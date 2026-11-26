@@ -223,6 +223,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                    32, 15);
         const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
         {
+            auto laneInterior = canvas.reduced(2);
+            const auto badge = laneInterior.removeFromBottom(14).removeFromRight(46);
+            g.fillRect(badge.reduced(2, 0));
             const auto &geo = root.arrangement.geometry;
             const auto rowsShown = geo.rows(root.reader());
             const int dropTop = canvas.getY() + geo.tracksHeight(root.reader()) - geo.scrollY;
@@ -338,6 +341,67 @@ void renderMenu(juce::LookAndFeel &look, const juce::PopupMenu &menu, const juce
     file.deleteFile();
     if (auto stream = file.createOutputStream())
         juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+}
+void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "ruler-grid.adi", err);
+    check(store != nullptr, "the ruler and grid project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Ruler and grid')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    check(submitter.submit(track(1)).ok, "make a lane for the grid");
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+
+    auto saved = persistence.load("saved");
+    saved.pixelsPerQuarter = 48;
+    std::string error;
+    check(persistence.save("saved", saved, error) && persistence.load("saved").pixelsPerQuarter == 48,
+          "the default scale does not overwrite a saved zoom");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "ruler-grid");
+    root.setSize(1440, 900);
+    auto &arrangement = root.arrangement;
+    auto &geo = arrangement.geometry;
+    const auto canvasBounds = root.getLocalArea(&arrangement.canvas, arrangement.canvas.getLocalBounds());
+    const auto rulerBounds = root.getLocalArea(&arrangement.ruler, arrangement.ruler.getLocalBounds());
+    std::printf("SC-70 canvas %d,%d %dx%d; beat ruler %d,%d %dx%d; bar %.2f px; grid %.2f quarters\n",
+                canvasBounds.getX(), canvasBounds.getY(), canvasBounds.getWidth(), canvasBounds.getHeight(),
+                rulerBounds.getX(), rulerBounds.getY(), rulerBounds.getWidth(), rulerBounds.getHeight(),
+                geo.x(textproj::kWhole), geo.gridQuarters());
+    check(geo.x(textproj::kWhole) == 18.5 && geo.gridQuarters() == 4,
+          "a fresh window uses a one-bar grid and a 74-pixel span for four bars");
+
+    // Keep a known zoom for the beat versus bar and badge paint probes.
+    geo.scale = 48;
+    {
+        auto &canvas = arrangement.canvas;
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        canvas.paint(g);
+        std::printf("SC-70 explicit 48 px/q: bar #%06x, beat #%06x, lane #%06x, lower-right #%06x\n",
+                    image.getPixelAt(192, 35).getARGB() & 0xffffffu, image.getPixelAt(48, 35).getARGB() & 0xffffffu,
+                    image.getPixelAt(49, 35).getARGB() & 0xffffffu,
+                    image.getPixelAt(canvas.getWidth() - 47, canvas.getHeight() - 15).getARGB() & 0xffffffu);
+        check(image.getPixelAt(192, 35).getBrightness() < image.getPixelAt(48, 35).getBrightness() &&
+                  image.getPixelAt(48, 35).getBrightness() < image.getPixelAt(49, 35).getBrightness(),
+              "the bar line is darker than a beat line and the beat line is darker than the lane");
+        check(image.getPixelAt(canvas.getWidth() - 47, canvas.getHeight() - 15) == look::band,
+              "the grid-spacing badge sits inside the lanes above the elapsed time ruler");
+    }
+    {
+        auto &ruler = arrangement.ruler;
+        juce::Image image(juce::Image::ARGB, ruler.getWidth(), ruler.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        ruler.paint(g);
+        const int foot = ruler.getHeight();
+        check(image.getPixelAt(0, foot - 2) != look::band && image.getPixelAt(1, foot - 2) == look::band &&
+                  image.getPixelAt(2, foot - 11) == look::band,
+              "the first bar uses a single-pixel vertical tick and no hook");
+    }
 }
 // Live parity (ADR-0203 d5): Live 11's default set as the director's capture shows it
 // (collab/window/look-live11.md): four tracks, the fourth selected with EQ Eight and
@@ -5460,6 +5524,7 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -5671,6 +5736,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-notes");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -5911,6 +5977,7 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-fields");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -6082,6 +6149,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-tools");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -6372,6 +6440,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-more");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -6730,6 +6799,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-time");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -7580,6 +7650,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-clip-time");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -8416,6 +8487,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-multi");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 3; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -16829,6 +16901,7 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && std::string(argv[1]) == "--arrangement-components-only") {
         // These fixtures render components in software and do not create a native peer.
+        trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
@@ -17377,6 +17450,88 @@ int main(int argc, char **argv) {
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
           "the Info View is on, bottom-left, beside the Device View");
+    check(a.infoArea().getWidth() == a.browserArea().getWidth(),
+          "SC-111: the Info box is exactly as wide as the Browser column");
+    {
+        const auto normal = a.infoArea();
+        a.setSize(480, 720);
+        check(a.infoArea().getWidth() < normal.getWidth() && a.infoArea().getWidth() == a.browserArea().getWidth(),
+              "a squeezed Browser gives the Info box its actual width");
+        a.setSize(1200, 720);
+        check(a.infoArea() == normal, "restoring the window also restores the Info box width");
+        check(a.command(AppCommands::SwapPanels) && a.infoArea().getWidth() == a.browserArea().getWidth(),
+              "the Info box uses the Browser width when the Browser moves to the other side");
+        check(a.command(AppCommands::SwapPanels) && a.infoArea() == normal,
+              "return the Browser to its original side");
+        check(a.command(AppCommands::ToggleBrowser) && a.infoArea() == normal,
+              "closing the Browser keeps the Info box at its stored width");
+        check(a.command(AppCommands::ToggleBrowser), "return the Browser to the layout");
+    }
+    a.frame();
+    check(a.infoSpectrum.mode() == SharedSpectrumView::Mode::Spectrogram,
+          "SC-112: a window with no saved choice starts on the spectrogram");
+    {
+        using Mode = SharedSpectrumView::Mode;
+        using Scale = SharedSpectrumView::SpectrumScale;
+        using Choice = InfoAnalyserMode;
+        auto &infoView = a.infoSpectrum;
+        juce::Image empty(juce::Image::RGB, infoView.getWidth(), infoView.getHeight(), true,
+                          juce::SoftwareImageType{});
+        juce::Graphics graphics(empty);
+        infoView.paintEntireComponent(graphics, true);
+        bool blankPlot = true;
+        for (int y = 22; y < empty.getHeight(); ++y)
+            for (int x = 0; x < empty.getWidth(); ++x)
+                blankPlot = blankPlot && empty.getPixelAt(x, y) == juce::Colour(look::display);
+        check(blankPlot, "the idle spectrogram has an empty plot without spectrum grid or status prose");
+
+        const auto centre = a.infoArea().getCentre().toFloat();
+        auto pick = [&](int choice, const juce::String &ticked) {
+            int requested = 0;
+            a.onInfoMenu = [&](const juce::PopupMenu &menu) {
+                ++requested;
+                check(menu.getNumItems() == 4 && menuLine(menu).contains(ticked + " *"),
+                      "the Info menu offers four renderers and ticks the current one");
+                int index = 0;
+                for (juce::PopupMenu::MenuItemIterator item(menu); item.next(); ++index)
+                    if (index == choice) item.getItem().action();
+            };
+            a.mouseDown(pressAt(a, centre, juce::ModifierKeys::rightButtonModifier));
+            a.mouseUp(pressAt(a, centre));
+            a.onInfoMenu = {};
+            check(requested == 1 && !a.state().mixView, "a context press requests the menu without opening Analysers");
+        };
+
+        pick(1, "Spectrogram");
+        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Extended,
+              "the filled spectrum uses the existing filled display");
+        pick(2, "Filled Spectrum");
+        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Device,
+              "the line spectrum uses the existing line display");
+        pick(3, "Line Spectrum");
+        a.mixViewPanel.analysis.setMode(Mode::Phase);
+        a.frame();
+        check(infoView.mode() == Mode::ClassicScope && b.infoSpectrum.mode() == Mode::Spectrogram &&
+                  persistence.load("main").infoAnalyserMode == Choice::ClassicScope,
+              "the Classic Scope survives other analyser changes and saves only in its own window");
+        {
+            AdiRootComponent reopened(view, submitter, mailbox, commands, persistence, session, "main");
+            check(reopened.infoSpectrum.mode() == Mode::ClassicScope,
+                  "reopening the window restores its saved analyser");
+        }
+        pick(0, "Classic Scope");
+        a.mixViewPanel.analysis.setMode(Mode::Spectrum);
+        a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
+        a.mouseUp(dragAt(a, centre, centre));
+        check(!a.state().mixView, "dragging across the Info box does not open Analysers");
+        a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
+        a.mouseUp(pressAt(a, centre));
+        a.frame();
+        check(a.state().mixView && a.mixViewPanel.tab() == MixViewPanel::Tab::Analysis && !infoView.isVisible(),
+              "a left click opens the Analysers page");
+        check(a.setMixView(false, false), "return to Arrangement after checking the Info click");
+        a.frame();
+    }
     a.hover(&a.transport.play);
     check(a.infoText().contains("Play") && a.infoText().contains("Space"),
           "the Info View describes the element under the mouse");
@@ -20172,6 +20327,7 @@ int main(int argc, char **argv) {
         }
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
+    trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });

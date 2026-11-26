@@ -33,9 +33,8 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
-// Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
-constexpr int kTabHeight = 20;
-constexpr int kInfoWidth = 200, kPreviewHeight = 27;
+// Live's measures, in points at 100 %: the AI tab and the browser's preview strip.
+constexpr int kTabHeight = 20, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -1318,6 +1317,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
+    applyInfoAnalyserMode();
     addAndMakeVisible(dockResizer);
     addChildComponent(clipView);
     addChildComponent(clipResizer);
@@ -1572,8 +1572,6 @@ void AdiRootComponent::frame() noexcept {
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
-        using AnalysisMode = SharedSpectrumView::Mode;
-        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
         infoSpectrum.setSource(settings.point());
         infoSpectrum.setChannel(settings.view.channel());
         infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
@@ -1723,13 +1721,6 @@ void AdiRootComponent::resized() {
     const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
     const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
     const int rowY = bottom - row;
-    // Live's Info View sits in the bottom-left corner beside the Device View.
-    const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
-    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
-                           : juce::Rectangle<int>();
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
@@ -1759,6 +1750,18 @@ void AdiRootComponent::resized() {
     }
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
+    const int bw = browserLeft ? left : right;
+    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
+                          : juce::Rectangle<int>();
+    // The Arrangement sheet makes the Info box as wide as the Browser column. With the Browser
+    // closed, use its stored width within the available detail space.
+    const int storedBrowserWidth = slots[browserLeft ? 0 : 1].width - gap;
+    const int infoW = bw > 0 ? browserArea_.getWidth() : std::clamp(storedBrowserWidth, 0, w / 2);
+    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
+    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
+                           : juce::Rectangle<int>();
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
     // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
     // then the track controls, then the clips, as Bitwig and Cubase have them (the
@@ -1780,9 +1783,6 @@ void AdiRootComponent::resized() {
     mixer.setBounds(mixerArea_);
     strip.setVisible(!stripArea_.isEmpty());
     strip.setBounds(stripArea_);
-    const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
-                          : juce::Rectangle<int>();
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
     // The AI chat is a tab at the browser's foot, collapsed by default, so the
@@ -1911,6 +1911,61 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(chatArea_);
     }
+}
+void AdiRootComponent::applyInfoAnalyserMode() {
+    using Mode = SharedSpectrumView::Mode;
+    using Scale = SharedSpectrumView::SpectrumScale;
+    switch (state_.infoAnalyserMode) {
+    case InfoAnalyserMode::Spectrogram:
+        infoSpectrum.setMode(Mode::Spectrogram);
+        break;
+    case InfoAnalyserMode::FilledSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Extended);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::LineSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Device);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::ClassicScope:
+        infoSpectrum.setMode(Mode::ClassicScope);
+        break;
+    }
+}
+void AdiRootComponent::mouseDown(const juce::MouseEvent &e) {
+    const bool inInfo = infoArea_.contains(e.getPosition());
+    infoPressed_ = inInfo && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+    if (!inInfo || !e.mods.isPopupMenu()) return;
+    juce::PopupMenu menu;
+    constexpr std::array choices{
+        std::pair{InfoAnalyserMode::Spectrogram, "Spectrogram"},
+        std::pair{InfoAnalyserMode::FilledSpectrum, "Filled Spectrum"},
+        std::pair{InfoAnalyserMode::LineSpectrum, "Line Spectrum"},
+        std::pair{InfoAnalyserMode::ClassicScope, "Classic Scope"}};
+    const SafePointer<AdiRootComponent> safe(this);
+    for (const auto &[mode, name] : choices)
+        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode] {
+            if (!safe || safe->state_.infoAnalyserMode == mode) return;
+            const auto previous = std::exchange(safe->state_.infoAnalyserMode, mode);
+            if (!safe->persist()) {
+                safe->state_.infoAnalyserMode = previous;
+                safe->fail(safe->error_);
+                return;
+            }
+            safe->applyInfoAnalyserMode();
+        });
+    if (onInfoMenu) {
+        onInfoMenu(menu);
+        return;
+    }
+    const auto where = e.getScreenPosition();
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+void AdiRootComponent::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(infoPressed_, false) && infoArea_.contains(e.getPosition()) &&
+        !e.mouseWasDraggedSinceMouseDown() && (state_.mixView || setMixView(true, state_.mixViewDetached)))
+        chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
