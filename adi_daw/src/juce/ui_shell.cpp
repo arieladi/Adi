@@ -877,8 +877,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('g', id == GroupTracks ? cmd : cmd | shift);
         const auto snapshot = active_ != nullptr ? active_->current() : nullptr;
         const auto track = active_ != nullptr ? active_->arrangement.geometry.selection.track : 0;
-        info.setActive(snapshot != nullptr && (id == GroupTracks ? canGroup(snapshot->tracks, track)
-                                                                 : canUngroup(snapshot->tracks, track)));
+        info.setActive(snapshot != nullptr && active_->trackGroupingContext() &&
+                       (id == GroupTracks ? canGroup(snapshot->tracks, track) : canUngroup(snapshot->tracks, track)));
         break;
     }
     // Live 12's Navigate menu (online manual §41.4.1, §42.2): Alt, or Option, and the view's
@@ -1098,6 +1098,8 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (id >= FoldToNotes && id <= HighlightScales)
+        return false;
+    if ((id == GroupTracks || id == UngroupTracks) && !root.trackGroupingContext())
         return false;
     if (id == DrawMode || id == ArmSelected) {
         const auto *focus = juce::Component::getCurrentlyFocusedComponent();
@@ -2344,6 +2346,11 @@ bool AdiRootComponent::trackClipboardContext() const {
     const auto *focus = juce::Component::getCurrentlyFocusedComponent();
     return focus == &arrangement.headers ||
            (dynamic_cast<const MixerStrip *>(focus) != nullptr && mixerView.isParentOf(focus));
+}
+bool AdiRootComponent::trackGroupingContext() const {
+    return !noteEditorHasContext() && !devices.hasKeyboardFocus(true) && !mixViewPanel.stack.hasKeyboardFocus(true) &&
+           !mixViewPanel.hasAnalyzerControlFocus() && !mixViewPanel.hasChannelControlFocus() &&
+           dynamic_cast<const juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent()) == nullptr;
 }
 bool AdiRootComponent::trackClipboard(ClipCommand command) {
     using track_edits_detail::children;
@@ -4823,7 +4830,7 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
-        if (!groupTracks(id == AppCommands::UngroupTracks))
+        if (!trackGroupingContext() || !groupTracks(id == AppCommands::UngroupTracks))
             return false;
         break;
     case AppCommands::SelectAll:

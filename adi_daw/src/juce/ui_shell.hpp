@@ -694,6 +694,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool clipClipboard(ClipCommand);
     bool trackClipboard(ClipCommand);
     bool trackClipboardContext() const;
+    bool trackGroupingContext() const;
     bool canClipClipboard(ClipCommand) const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.

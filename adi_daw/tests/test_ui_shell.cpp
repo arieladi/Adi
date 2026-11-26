@@ -1681,6 +1681,154 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
           "down: bar 3's start again");
     check(submitter.nextUndo()->txnId == beforeField, "none of it an undo step");
 }
+void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "group-command-context.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "SC-265: a project for focus-scoped Group Tracks");
+    if (!document)
+        return;
+    using C = AppCommands;
+    constexpr std::int64_t midi = 2, audio = 4, clip = 101;
+    const auto op = [](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        request.label = "Prepare group focus fixture";
+        return request;
+    };
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    const auto beat = textproj::kPPQ;
+    const bool made = document->ops().submit(std::vector<OpRequest>{
+        op("clip.create", {{"id", clip}, {"track", midi}, {"kind", "midi"}, {"name", "Notes"}, {"pos", 0}, {"length", 4 * beat}}),
+        op("note.insert", {{"clip", clip}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}),
+        op("clip.setScale", {{"id", clip}, {"root", 0}, {"scale", "major"}, {"mask", 2741}})
+    }).ok && document->synchronise() && document->insertPlugin(plugin, midi);
+    check(made, "a MIDI clip with a scale and a device on its track");
+    if (!made)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "group-command-context");
+    UiPeerRoot host;
+    host.setSize(1600, 1000);
+    host.addAndMakeVisible(root);
+    root.setBounds(host.getLocalBounds());
+    host.setVisible(true);
+    host.addToDesktop(0);
+    auto *peer = host.getPeer();
+    check(peer != nullptr, "SC-265: keyboard input uses the software peer");
+    if (!peer)
+        return;
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    const juce::KeyPress group('g', cmd, 0), ungroup('g', cmd | juce::ModifierKeys::shiftModifier, 0);
+    const auto active = [&](int id) {
+        commands.activate(root);
+        juce::ApplicationCommandInfo info(id);
+        commands.getCommandInfo(id, info);
+        return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+    };
+    const auto blocked = [&](juce::Component &control, int id, const juce::KeyPress &key) {
+        if (!control.isShowing())
+            return false;
+        control.grabKeyboardFocus();
+        const auto before = OpJournal(document->store()).headSeq();
+        const bool enabled = active(id);
+        peer->handleKeyPress(key);
+        const bool ran = root.command(id);
+        return control.hasKeyboardFocus(true) && !enabled && !ran && OpJournal(document->store()).headSeq() == before;
+    };
+    const auto parent = [&](std::int64_t track) { return root.current()->findTrack(track)->parent; };
+
+    root.selectClip(clip);
+    root.showClipView();
+    refresh();
+    auto &notes = root.clipView.notes;
+    notes.select({1});
+    const bool notesBlocked = blocked(notes, C::GroupTracks, group);
+    check(notesBlocked && notes.isSelected(1) && parent(midi) == 0,
+          "Ctrl/Cmd+G and Edit > Group Tracks leave the track alone while a note is selected");
+    if (!notesBlocked)
+        return;
+    check(peer->handleKeyPress(juce::KeyPress('g')) && notes.scaleFolded(),
+          "plain G still folds the Note Editor to the scale");
+    auto &headers = root.arrangement.headers;
+    const auto clickHeader = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
+        const juce::Point<float> title{60.f, static_cast<float>(laneTop(root, track) + 8)};
+        headers.mouseDown(pressAt(headers, title, mods));
+        headers.mouseUp(pressAt(headers, title));
+    };
+    clickHeader(midi);
+    clickHeader(audio, cmd);
+    const bool grouped = headers.hasKeyboardFocus(false) && active(C::GroupTracks) && peer->handleKeyPress(group) &&
+                         parent(midi) != 0 && parent(midi) == parent(audio);
+    check(grouped && root.undoTitle(false) == "Undo Group Tracks",
+          "Arrangement titles take focus from the notes and group the two picked tracks in one edit");
+    if (!grouped)
+        return;
+    const auto groupTrack = parent(midi);
+    refresh();
+    juce::TextEditor field;
+    root.addAndMakeVisible(field);
+    field.setBounds(10, 10, 120, 24);
+    const bool ungroupBlocked = blocked(field, C::UngroupTracks, ungroup);
+    check(ungroupBlocked && parent(midi) == groupTrack, "track Ungroup is disabled while a text field owns focus");
+    if (!ungroupBlocked)
+        return;
+    clickHeader(groupTrack);
+    check(active(C::UngroupTracks) && peer->handleKeyPress(ungroup) && parent(midi) == 0 && parent(audio) == 0,
+          "the group's title takes focus back and Ctrl/Cmd+Shift+G ungroups it");
+
+    clickHeader(midi);
+    root.showDeviceView();
+    refresh();
+    auto &panels = root.devices.panels;
+    const bool deviceBlocked = !panels.empty() && blocked(*panels.front(), C::GroupTracks, group);
+    check(deviceBlocked && parent(midi) == 0, "Ctrl/Cmd+G has no track action while the device title has focus");
+    if (!deviceBlocked)
+        return;
+    check(!panels.front()->controls.empty() && blocked(*panels.front()->controls.front(), C::GroupTracks, group),
+          "the device's parameter controls also keep Ctrl/Cmd+G from grouping the track");
+
+    root.setMixView(true, false);
+    refresh();
+    auto &mix = root.mixViewPanel;
+    check(blocked(mix.stack, C::GroupTracks, group) && blocked(mix.channels.list, C::GroupTracks, group) &&
+              blocked(mix.mainMeter.weightingBox, C::GroupTracks, group),
+          "the Mix View's Stack, channel browser and analyser never group a stale track choice");
+    root.setMixView(false, false);
+    root.command(C::ToggleMixerView);
+    root.resizeMixerView(320);
+    refresh();
+    const auto &columns = root.mixerView.strips();
+    const auto strip = std::find_if(columns.begin(), columns.end(), [](const auto &s) {
+        return s->isVisible() && s->track() == midi;
+    });
+    if (strip != columns.end() && !panels.empty()) {
+        panels.front()->grabKeyboardFocus();
+        auto &title = **strip;
+        title.mouseDown(pressAt(title, {20.f, 8.f}));
+        title.mouseUp(pressAt(title, {20.f, 8.f}));
+        check(title.hasKeyboardFocus(false) && active(C::GroupTracks) && peer->handleKeyPress(group) &&
+                  parent(midi) != 0 && parent(audio) == 0 && root.command(C::Undo) && parent(midi) == 0,
+              "a Mixer title takes focus from the device and Ctrl/Cmd+G groups only its track with one Undo");
+    } else {
+        check(false, "the same track has a visible Mixer title and a Device View panel");
+    }
+}
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
 void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
@@ -19774,6 +19922,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
