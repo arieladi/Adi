@@ -391,7 +391,7 @@ class ArrangementCanvas final : public juce::Component,
     // The nearest clip edge on the selected track after `tick`, or before it; `tick` if none.
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
     enum class ResizeEdge { None, Left, Right };
-    void beginResize(const engine::ClipNode &, std::int64_t track, ResizeEdge);
+    void beginResize(const engine::ClipNode &, std::int64_t track, ResizeEdge, bool stretch = false);
     void resizeTo(std::int64_t tick, std::int64_t minLength);
     std::optional<std::int64_t> commitResize();
     // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
@@ -401,7 +401,8 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     ResizeEdge resizeEdge_ = ResizeEdge::None;
-    bool keyResize_ = false;
+    bool keyResize_ = false, stretching_ = false;
+    std::optional<std::pair<std::int64_t, std::int64_t>> clipTimeBounds_;
     // A plain press on the bar of one of several selected clips keeps them for the drag; released
     // without one, it selects that clip alone, from where it was pressed.
     bool selectOnUp_ = false;

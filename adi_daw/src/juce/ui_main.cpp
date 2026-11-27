@@ -111,6 +111,36 @@ juce::File withExtension(const juce::File &file, const char *extension) {
     return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
 juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
+juce::File fileFromPath(const std::filesystem::path &path) {
+    auto nativePath = path;
+    const auto value = nativePath.make_preferred().u8string();
+    return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(value.data()), static_cast<int>(value.size())));
+}
+std::string launchExternalSampleEditor(const juce::File &editor, juce::File source, const juce::File &project, bool copy) {
+    juce::StringArray arguments;
+#if JUCE_MAC
+    if (editor.isDirectory() && editor.hasFileExtension(".app"))
+        arguments = juce::StringArray{"/usr/bin/open", "-a", editor.getFullPathName()};
+    else
+#endif
+    if (editor.existsAsFile())
+        arguments.add(editor.getFullPathName());
+    else
+        return "The configured Sample Editor could not be found.";
+
+    if (copy) {
+        const auto folder = project.getParentDirectory().getChildFile("audio/Edited").getChildFile(juce::Uuid().toString());
+        const auto target = folder.getChildFile(source.getFileName());
+        if (folder.createDirectory().failed() || !source.copyFileTo(target))
+            return "The sample could not be copied for editing.";
+        source = target;
+    }
+    arguments.add(source.getFullPathName());
+    juce::ChildProcess process;
+    if (!process.start(arguments, 0))
+        return "The configured Sample Editor could not be started.";
+    return copy ? "Opened an editable copy of " + source.getFileName().toStdString() + "." : std::string{};
+}
 // Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
 // which closing hides. The list stays the root's; the window only shows it.
 class UndoHistoryWindow final : public juce::DocumentWindow {
@@ -1039,6 +1069,20 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->browser.swapChoice = [this](const BrowserPanel::HotSwapChoice &choice) { return swapBrowserChoice(choice); };
         root->browser.leaveHotSwap = [this] { leaveHotSwap(); };
+        root->launchSampleEditor = [asker = juce::Component::SafePointer<AdiRootComponent>(root_)](
+                                       const std::filesystem::path &editor, const std::filesystem::path &source, bool copy) {
+            if (asker == nullptr)
+                return false;
+            const auto project = fileFromPath(asker->editStore().path());
+            return juce::Thread::launch([asker, project, editor = fileFromPath(editor), source = fileFromPath(source), copy] {
+                auto message = launchExternalSampleEditor(editor, source, project, copy);
+                if (!message.empty())
+                    juce::MessageManager::callAsync([asker, message = std::move(message)] {
+                        if (asker != nullptr)
+                            asker->say(message);
+                    });
+            });
+        };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
