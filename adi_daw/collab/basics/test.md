@@ -40,6 +40,8 @@ If the CoreAudio symptom persists, the missing reproduction data are the Cue Out
 
 The existing SC-27 shell fixture now locates explicitly inside a one-bar brace. It continues to check both refusal with MIDI armed and audio admission within the loop. The new document rehearsal covers the complementary start beyond the brace.
 
+The separately run transport suite still encoded the old wrap rule. Follow-up `d438ea3fd` updates its independent sample-by-sample model. The Debug warnings-as-errors run passed all 20 checks, including 253,708 exhaustive positions and offsets.
+
 ### SC-440 and SC-176 · Loop Selection
 
 The integration branch already contains Cmd/Ctrl+L from `a12f1cf75`, retention of a range when opening its menu from `493109bdc`, and the range actions and Loop Selection from `f19f5732f` and `a64c36e1f`, carried by merge `9d6bfb23d`. The window suite tests the native-independent command dispatch, persisted loop and corresponding brace fields, range retention and the enabled menu model. A headless measurement put the default four-bar brace at `(0,0,74,8)` in the scrub and the selected bars 3–5 at `(37,0,37,8)`.
