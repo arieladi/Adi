@@ -12,6 +12,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-123 | `basics/browser-chain` at `7a1e22ab9` | Audition a sample through the app-owned streaming Cue player with keyboard and waveform control. Browser, application and engine seats. | Headless streaming, Cue, live recording isolation, key rebinding and waveform seek passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-429 | `basics/browser-chain` at `f2c761cd8` | Reveal preview from the first eligible sample selection and retain the current list height. Browser seat. | The headless visibility, reservation, folder and hidden-command checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-431 | `basics/browser-chain` at `f23561dc8` | Report missing physical Cue outputs and map sparse device grants consistently. Engine and window seats. | Headless status, sparse stereo, failed restart, metronome and preview tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-127 | `basics/browser-chain` at `6286d5a37` | Keep working labels and list saved presets under Sounds. Browser seat. | The roster, fallback and preset search and load passed headless. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -125,6 +126,32 @@ The driver grant and the two Cue renderers now agree on physical channel numbers
 The strict display-free DeviceCore and fake JUCE DeviceBridge checks passed. The sample-preview suite passed all 17 checks, including playback through a sparse map and silence for the missing pair. Warnings-as-errors syntax checks covered the touched engine and window sources. The exact integrated Cue and peerless Status Bar fixtures are ready for the Browser chain build.
 
 The display-free fake DeviceBridge check also exercised a failed restart after a stop. The fake stayed closed while reporting its old sparse 1/2 and 7/8 grant and a 256-frame buffer. The check failed on `7407dc332`, which reopened the bridge, and passed on `16e23564c` with the closed-device guard. With the guard, the bridge stayed closed, made no additional prepare call, published no output map, retained the stop notice and silenced a stray callback.
+
+### SC-127 Browser roster
+
+Browser-local bounds at 308 × 443 in Compact density. The sidebar starts at (4, 27) and is 113 px wide. At scroll zero every row is 113 × 19, with its top at y = 28 + 19 × its zero-based index. The SC-125 base has 22 rows, including headings and gaps. SC-127 has 12. The content list keeps its current header and row layout.
+
+| Visible roster in order | Source | Before y | After y |
+|---|---|---:|---:|
+| Categories | SC-127 | 85 | 28 |
+| All | SC-120, SC-122 | 104 | 47 |
+| Sounds | SC-85, SC-127 | 123 | 66 |
+| Instruments | DF-W48 (#787) | 161 | 85 |
+| Audio Effects | N15 (#395) | 180 | 104 |
+| Pd Devices | N15 (#395) | 218 | 123 |
+| Plug-Ins | DF-W9, DF-W34 (#700) | 237 | 142 |
+| Samples | N15, SC-421 | 275 | 161 |
+| Separator | SC-127 | 332 | 180 |
+| Places | SC-125, SC-132 | 351 | 199 |
+| User Library | SC-135 | 389 | 218 |
+| Added Places, if any | SC-125, SC-132, SC-126 | before Add Folder | starting at 237 |
+| Add Folder… | SC-104, SC-125 | 427 | 237 with no added Places |
+
+Collections returns with Favorites (SC-133). The remaining hidden labels, in category or place order, are Drums (SC-128, after Sounds), MIDI Effects (SC-294; hosted effects SC-316), Clips (DF-W7; clip listing has no separate row), Grooves (MI-05 and SC-240), Templates (SC-161), AI (AGT-05 and ADR-0261 d2, at the foot of Categories), Packs (DF-W7; no separate Packs listing row) and Current Project (SC-134).
+
+Sounds lists saved preset files alphabetically and uses the same word matcher as All. The headless fixture creates and reads two real preset files, checks that an audio file with matching words stays outside Sounds, and checks that empty Sounds, a same-named user Place and old hidden-label preferences behave as expected. SC-128 adds the ordered Drums label, which shifts the rows below it by 19 px.
+
+The Device, Mixer and Mix View software fixture changed inside its Browser results from `(133,84)` to `(310,474)`, exclusive. The fixture’s first-label focus check now visits All because Favorites is hidden at this step. The other software references remained pixel-identical.
 
 ## For the director
 
