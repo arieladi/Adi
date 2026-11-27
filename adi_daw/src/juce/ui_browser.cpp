@@ -56,6 +56,17 @@ bool presetNameLess(const preset::Entry &a, const preset::Entry &b) {
     const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
     return order != 0 ? order < 0 : a.path < b.path;
 }
+juce::String rowName(const BrowserPanel::Row &row) {
+    if (row.folder)
+        return juce::String::fromUTF8(row.folder->name.c_str());
+    if (row.device)
+        return juce::String::fromUTF8(row.device->name.data(), static_cast<int>(row.device->name.size()));
+    if (row.plugin)
+        return juce::String::fromUTF8(row.plugin->name.c_str());
+    if (row.savedPreset)
+        return juce::String::fromUTF8(row.savedPreset->name.c_str());
+    return row.file ? juce::String::fromUTF8(row.file->name.c_str()) : row.heading;
+}
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     g.setColour(look::text);
     const float x = r.getX(), y = r.getY(), w = r.getWidth(), h = r.getHeight();
@@ -729,6 +740,7 @@ void BrowserPanel::refill(int selectRow, bool keepListPosition) {
         }
     }
     refillRows();
+    sortRows();
     if (previous) {
         juce::SparseSet<int> selected;
         int primary = -1;
@@ -920,6 +932,52 @@ void BrowserPanel::refillRows() {
             rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
+}
+void BrowserPanel::sortRows() {
+    if (!nameSortAscending_ || hotSwap_ || rows_.size() < 2)
+        return;
+    const auto count = rows_.size();
+    std::vector<std::size_t> ends(count);
+    std::vector<juce::String> names;
+    names.reserve(rows_.size());
+    for (const auto &row : rows_)
+        names.push_back(rowName(row));
+    // Each contiguous branch includes its more deeply indented descendants.
+    for (auto index = count; index > 0;) {
+        --index;
+        auto end = index + 1;
+        while (end < count && rows_[end].depth > rows_[index].depth)
+            end = ends[end];
+        ends[index] = end;
+    }
+    auto original = std::move(rows_);
+    rows_.clear();
+    rows_.reserve(original.size());
+    shown_.clear();
+    const auto append = [&](std::size_t index) {
+        if (const auto *file = original[index].file)
+            shown_.push_back(file);
+        rows_.push_back(std::move(original[index]));
+    };
+    const auto appendSorted = [&](auto &&self, std::size_t first, std::size_t end) -> void {
+        std::vector<std::size_t> siblings;
+        for (auto index = first; index < end; index = ends[index])
+            siblings.push_back(index);
+        std::stable_sort(siblings.begin(), siblings.end(), [&](std::size_t a, std::size_t b) {
+            const auto order = names[a].compareIgnoreCase(names[b]);
+            return *nameSortAscending_ ? order < 0 : order > 0;
+        });
+        for (const auto index : siblings) {
+            append(index);
+            if (index + 1 < ends[index])
+                self(self, index + 1, ends[index]);
+        }
+    };
+    // Scan progress is a status line and the progress callback updates row zero.
+    const bool scanNotice = pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
+    if (scanNotice)
+        append(0);
+    appendSorted(appendSorted, scanNotice ? 1u : 0u, count);
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 juce::String BrowserPanel::getNameForRow(int row) {
@@ -1338,12 +1396,9 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.fillRoundedRectangle(0, bar - 4, w, h - bar - footer + 8, look::radiusControl);
     if (previewRowShown_)
         g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
-    // The round buttons: show/hide the browser at the top, the groove pool at the foot.
-    // Round, in the shared button's colours at rest (language.png part B).
-    for (const float y : {0.5f, h - 19.5f}) {
-        controls::roundButton(g, {0, y, 19, 19}, controls::ButtonState::Rest);
-        look::triangle(g, {7, y + 5, 7, 9}, 0, controls::labelColour(controls::ButtonState::Rest));
-    }
+    // The top round button hides the Browser. MI-05 will bring in the Groove Pool.
+    controls::roundButton(g, {0, 0.5f, 19, 19}, controls::ButtonState::Rest);
+    look::triangle(g, {7, 5.5f, 7, 9}, 0, controls::labelColour(controls::ButtonState::Rest));
     // The search field.
     g.setColour(look::panel);
     g.fillRect(search.getBounds());
@@ -1383,7 +1438,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.drawRect(sidebarArea_, 1);
     }
     // The content pane's header, as Live's list.
-    const juce::Rectangle<int> header(contentArea_.getX(), contentArea_.getY(), contentArea_.getWidth(), 19);
+    const auto header = nameHeaderArea();
     g.setColour(look::columnHead);
     g.fillRect(header);
     g.setFont(look::font(look::fontField, true));
@@ -1395,8 +1450,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
     } else {
         g.setColour(look::text);
         g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
+        const auto angle = nameSortAscending_.value_or(true) ? juce::MathConstants<float>::halfPi
+                                                           : -juce::MathConstants<float>::halfPi;
         look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
-                       juce::MathConstants<float>::halfPi, look::textDim);
+                       angle, look::textDim);
     }
     // The preview row: Live's headphones switch at its left.
     const auto preview = previewArea();
@@ -1458,6 +1515,18 @@ void BrowserPanel::revealSidebarSelection() {
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
+    if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu()) {
+        if (hideButtonArea().contains(e.getPosition())) {
+            root_.command(AppCommands::ToggleBrowser);
+            return;
+        }
+        if (!hotSwap_ && nameHeaderArea().contains(e.getPosition())) {
+            nameSortAscending_ = !nameSortAscending_.value_or(true);
+            refill(-1, true);
+            repaint(nameHeaderArea());
+            return;
+        }
+    }
     const auto wave = previewWaveformArea();
     if (!e.mods.isPopupMenu() && previewPeaks_ && wave.contains(e.getPosition()) && selectedSample()) {
         previewSelected(static_cast<double>(e.x - wave.getX()) / std::max(1, wave.getWidth() - 1));

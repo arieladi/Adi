@@ -97,6 +97,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The logical row before clipping to the scrolling sidebar pane.
     juce::Rectangle<int> sidebarRowBounds(int row) const noexcept;
     juce::Rectangle<int> contentArea() const noexcept { return contentArea_; }
+    juce::Rectangle<int> nameHeaderArea() const noexcept { return contentArea_.withHeight(kRowHeight); }
+    static juce::Rectangle<int> hideButtonArea() noexcept { return {0, 0, 19, 20}; }
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the
     // search and preview rows, the dark edge.
     static constexpr int kStripWidth = 20, kSidebarWidth = 113, kRowHeight = 19, kBarHeight = 27;
@@ -222,6 +224,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The list's rows for the label chosen and the search typed.
     void refill(int selectRow = -1, bool keepListPosition = false);
     void refillRows();
+    void sortRows();
     // The rows are borrowed only while constructing a menu. Actions own the identity.
     void appendContextFavorites(juce::PopupMenu &, const Row &);
     void refillFavorites(const LibraryQuery &);
@@ -254,6 +257,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::optional<double> previewPosition_;
     bool previewRowShown_ = false;
     bool canRepeatPreview_ = false;
+    std::optional<bool> nameSortAscending_;
     int firstItem() const;
     int lastSelected_ = -1;
     bool restoringListSelection_ = false;

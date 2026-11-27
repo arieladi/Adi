@@ -7702,6 +7702,60 @@ void browserSampleFolders(AppCommands &commands, const std::filesystem::path &di
               browser.load(0) && file(1, drums, 1),
           "an overlapping Place has its own folder tree and browses the shared sample");
 }
+void browserNameAndHide(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ProjectDocument::open(dir / "browser-name-and-hide.adi", true, {}, error);
+    check(doc != nullptr, "SC-136: create Browser control fixture");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "browser-name-and-hide");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    const auto place = dir / "Sounds";
+    const auto low = place / "Alpha" / "A Low.wav";
+    const auto high = place / "Alpha" / "Z High.wav";
+    const auto middle = place / "Middle.wav";
+    LibraryListing listing;
+    listing.places = {{"Test Sounds", place, "order", false, {}, {"Alpha", "Zulu"}}};
+    listing.samples = {{"A Low.wav", low, "order"}, {"Z High.wav", high, "order"}, {"Middle.wav", middle, "order"}};
+    browser.setListing(std::move(listing));
+    const auto choice = std::ranges::find(browser.sidebar(), std::string("order"), &BrowserPanel::Entry::place);
+    check(choice != browser.sidebar().end(), "SC-136: the folder fixture is in Places");
+    if (choice == browser.sidebar().end())
+        return;
+    browser.choose(static_cast<int>(choice - browser.sidebar().begin()));
+    check(browser.load(0), "SC-136: open Alpha before toggling Name order");
+    browser.list.selectRow(4);
+    browser.list.selectRow(1, false, false);
+    const auto click = [&](juce::Point<int> point) {
+        browser.mouseDown(pressAt(browser, point.toFloat(), juce::ModifierKeys::leftButtonModifier));
+    };
+    const auto &rows = browser.rows();
+    const auto fileAt = [&](std::size_t index, const std::filesystem::path &path, int depth) {
+        return index < rows.size() && rows[index].file && rows[index].file->path == path && rows[index].depth == depth;
+    };
+    const auto folderAt = [&](std::size_t index, std::string_view name, bool open) {
+        return index < rows.size() && rows[index].folder && rows[index].folder->name == name && rows[index].folderOpen == open;
+    };
+    const auto header = browser.nameHeaderArea();
+    check(header == juce::Rectangle<int>(119, 27, 185, 19) && fileAt(1, low, 1) && fileAt(2, high, 1),
+          "SC-136: the Name control uses the existing header and the folder begins in name order");
+    click(header.getCentre());
+    check(folderAt(0, "Zulu", false) && fileAt(1, middle, 0) && folderAt(2, "Alpha", true) &&
+              fileAt(3, high, 1) && fileAt(4, low, 1) && browser.list.getLastRowSelected() == 4 &&
+              browser.list.isRowSelected(1) && browser.list.getNumSelectedRows() == 2,
+          "SC-136: Name descends, keeping children within the folder and preserving both selected files");
+    click(header.getCentre());
+    check(folderAt(0, "Alpha", true) && fileAt(1, low, 1) && fileAt(2, high, 1) &&
+              fileAt(3, middle, 0) && folderAt(4, "Zulu", false) && browser.list.getLastRowSelected() == 1,
+          "SC-136: clicking Name again sorts each branch ascending");
+    click({10, browser.getHeight() - 10});
+    check(!root.browserArea().isEmpty(), "SC-136: the former Groove Pool spot has no action before MI-05");
+    click(BrowserPanel::hideButtonArea().getCentre());
+    check(root.browserArea().isEmpty() && root.infoArea().isEmpty(),
+          "SC-136: clicking the Browser's round button uses the Browser collapse command");
+}
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
@@ -26537,6 +26591,7 @@ int main(int argc, char **argv) {
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
+    trace("browserNameAndHide", [&] { browserNameAndHide(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
