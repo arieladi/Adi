@@ -5216,14 +5216,8 @@ void ClipViewPanel::editSample() {
         root.say("Stop playback before editing the sample.");
         return;
     }
-    std::string error;
-    const auto source = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
-    if (source.empty()) {
-        root.say("The sample could not be opened: " + error);
-        return;
-    }
     const bool copy = settings.get("files.sampleEditorOpens") == "copy";
-    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, source, copy))
+    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, node_->audio->mediaId, copy))
         root.say("The configured Sample Editor could not be started.");
 }
 juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
