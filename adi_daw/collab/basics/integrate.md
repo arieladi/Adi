@@ -1,4 +1,4 @@
-Readiness pending while the full landing checks run on `basics/integrate-1` at `379b5d8b210745bfbc93bc725b993d0fe46b697a`.
+Ready for win: basics/integrate-1 at a7d02bcfedaa2f70f42f7f13e19e98967c8d7292
 
 # Basics integration
 
@@ -18,13 +18,15 @@ Integration starts from `origin/land/basics-1127i` at `ed0f2aa18795792818fd35817
 
 ## Landing verification
 
-The seven merged tips are ancestors of `012cc2f233db6cb973ac84ccad578ccdbe608735`. Linux GCC 14 Debug Ninja built every configured target, including `adi_app` and `adi_play`, with JUCE, Pd, warnings as errors, and acceptance enabled. The five validators and Win's landing-check tests passed. With DISPLAY unset, all 293 suites from `ctest -LE performance`, all 18 `adi_ui_` suites, and all three acceptance suites passed.
+The refreshed Linux Debug build covers all configured JUCE and Pd targets, including `adi_app` and `adi_play`, with warnings as errors. The five validators and Win's landing-check tests passed. All 293 non-performance suites and all three acceptance suites passed with DISPLAY unset. The final portability commit removed an unused Quit callback capture and renamed shadowing variables in the window fixtures. The affected app and UI targets rebuilt, Clang 14 rechecked those three units without diagnostics, and all 18 no-display window suites passed again. The refreshed Warp translation unit also passed under Clang 19 with libc++ 19. Win's native Windows and macOS matrix remains pending.
+
+Before the refreshed checks, the seven original merged tips were verified at `012cc2f233db6cb973ac84ccad578ccdbe608735`. Linux GCC 14 Debug Ninja built every configured target, including `adi_app` and `adi_play`, with JUCE, Pd, warnings as errors, and acceptance enabled. The five validators and Win's landing-check tests passed. With DISPLAY unset, all 293 suites from `ctest -LE performance`, all 18 `adi_ui_` suites, and all three acceptance suites passed.
 
 The full run caught an obsolete placeholder diagnostic after plug-in recovery and extra native mixer Undo entries during structural edits. Both fixes passed the targeted suites and the full rerun. Local executables were linked without debug symbols to recover build-volume space for the decoder's default 2 GiB free-space guard. Debug assertions and the decoder settings were retained.
 
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
-The original Export tip and the first two verified Edit items are included. The Edit report at `f586d4f5570c3ab4d9bb5ed93beb5f92f4e650bb` lists SC-175 and later implementation branches as local. Integrate the next verified, published tip when it appears.
+The original Export tip and the first two verified Edit items are included. The Edit report at `4ec51be5437f930a7fdeaab773b39727a6e5a596` lists SC-175 and later implementation branches as local. Integrate the next verified, published tip when it appears.
 ## Follow-up fixes
 
 | Queue item | Integration head | Change and verification |
