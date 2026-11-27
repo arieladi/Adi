@@ -18,6 +18,8 @@ namespace adi::ui {
 namespace {
 constexpr int kLoadIssueHeight = 48;
 constexpr const char *kPluginUnavailable = "Plug-in unavailable";
+constexpr const char *kPlaybackProblemDescription =
+    "This device has a playback problem. See Playback Problems in the Status Bar.";
 }
 ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
                                    double defaultNormalized)
@@ -1511,6 +1513,46 @@ void DevicePanelView::visibilityChanged() {
     releaseLimiterReduction();
     if (!parameterPages.empty()) cancelInteractions();
 }
+bool DevicePanelView::hasPlaybackProblem() const noexcept {
+    return strip.hasPlaybackProblem(id);
+}
+juce::String DevicePanelView::getTooltip() {
+    return hasPlaybackProblem() ? juce::String(kPlaybackProblemDescription) : juce::String{};
+}
+bool DevicePanelView::refreshPlaybackProblem() {
+    const bool next = hasPlaybackProblem();
+    if (next == playbackProblemPresented_)
+        return false;
+    playbackProblemPresented_ = next;
+    const juce::String description(next ? kPlaybackProblemDescription : "");
+    setDescription(description);
+    title.setDescription(description);
+    enabled.setDescription(description);
+    updateTitleTooltip();
+    layoutTitle(strip.folded(id));
+    repaint();
+    return true;
+}
+void DevicePanelView::updateTitleTooltip() {
+    if (!data)
+        return;
+    const auto &d = *data;
+    auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
+                      (d.available ? "Latency: " + juce::String(d.latency) + " samples."
+                                   : juce::String("This device is unavailable."));
+    if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
+    if (mixCard_ && eqPresentation(d))
+        hint += "\nSelect a band, then drag its frequency or gain handle.";
+    if (!d.processingIssue.empty()) {
+        hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
+        hint += "\nTo retry, reopen this project using File > Open Project.";
+    }
+    if (!d.loadIssue.empty())
+        hint += "\n" + juce::String(kPluginUnavailable) + ": " + juce::String(d.loadIssue);
+    if (playbackProblemPresented_)
+        hint += "\n" + juce::String(kPlaybackProblemDescription);
+    if (title.getTooltip() != hint) title.setTooltip(hint);
+}
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
     presentFunctionSelection(d);
@@ -1526,19 +1568,8 @@ void DevicePanelView::present(const DevicePanelData &d) {
         repaint();
     const bool loadFailed = !d.loadIssue.empty();
     const bool loadStateChanged = wrench.isEnabled() == loadFailed;
-    auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
-                      (d.available ? "Latency: " + juce::String(d.latency) + " samples."
-                                   : juce::String("This device is unavailable."));
-    if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
-    if (mixCard_ && eqPresentation(d))
-        hint += "\nSelect a band, then drag its frequency or gain handle.";
-    if (!d.processingIssue.empty()) {
-        hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
-        hint += "\nTo retry, reopen this project using File > Open Project.";
-    }
-    if (loadFailed)
-        hint += "\n" + juce::String(kPluginUnavailable) + ": " + juce::String(d.loadIssue);
-    if (title.getTooltip() != hint) title.setTooltip(hint);
+    if (!refreshPlaybackProblem())
+        updateTitleTooltip();
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
                                            : loadFailed ? "This plug-in is unavailable."
                                                         : "Switches the device on or off.");
@@ -1692,8 +1723,8 @@ void DevicePanelView::layoutCompactControls(int top) {
                                                      std::max(0, w - look::border), h);
     }
 }
-void DevicePanelView::resized() {
-    const bool isFolded = strip.folded(id);
+void DevicePanelView::layoutTitle(bool isFolded) {
+    const int markSpace = playbackProblemPresented_ ? static_cast<int>(kPlaybackProblemMarkSize) + 2 : 0;
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
     configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
@@ -1705,15 +1736,19 @@ void DevicePanelView::resized() {
     const int titleRight = getWidth() - (eqPresentation() || mixCard_ ? 4 : 58);
     const int swapWidth = hotSwapButton.isVisible() ? 17 : 0;
     hotSwapButton.setBounds(titleRight - swapWidth, 1, swapWidth, 15);
-    title.setBounds(nameLeft, 1, std::max(0, titleRight - swapWidth - nameLeft), 15);
+    title.setBounds(nameLeft, 1, std::max(0, titleRight - swapWidth - nameLeft - markSpace), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (mixCard_ && !isFolded) {
         const auto rail = look::fieldHeight;
         enabled.setBounds(0, 0, rail, rail);
-        title.setBounds(0, 0, std::max(0, getHeight() - rail), rail);
+        title.setBounds(0, 0, std::max(0, getHeight() - rail - markSpace), rail);
         title.setTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi)
                                .translated(0.f, static_cast<float>(getHeight())));
     }
+}
+void DevicePanelView::resized() {
+    const bool isFolded = strip.folded(id);
+    layoutTitle(isFolded);
     if (sample) {
         sample->setVisible(!isFolded);
         sample->hotSwapButton.setVisible(hotSwapButton.isVisible());
@@ -1870,6 +1905,18 @@ void DevicePanelView::paintOverChildren(juce::Graphics &g) {
     // Wash the whole device, including its controls, while keeping them editable.
     if (data != nullptr && !data->enabledNow())
         g.fillAll(look::frame.withAlpha(0.55f));
+    if (!hasPlaybackProblem())
+        return;
+    constexpr auto size = kPlaybackProblemMarkSize;
+    if (strip.folded(id)) {
+        paintPlaybackProblemMark(g, {(static_cast<float>(getWidth()) - size) * .5f,
+                                    static_cast<float>(getHeight()) - size - 3.f, size, size});
+    } else if (mixCard_) {
+        paintPlaybackProblemMark(g, {(static_cast<float>(look::fieldHeight) - size) * .5f,
+                                    static_cast<float>(look::fieldHeight) + 1.f, size, size});
+    } else {
+        paintPlaybackProblemMark(g, {static_cast<float>(title.getRight()) + 1.f, 4.f, size, size});
+    }
 }
 bool DevicePanelView::canHotSwap() const {
     if (!strip.hotSwap || mixCard_ || !data || !data->available || data->uid.empty() || nativeFunction())
@@ -2946,6 +2993,16 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, boo
 void DeviceChainStrip::showSamples() {
     for (auto &p : panels)
         if (p->sample) p->sample->refresh();
+}
+void DeviceChainStrip::setPlaybackProblemIds(std::vector<std::int64_t> ids) {
+    if (playbackProblemIds_ == ids)
+        return;
+    playbackProblemIds_ = std::move(ids);
+    for (const auto &panel : panels)
+        panel->refreshPlaybackProblem();
+}
+bool DeviceChainStrip::hasPlaybackProblem(std::int64_t id) const noexcept {
+    return std::binary_search(playbackProblemIds_.begin(), playbackProblemIds_.end(), id);
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     const auto safe = SafePointer<DeviceChainStrip>(this);

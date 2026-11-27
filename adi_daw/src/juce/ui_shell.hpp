@@ -212,7 +212,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleCollectionGray,
         ReverseAudio,      // Reverse Clip(s) in the Arrangement, R (manual 6.9)
         LockEnvelopes,
-        LastId = LockEnvelopes
+        OpenBackup,
+        LastId = OpenBackup
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -433,6 +434,7 @@ class StatusBar final : public juce::Component, public juce::SettableTooltipClie
     AdiRootComponent &root_;
     juce::String audioDeviceProblem_;
     std::vector<std::string> playbackProblems_;
+    friend class AdiRootComponent;
     juce::String playbackIssueLabel_;
     std::optional<int> missingCueOutput_;
     juce::String cueOutputProblem_;
@@ -547,7 +549,6 @@ class AdiRootComponent final : public juce::Component,
     std::function<void()> openAudioSettings;
     bool needsFirstSave = false;
     std::function<void(const juce::File &)> openProjectFile;
-    std::function<void()> openProjectBackup;
     std::function<void()> afterEdit;
     // The app stops audio and reloads the document for cross-checkpoint navigation.
     std::function<bool(HistoryRestoreTarget)> restoreStoredHistory;
@@ -1190,6 +1191,10 @@ class AdiRootComponent final : public juce::Component,
     int leftWidth_ = 0, rightWidth_ = 0;
     int shownPanelWidth(const PanelGeometry &) const noexcept;
     std::string error_;
+    std::unique_ptr<juce::DialogWindow> playbackProblemsWindow_;
+    void refreshPlaybackProblemList();
+    void showPlaybackProblems();
+    friend class StatusBar;
     // E5: the prompt while open and the optional warning for the drop in progress.
     std::unique_ptr<ImportPrompt> importPrompt_;
     std::optional<std::string> importing_;

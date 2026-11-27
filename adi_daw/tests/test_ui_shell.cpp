@@ -27716,6 +27716,43 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
 // program), the box names the device and the cause, and a free input is not dropped with it; a device
 // chosen afterwards in Settings then plays at once, which the application makes sure of by attaching its
 // callback whether or not the first open succeeded (ui_main's attachAudio).
+void playbackProblemNotices(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "playback-problems.adi", true, {}, error);
+    check(document != nullptr, "Playback problems: open a project document");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "playback-problems");
+    root.setSize(1000, 650);
+    check(!root.status.playbackIssues.isVisible(), "a healthy project has no playback problems action");
+
+    const std::vector<std::string> reasons{
+        "clips#17: the source file is missing",
+        "devices#21 (Plug-in): unavailable",
+        "tempo_map: clip timing uses step tempos",
+    };
+    root.status.setPlaybackProblems(reasons);
+    check(root.arrangement.canvas.hasPlaybackProblem(17) && !root.arrangement.canvas.hasPlaybackProblem(21) &&
+              root.devices.hasPlaybackProblem(21) && !root.devices.hasPlaybackProblem(17),
+          "the Arrangement and Device View mark the affected items");
+    check(root.status.playbackIssues.isVisible() &&
+              root.status.playbackIssues.getButtonText() == "3 playback issues",
+          "the Status Bar offers one action with the problem count");
+    root.status.setAudioDeviceProblem("Audio device unavailable");
+    check(root.status.audioSettings.isVisible() &&
+              !root.status.playbackIssues.getBounds().intersects(root.status.audioSettings.getBounds()),
+          "the playback problem action leaves Audio Settings available");
+    std::vector<std::string> shown;
+    root.status.onPlaybackProblems = [&](const auto &list) { shown = list; };
+    root.status.playbackIssues.onClick();
+    check(shown == reasons, "the Status Bar action opens the complete reasons in engine order");
+
+    root.status.setPlaybackProblems({});
+    check(!root.status.playbackIssues.isVisible() && !root.arrangement.canvas.hasPlaybackProblem(17) &&
+              !root.devices.hasPlaybackProblem(21) && root.status.audioSettings.isVisible(),
+          "when playback problems clear, their marks and action go away and Audio Settings remains available");
+}
 void heldOutputKeepsInput(const std::filesystem::path &dir) {
     settings::AppSettings fresh(appdata::App::Daw, dir / "held-output-audio.json");
     juce::AudioDeviceManager manager;
@@ -29096,16 +29133,23 @@ int main(int argc, char **argv) {
             return ids;
         };
         using C = AppCommands;
-        int openBackupId = 0;
-        const auto fileMenu = bar->getMenuForIndex(names.indexOf("File"), "File");
-        for (juce::PopupMenu::MenuItemIterator it(fileMenu); it.next();)
-            if (it.getItem().text == "Open Project Backup...") openBackupId = it.getItem().itemID;
-        check(openBackupId != 0, "SC-157: the File menu offers project backup recovery");
-        bool backupRequested = false;
-        window.root().openProjectBackup = [&] { backupRequested = true; };
-        bar->menuItemSelected(openBackupId, names.indexOf("File"));
-        check(backupRequested, "SC-157: Open Project Backup dispatches through the application's callback");
-        window.root().openProjectBackup = {};
+        juce::ApplicationCommandInfo backupCommand(C::OpenBackup);
+        commands.getCommandInfo(C::OpenBackup, backupCommand);
+        const auto fileItems = items("File");
+        check(std::find(fileItems.begin(), fileItems.end(), C::OpenBackup) != fileItems.end() &&
+                  backupCommand.shortName == "Open Backup..." && backupCommand.categoryName == "File" &&
+                  backupCommand.defaultKeypresses.isEmpty() && AppCommands::commandFor("file.open-backup") == C::OpenBackup,
+              "SC-157: File offers Open Backup as a stable command without a default shortcut");
+        auto &backupRoot = window.root();
+        int requestedBackupCommand = 0;
+        auto priorApplicationCommand = std::move(backupRoot.applicationCommand);
+        backupRoot.applicationCommand = [&](int id) {
+            requestedBackupCommand = id;
+            return id == C::OpenBackup;
+        };
+        check(backupRoot.command(C::OpenBackup) && requestedBackupCommand == C::OpenBackup,
+              "SC-157: Open Backup reaches the application's chooser seam");
+        backupRoot.applicationCommand = std::move(priorApplicationCommand);
         const auto create = items("Create");
         juce::ApplicationCommandInfo import(C::ImportAudioFile);
         commands.getCommandInfo(C::ImportAudioFile, import);
@@ -29121,7 +29165,7 @@ int main(int argc, char **argv) {
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, C::OpenBackup, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio,
                                                 C::ExportMidiClip},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -29129,7 +29173,7 @@ int main(int argc, char **argv) {
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, C::OpenBackup, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -29245,7 +29289,8 @@ int main(int argc, char **argv) {
                       C::ManageProjectFiles == C::HotSwap + 1 && C::ToggleFavorite == C::ManageProjectFiles + 1 &&
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
                       C::ReverseAudio == C::ToggleCollectionGray + 1 &&
-                      C::LockEnvelopes == C::ReverseAudio + 1 && C::LastId == C::LockEnvelopes,
+                      C::LockEnvelopes == C::ReverseAudio + 1 && C::OpenBackup == C::LockEnvelopes + 1 &&
+                      C::LastId == C::OpenBackup,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -29253,7 +29298,7 @@ int main(int argc, char **argv) {
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
                   "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
-                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), and Lock Envelopes");
+                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), Lock Envelopes, and Open Backup");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -31832,6 +31877,7 @@ int main(int argc, char **argv) {
         }
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
+    trace("playbackProblemNotices", [&] { playbackProblemNotices(commands, temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("missingCueOutputStatus", [&] { missingCueOutputStatus(commands, temp.path()); });

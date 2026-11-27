@@ -106,7 +106,8 @@ write-ahead log lets render and export read a consistent snapshot while the
 user keeps editing. The connection uses `busy_timeout = 5000`.
 
 An open project in a recognized synced folder or on a network volume uses
-`journal_mode = DELETE` and `synchronous = FULL` (ADR-0258 d7). Each successful
+`journal_mode = DELETE` and `synchronous = EXTRA` (ADR-0258 d7). SQLite also
+syncs the containing directory when removing its rollback journal. Each successful
 commit is present in the `.adi` file, and SQLite removes its rollback journal
 at the end of the transaction. The app recognizes configured OneDrive roots,
 macOS iCloud Drive and CloudStorage, and supported network filesystems. For

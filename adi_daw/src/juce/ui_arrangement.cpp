@@ -27,6 +27,7 @@
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <span>
@@ -81,6 +82,16 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
     int hover_ = -1;
 };
 } // namespace
+void paintPlaybackProblemMark(juce::Graphics &g, juce::Rectangle<float> bounds) {
+    g.setColour(look::error);
+    g.fillRect(bounds);
+    if (bounds.getWidth() < 5.f)
+        return;
+    g.setColour(look::error.contrasting());
+    const auto centre = bounds.getCentreX();
+    g.fillRect(centre - .75f, bounds.getY() + 1.5f, 1.5f, 3.5f);
+    g.fillRect(centre - .75f, bounds.getY() + 6.f, 1.5f, 1.5f);
+}
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
     setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
@@ -774,6 +785,25 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
                "[Delete] Delete Clip\n"
                "[0] Deactivate/Activate Clip");
 }
+void ArrangementCanvas::setPlaybackProblemIds(std::vector<std::int64_t> ids) {
+    if (playbackProblemIds_ == ids)
+        return;
+    playbackProblemIds_ = std::move(ids);
+    repaint();
+}
+bool ArrangementCanvas::hasPlaybackProblem(std::int64_t id) const noexcept {
+    return std::binary_search(playbackProblemIds_.begin(), playbackProblemIds_.end(), id);
+}
+juce::String ArrangementCanvas::getTooltip() {
+    if (!playbackProblemIds_.empty()) {
+        const auto mouse = getMouseXYRelative();
+        std::int64_t track = 0;
+        ResizeEdge edge = ResizeEdge::None;
+        if (const auto *clip = barAt(mouse.x, mouse.y, track, edge); clip && hasPlaybackProblem(clip->id))
+            return "This clip has a playback problem. See Playback Problems in the Status Bar.";
+    }
+    return juce::SettableTooltipClient::getTooltip();
+}
 std::unique_ptr<juce::AccessibilityHandler> ArrangementCanvas::createAccessibilityHandler() {
     return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::list);
 }
@@ -821,7 +851,7 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
             return juce::String::fromUTF8(displayName(t->name, rows[i].number()).c_str()) + ", " + clip +
                    " at bar " + juce::String(at.bar) + " beat " + juce::String(at.beat) + ", " +
                    juce::String(beats, 2) + " beats" +
-                   (c->muted ? ", muted" : "");
+                   (c->muted ? ", muted" : "") + (hasPlaybackProblem(clipId) ? ", playback problem" : "");
         }
     }
     return {};
@@ -3354,17 +3384,24 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                            static_cast<float>(clipY + clipHeight - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
-            if (!c->name.empty() && right - left > 6.f) {
+            const bool problem = unavailable || hasPlaybackProblem(c->id);
+            const float nameEnd = problem ? right - kPlaybackProblemMarkSize - 1.f : right;
+            if (!c->name.empty() && nameEnd - left > 6.f) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontSmall));
                 g.drawText(juce::String::fromUTF8(c->name.c_str()),
-                           juce::Rectangle<float>(left + 3.f, static_cast<float>(clipY + 1), right - left - 5.f,
+                           juce::Rectangle<float>(left + 3.f, static_cast<float>(clipY + 1), nameEnd - left - 5.f,
                                                   static_cast<float>(kClipBarHeight)),
                            juce::Justification::centredLeft, false);
             }
             g.setColour(clipColour.darker(0.5f));
             g.drawRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left),
                        static_cast<float>(clipHeight - 4), 1.f);
+            if (problem) {
+                const float markWidth = std::clamp(right - left - 2.f, 1.f, kPlaybackProblemMarkSize);
+                const float markX = std::max(left, right - markWidth - 1.f);
+                paintPlaybackProblemMark(g, {markX, static_cast<float>(clipY + 2), markWidth, kPlaybackProblemMarkSize});
+            }
             // Live tints the selected part of a clip's body, under its title strip (the manual's Cut
             // Time and Consolidate figures).
             if (selectedRange && geo.selection.start != geo.selection.end) {

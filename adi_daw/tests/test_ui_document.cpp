@@ -11,13 +11,16 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/playback_problems.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
+#include "adi/ui/project_backup_schedule.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "scoped_environment.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -847,6 +850,39 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
     }
 }
 
+void playbackProblemProjection() {
+    const std::vector<std::string> messages{
+        "clips#9: missing media",
+        "devices#12 (Synth (Stereo)): kept as a placeholder",
+        "routing#4: a key source is unavailable",
+        "clips#2: the requested pitch shift needs Warp",
+        "devices#3: key input is unavailable",
+        "clips#9: cannot open the media",
+        "devices#12 (Synth (Stereo)): state could not be read",
+        "clips#-3: missing media",
+        "devices#9223372036854775807 (): missing",
+        "automation: clips#15: unsupported",
+        " clips#7: this is not a leading clip tag",
+        "clips#7 (not a clip tag): unsupported",
+        "clips#07: padded IDs are not engine tags",
+        "clips#7a: malformed ID",
+        "clips#9223372036854775808: out of range",
+        "devices#+11: malformed ID",
+        "devices#-0: malformed ID",
+        "devices#11 (open name: missing delimiter",
+        "devices#11 (end name) : malformed delimiter",
+        "devices#11",
+    };
+    const auto projected = ui::projectPlaybackProblems(messages);
+    check(projected.reasons == messages, "SC-151: every complete reason stays in engine order");
+    check(projected.clipIds == std::vector<std::int64_t>{-3, 2, 9} &&
+              projected.deviceIds == std::vector<std::int64_t>{3, 12, INT64_MAX},
+          "SC-151: only exact clip and device tags mark IDs, once each in sorted order");
+    const auto empty = ui::projectPlaybackProblems({});
+    check(empty.reasons.empty() && empty.clipIds.empty() && empty.deviceIds.empty(),
+          "SC-151: clearing engine warnings clears all lists and markers");
+}
+
 // SC-320 (ADR-0258 d16): a plug-in that brought ADI down as the project loaded leaves the marker naming it;
 // the next open holds the plug-ins off, and the user then loads all but that one, or all.
 void heldOffAfterACrash(const std::filesystem::path &dir) {
@@ -920,6 +956,11 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && calm->placeholder && crashy && crashy->placeholder &&
               calm->error.find("held off") != std::string::npos,
           "held off: both stand as placeholders, their reason said");
+    const auto playback = ui::projectPlaybackProblems(session.problems());
+    check(std::binary_search(playback.deviceIds.begin(), playback.deviceIds.end(), 3) &&
+              std::binary_search(playback.deviceIds.begin(), playback.deviceIds.end(), 4) &&
+              playback.reasons == session.problems(),
+          "SC-151: actual engine placeholder reasons are listed and mark both devices");
     const auto loadIssueFor = [&document](std::int64_t id) {
         const auto publication = document->parameterFeed().current();
         const auto panel = std::find_if(publication->begin(), publication->end(),
@@ -5232,6 +5273,42 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
 // walk-A A18: a take recorded after Save As lands in the saved file. The session stamped every
 // capture with the file it loaded, so each take after a Save As was refused as "a different project"
 // and its audio removed.
+void sharedStorageWarning(const std::filesystem::path &dir) {
+    const auto sync = dir / "sync";
+    std::filesystem::create_directory(sync);
+    const test::ScopedOneDrive oneDrive(sync);
+    const auto mentionsSharedStorage = [](const ui::ProjectDocument &doc) {
+        return doc.warning().find("synced or network folder") != std::string::npos;
+    };
+
+    std::string error;
+    const auto saved = sync / "saved.adi";
+    auto doc = ui::ProjectDocument::open(dir / "local.adi", true, {}, error);
+    check(doc != nullptr && !mentionsSharedStorage(*doc), "local project opens without a shared storage warning");
+    if (!doc) return;
+    check(doc->startSave(saved, ui::ProjectDocument::SaveKind::as), "start the window's Save As into a sync folder");
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto progress = doc->saveProgress();
+    while (progress && progress->phase != Phase::succeeded && progress->phase != Phase::failed &&
+           progress->phase != Phase::cancelled && std::chrono::steady_clock::now() < deadline) {
+        doc->advanceSave();
+        progress = doc->saveProgress();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(progress && progress->phase == Phase::succeeded && mentionsSharedStorage(*doc),
+          "the window's Save As into a sync folder warns");
+    doc.reset();
+    doc = ui::ProjectDocument::open(saved, false, {}, error);
+    check(doc != nullptr && mentionsSharedStorage(*doc), "opening a project in a sync folder warns");
+    if (!doc) return;
+    check(doc->saveAs(dir / "moved-local.adi") && !mentionsSharedStorage(*doc),
+          "Save As to local storage clears the shared storage warning");
+
+    const auto made = ui::ProjectDocument::open(sync / "new.adi", true, {}, error);
+    check(made != nullptr && mentionsSharedStorage(*made), "creating a project in a sync folder warns");
+}
+
 void recordAfterSaveAs(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "untitled.adi", true, {}, error);
@@ -5469,6 +5546,31 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = fals
     check(std::all_of(left.begin(), left.end(), renderedTake) && std::all_of(right.begin(), right.end(), renderedTake),
           "the reopened, redone clip plays the recorded PCM with no audio input");
 }
+void projectBackupSchedule() {
+    backup::Schedule schedule;
+    const backup::Schedule::Clock::time_point opened;
+    const backup::Schedule::Revision initial{3, 1}, localEdit{4, 1}, externalEdit{4, 2};
+    const auto interval = backup::Schedule::interval;
+
+    check(!schedule.due(opened), "backup scheduling starts disabled");
+    schedule.arm(opened, true);
+    check(schedule.due(opened) && schedule.claim(opened, initial), "opening an existing song is due immediately");
+    schedule.recordSuccess(initial);
+    check(!schedule.due(opened + interval - std::chrono::seconds(1)),
+          "a scheduled backup waits for its interval");
+    check(!schedule.claim(opened + interval, initial), "an unchanged song skips its scheduled copy");
+    check(schedule.claim(opened + 2 * interval, localEdit), "a local change is backed up on schedule");
+    check(schedule.claim(opened + 3 * interval, localEdit), "a failed backup can retry at the next interval");
+    schedule.recordSuccess(localEdit);
+    check(schedule.claim(opened + 4 * interval, externalEdit), "an external data version change is backed up");
+    schedule.recordSuccess(externalEdit);
+
+    schedule.arm(opened + 5 * interval, true);
+    check(schedule.claim(opened + 5 * interval, externalEdit), "a saved destination gets its own initial backup");
+    schedule.arm(opened + 6 * interval, false);
+    check(!schedule.claim(opened + 7 * interval, externalEdit), "an ineligible project stays out of the schedule");
+}
+
 void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     const auto staging = dir / "Untitled";
@@ -5625,6 +5727,11 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory waveDir("ui_document", "wave-detail");
         waveformDetail(waveDir.path());
+    }
+    projectBackupSchedule();
+    {
+        test::TempDirectory syncDir("ui_document", "shared-storage");
+        sharedStorageWarning(syncDir.path());
     }
     peakSpans();
     punchedWaveformBounds();
@@ -6723,6 +6830,7 @@ int main(int argc, char **argv) {
     }
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
+    playbackProblemProjection();
     heldOffAfterACrash(temp.path());
     rememberedRouteStartsANewInstance(temp.path());
     importWithChoices(temp.path());

@@ -151,7 +151,8 @@ class SampleTile final : public juce::Component,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component,
                               public juce::FileDragAndDropTarget,
-                              public juce::DragAndDropTarget {
+                              public juce::DragAndDropTarget,
+                              public juce::TooltipClient {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
@@ -178,6 +179,8 @@ class DevicePanelView final : public juce::Component,
         if (auto *tile = samplerTile()) tile->itemDropped(details);
     }
     void present(const DevicePanelData &);
+    [[nodiscard]] bool hasPlaybackProblem() const noexcept;
+    juce::String getTooltip() override;
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
     void releaseEqSpectrum();
     void frameLimiterReduction(
@@ -293,6 +296,10 @@ class DevicePanelView final : public juce::Component,
     [[nodiscard]] bool previewVisible(juce::Rectangle<int>) const;
     void paintLimiterReduction(juce::Graphics &, juce::Rectangle<int>) const;
     void layoutCompactControls(int top);
+    void layoutTitle(bool folded);
+    void updateTitleTooltip();
+    bool refreshPlaybackProblem();
+    bool playbackProblemPresented_ = false;
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
@@ -345,6 +352,9 @@ class DeviceChainStrip final : public juce::Component,
     bool parametersSuspended() const noexcept { return parametersSuspended_; }
     void frame(std::int64_t track);
     void settleParameterTouches() { handleUpdateNowIfNeeded(); }
+    // The engine projection supplies sorted, unique device IDs.
+    void setPlaybackProblemIds(std::vector<std::int64_t> ids);
+    [[nodiscard]] bool hasPlaybackProblem(std::int64_t id) const noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;
     void paintOverChildren(juce::Graphics &) override;
@@ -487,6 +497,7 @@ class DeviceChainStrip final : public juce::Component,
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);
     std::vector<std::int64_t> demandedDevices_;
+    std::vector<std::int64_t> playbackProblemIds_;
     bool parametersSuspended_ = false;
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;

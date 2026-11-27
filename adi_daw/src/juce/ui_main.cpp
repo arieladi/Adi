@@ -19,9 +19,12 @@
 #include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/starter_drums.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/plugin_state_quit.hpp"
+#include "adi/project_backup.hpp"
+#include "adi/ui/project_backup_schedule.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/project_library.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -31,6 +34,7 @@
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
 #include "app_midi_ports.hpp"
+#include "ui_backup_trash.hpp"
 #include "ui_diagnostic_log.hpp"
 #include "ui_export.hpp"
 #include "ui_floating.hpp"
@@ -170,11 +174,6 @@ juce::File withExtension(const juce::File &file, const char *extension) {
     return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
 juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
-std::string synchronizedProjectNotice(const Store &store) {
-    if (!store.synchronizedLocation()) return {};
-    if (store.readOnly()) return "This read-only project is in a synced or network folder.";
-    return "This project is in a synced or network folder. Committed edits are kept in its .adi file.";
-}
 juce::File fileFromPath(const std::filesystem::path &path) {
     auto nativePath = path;
     const auto value = nativePath.make_preferred().u8string();
@@ -1053,53 +1052,102 @@ class AdiApplication final : public juce::JUCEApplication,
     // SC-330 and SC-415: open against the current catalogue and yield between device loads.
     // Discovery may finish during those turns and wake newly available placeholders after install.
     void requestProjectBackup() {
-        nextProjectBackup_ = std::chrono::steady_clock::time_point::max();
-        if (testLaunch() || !document_ || document_->store().readOnly() || !root_ || root_->needsFirstSave)
+        const auto now = backup::Schedule::Clock::now();
+        const bool enabled = !testLaunch() && document_ && !document_->store().readOnly() && root_ &&
+            !root_->needsFirstSave && document_->store().path().parent_path().filename() != "Backup";
+        backupSchedule_.arm(now, enabled);
+        backupScheduleSource_ = enabled ? appliedSource(document_->store()) : AppliedSource{};
+        if (enabled)
+            queueProjectBackup(now);
+    }
+    void queueProjectBackup(backup::Schedule::Clock::time_point now) {
+        if (!document_ || !backupScheduleSource_.sameConnection(appliedSource(document_->store()))) {
+            backupSchedule_.arm(now, false);
             return;
-        const auto path = document_->store().path();
-        if (path.parent_path().filename() == "Backup")
-            return;
-        nextProjectBackup_ = std::chrono::steady_clock::now() + std::chrono::minutes(10);
-        if (std::find(pendingProjectBackups_.begin(), pendingProjectBackups_.end(), path) == pendingProjectBackups_.end())
-            pendingProjectBackups_.push_back(path);
+        }
+        auto &store = document_->store();
+        try {
+            const backup::Schedule::Revision revision{
+                sqlite3_total_changes64(store.db().getHandle()),
+                store.db().execAndGet("PRAGMA data_version").getInt64()
+            };
+            if (!backupSchedule_.claim(now, revision))
+                return;
+            const auto path = store.path();
+            const auto pending = std::ranges::find(pendingProjectBackups_, path, &BackupRequest::project);
+            BackupRequest request{path, backupScheduleSource_, revision};
+            if (pending == pendingProjectBackups_.end())
+                pendingProjectBackups_.push_back(std::move(request));
+            else
+                *pending = std::move(request);
+        } catch (const SQLite::Exception &error) {
+            backupSchedule_.arm(now + backup::Schedule::interval, true);
+            if (root_) root_->say(std::string("Project backup could not start. ") + error.what());
+        }
     }
     void pollProjectBackups() {
         using namespace std::chrono_literals;
+        // Keep listed backups available while a person chooses one or recovery opens it.
+        if (backupPrompt_ || chooser_ || restoreJob_.valid())
+            return;
         if (backupJob_.valid() && backupJob_.wait_for(0ms) == std::future_status::ready) {
             const auto backup = backupJob_.get();
             auto status = backup.outcome.warning;
             if (!backup.outcome.ok)
                 status = "Project backup could not be saved. " + backup.outcome.error;
             for (const auto &obsolete : backup.obsolete) {
-                std::error_code ignored;
-                const auto lease = media::ProjectFileLease::openExclusive(obsolete.path, ignored);
-                if (lease && juce::File(juce::String(media::pathUtf8(obsolete.path))).moveToTrash()) continue;
+                const auto lease = obsolete.leaseForTrash();
+                if (lease && adi::backup::moveToTrash(juce::File(juce::String(media::pathUtf8(obsolete.path)))))
+                    continue;
                 if (!status.empty()) status += ' ';
                 status += "An old project backup could not be moved to the Recycle Bin.";
                 break;
             }
-            if (!status.empty() && root_ && document_ && document_->store().path() == backup.project)
-                root_->say(status);
+            if (document_ && backup.request.source.sameConnection(appliedSource(document_->store()))) {
+                if (backup.outcome.ok && backup.outcome.warning.empty())
+                    backupSchedule_.recordSuccess(backup.request.revision);
+                if (!status.empty() && root_)
+                    root_->say(status);
+            }
         }
-        if (std::chrono::steady_clock::now() >= nextProjectBackup_)
-            requestProjectBackup();
+        if (projectOpen_ || projectSave_ || installingDocument_ || quitAfterExport_ ||
+            (document_ && (document_->recording() || document_->landingTake())))
+            return;
+        const auto now = backup::Schedule::Clock::now();
+        if (backupSchedule_.due(now))
+            queueProjectBackup(now);
         if (backupJob_.valid() || pendingProjectBackups_.empty())
             return;
-        auto project = std::move(pendingProjectBackups_.front());
+        auto request = std::move(pendingProjectBackups_.front());
         pendingProjectBackups_.erase(pendingProjectBackups_.begin());
         const auto created = juce::Time::currentTimeMillis() * 1000;
         const auto stop = backupStop_.get_token();
         try {
-            backupJob_ = std::async(std::launch::async, [project, created, stop] {
-                auto outcome = Store::writeProjectBackup(project, created, stop);
-                const bool publishedDurably = outcome.ok && outcome.warning.empty();
-                auto backups = publishedDurably ? Store::projectBackups(project) : std::vector<ProjectBackup>{};
-                constexpr std::size_t keep = 10;
-                if (backups.size() > keep)
-                    backups.erase(backups.begin(), backups.begin() + static_cast<std::ptrdiff_t>(keep));
-                else
-                    backups.clear();
-                return BackupJobResult{project, std::move(outcome), std::move(backups)};
+            backup::Job prepared;
+            if (document_ && request.source.sameConnection(appliedSource(document_->store())) &&
+                !document_->store().synchronizedLocation()) {
+                const auto pinned = backup::prepare(document_->store(), created, prepared);
+                if (!pinned.ok) {
+                    if (root_) root_->say("Project backup could not be saved. " + pinned.error);
+                    return;
+                }
+            }
+            backupJob_ = std::async(std::launch::async, [request = std::move(request), prepared = std::move(prepared),
+                                                         created, stop]() mutable {
+                if (!prepared.path.empty()) {
+                    auto result = backup::write(prepared, stop);
+                    return BackupJobResult{std::move(request), std::move(result.file), std::move(result.expired)};
+                }
+                auto outcome = Store::writeProjectBackup(request.project, created, stop);
+                std::vector<ProjectBackup> obsolete;
+                if (outcome.ok && outcome.warning.empty() && !stop.stop_requested()) {
+                    try {
+                        obsolete = backup::expiredBackups(request.project);
+                    } catch (const std::exception &error) {
+                        outcome.warning = "Could not check backup retention. " + std::string(error.what());
+                    }
+                }
+                return BackupJobResult{std::move(request), std::move(outcome), std::move(obsolete)};
             });
         } catch (const std::system_error &error) {
             if (root_) root_->say(std::string("Project backup could not start. ") + error.what());
@@ -1126,9 +1174,18 @@ class AdiApplication final : public juce::JUCEApplication,
         prompt->addComboBox("backup", names, "Backup");
         prompt->getComboBoxComponent("backup")->setSelectedItemIndex(0);
         prompt->addButton("Open Backup", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        if (openError.empty())
+            prompt->addButton("Choose File...", 2);
         prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
         const auto generation = installGeneration_;
         prompt->enterModalState(true, juce::ModalCallbackFunction::create([this, prompt, backups, project, generation](int chosen) {
+            if (chosen == 2) {
+                juce::MessageManager::callAsync([this, generation] {
+                    if (juce::JUCEApplicationBase::getInstance() == this && generation == installGeneration_)
+                        browseProjectBackup();
+                });
+                return;
+            }
             if (chosen != 1) {
                 quitAfterFailedOpen();
                 return;
@@ -1139,11 +1196,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             }
             const auto backup = backups[static_cast<std::size_t>(index)].path;
+            const auto songFolder = juce::File(juce::String(media::pathUtf8(project.parent_path())));
+            const auto fallback = songFolder.hasWriteAccess() ? std::filesystem::path{} :
+                pathFromUtf8(projectsFolder(*settings_).getFullPathName().toStdString());
             const auto stop = backupStop_.get_token();
             try {
-                restoreJob_ = std::async(std::launch::async, [project, backup, stop, generation] {
+                restoreJob_ = std::async(std::launch::async, [project, backup, fallback, stop, generation] {
                     std::filesystem::path recovered;
-                    auto result = Store::restoreProjectBackup(project, backup, recovered, stop);
+                    auto result = Store::restoreProjectBackup(project, backup, recovered, stop, fallback);
                     return RestoreJobResult{std::move(recovered), std::move(result), generation};
                 });
             } catch (const std::system_error &error) {
@@ -1151,6 +1211,42 @@ class AdiApplication final : public juce::JUCEApplication,
                 quitAfterFailedOpen();
             }
         }), true);
+        return true;
+    }
+    bool browseProjectBackup() {
+        if (testLaunch() || chooser_ || projectOpen_ || projectSave_ || installingDocument_ || restoreJob_.valid())
+            return false;
+        auto start = projectsFolder(*settings_);
+        if (document_ && root_ && !root_->needsFirstSave) {
+            const auto adjacent = fileFromPath(backup::directoryFor(document_->store().path()));
+            if (adjacent.isDirectory()) start = adjacent;
+        }
+        chooser_ = std::make_unique<juce::FileChooser>("Open ADI backup", start, "*.adi");
+        const auto generation = installGeneration_;
+        const int flags = juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode;
+        chooser_->launchAsync(flags, [this, generation](const juce::FileChooser &picker) {
+            const auto chosen = picker.getResult();
+            if (chosen != juce::File{} && generation == installGeneration_ && !projectOpen_ && !projectSave_) {
+                auto folder = chosen.getParentDirectory();
+                if (folder.getFileName() == "Backup") folder = folder.getParentDirectory();
+                if (!folder.hasWriteAccess()) folder = projectsFolder(*settings_);
+                const auto destination = folder.getNonexistentChildFile("Recovered Project", ".adi", false);
+                const auto source = pathFromUtf8(chosen.getFullPathName().toStdString());
+                const auto target = pathFromUtf8(destination.getFullPathName().toStdString());
+                const auto stop = backupStop_.get_token();
+                try {
+                    restoreJob_ = std::async(std::launch::async, [source, target, stop, generation] {
+                        return RestoreJobResult{target, backup::recover(source, target, stop), generation};
+                    });
+                } catch (const std::system_error &error) {
+                    report(std::string("Project recovery could not start. ") + error.what());
+                }
+            }
+            juce::MessageManager::callAsync([this] {
+                if (juce::JUCEApplicationBase::getInstance() == this)
+                    chooser_.reset();
+            });
+        });
         return true;
     }
     void pollProjectRecovery() {
@@ -2295,17 +2391,9 @@ class AdiApplication final : public juce::JUCEApplication,
         root->clipPlaybackUnavailable = [this](std::int64_t clip) {
             return document_->session().clipPlaybackUnavailable(clip);
         };
-        root->status.onPlaybackProblems = [this](const std::vector<std::string> &problems) {
-            showPlaybackProblems(problems);
-        };
         root->status.setPlaybackProblems(document_->session().problems());
         root->locateClipMedia = [this](std::int64_t clip) { locateMissingSample(clip); };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
-        root->openProjectBackup = [this] {
-            if (!document_ || projectOpen_ || projectSave_ || installingDocument_) return;
-            if (!chooseProjectBackup(document_->store().path()) && root_)
-                root_->say("No project backups are available.");
-        };
         root->openProjectFile = [this](const juce::File &chosen) {
             if (chosen.existsAsFile())
                 openProject(chosen, false);
@@ -2391,7 +2479,7 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
-        auto openNotice = synchronizedProjectNotice(document_->store());
+        auto openNotice = document_->warning();
         if (const auto from = document_->store().upgradedFromMinor()) {
             const auto name = media::pathUtf8(document_->store().upgradeBackupPath().filename());
             openNotice = withWarning("Project upgraded from 1." + std::to_string(*from) +
@@ -2886,8 +2974,6 @@ class AdiApplication final : public juce::JUCEApplication,
                 message = withWarning(("Saved a copy as " + save.file.getFileName() + ".").toStdString(), message);
             else if (saved && !message.empty())
                 message = withWarning("Project saved.", message);
-            if (saved && save.kind != SaveKind::copy)
-                message = withWarning(std::move(message), synchronizedProjectNotice(document_->store()));
             root_->say(save.takeWarning + message);
         }
         document_->clearSave();
@@ -3079,26 +3165,6 @@ class AdiApplication final : public juce::JUCEApplication,
         text->setSize(650, 490);
         juce::DialogWindow::LaunchOptions options;
         options.dialogTitle = "About ADI " + getApplicationVersion();
-        options.componentToCentreAround = window_.get();
-        options.associatedComponent = window_.get();
-        options.content.setOwned(text.release());
-        options.escapeKeyTriggersCloseButton = true;
-        options.useNativeTitleBar = true;
-        options.resizable = true;
-        options.launchAsync();
-    }
-    void showPlaybackProblems(const std::vector<std::string> &problems) {
-        juce::String details;
-        for (const auto &problem : problems)
-            details << juce::String::fromUTF8(problem.c_str()) << "\n\n";
-        auto text = std::make_unique<juce::TextEditor>();
-        text->setMultiLine(true, true);
-        text->setReadOnly(true);
-        text->setText(details.trimEnd(), false);
-        text->setCaretPosition(0);
-        text->setSize(640, 320);
-        juce::DialogWindow::LaunchOptions options;
-        options.dialogTitle = "Playback issues";
         options.componentToCentreAround = window_.get();
         options.associatedComponent = window_.get();
         options.content.setOwned(text.release());
@@ -3367,6 +3433,13 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // Live's New Live Set (manual 5.4.1): the next untitled project opens at once, as at launch, with
         // no chooser; Save As names and places it (walk-A A3).
+        if (id == AppCommands::OpenBackup) {
+            if (testLaunch() || !document_ || chooser_ || projectOpen_ || projectSave_ || installingDocument_ || restoreJob_.valid())
+                return false;
+            if (root_ && !root_->needsFirstSave && chooseProjectBackup(document_->store().path()))
+                return true;
+            return browseProjectBackup();
+        }
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
             return false;
         if (chooser_ || projectOpen_ || projectSave_ || installingDocument_)
@@ -3646,8 +3719,13 @@ class AdiApplication final : public juce::JUCEApplication,
     };
     std::optional<PendingProjectSave> projectSave_;
     std::unique_ptr<ProjectProgressWindow> saveProgress_;
-    struct BackupJobResult {
+    struct BackupRequest {
         std::filesystem::path project;
+        AppliedSource source;
+        backup::Schedule::Revision revision;
+    };
+    struct BackupJobResult {
+        BackupRequest request;
         StoreFileResult outcome;
         std::vector<ProjectBackup> obsolete;
     };
@@ -3665,8 +3743,9 @@ class AdiApplication final : public juce::JUCEApplication,
     std::future<RestoreJobResult> restoreJob_;
     std::stop_source backupStop_;
     juce::Component::SafePointer<juce::AlertWindow> backupPrompt_;
-    std::vector<std::filesystem::path> pendingProjectBackups_;
-    std::chrono::steady_clock::time_point nextProjectBackup_ = std::chrono::steady_clock::time_point::max();
+    std::vector<BackupRequest> pendingProjectBackups_;
+    backup::Schedule backupSchedule_;
+    AppliedSource backupScheduleSource_;
     std::unique_ptr<ProjectDocument> document_;
     // SC-320: the marker a project's plug-in loads leave while they run, and what the current document's
     // loader holds off.
