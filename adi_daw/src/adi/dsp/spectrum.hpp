@@ -62,6 +62,8 @@ enum class Window : std::uint8_t {
     /// No window: the raw frame. Only for tests that want the transform's own
     /// behaviour with nothing applied to it.
     Rectangular,
+    Hamming,
+    Blackman,
 };
 
 /// THE ANALYSER'S OWN SETTINGS, in one place because two programs read them.
