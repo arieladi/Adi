@@ -63,13 +63,15 @@ class AudioDevicePage final : public juce::Component, public SettingsPageHead, p
     } channels;
     // The open dialog, if any.
     ChannelConfigPanel *configPanel() const;
-    // A saved Input or Output Config edit, including a change to names alone.
-    std::function<void()> onChannelConfigChanged;
+    // A setup attempt or a saved Input/Output Config edit, including names alone.
+    // The acknowledgement is true only if the device accepted the setup.
+    std::function<void(bool applied)> onSetupChanged;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;
     // Shows the manager's state: its drivers, devices, rates, buffer sizes and latencies.
     void refresh();
+    void finishSetupChange();
     void apply(const std::function<void(juce::AudioDeviceManager::AudioDeviceSetup &)> &);
     // Opens the Input Config or Output Config dialog for the device in use on that side.
     void openConfig(bool inputs);

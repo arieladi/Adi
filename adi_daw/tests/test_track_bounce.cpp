@@ -162,6 +162,8 @@ void command() {
                   db.execAndGet("SELECT color FROM tracks WHERE id=30").getInt() == 6 &&
                   db.execAndGet("SELECT kind FROM tracks WHERE id=30").getString() == "audio",
               "new plain audio sibling inherits hierarchy and palette color");
+        check(db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=30").getInt() == 0,
+              "SC-249: a new audio track created by Bounce starts with Monitor Off");
         check(db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=30").getInt() == 1 &&
                   db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=22").getInt() == 2,
               "new sibling is inserted immediately after the source");
@@ -183,6 +185,8 @@ void command() {
               "one undo restores all original tracks, order, source state and media rows");
         check(History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 2,
               "one redo restores track and immutable render without running the effect again");
+        check(db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=30").getInt() == 0,
+              "SC-249: Bounce redo restores its recorded monitor mode");
         const auto path = p.store->path();
         p.store.reset();
         StoreError error{};

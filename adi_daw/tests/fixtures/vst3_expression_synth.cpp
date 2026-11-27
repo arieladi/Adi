@@ -147,6 +147,9 @@ std::atomic<double> g_mappedMemberBend{-1.0};
 // fixture is one object, so its controller's own value would reach the sound without the host; a VST3
 // that keeps its processor apart learns a value only this way, and this records exactly that.
 std::atomic<double> g_processorDrive{-1.0};
+// SC-332: "Drive" is renamed on demand, as a plug-in renames a macro, and the host told so.
+std::atomic<bool> g_driveRenamed{false};
+IComponentHandler* g_lastHandler = nullptr;
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -420,8 +423,9 @@ public:
                                                                  "Patch", "Restart", "Slow", "Refuse"};
             const bool drive = k == 0;
             info.id = ids[k];
-            copy128(info.title, titles[k]);
-            copy128(info.shortTitle, shorts[k]);
+            const bool renamed = drive && g_driveRenamed.load(std::memory_order_relaxed);
+            copy128(info.title, renamed ? "Macro 1" : titles[k]);
+            copy128(info.shortTitle, renamed ? "Macro 1" : shorts[k]);
             info.defaultNormalizedValue = drive ? kDriveDefault : 0.0;
             info.unitId = kRootUnitId;
             info.flags = drive ? ParameterInfo::kCanAutomate
@@ -509,6 +513,7 @@ public:
         if (handler_ != nullptr) handler_->release();
         handler_ = h;
         if (handler_ != nullptr) handler_->addRef();
+        g_lastHandler = handler_;
         return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
@@ -960,6 +965,10 @@ extern "C" SMTG_EXPORT_SYMBOL int adiFixtureReadNoteWire(int* output, int rows) 
     return count;
 }
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureProcessorDrive() { return g_processorDrive.load(); }
+extern "C" SMTG_EXPORT_SYMBOL void adiFixtureRenameDrive(int renamed) {
+    g_driveRenamed.store(renamed != 0, std::memory_order_relaxed);
+    if (g_lastHandler != nullptr) g_lastHandler->restartComponent(kParamTitlesChanged);
+}
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureMappedMemberBend() {
     return g_mappedMemberBend.load(std::memory_order_relaxed);
 }

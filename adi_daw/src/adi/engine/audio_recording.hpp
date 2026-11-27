@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/engine/transport.hpp"
 #include "adi/media/peaks.hpp"
 #include <filesystem>
 #include <functional>
@@ -14,6 +15,7 @@
 namespace adi::engine {
 class Transport;
 struct AudioMemorySnapshot;
+struct TempoMap;
 struct AudioMemoryTakeSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // resolved by recording::captureMemory on the owner
@@ -28,6 +30,7 @@ struct RecordingTarget {
 struct AudioRecordingLoop {
     std::int64_t beginSample=0,endSample=0;
     std::uint32_t maxPasses=1024; // 1..65536; exhaustion refuses a whole callback
+    std::shared_ptr<const TempoMap> tempo{}; // authored and playback clocks agreed at Arrangement admission
 };
 struct RecordedPass {
     std::uint64_t sourceStartFrame=0,frames=0;
@@ -37,6 +40,9 @@ struct RecordedPass {
 // at song zero. An unrepresentable sample position cannot be placed.
 [[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
                                                                  std::int64_t offsetSamples) noexcept;
+// Intersect a latency-corrected linear take with its captured punch bounds.
+[[nodiscard]] std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,
+    std::uint64_t frames,std::int64_t offsetSamples,const RecordingPunchWindow&) noexcept;
 struct AudioRecordingSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // Session supplies its resolved project identity
@@ -60,6 +66,17 @@ struct AudioRecordingPreview {
     std::int64_t startSample=0; // clip position on the timeline after the placement correction
     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
     std::vector<Track> tracks;
+    struct PunchedPlacement {
+        std::int64_t rawStartSample, offsetSamples;
+        RecordingPunchWindow window;
+    };
+    std::optional<PunchedPlacement> punchedPlacement;
+    std::optional<AudioRecordingLoop> loop; // bounds frozen when the recording starts
+    struct Range {
+        std::int64_t startSample;
+        std::uint64_t sourceStartFrame, frames;
+    };
+    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames) const noexcept;
 };
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.
@@ -76,6 +93,7 @@ public:
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
+    [[nodiscard]] const RecordingPunchWindow& punchWindow()const noexcept{return punchWindow_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
     [[nodiscard]] bool hasAttachableAudio()const noexcept;
     // Owner thread, after recording has finished. A cleanup error retains the
@@ -92,6 +110,7 @@ private:
     std::shared_ptr<Files> files_;
     std::string sourceProject_;
     std::optional<AudioRecordingLoop> loop_;
+    RecordingPunchWindow punchWindow_;
     std::vector<RecordedPass> passes_;
     bool finalizedPrefix_=false;
     friend class AudioInputRecorder;
@@ -125,7 +144,10 @@ public:
     [[nodiscard]] std::optional<AudioRecordingResult> poll(bool deviceStopped=false);
     // Callback only. Returns the sorted track IDs whose input was accepted in
     // this slice. The view is valid until the next capture call on the driver.
-    std::span<const std::int64_t> capture(const AudioIo&,const Transport&)noexcept;
+    std::span<const std::int64_t> capture(const AudioIo&,const Transport&,
+                                         RecordingPunch=RecordingPunch::Within,
+                                         const RecordingPunchWindow& = {}, const TempoMap* clock=nullptr,
+                                         std::uint64_t clockGeneration=0)noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

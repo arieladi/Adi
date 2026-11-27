@@ -16,6 +16,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include <limits>
+#include <map>
 #include <span>
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
@@ -26,19 +27,21 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
 namespace {
 template <typename FrameAt>
 void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int from, int to, float top, float bottom,
-                      std::span<const std::uint32_t> channelMap, FrameAt frameAt) {
+                      std::span<const std::uint32_t> channelMap, FrameAt frameAt,
+                      double sourceEnd = std::numeric_limits<double>::infinity()) {
     const auto channels = channelMap.empty() ? peaks.channels : static_cast<std::uint32_t>(channelMap.size());
     if (channels == 0 || bottom - top < 4.f)
         return;
     const float band = (bottom - top) / static_cast<float>(channels);
     for (int x = from; x < to; ++x) {
         const auto frame = frameAt(x);
-        if (!frame)
+        if (!frame || *frame >= sourceEnd)
             continue;
         const double end = frameAt(x + 1).value_or(*frame + 1.);
         for (std::uint32_t ch = 0; ch < channels; ++ch) {
             const auto source = channelMap.empty() ? ch : channelMap[ch];
-            const auto peak = peakSpan(peaks, std::min(*frame, end), std::max(*frame + 1., end), source);
+            const auto peak = peakSpan(peaks, std::min(*frame, end), std::min(sourceEnd, std::max(*frame + 1., end)),
+                                       source);
             if (!peak)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
@@ -49,37 +52,41 @@ void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int fro
     }
 }
 
-// Live's lanes: grey, every other sixteen grid steps a shade lighter, lighter again
-// for the selected track, with the grid (§6.10) a quarter darker than the lane under it.
+// Live's lanes alternate shades every sixteen grid steps. Bar lines have more contrast
+// than beat lines against the underlying lane in both selected and unselected tracks.
 void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, int top, int height,
                 bool selected) {
     // The shading follows the plain step, so triplets keep it on the bars.
     const double grid = geo.gridQuarters();
     const double group = geo.plainGridQuarters() * 16;
+    const bool metered = geo.metered();
+    const auto shade = [selected](bool alternate) {
+        return selected ? (alternate ? look::laneSelectedAlt : look::laneSelected)
+                        : (alternate ? look::laneAlt : look::lane);
+    };
     for (double q = std::floor(geo.left / group) * group; q < geo.left + width / geo.scale; q += group) {
         const bool alt = static_cast<std::int64_t>(std::llround(q / group)) % 2 != 0;
-        const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
-                                   : (alt ? look::laneAlt : look::lane);
         const double x0 = (q - geo.left) * geo.scale, x1 = x0 + group * geo.scale;
+        const auto lane = shade(alt);
         g.setColour(lane);
         g.fillRect(static_cast<float>(x0), static_cast<float>(top), static_cast<float>(x1 - x0),
                    static_cast<float>(height));
-        if (geo.metered())
+        if (metered)
             continue;
-        g.setColour(lane.darker(0.33f));
+        const auto barInk = lane.darker(.66f), beatInk = lane.darker(.33f);
         for (double line = q; line < q + group && line < geo.left + width / geo.scale; line += grid)
-            if (line >= geo.left)
+            if (line >= geo.left) {
+                const bool bar = std::llround(line * textproj::kPPQ) % textproj::kWhole == 0;
+                g.setColour(bar ? barInk : beatInk);
                 g.fillRect(static_cast<int>((line - geo.left) * geo.scale), top, 1, height);
+            }
     }
-    // In the project's meters the lines run from each bar line (manual 6.10), each a quarter darker
-    // than the lane under it.
-    if (geo.metered())
+    if (metered)
         geo.forEachGridLine(geo.tick(0.), geo.tick(static_cast<double>(width)), [&](std::int64_t line) {
             const double q = static_cast<double>(line) / textproj::kPPQ;
             const bool alt = static_cast<std::int64_t>(std::floor(q / group)) % 2 != 0;
-            const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
-                                       : (alt ? look::laneAlt : look::lane);
-            g.setColour(lane.darker(0.33f));
+            const bool bar = geo.barHolding(line).start == line;
+            g.setColour(shade(alt).darker(bar ? .66f : .33f));
             g.fillRect(static_cast<int>(geo.x(line)), top, 1, height);
         });
 }
@@ -100,7 +107,7 @@ juce::Rectangle<float> ArrangementOverview::outline() const noexcept {
 }
 void ArrangementOverview::paint(juce::Graphics &g) {
     // Live's Overview: a grey line per track on the dark band, its clips in the
-    // track's colour, and a black outline around what is on screen.
+    // clip's colour, and a black outline around what is on screen.
     g.fillAll(look::band);
     const auto rows = view.geometry.rows(view.reader());
     const double total = static_cast<double>(span()), w = getWidth();
@@ -118,11 +125,14 @@ void ArrangementOverview::paint(juce::Graphics &g) {
         const float line = std::max(1.f, row - 1);
         g.setColour(look::panel);
         g.fillRect(0.f, y, static_cast<float>(w), line);
-        g.setColour(view.colourFor(r.position));
-        for (const auto &c : r.track->clips)
+        const auto trackColour = view.colourFor(r.position);
+        for (const auto &c : r.track->clips) {
+            const auto colour = c->color ? look::paletteColour(*c->color) : trackColour;
+            g.setColour(r.track->muted || c->muted ? look::mutedClip : colour);
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
                        std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
                        line);
+        }
         y += row;
     }
     g.setColour(look::overviewFrame);
@@ -581,7 +591,17 @@ void ScrubArea::endMeterEdit() {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
-    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the selection.");
+    setTooltip("Drag sideways to scroll, up or down to zoom. Double-click to zoom to the selection. "
+               "Right-click to insert or edit a tempo change.");
+    addChildComponent(tempoEditor);
+    tempoEditor.setTitle("Tempo in BPM");
+    tempoEditor.onCommit = [this] {
+        if (view.root.setTempoChange(tempoEditing_, tempoEditor.getText().toStdString()))
+            tempoEditor.setVisible(false);
+        else
+            tempoEditor.selectAll();
+    };
+    tempoEditor.onCancel = [this] { tempoEditor.setVisible(false); };
 }
 bool RenameEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::returnKey) {
@@ -982,7 +1002,7 @@ NamesBar::NamesBar()
       inOut(juce::String::fromUTF8("I\xc2\xb7O"), "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
       sends("S", "Sends: show or hide the track controls' sends (Ctrl/Cmd+Alt+S).", true),
       returns("R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R).", true),
-      mixer("M", "Mixer: the track controls' mixer.", true),
+      mixer("M", "Mixer: show or hide volume, pan and meters in the track controls.", true),
       delay("D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options).", true),
       height("H", "Optimize Arrangement Height (H).", true), width("W", "Optimize Arrangement Width (W).", true),
       automation("Automation Mode", "Automation Mode", false, automationGlyph),
@@ -993,7 +1013,6 @@ NamesBar::NamesBar()
         addAndMakeVisible(c);
     for (auto *b : {&inOut, &sends, &returns, &mixer})
         b->setToggleState(true, juce::dontSendNotification);
-    mixer.setInterceptsMouseClicks(false, false);
 }
 void NamesBar::resized() {
     // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the
@@ -1230,7 +1249,8 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
         }
     // The ★ Reference track's toggle (ADR-0209 §4, d11), hidden by default.
     menu.addSeparator();
-    menu.addCommandItem(&root.commands().manager, AppCommands::ToggleReferenceTrack);
+    root.commands().activate(root);
+    root.addReferenceCommand(menu, AppCommands::ToggleReferenceTrack);
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
@@ -1317,8 +1337,8 @@ void ArrangementView::paint(juce::Graphics &g) {
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
     g.setColour(look::band);
     g.fillRect(time);
-    // The grid's spacing sits at the ruler's right end, as Live shows it (§6.10).
-    const juce::Rectangle<int> spacing(time.getRight() - 48, time.getY() + 2, 46, 14);
+    juce::Graphics::ScopedSaveState clip(g);
+    g.reduceClipRegion(time);
     if (const auto *tempo = reader().tempo()) {
         const double from = tempo->ticksToSeconds(geometry.tick(0));
         const double to = tempo->ticksToSeconds(geometry.tick(static_cast<double>(clipsW)));
@@ -1335,18 +1355,11 @@ void ArrangementView::paint(juce::Graphics &g) {
             g.setColour(look::textOnBand);
             g.fillRect(x, time.getY(), 1, 5);
             const int sec = static_cast<int>(t + 0.5);
-            // A time that would run into the grid's spacing keeps its mark only.
-            if (x + 3 + 32 < spacing.getX())
+            if (x + 3 + 32 <= time.getRight())
                 g.drawText(juce::String(sec / 60) + ":" + juce::String(sec % 60).paddedLeft('0', 2),
                            x + 3, time.getY() + 2, 50, 14, juce::Justification::centredLeft);
         }
     }
-    g.setColour(look::band);
-    g.fillRect(spacing);
-    g.setColour(look::textOnBand);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(juce::String(gridLabel(geometry.gridQuarters(), geometry.grid.triplet)), spacing,
-               juce::Justification::centredRight);
 }
 void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
@@ -1428,7 +1441,7 @@ void ArrangementView::changed() {
     state.gridNarrow = geometry.grid.narrow;
     state.gridFixedQuarters = geometry.grid.fixedQuarters;
     root.persist();
-    root.publishSelection();
+    root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     // The mixer's rows follow these lanes: re-place them on the next frame.
     root.mark(DirtySet::Layout);
     frame(true);
@@ -1467,10 +1480,8 @@ bool ArrangementView::command(int id) {
         break;
     }
     case AppCommands::GoStart:
-        geometry.selection.insert = 0;
-        geometry.selection.marked = true;
-        root.locate(geometry.selection.insert);
-        break;
+        placeInsertMarker(0);
+        return true;
     case AppCommands::InsertMarkerToPlayhead: {
         // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
         // Space then plays from there.
@@ -1523,6 +1534,18 @@ bool ArrangementView::command(int id) {
     }
     changed();
     return true;
+}
+void ArrangementView::placeInsertMarker(std::int64_t tick, bool fromInsertMarker) {
+    root.locate(tick, fromInsertMarker);
+    showInsertMarkerAt(tick);
+}
+void ArrangementView::showInsertMarkerAt(std::int64_t tick) {
+    auto &selection = geometry.selection;
+    selection.insert = tick;
+    selection.clearMaterial();
+    selection.marked = true;
+    follow(tick, true); // Reveal an explicit jump even when playback Follow is off.
+    changed();
 }
 void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
 void ArrangementView::select(int x, int y, bool snapToGrid) {
@@ -1691,7 +1714,6 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.
     {
-        root.demandAutomationDevices(true); // the parameters of a device the Device View does not show
         const auto shown = root.automationTarget(track);
         juce::PopupMenu show;
         std::map<std::string, juce::PopupMenu> byDevice;
@@ -1710,17 +1732,9 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
                                       if (touchSource) {
                                           const auto captured = std::find_if(touchSource->begin(), touchSource->end(),
                                               [&](const auto &d) { return d.id == t.ownerId; });
-                                          if (captured != touchSource->end()) {
-                                              if (!safe->root.devices.validExpected(*captured) || !safe) return;
-                                              const bool showingAutomation = safe->root.automationMode();
-                                              safe->root.demandAutomationDevices(true);
-                                              if (!safe) return;
-                                              if (!safe->root.devices.addLastTouchedParameter(*captured)) {
-                                                  if (safe && !showingAutomation)
-                                                      safe->root.demandAutomationDevices(false);
-                                                  return;
-                                              }
-                                          }
+                                          if (captured == touchSource->end() ||
+                                              !safe->root.devices.addLastTouchedParameter(*captured))
+                                              return;
                                       }
                                       if (safe) safe->root.showAutomation(track, t);
                                   });
@@ -1728,9 +1742,6 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
         for (const auto &key : order)
             show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),
                             byDevice[key]);
-        // The choices are read: with Automation Mode off, this window keeps no demand on the feed.
-        if (!root.automationMode())
-            root.demandAutomationDevices(false);
         menu.addSeparator();
         menu.addSubMenu("Show Automation", show, show.getNumItems() > 0);
     }
@@ -1942,9 +1953,8 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
     changed();
 }
 void TimelineRuler::paint(juce::Graphics &g) {
-    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark band, each after
-    // its hook; a dot at every bar. In the project's meters (#299): a signature change starts a new
-    // bar where it falls, and a bar's beats are its signature's (Live 12 manual 6.1).
+    // The beat-time ruler draws plain labels above thin ticks. A signature change starts a new
+    // bar where it falls, and the beats follow its signature (Live 12 manual 6.1).
     g.fillAll(look::band);
     const auto &geo = view.geometry;
     const auto &meters = view.reader().meters();
@@ -1953,36 +1963,35 @@ void TimelineRuler::paint(juce::Graphics &g) {
     // are 56 points apart; else every bar, every second, every fourth and so on.
     const auto &first = meterAt(from, meters);
     const double beatPx = 4. / std::max<double>(1, first.denominator) * geo.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = getHeight();
+    const auto ink = look::rulerLabel.interpolatedWith(look::band, .5f);
     g.setFont(look::font(look::fontField, true));
-    auto label = [&](std::int64_t tick, const juce::String &text) {
-        const int x = static_cast<int>(geo.x(tick));
-        g.setColour(look::rulerLabel);
-        g.fillRect(x, foot - 11, 1, 8);
-        g.fillRect(x, foot - 11, 3, 1);
-        g.setColour(look::textOnBand);
-        g.drawText(text, x + 5, foot - 15, 60, 14, juce::Justification::centredLeft);
+    const auto tickMark = [&](int x, int height) {
+        g.setColour(ink);
+        g.fillRect(x, foot - height, 1, height);
     };
-    const bool dots = beatPx * first.numerator >= 8;
+    const auto label = [&](int x, const juce::String &text) {
+        g.setColour(look::textOnBand);
+        g.drawText(text, x + 4, 1, 60, 16, juce::Justification::centredLeft);
+    };
     // From a bar before the left edge, so a bar's later beats still show.
     forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
-        if (dots) {
-            g.setColour(look::rulerLabel);
-            g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
-        }
-        if (!beats) {
-            if ((bar - 1) % barStep == 0)
-                label(tick, juce::String(bar));
+        const int x = static_cast<int>(geo.x(tick));
+        if (beats || (bar - 1) % barStep == 0) {
+            label(x, juce::String(bar));
+            tickMark(x, 12);
+        } else if (beatPx * first.numerator >= 8)
+            tickMark(x, 5);
+        if (!beats)
             return;
-        }
-        label(tick, juce::String(bar));
         const auto &m = meterAt(tick, meters);
         const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
         // A change part-way through a bar cuts it short (Live's fragmentary bar, manual 6.5): its
@@ -1993,23 +2002,94 @@ void TimelineRuler::paint(juce::Graphics &g) {
                 until = next.start_ticks;
                 break;
             }
-        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
-            label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep) {
+            const int beatX = static_cast<int>(geo.x(tick + b * beatTicks));
+            label(beatX, juce::String(bar) + "." + juce::String(b + 1));
+            tickMark(beatX, 5);
+        }
     });
+    geo.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        const int x = static_cast<int>(geo.x(tick));
+        if (at)
+            label(x, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        tickMark(x, at ? 5 : 3);
+    });
+    paintTempos(g);
+}
+void TimelineRuler::paintTempos(juce::Graphics &g) const {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo || tempo->events.size() < 2 || getWidth() <= 0) return;
+    const auto &geometry = view.geometry;
+    const auto from = geometry.tick(0.), to = geometry.tick(getWidth());
+    const auto &events = tempo->events;
+    auto event = std::upper_bound(events.begin(), events.end(), from,
+                                  [](auto tick, const auto &e) { return tick < e.posTicks; });
+    if (event != events.begin()) --event;
+    const int top = getHeight() - kTempoRowHeight;
+    g.setFont(look::font(look::fontCaption));
+    for (; event != events.end() && event->posTicks <= to; ++event) {
+        const int x = juce::roundToInt(std::clamp(geometry.x(event->posTicks), 0., static_cast<double>(getWidth())));
+        const auto next = std::next(event);
+        const int right = next != events.end() && next->posTicks <= to
+            ? juce::roundToInt(geometry.x(next->posTicks)) : getWidth();
+        g.setColour(look::accent);
+        if (event->posTicks >= from) g.fillRect(x, top + 2, 1, 8);
+        g.drawText(juce::String(event->bpm, std::round(event->bpm) == event->bpm ? 0 : 2) + " BPM",
+                   x + 4, top, std::clamp(right - x - 4, 0, kTempoLabelWidth), kTempoRowHeight,
+                   juce::Justification::centredLeft, false);
+    }
+}
+std::int64_t TimelineRuler::tempoPosition(const juce::MouseEvent &e) const {
+    const auto &geometry = view.geometry;
+    if (e.getPosition().y >= getHeight() - kTempoRowHeight)
+        if (const auto *tempo = view.reader().tempo())
+            for (const auto &event : tempo->events)
+                if (std::abs(geometry.x(event.posTicks) - e.position.x) <= 3.) return event.posTicks;
+    const auto at = geometry.tick(e.position.x);
+    return std::max<std::int64_t>(0, view.snaps(e.mods) ? geometry.snap(at, false) : at);
+}
+void TimelineRuler::beginTempoEdit(std::int64_t at) {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo) return;
+    tempoEditing_ = at;
+    const int width = std::min(kTempoLabelWidth, getWidth());
+    const int x = juce::roundToInt(std::clamp(view.geometry.x(at), 0., static_cast<double>(getWidth() - width)));
+    tempoEditor.setBounds(x, 0, width, getHeight());
+    tempoEditor.setText(juce::String(tempo->bpmAt(at), 2), false);
+    tempoEditor.setVisible(true);
+    tempoEditor.selectAll();
+    focusIfShowing(tempoEditor);
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
+    tempoMenuPressed_ = e.mods.isPopupMenu();
+    if (tempoMenuPressed_) {
+        const auto *tempo = view.reader().tempo();
+        if (!tempo) return;
+        const auto at = tempoPosition(e);
+        const bool exists = std::ranges::any_of(tempo->events, [at](const auto &event) { return event.posTicks == at; });
+        juce::PopupMenu menu;
+        menu.addItem(exists ? "Edit Tempo Change" : "Insert Tempo Change", [safe = SafePointer<TimelineRuler>(this), at] {
+            if (safe) safe->beginTempoEdit(at);
+        });
+        if (onTempoMenu)
+            onTempoMenu(menu);
+        else
+            menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
     last = e.position;
     view.followPaused = true; // a click on the beat-time ruler pauses Follow (§6.2)
 }
 void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
+    if (tempoMenuPressed_) return;
     auto d = e.position - last;
     view.geometry.pan(-d.x);
     view.geometry.zoom(std::exp(-d.y * .02), e.position.x);
     last = e.position;
     view.changed();
 }
-void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
-    view.fit(view.geometry.selection.start != view.geometry.selection.end);
+void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu()) view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
 int TrackHeaderList::nameLeft(std::uint32_t depth) const noexcept {
     // One band per group the track sits in, as many as leave the name some room.
@@ -2079,8 +2159,11 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (t->id != renaming_) {
             g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
+            const int badgeSpace = t->frozen ? 14 : 0;
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()), x + 23, y + 2,
-                       getWidth() - x - 25, 15, juce::Justification::centredLeft);
+                       getWidth() - x - 25 - badgeSpace, 15, juce::Justification::centredLeft);
+            if (t->frozen)
+                controls::frozenTrackBadge(g, {static_cast<float>(getWidth() - 14), static_cast<float>(y + 3), 11, 11});
         }
         // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
         // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
@@ -2135,7 +2218,7 @@ bool TrackHeaderList::beginRename(std::int64_t track, bool selectTrack) {
     renaming_ = track;
     if (selectTrack) {
         view.geometry.selection.track = track;
-        view.root.publishSelection();
+        view.root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     }
     const int x = nameLeft(depth) + 2;
     editor.setBounds(x, y + 3, std::max(0, getWidth() - x - 4), 24);
@@ -2484,7 +2567,16 @@ bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
     return view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details) ||
            !BrowserPanel::droppedFiles(details.description).isEmpty();
 }
+void TrackHeaderList::itemDragMove(const SourceDetails &details) {
+    if (view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details)) {
+        view.canvas.previewDeviceDrop(details.localPosition.y, true);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void TrackHeaderList::itemDragExit(const SourceDetails &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::itemDropped(const SourceDetails &details) {
+    view.canvas.clearDropPreview();
     if (view.root.devices.isMovingDevice(details)) {
         view.dropMovedDevice(details);
         return;
@@ -2499,7 +2591,12 @@ void TrackHeaderList::itemDropped(const SourceDetails &details) {
 bool TrackHeaderList::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty();
 }
+void TrackHeaderList::fileDragMove(const juce::StringArray &files, int, int y) {
+    view.canvas.previewSampleDrop(y, view.geometry.selection.insert, files.size(), true);
+}
+void TrackHeaderList::fileDragExit(const juce::StringArray &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::filesDropped(const juce::StringArray &files, int, int y) {
+    view.canvas.clearDropPreview();
     if (const auto *target = view.geometry.trackAt(view.reader(), y))
         view.root.dropAudioPaths(files, target->id, view.geometry.selection.insert);
 }
@@ -2511,6 +2608,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     const auto rows = geo.rows(view.reader());
     const auto midiTakes = view.root.liveMidiTakes ? view.root.liveMidiTakes() : std::span<const LiveMidiTake>{};
     const auto foot = geo.footStart(rows);
+    const int footY = foot < rows.size() ? geo.footTop(view.reader()) : getHeight();
+    const auto paintBounds = g.getClipBounds();
     int y = -geo.scrollY;
     auto lanes = [&](int top, int height, bool selected) {
         paintLanes(g, geo, getWidth(), top, height, selected);
@@ -2532,7 +2631,6 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto row = rows[i];
         // The returns and Main at the foot, over the tracks scrolled under it.
         if (i == foot) {
-            const int footY = geo.footTop(view.reader());
             dropArea(y, footY);
             y = footY;
             g.setColour(look::band);
@@ -2544,6 +2642,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const int h = geo.heightFor(t->id);
         if (h == 0)
             continue; // left out by the project view, or folded away: no room
+        const int visibleBottom = i < foot ? std::min(footY, paintBounds.getBottom()) : paintBounds.getBottom();
+        if (y >= visibleBottom || y + h <= paintBounds.getY()) {
+            y += h;
+            continue;
+        }
         // Every track the selection covers is lit, as Live lights a selection across tracks.
         const bool selected = geo.inSelection(view.reader(), t->id);
         lanes(y, h - 2, selected);
@@ -2573,8 +2676,9 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const bool picked = geo.clipSelected(c->id);
             // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
             // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
-            // it. A deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? look::mutedClip : colour;
+            // it. A deactivated clip or a clip on a deactivated track is grey.
+            const auto ownColour = c->color ? look::paletteColour(*c->color) : colour;
+            const auto clipColour = c->muted || t->muted ? look::mutedClip : ownColour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
@@ -2614,8 +2718,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
         };
-        // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
-        // each of several selected clips dragged across tracks.
+        // A clip dragged across tracks is drawn on the destination lane, using that track's
+        // colour if the clip has no colour of its own.
         for (const auto &c : t->clips) {
             // A copy being dragged leaves its original drawn where it is.
             if (copying_ && moving_ != 0 &&
@@ -2638,15 +2742,40 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             auto end = live->landing ? start : view.root.timelineTick();
             const auto *preview = live->preview.get();
             const auto *snapshot = view.reader().get();
-            const auto *tempo = snapshot ? snapshot->tempo.get() : nullptr;
+            const auto *tempo = preview && preview->loop && preview->loop->tempo
+                ? preview->loop->tempo.get() : snapshot ? snapshot->tempo.get() : nullptr;
             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
-            double startSeconds = 0.;
+            double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;
             if (havePreview) {
-                const auto rate = static_cast<double>(preview->peaks.sampleRate);
-                startSeconds = static_cast<double>(preview->startSample) / rate;
-                const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
-                start = tempo->secondsToTicks(startSeconds);
-                end = tempo->secondsToTicks(startSeconds + static_cast<double>(frames) / rate);
+                if (const auto &punch = preview->punchedPlacement; !preview->loop && punch) {
+                    const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
+                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);
+                    if (range) {
+                        start = range->startTicks;
+                        end = range->endTicks;
+                        startSeconds = range->startSeconds;
+                        sourceStartFrame = static_cast<double>(range->sourceStartFrame);
+                        sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, range->sourceEndFrame));
+                    } else {
+                        end = start;
+                    }
+                } else {
+                    const auto rate = static_cast<double>(preview->peaks.sampleRate);
+                    const auto pass = preview->latestPass(live->capturedFrames);
+                    startSeconds = static_cast<double>(pass.startSample) / rate;
+                    sourceStartFrame = static_cast<double>(pass.sourceStartFrame);
+                    sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, pass.sourceStartFrame + pass.frames));
+                    start = tempo->secondsToTicks(startSeconds);
+                    end = tempo->secondsToTicks(startSeconds + static_cast<double>(pass.frames) / rate);
+                }
+                if (preview->loop && snapshot && snapshot->transport.loopEnabled)
+                    end = std::min(end, snapshot->transport.loopEndTicks);
+            } else if (snapshot) {
+                const auto &transport = snapshot->transport;
+                if (transport.punchIn)
+                    start = std::max(start, transport.loopStartTicks);
+                if (transport.punchOut && !transport.loopEnabled)
+                    end = std::min(end, transport.loopEndTicks);
             }
             if (end > start) {
                 const double x0 = geo.x(start), x1 = geo.x(end);
@@ -2669,11 +2798,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                              top + static_cast<float>(h - 4), mapping->channels,
                                              [&](int x) -> std::optional<double> {
                                 const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
-                                const auto frame = std::max(0., seconds * preview->peaks.sampleRate);
-                                if (frame >= static_cast<double>(preview->peaks.frames))
-                                    return std::nullopt;
-                                return frame;
-                            });
+                                return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
+                            }, sourceEndFrame);
                         }
                     }
                     if (right - left > 6.f) {
@@ -2699,7 +2825,6 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         dropArea(y, getHeight());
     // The insert marker, a thin blue line in the selected track.
     if (geo.selection.start == geo.selection.end && geo.selection.marked) {
-        const int footY = geo.footTop(view.reader());
         int top = -geo.scrollY;
         for (const auto row : rows) {
             if (row.position == foot)
@@ -2718,6 +2843,32 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode())
         paintAutomation(g);
+    // The returns and Main stay pinned over the scrolled tracks. Mark the bottom of
+    // the scrolling band when another part of the arrangement continues underneath.
+    const int scrollBottom = foot < rows.size() ? std::min(getHeight(), geo.footTop(view.reader())) : getHeight();
+    if (scrollBottom >= 12 && geo.tracksHeight(view.reader()) - geo.scrollY > scrollBottom) {
+        const juce::Rectangle<int> badge{8, scrollBottom - 10, 16, 8};
+        g.setColour(look::frame);
+        g.fillRect(badge);
+        look::triangle(g, badge.toFloat().withSizeKeepingCentre(5.f, 8.f),
+                       juce::MathConstants<float>::halfPi, look::text);
+    }
+    if (!dropPreview_.bounds.isEmpty()) {
+        g.setColour(look::dropTarget);
+        if (dropPreview_.device)
+            g.drawRect(dropPreview_.bounds, 2);
+        else
+            g.fillRect(dropPreview_.bounds);
+    }
+    // The grid spacing sits inside the lower right of the lanes, above the time ruler.
+    auto corner = getLocalBounds().reduced(2);
+    const auto spacing = corner.removeFromBottom(14).removeFromRight(46);
+    g.setColour(look::band);
+    g.fillRect(spacing);
+    g.setColour(look::textOnBand);
+    g.setFont(look::font(look::fontBody));
+    g.drawText(juce::String(gridLabel(geo.gridQuarters(), geo.grid.triplet)), spacing.reduced(2, 0),
+               juce::Justification::centredRight);
 }
 std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
     // The clip body's band of every track drawn, as clipBodies walks them; Main's and the returns' too.
@@ -2886,7 +3037,10 @@ bool ArrangementCanvas::beginAutomationStroke(const juce::MouseEvent &e) {
             selection.pickedClips.clear();
             view.changed();
         }
-        auto &stroke = automationStroke_.emplace();
+        // Assigned, not emplace(): Clang 14 refuses a nested struct with default member initializers
+        // there (CWG 1397), inside the class that declares it.
+        automationStroke_ = AutomationStroke{};
+        auto &stroke = *automationStroke_;
         stroke.track = body.track->id;
         stroke.generation = view.root.committedGeneration();
         stroke.target = std::move(target);
@@ -3332,34 +3486,9 @@ void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake 
 }
 void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                    float right, float top, float bottom) const {
-    if (bottom - top < 4.f || right <= left)
+    if (bottom - top < 4.f || right <= left || !clip.midiPreview || clip.midiPreview->bars.empty())
         return;
-    // Read once for each generation of the document: any edit moves it, and the next paint reads again.
-    const auto generation = view.root.generation();
-    if (clipNotes_.size() > 4096)
-        clipNotes_.clear();
-    auto &held = clipNotes_[clip.id];
-    if (held.readAt != generation + 1) {
-        held = {};
-        held.readAt = generation + 1;
-        if (auto read = engine::readClipDetails(view.root.editStore(), clip.id); read.clip && read.clip->kind == "midi") {
-            const auto &d = *read.clip;
-            held.midi = true;
-            held.startMarker = d.startMarkerTicks;
-            if (d.loopEnabled && d.loopLengthTicks && *d.loopLengthTicks > 0) {
-                held.loopStart = d.loopStartTicks;
-                held.loopLength = *d.loopLengthTicks;
-            }
-            held.bars.reserve(d.notes.size());
-            for (const auto &n : d.notes) {
-                held.bars.push_back({n.startTicks, n.durationTicks, static_cast<int>(n.key), n.active});
-                held.low = std::min(held.low, static_cast<int>(n.key));
-                held.high = std::max(held.high, static_cast<int>(n.key));
-            }
-        }
-    }
-    if (!held.midi || held.bars.empty())
-        return;
+    const auto &held = *clip.midiPreview;
     const auto &geo = view.geometry;
     // The keys in use over the body's height, never fewer than an octave so one note is not a slab.
     const int keys = std::max(12, held.high - held.low + 1);
@@ -3368,7 +3497,7 @@ void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &cl
     const float pitch = inner / static_cast<float>(keys);
     const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
     const std::int64_t clipEnd = pos + clip.lengthTicks;
-    auto bar = [&](std::int64_t source, const ClipNotes::Bar &n) {
+    auto bar = [&](std::int64_t source, const engine::MidiClipPreview::Bar &n) {
         const auto start = pos + (source - held.startMarker);
         const auto end = std::min(start + n.duration, clipEnd);
         if (end <= pos || start >= clipEnd)
@@ -4244,6 +4373,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             sel.toTrack = far == sel.track ? 0 : far;
             sel.clip = 0;
             sel.pickedClips.clear();
+            view.geometry.reveal(view.reader(), far);
             view.changed();
             announce(view.root.selectionText());
             return true;
@@ -4253,6 +4383,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         sel.picked.clear();
         sel.clip = 0;
         sel.pickedClips.clear();
+        view.geometry.reveal(view.reader(), sel.track);
         view.changed();
         return true;
     }
@@ -4432,6 +4563,72 @@ bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
            !BrowserPanel::droppedFiles(details.description).isEmpty() ||
            view.root.browser.acceptsDeviceDrop(details);
 }
+void ArrangementCanvas::setDropPreview(DropPreview next) {
+    if (next == dropPreview_)
+        return;
+    repaint(dropPreview_.bounds);
+    dropPreview_ = next;
+    repaint(dropPreview_.bounds);
+}
+std::pair<const engine::TrackNode *, juce::Rectangle<int>> ArrangementCanvas::dropLane(int y) const {
+    const auto &geo = view.geometry;
+    const auto &reader = view.reader();
+    const auto rows = geo.rows(reader);
+    const auto foot = geo.footStart(rows);
+    const int footTop = foot < rows.size() ? geo.footTop(reader) : getHeight();
+    int top = 0;
+    const auto row = geo.rowAt(reader, y, &top);
+    const auto *track = row < rows.size() ? rows[row].track : nullptr;
+    if (!track)
+        top = std::max(0, geo.tracksHeight(reader) - geo.scrollY);
+    const int height = track ? geo.heightFor(track->id) : geo.height;
+    const int bottom = std::min(top + height, row >= foot && track ? getHeight() : footTop);
+    top = std::max(0, top);
+    return {track, {0, top, getWidth(), std::max(0, bottom - top)}};
+}
+std::int64_t ArrangementCanvas::audioDropTick(int x) const {
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
+    if (!view.snaps(juce::ModifierKeys::currentModifiers))
+        return raw;
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    return raw - down <= up - raw ? down : up;
+}
+void ArrangementCanvas::fileDragEnter(const juce::StringArray &files, int x, int y) { fileDragMove(files, x, y); }
+void ArrangementCanvas::fileDragMove(const juce::StringArray &files, int x, int y) {
+    previewSampleDrop(y, audioDropTick(x), files.size(), false);
+}
+void ArrangementCanvas::previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    if (files <= 0 || !view.reader().get() || (existingTrackOnly && !track)) {
+        clearDropPreview();
+        return;
+    }
+    if (track && track->kind != "audio") {
+        if (files == 1 && view.root.loadSampleInstrument && view.root.sampleInstrumentTarget(track->id))
+            setDropPreview({lane, true});
+        else
+            clearDropPreview();
+        return;
+    }
+    const int left = static_cast<int>(view.geometry.x(tick));
+    setDropPreview({lane.withX(left).withWidth(2).getIntersection(getLocalBounds())});
+}
+void ArrangementCanvas::previewDeviceDrop(int y, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    setDropPreview({!existingTrackOnly || track ? lane : juce::Rectangle<int>{}, true});
+}
+void ArrangementCanvas::clearDropPreview() { setDropPreview({}); }
+void ArrangementCanvas::fileDragExit(const juce::StringArray &) { clearDropPreview(); }
+void ArrangementCanvas::itemDragEnter(const SourceDetails &details) { itemDragMove(details); }
+void ArrangementCanvas::itemDragMove(const SourceDetails &details) {
+    const bool moving = view.root.devices.isMovingDevice(details);
+    if (moving || view.root.browser.acceptsDeviceDrop(details)) {
+        previewDeviceDrop(details.localPosition.y, moving);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void ArrangementCanvas::itemDragExit(const SourceDetails &) { clearDropPreview(); }
 void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &details) {
     if (const auto *track = geometry.trackAt(reader(), details.localPosition.y))
         root.devices.moveDroppedDevice(details, track->id);
@@ -4439,6 +4636,7 @@ void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetai
         root.say("Drop the device on a track to move it there.");
 }
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    clearDropPreview();
     if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
         view.dropMovedDevice(details);
         return;
@@ -4455,15 +4653,13 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
     // line while snapping; on a track's lane, that track; below the tracks, a new one. The clip is
     // named after the file, as Live names it.
+    clearDropPreview();
     if (files.isEmpty())
         return;
-    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
-    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
-    const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, at,
+    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, audioDropTick(x),
                             juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui

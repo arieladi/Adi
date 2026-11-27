@@ -87,6 +87,7 @@ struct DeviceTransport {
     int numerator = 4;
     int denominator = 4;
     bool playing = false;
+    bool recording = false; ///< SC-333: playing while ADI records a take (VST3 kRecording, CLAP IS_RECORDING)
     bool looping = false;
     std::int64_t loopBegin = 0;
     std::int64_t loopEnd = 0;
@@ -1047,9 +1048,9 @@ public:
     /// trust the comment.
     [[nodiscard]] static std::int32_t maxFloorFor(double sampleRate) noexcept;
 
-    /// Spare ring capacity on every compensated edge, in samples, so a
-    /// plugin's latency can change while the graph runs without anyone
-    /// allocating (ADR-0079).
+    /// Spare ring capacity on each edge that can need compensation, in
+    /// samples, so a plugin's latency can change while the graph runs
+    /// without anyone allocating (ADR-0079).
     ///
     /// THE DEFAULT IS 8192, AND IT IS MEASURED (ADR-0088). It was 0, and 0
     /// switches the feature off: with no headroom every change misses its

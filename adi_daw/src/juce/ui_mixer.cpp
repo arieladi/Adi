@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "ui_value_entry.hpp"
+#include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/automation_override.hpp"
@@ -22,6 +23,8 @@ namespace {
 // kPeakHoldSeconds and then falls at the same rate. win's placement until Live 12's are read
 // (Readings M1-02 to M1-04).
 constexpr double kFallDbPerSecond = 24, kPeakHoldSeconds = 1;
+// A note shorter than a window frame still needs a visible flash.
+constexpr double kMidiPulseSeconds = .10;
 // `shown` after `seconds` of falling at the rate, never under `now`, the engine's value; silence
 // once under the meter's floor.
 float fallen(float shown, float now, double seconds) noexcept {
@@ -512,6 +515,9 @@ void MixerStrip::bind(std::int64_t id) {
     position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
+    midiOnsets_ = 0;
+    midiPulseUntil_ = 0;
+    midiLit_ = false;
     // The Peak Level is the track's: what it held on the strip that showed it before, else -Inf.
     const auto held = panel_.peakLevels.find(id);
     peakHold.held = held != panel_.peakLevels.end() ? held->second : 0.f;
@@ -658,11 +664,24 @@ void MixerStrip::frame(bool changed) noexcept {
     // bound before the session had a strip for its track finds the meter on a refresh.
     if (changed)
         resolveMeter();
+    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
+    const bool firstFrame = lastFrame_ < 0;
+    const double seconds = firstFrame ? 0 : std::max(0., now - lastFrame_);
+    lastFrame_ = now;
+    if (!audio_) {
+        const auto notes = panel_.midiActivity ? panel_.midiActivity(track_) : engine::MidiNoteActivity{};
+        if (!firstFrame && notes.onsets != midiOnsets_)
+            midiPulseUntil_ = now + kMidiPulseSeconds;
+        midiOnsets_ = notes.onsets;
+        const bool lit = notes.held || now < midiPulseUntil_;
+        if (lit != midiLit_) {
+            midiLit_ = lit;
+            repaint(meterArea().expanded(1));
+        }
+        return;
+    }
     const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
     const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
-    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
-    const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
-    lastFrame_ = now;
     // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
     if (panel_.vertical() && peakNow > peakHold.held) {
@@ -746,6 +765,12 @@ void MixerStrip::paintOverChildren(juce::Graphics &g) {
         const auto b = control->getBounds();
         g.fillEllipse(static_cast<float>(b.getRight() - 6), static_cast<float>(b.getY() + 1), 5.f, 5.f);
     }
+    if (dropPreview_) {
+        const auto band = panel_.rowsBand() - getY();
+        const auto area = getLocalBounds().getIntersection({0, band.getStart(), getWidth(), band.getLength()});
+        g.setColour(look::dropTarget);
+        g.drawRect(area, 2);
+    }
 }
 void MixerStrip::resized() {
     if (panel_.vertical()) {
@@ -814,16 +839,17 @@ void MixerStrip::resized() {
     // shows only when the track is tall enough for it.
     const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
     const int rows = std::max(1, (getHeight() - 1) / 17);
-    auto place = [rows](juce::Component &c, int row, juce::Rectangle<int> r) {
-        c.setVisible(row < rows);
+    const bool levels = audio_ && panel_.root.state().trackMixer;
+    auto place = [rows](juce::Component &c, int row, juce::Rectangle<int> r, bool shown = true) {
+        c.setVisible(shown && row < rows);
         c.setBounds(r);
     };
     if (kind_ == "master") {
         // Live's Main row: no activator, Solo or Arm; its volume where a track has its activator.
         for (juce::Component *c : std::initializer_list<juce::Component *>{&active, &solo, &arm, &prePost})
             c->setVisible(false);
-        place(volume, 0, {x + 4, 3, 45, 13});
-        place(pan, 1, {x + 54, 20, 45, 13});
+        place(volume, 0, {x + 4, 3, 45, 13}, levels);
+        place(pan, 1, {x + 54, 20, 45, 13}, levels);
     } else {
         place(active, 0, {x + 4, 3, 45, 13});
         place(solo, 0, {x + 54, 3, 20, 13});
@@ -839,28 +865,20 @@ void MixerStrip::resized() {
             prePost.setVisible(false);
             place(arm, 0, {x + 78, 3, 21, 13});
         }
-        place(volume, 1, {x + 4, 20, 35, 13});
-        place(pan, 1, {x + 54, 20, 45, 13});
-        // A MIDI track with no instrument: no volume or pan, as Live's.
-        if (!audio_) {
-            volume.setVisible(false);
-            pan.setVisible(false);
-        }
+        place(volume, 1, {x + 4, 20, 35, 13}, levels);
+        place(pan, 1, {x + 54, 20, 45, 13}, levels);
     }
-    // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row.
+    // Live's sends follow the mixer controls, three per row.
     const bool sends = showsSends();
+    const int sendsStart = levels ? 2 : 1;
     for (std::size_t i = 0; i < sends_.size(); ++i) {
-        const int row = 2 + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
-        place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13});
-        if (!sends)
-            sends_[i]->setVisible(false);
+        const int row = sendsStart + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
+        place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13}, sends);
     }
     // Live's Track Delay on the row after the sends, with its "ms" box (paintDelayUnit), while the
     // track controls' Track Options shows it (the D selector).
-    const int after = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
-    place(delay, after, {x + 4, 3 + 17 * after, 45, 13});
-    if (!panel_.root.state().trackOptions)
-        delay.setVisible(false);
+    const int after = sendsStart + (sends ? sendRows() : 0);
+    place(delay, after, {x + 4, 3 + 17 * after, 45, 13}, panel_.root.state().trackOptions);
 }
 juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
@@ -869,6 +887,8 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     return {(i % 2 == 0) ? 10 : 51, sendsTop() + 6 + 22 * i, 32, 32};
 }
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
+    if (!panel_.vertical())
+        return {(showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 1, 8, std::max(0, getHeight() - 4)};
     // Under a tall strip's numeric field, the meter stops short of the foot.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
     return {53, mixerTop() + 6, 11, std::max(0, mixerBottom() - mixerTop() - 10 - (tall ? 15 : 0))};
@@ -883,6 +903,7 @@ bool MixerStrip::showsInOut() const noexcept {
            getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
 }
 void MixerStrip::paint(juce::Graphics &g) {
+    const auto *track = panel_.root.reader().findTrack(track_);
     if (panel_.vertical()) {
         // Live's strip: grey, lighter when its track is selected; the name in the track's
         // colour; dark rules between the parts and down the right-hand edge.
@@ -936,11 +957,14 @@ void MixerStrip::paint(juce::Graphics &g) {
                 g.setColour(panel_.root.arrangement.colourFor(group_ - 1));
                 g.fillRect(0, 0, w, 3);
             }
-            if (const auto *track = panel_.root.reader().findTrack(track_)) {
+            if (track) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontBody, true));
-                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0, w - 8,
-                           17, juce::Justification::centredLeft);
+                const int badgeSpace = track->frozen ? 14 : 0;
+                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0,
+                           w - 8 - badgeSpace, 17, juce::Justification::centredLeft);
+                if (track->frozen)
+                    controls::frozenTrackBadge(g, {static_cast<float>(w - 14), 3, 11, 11});
             }
         }
         if (audio_)
@@ -962,10 +986,17 @@ void MixerStrip::paint(juce::Graphics &g) {
     }
     if (delay.isVisible())
         paintDelayUnit(g);
+    if (!panel_.root.state().trackMixer)
+        return;
+    const auto meter = meterArea();
     if (audio_)
-        paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+        paintMeter(g, meter);
     else
-        paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+        paintMidiMeter(g, meter);
+    if (track && track->frozen) {
+        g.setColour(look::value);
+        g.fillRect(meter.getRight(), meter.getY(), 2, meter.getHeight());
+    }
 }
 void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
@@ -991,12 +1022,10 @@ void MixerStrip::commitDelay() {
     panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
-    // Live's MIDI meter: a column of dots down the meter's place that light while notes play (Live 12
-    // manual, the Mixer in Arrangement View: 2 MIDI). ADI has no note activity to show yet, so they
-    // stay dark.
+    // Live's MIDI meter: a column of dots down the meter's place that light while notes play.
     const float d = std::min(5.5f, static_cast<float>(area.getWidth())), pitch = d + 2.5f;
     const float x = static_cast<float>(area.getCentreX()) - d / 2;
-    g.setColour(look::display);
+    g.setColour(midiLit_ ? look::accent : look::display);
     for (float y = static_cast<float>(area.getY()); y + d <= static_cast<float>(area.getBottom()); y += pitch)
         g.fillEllipse(x, y, d, d);
 }
@@ -1140,7 +1169,7 @@ const char *MixerStrip::outputLabel() const noexcept {
         return "1/2";
     if (!audio_)
         return "No Output";
-    return inGroup_ ? "Group" : "Master";
+    return inGroup_ ? "Group" : "Main";
 }
 void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
@@ -1229,14 +1258,28 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     panel_.root.arrangement.geometry.selection.track = track_;
     panel_.root.arrangement.geometry.selection.toTrack = 0;
     panel_.root.arrangement.geometry.selection.picked.clear();
-    panel_.root.publishSelection();
+    panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
     panel_.root.showDeviceView();
 }
 bool MixerStrip::isInterestedInDragSource(const SourceDetails &details) {
     return track_ != 0 && (panel_.root.browser.acceptsDeviceDrop(details) ||
                            !BrowserPanel::droppedFiles(details.description).isEmpty());
 }
+void MixerStrip::setDropPreview(bool on) {
+    if (dropPreview_ == on)
+        return;
+    dropPreview_ = on;
+    repaint();
+}
+void MixerStrip::itemDragMove(const SourceDetails &details) {
+    if (track_ != 0 && panel_.root.browser.acceptsDeviceDrop(details))
+        setDropPreview(true);
+    else
+        fileDragEnter(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void MixerStrip::itemDragExit(const SourceDetails &) { setDropPreview(false); }
 void MixerStrip::itemDropped(const SourceDetails &details) {
+    setDropPreview(false);
     if (track_ == 0)
         return;
     if (panel_.root.browser.acceptsDeviceDrop(details)) {
@@ -1248,7 +1291,14 @@ void MixerStrip::itemDropped(const SourceDetails &details) {
 bool MixerStrip::isInterestedInFileDrag(const juce::StringArray &files) {
     return track_ != 0 && !files.isEmpty();
 }
+void MixerStrip::fileDragEnter(const juce::StringArray &files, int, int) {
+    const bool instrument = files.size() == 1 && panel_.root.loadSampleInstrument &&
+                            panel_.root.sampleInstrumentTarget(track_);
+    setDropPreview(track_ != 0 && !files.isEmpty() && (kind_ == "audio" || instrument));
+}
+void MixerStrip::fileDragExit(const juce::StringArray &) { setDropPreview(false); }
 void MixerStrip::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview(false);
     if (track_ != 0)
         panel_.root.dropAudioPaths(files, track_, panel_.root.arrangement.geometry.selection.insert);
 }
@@ -1294,7 +1344,7 @@ void MixerStrip::mouseUp(const juce::MouseEvent &e) {
                 panel_.root.moveTracks(drag->source, panel_.trackDropAt(at.x, drag->movingReturn).target);
         } else if (drag->selectOnRelease) {
             selectTitle(drag->source);
-            panel_.root.publishSelection();
+            panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
             panel_.root.arrangement.changed();
         }
         return;
@@ -1326,6 +1376,7 @@ void MixerStrip::trackTitleMenu(juce::Point<int> where) {
     view.loopSelected = false;
     view.scrub.repaint();
     focusIfShowing(*this);
+    panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
     view.changed();
     panel_.showContextMenu(view.headerMenu(track), where);
 }
@@ -1401,7 +1452,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             selection.toTrack = track_ == selection.track ? 0 : track_;
         else
             selectTitle(track_);
-        panel_.root.publishSelection();
+        panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
         panel_.root.arrangement.changed();
         return;
     }
@@ -2144,24 +2195,11 @@ void SideStrip::setHead(int y) {
     repaint();
 }
 void SideStrip::resized() {
-    // Under the two view switches, the track height.
+    // Keep the track height control at its position under the names bar.
     tracks.setBounds(4, head_ + 47, 19, 14);
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
-    // At the strip's head, Live's switches between Arrangement and Session View; the
-    // Arrangement's is lit.
-    for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> r(4.f, static_cast<float>(head_) + 3.f + 22.f * static_cast<float>(i), 19, 19);
-        g.setColour(look::selectorEdge);
-        g.fillEllipse(r);
-        g.setColour(i == 0 ? look::accent : look::panel);
-        for (int line = 0; line < 3; ++line)
-            if (i == 0)
-                g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
-            else
-                g.fillRect(r.getX() + 6 + 3.f * static_cast<float>(line), r.getY() + 5, 1.6f, 9.f);
-    }
 }
 void MixerPanel::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())

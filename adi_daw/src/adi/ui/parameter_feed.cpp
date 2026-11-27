@@ -11,8 +11,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
-                        d.pluginTouch, d.recentPluginTouches,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
+                        d.processingIssue, d.loadIssue, d.pluginTouch, d.recentPluginTouches,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -58,6 +58,48 @@ bool ParameterFeed::setDemand(const void *consumer, std::vector<std::int64_t> de
     demanded_ = std::move(next);
     return true;
 }
+
+std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation(engine::Session &session,
+                                                                                 std::int64_t track) const {
+    auto result = std::make_shared<ParameterPublication>();
+    const auto &model = session.model();
+    for (const auto &chain : model.deviceChains) {
+        if (chain.trackId != track)
+            continue;
+        for (const auto &row : model.devices) {
+            if (row.chainId != chain.id)
+                continue;
+            const auto *entry = session.entryFor(row.id);
+            const auto *instance = session.instanceFor(row.id);
+            if (!entry || entry->retired || entry->parked || entry->resolvedPluginRef != row.pluginRefId || !instance)
+                continue;
+            DevicePanelData data;
+            data.track = track;
+            data.id = row.id;
+            data.name = row.name;
+            data.format = entry->resolvedFormat;
+            const bool available = instance->loaded();
+            if (available) {
+                const auto shown = std::find_if(current_->begin(), current_->end(), [&](const auto &device) {
+                    return device.id == row.id && device.track == track && device.pluginTouch;
+                });
+                if (shown != current_->end() && session.resolveDevice(shown->runtime) == instance)
+                    data.pluginTouch = shown->pluginTouch;
+            }
+            const auto count = instance->paramCount();
+            for (std::int32_t index = 0; index < count; ++index) {
+                const auto *descriptor = instance->paramAt(index);
+                if (descriptor && descriptor->automatable) {
+                    data.declared.push_back({descriptor->id, descriptor->name, available && !descriptor->missing, true});
+                    data.defaults.emplace(descriptor->id, descriptor->defaultValue.normalized);
+                }
+            }
+            result->push_back(std::move(data));
+        }
+    }
+    return result;
+}
+
 void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevision) {
     auto next = std::make_shared<ParameterPublication>();
     const auto publication = ++publication_;
@@ -84,14 +126,22 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         data.uid = ref.uid; data.format = ref.format; data.plugin = ref.format != "internal";
                         break;
                     }
+            for (const auto &route : model.deviceRoutes)
+                if (route.deviceId == row.id) {
+                    data.route = route.route;
+                    break;
+                }
             auto *instance = session.instanceFor(row.id);
             const auto *entry = session.entryFor(row.id);
-            data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&
-                             entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            const bool resolved = entry && !entry->retired && !entry->parked &&
+                                  entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            data.available = resolved && instance && instance->loaded();
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
             if (data.available)
                 data.processingIssue = instance->processingIssue();
+            if (data.plugin && resolved && entry->placeholder)
+                data.loadIssue = entry->error;
             auto &identity = identities_[row.id];
             const bool runtimeSame = instance != nullptr && session.resolveDevice(identity.runtime) == instance;
             const bool unpublished = !entry && identity.runtime.claimIdentity().expired();
@@ -101,6 +151,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 identity.runtime = session.deviceRuntimeToken(row.id);
                 identity.pluginRef = row.pluginRefId; identity.uid = data.uid;
                 identity.touchSequence = 0;
+                identity.latestTouch.reset();
                 identity.recentTouches.reset();
                 native_.erase(row.id);
             }
@@ -108,28 +159,24 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
             data.instance = identity.stamp; identity.seen = publication;
             if (parameterOps_ && data.available && (data.format == "vst3" || data.format == "clap") &&
                 session.resolveDevice(data.runtime) == instance) {
-                const auto stableId = [instance](std::int32_t index) -> const std::string * {
-                    const auto *parameter = index >= 0 ? instance->paramAt(index) : nullptr;
-                    if (parameter && !parameter->id.empty() && !parameter->missing &&
-                        (parameter->automatable || parameter->configurable))
-                        return &parameter->id;
-                    return nullptr;
-                };
                 const auto sequence = parameterOps_->lastTouchSequence(row.id);
-                const auto index = sequence ? parameterOps_->lastTouched(row.id) : -1;
-                if (const auto *id = stableId(index))
-                    data.pluginTouch = PluginParameterTouch{*id, sequence};
                 if (sequence != identity.touchSequence) {
                     std::vector<PluginParameterTouch> touches;
                     const auto recent = parameterOps_->recentTouches(row.id);
                     touches.reserve(recent.size());
-                    for (const auto &touch : recent)
-                        if (const auto *id = stableId(touch.index))
-                            touches.push_back({*id, touch.sequence});
+                    for (const auto &touch : recent) {
+                        const auto *parameter = instance->paramAt(touch.index);
+                        if (parameter && !parameter->id.empty() && !parameter->missing &&
+                            (parameter->automatable || parameter->configurable))
+                            touches.push_back({parameter->id, touch.sequence});
+                    }
+                    identity.latestTouch = !touches.empty() && touches.back().sequence == sequence
+                        ? std::optional{touches.back()} : std::nullopt;
                     identity.recentTouches = touches.empty() ? nullptr :
                         std::make_shared<const std::vector<PluginParameterTouch>>(std::move(touches));
                     identity.touchSequence = sequence;
                 }
+                data.pluginTouch = identity.latestTouch;
                 data.recentPluginTouches = identity.recentTouches;
             }
             // Mixer and selection identity stays available without touching parameters.

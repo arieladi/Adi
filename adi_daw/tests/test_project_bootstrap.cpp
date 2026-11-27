@@ -37,9 +37,10 @@ void newProject() {
     check(count(*store,"tracks")==7 && db.execAndGet("SELECT count(*) FROM tracks WHERE kind='midi'").getInt()==2 &&
           db.execAndGet("SELECT count(*) FROM tracks WHERE kind='audio'").getInt()==2,
           "the default Set has two MIDI and two audio tracks");
-    check(db.execAndGet("SELECT count(*) FROM tracks WHERE id BETWEEN 2 AND 5 AND monitor_mode=2").getInt()==4 &&
+    check(db.execAndGet("SELECT count(*) FROM tracks WHERE kind='audio' AND monitor_mode=0").getInt()==2 &&
+          db.execAndGet("SELECT count(*) FROM tracks WHERE kind='midi' AND monitor_mode=2").getInt()==2 &&
           db.execAndGet("SELECT count(*) FROM tracks WHERE id IN(1,6,7) AND monitor_mode=0").getInt()==3,
-          "New monitors all four input tracks on Auto");
+          "SC-249: New seeds audio tracks Off and MIDI tracks Auto");
     check(db.execAndGet("SELECT group_concat(name,',') FROM (SELECT name FROM tracks "
                         "WHERE kind!='master' ORDER BY index_in_parent,id)").getString()=="# MIDI,# MIDI,# Audio,# Audio,A Reverb,B Delay",
           "default track names and positions are deterministic: numbered names, as Live's (walk-B B13)");
@@ -131,6 +132,22 @@ void monitorDefaultAndLegacyRedo() {
     prior.exec();
     check(history.redo().ok && monitor()==0,
           "redoing an older track.create retains its original Off default");
+
+    create.payload={{"id",2},{"kind","audio"}};
+    const auto audio=journal.commit(create);
+    if (!audio.ok) throw std::runtime_error(audio.error);
+    const auto audioMonitor=[&] { return db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=2").getInt(); };
+    check(audioMonitor()==0, "SC-249: ordinary track.create monitors a new audio track Off");
+    check(history.undo().ok && history.redo().ok && audioMonitor()==0,
+          "SC-249: an audio track created Off is still Off after Undo and Redo");
+    if (!history.undo().ok) throw std::runtime_error("prepare replay of an N67 audio create");
+    const auto oldAuto=encodePayload({{"id",2},{"monitorMode",2}});
+    prior.reset();
+    prior.bind(1,oldAuto.data(),static_cast<int>(oldAuto.size()));
+    prior.bind(2,audio.seqs.front());
+    prior.exec();
+    check(history.redo().ok && audioMonitor()==2,
+          "SC-249: Redo restores an older audio track whose create recorded Auto");
 }
 
 }

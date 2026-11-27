@@ -58,6 +58,14 @@ bool ParamEditCapture::push(const ParamEvent& event,gesture::detail::ProducerFen
     return true;
 }
 
+void ParamEditCapture::track(const Key& key, Parameter& parameter) {
+    if (parameter.tracked) return;
+    const bool ordered = maintenance_.empty() || maintenance_.back().key < key;
+    maintenance_.push_back({key, &parameter});
+    maintenanceOrdered_ = maintenanceOrdered_ && ordered;
+    parameter.tracked = true;
+}
+
 void ParamEditCapture::seed(std::int64_t deviceId, std::int32_t paramIndex, double value) {
     auto& p = parameters_[{deviceId, paramIndex}];
     p.last = value;
@@ -65,7 +73,9 @@ void ParamEditCapture::seed(std::int64_t deviceId, std::int32_t paramIndex, doub
 }
 void ParamEditCapture::expectEcho(std::int64_t deviceId, std::int32_t paramIndex,
                                 double value, std::int64_t nowMs) {
-    auto& p = parameters_[{deviceId, paramIndex}];
+    const Key key{deviceId, paramIndex};
+    auto& p = parameters_[key];
+    track(key, p);
     p.guarded = true;
     p.echo = value;
     p.armedMs = nowMs;
@@ -73,7 +83,9 @@ void ParamEditCapture::expectEcho(std::int64_t deviceId, std::int32_t paramIndex
 }
 void ParamEditCapture::expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
                                           double value, std::int64_t nowMs) {
-    auto& p = parameters_[{deviceId,paramIndex}];
+    const Key key{deviceId, paramIndex};
+    auto& p = parameters_[key];
+    track(key, p);
     if (p.echoes.empty() && p.guarded && elapsed(nowMs,p.armedMs) <= static_cast<std::uint64_t>(echoTtlMs_))
         p.echoes.push_back({p.echo,p.armedMs});
     std::erase_if(p.echoes,[&](const Parameter::Echo& echo) {
@@ -143,7 +155,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                                         bool absorb,std::vector<ParamActivity>* activity) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
-    for (auto& [key, p] : parameters_) {
+    for (const auto& entry : maintenance_) {
+        auto& p = *entry.parameter;
         if (!p.echoes.empty()) {
             std::erase_if(p.echoes,[&](const Parameter::Echo& echo) {
                 return elapsed(nowMs,echo.armedMs) > static_cast<std::uint64_t>(echoTtlMs_);
@@ -173,6 +186,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     // Snapshot the producer boundary: a busy producer cannot prolong this drain.
     const auto end = write_.load(std::memory_order_acquire);
     const auto pending=end>=r?end-r:ring_.size()-r+end;
+    if (pending == 0 && maintenance_.empty()) return 0;
     // The published prefix cannot be overwritten while read_ stays fixed.
     // Allocate every newly discovered parameter (including Debug iterator
     // proxies) before consuming even a known-key prefix.
@@ -182,8 +196,16 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     }
     // Reserve before advancing any consumer state. Once processing begins,
     // publishing the corresponding owned observations cannot allocate.
-    if(activity)activity->reserve(activity->size()+pending*2+parameters_.size());
-    out.reserve(out.size()+pending+parameters_.size());
+    const auto tracked = maintenance_.size();
+    const auto needed = tracked + pending;
+    if (needed > maintenance_.capacity()) {
+        const auto growth = std::min(maintenance_.max_size(), maintenance_.capacity() * 2);
+        maintenance_.reserve(std::max(needed, growth));
+    }
+    // A new implicit completion needs a Value in this prefix. It and the
+    // already tracked gestures bound the extra synthetic observations.
+    if(activity)activity->reserve(activity->size()+pending*2+tracked);
+    out.reserve(out.size()+pending+tracked);
     const auto touchLimit = std::max(ring_.size() - 1, std::size_t{128});
     // Room for one whole producer prefix lets us trim the old tail once
     // after the drain rather than shifting history for each reported touch.
@@ -193,6 +215,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         const auto event=slot.event;
         const Key key{event.deviceId, event.paramIndex};
         auto& p = parameters_.at(key);
+        p.promoteEarlierActivity = false;
         ParamActivity observed;
         observed.event=event;observed.fence=slot.fence;observed.afterNavigation=slot.afterNavigation;
         observed.before=p.known?p.last:event.value;observed.after=event.value;
@@ -244,6 +267,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             }
             if (!absorb || (p.open && !p.implicit)) touch(event.paramIndex);
             if (!p.open) {
+                track(key, p);
                 p.open = true;
                 p.implicit = true;
                 p.hasValue = false;
@@ -269,7 +293,6 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         // ParamOps gives implicit observations to the state snapshot. A
         // promoted gesture owns its earlier values in the same prefix, back
         // to the preceding End for this parameter.
-        for (auto& [key, p] : parameters_) p.promoteEarlierActivity = false;
         for (auto i=activity->size();i>activityStart;--i) {
             auto& observation=(*activity)[i-1];
             auto& p=parameters_.at({observation.event.deviceId,observation.event.paramIndex});
@@ -283,24 +306,35 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             }
         }
     }
-    for (auto& [key, p] : parameters_) {
-        if (!p.open || !p.implicit) continue;
-        if (absorb) {
-            if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
-            // Folded into the snapshot: the value is where the plugin put it,
-            // and no edit says so.
-            if (p.hasValue) {
-                p.last = p.after;
-                p.known = true;
-                ++stats_.absorbed;
-            }
-            p.open = false;
-            p.hasValue = false;
-        } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
-            if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
-            close(key, p, out);
-        }
+    if (!maintenanceOrdered_) {
+        std::sort(maintenance_.begin(), maintenance_.end(), [](const auto& a, const auto& b) { return a.key < b.key; });
+        maintenanceOrdered_ = true;
     }
+    auto retained = maintenance_.begin();
+    for (const auto& entry : maintenance_) {
+        const auto& key = entry.key;
+        auto& p = *entry.parameter;
+        if (p.open && p.implicit) {
+            if (absorb) {
+                if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
+                // Folded into the snapshot: the value is where the plugin put it,
+                // and no edit says so.
+                if (p.hasValue) {
+                    p.last = p.after;
+                    p.known = true;
+                    ++stats_.absorbed;
+                }
+                p.open = false;
+                p.hasValue = false;
+            } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
+                if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
+                close(key, p, out);
+            }
+        }
+        p.tracked = p.guarded || !p.echoes.empty() || (p.open && p.implicit);
+        if (p.tracked) *retained++ = entry;
+    }
+    maintenance_.erase(retained, maintenance_.end());
     return out.size() - start;
 }
 

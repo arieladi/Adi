@@ -346,6 +346,7 @@ subject, say so in your log instead of writing it twice.
 | 0257 | win | `win/sanity-1126` | the basics come first: the sanity check's rows are fixes worked now; the Dream's shape and ground; view filters placed; no AI tab, a larger Info box and its analyser's switch | used |
 | 0258 | win | `win/sanity2-1126` | after the sanity check's round 2: a folder per song and fifteen more answers, each as Live; a silent MIDI track until it has an instrument; presets are files; who works what on 27 to 29 November | used |
 | 0259 | win | `win/adr-0259` | surfaces, phones and the agent's stop: Stop Agent, a Captures place, a phone page as a direction, bias controls parked, OSC and learned mappings as decided, a lost device, who did it | used |
+| 0260 | win | `win/adr-0260` | the Jam: three templates, a Mark command with a riff list, rule-made grooves, Make Session after the Foundry, backing to the Cue output | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

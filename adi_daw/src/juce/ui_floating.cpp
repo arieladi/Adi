@@ -92,7 +92,7 @@ std::string zoomKey(const std::string &key) { return "floating:" + key; }
 struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
-    bool closing = false, scaled = true, hidden = false, onTop = false;
+    bool closing = false, scaled = true, hidden = false, onTop = false, userResizable = false;
     // WIN-03: an owned window (a plug-in's editor, a device's view) goes with the main window: no task
     // bar button, minimised and back with it, above it. The Mix View's window is a normal one.
     bool ownedKind = false, byOwner = false;
@@ -165,6 +165,15 @@ struct FloatingHost::Entry {
             DocumentWindow::resized();
             place.moved();
         }
+        // SC-328: a plug-in window resized from its edges has an edge to take. A plug-in's own native
+        // view covers the window's content to the pixel, so the edge outside it is all the mouse can
+        // grab; one pixel of it, as the desk showed with Surge XT's CLAP, is none in practice.
+        juce::BorderSize<int> getBorderThickness() const override {
+            if (e.userResizable && !isFullScreen() && !isKioskMode() && !isUsingNativeTitleBar())
+                return juce::BorderSize<int>(kResizableEdge);
+            return DocumentWindow::getBorderThickness();
+        }
+        static constexpr int kResizableEdge = 6;
         void parentSizeChanged() override {
             DocumentWindow::parentSizeChanged();
             if (keepReachable(*this, isResizable()))
@@ -207,10 +216,12 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
     if (raw->owned && !raw->scaled) {
-        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
-        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        // A plug-in's own window takes the plug-in's size: the window fits it; it is resized from
+        // outside only when the plug-in can be (`userResizable`, SC-328), each size then asked of the
+        // plug-in, and that is decided here, before the window is on the screen (SC-322). A kept place
+        // moves it, never sizes it.
         raw->window->setContentNonOwned(raw->component.getComponent(), true);
-        raw->window->setResizable(false, false);
+        raw->window->setResizable(raw->userResizable, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
             raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
         else if (const auto screens = currentMonitors(); !screens.empty()) {
@@ -280,7 +291,8 @@ bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Compone
 }
 bool FloatingHost::openView(const std::string &key, std::int64_t id,
                             std::unique_ptr<juce::Component> component,
-                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title) {
+                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title,
+                            bool userResizable) {
     auto e = std::make_unique<Entry>();
     e->key = key;
     e->title = std::move(title);
@@ -289,6 +301,7 @@ bool FloatingHost::openView(const std::string &key, std::int64_t id,
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
     e->scaled = scaled;
+    e->userResizable = userResizable;
     e->ownedKind = true;
     return install(std::move(e));
 }
@@ -487,7 +500,9 @@ void FloatingHost::close(const std::string &key) {
         e.component->setBounds(e.dockBounds);
     }
     // The content before its window: a plug-in's editor tears its native view down while the
-    // window that parents it still exists.
+    // window that parents it still exists. Its frame callback goes first: an editor that pumps
+    // messages as it closes lets the window's clock fire, which must not reach the freed editor (SC-321).
+    e.onFrame = nullptr;
     e.zoomed.reset();
     e.owned.reset();
     entries_.erase(it);
@@ -526,7 +541,8 @@ void FloatingHost::closeAll(bool remember) {
             e.component->setBounds(e.dockBounds);
         }
         // The content before its window: a plug-in's editor tears its native view down while
-        // the window that parents it still exists.
+        // the window that parents it still exists; its frame callback first (SC-321).
+        e.onFrame = nullptr;
         e.zoomed.reset();
         e.owned.reset();
         entries_.erase(entries_.begin());

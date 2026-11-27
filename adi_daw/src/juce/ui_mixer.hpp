@@ -16,6 +16,7 @@
 #include <vector>
 namespace adi::engine {
 struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
+struct MidiNoteActivity;
 }
 namespace adi::ui {
 class AdiRootComponent;
@@ -104,8 +105,13 @@ class MixerStrip final : public juce::Component,
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
@@ -179,7 +185,7 @@ class MixerStrip final : public juce::Component,
     // audio mixer: a MIDI track holding no instrument has no volume, pan or sends, as Live's.
     bool isMidi() const noexcept { return midi_; }
     bool hasAudio() const noexcept { return audio_; }
-    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Master, its
+    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Main, its
     // group ("Group"), or No Output.
     const char *outputLabel() const noexcept;
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
@@ -225,6 +231,7 @@ class MixerStrip final : public juce::Component,
     void trackTitleMenu(juce::Point<int> where);
     void selectTitle(std::int64_t track);
     bool cancelTitleDrag();
+    void setDropPreview(bool);
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
     void showAudioInputMenu();
@@ -307,6 +314,7 @@ class MixerStrip final : public juce::Component,
     std::size_t number_ = 0;   // Live's track number, which skips the returns: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
+    bool dropPreview_ = false;
     TrackRecordState record_; // the arm and monitoring last shown (MX-09)
     // A drag heard while it moves (MX-23): begun on the control's drag start, ended on its release.
     bool live_ = false, cancelled_ = false; // cancelled: Esc came before the release, which commits nothing
@@ -328,6 +336,9 @@ class MixerStrip final : public juce::Component,
     // session has a strip for the track. The strips live as long as the session (ADR-0122's
     // rule), and the session as long as the root that holds this panel.
     const engine::StripMeter *meter_ = nullptr;
+    std::uint32_t midiOnsets_ = 0;
+    double midiPulseUntil_ = 0;
+    bool midiLit_ = false;
     // What the meter draws after the window's ballistics: the level, falling once the engine's
     // value drops, and the peak line, held and then falling; the clock readings they need.
     float peak_ = 0, rms_ = 0;
@@ -383,6 +394,7 @@ class MixerPanel final : public juce::Component {
     // `Session::strips().stripFor(track)->meter()`, #381), written by the audio thread and read
     // with relaxed loads, never a tap. Null for a track the session has no strip for yet.
     std::function<const engine::StripMeter *(std::int64_t)> meter;
+    std::function<engine::MidiNoteActivity(std::int64_t)> midiActivity;
     // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
     std::function<double()> clock;
     // Each track's Peak Level (manual 18.1), linear, by track id: the strips are reused for other
@@ -417,10 +429,8 @@ class TrackHeightButton final : public juce::Button {
     TrackHeightButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
-// between Arrangement and Session View, then the track height, under the bar over the track names,
-// which holds the flip and the section selectors (the Arrangement sheet; DF-W25). Flipped, it moves to
-// the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
+// The strip down the Arrangement's outer edge holds the track height control. Flipped, it moves to
+// the window's left edge so the track controls meet the lanes (the director, 28 October 2026).
 class SideStrip final : public juce::Component {
   public:
     SideStrip();
