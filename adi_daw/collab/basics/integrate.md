@@ -1,4 +1,4 @@
-Ready for win: basics/integrate-1 at bd82fa25357c49852a8fe91f11c4ce36347fbed3
+Ready for win: basics/integrate-1 at 9d6bfb23dda4d9fb76e00f4bd5c014878633ec21
 
 # Basics integration
 
@@ -46,6 +46,10 @@ The final Linux Debug build used GCC 14, JUCE, Pd and warnings as errors. All co
 
 Forwarded all 18 fixes into `basics/integrate-2` in merge `190896abbe998299453e738ff1a5dd0aee64687e`. The Cue callback and its fixture kept the Browser preview and Routing capture/render behavior and added the metronome for automation-only recording. The MIDI history regression uses the SC-276 port/channel API and checks both filtered and All inputs. The Linux app and player, six validators, Win’s landing-check tests, all 18 affected headless suites, all 18 display-free window suites, all three acceptance suites and a relocated installer smoke passed.
 
+## Published Edit follow-up
+
+Merged the original Edit tip `1c93e727bc96d24ca71a1f4f0b3140188c9ea117` at `9d6bfb23dda4d9fb76e00f4bd5c014878633ec21`. The two conflicts in the Arrangement lane menu preserve one Delete Automation Range and bring in the owner’s material and track actions. Locate Missing Sample and the peerless menu seam remain available. SC-394 uses the whole arrangement when neither a time selection nor an enabled loop sets the range. The Return and Main Effects refusal tests from review item 16 still pass. The tip contains the analyzer ancestor already on main. All configured Linux targets, five validators, Win’s landing-check tests, the full non-performance run, 18 no-display suites and all three acceptance suites passed.
+
 ## Landing verification
 
 The refreshed Linux Debug build covers all configured JUCE and Pd targets, including `adi_app` and `adi_play`, with warnings as errors. The five validators and Win's landing-check tests passed. All 293 non-performance suites and all three acceptance suites passed with DISPLAY unset. The final portability commit removed an unused Quit callback capture and renamed shadowing variables in the window fixtures. The affected app and UI targets rebuilt, Clang 14 rechecked those three units without diagnostics, and all 18 no-display window suites passed again. The refreshed Warp translation unit also passed under Clang 19 with libc++ 19. Win's native Windows and macOS matrix remains pending.
@@ -56,7 +60,7 @@ The full run caught an obsolete placeholder diagnostic after plug-in recovery an
 
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
-The original Export and the published Edit items through SC-175 are included. The Edit report at `8adf9ee78d8612c6a3d353515e52e0ec7c357352` records SC-421 and SC-415 timing misses on unchanged main in the owner’s environment. Both checks passed here with their existing thresholds. SC-176 is still undergoing the owner's verification.
+The original Export and the published Edit items through SC-175 are included. The Edit report at `8adf9ee78d8612c6a3d353515e52e0ec7c357352` records SC-421 and SC-415 timing misses on unchanged main in the owner’s environment. Both checks passed here with their existing thresholds. The owner later published SC-176 and SC-394, recorded in the follow-up above.
 
 The SC-430 VST3 follow-up at `33d91d39ca9c777da3cbc567d3f4f349005ab1ff` treats a JUCE state wrapper as incomplete when a previously captured or loaded stream is missing. The document keeps the stored chunk, marks it stale and names the device. Previously unobserved streams remain optional because JUCE encodes absence and refusal the same way. The native Linux VST3 fixture passed 201 checks, including reopening, retaining the exact chunk, successful retry and component-only, controller-only and stateless plug-ins. Strict Clang 14 syntax passed on the host and fixtures. All targets, all five validators, Win’s landing-check tests, five focused suites, all 18 no-display window suites, all 293 non-performance suites and all three acceptance suites passed at this head. Native Windows and macOS verification remains with Win.
 ## Follow-up fixes
