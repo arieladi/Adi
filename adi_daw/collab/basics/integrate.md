@@ -1,4 +1,4 @@
-Readiness pending for basics/integrate-1. Linux verification passed at `012cc2f233db6cb973ac84ccad578ccdbe608735` before Win reported the macOS build failure and requested SC-430 and the agent Settings correction.
+Readiness pending while the full landing checks run on `basics/integrate-1` at `379b5d8b210745bfbc93bc725b993d0fe46b697a`.
 
 # Basics integration
 
@@ -14,6 +14,7 @@ Integration starts from `origin/land/basics-1127i` at `ed0f2aa18795792818fd35817
 | `basics/sc-160-import-prompt-opt-out` `beeee700c42def4a1d8c4161ceff77f1baf32b97` | `8948b7c05e7bb2f49fffcbd69304734ef1c7c2c3` | Combined conflicts in project storage and recovery, media/waveforms, parameter capture, Browser, app and window fixtures. Preserved asynchronous Save As with first-save audio relocation, confirmed replacement and safe unnamed cleanup. Retired old waveform readers before closing the SQLite writer. Captured plug-in state before the range clipboard transaction. Kept Browser audio insertion and MIDI loading, relinking, settings availability, stable commands, and both sides’ tests. Fixed three incoming shadows. | Linux GCC 14 Debug JUCE/Pd Werror build including the app. Passed 12 affected project, playback, media and parameter suites and all 18 `adi_ui_` suites with DISPLAY unset after the corrections. |
 | `basics/sc-402-export-sample-rates` `8a3fdca06277bd55e2e35db79f80484d798efaaf` | `9a475d8b62d22d55dcd8654f18d91aed7d3ab641` | Resolved six conflicts across playback, render queue, app and tests. Export can skip missing assets while keeping relink diagnostics and rejecting changed source content. Combined preroll and normalization progress with Warp preparation. New, Open and Quit preserve export confirmation and the independent archive finish path. Enabled the seven settings now consumed by Export. The original session’s branch supplied this work. | Linux GCC 14 Debug JUCE/Pd Werror build including the app. Passed render queue, normalization, NI Stems, clip playback, collect export and all 18 `adi_ui_` suites with DISPLAY unset. |
 | `land/basics-1127i` `956d36454316d2e48635b891a3c679f62f077fd0` | `e0447f13b2f03ce7d1495c171fb3b9087d9c67a7` | Clean merge. Includes `2c59ae005`, which publishes each Warp result once through a release/acquire readiness flag, plus current main and ADR-0261. | All five validators, four affected Warp, clip playback and render suites, and all 18 no-display window suites passed. The old error was reproduced with Clang 19 and libc++ 19 on Linux. The repaired Warp unit passed warnings-as-errors syntax under that toolchain. |
+| `basics/sc-177-track-header-selection` `e359aa9bdfad19538caef57f98334156a0194cce` | `379b5d8b210745bfbc93bc725b993d0fe46b697a` | Resolved two Arrangement conflicts. Kept SC-174 and SC-177 selection context without seeking, and the earlier automation range clipboard and breakpoint values. Updated three peerless tests for the incoming popup-menu seam and added coverage for both automation menus. | Linux Debug JUCE/Pd warnings-as-errors build including the app. All three affected edit/clip suites and all 18 no-display window suites passed. |
 
 ## Landing verification
 
@@ -23,7 +24,7 @@ The full run caught an obsolete placeholder diagnostic after plug-in recovery an
 
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
-The original Export tip is included. The Edit report at `fd5eb152e8fd495fb7fa401844ae488bf9f97514` still lists local implementation branches, so the Edit merge is pending publication.
+The original Export tip and the first two verified Edit items are included. The Edit report at `f586d4f5570c3ab4d9bb5ed93beb5f92f4e650bb` lists SC-175 and later implementation branches as local. Integrate the next verified, published tip when it appears.
 ## Follow-up fixes
 
 | Queue item | Integration head | Change and verification |
