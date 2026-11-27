@@ -11377,6 +11377,20 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};
     const auto freshMenu = bar.metronomeMenu();
     check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");
+    check(menuItem(freshMenu, "Classic").isTicked && menuItem(freshMenu, "Auto").isTicked &&
+              !menuItem(freshMenu, "Enable Only While Recording").isTicked,
+          "SC-256: a new project uses the Classic sound, signature beat, and ordinary playback");
+    for (const char *label : {"Enable Only While Recording", "Wood", "1/8"}) {
+        const auto item = menuItem(bar.metronomeMenu(), label);
+        check(item.isEnabled && item.action, "SC-256: an option in the metronome menu can be invoked");
+        if (item.action)
+            item.action();
+        root.frame();
+        check(menuItem(bar.metronomeMenu(), label).isTicked, "SC-256: the saved option is ticked on reopening the menu");
+    }
+    const auto options = stored().metronomeOptions;
+    check(options.recordingOnly && options.eighthNotes && options.sound == MetronomeSound::Wood,
+          "SC-256: menu selections persist in the project");
     for (const auto &[label, bars] : countIns) {
         const auto item = menuItem(bar.metronomeMenu(), label);
         check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");
@@ -11578,6 +11592,35 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.frame();
     check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");
     check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");
+
+    constexpr auto shortBar = 4 * textproj::kPPQ;
+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;
+    const auto insertMeter = [&](std::int64_t tick, int numerator, int denominator) {
+        OpRequest request;
+        request.opType = "project.insertTimeSignature";
+        request.payload = {{"pos", tick}, {"num", numerator}, {"den", denominator}};
+        return document->ops().submit(std::move(request)).ok;
+    };
+    check(insertMeter(shortBar, 3, 16) && insertMeter(regularBar, 4, 4) && document->synchronise(),
+          "SC-256: author a 3/16 bar between compatible bars");
+    document->prepare(48000, 64);
+    engine::AudioIo clockBlock;
+    clockBlock.frames = 64;
+    const auto menuAt = [&](std::int64_t tick) {
+        check(root.locate(tick), "SC-256: move the timeline to the requested meter");
+        document->process(clockBlock);
+        clockBlock.streamTimeSamples += clockBlock.frames;
+        root.frame();
+        return bar.metronomeMenu();
+    };
+    const auto shortBarMenu = menuAt(shortBar + q / 4);
+    check(!menuItem(shortBarMenu, "1/8").isEnabled && !menuItem(shortBarMenu, "1/8").isTicked &&
+              menuItem(shortBarMenu, "Auto").isTicked && stored().metronomeOptions.eighthNotes,
+          "SC-256: the menu shows effective Auto in 3/16 and retains the saved eighth-note rhythm");
+    const auto regularBarMenu = menuAt(regularBar + q / 4);
+    check(menuItem(regularBarMenu, "1/8").isEnabled && menuItem(regularBarMenu, "1/8").isTicked &&
+              !menuItem(regularBarMenu, "Auto").isTicked,
+          "SC-256: the menu resumes the saved rhythm in 4/4");
     root.afterEdit = nullptr;
     document->release();
 }

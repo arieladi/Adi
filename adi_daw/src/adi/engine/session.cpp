@@ -2171,6 +2171,10 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work
         resetMidiInput();
         if (transport_.countInRemaining() > 0)
             transport_.play(false);
+        countInTail_ = false;
+        clickCaptureEdgeCount_ = 0;
+        clickEnvelope_ = 0;
+        clickWasPlaying_ = false;
     }
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
@@ -2639,28 +2643,35 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         inputMonitors->channels = io.numIn;
     }
     const bool rendered = graph_.process(block);
+    // MIDI can still report Recording after a locate outside the punch. Only
+    // a playing slice inside the punch can contribute to the capture gate.
+    const bool capturing = captureRecording && (!session_.recordingAudioTracks_.empty() ||
+        (transport.playing() && punch == RecordingPunch::Within &&
+         session_.midiInputCapture_->state() == MidiCaptureState::Recording));
     session_.recordingAudioTracks_ = {};
     if (inputMonitors) {
         inputMonitors->input = nullptr;
         inputMonitors->channels = 0;
     }
     if (!rendered) return false;
+    session_.noteClickCapture(capturing);
     session_.mainLoudness_.process(block);
-    struct ClickContext { Session* session; const TimingView* timing; };
-    ClickContext click{&session_, timing};
+    const bool rollingClick = timing && timing->settings.metronome && session_.transport_.playing() &&
+                              (!timing->settings.metronomeOptions.recordingOnly || session_.recordingClickPending());
+    struct ClickContext { Session* session; const TimingView* timing; bool rolling; };
+    ClickContext click{&session_, timing, rollingClick};
     CueMonitor::Click renderClick;
-    if (timing && (session_.transport_.countInRemaining() > 0 || session_.countInTailActive() ||
-                   (timing->settings.metronome && session_.transport_.playing()))) {
+    if (timing && (session_.transport_.countInRemaining() > 0 || session_.countInTailActive() || rollingClick)) {
         renderClick.context = &click;
         renderClick.render = [](void* context, const AudioIo& cueIo) noexcept {
             const auto& call = *static_cast<ClickContext*>(context);
             if (call.session->transport_.countInRemaining() > 0)
                 call.session->renderCountIn(*call.timing, cueIo);
             else
-                call.session->renderMetronome(*call.timing, cueIo);
+                call.session->renderMetronome(*call.timing, cueIo, call.rolling);
         };
     } else if (timing)
-        session_.renderMetronome(*timing, AudioIo{});
+        session_.renderMetronome(*timing, AudioIo{}, false);
     session_.cueMonitor_.process(session_.graph_, block, renderClick);
     session_.transport_.advance(io.frames);
     if (remaining > 0 && session_.transport_.countInRemaining() == 0 &&
@@ -2731,32 +2742,54 @@ bool Session::countInTailActive() const noexcept {
            transport_.revision() == countInTailRevision_ &&
            transport_.streamedFrames() < countInTailLag_;
 }
+namespace {
+double clickDecay(MetronomeSound sound, double rate) noexcept {
+    const double seconds = sound == MetronomeSound::Wood ? 0.002 : sound == MetronomeSound::Bell ? 0.016 : 0.004;
+    return std::exp(-1.0 / (seconds * rate));
+}
+}
+void Session::triggerClick(bool accent, MetronomeSound sound) noexcept {
+    clickPhase_ = 0;
+    clickEnvelope_ = 0.2;
+    switch (sound) {
+    case MetronomeSound::Wood: clickFrequency_ = accent ? 1200 : 690; break;
+    case MetronomeSound::Bell: clickFrequency_ = accent ? 1280 : 960; break;
+    case MetronomeSound::Classic: clickFrequency_ = accent ? 1760 : 880; break;
+    }
+}
+double Session::nextClickSample(double rate, double decay, MetronomeSound sound) noexcept {
+    const double fundamental = std::sin(clickPhase_);
+    double shape = fundamental;
+    if (sound == MetronomeSound::Wood)
+        shape = 0.6 * fundamental - 0.4 * std::sin(3 * clickPhase_);
+    else if (sound == MetronomeSound::Bell)
+        shape = 0.65 * fundamental + 0.25 * std::sin(2 * clickPhase_) + 0.1 * std::sin(3 * clickPhase_);
+    clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / rate;
+    if (clickPhase_ >= 2 * std::numbers::pi)
+        clickPhase_ -= 2 * std::numbers::pi;
+    const double value = shape * clickEnvelope_;
+    clickEnvelope_ *= decay;
+    return value;
+}
 // One count-in frame at `heard` frames after the first heard count-in beat;
 // before that beat it only carries the (silent) envelope on.
-double Session::countInClick(std::int64_t heard, double rate, double decay) noexcept {
+double Session::countInClick(std::int64_t heard, double rate, double decay, MetronomeSound sound) noexcept {
     if (heard >= 0) {
         const auto beat = static_cast<std::int64_t>(
             std::llround(static_cast<double>(heard) / countInBeatSamples_));
         const auto boundary = static_cast<std::int64_t>(
             std::llround(static_cast<double>(beat) * countInBeatSamples_));
-        if (heard == boundary) {
-            clickPhase_ = 0;
-            clickEnvelope_ = 0.2;
-            clickFrequency_ = beat % countInBeatsPerBar_ == 0 ? 1760 : 880;
-        }
+        if (heard == boundary)
+            triggerClick(beat % countInBeatsPerBar_ == 0, sound);
     }
-    const double value = std::sin(clickPhase_) * clickEnvelope_;
-    clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / rate;
-    if (clickPhase_ >= 2 * std::numbers::pi)
-        clickPhase_ -= 2 * std::numbers::pi;
-    clickEnvelope_ *= decay;
-    return value;
+    return nextClickSample(rate, decay, sound);
 }
 void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {
     const auto heard = transport_.countInElapsed() - countInLag(graph_.renderedLatency());
-    const double decay = std::exp(-1.0 / (0.004 * timing.sampleRate));
+    const auto sound = timing.settings.metronomeOptions.sound;
+    const double decay = clickDecay(sound, timing.sampleRate);
     for (std::int32_t frame = 0; frame < io.frames; ++frame) {
-        const double value = countInClick(heard + frame, timing.sampleRate, decay);
+        const double value = countInClick(heard + frame, timing.sampleRate, decay, sound);
         for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
             if (io.out && io.out[channel])
                 io.out[channel][frame] += static_cast<float>(value);
@@ -2765,14 +2798,43 @@ void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcep
         }
     }
 }
-void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {
+void Session::noteClickCapture(bool capturing) noexcept {
+    if (clickCaptureRevision_ != transport_.revision()) {
+        clickCaptureRevision_ = transport_.revision();
+        clickCaptureEdgeCount_ = 0;
+    }
+    const bool wasCapturing = clickCaptureEdgeCount_ && clickCaptureEdges_[clickCaptureEdgeCount_ - 1].capturing;
+    if (capturing == wasCapturing)
+        return;
+    if (clickCaptureEdgeCount_ == clickCaptureEdges_.size()) {
+        // If more than 32 takes fit inside the delay, drop the earliest edge.
+        // An unheard frame older than the retained history is treated as silent.
+        std::move(clickCaptureEdges_.begin() + 1, clickCaptureEdges_.end(), clickCaptureEdges_.begin());
+        --clickCaptureEdgeCount_;
+    }
+    clickCaptureEdges_[clickCaptureEdgeCount_++] = {transport_.streamedFrames(), capturing};
+}
+
+bool Session::recordingClickPending() const noexcept {
+    if (clickCaptureEdgeCount_ == 0)
+        return false;
+    const auto& lastEdge = clickCaptureEdges_[clickCaptureEdgeCount_ - 1];
+    return lastEdge.capturing || transport_.streamedFrames() - lastEdge.streamFrame < graph_.renderedLatency();
+}
+
+void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool rollingClick) noexcept {
     const bool tail=countInTailActive();
-    if((!timing.settings.metronome && !tail) || !transport_.playing()) {
+    if((!rollingClick && !tail) || !transport_.playing()) {
         clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;
     }
     const auto& tempo=timing.tempo;const double rate=timing.sampleRate;
     const auto latency=graph_.renderedLatency();
-    const double decay=std::exp(-1.0/(0.004*rate));
+    const auto options = timing.settings.metronomeOptions;
+    const double decay = clickDecay(options.sound, rate);
+    const auto captureEdges = std::span{clickCaptureEdges_}.first(options.recordingOnly ? clickCaptureEdgeCount_ : 0);
+    auto edge = captureEdges.begin();
+    bool clickAllowed = !options.recordingOnly;
+    const auto streamFrame = transport_.streamedFrames();
     // Heard count-in clock of this callback's first frame (DF-E6 (a)).
     const auto heard=countInTailTotal_-countInTailLag_+transport_.streamedFrames();
     for(std::int32_t i=0;i<io.frames;++i) {
@@ -2780,31 +2842,35 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
         if(sample<0 && tail && heard+i<countInTailTotal_) {
             // The compensated program is not heard yet: the count-in's last
             // clicks and their decay play on, on the count-in grid.
-            const double click=countInClick(heard+i,rate,decay);
+            const double click=countInClick(heard+i,rate,decay,options.sound);
             for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
                 if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
                 if(io.out64 && io.out64[c])io.out64[c][i]+=click;
             }
             clickWasPlaying_=false;continue;
         }
-        if(!timing.settings.metronome){clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;}
-        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}
+        if(!rollingClick){clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;}
+        // Capture changed on the undelayed clock, which can be several
+        // slices ahead of the timeline heard now, even for a complete punch.
+        while (edge != captureEdges.end() && edge->streamFrame - streamFrame <= i - latency)
+            clickAllowed = (edge++)->capturing;
+        if(sample<0 || !clickAllowed){clickWasPlaying_=false;clickEnvelope_=0;continue;}
         const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
         std::int64_t signature=0,numerator=4,denominator=4;
         for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
-        const auto beatTicks=textproj::kWhole/denominator;
-        const auto beat=(tick-signature)/beatTicks;
-        const auto beatTick=signature+beat*beatTicks;
+        const auto signatureBeat = textproj::kWhole / denominator;
+        const auto barTicks = signatureBeat * numerator;
+        const auto barStart = tick - (tick - signature) % barTicks;
+        const auto interval = options.eighthNotes && metronomeEighthNotesFit(barTicks)
+            ? kMetronomeEighthNoteTicks : signatureBeat;
+        const auto beatTick = tick - (tick - barStart) % interval;
         const double boundary=tempo.ticksToSeconds(beatTick)*rate;
         const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
         const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
-        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {
-            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;
-        }
-        const double click=clickEnvelope_*std::sin(clickPhase_);
-        clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;
-        if(clickPhase_>=2*std::numbers::pi)clickPhase_-=2*std::numbers::pi;
-        clickEnvelope_*=decay;if(clickEnvelope_<1e-12)clickEnvelope_=0;
+        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary))
+            triggerClick(beatTick == barStart, options.sound);
+        const double click = nextClickSample(rate, decay, options.sound);
+        if(clickEnvelope_<1e-12)clickEnvelope_=0;
         // Default Cue pair until the separate Cue Out routing (N23) is built.
         for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
             if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
@@ -2826,6 +2892,9 @@ void Session::release() {
     if (transport_.countInRemaining() > 0)
         transport_.play(false);
     countInTail_ = false;
+    clickCaptureEdgeCount_ = 0;
+    clickEnvelope_ = 0;
+    clickWasPlaying_ = false;
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released

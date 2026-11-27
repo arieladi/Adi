@@ -4059,6 +4059,26 @@ bool AdiRootComponent::toggleMetronome() {
     const auto current = view_.current();
     return setMetronome(!(current && current->transport.metronome));
 }
+bool AdiRootComponent::toggleMetronomeWhileRecording() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The metronome needs an open project.");
+    return submitTransport(::adi::ui::setMetronomeOptions({{"recordingOnly", !current->transport.metronomeOptions.recordingOnly}}));
+}
+bool AdiRootComponent::setMetronomeEighthNotes(bool eighthNotes) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The metronome needs an open project.");
+    return current->transport.metronomeOptions.eighthNotes == eighthNotes ||
+           submitTransport(::adi::ui::setMetronomeOptions({{"eighthNotes", eighthNotes}}));
+}
+bool AdiRootComponent::setMetronomeSound(MetronomeSound sound) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The metronome needs an open project.");
+    return current->transport.metronomeOptions.sound == sound ||
+           submitTransport(::adi::ui::setMetronomeOptions({{"sound", static_cast<int>(sound)}}));
+}
 bool AdiRootComponent::setCountIn(int bars) {
     const auto current = view_.current();
     if (!current)

@@ -837,6 +837,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.
     bool setMetronome(bool on);
     bool toggleMetronome();
+    bool toggleMetronomeWhileRecording();
+    bool setMetronomeEighthNotes(bool eighthNotes);
+    bool setMetronomeSound(MetronomeSound sound);
     bool setCountIn(int bars);
     bool togglePunch(bool start);
     // Live's Arrangement Loop (manual 6.6), `transport.setLoop` outside undo and saved with the

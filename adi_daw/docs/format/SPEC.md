@@ -1192,6 +1192,9 @@ storage; WIN-02 owns the window's placement and display-change behavior.
 Reserved `session_state` keys for saved performance controls:
 `transport.metronome` is a JSON boolean; `transport.loop` is JSON
 `{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+`transport.metronomeOptions` is JSON with Boolean `recordingOnly` and
+`eighthNotes` fields, both off by default. Its integer `sound` selects
+Classic (0, default), Wood (1), or Bell (2).
 `transport.countIn` is a JSON integer in `0,1,2,4` bars (`0` is None).
 `transport.punch` is JSON `{"in": bool, "out": bool}`. Punch-In excludes audio
 before the loop brace. Punch-Out ends a linear recording at the other edge.

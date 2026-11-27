@@ -607,6 +607,15 @@ private:
     std::int64_t clickLastSample_=-2,clickLastBeat_=-1;
     bool clickWasPlaying_=false;
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
+    struct ClickCaptureEdge {
+        std::int64_t streamFrame;
+        bool capturing;
+    };
+    // Keep recent capture edges on the undelayed stream clock. The audio
+    // callback reads them back on the same compensated clock as the click.
+    std::array<ClickCaptureEdge, 64> clickCaptureEdges_{};
+    std::size_t clickCaptureEdgeCount_ = 0;
+    std::uint64_t clickCaptureRevision_ = 0;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
     std::int32_t countInBars_ = 0, countInDivisionsPerBeat_ = 4;
@@ -619,9 +628,13 @@ private:
     std::int64_t countInTailTotal_ = 0, countInTailLag_ = 0;
     [[nodiscard]] std::int64_t countInLag(std::int32_t latency) const noexcept;
     [[nodiscard]] bool countInTailActive() const noexcept;
-    double countInClick(std::int64_t heard, double rate, double decay) noexcept;
+    void triggerClick(bool accent, MetronomeSound sound) noexcept;
+    double nextClickSample(double rate, double decay, MetronomeSound sound) noexcept;
+    double countInClick(std::int64_t heard, double rate, double decay, MetronomeSound sound) noexcept;
     void renderCountIn(const TimingView &, const AudioIo &) noexcept;
-    void renderMetronome(const TimingView&,const AudioIo&) noexcept;
+    void noteClickCapture(bool capturing) noexcept;
+    [[nodiscard]] bool recordingClickPending() const noexcept;
+    void renderMetronome(const TimingView&, const AudioIo&, bool rollingClick) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
     std::shared_ptr<ClipPlayback> clips_;
