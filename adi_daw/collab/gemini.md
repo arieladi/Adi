@@ -4,6 +4,42 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-27 — `basics/integrate-1` Round 1 (`df420228` — FAIL under Clang 14 ASan+UBSan: real stack-buffer-overflow / ODR layout mismatch in `adi_ui_shell_tests`)
+
+### Finding (TOP — real stack-buffer-overflow in Release / RelWithDebInfo `adi_ui_shell_tests`)
+
+- **`src/juce/ui_shell.cmake:103` + `src/juce/smexoscope/widgets/WaveDisplay.cpp:31:18` — AddressSanitizer `stack-buffer-overflow` (1-byte write past stack variable `juce::Random rng`) in `env -u DISPLAY adi_ui_shell_tests` (Clang 14.0.6 + libstdc++ 12, `RelWithDebInfo`, `-O1 -g1 -fsanitize=address,undefined`):**
+  - **Root cause (ODR / ABI layout mismatch between `libadi_ui_shell.a` and `adi_ui_shell_tests` in any `-DNDEBUG` build — Release and RelWithDebInfo on Linux, macOS, and Windows):**
+    - `src/juce/ui_shell.cmake:103` sets `target_compile_definitions(adi_ui_shell_tests PRIVATE JUCE_LOG_ASSERTIONS=1)` ONLY on `adi_ui_shell_tests`, NOT on the static library `adi_ui_shell` that it links (`src/juce/ui_shell.cmake:99`).
+    - Under `-DNDEBUG=1`, `adi_ui_shell` (`WaveDisplay.cpp.o`, etc.) compiles with `JUCE_ASSERTIONS_ENABLED_OR_LOGGED == 0`, so `sizeof(juce::Random) == 8` (`int64 seed;` only — `third_party/JUCE/modules/juce_core/maths/juce_Random.h:145–149`).
+    - Meanwhile `adi_ui_shell_tests` compiles its own `juce_core.cpp.o` with `-DJUCE_LOG_ASSERTIONS=1` (`JUCE_ASSERTIONS_ENABLED_OR_LOGGED == 1`), so `juce::Random::Random()` expects `sizeof(juce::Random) == 16` and writes `bool isSystemRandom = false;` at offset `+8` (`juce_Random.h:148:10`).
+    - When `test_ui_shell.cpp:21296` (`SC-112` Info box analyser menu -> `ClassicScope` -> `ClassicScopePanel` -> `WaveDisplay::WaveDisplay` at `src/juce/smexoscope/widgets/WaveDisplay.cpp:31:18`) constructs `juce::Random rng;` (8 bytes on the stack) and calls `juce::Random::Random()` resolved from `adi_ui_shell_tests`'s `juce_core.cpp.o`, it writes 1 byte past `rng` on the stack (`Address ... is located in stack of thread T0 at offset 40 in frame ... [32, 40) 'rng' (line 31)`).
+    - Hidden in Debug builds because `-DDEBUG=1` makes `JUCE_ASSERTIONS_ENABLED_OR_LOGGED == 1` in both targets; live stack corruption in every Release / RelWithDebInfo build of `adi_ui_shell_tests` (and affects any other JUCE type whose layout depends on `JUCE_ASSERTIONS_ENABLED_OR_LOGGED`).
+  - **Owner:** integrator (`basics/integrate-1` `df420228`; build-definition mismatch in `src/juce/ui_shell.cmake:103` exposed by `look-chain` `SC-112` `test_ui_shell.cpp:21296` / `WaveDisplay.cpp:31`; also present on `main` / `land/basics-1127i`).
+  - **Fix direction:** do not mix `JUCE_LOG_ASSERTIONS=1` and `JUCE_LOG_ASSERTIONS=0` across `libadi_ui_shell.a` and `adi_ui_shell_tests` (e.g., compile a separate test library or compile the `adi_ui_shell` sources directly into `adi_ui_shell_tests` with consistent JUCE defines, or drop `JUCE_LOG_ASSERTIONS=1` from non-Debug `adi_ui_shell_tests` and guard the `jassertfalse` probe accordingly).
+  - **Smallest repro:**
+    ```sh
+    cmake -S adi_daw -B build-asan-ui -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_C_COMPILER=clang-14 -DCMAKE_CXX_COMPILER=clang++-14 \
+      -DCMAKE_CXX_FLAGS="-O1 -g1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+      -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+    cmake --build build-asan-ui --target adi_ui_shell_tests
+    env -u DISPLAY ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+      ctest --test-dir build-asan-ui -R '^adi_ui_shell_tests$' --output-on-failure
+    ```
+
+### Round 1 Table (`basics/integrate-1` `df420228`)
+
+| Branch | SHA | Compiler / Tool | Warnings | JUCE Targets (`adi_app`, `adi_play`, VST3/CLAP, `adi_ui_*`) | Window Suites (`env -u DISPLAY ctest -R '^adi_ui_'`) | JUCE VST3 / Play Suites | 5 Validators | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| `basics/integrate-1` | `df420228` | GCC 12.4.0 (`-DADI_WERROR=ON`, Debug) | 0 | **PASS** (all built incl. `ADI` / `adi_app`, `adi_play`, `adi_vst3_probe`, `adi_vst3_key_tests`, `adi_play_render_tests`, `adi_acceptance_wts01_vst3`) | **PASS** (18/18, 143.63 s; `adi_ui_shell_tests` 77.54 s, `adi_ui_appearance_settings_tests` 0.38 s, `adi_ui_shared_spectrum_tests` 2.13 s, `adi_ui_mix_functions_tests` 7.36 s, `adi_ui_eq_pages_tests` 2.46 s, `adi_ui_quit_export_tests` 0.72 s) | **PASS** (4/4, 51.02 s: `adi_vst3_key_tests` 2.29 s, `adi_vst3_scanner_tests` 1.10 s, `adi_play_render_tests` 42.90 s, `adi_acceptance_wts01_vst3` 4.70 s) | **PASS** (5/5: `validate_ci`, `validate_ops` 214 ops, `validate_parity` 165 built, `validate_pd` 4 patches, `validate_schema` 69 tables / 260 ADRs) | — |
+| `basics/integrate-1` | `df420228` | Clang 14.0.6 + libstdc++ 12 ASan + UBSan (`RelWithDebInfo`, `-DADI_WERROR=ON`) | 0 (all ADI JUCE sources incl. `ui_arrangement.cpp`, `ui_shell.cpp`, `test_ui_shell.cpp` clean — confirms `3ba18bdc` fixed both Clang 14 errors) | `adi_ui_shell_tests` built clean | **FAIL** (`adi_ui_shell_tests` aborted at 17.32 s: ASan `stack-buffer-overflow` at `WaveDisplay.cpp:31:18` via `src/juce/ui_shell.cmake:103` ODR mismatch) | — | — | **FAIL** |
+
+(`origin/basics/integrate-1` advanced to `379b5d8b` during this run; moving immediately to `379b5d8b` for full GCC 12 + Clang 14 + JUCE + headless + acceptance + ASan verification.)
+
+---
+
 ## 2026-11-26 — `land/*` Round 5 (`land/basics-1127f` `3ca5a798` — FAIL on GCC 12 `-Werror=range-loop-construct` + 2 Clang 14 JUCE errors)
 
 Verified `origin/land/basics-1127f` at `3ca5a798` (merging `land/basics-1127e` `4535b93a` + `basics/plugins-chain` `5f0e646b` + `basics/recording-chain` `c2cc49bd` + `basics/look-chain` `c5f204b8`) under **GCC 12.4.0 `-DADI_WERROR=ON`**.
