@@ -54,8 +54,15 @@ beside ADI. His words are quoted where they decide something.
 14. **SC-438: an empty group, and a song with every track deleted.** ADI allows both where Live refuses,
     and he likes that. Prove it causes no trouble: save, reopen, export, routing, freeze, the agent's
     read. Fix what you find.
+15. **DF-W64: a double-click on the empty area under the tracks adds a track,** his wish of 28 November
+    (ADR-0265 d5, an addition: Live does nothing there). The first time it asks which kind, a MIDI track,
+    an audio track or an FX channel, and it remembers the answer, as ADI's other remembered choices do; a
+    setting changes it later.
 
 ## What he said works
 
 A file dropped in plays, its waveform and playhead run smoothly, the meters read right, Play and Stop are
 exact, the tracks and groups look right, resizing a lane by a drag is live. Do not change these.
+
+A note on Loop, from his second look: the Loop switch plays the brace where it lies and Ctrl/Cmd+L moves
+the brace to what is selected. That is Live's way and it is right; only SC-445 is wrong there.
