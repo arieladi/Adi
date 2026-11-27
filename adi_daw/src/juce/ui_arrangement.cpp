@@ -3564,7 +3564,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (foot == rows.size())
         dropArea(y, getHeight());
-    // The insert marker, a thin blue line in the selected track.
+    // The insert marker has a one-pixel stem and a flag at the top of its lane.
     if (geo.selection.start == geo.selection.end && geo.selection.marked && !hasAutomationSelection()) {
         int top = -geo.scrollY;
         for (const auto row : rows) {
@@ -3576,8 +3576,19 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 const int bottom = row.position < foot && foot < rows.size()
                                        ? std::min(top + geo.heightFor(id), footY) - 2
                                        : top + geo.heightFor(id) - 2;
-                g.setColour(look::handleChosen);
-                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
+                if (bottom > top) {
+                    const auto x = static_cast<int>(geo.x(geo.selection.insert));
+                    g.setColour(look::handleChosen);
+                    g.fillRect(x, top, 1, bottom - top);
+                    const auto y = static_cast<float>(top);
+                    constexpr float flagHalfWidth = 3.5f;
+                    constexpr int flagHeight = 5;
+                    const float centre = static_cast<float>(x) + .5f;
+                    juce::Path flag;
+                    flag.addTriangle(centre - flagHalfWidth, y, centre + flagHalfWidth, y,
+                                     centre, y + static_cast<float>(std::min(flagHeight, bottom - top)));
+                    g.fillPath(flag);
+                }
             }
             top += geo.rowHeight(*row.track);
         }
@@ -5824,6 +5835,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     moving_ = resizing_ = 0;
     copying_ = false;
+    draggingTimeRange_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
@@ -6215,9 +6227,13 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    // JUCE's held-drag timer can dispatch at the press point before any motion.
+    if (e.mouseWasDraggedSinceMouseDown() && e.position != e.mouseDownPosition)
+        draggingTimeRange_ = true;
     if (clipTimeBounds_) {
-        if (e.mouseWasDraggedSinceMouseDown())
-            view.edgeScroll(e.x, e.y, true, false);
+        if (!draggingTimeRange_)
+            return;
+        view.edgeScroll(e.x, e.y, true, false);
         auto &geo = view.geometry;
         const auto raw = geo.tick(e.x);
         const auto snapped = geo.grid.snap ? geo.snap(raw, raw >= geo.selection.start) : raw;
@@ -6304,12 +6320,13 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
+        if (!draggingTimeRange_)
+            return;
         auto &sel = view.geometry.selection;
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
         const bool envelopeSelection = hasAutomationSelection();
-        if (e.mouseWasDraggedSinceMouseDown())
-            view.edgeScroll(e.x, e.y, true);
+        view.edgeScroll(e.x, e.y, true);
         // A time selection covers whole grid cells while snapping (§6.10).
         const auto at = view.geometry.tick(e.x);
         sel.end = view.snaps(e.mods) ? view.geometry.snap(at, at >= sel.start) : at;

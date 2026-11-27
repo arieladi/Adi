@@ -454,6 +454,7 @@ class ArrangementCanvas final : public juce::Component,
                                                            bool allowAdd) const;
     void automationContextMenu(const juce::MouseEvent &);
     bool draggingTakeSelection_ = false;
+    bool draggingTimeRange_ = false;
     std::int64_t takeAnchor_ = 0;
     void simplifyAutomationEnvelope(const AutomationValueAddress &, std::int64_t begin,
                                     std::int64_t end, std::uint64_t generation);

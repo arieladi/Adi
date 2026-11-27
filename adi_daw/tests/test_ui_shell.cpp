@@ -5427,13 +5427,29 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     const juce::Point<float> body(static_cast<float>(geo.x(bar / 2)) + 1.f,
                                  static_cast<float>(laneTop(root, 2) + 20));
     canvas.mouseDown(pressAt(canvas, body));
+    canvas.mouseDrag(pressAt(canvas, body));
+    canvas.mouseDrag(dragAt(canvas, body, body));
     canvas.mouseUp(pressAt(canvas, body));
     check(sel.track == 2 && sel.marked && sel.insert == bar / 2 && sel.start == sel.end && sel.clip == 0,
           "SC-175: a plain clip body click places only the insert marker");
+    const auto markerX = static_cast<int>(geo.x(sel.insert)), markerTop = laneTop(root, sel.track);
+    check(root.selectionText().startsWith("Insert Mark") &&
+              renderedPixel(canvas, {markerX + 1, markerTop + 1}) == look::handleChosen &&
+              renderedPixel(canvas, {markerX, markerTop + 10}) == look::handleChosen &&
+              renderedPixel(canvas, {markerX + 1, markerTop + 10}) != look::handleChosen,
+          "SC-439: a body click shows an insert flag and a one-pixel stem, with no time selection");
     const auto clipsBeforeDelete = clipsOf(2);
     canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
     root.frame();
     check(clipsOf(2) == clipsBeforeDelete, "SC-175: Delete after a body click does not remove the clip");
+    const auto emptyTick = 2 * bar + bar / 4;
+    const juce::Point<float> empty(static_cast<float>(geo.x(emptyTick)) + 1.f, body.y);
+    canvas.mouseDown(pressAt(canvas, empty));
+    canvas.mouseDrag(dragAt(canvas, empty, empty));
+    canvas.mouseUp(pressAt(canvas, empty));
+    check(sel.track == 2 && sel.insert == emptyTick && sel.start == sel.end && sel.clip == 0 &&
+              root.selectionText().startsWith("Insert Mark"),
+          "SC-439: a click past the clip also sets an insert marker without marking a grid cell");
     const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
         const auto y = static_cast<float>(laneTop(root, track) + 20);
         const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
@@ -13749,9 +13765,13 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
     // From bar 1 on track 1, dragged to bar 3 on track 3: bars 1 to 3 on tracks 1, 2 and 3. A forward
     // selection snaps up to the next grid line, so the mouse lets go just short of bar 3's.
-    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
-    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
-    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    const auto dragTimeAcrossTracks = [&] {
+        const juce::Point<float> start{x(0) + 1, lane(1)}, end{x(2 * bar) - 1, lane(3)};
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, end));
+        canvas.mouseUp(dragAt(canvas, start, end));
+    };
+    dragTimeAcrossTracks();
     root.frame();
     check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start == 0 &&
               geo.selection.end == 2 * bar && geo.inSelection(root.reader(), 2) && !geo.inSelection(root.reader(), 4),
@@ -13800,9 +13820,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     check(geo.selection.track == 1 && geo.selection.toTrack == 2 && geo.selection.end == bar,
           "Shift+click extends or shortens the selection, across tracks too");
     // Delete on bars 1 to 3 of tracks 1 to 3: their clips go, as one step.
-    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
-    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
-    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    dragTimeAcrossTracks();
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
     root.frame();
     check(root.reader().findTrack(1)->clips.empty() && root.reader().findTrack(3)->clips.empty() &&
