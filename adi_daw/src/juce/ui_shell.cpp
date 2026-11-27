@@ -1469,10 +1469,9 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
             safe->pluginHost->requestClose(key);
         }
     };
-    if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false, title))
+    if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false, title, resizable))
         return fail("The plug-in window could not open.");
     pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
-    pluginHost->setUserResizable(key, resizable);
     // A window opened on purpose shows, and with it the others Show/Hide had hidden.
     if (!pluginWindowsShown_) {
         pluginWindowsShown_ = true;

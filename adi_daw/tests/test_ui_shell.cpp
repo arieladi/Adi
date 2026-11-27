@@ -12115,6 +12115,8 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     check(root.togglePluginWindow(3, false) && host.contains(key3), "a resizable plug-in's window opens");
     if (auto *window = dynamic_cast<juce::ResizableWindow *>(host.window(key3))) {
         check(window->isResizable(), "and it can be resized from its edges (SC-328)");
+        check(window->getContentComponentBorder().getLeft() >= 6 && window->getContentComponentBorder().getBottom() >= 6,
+              "with an edge wide enough to take outside the plug-in's own view (the desk: one pixel was none)");
         const auto border = window->getContentComponentBorder();
         window->setSize(border.getLeftAndRight() + 480, border.getTopAndBottom() + 360);
         check(host.content(key3) != nullptr && host.content(key3)->getWidth() == 480 &&
