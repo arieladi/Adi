@@ -54,8 +54,8 @@ fs::path environmentFolder(const char* name) {
     return fs::path(value);
 #else
     if (const auto* value = std::getenv(name)) return fs::path(value);
-#endif
     return {};
+#endif
 }
 
 bool insideFolder(const fs::path& path, const fs::path& configuredRoot) {
