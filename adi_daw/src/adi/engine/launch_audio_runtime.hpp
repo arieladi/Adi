@@ -92,6 +92,7 @@ private:
         std::int64_t track, clip, sourceFrame, elapsed, fadeInAtExit;
         float velocity;
         std::uint64_t media;
+        LaunchWarpPosition warp;
     };
     Launcher launcher_;
     LaunchClipGainEdits gains_;
@@ -143,6 +144,7 @@ private:
         std::int64_t sourceFrame;
         float velocity;
         std::int64_t fadeElapsed;
+        LaunchWarpPosition warp;
     };
     struct TrackRanges {
         std::vector<Range> items;

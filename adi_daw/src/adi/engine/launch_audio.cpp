@@ -5,12 +5,16 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/launch_paged_audio.hpp"
+#include "adi/engine/warp_clip_player.hpp"
 #include "adi/textproj.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace adi::engine {
@@ -27,6 +31,43 @@ double launchFadeGain(std::int64_t elapsed, std::int64_t length) noexcept {
 LaunchAudioClip::LaunchAudioClip(std::int64_t clip, std::int64_t firstTick, std::uint32_t rate,
                                  std::uint16_t channels, std::vector<float> samples)
     : clip_(clip), firstTick_(firstTick), rate_(rate), channels_(channels), samples_(std::move(samples)) {}
+
+struct LaunchAudioClip::Warp {
+    explicit Warp(LaunchWarpMedia&& media)
+        : clock(std::move(media.clock)),
+          player(*clock, std::move(media.plan), std::move(media.markers), media.sourceRate,
+                 media.sourceChannels, 0, static_cast<double>(media.endTick), 0, 0),
+          channels(media.sourceChannels), channelMode(media.channelMode), gain(media.gain) {}
+
+    std::shared_ptr<const WarpArrangementClock> clock;
+    WarpClipPlayer player;
+    std::uint16_t channels;
+    int channelMode;
+    float gain;
+};
+
+LaunchAudioClip LaunchAudioClip::fromWarp(std::int64_t clip, std::uint16_t channels,
+                                         std::uint64_t referenceFrames, LaunchWarpMedia media,
+                                         std::vector<float> source) {
+    if (audio::onAudioThread) throw std::logic_error("prepare Session Warp off the callback");
+    if (clip <= 0 || !media.clock || !referenceFrames || channels == 0 || channels > 64 ||
+        media.sourceChannels == 0 || media.sourceChannels > 64 || media.channelMode < 0 || media.channelMode > 3 ||
+        !std::isfinite(media.gain) || media.endTick <= 0 || source.size() % media.sourceChannels != 0 ||
+        source.size() / media.sourceChannels != media.plan.sourceFrames ||
+        media.plan.sourceFrames > std::numeric_limits<std::uint32_t>::max())
+        throw std::invalid_argument("invalid resident Session Warp source");
+    LaunchAudioClip result(clip, 0, media.plan.outputRate, channels, std::move(source));
+    auto warp = std::make_shared<Warp>(std::move(media));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!warp->player.prepare()) {
+        if (std::chrono::steady_clock::now() >= until)
+            throw std::runtime_error("Session Beats onset analysis timed out");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    result.warp_ = std::move(warp);
+    result.renderedFrames_ = referenceFrames;
+    return result;
+}
 
 LaunchAudioClip LaunchAudioClip::read(std::int64_t clip, std::int64_t firstTick,
                                      const std::filesystem::path& pcm, std::uint32_t driverRate,
@@ -80,7 +121,7 @@ LaunchAudioClip LaunchAudioClip::fromPages(std::int64_t clip, std::uint32_t rate
         throw std::invalid_argument("invalid paged Session clip audio");
     LaunchAudioClip result(clip, 0, rate, channels, {});
     result.pages_ = std::move(pages);
-    result.pagedFrames_ = frames;
+    result.renderedFrames_ = frames;
     return result;
 }
 
@@ -96,12 +137,72 @@ std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const 
 }
 
 float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const noexcept {
-    if (pages_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
+    if (pages_ || warp_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
         return 0;
     const auto source = channels_ == 1 ? 0 : channel;
     if (source >= channels_)
         return 0;
     return samples_.data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
+}
+
+bool LaunchAudioClip::renderWarp(const AudioIo& io, std::int32_t offset, std::int32_t count,
+                                 LaunchWarpPosition position, double gain, std::int64_t fadeElapsed,
+                                 bool tail) const noexcept {
+    if (!warp_) return false;
+    const auto& warp = *warp_;
+    const auto placement = warp.player.launchAt(static_cast<double>(position.anchorTick),
+                                                static_cast<double>(position.anchorSourceTick));
+    struct Input { const float* data; std::uint64_t frames; std::uint16_t channels; } input{
+        samples_.data(), samples_.size()/warp.channels, warp.channels};
+    const audio::WarpStreamInput reader{&input, [](void* state, std::int64_t frame, std::uint16_t ch) noexcept {
+        const auto& pcm = *static_cast<const Input*>(state);
+        if (frame < 0 || static_cast<std::uint64_t>(frame) >= pcm.frames) return 0.0f;
+        return pcm.data[static_cast<std::size_t>(frame)*pcm.channels + ch];
+    }, [](void* state, std::int64_t frame) noexcept -> audio::WarpStreamPcm {
+        const auto& pcm = *static_cast<const Input*>(state);
+        if (frame < 0 || static_cast<std::uint64_t>(frame) >= pcm.frames) return {};
+        return {pcm.data + static_cast<std::size_t>(frame)*pcm.channels,
+                static_cast<std::uint32_t>(pcm.frames-static_cast<std::uint64_t>(frame))};
+    }};
+    const auto fadeFrames = fadeElapsed < 0 ? 0 : launchFadeFrames(rate_);
+    std::array<float,64> source{};
+    for (std::int32_t frame = 0; frame < count; ++frame) {
+        const auto at = position.frame + std::min<std::int64_t>(frame,
+            std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, position.frame));
+        if (placement) {
+            const auto selected = tail ? std::min(at, placement.endFrame-1) : at;
+            (void)warp.player.renderFrame(placement, selected, reader, std::span(source.data(),warp.channels));
+        }
+        double frameGain = gain;
+        if (fadeFrames > 0 && fadeElapsed < fadeFrames && frame < fadeFrames-fadeElapsed) {
+            const auto shape = launchFadeGain(fadeElapsed+frame, fadeFrames);
+            frameGain *= tail ? 1.0-shape : shape;
+        }
+        double folded = 0.0;
+        if (warp.channelMode == 3) {
+            for (std::uint16_t ch = 0; ch < warp.channels; ++ch) folded += source[ch];
+            folded /= warp.channels;
+        }
+        for (std::int32_t ch = 0; ch < io.numOut; ++ch) {
+            float sample = 0;
+            if (warp.channelMode == 3) sample = static_cast<float>(folded);
+            else if (warp.channelMode == 1 || warp.channels == 1) sample = source[0];
+            else if (warp.channelMode == 2) sample = source[1];
+            else if (ch < warp.channels) sample = source[static_cast<std::size_t>(ch)];
+            const auto value = sample*warp.gain;
+            if (io.out && io.out[ch]) {
+                auto& dest = io.out[ch][offset+frame];
+                const auto mixed = value*static_cast<float>(frameGain);
+                dest = tail ? dest + mixed : mixed;
+            }
+            if (io.out64 && io.out64[ch]) {
+                auto& dest = io.out64[ch][offset+frame];
+                const auto mixed = static_cast<double>(value)*frameGain;
+                dest = tail ? dest + mixed : mixed;
+            }
+        }
+    }
+    return true;
 }
 
 std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
@@ -110,10 +211,11 @@ std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
 
 void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip* clip, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames) noexcept {
+                       std::int64_t fadeElapsedFrames, LaunchWarpPosition warp) noexcept {
     if (offset < 0 || offset >= io.frames || frames <= 0)
         return;
     const auto count = std::min(frames, io.frames - offset);
+    if (clip && clip->renderWarp(io,offset,count,warp,velocity,fadeElapsedFrames)) return;
     const auto fadeLength = clip && fadeElapsedFrames >= 0 ? launchFadeFrames(clip->rate()) : 0;
     auto* pages = clip ? clip->pageReader() : nullptr;
     const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count);
@@ -140,7 +242,8 @@ void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t fram
 
 void mixLaunchAudioTail(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                         const LaunchAudioClip& clip, std::int64_t firstFrame, float velocity,
-                        std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop) noexcept {
+                        std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop,
+                        LaunchWarpPosition warp) noexcept {
     const auto fadeLength = launchFadeFrames(clip.rate());
     if (offset < 0 || offset >= io.frames || frames <= 0 || clip.frames() == 0 ||
         fadeElapsedFrames < 0 || fadeElapsedFrames >= fadeLength)
@@ -151,6 +254,7 @@ void mixLaunchAudioTail(const AudioIo& io, std::int32_t offset, std::int32_t fra
     auto stopGain = static_cast<double>(velocity);
     if (fadeInFramesAtStop >= 0 && fadeInFramesAtStop < fadeLength)
         stopGain *= launchFadeGain(fadeInFramesAtStop, fadeLength);
+    if (clip.renderWarp(io,offset,static_cast<std::int32_t>(count),warp,stopGain,fadeElapsedFrames,true)) return;
     auto* pages = clip.pageReader();
     const auto pageFrames = start >= lastSource - (count - 1) ? lastSource - start + 1 : count;
     const auto pageReady = pages && pages->read(clip.clip(), start, static_cast<std::int32_t>(pageFrames), false);

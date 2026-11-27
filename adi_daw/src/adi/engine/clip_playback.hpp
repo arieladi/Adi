@@ -35,8 +35,10 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint64_t residentBudget = kSessionResidentPcmBudget);
 class ClipPlayback {
 public:
+    enum class WarpPlayback { Streaming, Prepared };
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
-                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false);
+                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false,
+                 WarpPlayback = WarpPlayback::Streaming);
     ~ClipPlayback();
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;

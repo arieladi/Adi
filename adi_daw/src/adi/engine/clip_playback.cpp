@@ -757,7 +757,7 @@ struct ClipPlayback::Impl {
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
                            double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder,
-                           bool synchronousReads)
+                           bool synchronousReads, WarpPlayback warpPlayback)
     :impl_(std::make_shared<Impl>(transport,maxFrames,channels,synchronousReads)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
@@ -776,10 +776,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
             const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
-            const bool nativeWarp = warpMode && (a->formantShift == 0) &&
+            const bool nativeWarp = warpPlayback == WarpPlayback::Streaming && warpMode && (a->formantShift == 0) &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
                  (*warpMode == audio::WarpMode::RePitch && a->transposeSemis == 0));
-            const bool r3Mode = warpMode &&
+            const bool r3Mode = warpPlayback == WarpPlayback::Streaming && warpMode &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
             if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
@@ -1078,6 +1078,63 @@ static void appendLaunchSource(ClipProject& project, const ClipProject& original
     model.clips.push_back(std::move(source));
 }
 
+static LaunchAudioClip prepareStreamingLaunchClip(const ClipProject& project, const rows::Clip& clip,
+    const rows::AudioClip& audioRow, audio::WarpMode mode, const TempoMap& reference,
+    const std::shared_ptr<const WarpArrangementClock>& clock, std::int64_t endTick, std::uint32_t rate,
+    std::uint16_t channels, std::uint64_t byteBudget) {
+    if (audioRow.reverse || clip.aliasOf || audioRow.srcStartFrames < 0 || audioRow.srcLenFrames <= 0 ||
+        !audioRow.warpMarkers || audioRow.channelMode < 0 || audioRow.channelMode > 3 ||
+        !std::isfinite(clip.gainDb) || std::abs(clip.gainDb) > 120)
+        throw std::runtime_error("invalid native Session Warp source");
+    const auto media = std::ranges::find(project.rows.media, audioRow.mediaId, &rows::Media::id);
+    if (media == project.rows.media.end() || media->embedded)
+        throw std::runtime_error("Session Warp source media is missing or embedded");
+    fs::path source;
+    if (media->relPath) source=project.folder/utf8Path(*media->relPath);
+    else if (const auto hint=project.hints.find(media->id); hint!=project.hints.end()) source=hint->second;
+    else throw std::runtime_error("Session Warp source has no media path");
+
+    WavSource input(source,true);
+    const auto count=static_cast<std::uint64_t>(audioRow.srcLenFrames);
+    const auto start=static_cast<std::uint64_t>(audioRow.srcStartFrames);
+    const auto nativeChannels=input.wav.channels();
+    if (!nativeChannels || nativeChannels > 64 || start > input.wav.frames() || count > input.wav.frames()-start)
+        throw std::runtime_error("Session Warp window is outside its source");
+    if (count > byteBudget / sizeof(float) / nativeChannels)
+        throw std::length_error("Session Warp source exceeds its resident PCM budget");
+    auto markers=audio::readWarpMap(*audioRow.warpMarkers,count);
+    if (!markers) throw std::runtime_error("Session Warp marker map is not readable or canonical");
+    if (mode == audio::WarpMode::RePitch) {
+        constexpr double minimumStride=1.0/256.0, maximumStride=256.0;
+        for (std::size_t i=1; i<markers.markers.size(); ++i) {
+            const auto& a=markers.markers[i-1];
+            const auto& b=markers.markers[i];
+            const auto sourcePerTick=static_cast<double>(b.sourceFrame-a.sourceFrame)/static_cast<double>(b.tick-a.tick);
+            if (sourcePerTick*clock->minTicksPerFrame() < minimumStride ||
+                sourcePerTick*clock->maxTicksPerFrame() > maximumStride)
+                throw std::runtime_error("Session Re-Pitch Warp rate exceeds the streaming resampler range");
+        }
+    }
+    const auto referenceFrames=samples(reference.ticksToSeconds(endTick),rate);
+    if (referenceFrames <= 0) throw std::runtime_error("Session Warp source is shorter than one frame");
+
+    std::vector<float> pcm(static_cast<std::size_t>(count)*nativeChannels);
+    for (std::uint64_t first=0; first<count;) {
+        const auto frames=static_cast<std::uint32_t>(std::min<std::uint64_t>(4096,count-first));
+        input.read(start+first,pcm.data()+static_cast<std::size_t>(first)*nativeChannels,frames);
+        first+=frames;
+    }
+    audio::WarpRenderPlan plan;
+    plan.source=std::move(source);
+    plan.sourceStart=start;plan.sourceFrames=count;plan.outputRate=rate;
+    plan.mode=mode;
+    plan.transposeSemis=audioRow.transposeSemis;
+    LaunchWarpMedia prepared{clock,std::move(plan),std::move(markers.markers),input.wav.sampleRate(),
+        nativeChannels,static_cast<int>(audioRow.channelMode),static_cast<float>(std::pow(10.0,clip.gainDb/20.0)),endTick};
+    return LaunchAudioClip::fromWarp(clip.id,channels,static_cast<std::uint64_t>(referenceFrames),
+                                     std::move(prepared),std::move(pcm));
+}
+
 static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const rows::Clip& authored,
                                        std::int64_t endTick, double bpm, std::uint32_t rate,
                                        std::uint16_t channels, std::uint64_t byteBudget) {
@@ -1092,7 +1149,8 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
         throw std::length_error("Session clip exceeds the prepared audio budget");
     constexpr std::int32_t blockSize = 512;
     Transport transport;
-    ClipPlayback playback(project, transport, rate, channels, blockSize, nullptr, true);
+    ClipPlayback playback(project, transport, rate, channels, blockSize, nullptr, true,
+                          ClipPlayback::WarpPlayback::Prepared);
     if (!playback.problems().empty()) throw std::runtime_error(playback.problems().front());
     const auto sources = playback.sourcesFor(authored.trackId);
     if (sources.size() != 1 || !playback.waitForWarp()) throw std::runtime_error("Session clip audio is unavailable");
@@ -1128,6 +1186,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     const auto& data = *original.session;
     const auto bpm = clock.bpmAt(0);
     const bool constantTempo = std::ranges::all_of(clock.events, [bpm](const TempoEvent& e) { return e.bpm == bpm; });
+    std::shared_ptr<const WarpArrangementClock> streamingClock;
     TempoMap fixedClock;
     fixedClock.events.push_back({0, bpm, 0});
     std::vector<std::int64_t> tracks, midiTracks, scenes;
@@ -1180,8 +1239,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         }
         const auto clip = std::ranges::find(original.rows.slotClips, *cell.clipId, &rows::Clip::id);
         if (clip == original.rows.slotClips.end()) continue; // the persisted reader has already validated this
-        const auto audio = std::ranges::find(original.rows.audioClips, *cell.clipId, &rows::AudioClip::clipId);
-        const bool warped = audio != original.rows.audioClips.end() && audio->warpEnabled;
+        const auto audioRow = std::ranges::find(original.rows.audioClips, *cell.clipId, &rows::AudioClip::clipId);
+        const bool warped = audioRow != original.rows.audioClips.end() && audioRow->warpEnabled;
         const auto setting = data.settings(clip->id).value_or(launch::ClipLaunchSettings{});
         slot.clip = clip->id;
         slot.mode = setting.mode;
@@ -1211,8 +1270,20 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 throw std::runtime_error("invalid Session start or end marker");
             launchSlots.push_back(slot);
             if (clip->kind == "audio" && !clip->muted) {
-                if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
                 const auto end = std::max(slot.endTick, slot.loopEndTick);
+                const auto mode = warped ? audio::parseWarpMode(audioRow->warpMode) : std::nullopt;
+                const bool native = mode && audioRow->formantShift == 0 &&
+                    (*mode == audio::WarpMode::Beats || *mode == audio::WarpMode::Texture ||
+                     (*mode == audio::WarpMode::RePitch && audioRow->transposeSemis == 0));
+                if (!constantTempo && setting.ramMode && native) {
+                    if (!streamingClock) streamingClock = std::make_shared<WarpArrangementClock>(clock,rate);
+                    auto audioClip=prepareStreamingLaunchClip(original,*clip,*audioRow,*mode,fixedClock,
+                                                              streamingClock,end,rate,channels,remaining);
+                    remaining-=audioClip.bytes();
+                    pcm.push_back(std::move(audioClip));
+                    continue;
+                }
+                if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
                 if (setting.ramMode) {
                     auto clipAudio = prepareLaunchClipAudio(original, *clip, end, bpm, rate, channels, remaining);
                     remaining -= clipAudio.bytes();

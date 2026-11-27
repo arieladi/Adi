@@ -335,8 +335,10 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
     const auto source = tail.sourceFrame + std::min(tail.elapsed,
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, tail.sourceFrame));
     const auto length = static_cast<std::int32_t>(std::min<std::int64_t>(frames, duration - tail.elapsed));
+    auto warp = tail.warp;
+    warp.frame += std::min(tail.elapsed, std::numeric_limits<std::int64_t>::max()-warp.frame);
     ranges.tails.data()[ranges.tailCount++] = {
-        {offset, length, pcm, source, tail.velocity, tail.elapsed}, tail.fadeInAtExit};
+        {offset, length, pcm, source, tail.velocity, tail.elapsed, warp}, tail.fadeInAtExit};
     tail.elapsed += length;
     return tail.elapsed < duration;
 }
@@ -351,7 +353,7 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, anchor));
     LaunchAudioDriver::Tail tail{edge.track, edge.oldClip, source, 0,
         edge.oldFramesSinceStart, edge.oldVelocity * driver.gains_.currentMultiplier(edge.track, edge.oldRun),
-        media.pcmRevision()};
+        media.pcmRevision(), {edge.sample,edge.oldClockAnchorTick,edge.oldClockAnchorSourceTick}};
     if (addTail(tail, offset, frames - offset) && driver.tailCount_ < driver.tails_.size())
         driver.tails_.data()[driver.tailCount_++] = tail;
 }
@@ -377,16 +379,18 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
+    LaunchWarpPosition warp{block.sample+section.offset,section.clockAnchorTick,section.clockAnchorSourceTick};
     if (gain.beforeFrames > 0)
         ranges.items.data()[ranges.size++] = {base + section.offset, gain.beforeFrames, pcm, source,
-            section.velocity * gain.before, fade};
+            section.velocity * gain.before, fade, warp};
     if (gain.beforeFrames < section.frames && ranges.size < ranges.items.size()) {
         const auto advanced = source + std::min<std::int64_t>(gain.beforeFrames,
             std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
         const auto elapsed = fade < 0 ? -1 : fade + std::min<std::int64_t>(gain.beforeFrames,
             std::numeric_limits<std::int64_t>::max() - fade);
+        warp.frame += gain.beforeFrames;
         ranges.items.data()[ranges.size++] = {base + section.offset + gain.beforeFrames,
-            section.frames - gain.beforeFrames, pcm, advanced, section.velocity * gain.after, elapsed};
+            section.frames - gain.beforeFrames, pcm, advanced, section.velocity * gain.after, elapsed, warp};
     }
 }
 
@@ -434,8 +438,10 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node) const n
         const auto available = range->sourceFrame <= std::numeric_limits<std::int64_t>::max() - advance;
         const auto fadeElapsed = range->fadeElapsed < 0 ? -1 : range->fadeElapsed +
             std::min<std::int64_t>(advance, std::numeric_limits<std::int64_t>::max() - range->fadeElapsed);
+        auto warp = range->warp;
+        warp.frame += std::min<std::int64_t>(advance,std::numeric_limits<std::int64_t>::max()-warp.frame);
         renderLaunchAudio(io, start, finish - start, available ? range->pcm : nullptr,
-                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed);
+                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed, warp);
     }
     for (std::size_t index = 0; index < ranges.tailCount; ++index) {
         const auto& tail = ranges.tails.data()[index];
@@ -445,8 +451,10 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node) const n
         const auto advance = start - tail.range.offset;
         const auto source = tail.range.sourceFrame + std::min<std::int64_t>(advance,
             std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, tail.range.sourceFrame));
+        auto warp = tail.range.warp;
+        warp.frame += std::min<std::int64_t>(advance,std::numeric_limits<std::int64_t>::max()-warp.frame);
         mixLaunchAudioTail(io, start, finish - start, *tail.range.pcm, source,
-                           tail.range.velocity, tail.range.fadeElapsed + advance, tail.fadeInAtExit);
+                           tail.range.velocity, tail.range.fadeElapsed + advance, tail.fadeInAtExit, warp);
     }
 }
 

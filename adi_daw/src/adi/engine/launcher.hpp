@@ -70,6 +70,8 @@ struct LaunchSection {
     // The anchor restarts at launches and wraps, independent of block size.
     std::int64_t sourceAnchorTick = 0, framesSinceSourceAnchor = 0;
     bool regionIsLiveEdit = false;
+    // Musical anchor of the current run or lap, independent of callback size.
+    std::int64_t clockAnchorTick = 0, clockAnchorSourceTick = 0;
 };
 
 struct LaunchTransition {
@@ -84,6 +86,7 @@ struct LaunchTransition {
     std::int64_t oldFramesSinceStart = 0;
     float oldVelocity = 1.0f;
     bool oldFade = false;
+    std::int64_t oldClockAnchorTick = 0, oldClockAnchorSourceTick = 0;
 };
 
 struct LaunchFollowRequest {

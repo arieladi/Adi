@@ -12,7 +12,8 @@ namespace adi::engine {
 LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
                                   std::span<const LaunchPagedSource> sources, std::uint32_t sampleRate,
                                   std::int32_t channels, std::int32_t maxFrames)
-    : pages_(std::move(project), clock_, sampleRate, channels, maxFrames), channels_(channels),
+    : pages_(std::move(project), clock_, sampleRate, channels, maxFrames, nullptr, false,
+             ClipPlayback::WarpPlayback::Prepared), channels_(channels),
       blockFrames_(maxFrames), sampleRate_(sampleRate) {
     if (channels < 1 || channels > 64 || maxFrames < 1 || maxFrames > 4096)
         throw std::invalid_argument("invalid Session paged playback format");

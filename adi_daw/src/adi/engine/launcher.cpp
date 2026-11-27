@@ -192,7 +192,7 @@ void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSin
             sink.transition(sink.context, {track.id, track.run.clip, 0, 0, block.sample,
                 atSample(block,block.sample), 0, false, track.run.serial, 0, 0, 1.0f, false,
                 track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,
-                track.run.frames,track.run.velocity,track.run.fade});
+                track.run.frames,track.run.velocity,track.run.fade,track.run.anchorTick,track.run.anchorSourceTick});
         }
     };
     for (const auto id : view.tracks) {
@@ -480,7 +480,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     const LaunchTransition edge{track.id,previous.clip,track.run.clip,track.run.sourceTick,
         block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
         track.run.velocity,track.run.fade,previous.pcmAnchorTick,previous.frames-previous.pcmAnchorFrame,
-        previous.frames,previous.velocity,previous.fade};
+        previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -580,7 +580,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (sink.section) sink.section(sink.context, {track.id,track.run.clip,track.run.sourceTick,
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
-                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,track.run.region.has_value()});
+                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,track.run.region.has_value(),
+                track.run.anchorTick,track.run.anchorSourceTick});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
