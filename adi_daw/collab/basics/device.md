@@ -10,7 +10,7 @@ director has written that the desk is free.
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
 | SC-379 | `basics/device-chain` 12a065e7 | The driver's mode is kept: Settings take "WASAPI Exclusive" and "WASAPI Low Latency" beside "WASAPI", and the audio page writes the mode JUCE opened, so Exclusive comes back as Exclusive. | `test_settings` testDriverModeKept. At the desk: Windows Audio (Exclusive Mode) chosen on the Audio page, written as "WASAPI Exclusive", and shown again after a restart | pushed; desk passed |
-| SC-378 (with SC-28) | `basics/device-chain` 0ba3a5d0 | An unplugged interface keeps the user's choice: ADI plays through the system device and says so, and opens the chosen one again when it is back. A pure rule, `deviceChange` (Keep, Hold, Return). | `test_settings` testDeviceUnpluggedAndBack. At the desk: no USB interface here; disabling the VB-Cable device stood in badly (Windows will not disable a device in use, it waits for a reboot), and its flag was put back | pushed; desk owed (a real USB device) |
+| SC-378 (with SC-28) | `basics/device-chain` 0ba3a5d0 | An unplugged interface keeps the user's choice: ADI plays through the system device and says so, and opens the chosen one again when it is back. A pure rule, `deviceChange` (Keep, Hold, Return). | `test_settings` testDeviceUnpluggedAndBack. At the desk: no USB interface here; disabling the VB-Cable device stood in badly (Windows will not disable a device in use, it waits for a reboot), and its flag was put back | pushed; desk test deferred (the director, 27 Nov): no USB device at this desk |
 | SC-376 | `basics/device-chain` c67e376a, a1980b33 | M4A and AAC play on Windows 10: the encoder probe asks for 192 kbit/s (the only rates the Windows 10 encoder takes are 96 to 192), an MP4 one tick short of its samples is accepted, and the packets go to Media Foundation with no priming edit (Windows 10 played the priming, 1,024 frames late) while ADI trims it. | `test_aac_import` against FFmpeg's independent decodes, `test_mp4_aac`, both on this Windows 10 | pushed |
 | SC-377 | `basics/device-chain` 230111de, e8218e5e, 1c88590d | An hour-long file dropped in is read off the window on a worker, with progress by name ("Reading … (i of n)"), Esc cancelling; the worker opens the project read-write as the material import does. | `test_ui_shell` plainDropReadsOffTheWindow | pushed |
 | SC-405 | `basics/device-chain` cbafaaaa | Every switch in the MIDI ports list does something, or is greyed with a tooltip saying why. | `test_ui_shell` MIDI ports checks | pushed |
@@ -30,9 +30,17 @@ director has written that the desk is free.
 ## For the director
 - The landing check ran at the chain's head (every item in it), not once per item: a full build here is
   several hours at 2 jobs, and the items touch none of the JUCE modules that take that time.
-- At the desk, still owed: SC-378 needs a real interface unplugged and plugged back (a USB headset or
-  interface on this PC); SC-380 needs an ASIO driver whose panel opens (ASIO4ALL does not start here, and
-  Voicemeeter's shows nothing unless Voicemeeter runs).
+- **Deferred, the director's word of 27 November ("skip"):** SC-378's desk test needs a real interface
+  unplugged while ADI plays through it and plugged back, and this desk has none. It is owed for later, on
+  the ADI studio PC with its interface, or by the Mac session on a Mac with a USB headset or interface, if
+  that is sooner (the rule, `deviceChange`, is the same on both; the device-change messages are the
+  platform's). The test: choose the interface as output, unplug it while playing (the Status Bar says it
+  is not connected and what ADI plays through; the setting keeps the interface), plug it back (ADI opens
+  it again and says it is back). **For win, a register row:** DF-E (next free) | SC-378's unplug and
+  plug-back at a real desk | the studio PC or the Mac session | before SC-378 is closed in the sanity check.
+- SC-380's panel is owed the same way: an ASIO driver whose own panel opens (the studio PC's interface).
+  ASIO4ALL does not start here, and Voicemeeter's shows nothing unless Voicemeeter runs. A Mac cannot do
+  this one: Core Audio drivers have no panel of their own.
 - The VB-Cable device was disabled for the SC-378 try (with your approval); Windows held the disable for
   a reboot, and its flag was set back, so it stays enabled.
 - The landing check at the chain's head (1c88590d): the five validators, the build of every suite,
