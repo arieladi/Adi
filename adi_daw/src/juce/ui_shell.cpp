@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
 #include "adi/automation_splice_store.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
 #include "adi/track_image.hpp"
 #include "adi/media/media_ops.hpp"
 #include "ui_controls.hpp"
@@ -25,8 +26,10 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <sqlite3.h>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -4386,6 +4389,59 @@ bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, const Automatio
         return fail("That automation lane is no longer visible.");
     auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, target), point);
     return !ops.empty() && submitEdits(std::move(ops));
+}
+
+bool AdiRootComponent::submitAutomationMove(std::vector<OpRequest> requests,
+                                          std::span<const TrackEnvelope> envelopes) {
+    if (requests.empty())
+        return false;
+    auto &store = submitter_.store();
+    auto &db = store.db();
+    try {
+        {
+            std::optional<SQLite::Transaction> read;
+            if (sqlite3_get_autocommit(db.getHandle()) != 0)
+                read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+            const auto head = OpJournal(store).headSeq();
+            OpTransactionInputs inputs;
+            for (const auto &envelope : envelopes) {
+                const auto &lane = *envelope.lane;
+                const auto &data = *envelope.data;
+                const Payload laneKey{{"id", lane.id}};
+                const Payload dataKey{{"lane_id", lane.id}, {"clip_id", nullptr}};
+                auto laneRows = adi::detail::captureGuardRows(store, "automation_lanes", laneKey, 2);
+                auto dataRows = adi::detail::captureGuardRows(store, "automation_data", dataKey, 2);
+                if (laneRows.size() != 1 || dataRows.size() != 1)
+                    return fail("That automation envelope changed during the drag.");
+                const auto &row = laneRows.front();
+                const auto &stored = dataRows.front();
+                const auto &bytes = stored.at("data").get_binary();
+                if (row.at("owner_kind") != lane.ownerKind || row.at("owner_id") != lane.ownerId ||
+                    row.at("param_ref") != lane.paramRef || row.at("time_base") != lane.timeBase ||
+                    row.at("min_value") != (lane.minValue ? Payload(*lane.minValue) : Payload(nullptr)) ||
+                    row.at("max_value") != (lane.maxValue ? Payload(*lane.maxValue) : Payload(nullptr)) ||
+                    stored.at("id") != data.id ||
+                    !std::equal(bytes.begin(), bytes.end(), data.encoded.begin(), data.encoded.end(),
+                                [](std::uint8_t storedByte, std::byte source) {
+                                    return storedByte == std::to_integer<std::uint8_t>(source);
+                                }))
+                    return fail("That automation envelope changed during the drag.");
+                inputs.rowGuards.push_back({"automation_lanes", laneKey, std::move(laneRows.front())});
+                inputs.rowSetGuards.push_back({"automation_data", dataKey, std::move(dataRows)});
+                const Payload rangesKey{{"data_id", data.id}};
+                auto ranges = adi::detail::captureGuardRows(store, "automation_segment_ranges", rangesKey);
+                inputs.rowSetGuards.push_back({"automation_segment_ranges", rangesKey, std::move(ranges)});
+            }
+            requests.front().selBefore = session_.advisory();
+            const auto captured = CapturedTransactionAccess::seal(appliedSource(store), head, requests,
+                                                                   std::move(inputs));
+            for (auto &request : requests)
+                request.capturedTransaction = captured;
+        }
+        return edited(submitter_.submit(std::move(requests)));
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
 }
 
 bool AdiRootComponent::replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,

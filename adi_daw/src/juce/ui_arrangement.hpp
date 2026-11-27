@@ -450,18 +450,24 @@ class ArrangementCanvas final : public juce::Component,
         std::int64_t track = 0, lane = 0, data = 0;
         AutomationTarget target;
         std::vector<AutomationDragPoint> points;
+        std::vector<std::int64_t> pointTimes;
+        std::vector<std::uint64_t> overwritten;
     };
     struct AutomationDrag {
+        enum class Axis { Undecided, Horizontal, Vertical };
         std::vector<AutomationDragLane> lanes;
-        juce::Point<float> origin;
-        std::int64_t anchorTick = 0, timeDelta = 0;
-        double valueDelta = 0;
+        juce::Point<float> origin, lastPointer, pendingShift;
+        std::int64_t anchorTick = 0, anchorData = 0, timeDelta = 0;
+        double horizontalTravel = 0, valueDelta = 0;
+        Axis shiftAxis = Axis::Undecided;
         float height = 1;
         std::uint64_t generation = 0;
         bool verticalOnly = false, movesSelection = false, cancelled = false;
         std::optional<std::pair<std::int64_t, std::int64_t>> spliceBounds;
     };
+    bool beginSingleAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
     bool beginSelectedAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
+    void updateOverwrittenAutomationPoints(AutomationDrag &, const engine::Snapshot &);
     struct AutomationSegmentHit {
         LaneBody body;
         AutomationPick left, right;

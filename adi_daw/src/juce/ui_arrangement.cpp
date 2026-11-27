@@ -21,6 +21,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <span>
@@ -3372,6 +3373,8 @@ struct AutomationCurveProjection {
     }
 };
 constexpr float kPointHit = 5.f;
+constexpr float kAutomationDragSlop = 4.f;
+constexpr float kAutomationNeighborSnap = 4.f;
 constexpr float kCurveTensionDragPixels = 60.f;
 constexpr float kAutomationCurveHitPixels = 5.f;
 juce::String automationValueText(const AutomationTarget &target,double value,bool forEditing=false) {
@@ -3491,6 +3494,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                 const auto &p = env.data->points[index];
                 const bool dragged = pointDrag_ && pointDrag_->track == body.track->id &&
                                      pointDrag_->target == target && pointDrag_->point == p.id;
+                if (dragLane && std::binary_search(dragLane->overwritten.begin(), dragLane->overwritten.end(), p.id))
+                    continue;
                 const bool moved = dragLane && !drag->spliceBounds &&
                     std::ranges::binary_search(dragLane->points, p.id, {}, &AutomationDragPoint::id);
                 const auto time = moved ? p.time + drag->timeDelta : dragged ? pointTick_ : p.time;
@@ -3966,8 +3971,38 @@ void ArrangementCanvas::selectAutomationSpan(std::int64_t begin, std::int64_t en
     automationSelection_ = sel;
     view.changed();
 }
+bool ArrangementCanvas::beginSingleAutomationDrag(const AutomationPick &pick, const juce::MouseEvent &e) {
+    if (!automationPickIsCurrent(pick))
+        return false;
+    const auto current = view.root.current();
+    const auto envelope = envelopeOf(*current, pick.target);
+    if (!editableEnvelope(envelope))
+        return false;
+    const auto &points = envelope.data->points;
+    const auto point = std::find_if(points.begin(), points.end(), [&](const auto &entry) {
+        return entry.id == pick.point && entry.time == pointTick_ && entry.value == pointValue_;
+    });
+    const auto bodies = laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &candidate) {
+        return candidate.track->id == pick.track && candidate.target == pick.target;
+    });
+    if (point == points.end() || body == bodies.end())
+        return false;
+
+    AutomationDrag drag;
+    drag.origin = drag.lastPointer = e.mouseDownPosition;
+    drag.anchorTick = point->time;
+    drag.anchorData = pick.data;
+    drag.height = std::max(1.f, body->scaleBottom - body->top);
+    drag.generation = view.root.committedGeneration();
+    drag.lanes.push_back({pick.track, pick.lane, pick.data, pick.target,
+        {{point->id, point->time, point->value, point->curve, point->tension}}, {point->time}, {}});
+    automationDrag_ = std::move(drag);
+    return true;
+}
+
 bool ArrangementCanvas::beginSelectedAutomationDrag(const AutomationPick &pick, const juce::MouseEvent &e) {
-    if (!hasAutomationSelection() || e.mods.isShiftDown() || e.mods.isCommandDown())
+    if (!hasAutomationSelection() || e.mods.isCommandDown())
         return false;
 
     const auto &selection = view.geometry.selection;
@@ -3983,7 +4018,7 @@ bool ArrangementCanvas::beginSelectedAutomationDrag(const AutomationPick &pick, 
         return false;
 
     AutomationDrag drag;
-    drag.origin = e.position;
+    drag.origin = drag.lastPointer = e.position;
     drag.height = std::max(1.f, body->scaleBottom - body->top);
     drag.generation = view.root.committedGeneration();
     drag.movesSelection = true;
@@ -3994,15 +4029,17 @@ bool ArrangementCanvas::beginSelectedAutomationDrag(const AutomationPick &pick, 
         const auto envelope = envelopeOf(*current, target);
         if (!envelope.data || !envelope.lane || !editableEnvelope(envelope))
             continue;
-        AutomationDragLane lane{track, envelope.lane->id, envelope.data->id, target, {}};
+        AutomationDragLane lane{track, envelope.lane->id, envelope.data->id, target, {}, {}, {}};
         const auto &points = envelope.data->points;
         const auto first = std::lower_bound(points.begin(), points.end(), begin,
                                             [](const auto &point, auto tick) { return point.time < tick; });
         for (auto point = first; point != points.end() && point->time < end; ++point) {
             lane.points.push_back({point->id, point->time, point->value, point->curve, point->tension});
+            lane.pointTimes.push_back(point->time);
             if (track == pick.track && target == pick.target && lane.lane == pick.lane && lane.data == pick.data &&
                 point->id == pick.point) {
                 drag.anchorTick = point->time;
+                drag.anchorData = pick.data;
                 capturedAnchor = true;
             }
         }
@@ -4034,12 +4071,12 @@ bool ArrangementCanvas::beginAutomationSegmentDrag(const juce::MouseEvent &e) {
     const auto range = automationRange(body.target);
 
     AutomationDrag drag;
-    drag.origin = at;
+    drag.origin = drag.lastPointer = at;
     drag.anchorTick = geometry.tick(at.x);
     drag.height = std::max(1.f, body.scaleBottom - body.top);
     drag.generation = view.root.committedGeneration();
     drag.verticalOnly = true;
-    AutomationDragLane lane{body.track->id, envelope.lane->id, envelope.data->id, body.target, {}};
+    AutomationDragLane lane{body.track->id, envelope.lane->id, envelope.data->id, body.target, {}, {}, {}};
     const auto [begin, end] = std::minmax(geometry.selection.start, geometry.selection.end);
     if (hasAutomationSelection() && automationLaneSelected(body) &&
         begin <= drag.anchorTick && drag.anchorTick < end) {
@@ -4085,10 +4122,70 @@ bool ArrangementCanvas::beginAutomationSegmentDrag(const juce::MouseEvent &e) {
     return true;
 }
 
+void ArrangementCanvas::updateOverwrittenAutomationPoints(AutomationDrag &drag, const engine::Snapshot &current) {
+    const auto delta = drag.timeDelta;
+    for (auto &lane : drag.lanes) {
+        lane.overwritten.clear();
+        const auto envelope = envelopeOf(current, lane.target);
+        if (delta == 0 || lane.pointTimes.empty() || !envelope.data)
+            continue;
+        const auto low = lane.pointTimes.front() + std::min<std::int64_t>(0, delta);
+        const auto high = lane.pointTimes.back() + std::max<std::int64_t>(0, delta);
+        const auto &points = envelope.data->points;
+        auto point = std::lower_bound(points.begin(), points.end(), low, [](const auto &entry, auto tick) {
+            return entry.time < tick;
+        });
+        for (; point != points.end() && point->time <= high; ++point) {
+            if (std::ranges::binary_search(lane.points, point->id, {}, &AutomationDragPoint::id))
+                continue;
+            const auto &times = lane.pointTimes;
+            // Erase only stationary points swept by at least one moved point,
+            // including its destination but excluding its original tick.
+            bool crossed;
+            if (delta > 0) {
+                const auto after = std::lower_bound(times.begin(), times.end(), point->time);
+                crossed = after != times.begin() && point->time - *std::prev(after) <= delta;
+            } else {
+                const auto next = std::upper_bound(times.begin(), times.end(), point->time);
+                crossed = next != times.end() && *next - point->time <= -delta;
+            }
+            if (crossed)
+                lane.overwritten.push_back(point->id);
+        }
+        std::sort(lane.overwritten.begin(), lane.overwritten.end());
+    }
+}
+
 void ArrangementCanvas::updateAutomationDrag(const juce::MouseEvent &e) {
     auto &drag = *automationDrag_;
-    if (drag.cancelled || !view.root.automationMode())
+    const auto current = view.root.current();
+    if (drag.cancelled || !current || !view.root.automationMode() ||
+        drag.generation != view.root.committedGeneration())
         return;
+
+    auto step = e.position - drag.lastPointer;
+    drag.lastPointer = e.position;
+    if (step == juce::Point<float>{})
+        return;
+    if (!e.mods.isShiftDown()) {
+        drag.shiftAxis = AutomationDrag::Axis::Undecided;
+        drag.pendingShift = {};
+    } else if (!drag.verticalOnly) {
+        if (drag.shiftAxis == AutomationDrag::Axis::Undecided) {
+            drag.pendingShift += step;
+            if (drag.pendingShift.getDistanceFromOrigin() < kAutomationDragSlop)
+                return;
+            step = drag.pendingShift;
+            drag.pendingShift = {};
+            drag.shiftAxis = std::abs(step.x) >= std::abs(step.y)
+                ? AutomationDrag::Axis::Horizontal : AutomationDrag::Axis::Vertical;
+        }
+        if (drag.shiftAxis == AutomationDrag::Axis::Horizontal)
+            step.y = 0;
+        else
+            step.x = 0;
+    }
+
     const auto &geo = view.geometry;
     constexpr auto limit = std::numeric_limits<std::int64_t>::max();
     auto minimumTime = -limit, maximumTime = limit;
@@ -4110,14 +4207,54 @@ void ArrangementCanvas::updateAutomationDrag(const juce::MouseEvent &e) {
         minimumTime = std::max(minimumTime, -std::min(geo.selection.start, geo.selection.end));
         maximumTime = std::min(maximumTime, limit - std::max(geo.selection.start, geo.selection.end));
     }
-    if (!drag.verticalOnly) {
-        const auto travelled = geo.tick(e.position.x) - geo.tick(drag.origin.x);
+    if (!drag.verticalOnly && step.x != 0) {
+        drag.horizontalTravel += step.x;
+        const auto travelled = geo.tick(drag.origin.x + drag.horizontalTravel) - geo.tick(drag.origin.x);
         const auto wanted = drag.anchorTick + std::clamp(travelled, -drag.anchorTick, limit - drag.anchorTick);
-        const auto tick = travelled != 0 && view.snaps(e.mods) ? geo.snap(wanted, false) : wanted;
-        drag.timeDelta = std::clamp(tick - drag.anchorTick, minimumTime, maximumTime);
+        auto tick = wanted;
+        if (travelled != 0 && view.snaps(e.mods)) {
+            tick = geo.snap(wanted, false);
+            const auto anchor = std::find_if(drag.lanes.begin(), drag.lanes.end(), [&](const auto &lane) {
+                return lane.data == drag.anchorData;
+            });
+            if (anchor != drag.lanes.end()) {
+                const auto envelope = envelopeOf(*current, anchor->target);
+                if (envelope.data) {
+                    const auto x = geo.x(wanted);
+                    auto best = static_cast<double>(kAutomationNeighborSnap);
+                    const auto &points = envelope.data->points;
+                    auto point = std::lower_bound(points.begin(), points.end(), geo.tick(x - best),
+                        [](const auto &entry, auto at) { return entry.time < at; });
+                    for (; point != points.end() && geo.x(point->time) <= x + kAutomationNeighborSnap; ++point) {
+                        const auto distance = std::abs(geo.x(point->time) - x);
+                        if (distance < best &&
+                            !std::ranges::binary_search(anchor->points, point->id, {}, &AutomationDragPoint::id)) {
+                            best = distance;
+                            tick = point->time;
+                        }
+                    }
+                }
+            }
+        }
+        const auto timeDelta = std::clamp(tick - drag.anchorTick, minimumTime, maximumTime);
+        if (timeDelta != drag.timeDelta) {
+            drag.timeDelta = timeDelta;
+            updateOverwrittenAutomationPoints(drag, *current);
+        }
     }
-    const auto vertical = static_cast<double>(drag.origin.y - e.position.y) / std::max(1.f, drag.height);
-    drag.valueDelta = std::clamp(vertical, minimumValue, maximumValue);
+    // Use the same fine resolution as Draw Mode. Integrating pointer steps
+    // keeps the value steady when Shift is pressed or released mid-drag.
+    const auto vertical = -static_cast<double>(step.y) / std::max(1.f, drag.height);
+    drag.valueDelta = std::clamp(drag.valueDelta + vertical * (e.mods.isShiftDown() ? .1 : 1.),
+                                 minimumValue, maximumValue);
+    if (!drag.movesSelection && !drag.verticalOnly) {
+        const auto &lane = drag.lanes.front();
+        const auto envelope = envelopeOf(*current, lane.target);
+        if (envelope.lane)
+            showAutomationValue(lane.target,
+                automationDragValue(*envelope.lane, lane.target, lane.points.front().value, drag.valueDelta),
+                e.position);
+    }
     repaint();
 }
 
@@ -4127,6 +4264,7 @@ bool ArrangementCanvas::commitAutomationDrag(const AutomationDrag &drag) {
         drag.generation != view.root.committedGeneration() || (drag.timeDelta == 0 && drag.valueDelta == 0))
         return false;
     std::vector<OpRequest> requests;
+    std::vector<TrackEnvelope> envelopes;
     for (const auto &lane : drag.lanes) {
         const auto envelope = envelopeOf(*current, lane.target);
         if (!view.root.automationTargetShown(lane.track, lane.target) || !editableEnvelope(envelope) ||
@@ -4153,12 +4291,20 @@ bool ArrangementCanvas::commitAutomationDrag(const AutomationDrag &drag) {
                 points.push_back({{"id", point.id}, {"time", point.time + drag.timeDelta}, {"value", value}});
         }
         if (!points.empty()) {
-            auto request = automation::movePoints(lane.data, lane.lane, nullptr, std::move(points));
-            request.label = drag.verticalOnly ? "Move Automation Segment" : "Move Automation Breakpoints";
-            requests.push_back(std::move(request));
+            envelopes.push_back(envelope);
+            const char *label = drag.verticalOnly ? "Move Automation Segment"
+                               : drag.movesSelection ? "Move Automation Breakpoints" : "Move Automation Point";
+            if (!lane.overwritten.empty()) {
+                auto remove = automation::deletePoints(lane.data, lane.lane, nullptr, Payload(lane.overwritten));
+                remove.label = label;
+                requests.push_back(std::move(remove));
+            }
+            auto move = automation::movePoints(lane.data, lane.lane, nullptr, std::move(points));
+            move.label = label;
+            requests.push_back(std::move(move));
         }
     }
-    if (requests.empty() || !view.root.submitEdits(std::move(requests)))
+    if (requests.empty() || !view.root.submitAutomationMove(std::move(requests), envelopes))
         return false;
     if (drag.movesSelection && drag.timeDelta != 0) {
         const auto &selection = view.geometry.selection;
@@ -5013,8 +5159,16 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (pointDrag_) {
-        // A breakpoint follows the mouse: in time on the grid as the view snaps, in value up and down,
-        // inside its lane; nothing is written until the mouse lets go.
+        if (!pointAdded_) {
+            if (e.position.getDistanceFrom(e.mouseDownPosition) >= kAutomationDragSlop &&
+                beginSingleAutomationDrag(*pointDrag_, e)) {
+                pointDrag_.reset();
+                updateAutomationDrag(e);
+            }
+            return;
+        }
+        // A point created on the line keeps the line's add-and-drag gesture.
+        // An existing point uses the same preview and commit as a group drag.
         for (const auto &body : laneBodies())
             if (body.track->id == pointDrag_->track && body.target == pointDrag_->target) {
                 const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
@@ -5177,9 +5331,11 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         return;
     }
     if (automationDrag_) {
+        const bool dragged = e.mouseWasDraggedSinceMouseDown();
+        if (dragged)
+            updateAutomationDrag(e);
         auto drag = std::move(*automationDrag_);
         automationDrag_.reset();
-        const bool dragged = e.mouseWasDraggedSinceMouseDown();
         if (drag.movesSelection) {
             if (dragged || drag.cancelled)
                 chosenPoint_.reset();
@@ -5199,7 +5355,7 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         const auto drag = *pointDrag_;
         pointDrag_.reset();
         if (e.mouseWasDraggedSinceMouseDown()) {
-            if (automationPickIsCurrent(drag))
+            if (pointAdded_ && automationPickIsCurrent(drag))
                 view.root.moveAutomationPoint(drag.track, drag.target, drag.point, pointTick_, pointValue_);
         } else {
             finishAutomationPointClick(drag);

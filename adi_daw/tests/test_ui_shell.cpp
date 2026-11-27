@@ -16354,6 +16354,151 @@ void groupAutomation(AppCommands &commands, const std::filesystem::path &dir) {
           "the folded group's device Cutoff line writes its normalized breakpoint at the knob's default");
 }
 
+void automationBreakpointModifiers(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-breakpoint-modifiers.adi", true, {}, error);
+    check(document != nullptr, "a project for breakpoint drag modifiers");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, laneId = 31, dataId = 41;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    auto lane = automationLaneSpec(pan, 0., laneId);
+    auto write = automation::writePoints(dataId, laneId, nullptr, Payload::array({
+        {{"id", 7}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 11}, {"time", 3 * bar}, {"value", -.125}, {"curve", 1}, {"tension", 0.}}
+    }));
+    const bool authored = document->ops().submit({automation::createLane(lane), std::move(write)}).ok &&
+                          document->synchronise();
+    check(authored, "three Pan breakpoints establish an intervening neighbor and a later untouched point");
+    if (!authored)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-breakpoint-modifiers");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &candidate) {
+        return candidate.track->id == track && candidate.target == pan;
+    });
+    check(body != bodies.end(), "the Pan overlay is visible for single-point drags");
+    if (body == bodies.end())
+        return;
+
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto journalHead = [&] { return OpJournal(document->store()).headSeq(); };
+    const auto original = points();
+    check(original.size() == 3, "the fixture's three Pan points are readable");
+    if (original.size() != 3)
+        return;
+    const auto initialHead = journalHead();
+    const auto initialBytes = document->store().getAutomationData(laneId, {});
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto height = body->scaleBottom - body->top;
+    const auto travel = static_cast<float>((original.front().value - pan.minimum) / (pan.maximum - pan.minimum));
+    const juce::Point<float> origin{x(original.front().time), body->scaleBottom - height * travel};
+    const auto hit = canvas.automationPointAt(origin);
+    check(hit && hit->point == 7, "the drag starts at authored point 7");
+    if (!hit)
+        return;
+
+    const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+    const juce::ModifierKeys shiftLeft(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier);
+    const auto move = [&](juce::Point<float> destination, juce::ModifierKeys mods) {
+        canvas.mouseDown(pressAt(canvas, origin, mods));
+        const auto drag = dragAt(canvas, origin, destination, mods);
+        canvas.mouseDrag(drag);
+        check(journalHead() == initialHead && points() == original, "drag preview has not written points or history");
+        canvas.mouseUp(drag);
+        root.frame();
+        return points();
+    };
+    const auto undo = [&](const char *label) {
+        const bool restored = journalHead() != initialHead && root.command(AppCommands::Undo) &&
+                              journalHead() == initialHead && points() == original &&
+                              document->store().getAutomationData(laneId, {}) == initialBytes;
+        check(restored, label);
+        root.frame();
+        return restored;
+    };
+    const auto neighborsIntact = [&](const auto &edited) {
+        return edited.size() == original.size() && edited[0].id == 7 &&
+               edited[1] == original[1] && edited[2] == original[2];
+    };
+
+    const auto later = bar + bar / 4;
+    const auto horizontal = move({x(later), origin.y + 13.f}, shiftLeft);
+    check(neighborsIntact(horizontal) && horizontal[0].time == later && horizontal[0].value == original[0].value,
+          "horizontal Shift-drag moves in time and ignores vertical drift");
+    if (!undo("one Undo restores the horizontal Shift-drag"))
+        return;
+
+    constexpr float dy = 28.f;
+    const auto vertical = move(origin.translated(8.f, -dy), shiftLeft);
+    const auto ordinaryChange = static_cast<double>(dy / height) * (pan.maximum - pan.minimum);
+    const auto fineChange = neighborsIntact(vertical) ? vertical[0].value - original[0].value : 0.;
+    check(neighborsIntact(vertical) && vertical[0].time == original[0].time &&
+              fineChange > 0 && fineChange < ordinaryChange / 2,
+          "vertical Shift-drag stays at the original tick and raises the value at finer resolution");
+    if (!undo("one Undo restores the fine vertical Shift-drag"))
+        return;
+
+    const auto beyondNeighbor = 5 * bar / 2;
+    const auto shortOfNeighbor = bar + bar / 2;
+    const juce::Point<float> overshoot{x(beyondNeighbor), origin.y}, retreat{x(shortOfNeighbor), origin.y};
+    canvas.mouseDown(pressAt(canvas, origin, left));
+    canvas.mouseDrag(dragAt(canvas, origin, overshoot, left));
+    check(journalHead() == initialHead && points() == original, "passing a neighbor in preview writes nothing");
+    canvas.mouseDrag(dragAt(canvas, origin, retreat, left));
+    canvas.mouseUp(dragAt(canvas, origin, retreat, left));
+    root.frame();
+    const auto returned = points();
+    check(neighborsIntact(returned) && returned[0].time == shortOfNeighbor,
+          "retreating before release preserves the swept neighbor");
+    if (!undo("one Undo restores the drag that retreated"))
+        return;
+
+    const auto crossed = move({x(beyondNeighbor), origin.y}, left);
+    check(crossed.size() == 2 && crossed[0].id == 7 && crossed[0].time == beyondNeighbor &&
+              std::abs(crossed[0].value - original[0].value) < 1.e-6 && crossed[1] == original[2],
+          "dragging past a neighbor removes only that neighbor and preserves the moved point ID");
+    if (!undo("one Undo restores both the moved and the overwritten breakpoint"))
+        return;
+
+    canvas.mouseDown(pressAt(canvas, origin, left));
+    const auto crossedDrag = dragAt(canvas, origin, overshoot, left);
+    canvas.mouseDrag(crossedDrag);
+    auto external = automation::movePoints(dataId, laneId, nullptr, Payload::array({
+        {{"id", original[1].id}, {"time", 4 * bar}, {"value", original[1].value}}
+    }));
+    const auto changedOutsideView = OpJournal(document->store()).commit(external);
+    check(changedOutsideView.ok, "a journal edit changes the captured neighbor before release");
+    if (!changedOutsideView.ok)
+        return;
+    const auto freshHead = journalHead();
+    const auto freshBytes = document->store().getAutomationData(laneId, {});
+    canvas.mouseUp(crossedDrag);
+    check(journalHead() == freshHead && document->store().getAutomationData(laneId, {}) == freshBytes,
+          "releasing an out-of-date drag preserves the newer envelope and adds no edit");
+}
+
 void automationBreakpointDrags(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-breakpoint-drags.adi", true, {}, error);
@@ -23884,6 +24029,7 @@ int main(int argc, char **argv) {
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
     trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
+    trace("automationBreakpointModifiers", [&] { automationBreakpointModifiers(commands, temp.path()); });
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationCurveGestures", [&] { automationCurveGestures(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
