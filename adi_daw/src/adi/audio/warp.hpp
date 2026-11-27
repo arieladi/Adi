@@ -71,7 +71,9 @@ class WarpTask {
 public:
     [[nodiscard]] std::shared_ptr<const WarpResult> result() const noexcept;
 private:
-    std::atomic<std::shared_ptr<const WarpResult>> result_;
+    // The worker writes the result once, then publishes it to other threads.
+    std::shared_ptr<const WarpResult> result_;
+    std::atomic<bool> ready_{false};
     friend class WarpRenderCache;
 };
 [[nodiscard]] std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan);
