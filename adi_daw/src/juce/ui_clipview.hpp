@@ -448,7 +448,9 @@ class SampleEditor final : public juce::Component {
 
 // The Clip View: the clip's title bar with its activator, name and colour; the Main panel with the
 // clip's properties; and the editor for its kind (manual 8.1).
-class ClipViewPanel final : public juce::Component {
+class ClipViewPanel final : public juce::Component,
+                            public juce::FileDragAndDropTarget,
+                            public juce::DragAndDropTarget {
   public:
     explicit ClipViewPanel(AdiRootComponent &);
     // Follows the selected clip and the project; called on the window's frame.
@@ -458,6 +460,10 @@ class ClipViewPanel final : public juce::Component {
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int x, int y) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
 
     static constexpr int kPanelWidth = 156, kToolsWidth = 196, kTitleHeight = 17, kHeaderHeight = 17;
     // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.

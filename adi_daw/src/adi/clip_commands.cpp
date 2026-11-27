@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <set>
 
@@ -439,6 +440,79 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
     }
 }
 void expectedHead(Store& store,PreparedEdit& result) {result.options.expectHead.emplace(OpJournal(store).headSeq());}
+}
+PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t mediaId,
+                              std::int64_t frames,std::int64_t sampleRate,OpRequest capturedMedia) {
+    PreparedEdit result;
+    try {
+        if(mediaId<=0 || frames<=0 || sampleRate<=0 || sampleRate>768000)
+            throw std::runtime_error("replacement must be a readable audio file");
+        if(!capturedMedia.opType.empty() && ((capturedMedia.opType!="media.import" && capturedMedia.opType!="media.relink") ||
+                                           detail::signedInteger(capturedMedia.payload.at("id"))!=mediaId))
+            throw std::runtime_error("replacement media capture differs from its source");
+        Read read(store.db());expectedHead(store,result);
+        OpContext context{store,store.db()};
+        const auto clip=captureDeleted(context,clipId);
+        const auto& core=clip.at("row");
+        const auto& audio=clip.at("children").at("audio_clips");
+        if(core.at("kind")!="audio" || !core.at("alias_of").is_null() || audio.size()!=1)
+            throw std::runtime_error("choose one audio clip with its own sample");
+        auto source=audio[0];
+        const auto oldId=detail::signedInteger(source.at("media_id"));
+        if(mediaId!=oldId) {
+            const auto oldStart=detail::signedInteger(source.at("src_start_frames"));
+            const auto oldLength=detail::signedInteger(source.at("src_len_frames"));
+            if(oldStart<0 || oldLength<=0)
+                throw std::runtime_error("the original clip lacks a valid source window");
+            SQLite::Statement oldMedia(store.db(),"SELECT frames,sample_rate FROM media_files WHERE id=?");
+            oldMedia.bind(1,oldId);
+            if(!oldMedia.executeStep())throw std::runtime_error("the original clip has no media row");
+            const auto oldFrames=oldMedia.getColumn(0).getInt64(),oldRate=oldMedia.getColumn(1).getInt64();
+            bool sameDuration=false;
+            if(oldFrames>0 && oldRate>0) {
+                const auto oldDivisor=std::gcd(oldFrames,oldRate),newDivisor=std::gcd(frames,sampleRate);
+                sameDuration=oldFrames/oldDivisor==frames/newDivisor && oldRate/oldDivisor==sampleRate/newDivisor;
+            }
+            auto& stored=source.at("warp_markers");
+            if(!sameDuration || oldRate!=sampleRate) {
+                const auto rescale=[&](std::int64_t frame) {
+                    return std::llround(static_cast<long double>(frame)*sampleRate/oldRate);
+                };
+                const auto first=sameDuration?rescale(oldStart):0;
+                const auto count=sameDuration?rescale(edit::addTime(oldStart,oldLength))-first:frames;
+                source["src_start_frames"]=first;
+                source["src_len_frames"]=count;
+                if(source.at("warp_enabled")!=0 || (sameDuration && !stored.is_null())) {
+                    if(!stored.is_binary())throw std::runtime_error("Warp replacement needs a readable source map");
+                    const auto& bytes=stored.get_binary();
+                    const std::span raw(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size());
+                    auto map=audio::readWarpMap(raw,static_cast<std::uint64_t>(oldLength));
+                    if(!map || map.futureLayout)throw std::runtime_error("Warp replacement cannot rewrite this source map");
+                    if(sameDuration) {
+                        for(auto& marker:map.markers)marker.sourceFrame=rescale(marker.sourceFrame);
+                        map.markers.back().sourceFrame=count;
+                    } else {
+                        // Keep the clip's musical source span and replace the hand-aligned points with a fresh linear map.
+                        map.markers={{0,0},{count,map.markers.back().tick}};
+                    }
+                    const auto replacement=audio::writeWarpMap(map.markers,static_cast<std::uint64_t>(count));
+                    if(!replacement)throw std::runtime_error("replacement cannot carry a valid Warp map");
+                    const auto* begin=reinterpret_cast<const std::uint8_t*>(replacement.bytes.data());
+                    stored=Payload::binary(std::vector<std::uint8_t>(begin,begin+replacement.bytes.size()));
+                } else {
+                    stored=nullptr;
+                }
+            }
+            source["media_id"]=mediaId;
+        }
+        if(!capturedMedia.opType.empty()) {
+            capturedMedia.label="Replace Clip Sample";
+            result.requests.push_back(std::move(capturedMedia));
+        }
+        edit::RowEdits rows(store.db());rows.set("audio_clips",clipId,std::move(source));
+        packet(store,result,"audioClip.setSource","Replace Clip Sample",clipId,rows);
+    } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
 }
 ClipCopy copyClip(Store& store,std::int64_t id,double referenceRate) {
     ClipCopy result;

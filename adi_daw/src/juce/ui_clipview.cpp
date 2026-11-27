@@ -4051,6 +4051,34 @@ void ClipViewPanel::reread() {
     notes.prune();
     repaint();
 }
+bool ClipViewPanel::isInterestedInFileDrag(const juce::StringArray &files) {
+    return audio() && details_->aliasOf == std::nullopt && files.size() == 1 &&
+           isAudioFile(media::pathFromUtf8(files[0].toStdString()));
+}
+void ClipViewPanel::filesDropped(const juce::StringArray &files, int, int) {
+    if (!isInterestedInFileDrag(files))
+        return;
+    if (!root.importAudio) {
+        root.say("Replacing a clip's sample needs an open project.");
+        return;
+    }
+    const auto clip = details_->id;
+    AudioImport source;
+    std::string error;
+    if (!root.importAudio(files[0].toStdString(), source, error)) {
+        root.say(error.empty() ? "The replacement sample could not be read." : std::move(error));
+        return;
+    }
+    if (root.commitEdit(clip_edit::prepareSetSource(root.editStore(), clip, source.mediaId, source.frames,
+                                                    source.sampleRate, std::move(source.media))))
+        reread();
+}
+bool ClipViewPanel::isInterestedInDragSource(const SourceDetails &details) {
+    return isInterestedInFileDrag(BrowserPanel::droppedFiles(details.description));
+}
+void ClipViewPanel::itemDropped(const SourceDetails &details) {
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
 void ClipViewPanel::frame(const SnapshotReader &reader) {
     // The selected clips; with none selected, what is already shown stays, as Live's does. The clip
     // being edited stays the same while it is still among them; else it is the one clicked last.

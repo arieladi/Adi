@@ -17,6 +17,8 @@ struct PreparedEdit {
     /// Immutable preview facts, bound to the captured arrangement requests.
     std::shared_ptr<const edit_plan::CapturedDescription> description;
 };
+[[nodiscard]] PreparedEdit prepareSetSource(Store&,std::int64_t clipId,std::int64_t mediaId,
+                                            std::int64_t frames,std::int64_t sampleRate,OpRequest capturedMedia={});
 struct ClipCopy {
     bool ok=false;
     std::string error,sourceFile;

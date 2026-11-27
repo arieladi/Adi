@@ -8,6 +8,7 @@
 #include "adi/edit_rows.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -61,6 +62,51 @@ void replaceClipSource() {
         check(history.undo().ok && digestProject(*fixture.store).text==before,
               "source replacement undo restores the original project exactly");
     }
+}
+void replaceWarpedSource() {
+    Fixture fixture;
+    auto& store=*fixture.store;
+    auto& db=store.db();
+    constexpr std::int64_t frames=45334;
+    const auto map=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{22000,q},{frames,3*q}},frames);
+    SQLite::Statement warp(db,"UPDATE audio_clips SET warp_enabled=1,warp_mode='complex',warp_markers=?,"
+                              "transpose_semis=2.5 WHERE clip_id=7");
+    warp.bind(1,map.bytes.data(),static_cast<int>(map.bytes.size()));warp.exec();
+    db.exec("UPDATE clips SET gain_db=-7 WHERE id=7;"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(12,1,'audio',0,10);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(12,8,45334);"
+            "INSERT INTO media_files(id,hash_blake3,frames,sample_rate,channels,format) VALUES(18,'equal',45334,44100,1,'wav')");
+    const auto before=digestProject(store).text;
+    const auto originalMap=db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=7").getString();
+    if(!apply(fixture,clip_edit::prepareSetSource(store,7,18,frames,44100),"swap in a different file of equal duration"))return;
+    check(db.execAndGet("SELECT media_id=18 AND warp_enabled=1 AND warp_mode='complex' AND transpose_semis=2.5 FROM audio_clips WHERE clip_id=7").getInt()==1 &&
+          db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=7").getString()==originalMap &&
+          db.execAndGet("SELECT media_id FROM audio_clips WHERE clip_id=12").getInt64()==8 &&
+          db.execAndGet("SELECT gain_db FROM clips WHERE id=7").getDouble()==-7.,
+          "equal-duration replacement retains exact marker bytes and settings and leaves the other clip alone");
+    History history(store);
+    check(history.undo().ok && digestProject(store).text==before,"undo restores the original source and every clip property");
+
+    const auto file=fixture.temporary.path()/"shorter.wav";
+    std::vector<float> samples(22050,.25f);
+    {audio::WavWriter writer(file,44100,1,audio::WavFormat::Float32);writer.write(samples.data(),22050);writer.close();}
+    OpRequest imported;
+    const auto captured=media::prepareImport(store,file,19,1,imported);
+    check(captured.ok && captured.audio,"read a new replacement file without writing its pool row");
+    if(!captured.ok || !captured.audio)return;
+    if(!apply(fixture,clip_edit::prepareSetSource(store,7,captured.mediaId,captured.audio->frames,captured.audio->sampleRate,
+                                                  std::move(imported)),"commit import and unequal-duration replacement as one edit"))return;
+    SQLite::Statement current(db,"SELECT warp_markers FROM audio_clips WHERE clip_id=7");
+    current.executeStep();
+    const auto bytes=current.getColumn(0);
+    const auto newMap=audio::readWarpMap(std::span(static_cast<const std::byte*>(bytes.getBlob()),
+                                                   static_cast<std::size_t>(bytes.getBytes())),22050);
+    check(newMap && newMap.markers==std::vector<WarpMarker>{{0,0},{22050,3*q}},
+          "a new duration resets hand-aligned markers and keeps the clip's Warp span");
+    current.reset();
+    check(history.undo().ok && digestProject(store).text==before &&
+          db.execAndGet("SELECT count(*) FROM media_files WHERE id=19").getInt()==0,
+          "one undo restores the sample and removes the newly imported media row");
 }
 std::vector<float> render(Fixture& f) {
     Session session;SessionSpec spec{2,48000,1024};session.graph().setFadeFrames(0);
@@ -290,4 +336,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();replaceClipSource();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();replaceClipSource();replaceWarpedSource();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

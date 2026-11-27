@@ -13265,6 +13265,37 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     check(offersSave && panel.chooseTitleItem(ClipViewPanel::kSaveSampleDefaults) && root.undoTitle(false) == undoBeforeSave &&
               std::filesystem::exists(defaultsIndex),
           "the audio Clip View's title action saves defaults to the Library without making an undo step");
+    const auto replacement = dir / "Different Source.wav";
+    {
+        std::vector<float> samples(96000, .2f);
+        audio::WavWriter writer(replacement, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), 96000);
+    }
+    root.importAudio = [&](const std::string &path, AudioImport &source, std::string &why) {
+        const bool imported = document->prepareImport(path, 1'700'000'000'000'001, source);
+        if (!imported) {
+            why = document->error();
+        } else {
+            auto defaults = std::make_shared<library::SampleSettings>();
+            defaults->gainDb = -24.;
+            defaults->transposeSemis = 3.;
+            source.savedDefaults = std::move(defaults);
+        }
+        return imported;
+    };
+    const auto point = panel.editorArea().getCentre();
+    const juce::String path(media::pathUtf8(replacement));
+    const juce::DragAndDropTarget::SourceDetails drop("adi-sample:" + path, &root.browser.list, point);
+    check(panel.isInterestedInDragSource(drop) && panel.isInterestedInFileDrag({path}) && !panel.isInterestedInFileDrag({path, path}),
+          "Clip View accepts one sample from the Browser or desktop and refuses a multi-file drop");
+    panel.itemDropped(drop);
+    root.frame();
+    const auto mediaId = [&] { return panel.node() && panel.node()->audio ? panel.node()->audio->mediaId : 0; };
+    check(panel.clip() == clipId && mediaId() != 0 && mediaId() != import.mediaId && gainIs(-6.5) && pitchIs(11.5),
+          "the browser sample reaches Clip View and preserves the selected clip's Gain and Pitch over the new sample's defaults");
+    check(root.command(AppCommands::Undo), "undo the Clip View source replacement");
+    root.frame();
+    check(mediaId() == import.mediaId && gainIs(-6.5), "one Undo restores the previous source in Clip View");
     root.afterEdit = nullptr;
     document->release();
 }
