@@ -5989,23 +5989,6 @@ juce::File songProjectFile(const juce::File &file) {
         return file;
     return parent.getChildFile(name).getChildFile(file.getFileName());
 }
-bool discardUntouchedProject(const std::filesystem::path &path, const media::FileIdentity &expected) {
-    std::error_code error;
-    const auto lease = media::ProjectFileLease::openExclusive(path, error);
-    if (!lease || lease->identity() != expected || !std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)))
-        return false;
-    try {
-        // Read after all document workers have released SQLite and under the exclusive project lease.
-        // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
-        SQLite::Database db(media::pathUtf8(path), SQLite::OPEN_READONLY);
-        if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
-                          "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
-            return false;
-    } catch (const SQLite::Exception &) {
-        return false;
-    }
-    return media::readFileIdentity(path, error) == expected && std::filesystem::remove(path, error);
-}
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
     return d != nullptr ? displayId(*d) : std::string();

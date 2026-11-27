@@ -403,6 +403,32 @@ ProjectRevision readRevision(SQLite::Database &db) {
 }
 }
 
+bool discardUntouchedProject(const fs::path& path, const media::FileIdentity& expected) {
+    std::error_code error;
+    const auto lease = media::ProjectFileLease::openExclusive(path, error);
+    if (!lease || lease->identity() != expected)
+        return false;
+    try {
+        // A clean Store close folds its owned WAL. Any surviving sidecar may contain someone
+        // else's recovery data, so keep the entire set without even opening SQLite on it.
+        if (projectDestinationReady(lease->path()))
+            return false;
+        const auto revision = media::readFileRevision(lease->path(), error);
+        if (!revision || revision->identity != expected)
+            return false;
+        {
+            // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
+            SQLite::Database db(media::pathUtf8(lease->path()), SQLite::OPEN_READONLY);
+            if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
+                              "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
+                return false;
+        }
+        return lease->removeExclusive(*revision, error, [&] { return projectDestinationReady(lease->path()); });
+    } catch (const SQLite::Exception&) {
+        return false;
+    }
+}
+
 struct StoreFileSave::Data {
     StoreSaveKind kind = StoreSaveKind::copy;
     StoreFileCollision collision = StoreFileCollision::Fail;
