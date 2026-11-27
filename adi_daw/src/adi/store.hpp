@@ -33,7 +33,7 @@ class Database;
 }
 
 namespace adi {
-namespace media { class ProjectFileLease; }
+namespace media { struct FileIdentity; class ProjectFileLease; }
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
@@ -60,6 +60,9 @@ enum class StoreError {
 
 const char* toString(StoreError);
 
+// Discard a closed provisional project still owned by this launch, with no edits or recovery files.
+bool discardUntouchedProject(const std::filesystem::path&, const media::FileIdentity&);
+
 enum class StoreFileCollision { Fail, ReplaceConfirmed };
 
 struct StoreFileResult {
@@ -68,7 +71,7 @@ struct StoreFileResult {
     std::string warning;
 };
 
-enum class StoreSaveKind { copy, saveAs };
+enum class StoreSaveKind { copy, saveAs, firstSave };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
     StoreSavePhase phase = StoreSavePhase::copying;
@@ -166,12 +169,23 @@ public:
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
-    /// success. A failed switch retains the source and a completed copy.
-    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail);
+    /// success. A failed switch retains the source and a completed copy. When
+    /// given, expectedTarget binds the confirmation to the existing file.
+    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail,
+                                        const media::FileIdentity* expectedTarget=nullptr);
+    /// Name a newly created, unnamed project. Project-local media and history
+    /// follow the file; the original is discarded only after the switch.
+    [[nodiscard]] StoreFileResult saveUntitledAs(const std::filesystem::path&,
+                                                StoreFileCollision=StoreFileCollision::Fail,
+                                                const media::FileIdentity* expectedTarget=nullptr);
+    /// Retry releasing an unnamed project's old files once playback and
+    /// waveform readers have switched away from them.
+    void finishUntitledSave() noexcept;
     /// Owner preflight for a file worker. The private read connection pins the
     /// committed database (including WAL) at invocation.
     [[nodiscard]] StoreFileResult prepareFileSave(const std::filesystem::path&, StoreSaveKind, StoreFileSave&,
-                                                  StoreFileCollision = StoreFileCollision::Fail);
+                                                  StoreFileCollision = StoreFileCollision::Fail,
+                                                  const media::FileIdentity* expectedTarget = nullptr);
     /// Owner finalization for Save As. Retains the completed copy and the
     /// current Store if the source changed since preflight.
     [[nodiscard]] StoreFileResult adoptFileSave(StoreFileSave&);
@@ -267,6 +281,10 @@ private:
         const StoreFileSave* pending = nullptr);
     StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,
         std::unique_ptr<Store>& retired, const StoreFileSave* pending = nullptr);
+    StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,StoreSaveKind,
+                               const media::FileIdentity* expectedTarget);
+    std::function<bool()> untitledCleanup_;
+    bool untitledCleanupReady_=false;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();

@@ -444,10 +444,15 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
         native_->prepare(sampleRate_, maxFrames);
         nativePrepared_ = true;
         adapterLatency_ = 0;
-        midiRouter_.configure(midiRoute_, engine::ExpressionCaps{}, 15);
-        midiRouter_.reset();
-        midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
-                            engine::MpeOut{});
+        if (native_->usesTypedMidi()) {
+            nativeMidiScratch_.resize(static_cast<std::size_t>(std::max(
+                engine::Graph::deriveEventCapacity(sampleRate_, maxFrames, 32), 512)));
+        } else {
+            midiRouter_.configure(midiRoute_, engine::ExpressionCaps{}, 15);
+            midiRouter_.reset();
+            midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
+                                engine::MpeOut{});
+        }
         requestLatencyReport();
         return;
     }
@@ -597,7 +602,8 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // and 412), so an event that lands in this segment lands at its start.
     // Pd then quantises again to its own 64-sample block, which is Pd's limit
     // and is the same one ADR-0188 d3 records for parameters.
-    if (!io.events.empty() && !midiScratch_.empty()) {
+    const bool typedMidi = native_ != nullptr && native_->usesTypedMidi();
+    if (!typedMidi && !io.events.empty() && !midiScratch_.empty()) {
         engine::MpeOutList list(midiScratch_.data(),
                                 static_cast<std::int32_t>(midiScratch_.size()));
         midiRouter_.route(io.events.first, io.events.count, io.blockOffset, list);
@@ -615,7 +621,23 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     }
 
     if (native_ != nullptr) {
-        native_->process(io, transportSet_ ? &transport_ : nullptr);
+        auto child = io;
+        if (typedMidi) {
+            // Parameter messages still use the canvas's own parameter path.
+            // Only note-stream events belong to these native MIDI inputs.
+            engine::EventList notes(nativeMidiScratch_.data(), static_cast<std::int32_t>(nativeMidiScratch_.size()));
+            if (!io.events.empty())
+                for (const auto& event : io.events)
+                    if (engine::isNoteStream(event.type))
+                        notes.push(event);
+            if (notes.dropped() != 0) {
+                midiDropped_ += notes.dropped();
+                native_->resetTypedMidi();
+                notes.clear();
+            }
+            child.events = {notes.begin(), notes.size()};
+        }
+        native_->process(child, transportSet_ ? &transport_ : nullptr);
         nativeLatency_->report(native_->latencySamples());
         return;
     }

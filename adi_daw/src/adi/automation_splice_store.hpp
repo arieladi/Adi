@@ -4,6 +4,11 @@
 #include "adi/ops.hpp"
 #include <string_view>
 
+namespace adi {
+struct OpTransactionInputs;
+namespace clip_edit { class CopyIds; }
+namespace edit { class RowEdits; class TimeMap; }
+}
 namespace adi::automation {
 /// Absolute positions in the destination lane's declared native clock. No
 /// projected sample positions or persistent IDs are accepted from the caller.
@@ -11,6 +16,14 @@ struct NativeSpliceKnot {
     AutomationPoint point{};
     std::optional<engine::CurveSlice> slice;
 };
+/// Add a replacement to the caller's row plan using its read snapshot and
+/// shared ID allocator. Earlier staged replacements and new lanes are visible.
+/// Optional guards describe the stored snapshot. Discard the plan on failure.
+void stageEnvelopeSplice(Store &, edit::RowEdits &, clip_edit::CopyIds &, const edit::TimeMap &,
+                         std::int64_t laneId, std::int64_t begin, std::int64_t end,
+                         std::span<const NativeSpliceKnot> replacement, double sampleRate,
+                         OpTransactionInputs *guards = nullptr,
+                         std::size_t pointBudget = kSplicePointBudget);
 struct PreparedEnvelopeSplice {
     bool ok = false;
     std::string error;

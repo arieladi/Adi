@@ -1207,6 +1207,9 @@ storage; WIN-02 owns the window's placement and display-change behavior.
 Reserved `session_state` keys for saved performance controls:
 `transport.metronome` is a JSON boolean; `transport.loop` is JSON
 `{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+`transport.metronomeOptions` is JSON with Boolean `recordingOnly` and
+`eighthNotes` fields, both off by default. Its integer `sound` selects
+Classic (0, default), Wood (1), or Bell (2).
 `transport.countIn` is a JSON integer in `0,1,2,4` bars (`0` is None).
 `transport.punch` is JSON `{"in": bool, "out": bool}`. Punch-In excludes audio
 before the loop brace. Punch-Out ends a linear recording at the other edge.
@@ -1444,9 +1447,12 @@ A reader resolving a media file **MUST** try, in order:
 A reader of a schema 1.0 file that still holds embedded media **MAY** resolve
 it from `media_blobs` first; a writer **MUST** extract it (§10.5).
 
-A hash mismatch at any step **MUST** be reported, never silently accepted. A
-sample that has been replaced on disk by a different file of the same name is one
-of the most disorienting failures in a DAW, and it is entirely detectable.
+Imports and relinks of external media retain `abs_path_hint` alongside `rel_path`
+when both can be represented. A move of the `.adi` alone can then recover the
+original sample while a move that includes the sample still uses the relative path.
+A candidate with different content can be skipped while resolving a moved
+external link if another candidate matches the stored hash. An unresolved hash
+mismatch **MUST** be reported.
 
 ### 10.3 Referenced, always
 
