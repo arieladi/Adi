@@ -2,11 +2,11 @@ Codex took the stretcher seat on 27 November 2026.
 
 ## Still unbuilt
 
-- A continuing R3 Session run under an arbitrary tempo change, or a Legato target outside the primed worker window, still needs driver admission keyed to the exact launch and loop anchors.
+- A continuing R3 Session run under an arbitrary tempo change, or a Legato target outside the primed worker window, still needs a phase-coherent worker handover and driver admission keyed to the exact launch and loop anchors.
 
 The Windows checker has reported on Session, Pitch and main. Its 19:20 UTC report contains no stretcher entry or fix branch. The manual MSVC run of `f9c8e981c` passed all 285 headless suites and the JUCE job. [GitHub CI](https://github.com/arieladi/Adi/actions/runs/46055965930)
 
-The matching post-main companion tree is also in native Windows CI. [Companion CI](https://github.com/arieladi/Adi/actions/runs/46059712374)
+The post-main companion at `459e49c61` passed the JUCE job and headless build. Its native headless tests are running. [Companion CI](https://github.com/arieladi/Adi/actions/runs/46059712374)
 
 Live 12.4 reference measurements are tracked under Readings owed.
 
@@ -34,7 +34,7 @@ Live 12.4 reference measurements are tracked under Readings owed.
 | TM-WT-04 MSVC page-read warning | Give the in-page frame index a distinct name from the enclosing clip's source offset. | The otherwise-green Windows build at `f9c8e981c` emitted one C4458 from `Clip::StreamReader::pcm`. Strict Linux rebuilt the page reader and passed all 286 suites on the exact renamed head in 228.68 seconds. All five validators passed. | `ecc23ed92` on the stretcher chain. |
 | TM-WT-04 mixed native and fixed tempo scenes | Use the performed map for native Warp and a flat prepared clock for fixed media. Validate continued source rows and warm the entire bounded paged target when the scheduler can enter at any phase. | A mixed No Stop scene formerly failed admission. It now holds the native run and live gain at 140 BPM with all four landmarks exact while the fixed track stops. A paged Legato target switches at frame 96,000 within one sample while the fixed track relaunches. Tests preserve a 250 ms prepared fallback and refuse oversized cold pages or changed retained source audio. All 11 strict suites passed. | `e77bb5609` on the companion chain. |
 | TM-WT-04 Session clock portability | Merge the MSVC page-reader shadow fix into the companion chain and make both 64-bit tick conversions explicit when deriving fixed-bank frame positions. | The 53-bit `long double` syntax check reproduces the implicit-conversion warning before the cast and passes afterward. All 11 strict Session and clock suites pass on the exact companion head and all five validators pass. | `4550d930a` on the companion chain. |
-| TM-WT-04 running R3 Link admission | Check the running slot before publishing a performed tempo whose bank would drop its R3 source. The driver checks the live run again if it starts during owner preparation. | Before the fix an active Complex slot accepted 140 BPM and its next compensated peak became zero. The corrected admission keeps 120 BPM and the 0.626 FS peak. An idle slot permits the new clock. The raced launch keeps playing on the old graph and an explicit Stop permits the pending 140 BPM graph to adopt. | `0c7f791c8` on the companion chain. |
+| TM-WT-04 running R3 Link admission | Check the running slot before publishing a performed tempo whose bank would drop its R3 source. The driver checks the live run again if it starts during owner preparation. | Before the fix an active Complex slot accepted 140 BPM and its next compensated peak became zero. The corrected admission keeps 120 BPM and the 0.626 FS peak. An idle slot permits the new clock. The raced launch keeps playing on the old graph and an explicit Stop permits the pending 140 BPM graph to adopt. | `0c7f791c8` on the companion chain. All 11 strict companion suites and all five validators passed. |
 
 The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, page publication, physical delay and clip diagnostics. `CMakeLists.txt` registers the engines and tests. `docs/ENGINE-WARP.md` records the playback contract. The Warp work requires no format, operation or register reservation.
 
