@@ -557,7 +557,14 @@ ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRes
         return out;
     }
     out.replayBaseChanged = true;
-    out.document = open(store_->path(), false, renderLoader_, out.error);
+    const auto opening = store_->openingHistory();
+    const auto reopen = [&](std::string& error) {
+        auto document = open(store_->path(), false, renderLoader_, error);
+        if (document && opening)
+            document->store_->retainOpeningHistory(opening->seq);
+        return document;
+    };
+    out.document = reopen(out.error);
     if (out.document)
         return out;
     const auto rollback = history.moveTo(priorHead, nowUtc, prepared);
@@ -566,7 +573,7 @@ ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRes
         return out;
     }
     std::string reloadError;
-    out.document = open(store_->path(), false, renderLoader_, reloadError);
+    out.document = reopen(reloadError);
     if (out.document)
         out.error += " The previous version was reopened.";
     else

@@ -1599,7 +1599,11 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     setLookAndFeel(&look::liveLook());
     browser.syncPreviewToggle();
     undoHistory.setLookAndFeel(&look::liveLook());
-    undoHistory.openingHead = OpJournal(submitter_.store()).headSeq();
+    auto& store = submitter_.store();
+    const auto opening = store.openingHistory();
+    undoHistory.openingHead = opening ? opening->seq : OpJournal(store).headSeq();
+    if (!opening && !store.readOnly())
+        store.retainOpeningHistory(undoHistory.openingHead);
     undoHistory.openedUtc = juce::Time::currentTimeMillis() * 1000;
     undoHistory.read = [this] { return submitter_.timeline(); };
     undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };

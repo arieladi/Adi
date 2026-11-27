@@ -14041,7 +14041,8 @@ void snapshotVersions(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent reloaded(result.document->view(), result.document->ops(), result.document->mailbox(),
                               commands, result.document->views(), result.document->sessionState(), "versions-reloaded");
     auto &reloadedPanel = reloaded.undoHistory;
-    reloadedPanel.openingHead = root.undoHistory.openingHead;
+    check(reloadedPanel.openingHead == root.undoHistory.openingHead,
+          "SC-155: stored-version reload carries the original opening into the fresh window");
     reloadedPanel.refresh();
     reloadedPanel.snapshotsTab.onClick();
     reloadedPanel.list.selectRow(1);

@@ -225,6 +225,16 @@ public:
     [[nodiscard]] SQLite::Database& db() { return *db_; }
     [[nodiscard]] const SQLite::Database& db() const { return *db_; }
 
+    // The open document's starting state, retained only for this visit.
+    // A point with no sequence refers to the original, pre-edit state.
+    struct OpeningHistoryPoint { std::optional<std::int64_t> seq; };
+    void retainOpeningHistory(std::optional<std::int64_t> seq) noexcept {
+        openingHistory_ = OpeningHistoryPoint{seq};
+    }
+    [[nodiscard]] std::optional<OpeningHistoryPoint> openingHistory() const noexcept {
+        return openingHistory_;
+    }
+
     // --- blob persistence, at the ADR-0009 granularity bound -----------------
     // One blob per editable object. `clipId` scopes a note stream; a lane and an
     // optional clip scope an automation stream. Nothing here writes a blob that
@@ -317,6 +327,7 @@ private:
     std::string clientId_;
     std::string clientLabel_;
     std::filesystem::path upgradeBackup_;
+    std::optional<OpeningHistoryPoint> openingHistory_;
 };
 
 // --- upgrading an older 1.x file (ADR-0144, SPEC §11) -------------------------

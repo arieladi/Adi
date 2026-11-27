@@ -69,7 +69,8 @@ void UndoHistoryPanel::refresh() {
             currentSnapshot = static_cast<int>(snapshots_.size());
         snapshots_.push_back({snapshot.id, snapshot.name, historyTime(snapshot.createdUtc)});
     }
-    const bool atOpening = timeline.headSeq == openingHead;
+    const auto opening = openingHead ? openingHead : timeline.originSeq;
+    const bool atOpening = timeline.headSeq == opening;
     for (const auto &s : timeline.steps) {
         Row row;
         row.txnId = s.step.txnId;
@@ -81,7 +82,7 @@ void UndoHistoryPanel::refresh() {
         if (row.otherBranch && !s.branchIds.empty())
             row.detail = "on " + (branchNames[s.branchIds.front()].empty() ? std::string("another branch")
                                                                           : branchNames[s.branchIds.front()]);
-        if (openingHead == s.step.lastSeq)
+        if (opening == s.step.lastSeq)
             row.detail += (row.detail.empty() ? "" : ", ") + std::string("Project opened here");
         for (const auto id : s.snapshotIds)
             for (const auto &snap : timeline.snapshots)
@@ -100,7 +101,7 @@ void UndoHistoryPanel::refresh() {
         root.root = true;
         root.current = atOpening;
         for (const auto &snap : timeline.snapshots)
-            if (snap.opSeq == openingHead)
+            if (snap.opSeq == opening)
                 root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
         if (root.current)
             currentStep_ = static_cast<int>(rows_.size());

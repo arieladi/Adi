@@ -223,6 +223,9 @@ UndoCompactionResult compactStoredUndo(Store &store, const UndoRetentionPolicy &
     for (const auto &row : rows)
         if (row.seq > cut && (!row.parent || *row.parent <= cut))
             point(row.parent);
+    const auto opening = store.openingHistory();
+    if (opening && (!opening->seq || *opening->seq <= cut))
+        point(opening->seq);
     std::map<std::int64_t, std::string> captures;
     std::optional<std::string> originHash;
     auto origin = originRoot(db);
@@ -296,11 +299,16 @@ UndoCompactionResult compactStoredUndo(Store &store, const UndoRetentionPolicy &
     // Roots are metadata, not active edits. Keep every referenced baseline;
     // an unreferenced synthetic maximum stays until a newer edit preserves
     // the monotonic clock floor.
-    const std::string unused =
+    std::string unused =
         "NOT EXISTS(SELECT 1 FROM ops c WHERE c.parent_seq=o.seq) AND NOT "
         "EXISTS(SELECT 1 FROM history_snapshots s WHERE s.op_seq=o.seq) AND NOT "
         "EXISTS(SELECT 1 FROM op_branches b WHERE b.head_seq=o.seq) AND NOT "
         "EXISTS(SELECT 1 FROM history_checkpoint c WHERE c.base_seq=o.seq)";
+    if (opening) {
+        const auto openingSeq = opening->seq ? opening->seq : origin;
+        if (openingSeq)
+            unused += " AND o.seq<>" + std::to_string(*openingSeq);
+    }
     db.exec("DELETE FROM history_origin_root WHERE root_seq IN (SELECT o.seq "
             "FROM ops o WHERE " +
             unused + ")");
