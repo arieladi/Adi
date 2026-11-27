@@ -28,8 +28,9 @@ enum class WarpMarkerChange { Add, Move, Remove };
 /// Edit an interior anchor by its source frame; the endpoint anchors stay fixed.
 [[nodiscard]] PreparedEdit prepareWarpMarkerEdit(Store&,std::int64_t clipId,WarpMarkerChange,
     WarpMarker,double referenceRate);
+/// A straight map may promote cached file transients before snapping its interior markers.
 [[nodiscard]] PreparedEdit prepareQuantizeWarpMarkers(Store&,std::int64_t clipId,std::int64_t gridTicks,
-    double referenceRate);
+    double referenceRate,std::span<const std::uint64_t> fileFrames={});
 [[nodiscard]] PreparedEdit prepareWarpMarkersAtTransients(Store&,std::int64_t clipId,
     std::span<const std::uint64_t> fileFrames,double referenceRate);
 /// Rebuild only the right side of an existing map. The cached transient frames
