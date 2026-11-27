@@ -16361,22 +16361,29 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     sel.start = 0;
     sel.end = bar;
     root.frame();
-    // The curve's diamond, dragged up, writes the fade's tension.
-    if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
-        const juce::Point<float> up(diamond->x, diamond->y - 30.f);
-        canvas.mouseDown(pressAt(canvas, *diamond));
-        canvas.mouseDrag(dragAt(canvas, *diamond, up));
-        canvas.mouseUp(dragAt(canvas, *diamond, up));
+    // The regular curve drag and the Option/Alt drag bend in opposite directions.
+    const Handle curve{first, 4, true, true};
+    for (const bool alt : {false, true}) {
+        const auto diamond = canvas.fadeHandlePoint(curve);
+        check(diamond.has_value(), "SC-444: the fade's curve handle is shown");
+        if (!diamond)
+            break;
+        const auto mods = alt ? juce::ModifierKeys(juce::ModifierKeys::altModifier) : juce::ModifierKeys{};
+        const auto up = diamond->translated(0.f, -30.f);
+        canvas.mouseDown(pressAt(canvas, *diamond, mods));
+        canvas.mouseDrag(dragAt(canvas, *diamond, up, mods));
+        const auto during = canvas.fadeHandlePoint(curve);
+        check(during && (alt ? during->y > diamond->y : during->y < diamond->y),
+              "SC-444: the fade follows the upward drag, and Alt bends it the other way");
+        canvas.mouseUp(dragAt(canvas, *diamond, up, mods));
         root.frame();
         const auto bent = engine::clipFadeShape(0.5, clips()[0]->fadeInCurve, clips()[0]->fadeInTension);
-        check(clips()[0]->fadeInTension.has_value() && std::abs(*clips()[0]->fadeInTension) > 0.2 &&
-                  clips()[0]->fadeInCurve == kBentFadeCurve && std::abs(bent - 0.5) > 0.05 &&
+        check(clips()[0]->fadeInTension.has_value() && (alt ? bent < 0.45 : bent > 0.55) &&
+                  clips()[0]->fadeInCurve == kBentFadeCurve && document->ops().nextUndo() &&
                   document->ops().nextUndo()->label == "Change Fade Curve",
-              "the diamond dragged up bends the curve, one step");
+              "SC-444: one-step curve edit plays the shape shown during the drag");
         check(root.command(AppCommands::Undo), "undo the curve");
         root.frame();
-    } else {
-        check(false, "the fade's diamond is shown");
     }
     // The chosen fade-in square and Delete: the fade goes.
     canvas.mouseDown(pressAt(canvas, *canvas.fadeHandlePoint(Handle{first, 4, true, false})));

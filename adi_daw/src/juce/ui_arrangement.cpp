@@ -6212,7 +6212,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
-            fadeTension_ = std::clamp(fadeTensionFrom_ - (e.y - fadeFromY_) / 60.0, -1.0, 1.0);
+            const double bend = (e.y - fadeFromY_) / 60.0;
+            fadeTension_ = std::clamp(fadeTensionFrom_ + (e.mods.isAltDown() ? -bend : bend), -1.0, 1.0);
         } else {
             for (const auto &b : clipBodies())
                 if (b.clip->id == fadeDrag_->clip) {
