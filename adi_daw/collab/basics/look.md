@@ -28,6 +28,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-109 | — | High DPI and second-monitor window walk. Window seat. | Requires a real second display and a window-driving session. | Blocked on the window environment |
 | SC-266 | `basics/look-chain` at `040e4116` | Identify frozen tracks in Arrangement and Mixer. Per-track load awaits a track-attributed timing publication. Window seat. | Focused red/green peerless freeze and thaw probes passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-267 | `basics/look-chain` at `77f611a5` | Reveal keyboard and cross-view track selections. Keep manual scroll and editing gestures stable. Window seat. | Headless keys, Mixer to Arrangement selection, automation hit-testing and edit viewport checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-268 | `basics/look-chain` at `03505361` | Disable unavailable Reference Track controls with reasons and connect visibility for assigned roles. Window and Mix View seats. | Peerless menu and visibility tests passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -207,6 +208,10 @@ At 1440 × 900 Compact, the Arrangement viewport is `(328, 115, 788, 305)` and t
 In the automation fixture, track 4 is already visible from lane y=176 until the pinned foot at y=261. Selecting it by clicking keeps lane scroll at 0 and its breakpoint line at the same coordinate. A full reveal would shift the lane up 3 px. Arrow navigation still performs full reveal.
 
 Cross-view reveal is queued by an Arrangement or Mixer selection gesture. Undo and changes from document edits preserve the current viewport. The peerless suite checks both the navigation path and the existing edits that retain their viewport.
+
+### SC-268
+
+At 1440 × 900 Compact, Mix View controls keep these local rectangles before and after: strip `(4, 87, 1432, 28)`, REF `(214, 92, 38, 17)`, eye `(258, 92, 124, 17)`, timeline `(390, 92, 1038, 18)`. REF, the eye and the two menu entries are now visibly disabled with reasons when the song has no Reference. An existing assigned track enables the two visibility controls. Audition remains disabled with its audio connection reason.
 
 ## For the director
 
