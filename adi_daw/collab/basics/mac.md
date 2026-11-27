@@ -87,6 +87,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/tracks-chain` | `e2fd2cf6fa34c8aae1171ecef917be7f80b3253b` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The shell suite covers the Cmd-arrow reorder shortcut, nested group boundaries, and one Undo with synthetic JUCE keys. |
 | `origin/basics/analysers-chain` | `43c4a5bee93149715a683a0b3ebd3cd49abb5055` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The window suites cover Filled Spectrum traces, local reset, and Mix View and Info rendering. |
 | `origin/land/basics-1127j` | `e0f00f0d86e5c2dc9c3d247c353ed4ce9ba731a0` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Includes the Analysers stack and ADR-0262. The shared analysis and window checks exercise spectrum, goniometer, third-octave bands, period scope, and color waveform. All five repository validators also passed. |
+| `origin/basics/analysers-chain` | `6e1b969551379fc4d3f49451b9a22390c4fa351e` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Checks cover the passive stereo analysis tap, meter DSP, and Main meter rendering. |
 
 ## Nine-step window walk
 
