@@ -6546,6 +6546,97 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         browser.setListing({});
     }
 }
+void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-search-all.adi", true, {}, error);
+    check(document != nullptr, "SC-120: a project for Browser search");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-search-all");
+    root.setSize(1280, 800);
+    root.frame();
+    auto &browser = root.browser;
+    const auto drums = dir / "Search Drums";
+    const auto other = dir / "Search Other";
+    LibraryListing library;
+    library.places = {{"Search Drums", drums, "drums"}, {"Search Other", other, "other"}};
+    library.samples = {{"808 Kick.wav", drums / "808 Kick.wav", "drums"},
+                       {"808 Snare.wav", drums / "808 Snare.wav", "drums"},
+                       {"909 Kick.wav", other / "909 Kick.wav", "other"},
+                       {"Big Reverb.wav", other / "Big Reverb.wav", "other"}};
+    browser.setListing(std::move(library));
+    const auto choose = [&](const juce::String &name) {
+        const auto &labels = browser.sidebar();
+        const auto label = std::ranges::find(labels, name, &BrowserPanel::Entry::name);
+        if (label != labels.end())
+            browser.choose(static_cast<int>(label - labels.begin()));
+        return label != labels.end();
+    };
+    const auto query = [&](const juce::String &text) {
+        browser.search.setText(text, false);
+        browser.search.onTextChange();
+    };
+    const auto hasDevice = [&](std::string_view name) {
+        return std::ranges::any_of(browser.rows(), [name](const BrowserPanel::Row &row) {
+            return row.device != nullptr && row.device->name == name;
+        });
+    };
+    const auto hasPlugin = [&](std::string_view name) {
+        return std::ranges::any_of(browser.rows(), [name](const BrowserPanel::Row &row) {
+            return row.plugin != nullptr && row.plugin->name == name;
+        });
+    };
+    check(choose("Search Drums"), "SC-120: locate the explicitly scoped Place");
+    query("kick");
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "808 Kick.wav",
+          "SC-120: the selected Place still bounds a typed search");
+    query("  KiCk   808  ");
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "808 Kick.wav",
+          "SC-122: a sample matches every word in any order");
+
+    PluginScan scan;
+    scan.candidates = 20;
+    scan.listing.plugins = {{"clap", "test.tape", "Tape Reverb", "Northwind Audio", "1", {}, PluginEntry::Kind::Effect},
+                            {"clap", "test.echo", "Tape Echo", "Other Audio", "1", {}, PluginEntry::Kind::Effect}};
+    int scans = 0;
+    browser.scanPlugins = [&] {
+        ++scans;
+        scan.phase = PluginScan::Phase::Scanning;
+        browser.setPluginScan(scan);
+    };
+    check(root.command(AppCommands::SearchBrowser) && browser.selected() >= 0 &&
+              browser.sidebar()[static_cast<std::size_t>(browser.selected())].name == "All" && scans == 1,
+          "SC-120: global Search selects All and requests plug-in discovery from a Place");
+    query("reverb");
+    check(hasDevice("Hybrid Reverb") && hasPlugin("Tape Reverb") &&
+              browser.shown().size() == 1 && browser.shown().front()->name == "Big Reverb.wav",
+          "SC-120: All returns an effect, a plug-in and a sample together");
+    const auto sampleRow = std::ranges::find_if(browser.rows(), [](const BrowserPanel::Row &row) { return row.file != nullptr; });
+    if (sampleRow != browser.rows().end()) {
+        const auto index = static_cast<int>(sampleRow - browser.rows().begin());
+        browser.list.selectRow(index);
+        scan.completed = 8;
+        browser.setPluginScan(scan);
+        check(browser.list.getSelectedRow() == index && browser.rows()[static_cast<std::size_t>(index)].heading.isEmpty(),
+              "SC-120: updating scan progress preserves the selected sample row in All");
+    }
+    query("northwind reverb");
+    check(hasPlugin("Tape Reverb") && !hasPlugin("Tape Echo") && !hasDevice("Hybrid Reverb") && browser.shown().empty(),
+          "SC-122: words can match both a plug-in maker and plug-in name");
+    browser.search.clear();
+    browser.search.onTextChange();
+    check(browser.shown().size() == 4 && hasDevice("OneShot") && hasPlugin("Tape Reverb"),
+          "SC-120: clearing the All query restores all result types");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    query("kick 808");
+    check(root.command(AppCommands::SearchBrowser) && browser.hotSwapActive() && browser.shown().size() == 1 &&
+              !hasDevice("OneShot") && !hasPlugin("Tape Reverb") && scans == 1,
+          "SC-120: global Search keeps a sample Hot-Swap in its own scope");
+    browser.setHotSwap(std::nullopt);
+    check(browser.search.getText().isEmpty() && browser.shown().size() == 4,
+          "SC-120: leaving Hot-Swap restores the previous All results");
+}
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
@@ -23649,15 +23740,22 @@ int main(int argc, char **argv) {
                   "Alt/Option+5 moves the focus to the browser, ringed");
             juce::Component &browserKeys = browserPanel;
             const juce::KeyPress down(juce::KeyPress::downKey), up(juce::KeyPress::upKey);
+            const auto browserLabel = [&] {
+                const auto index = browserPanel.selected();
+                return index >= 0 ? browserPanel.sidebar()[static_cast<std::size_t>(index)].name : juce::String{};
+            };
             browserKeys.keyPressed(down);
-            const int favorites = browserPanel.selected();
+            const auto favorites = browserLabel();
             browserKeys.keyPressed(down);
-            const int sounds = browserPanel.selected();
+            const auto all = browserLabel();
+            browserKeys.keyPressed(down);
+            const auto sounds = browserLabel();
             browserKeys.keyPressed(up);
-            const int back = browserPanel.selected();
+            const auto back = browserLabel();
             browserKeys.keyPressed(up);
-            check(favorites == 1 && sounds == 4 && back == 1 && browserPanel.selected() == 1 &&
-                      integrated.error() == "Favorites is not listed yet.",
+            browserKeys.keyPressed(up);
+            check(favorites == "Favorites" && all == "All" && sounds == "Sounds" && back == "All" &&
+                      browserLabel() == "Favorites" && integrated.error() == "Favorites is not listed yet.",
                   "the arrows move between the sidebar's labels, past the headings");
             integrated.command(AppCommands::ToggleDeviceView);
             check(!integrated.state().docked && integrated.command(AppCommands::FocusDeviceView) &&
@@ -24992,6 +25090,7 @@ int main(int argc, char **argv) {
     trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });

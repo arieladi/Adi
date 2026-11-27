@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -30,7 +31,7 @@ class BrowserLibrarySnapshot {
         SampleIndices ordered;
         std::vector<bool> contains;
     };
-    void appendSamples(std::string_view query, const std::string *volume,
+    void appendSamples(std::span<const std::string> words, const std::string *volume,
                        std::vector<const LibraryFile *> &results) const;
     LibraryListing listing_;
     std::vector<std::string> foldedNames_;
@@ -108,6 +109,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     const LibraryListing &listing() const noexcept;
     // Selects a label, as a click on it does.
     void choose(int);
+    // The global search shortcut selects All, unless a Hot-Swap owns the search.
+    void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
     // A row of the list: a sample, a folder heading, a device or a saved preset.
@@ -189,6 +192,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
+    void startSearchPluginScan();
     // The search's down arrow goes into the list (§41.4.1.6).
     struct SearchKeys final : juce::KeyListener {
         BrowserPanel &panel;
