@@ -26077,8 +26077,8 @@ int main(int argc, char **argv) {
             const auto nextPlace = labels[static_cast<std::size_t>(browserPanel.selected())].name;
             browserKeys.keyPressed(up);
             const int back = browserPanel.selected();
-            const auto all = std::ranges::find(labels, juce::String("All"), &BrowserPanel::Entry::name);
-            browserPanel.choose(static_cast<int>(all - labels.begin()));
+            const auto allLabel = std::ranges::find(labels, juce::String("All"), &BrowserPanel::Entry::name);
+            browserPanel.choose(static_cast<int>(allLabel - labels.begin()));
             browserKeys.keyPressed(up);
             check(samples != labels.end() && nextPlace == "User Library" && back == sampleIndex &&
                       browserPanel.selected() >= 0 && labels[static_cast<std::size_t>(browserPanel.selected())].name == "Favorites",
