@@ -246,11 +246,13 @@ void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
             pendingLabel_ = saved;
         selected_ = findLabel(kAllLabel);
     }
+    revealSidebarSelection();
     refill();
     repaint();
 }
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
     const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
+    const bool keepInView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
     library_ = std::move(library);
     ready_ = ready;
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
@@ -275,6 +277,9 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         pendingLabel_.clear();
     if (selected_ < 0)
         selected_ = findLabel(kAllLabel);
+    setSidebarScroll(sidebarScroll_);
+    if (keepInView)
+        revealSidebarSelection();
     refill();
     repaint();
 }
@@ -712,7 +717,12 @@ void BrowserPanel::resized() {
     const int edge = look::border;
     search.setBounds(kStripWidth + edge, edge, std::max(0, r.getWidth() - kStripWidth - 2 * edge), 21);
     const int top = kBarHeight, bottom = r.getHeight() - kBarHeight - edge;
+    const bool keepInView = selected_ >= 0 &&
+        (sidebarArea_.isEmpty() || sidebarArea_.intersects(sidebarRowBounds(selected_)));
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
+    setSidebarScroll(sidebarScroll_);
+    if (keepInView)
+        revealSidebarSelection();
     contentArea_ = {sidebarArea_.getRight() + 2, top,
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
     // The list fills the content pane below its header.
@@ -740,15 +750,17 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(area);
     }
-    // The rows stop at the pane's foot.
+    // Draw only the rows that meet the sidebar pane.
     {
         juce::Graphics::ScopedSaveState clip(g);
         g.reduceClipRegion(sidebarArea_);
-        int y = sidebarArea_.getY() + 1;
-        for (std::size_t i = 0; i < sidebar_.size(); ++i) {
-            const auto &e = sidebar_[i];
-            const juce::Rectangle<int> row(sidebarArea_.getX(), y, sidebarArea_.getWidth(), kRowHeight);
-            if (!hotSwap_ && static_cast<int>(i) == selected_) {
+        const int first = std::max(0, juce::roundToInt(sidebarScroll_) - 1) / kRowHeight;
+        for (int i = first; i < static_cast<int>(sidebar_.size()); ++i) {
+            const auto row = sidebarRowBounds(i);
+            if (row.getY() >= sidebarArea_.getBottom())
+                break;
+            const auto &e = sidebar_[static_cast<std::size_t>(i)];
+            if (!hotSwap_ && i == selected_) {
                 g.setColour(look::selection);
                 g.fillRect(row);
             }
@@ -762,7 +774,6 @@ void BrowserPanel::paint(juce::Graphics &g) {
                 g.setFont(look::font(look::fontHeading));
                 g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
             }
-            y += kRowHeight;
         }
     }
     if (ring_) {
@@ -797,9 +808,40 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.setColour(look::focus);
     g.drawEllipse(headphones, 2.f);
 }
+juce::Rectangle<int> BrowserPanel::sidebarRowBounds(int row) const noexcept {
+    return {sidebarArea_.getX(), sidebarArea_.getY() + 1 + row * kRowHeight - juce::roundToInt(sidebarScroll_),
+            sidebarArea_.getWidth(), kRowHeight};
+}
+void BrowserPanel::setSidebarScroll(double requested) {
+    if (sidebarArea_.isEmpty())
+        return;
+    const int extent = 1 + static_cast<int>(sidebar_.size()) * kRowHeight;
+    const double maximum = std::max(0, extent - sidebarArea_.getHeight());
+    const double next = std::clamp(requested, 0., maximum);
+    if (juce::roundToInt(next) != juce::roundToInt(sidebarScroll_))
+        repaint(sidebarArea_);
+    sidebarScroll_ = next;
+}
+void BrowserPanel::revealSidebarSelection() {
+    if (selected_ < 0 || sidebarArea_.isEmpty())
+        return;
+    const int top = 1 + selected_ * kRowHeight;
+    const int height = sidebarArea_.getHeight();
+    const double minimumScroll = top + std::min(height, kRowHeight) - height;
+    setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
+}
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
-    if (sidebarArea_.contains(e.getPosition()))
-        choose((e.y - sidebarArea_.getY() - 1) / kRowHeight);
+    const int y = e.y - sidebarRowBounds(0).getY();
+    if (sidebarArea_.contains(e.getPosition()) && y >= 0)
+        choose(y / kRowHeight);
+}
+void BrowserPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) {
+    if (sidebarArea_.contains(e.getPosition()) && wheel.deltaY != 0) {
+        constexpr double pixelsPerUnit = 300.;
+        setSidebarScroll(sidebarScroll_ - pixelsPerUnit * wheel.deltaY);
+        return;
+    }
+    juce::Component::mouseWheelMove(e, wheel);
 }
 void BrowserPanel::searchAll() {
     const SafePointer<BrowserPanel> alive(this);
@@ -818,6 +860,7 @@ void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         pendingLabel_.clear();
+        revealSidebarSelection();
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
         // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.

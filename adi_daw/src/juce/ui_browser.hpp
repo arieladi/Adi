@@ -55,6 +55,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     // With the focus, the up and down arrows move between the sidebar's labels (§41.4.1.6).
     bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override;
@@ -74,6 +75,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     const std::vector<Entry> &sidebar() const noexcept { return sidebar_; }
     int selected() const noexcept { return selected_; }
     juce::Rectangle<int> sidebarArea() const noexcept { return sidebarArea_; }
+    // The logical row before clipping to the scrolling sidebar pane.
+    juce::Rectangle<int> sidebarRowBounds(int row) const noexcept;
     juce::Rectangle<int> contentArea() const noexcept { return contentArea_; }
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the
     // search and preview rows, the dark edge.
@@ -147,6 +150,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
+    void setSidebarScroll(double);
+    void revealSidebarSelection();
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
@@ -188,6 +193,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int selected_ = -1;
     settings::AppSettings *labelSettings_ = nullptr;
     std::string pendingLabel_;
+    double sidebarScroll_ = 0.;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };

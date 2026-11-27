@@ -3522,6 +3522,63 @@ void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
 
+void browserSidebarScroll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-sidebar.adi", true, {}, error);
+    check(document != nullptr, "SC-124: a project for the Browser sidebar");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "browser-sidebar");
+    auto &browser = root->browser;
+    browser.setSize(308, 443); // The Browser column in a 1200×720 Compact window with Info shown.
+    const auto viewport = browser.sidebarArea();
+    const auto scroll = [&](float delta) {
+        juce::MouseWheelDetails wheel{};
+        wheel.deltaY = delta;
+        browser.mouseWheelMove(pressAt(browser, viewport.getCentre().toFloat()), wheel);
+    };
+    const auto last = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
+    check(browser.sidebar().back().name == "Add Folder..." && !viewport.contains(browser.sidebarRowBounds(last())),
+          "SC-124: the default viewport initially crops Add Folder");
+    scroll(-10.f);
+    check(viewport.contains(browser.sidebarRowBounds(last())) &&
+              browser.sidebarRowBounds(last()).getBottom() == viewport.getBottom(),
+          "SC-124: the wheel scrolls the entire Add Folder row into view");
+
+    LibraryListing listing;
+    for (int i = 0; i < 32; ++i) {
+        const auto name = "Folder " + std::to_string(i + 1);
+        listing.places.push_back({name, dir / name, "test-volume-" + std::to_string(i + 1)});
+    }
+    browser.setListing(listing);
+    scroll(-10.f);
+    const int finalPlace = last() - 1;
+    const auto row = browser.sidebarRowBounds(finalPlace);
+    check(viewport.contains(row) && viewport.contains(browser.sidebarRowBounds(last())),
+          "SC-124: added folders are reachable all the way to the bottom of the sidebar");
+    browser.mouseDown(pressAt(browser, row.getCentre().toFloat()));
+    check(browser.selected() == finalPlace &&
+              browser.sidebar()[static_cast<std::size_t>(browser.selected())].place == "test-volume-32" &&
+              renderedPixel(browser, {row.getRight() - 2, row.getY() + 1}) == look::selection,
+          "SC-124: a click selects and paints the visible folder after scrolling");
+    scroll(10.f);
+    check(browser.selected() == finalPlace && !viewport.intersects(browser.sidebarRowBounds(finalPlace)),
+          "SC-124: the wheel scrolls without changing the active label");
+    check(browser.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && browser.selected() == finalPlace - 1 &&
+              viewport.contains(browser.sidebarRowBounds(finalPlace - 1)),
+          "SC-124: keyboard navigation reveals the newly selected label");
+    const auto selectedBounds = browser.sidebarRowBounds(finalPlace - 1);
+    browser.setListing(std::move(listing));
+    check(browser.selected() == finalPlace - 1 && browser.sidebarRowBounds(finalPlace - 1) == selectedBounds,
+          "SC-124: a library refresh preserves the same visible selection");
+    browser.setListing({});
+    const int scrollPosition = viewport.getY() + 1 - browser.sidebarRowBounds(0).getY();
+    const int remainingScroll = 1 + (last() + 1) * BrowserPanel::kRowHeight - viewport.getHeight();
+    check(scrollPosition >= 0 && scrollPosition <= std::max(0, remainingScroll) &&
+              viewport.contains(browser.sidebarRowBounds(browser.selected())),
+          "SC-124: removing folders clamps the sidebar to its shorter extent");
+}
 void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
     std::string why;
     const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
@@ -25368,6 +25425,7 @@ int main(int argc, char **argv) {
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
+    trace("browserSidebarScroll", [&] { browserSidebarScroll(commands, temp.path()); });
     trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
