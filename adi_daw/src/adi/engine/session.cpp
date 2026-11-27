@@ -3272,6 +3272,19 @@ bool Session::postLaunchGesture(std::span<const LaunchRequest> requests) noexcep
     for (const auto& request : requests)
         if (request.kind == LaunchRequestKind::ScenePress && request.scene && timing->launchAudio->sceneClock(*request.scene))
             return false;
+    const auto stops = [](const LaunchRequest& request) {
+        return request.kind == LaunchRequestKind::StopTrack || request.kind == LaunchRequestKind::StopAll;
+    };
+    if (timing->preparedScene && timing->preparedScene->token > launchAudioDriver_->performedSceneToken() &&
+        std::ranges::any_of(requests, stops)) {
+        std::array<LaunchRequest, LaunchGestureQueue::capacity> stamped;
+        if (requests.size() > stamped.size()) return false;
+        const auto gesture = std::span(stamped).first(requests.size());
+        std::ranges::copy(requests, gesture.begin());
+        for (auto& request : gesture)
+            if (stops(request)) request.preparedSceneToken = timing->preparedScene->token;
+        return launchAudioDriver_->post(gesture);
+    }
     return launchAudioDriver_->post(requests);
 }
 
@@ -3280,6 +3293,13 @@ bool Session::submitLaunchGesture(std::span<const LaunchRequest> requests) {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!launchAudioDriver_ || !timing || !timing->launchAudio) return false;
     const auto* store = adi::detail::appliedSourceStore(appliedSource_);
+    if (requests.size() == 1 && requests.front().kind == LaunchRequestKind::StopAll && sceneClockPending()) {
+        if (requests.front().incarnation != timing->launchAudio->incarnation() ||
+            !postLaunchGesture(requests)) return false;
+        // Keep the stop queued even when the clock has reached its publish deadline.
+        if (store) (void)cancelPreparedScene(*store, preparedScene_->scene);
+        return true;
+    }
     const auto cancel = std::ranges::find_if(requests, [&](const LaunchRequest& request) {
         return request.kind == LaunchRequestKind::CancelScene && preparedScene_ &&
             request.scene == preparedScene_->scene && preparedScene_->token > launchAudioDriver_->performedSceneToken();

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #define ADI_TEST_COUNT_REPLACED_DELETE
 #include "replace_operator_new.hpp"
+#include "session_schema_fixture.hpp"
 #include "temp_directory.hpp"
 
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/blob.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
@@ -269,6 +271,131 @@ void fadeThroughHandover() {
     render.block(197, [end](auto frame) { return -0.25 * (1.0 - fadeAt(frame - end)); }, 1e-8);
 }
 
+struct StopInstrument final : device::DeviceInstance {
+    device::DeviceIdentity info;
+    std::int64_t callbackStart = 0, releasedAt = -1;
+    std::uint64_t voice = 0;
+    unsigned starts = 0, releases = 0;
+    bool held = false, matchedRelease = false;
+
+    const device::DeviceIdentity& identity() const noexcept override { return info; }
+    bool loaded() const noexcept override { return true; }
+    EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+
+    void process(const NodeIo& io) noexcept override {
+        auto event = io.events.begin();
+        const auto end = io.events.end();
+        for (auto frame = io.blockOffset; frame < io.blockOffset + io.frames; ++frame) {
+            while (event != end && event->frame <= frame) {
+                if (event->type == EventType::NoteOn) {
+                    ++starts;
+                    held = true;
+                    voice = event->noteId;
+                } else if (event->type == EventType::NoteOff) {
+                    ++releases;
+                    releasedAt = callbackStart + frame;
+                    matchedRelease = held && event->noteId == voice;
+                    held = false;
+                }
+                ++event;
+            }
+            for (std::int32_t channel = 0; channel < io.channels; ++channel)
+                io.out[channel][frame] = held ? 0.5f : 0.0f;
+        }
+    }
+};
+
+void auditedStops() {
+    constexpr std::int64_t midiTrack = 3;
+    test::TempDirectory folder{"audited_launch_stops", "project"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path() / "stops.adi", error);
+    require(static_cast<bool>(store), "create persisted stop playback fixture");
+    test::applySessionSchema(store->db());
+    const auto wave = [&](const char* name, float value) {
+        const std::vector<float> signal(3 * bar, value);
+        audio::WavWriter wav(folder.path() / name, rate, 1, audio::WavFormat::Float32);
+        wav.write(signal.data(), 3 * bar);
+        wav.close();
+    };
+    wave("first.wav", 0.25f);
+    wave("second.wav", 0.125f);
+    wave("arrangement.wav", 0.0625f);
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+        "(1,'audio','First audio',0),(2,'audio','Second audio',1),(3,'midi','MIDI',2),(9,'master','Main',3);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO scenes(id,ord,name) VALUES(10,0,'Three clips');"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES"
+        "(1,'first','first.wav','wav'),(2,'second','second.wav','wav'),(3,'arrangement','arrangement.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+        "(101,1,'audio',0,69189120),(102,2,'audio',0,69189120),(103,3,'midi',0,69189120),"
+        "(104,1,'audio',0,69189120);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(101,1,288000),(102,2,288000),(104,3,288000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,10,101),(2,10,102),(3,10,103);"
+        "INSERT INTO clip_launch(clip_id,clip_fade,ram_mode) VALUES(101,0,1),(102,0,1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.stop','Held note probe','instrument');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,3);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Held note probe');");
+    NoteRecord held{};
+    held.dur_ticks = 3 * textproj::kWhole;
+    held.note_id = 1;
+    held.key = 64;
+    held.vel_on = 100;
+    held.vel_off = 40;
+    held.probability = 10000;
+    const auto notes = writeStream<NoteRecord>(FourCC::Notes, std::array{held});
+    require(store->putEventStream(103, "notes", notes), "store a MIDI note whose natural end is beyond both stops");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    StopInstrument* probe = nullptr;
+    const auto load = [&](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+        auto instrument = std::make_unique<StopInstrument>();
+        probe = instrument.get();
+        return instrument;
+    };
+    SessionSpec spec{2, rate, blockFrames};
+    spec.synchronousClipReads = true;
+    if (!session.load(*store, load, spec)) throw std::runtime_error(session.error());
+    const auto stamp = session.launchIncarnation();
+    require(stamp != 0 && probe, "native persisted launch and MIDI destination are available");
+    const auto audit = [&](const char* operation, Payload payload) {
+        OpRequest request;
+        request.opType = operation;
+        request.payload = std::move(payload);
+        require(OpJournal(*store).commit(request).ok,
+            "commit a live Session operation through the audit journal");
+    };
+    audit("session.launchScene", {{"scene", sceneOne}, {"incarnation", stamp}});
+    Render render{session, Precision::Float32};
+    const auto until = [&](std::int64_t end) {
+        while (render.stream <= end) {
+            probe->callbackStart = render.stream;
+            render.block(blockFrames, [](auto frame) {
+                return frame < bar ? 0.875 : frame < 2 * bar ? 0.625 : 0.0;
+            });
+        }
+    };
+    until(0);
+    audit("session.stopTrack", {{"track", trackOne}, {"incarnation", stamp}});
+    audit("session.stopAll", {{"incarnation", stamp + 1}});
+    until(bar);
+    require(render.edgeCount == 4 && render.edges[3].stream == bar &&
+        render.edges[3].transition.track == trackOne && render.edges[3].transition.newClip == 0 &&
+        !render.edges[3].transition.arrangement && probe->held && probe->releases == 0,
+        "StopTrack mutes its Arrangement source on the Global bar and leaves other clips playing");
+    audit("session.stopAll", {{"incarnation", stamp}});
+    until(2 * bar + 2 * blockFrames);
+    require(render.edgeCount == 6 && render.edges[4].stream == 2 * bar && render.edges[5].stream == 2 * bar &&
+        render.edges[4].transition.track == trackTwo && render.edges[5].transition.track == midiTrack &&
+        render.edges[4].transition.newClip == 0 && render.edges[5].transition.newClip == 0,
+        "StopAll emits one exact stop for each remaining Session source");
+    require(probe->starts == 1 && probe->releases == 1 && probe->releasedAt == 2 * bar &&
+        probe->matchedRelease && !probe->held && session.transport().playing(),
+        "StopAll releases the held MIDI identity at the bar with transport still rolling");
+}
+
 void rejectsDuplicateSlotClip(const Fixture& fixture) {
     const auto view = fixture.sceneAudio->view();
     std::vector<LaunchSlot> duplicate(view.slots.begin(), view.slots.end());
@@ -296,6 +423,7 @@ int main() {
         unquantized();
         individualTrackHandover();
         fadeThroughHandover();
+        auditedStops();
         rejectsDuplicateSlotClip(fixture);
         require(allocations == 0 && releases == 0 && audio::callbackFileIo == io,
                 "Session launch callbacks allocate, release and read no files");

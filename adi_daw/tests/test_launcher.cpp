@@ -358,7 +358,7 @@ void sceneFollowPrecedence() {
     auto armed = block(0,1,rate);
     armed.preparedScene = PreparedSceneLaunch{3,quarter,1.0f,12};
     const std::array conflicting{request(LaunchRequestKind::CancelScene,0,3),
-        request(LaunchRequestKind::ScenePress,0,4),request(LaunchRequestKind::StopAll,0),
+        request(LaunchRequestKind::ScenePress,0,4),
         request(LaunchRequestKind::BackToArrangement,0)};
     check(held.process(armed,view,protectedScene.sink()) && held.post(conflicting) &&
           held.process(block(1,24000,rate),view,protectedScene.sink()) &&
@@ -525,6 +525,102 @@ void cancelSceneAndStopAll() {
           out.edges[5].newClip == 0 && out.edges[6].newClip == 0 &&
           !out.edges[5].arrangement && !out.edges[6].arrangement,
           "Stop All silences every track on the same bar without handing back Arrangement");
+}
+
+void stopSupersedesQueuedPlayback() {
+    constexpr int rate = 48000;
+    auto repeating = slot(1,1,11,LaunchMode::Repeat);
+    repeating.quantization = LaunchQuantization::Quarter;
+    repeating.fade = true;
+    const std::array slots{repeating,slot(1,2,12),slot(1,3,13),slot(2,1,21),slot(2,2,22)};
+    const LaunchView view{tracks,slots,scenes};
+    const auto start = request(LaunchRequestKind::ScenePress,0,1);
+    const auto stopTrack = request(LaunchRequestKind::StopTrack,1);
+    const auto stopAll = request(LaunchRequestKind::StopAll,0);
+
+    Launcher queued(2);
+    SceneOutput queuedOut;
+    queuedOut.clipActions = false;
+    const std::array queuedThenStopped{request(LaunchRequestKind::ScenePress,0,2),
+        request(LaunchRequestKind::SlotPress,1,3,13),stopAll};
+    check(post(queued,start) && queued.process(block(0,1,rate),view,queuedOut.sink()) &&
+          queued.post(queuedThenStopped) && queued.process(block(1,48001,rate,LaunchQuantization::Quarter),
+              view,queuedOut.sink()) && queuedOut.sceneCount == 1 && queuedOut.edgeCount == 4 &&
+          queuedOut.has(1,0,24000) && queuedOut.has(2,0,24000),
+          "Stop All supersedes a queued clip and ordinary scene and cancels the old scene's Follow Action");
+
+    Launcher repeat(2);
+    SceneOutput repeatOut;
+    const std::array staleFollows{
+        LaunchFollowRequest{request(LaunchRequestKind::SlotPress,1,3,13),quarter / 8},
+        LaunchFollowRequest{request(LaunchRequestKind::ScenePress,0,2),quarter / 4}};
+    check(post(repeat,request(LaunchRequestKind::SlotPress,1,1,11)) &&
+          repeat.process(block(0,1,rate),view,repeatOut.sink()) && post(repeat,stopTrack) &&
+          repeat.process(block(1,95999,rate),view,repeatOut.sink(),staleFollows),
+          "admit a quantized track stop with held Repeat and older clip and scene follow actions");
+    check(std::ranges::any_of(repeatOut.sections,[](const LaunchSection& section) {
+              return section.track == 1 && section.clip == 11 && section.offset + section.frames == 95999;
+          }) && repeatOut.edgeCount == 2 && repeatOut.has(2,22,6000),
+          "old voice plays up to its stop grid while only unaffected tracks follow the scene");
+    const auto repeatEdgeCount = repeatOut.edgeCount;
+    check(repeat.process(block(96000,48001,rate),view,repeatOut.sink(),std::span(staleFollows).first(1)) &&
+          repeatOut.edgeCount == repeatEdgeCount + 1 && repeatOut.has(1,0,96000) &&
+          repeatOut.edges[repeatEdgeCount].oldClip == 11 && repeatOut.edges[repeatEdgeCount].oldFade,
+          "Stop Track performs at the first unrendered grid sample with outgoing fade and no later restart");
+    check(post(repeat,request(LaunchRequestKind::SlotPress,1,3,13)) &&
+          repeat.process(block(144001,1,rate,LaunchQuantization::None),view,repeatOut.sink()) &&
+          repeatOut.has(1,13,144001),"a fresh manual launch can start a stopped track");
+
+    Launcher scoped(2);
+    SceneOutput scopedOut;
+    scopedOut.clipActions = false;
+    auto scopedSink = scopedOut.sink();
+    scopedSink.followOnSceneLaunch = nullptr;
+    auto pinned = block(1,24000,rate,LaunchQuantization::Quarter);
+    pinned.preparedScene = PreparedSceneLaunch{2,quarter,1.0f,12};
+    pinned.preparedScenePinned = true;
+    check(post(scoped,start) && scoped.process(block(0,1,rate),view,scopedSink) &&
+          post(scoped,stopTrack) && scoped.process(pinned,view,scopedSink) &&
+          scopedOut.sceneCount == 2 && scopedOut.events[1].preparedToken == 12 &&
+          scopedOut.events[1].sample == 24000 && scopedOut.has(1,0,24000) &&
+          !scopedOut.has(1,12,24000) && scopedOut.has(2,22,24000),
+          "Stop Track wins its prepared-scene tie while the clock and the other follower perform");
+
+    for (const bool alreadyPinned : {false,true}) {
+        Launcher all(2);
+        SceneOutput allOut;
+        auto allSink = allOut.sink();
+        allSink.followOnSceneLaunch = [](void*, const LaunchSceneTransition& edge) noexcept
+            -> std::optional<LaunchFollowRequest> {
+            return LaunchFollowRequest{request(LaunchRequestKind::ScenePress,0,3),edge.tick + quarter / 4};
+        };
+        check(post(all,start) && all.process(block(0,1,rate),view,allSink),"start both tracks before Stop All");
+        auto armed = pinned;
+        armed.frames = 1;
+        if (alreadyPinned) check(all.process(armed,view,allSink),"arm an already pinned scene before Stop All");
+        auto stop = stopAll;
+        stop.preparedSceneToken = 12;
+        auto throughStop = block(alreadyPinned ? 2 : 1,alreadyPinned ? 11999 : 12000,rate,LaunchQuantization::Eighth);
+        if (alreadyPinned) throughStop.preparedScene = pinned.preparedScene;
+        check(post(all,stop) && all.process(throughStop,view,allSink,staleFollows) &&
+              allOut.edgeCount == 4 && allOut.has(1,0,12000) && allOut.has(2,0,12000),
+              "Stop All keeps its quantized deadline and cancels prior automatic children");
+        auto afterStop = pinned;
+        afterStop.sample = 12001;
+        afterStop.frames = 36000;
+        check(all.process(afterStop,view,allSink,staleFollows) && allOut.edgeCount == 4 && allOut.sceneCount == 2 &&
+              allOut.events[1].preparedToken == 12 && allOut.events[1].sample == 24000,
+              "a committed scene's clock can settle after Stop All without followers or a new Follow Action");
+        auto newer = pinned;
+        newer.sample = 48001;
+        newer.frames = 24000;
+        newer.preparedScene = PreparedSceneLaunch{2,3 * quarter,1.0f,13};
+        auto staleStop = stopAll;
+        staleStop.incarnation = 16;
+        staleStop.preparedSceneToken = 13;
+        check(post(all,staleStop) && all.process(newer,view,allSink) && allOut.has(1,12,72000) &&
+              allOut.has(2,22,72000),"a stale-incarnation stop cannot suppress a new prepared scene");
+    }
 }
 
 void statusTapAndStoppedAdmission() {
@@ -945,6 +1041,7 @@ int main() {
     followQuantizationAndStableTargets();
     roundedLoopAndWrap();
     cancelSceneAndStopAll();
+    stopSupersedesQueuedPlayback();
     statusTapAndStoppedAdmission();
     tapAcrossGenerations();
     simultaneousTapReaders();

@@ -3,6 +3,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/launcher.hpp"
@@ -372,7 +373,7 @@ struct NoteProbe final : device::DeviceInstance {
     }
 };
 
-std::vector<HeardNote> renderExpression(Store& store, LaunchCaptureBuffer* tape) {
+std::vector<HeardNote> renderMidi(Store& store, LaunchCaptureBuffer* tape) {
     Session session;
     session.graph().setFadeFrames(0);
     NoteProbe* probe = nullptr;
@@ -408,15 +409,17 @@ std::vector<HeardNote> renderExpression(Store& store, LaunchCaptureBuffer* tape)
         require(block.process(io), "render a native note/expression trace");
         at += frames;
     }
-    require(probe->count == 5 && probe->voices.front() != 0 &&
-            std::all_of(probe->voices.begin(), probe->voices.begin() + 5, [&](std::uint64_t voice) {
-                return voice == probe->voices.front();
-            }), "all five observed events belong to the same note voice");
-    return {probe->notes.begin(), probe->notes.begin() + 5};
+    require(probe->count < probe->notes.size(), "the MIDI trace fits the probe buffer");
+    std::uint64_t voice = 0;
+    for (std::size_t i = 0; i < probe->count; ++i) {
+        if (probe->notes[i].type == EventType::Controller) continue;
+        if (voice == 0) voice = probe->voices[i];
+        require(voice != 0 && probe->voices[i] == voice, "all observed note events belong to one voice");
+    }
+    return {probe->notes.begin(), probe->notes.begin() + static_cast<std::ptrdiff_t>(probe->count)};
 }
 
-void heldExpressionCapture() {
-    Project project;
+void prepareMidiProbe(Project& project, float tuningCents) {
     project.db().exec("DELETE FROM clip_slots WHERE clip_id=52; DELETE FROM clips WHERE id=52;"
         "UPDATE clips SET length_ticks=216216 WHERE id=51;"
         "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(99,'master','Main',3);"
@@ -433,9 +436,14 @@ void heldExpressionCapture() {
     note.vel_on = 99;
     note.vel_off = 33;
     note.probability = 10000;
-    note.tuning_cents = 31.25f;
+    note.tuning_cents = tuningCents;
     require(project.store->putEventStream(51, "notes", writeStream<NoteRecord>(FourCC::Notes, std::array{note})),
-            "store a tuned native note crossing the capture exit");
+            "store a native note crossing the capture exit");
+}
+
+void heldExpressionCapture() {
+    Project project;
+    prepareMidiProbe(project, 31.25f);
     std::array<ExpressionPoint, 3> points{{{0, 1.0f, 0, 0, 0, {}},
         {tick(200), 3.0f, 0, 0, 0, {}}, {tick(500), -0.5f, 0, 0, 0, {}}}};
     const auto writeExpression = [&] {
@@ -448,8 +456,8 @@ void heldExpressionCapture() {
     writeExpression();
     std::array<LaunchTransition, 8> edges{};
     LaunchCaptureBuffer tape(edges);
-    const auto heard = renderExpression(*project.store, &tape);
-    require(heard[0].sample == 75 && heard[0].type == EventType::NoteOn &&
+    const auto heard = renderMidi(*project.store, &tape);
+    require(heard.size() == 5 && heard[0].sample == 75 && heard[0].type == EventType::NoteOn &&
             heard[1].sample == 75 && heard[1].value == 1.3125 &&
             heard[2].sample == 275 && heard[2].value == 3.3125 &&
             heard[3].sample == 575 && heard[3].value == -0.1875 &&
@@ -477,11 +485,71 @@ void heldExpressionCapture() {
     project.store.reset();
     StoreError error{};
     project.store = Store::open(project.path, error, false);
-    require(project.store && renderExpression(*project.store, nullptr) == heard,
+    require(project.store && renderMidi(*project.store, nullptr) == heard,
         "reopened Arrangement delivers the same ordered note, pitch, and release values at every sample");
     require(History(*project.store).undo().ok && digestProject(*project.store).text == before &&
             History(*project.store).redo().ok && digestProject(*project.store).text == after,
             "one reopened Undo and Redo include the literal AEXP source image");
+}
+
+void heldControllerCapture() {
+    Project project;
+    prepareMidiProbe(project, 0.0f);
+    const std::array points{controllers::Point{1, 0, 0.25, 0, 0, 0},
+        controllers::Point{2, tick(493), 0.75, 0, 0, 0}};
+    const auto control = controllers::prepareWrite(*project.store, 51, 3, 7, points);
+    require(control.ok && controllers::commitPrepared(*project.store, control).ok, "store unshared CC7 at two held knots");
+    const auto source = project.freeze();
+    std::array<LaunchTransition, 8> edges{};
+    LaunchCaptureBuffer tape(edges);
+    const auto heard = renderMidi(*project.store, &tape);
+    require(heard.size() == 4 && heard[0] == HeardNote{55, EventType::Controller, 3, 0, 7, 0.25} &&
+        heard[1].sample == 75 && heard[1].type == EventType::NoteOn &&
+        heard[2] == HeardNote{548, EventType::Controller, 3, 0, 7, 0.75} &&
+        heard[3].sample == 730 && heard[3].type == EventType::NoteOff,
+        "the real Session graph emits held CC knots and a note without an extra exit controller");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1, "capture the isolated held CC run");
+    const auto prepared = prepareSessionPerformance(*project.store, source, plan, 48000);
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+
+    project.db().exec("INSERT INTO event_streams(id,clip_id,stream_kind,channel,controller,data) "
+        "SELECT 997,31,stream_kind,channel,controller,data FROM event_streams WHERE clip_id=51 AND stream_kind='cc'");
+    const auto competing = digestProject(*project.store).text;
+    require(!prepareSessionPerformance(*project.store, source, plan, 48000).ok &&
+        !prepareSessionPerformance(*project.store, project.freeze(), plan, 48000).ok &&
+        !clip_edit::commitPrepared(*project.store, prepared).ok && digestProject(*project.store).text == competing,
+        "another same-address Arrangement owner refuses capture and rolls back an already prepared commit");
+    project.db().exec("DELETE FROM event_streams WHERE id=997;"
+        "UPDATE event_streams SET controller=64 WHERE clip_id=51 AND stream_kind='cc'");
+    require(!prepareSessionPerformance(*project.store, source, plan, 48000).ok &&
+        !prepareSessionPerformance(*project.store, project.freeze(), plan, 48000).ok,
+        "an altered address and a pedal are each refused");
+    project.db().exec("UPDATE event_streams SET controller=7 WHERE clip_id=51 AND stream_kind='cc'");
+    auto moving = points;
+    moving.front().curve = static_cast<std::uint8_t>(Curve::Linear);
+    const auto writeMoving = controllers::prepareWrite(*project.store, 51, 3, 7, moving);
+    require(writeMoving.ok && controllers::commitPrepared(*project.store, writeMoving).ok &&
+            !prepareSessionPerformance(*project.store, project.freeze(), plan, 48000).ok,
+            "a moving controller and its final-frame probe are outside exact capture");
+    require(History(*project.store).undo().ok, "restore the held controller before committing its capture");
+    const auto before = digestProject(*project.store).text;
+    const auto edit = prepareSessionPerformance(*project.store, source, plan, 48000);
+    if (!edit.ok) throw std::runtime_error(edit.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, edit);
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    require(project.count("SELECT count(*) FROM event_streams a,event_streams b WHERE a.clip_id=51 "
+        "AND b.clip_id<>51 AND a.stream_kind='cc' AND b.stream_kind='cc' AND a.channel=b.channel "
+        "AND a.controller=b.controller AND a.id<>b.id AND a.data=b.data") == 1,
+        "Arrangement capture keeps each original ACTL byte, channel and address");
+    const auto after = digestProject(*project.store).text;
+    project.store.reset();
+    StoreError error{};
+    project.store = Store::open(project.path, error, false);
+    require(project.store && renderMidi(*project.store, nullptr) == heard &&
+        History(*project.store).undo().ok && digestProject(*project.store).text == before &&
+        History(*project.store).redo().ok && digestProject(*project.store).text == after,
+        "reopened Arrangement matches the literal CC performance and one Undo and Redo");
 }
 
 } // namespace
@@ -493,6 +561,7 @@ int main() {
         sourceMediaChanged();
         appliedSceneClock();
         heldExpressionCapture();
+        heldControllerCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
