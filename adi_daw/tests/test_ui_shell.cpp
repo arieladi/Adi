@@ -16,6 +16,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/warp_commands.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
