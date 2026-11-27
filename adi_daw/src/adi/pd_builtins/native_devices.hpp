@@ -36,6 +36,10 @@ class NativePdDevice {
     virtual bool sendParameter(int id, float value) noexcept = 0;
     [[nodiscard]] virtual int latencySamples() const noexcept = 0;
     [[nodiscard]] virtual bool usesTransportPosition() const noexcept { return false; }
+    // A native instrument may consume the host's original note stream instead
+    // of crossing the Pd MIDI 1 wire and reconstructing note identities.
+    [[nodiscard]] virtual bool usesTypedMidi() const noexcept { return false; }
+    virtual void resetTypedMidi() noexcept {}
     virtual void tempo(double) noexcept {}
     virtual void midi(const engine::MpeOut&) noexcept {}
 };

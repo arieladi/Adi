@@ -15,10 +15,13 @@
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include <array>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <span>
+#include <string_view>
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
@@ -350,6 +353,7 @@ void ScrubArea::paint(juce::Graphics &g) {
         }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
+    view.canvas.clearAutomationSelection();
     // The loop brace pressed is selected, and the material in the loop with it (manual 6.6: "Clicking
     // on the loop brace is a shortcut for executing the Edit menu's Select Loop command"); it plays
     // nothing, and a drag moves an edge or the whole brace.
@@ -675,6 +679,13 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
             endClipRename();
         }
     };
+    addChildComponent(automationValueEditor_);
+    automationValueEditor_.setTitle("Automation breakpoint value");
+    automationValueEditor_.setInputRestrictions(64);
+    automationValueEditor_.onCommit=[this] {commitAutomationValue();};
+    automationValueEditor_.onCancel=[this] {endAutomationValueEdit();};
+    automationValueEditor_.onTab=[this](bool) {commitAutomationValue();};
+    automationValueEditor_.onFocusLost=[this] {endAutomationValueEdit(false);};
     setWantsKeyboardFocus(true);
     setTitle("Arrangement");
     setDescription("Clips on a timeline. Up and down move between tracks; left and right move the "
@@ -1565,22 +1576,42 @@ void ArrangementView::showInsertMarkerAt(std::int64_t tick) {
     changed();
 }
 void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
-void ArrangementView::select(int x, int y, bool snapToGrid) {
+void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose purpose) {
+    if (purpose == SelectionPurpose::Edit)
+        canvas.clearAutomationSelection();
     if (const auto *t = geometry.trackAt(reader(), y)) {
+        const auto at = geometry.tick(x);
+        // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
+        const auto *c = purpose == SelectionPurpose::InsertMarker ? nullptr : geometry.hit(*t, at);
+        const auto tick = snapToGrid ? geometry.snap(at, false) : at;
+        if (purpose == SelectionPurpose::ContextMenu) {
+            auto &sel = geometry.selection;
+            if (c != nullptr && geometry.clipSelected(c->id)) {
+                if (sel.pickedClips.empty()) {
+                    // Split from a single clip's menu uses the point where it was opened.
+                    sel.insert = tick;
+                    sel.marked = true;
+                    changed();
+                }
+                return;
+            }
+            const auto [start, end] = std::minmax(sel.start, sel.end);
+            if (sel.clip == 0 && sel.pickedClips.empty() && at >= start && at < end &&
+                geometry.inSelection(reader(), t->id))
+                return;
+            canvas.clearAutomationSelection();
+        }
         geometry.selection.track = t->id;
         geometry.selection.toTrack = 0;
         geometry.selection.picked.clear();
-        const auto at = geometry.tick(x);
-        // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
-        const auto *c = geometry.hit(*t, at);
-        const auto tick = snapToGrid ? geometry.snap(at, false) : at;
         geometry.selection.clip = c ? c->id : 0;
         geometry.selection.pickedClips.clear();
         geometry.selection.insert = tick;
         geometry.selection.marked = true;
         geometry.selection.start = c ? c->posTicks : tick;
         geometry.selection.end = c ? c->posTicks + c->lengthTicks : tick;
-        locate();
+        if (purpose != SelectionPurpose::ContextMenu)
+            locate();
         changed();
     }
 }
@@ -1594,6 +1625,7 @@ bool ArrangementView::snaps(const juce::ModifierKeys &mods) const noexcept {
     return geometry.grid.snap != bypass;
 }
 void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
+    canvas.clearAutomationSelection();
     const auto *t = reader().findTrack(track);
     if (t == nullptr)
         return;
@@ -1611,6 +1643,7 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
         }
 }
 bool ArrangementView::selectAll() {
+    canvas.clearAutomationSelection();
     std::int64_t first = 0, last = 0, from = 0, to = 0, only = 0, clips = 0;
     for (const auto row : geometry.rows(reader())) {
         const auto *t = row.track;
@@ -1644,6 +1677,7 @@ bool ArrangementView::selectAll() {
     return true;
 }
 bool ArrangementView::selectLoop() {
+    canvas.clearAutomationSelection();
     std::int64_t first = 0, last = 0;
     for (const auto row : geometry.rows(reader())) {
         if (!geometry.shown(row.track->id))
@@ -1735,12 +1769,26 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
         juce::PopupMenu show;
         std::map<std::string, juce::PopupMenu> byDevice;
         std::vector<std::string> order;
+        const auto publication = root.devices.publication ? root.devices.publication() : nullptr;
         for (const auto &t : root.automationChoices(track)) {
             const auto key = t.ownerKind == "device" ? t.device + "#" + std::to_string(t.ownerId) : std::string("Mixer");
             if (!byDevice.count(key))
                 order.push_back(key);
-            byDevice[key].addItem(juce::String::fromUTF8(t.paramName.c_str()), true, t == shown,
-                                  [this, track, t] { root.showAutomation(track, t); });
+            auto label = juce::String::fromUTF8(t.paramName.c_str());
+            if (t.lastTouched) label += " (last touched)";
+            byDevice[key].addItem(label, true, t == shown,
+                                  [safe = SafePointer<ArrangementView>(this), track, t,
+                                   touchSource = t.lastTouched ? publication : nullptr] {
+                                      if (!safe) return;
+                                      if (touchSource) {
+                                          const auto captured = std::find_if(touchSource->begin(), touchSource->end(),
+                                              [&](const auto &d) { return d.id == t.ownerId; });
+                                          if (captured == touchSource->end() ||
+                                              !safe->root.devices.addLastTouchedParameter(*captured))
+                                              return;
+                                      }
+                                      if (safe) safe->root.showAutomation(track, t);
+                                  });
         }
         for (const auto &key : order)
             show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),
@@ -1778,13 +1826,14 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
                        "Colour");
     return menu;
 }
-void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
-    if (onContextMenu) {
-        onContextMenu(where, header, lane);
-        return;
-    }
-    contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
-        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane,
+                                  const std::function<void(juce::PopupMenu &)> &configure) {
+    auto menu=contextMenuItems(header,lane);
+    if(configure)configure(menu);
+    if(onContextMenu)
+        onContextMenu(where,header,lane,menu);
+    else
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>(where.x,where.y,1,1)));
 }
 const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
     if (!root.automationMode())
@@ -1812,6 +1861,29 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             // Rename, the clip's (walk-B B14): the same command as Ctrl/Cmd+R, which acts on the
             // selected clip.
             menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+            if (const auto snapshot = root.current(); snapshot && root.locateClipMedia) {
+                const auto clipId = geometry.selection.clip;
+                for (const auto &track : snapshot->tracks) {
+                    if (!track) continue;
+                    const auto found = std::find_if(track->clips.begin(), track->clips.end(), [clipId](const auto &clip) {
+                        return clip->id == clipId;
+                    });
+                    if (found == track->clips.end()) continue;
+                    const auto &clip = **found;
+                    if (root.clipMediaOffline(clip) && clip.audio->mediaInfo) {
+                        const auto safe = juce::Component::SafePointer<ArrangementView>(this);
+                        menu.addItem("Locate Missing Sample...", [safe, clipId] {
+                            if (safe && safe->root.locateClipMedia) safe->root.locateClipMedia(clipId);
+                        });
+                    }
+                    break;
+                }
+            }
+            menu.addSeparator();
+        } else if (canvas.hasAutomationSelection()) {
+            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
+                                  AppCommands::Duplicate, AppCommands::DeleteTrack})
+                menu.addCommandItem(&commands.manager, id);
             menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
             menu.addCommandItem(&commands.manager, AppCommands::Paste);
@@ -2068,6 +2140,7 @@ void TimelineRuler::beginTempoEdit(std::int64_t at) {
     focusIfShowing(tempoEditor);
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
+    view.canvas.clearAutomationSelection();
     tempoMenuPressed_ = e.mods.isPopupMenu();
     if (tempoMenuPressed_) {
         const auto *tempo = view.reader().tempo();
@@ -2287,6 +2360,7 @@ juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
     return menu;
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
+    view.canvas.clearAutomationSelection();
     if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false;
         view.selectedLocator = 0;
@@ -2321,41 +2395,49 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             }
     resizeId = 0;
     moveId_ = 0;
-    moving_ = selectOnUp_ = false;
+    moving_ = false;
+    selectOnUp_ = 0;
+    const bool popup = e.mods.isPopupMenu();
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
         focusIfShowing(*this);
+        auto &sel = view.geometry.selection;
+        if (popup && sel.clip == 0 && sel.pickedClips.empty() &&
+            view.geometry.inSelection(view.reader(), t->id)) {
+            view.contextMenu(e.getScreenPosition(), true);
+            return;
+        }
         // The split line at the row's foot resizes it; the rest of the title moves it, Main and
         // the returns aside.
         const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
         const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
-        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !e.mods.isPopupMenu();
+        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !popup;
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
         // A plain press on one of several selected tracks keeps them for a drag; released
         // without one, it selects that track alone.
         if (plain && !split && view.geometry.inSelection(view.reader(), t->id) &&
             view.geometry.selectedTracks(view.reader()).size() > 1)
-            selectOnUp_ = true;
-        else if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
-            auto &picked = view.geometry.selection.picked;
-            if (t->id != view.geometry.selection.track) {
+            selectOnUp_ = t->id;
+        else if (e.mods.isCommandDown() && sel.track != 0 && !popup) {
+            auto &picked = sel.picked;
+            if (t->id != sel.track) {
                 if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
                     picked.erase(at);
                 else
                     picked.push_back(t->id);
             }
-        } else if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
-            view.geometry.selection.toTrack = t->id == view.geometry.selection.track ? 0 : t->id;
+        } else if (e.mods.isShiftDown() && sel.track != 0 && !popup)
+            sel.toTrack = t->id == sel.track ? 0 : t->id;
         else {
-            view.geometry.selection.track = t->id;
-            view.geometry.selection.toTrack = 0;
-            view.geometry.selection.picked.clear();
+            sel.track = t->id;
+            sel.toTrack = 0;
+            sel.picked.clear();
         }
         // A title chooses tracks. The insert marker can stay at its previous position.
-        view.geometry.selection.clearMaterial();
+        sel.clearMaterial();
         if (split)
             resizeId = t->id;
-        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
+        else if (!popup && pressed < rows.size() && !rows[pressed].place.main) {
             moveId_ = t->id;
             movingReturn_ = rows[pressed].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
@@ -2364,7 +2446,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
-    if (e.mods.isPopupMenu()) {
+    if (popup) {
         resizeId = moveId_ = 0;
         view.contextMenu(e.getScreenPosition(), true);
     }
@@ -2534,7 +2616,7 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other
         // tracks"; the line shows where they would land.
         moving_ = true;
-        selectOnUp_ = false;
+        selectOnUp_ = 0;
         // At the lanes' top or foot they scroll, and the line follows; the returns stand still.
         if (!movingReturn_ && view.edgeScroll(0, e.y, false))
             view.frame(true);
@@ -2549,12 +2631,11 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
     const bool moved = moving_;
     resizeId = moveId_ = 0;
     moving_ = false;
-    if (selectOnUp_ && !moved && dragged != 0) {
-        view.geometry.selection.track = dragged;
+    if (const auto selected = std::exchange(selectOnUp_, 0); selected != 0 && !moved) {
+        view.geometry.selection.track = selected;
         view.geometry.selection.toTrack = 0;
         view.geometry.selection.picked.clear();
     }
-    selectOnUp_ = false;
     view.changed();
     // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
     if (moved) {
@@ -2659,12 +2740,18 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         lanes(y, h - 2, selected);
         g.setColour(look::separator);
         g.fillRect(0, y + h - 2, getWidth(), 2);
-        // The time selection lights the selected tracks' lanes, as Live's.
-        if (selected && geo.selection.start != geo.selection.end) {
+        // An automation selection highlights the lane body, leaving clip titles alone.
+        const bool envelopeSelection = hasAutomationSelection();
+        const bool laneSelected = envelopeSelection
+            ? std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
+                          [&](const auto &entry) { return entry.first == row.track->id; })
+            : selected;
+        if (laneSelected && geo.selection.start != geo.selection.end) {
             const float x0 = static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end)));
             const float x1 = static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end)));
             g.setColour(look::selection.withAlpha(0.85f));
-            g.fillRect(x0, static_cast<float>(y), x1 - x0, static_cast<float>(h - 2));
+            const int inset = envelopeSelection ? kClipBarHeight + 1 : 0;
+            g.fillRect(x0, static_cast<float>(y + inset), x1 - x0, static_cast<float>(std::max(0, h - 2 - inset)));
         }
         const auto colour = view.colourFor(row.position);
         if (row.place.group)
@@ -2694,8 +2781,10 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
-            paintWaveform(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
-                          static_cast<float>(y + h - 3));
+            const bool offline = view.root.clipMediaOffline(*c);
+            if (!offline)
+                paintWaveform(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                              static_cast<float>(y + h - 3));
             if (!c->audio)
                 paintNotes(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
@@ -2714,7 +2803,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                        static_cast<float>(h - 4), 1.f);
             // Live tints the selected part of a clip's body, under its title strip (the manual's Cut
             // Time and Consolidate figures).
-            if (selected && geo.selection.start != geo.selection.end) {
+            if (laneSelected && geo.selection.start != geo.selection.end) {
                 const float s0 = std::max(left, static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end))));
                 const float s1 = std::min(right, static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end))));
                 if (s1 > s0) {
@@ -2728,6 +2817,15 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
+            if (offline) {
+                const auto banner = juce::Rectangle<float>(left + 1.f, static_cast<float>(y + 1 + kClipBarHeight),
+                    std::max(0.f, right - left - 2.f), static_cast<float>(std::min(13, std::max(0, h - kClipBarHeight - 4))));
+                g.setColour(look::error);
+                g.fillRect(banner);
+                g.setColour(look::ink);
+                g.setFont(look::font(look::fontSmall));
+                g.drawText("Sample Offline", banner.reduced(3.f, 0.f), juce::Justification::centredLeft, true);
+            }
         };
         // A clip dragged across tracks is drawn on the destination lane, using that track's
         // colour if the clip has no colour of its own.
@@ -2756,11 +2854,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const auto *tempo = preview && preview->loop && preview->loop->tempo
                 ? preview->loop->tempo.get() : snapshot ? snapshot->tempo.get() : nullptr;
             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
+            const engine::AudioRecordingPreview::Track *mapping = nullptr;
             double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;
             if (havePreview) {
+                const auto track = std::find_if(preview->tracks.begin(), preview->tracks.end(),
+                    [&](const auto &item) { return item.trackId == t->id; });
+                if (track != preview->tracks.end())
+                    mapping = &*track;
+                const auto offset = mapping ? mapping->placementOffsetSamples : std::nullopt;
                 if (const auto &punch = preview->punchedPlacement; !preview->loop && punch) {
                     const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
-                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);
+                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo, offset);
                     if (range) {
                         start = range->startTicks;
                         end = range->endTicks;
@@ -2772,7 +2876,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     }
                 } else {
                     const auto rate = static_cast<double>(preview->peaks.sampleRate);
-                    const auto pass = preview->latestPass(live->capturedFrames);
+                    const auto pass = preview->latestPass(live->capturedFrames, offset);
                     startSeconds = static_cast<double>(pass.startSample) / rate;
                     sourceStartFrame = static_cast<double>(pass.sourceStartFrame);
                     sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, pass.sourceStartFrame + pass.frames));
@@ -2798,20 +2902,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     g.fillRect(left, top, width, static_cast<float>(h - 4));
                     g.setColour(look::record.darker(0.3f));
                     g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
-                    if (havePreview) {
-                        const auto mapping = std::find_if(preview->tracks.begin(), preview->tracks.end(),
-                            [&](const auto &track) { return track.trackId == t->id; });
-                        if (mapping != preview->tracks.end() && !mapping->channels.empty()) {
-                            g.setColour(look::ink.withAlpha(0.85f));
-                            const int from = std::max(0, static_cast<int>(std::floor(left)));
-                            const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
-                            paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
-                                             top + static_cast<float>(h - 4), preview->peaks.channels, mapping->channels,
-                                             [&](int x) -> std::optional<double> {
-                                const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
-                                return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
-                            }, sourceEndFrame, view.waveformZoomScale());
-                        }
+                    if (mapping && !mapping->channels.empty()) {
+                        g.setColour(look::ink.withAlpha(0.85f));
+                        const int from = std::max(0, static_cast<int>(std::floor(left)));
+                        const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
+                        paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
+                                         top + static_cast<float>(h - 4), preview->peaks.channels, mapping->channels,
+                                         [&](int x) -> std::optional<double> {
+                            const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
+                            return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
+                        }, sourceEndFrame, view.waveformZoomScale());
                     }
                     if (right - left > 6.f) {
                         g.setColour(look::ink);
@@ -2852,8 +2952,10 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             top += geo.heightFor(id);
         }
     }
-    if (view.root.automationMode())
+    if (view.root.automationMode()) {
         paintAutomation(g);
+        paintAutomationValueReadout(g);
+    }
     // The returns and Main stay pinned over the scrolled tracks. Mark the bottom of
     // the scrolling band when another part of the arrangement continues underneath.
     const int scrollBottom = foot < rows.size() ? std::min(getHeight(), geo.footTop(view.reader())) : getHeight();
@@ -2934,8 +3036,39 @@ juce::Path automationPath(std::span<const AutomationMark> points, float left, fl
     return line;
 }
 constexpr float kPointHit = 5.f;
+juce::String automationValueText(const AutomationTarget &target,double value,bool forEditing=false) {
+    juce::String number;
+    if(target.footIsSilence && value==kAutomationSilenceDb)number="-inf";
+    else if(forEditing) {
+        // Enter on the initial text must round-trip the stored breakpoint.
+        std::array<char,64> buffer{};
+        const auto converted=std::to_chars(buffer.data(),buffer.data()+buffer.size(),value,std::chars_format::general);
+        if(converted.ec==std::errc{})
+            number=juce::String::fromUTF8(buffer.data(),static_cast<int>(converted.ptr-buffer.data()));
+    } else number=juce::String(value,6).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+    if(!target.unit.empty())number+=" "+juce::String::fromUTF8(target.unit.c_str());
+    return number;
+}
+std::optional<double> parseAutomationValue(juce::String text,const AutomationTarget &target) {
+    text=text.trim().replaceCharacter(0x2212,'-');
+    const auto unit=juce::String::fromUTF8(target.unit.c_str());
+    if(unit.isNotEmpty() && text.endsWithIgnoreCase(unit))
+        text=text.dropLastCharacters(unit.length()).trimEnd();
+    if(target.footIsSilence && text.equalsIgnoreCase("-inf"))return kAutomationSilenceDb;
+    const auto bytes=text.toStdString();
+    std::string_view input(bytes);
+    if(!input.empty() && input.front()=='+')input.remove_prefix(1);
+    if(input.empty())return std::nullopt;
+    double value=0;
+    const auto parsed=std::from_chars(input.data(),input.data()+input.size(),value,std::chars_format::general);
+    if(parsed.ec!=std::errc{} || parsed.ptr!=input.data()+input.size() || !std::isfinite(value))return std::nullopt;
+    return value;
+}
 } // namespace
 std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPointAt(juce::Point<float> at) const {
+    std::int64_t track = 0;
+    ResizeEdge edge = ResizeEdge::None;
+    if(barAt(juce::roundToInt(at.x),juce::roundToInt(at.y),track,edge))return std::nullopt;
     const auto current = view.root.current();
     if (!current)
         return std::nullopt;
@@ -3109,10 +3242,265 @@ void ArrangementCanvas::updateAutomationStroke(const juce::MouseEvent &e) {
     }
     repaint();
 }
+std::optional<ArrangementCanvas::AutomationValueAddress> ArrangementCanvas::automationValueAt(
+    juce::Point<float> at,bool snapToGrid,bool allowAdd) const {
+    if(!view.root.automationMode())return std::nullopt;
+    const auto current=view.root.current();
+    if(!current)return std::nullopt;
+    std::int64_t titleTrack = 0;
+    ResizeEdge edge = ResizeEdge::None;
+    if(barAt(juce::roundToInt(at.x),juce::roundToInt(at.y),titleTrack,edge))return std::nullopt;
+    const auto hit=automationPointAt(at);
+    if(!hit && !allowAdd)return std::nullopt;
+    const auto bodies=laneBodies();
+    const auto body=std::find_if(bodies.begin(),bodies.end(),[&](const auto &item) {
+        return hit?item.track->id==hit->track:at.y>=item.top && at.y<=item.bottom;
+    });
+    if(body==bodies.end())return std::nullopt;
+    AutomationValueAddress result;
+    result.track=body->track->id;
+    result.target=view.root.automationTarget(result.track);
+    const auto envelope=envelopeOf(*current,result.target);
+    result.lane=envelope.lane?envelope.lane->id:0;
+    result.data=envelope.data?envelope.data->id:0;
+    result.anchor=at.roundToInt();
+    if(hit) {
+        if(!envelope.data)return std::nullopt;
+        const auto point=std::find_if(envelope.data->points.begin(),envelope.data->points.end(),[&](const auto &item) {
+            return item.id==hit->point;
+        });
+        if(point==envelope.data->points.end())return std::nullopt;
+        result.point=point->id;result.tick=point->time;result.value=point->value;
+    } else {
+        if(!editableEnvelope(envelope))return std::nullopt;
+        const auto raw=std::max<std::int64_t>(0,view.geometry.tick(at.x));
+        result.tick=snapToGrid?view.geometry.snap(raw,false):raw;
+        result.value=view.root.automationCurrent(result.target);
+        if (envelope.data)
+            result.value = envelopeValue(*envelope.data, result.tick, result.target.stepped).value_or(result.value);
+    }
+    return result;
+}
+
+bool ArrangementCanvas::resolveAutomationValue(const AutomationValueAddress &address,const TrackEnvelope &envelope) const {
+    if(!view.root.automationMode() || view.root.automationTarget(address.track)!=address.target ||
+       (envelope.lane?envelope.lane->id:0)!=address.lane ||
+       (envelope.data?envelope.data->id:0)!=address.data)return false;
+    if(!address.point)return editableEnvelope(envelope);
+    return envelope.data && std::any_of(envelope.data->points.begin(),envelope.data->points.end(),[&](const auto &point) {
+        return point.id==*address.point && point.time==address.tick && point.value==address.value;
+    });
+}
+
+void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
+    const auto edit=automationValueAt(e.position,view.snaps(e.mods),true);
+    const juce::Component::SafePointer<ArrangementCanvas> safe(this);
+    view.contextMenu(e.getScreenPosition(),false,view.automationLaneAt(e.y),[safe,edit](juce::PopupMenu &menu) {
+        if(!edit)return;
+        menu.addSeparator();
+        const auto name=juce::String::fromUTF8(edit->point?"Edit Value\xE2\x80\xA6":"Add Value\xE2\x80\xA6");
+        menu.addItem(name,[safe,address=*edit] {
+            if(safe!=nullptr)safe->beginAutomationValueEdit(address);
+        });
+    });
+}
+
+void ArrangementCanvas::beginAutomationValueEdit(const AutomationValueAddress &address) {
+    endAutomationValueEdit(false);
+    const auto current=view.root.current();
+    if(!current || current->findTrack(address.track)==nullptr ||
+       !resolveAutomationValue(address,envelopeOf(*current,address.target))) {
+        view.root.say("That automation point or lane changed. Select it again.");
+        return;
+    }
+    clearAutomationValueReadout();
+    automationValueAddress_=address;
+    constexpr int width=116,height=24;
+    const int left=std::clamp(address.anchor.x+8,0,std::max(0,getWidth()-width));
+    const int top=std::clamp(address.anchor.y-12,0,std::max(0,getHeight()-height));
+    automationValueEditor_.setBounds(left,top,width,height);
+    automationValueEditor_.setText(automationValueText(address.target,address.value,true),false);
+    automationValueEditor_.selectAll();
+    automationValueEditor_.setVisible(true);
+    focusIfShowing(automationValueEditor_);
+}
+
+void ArrangementCanvas::commitAutomationValue() {
+    if(!automationValueAddress_)return;
+    const auto address=*automationValueAddress_;
+    const auto current=view.root.current();
+    if(!current || current->findTrack(address.track)==nullptr) {
+        endAutomationValueEdit();
+        return;
+    }
+    const auto envelope=envelopeOf(*current,address.target);
+    if(!resolveAutomationValue(address,envelope)) {
+        view.root.say("That automation point or lane changed. Select it again.");
+        endAutomationValueEdit();
+        return;
+    }
+    const auto value=parseAutomationValue(automationValueEditor_.getText(),address.target);
+    if(!value || !validExactAutomationValue(envelope,address.target,*value)) {
+        view.root.say("Enter a value within the automation control's range.");
+        return;
+    }
+    const bool done=address.point
+        ? view.root.moveAutomationPoint(address.track,*address.point,address.tick,*value,true)
+        : view.root.addAutomationPoint(address.track,address.tick,*value,true);
+    if(!done)return;
+    endAutomationValueEdit();
+    showAutomationValue(address.target,*value,address.anchor.toFloat());
+    view.changed();
+}
+
+void ArrangementCanvas::endAutomationValueEdit(bool refocus) {
+    if(!automationValueAddress_)return;
+    automationValueAddress_.reset();
+    automationValueEditor_.setVisible(false);
+    if(refocus)focusIfShowing(*this);
+    repaint();
+}
+
+void ArrangementCanvas::resetAutomationValueInput() {
+    endAutomationValueEdit(false);
+    clearAutomationValueReadout();
+}
+
+void ArrangementCanvas::showAutomationValue(const AutomationTarget &target,double value,juce::Point<float> at) {
+    automationValueReadout_=automationValueText(target,value);
+    const auto font=look::font(look::fontBody,true);
+    automationValueGlyphs_.clear();
+    automationValueGlyphs_.addLineOfText(font,automationValueReadout_,0.f,0.f);
+    const float width=juce::GlyphArrangement::getStringWidth(font,automationValueReadout_)+12.f;
+    constexpr float height=20.f;
+    const float x=std::clamp(at.x+9.f,0.f,std::max(0.f,static_cast<float>(getWidth())-width));
+    const float y=std::clamp(at.y-height-4.f,0.f,std::max(0.f,static_cast<float>(getHeight())-height));
+    automationValueReadoutBounds_={x,y,width,height};
+    repaint();
+}
+
+void ArrangementCanvas::clearAutomationValueReadout() {
+    if(automationValueReadout_.isEmpty())return;
+    automationValueReadout_.clear();
+    automationValueGlyphs_.clear();
+    repaint();
+}
+
+void ArrangementCanvas::paintAutomationValueReadout(juce::Graphics &g) const {
+    if(automationValueReadout_.isEmpty() || automationValueAddress_)return;
+    g.setColour(look::band);
+    g.fillRoundedRectangle(automationValueReadoutBounds_,3.f);
+    g.setColour(look::rulerLabel);
+    automationValueGlyphs_.draw(g,juce::AffineTransform::translation(
+        automationValueReadoutBounds_.getX()+6.f,automationValueReadoutBounds_.getY()+14.f));
+}
+
+bool ArrangementCanvas::hasAutomationSelection() const {
+    const auto &selection=view.geometry.selection;
+    // History restores time coordinates through the ordinary selection advisory.
+    // A restored range on the same selected lanes keeps its envelope context.
+    return view.root.automationMode() && automationSelection_ && !automationSelectionTargets_.empty() &&
+           !view.loopSelected && view.selectedLocator == 0 && view.selectedMeter < 0 &&
+           selection.track==automationSelection_->track && selection.toTrack==automationSelection_->toTrack &&
+           selection.picked==automationSelection_->picked && selection.clip==0 && selection.pickedClips.empty() &&
+           (selection.marked || selection.start!=selection.end);
+}
+void ArrangementCanvas::clearAutomationSelection() {
+    automationSelection_.reset();
+    automationSelectionTargets_.clear();
+}
+void ArrangementCanvas::rememberAutomationSelection() {
+    const auto selected = view.geometry.selectedTracks(view.reader());
+    automationSelectionTargets_.clear();
+    for (const auto &body : laneBodies())
+        if (std::find(selected.begin(), selected.end(), body.track->id) != selected.end())
+            automationSelectionTargets_.emplace_back(body.track->id, view.root.automationTarget(body.track->id));
+    automationSelection_ = view.geometry.selection;
+}
+bool ArrangementCanvas::automationSelectionDown(const juce::MouseEvent &e) {
+    if (!view.root.automationMode())
+        return false;
+    const auto bodies = laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(),
+                                   [&](const auto &lane) { return e.position.y >= lane.top && e.position.y <= lane.bottom; });
+    if (body == bodies.end())
+        return false;
+
+    auto &sel = view.geometry.selection;
+    const auto track = body->track->id;
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x));
+    const bool snap = view.snaps(e.mods);
+    const bool extending = hasAutomationSelection() && e.mods.isShiftDown() && !e.mods.isPopupMenu();
+    if (e.mods.isPopupMenu() && hasAutomationSelection() && raw >= std::min(sel.start, sel.end) &&
+        raw < std::max(sel.start, sel.end) &&
+        std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
+                    [&](const auto &entry) { return entry.first == track; })) {
+        automationContextMenu(e);
+        return true;
+    }
+    if (extending) {
+        if (sel.start == sel.end)
+            sel.start = sel.insert;
+        sel.end = snap ? view.geometry.snap(raw, raw >= sel.start) : raw;
+        sel.toTrack = track == sel.track ? 0 : track;
+    } else {
+        const auto tick = snap ? view.geometry.snap(raw, false) : raw;
+        sel = {};
+        sel.track = track;
+        sel.insert = sel.start = sel.end = tick;
+        sel.marked = true;
+    }
+    rememberAutomationSelection();
+    if (!extending && !e.mods.isPopupMenu())
+        view.locate();
+    view.changed();
+    if (e.mods.isPopupMenu())
+        automationContextMenu(e);
+    else
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+    return true;
+}
+std::optional<std::vector<automation::LaneSpec>> ArrangementCanvas::automationRangeLanes() const {
+    const auto current = view.root.current();
+    if (!current || !hasAutomationSelection())
+        return std::nullopt;
+    std::vector<automation::LaneSpec> lanes;
+    for (const auto &[track, target] : automationSelectionTargets_) {
+        if (current->findTrack(track) == nullptr || !view.geometry.shown(track) || view.root.automationTarget(track) != target)
+            return std::nullopt;
+        const auto envelope = envelopeOf(*current, target);
+        automation::LaneSpec spec;
+        spec.id = envelope.lane ? envelope.lane->id : 0;
+        spec.ownerKind = target.ownerKind;
+        spec.ownerId = target.ownerId;
+        spec.paramRef = target.paramRef;
+        spec.paramName = target.paramName;
+        spec.timeBase = envelope.lane ? envelope.lane->timeBase : 0;
+        spec.valueDomain = target.valueDomain;
+        spec.unit = target.unit;
+        spec.defaultValue = writtenAutomationValue(target, view.root.automationCurrent(target));
+        spec.minValue = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
+        spec.maxValue = target.maximum;
+        lanes.push_back(std::move(spec));
+    }
+    return lanes;
+}
+void ArrangementCanvas::selectAutomationSpan(std::int64_t begin, std::int64_t end) {
+    auto &sel = view.geometry.selection;
+    sel.insert = sel.start = begin;
+    sel.end = end;
+    sel.marked = true;
+    automationSelection_ = sel;
+    view.changed();
+}
 bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     // In Automation Mode a click on a breakpoint chooses it and a drag moves it; on the envelope's line
     // it adds one, on the grid as the view snaps (Live 12 manual 25.3, 25.5.2).
     if (!view.root.automationMode() || e.mods.isPopupMenu())
+        return false;
+    std::int64_t titleTrack = 0;
+    ResizeEdge titleEdge = ResizeEdge::None;
+    if (barAt(e.x, e.y, titleTrack, titleEdge) != nullptr)
         return false;
     if (view.root.drawMode())
         return beginAutomationStroke(e);
@@ -3379,6 +3767,7 @@ std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int
     return nearest;
 }
 void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
+    if(!pointDrag_)clearAutomationValueReadout();
     if (hoverClip_ != 0) {
         hoverClip_ = 0;
         repaint();
@@ -3649,7 +4038,6 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         view.selectedMeter = -1; // a click in the lanes lets a selected marker go
         view.scrub.repaint();
     }
-    view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
     copying_ = false;
@@ -3661,15 +4049,35 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     pointDrag_.reset();
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
     pointAdded_ = false;
-    // With F held, a visible fade handle wins a hit on the envelope beneath it.
-    const auto fade = !panning && !e.mods.isPopupMenu() ? fadeHandleAt(e.x, e.y) : std::nullopt;
-    if (!panning && !fade && automationDown(e))
+    contextMenuPress_ = e.mods.isPopupMenu();
+    if (!contextMenuPress_)
+        view.followPaused = false; // a primary press in the Arrangement starts Follow again (§6.2)
+    if (!panning && contextMenuPress_ && view.root.automationMode() && automationPointAt(e.position)) {
+        clearAutomationSelection();
+        automationContextMenu(e);
         return;
-    if (e.mods.isPopupMenu()) {
-        view.select(e.x, e.y, view.snaps(e.mods));
+    }
+    // Holding F gives a visible fade handle priority over the automation lane.
+    const auto fade = !panning && !contextMenuPress_ ? fadeHandleAt(e.x, e.y) : std::nullopt;
+    if (!panning && !fade && automationDown(e)) {
+        clearAutomationSelection();
+        if(const auto point=automationValueAt(e.position,false,false))
+            showAutomationValue(point->target,point->value,e.position);
+        else if(pointDrag_)
+            showAutomationValue(view.root.automationTarget(pointDrag_->track),pointValue_,e.position);
+        return;
+    }
+    clearAutomationValueReadout();
+    if (!panning && !fade && automationSelectionDown(e))
+        return;
+    if (contextMenuPress_) {
+        view.select(e.x, e.y, view.snaps(e.mods), ArrangementView::SelectionPurpose::ContextMenu);
         // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
         view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
-    } else if (!panning) {
+        return;
+    }
+    clearAutomationSelection();
+    if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
@@ -3759,12 +4167,15 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             extendTo(e.x, e.y, view.snaps(e.mods));
             return;
         }
-        view.select(e.x, e.y, view.snaps(e.mods));
-        if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && c->id == view.geometry.selection.clip) {
-            moving_ = c->id;
-            movingFrom_ = movingTo_ = c->posTicks;
+        const auto *bar = barAt(e.x, e.y, track, edge);
+        using Purpose = ArrangementView::SelectionPurpose;
+        const auto purpose = bar != nullptr ? Purpose::Edit : Purpose::InsertMarker;
+        view.select(e.x, e.y, view.snaps(e.mods), purpose);
+        if (bar != nullptr && bar->id == view.geometry.selection.clip) {
+            moving_ = bar->id;
+            movingFrom_ = movingTo_ = bar->posTicks;
             movingSource_ = movingTrack_ = track;
-            grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+            grabTicks_ = view.geometry.tick(e.x) - bar->posTicks;
         }
     }
 }
@@ -3821,6 +4232,9 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     return nullptr;
 }
 void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
+    if(const auto point=automationValueAt(e.position,false,false))
+        showAutomationValue(point->target,point->value,e.position);
+    else clearAutomationValueReadout();
     focusLost(focusChangedDirectly);
     if (view.root.automationMode() && view.root.drawMode()) {
         setMouseCursor(juce::MouseCursor::CrosshairCursor);
@@ -3847,7 +4261,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
                                                              : juce::MouseCursor::NormalCursor);
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu())
+    if (contextMenuPress_ || e.mods.isPopupMenu())
         return;
     if (automationStroke_) {
         if (view.root.automationMode() && view.root.drawMode())
@@ -3861,8 +4275,10 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             if (body.track->id == pointDrag_->track) {
                 const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
                 pointTick_ = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
-                pointValue_ = automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
+                const auto target=view.root.automationTarget(body.track->id);
+                pointValue_ = automationValue(e.position.y, automationRange(target),
                                               body.top, body.scaleBottom);
+                showAutomationValue(target,writtenAutomationValue(target,pointValue_),e.position);
             }
         repaint();
         return;
@@ -3966,20 +4382,25 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
+        auto &sel = view.geometry.selection;
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
+        const bool envelopeSelection = hasAutomationSelection();
         if (e.mouseWasDraggedSinceMouseDown())
             view.edgeScroll(e.x, e.y, true);
         if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
-            view.geometry.selection.toTrack = over->id == view.geometry.selection.track ? 0 : over->id;
+            sel.toTrack = over->id == sel.track ? 0 : over->id;
         // A time selection covers whole grid cells while snapping (§6.10).
         const auto at = view.geometry.tick(e.x);
-        view.geometry.selection.end =
-            view.snaps(e.mods) ? view.geometry.snap(at, at >= view.geometry.selection.start) : at;
+        sel.end = view.snaps(e.mods) ? view.geometry.snap(at, at >= sel.start) : at;
+        if (envelopeSelection)
+            rememberAutomationSelection();
     }
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(contextMenuPress_, false))
+        return;
     if (automationStroke_) {
         const bool drawing = view.root.automationMode() && view.root.drawMode();
         if (drawing)
@@ -4191,6 +4612,15 @@ void ArrangementCanvas::extendTo(int x, int y, bool snapToGrid) {
     view.changed();
     announce(view.root.selectionText());
 }
+namespace {
+// These existing planner exclusions keep the window's whole-clip Delete behavior.
+bool canDeleteWholeClips(const edit_plan::EditPolicy &policy, std::string_view error) {
+    return !policy.deleteOverlaps || policy.mutedClipsAsDeleted ||
+           error == "frozen placement requires TM-FC-04 policy" ||
+           error == "frozen-group placement requires TM-FC-04 policy";
+}
+} // namespace
+
 bool ArrangementCanvas::rangeEdit(bool deactivate) {
     // From the CURRENT cell, as every action is (ADR-0201).
     const auto current = view.root.current();
@@ -4203,31 +4633,40 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     // of a clip the selection lies inside (`prepareDeleteRange`, with the settings' editing policy);
     // 0 over one clip splits it at the selection's edges inside it and deactivates the part inside,
     // one batch.
-    if (content.crossing > 0 && !deactivate) {
-        clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+    if (!deactivate && !selected.empty()) {
         const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
-        auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
-        if (prepared.ok) {
-            if (!view.root.commitEdit(std::move(prepared)))
-                return false;
-            view.changed();
-            return true;
+        if (options.policy.automationFollowsClips || content.crossing > 0) {
+            const clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+            auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
+            if (prepared.ok) {
+                if (prepared.requests.empty()) {
+                    view.root.say("There is nothing in the selection to delete.");
+                    return false;
+                }
+                if (content.crossing == 0 && !content.inside.empty())
+                    prepared.requests.front().label = content.inside.size() == 1 ? "Delete Clip" : "Delete Clips";
+                if (!view.root.commitEdit(std::move(prepared)))
+                    return false;
+                view.changed();
+                return true;
+            }
+            if (!canDeleteWholeClips(options.policy, prepared.error))
+                return view.root.commitEdit(std::move(prepared));
+            if (content.crossing > 0) {
+                const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
+                                 prepared.error + ").";
+                auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
+                if (whole.ops.empty()) {
+                    view.root.say(why);
+                    return false;
+                }
+                if (!view.root.submitEdits(std::move(whole.ops)))
+                    return false;
+                view.changed();
+                view.root.say(why);
+                return true;
+            }
         }
-        // The engine will not trim here (a track whose automation follows its clips, a frozen track,
-        // the editing settings): the whole clips inside go as before, and the Status Bar says why the
-        // crossing ones stay.
-        const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
-                         prepared.error + ").";
-        auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
-        if (whole.ops.empty()) {
-            view.root.say(why);
-            return false;
-        }
-        if (!view.root.submitEdits(std::move(whole.ops)))
-            return false;
-        view.changed();
-        view.root.say(why);
-        return true;
     }
     if (deactivate)
         if (const auto split = edgeSplit(content, sel.start, sel.end)) {
@@ -4282,7 +4721,23 @@ bool ArrangementCanvas::editMaterialSelection(bool deactivate) {
         view.root.say(std::move(edit.refusal));
         return false;
     }
-    if (!view.root.submitEdits(std::move(edit.ops)))
+    if (!deactivate && !edit.ops.empty()) {
+        const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+        if (options.policy.automationFollowsClips) {
+            std::vector<std::int64_t> present;
+            for (const auto &op : edit.ops)
+                present.push_back(op.payload.at("id").get<std::int64_t>());
+            auto prepared = edit_plan::prepareDelete(view.root.editStore(), present, options);
+            if (prepared.ok || !canDeleteWholeClips(options.policy, prepared.error)) {
+                if (!prepared.requests.empty())
+                    prepared.requests.front().label = edit.ops.front().label;
+                if (!view.root.commitEdit(std::move(prepared)))
+                    return false;
+                edit.ops.clear();
+            }
+        }
+    }
+    if (!edit.ops.empty() && !view.root.submitEdits(std::move(edit.ops)))
         return false;
     if (!deactivate) {
         sel.insert = sel.start;
@@ -4295,8 +4750,11 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
     if (e.mods.isPopupMenu())
         return;
+    // A breakpoint's hit slop does not cover a clip title.
+    std::int64_t titleTrack = 0;
+    ResizeEdge titleEdge = ResizeEdge::None;
     // In Automation Mode a double-click on a breakpoint deletes it (manual 25.3).
-    if (view.root.automationMode()) {
+    if (view.root.automationMode() && barAt(e.x, e.y, titleTrack, titleEdge) == nullptr) {
         if (view.root.drawMode())
             return;
         if (const auto hit = automationPointAt(e.position)) {
@@ -4312,10 +4770,10 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
             if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
                 if (!automationLineAt(e.position)) {
                     const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
-                    view.root.addAutomationPoint(body.track->id, view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw,
-                                                 automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
-                                                                 body.top, body.scaleBottom));
-                    repaint();
+                    const auto target=view.root.automationTarget(body.track->id);
+                    const auto value=automationValue(e.position.y,automationRange(target),body.top,body.scaleBottom);
+                    if(view.root.addAutomationPoint(body.track->id,view.snaps(e.mods)?view.geometry.snap(raw,false):raw,value))
+                        showAutomationValue(target,writtenAutomationValue(target,value),e.position);
                 }
                 return;
             }
@@ -4350,7 +4808,10 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
         view.geometry.zoom(factor, e.position.x);
     view.changed();
 }
-bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
+bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
+    if (view.root.playComputerMidiKey(pressed))
+        return true;
+    const auto k = view.root.computerMidiShortcut(pressed);
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     if (automationStroke_ && code == juce::KeyPress::escapeKey) {
@@ -4475,6 +4936,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     }
     const auto tracks = view.geometry.rows(view.reader());
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
+        clearAutomationSelection();
         // Between the tracks shown, in the lanes' order: those the project view leaves out or a
         // folded group holds are passed over. At either end the selection stays; with none, it
         // goes to the first track shown. With Shift, the selection's far track moves instead, so the
@@ -4553,6 +5015,14 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         view.root.deleteMeter(view.selectedMeter);
         return true;
     }
+    if (hasAutomationSelection()) {
+        if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
+            view.root.deleteAutomationRange();
+            return true;
+        }
+        if (k == juce::KeyPress('0'))
+            return true;
+    }
     // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
     // material, as one undo step.
     const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
@@ -4573,6 +5043,22 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
     auto &geo = view.geometry;
     auto &sel = geo.selection;
     const auto *track = view.reader().findTrack(sel.track);
+    if (hasAutomationSelection() && !edgeKey) {
+        if (mods.isShiftDown()) {
+            const auto begin = sel.start == sel.end ? sel.insert : sel.start;
+            const auto end = geo.nextGridLine(sel.start == sel.end ? sel.insert : sel.end, forward);
+            selectAutomationSpan(begin, end);
+        } else {
+            const auto at = sel.start == sel.end
+                ? geo.nextGridLine(sel.insert, forward)
+                : (forward ? std::max(sel.start, sel.end) : std::min(sel.start, sel.end));
+            selectAutomationSpan(at, at);
+            view.locate();
+        }
+        view.root.linkLoopToSelection();
+        announce(view.root.selectionText());
+        return true;
+    }
     if (mods.isShiftDown()) {
         // Shift selects from the insert marker, or moves the selection's far edge; a selection
         // that is exactly a clip selects that clip (§6.9).
@@ -4793,7 +5279,22 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, audioDropTick(x),
-                            juce::ModifierKeys::currentModifiers.isCommandDown());
+    juce::StringArray audio;
+    std::vector<std::pair<std::string, std::string>> midi;
+    for (const auto &path : files) {
+        const auto file = juce::File::createFileWithoutCheckingPath(path);
+        if (file.hasFileExtension("mid;smf"))
+            midi.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
+        else
+            audio.add(path);
+    }
+    const auto on = track != nullptr ? track->id : 0;
+    const bool onMidi = track != nullptr && isMidiTrack(*track);
+    const auto at = audioDropTick(x);
+    const bool separate = juce::ModifierKeys::currentModifiers.isCommandDown();
+    if (!audio.isEmpty())
+        view.root.dropAudioPaths(audio, !midi.empty() && onMidi ? 0 : on, at, separate);
+    if (!midi.empty())
+        view.root.dropMidiFiles(midi, !audio.isEmpty() && !onMidi ? 0 : on, at, separate);
 }
 } // namespace adi::ui

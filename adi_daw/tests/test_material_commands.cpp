@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -107,7 +108,12 @@ void externalCopyOwnership() {
 void bounce() {
     Project p;auto& db=p.store->db();auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"bounce fixture imports source");
-    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PostFader};
+    p.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain)"
+                       " VALUES(91,'track',21,'volume','real')");
+    AutomationPoint point{};point.time=50000;point.value=-6;point.point_id=1;
+    const auto automation=writeStream<AutomationPoint>(FourCC::Automation,{&point,1});
+    check(p.store->putAutomationData(91,{},automation),"Bounce in Place fixture has track Volume automation");
+    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PreFader};
     options.job.beginSample=127;options.job.endSample=639;options.job.session={2,48000,64};
     options.job.encoding.format=audio::WavFormat::Float32;
     options.destination=p.options();options.destination.clipId=10;options.destination.mediaId=11;options.destination.at={1,1000000000};options.destination.warp=true;
@@ -131,7 +137,12 @@ void bounce() {
 void bounceInPlaceAndStale() {
     Project p;auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"Bounce in Place fixture source");
-    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PostFader};
+    p.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain)"
+                       " VALUES(91,'track',21,'volume','real')");
+    AutomationPoint point{};point.time=50000;point.value=-6;point.point_id=1;
+    const auto automation=writeStream<AutomationPoint>(FourCC::Automation,{&point,1});
+    check(p.store->putAutomationData(91,{},automation),"Bounce in Place fixture has track Volume automation");
+    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PreFader};
     options.job.beginSample=127;options.job.endSample=639;options.job.session={2,48000,64};
     options.job.encoding.format=audio::WavFormat::Float32;
     options.destination=p.options();options.destination.clipId=8;options.destination.mediaId=11;options.destination.at={1,2645833};
@@ -146,6 +157,7 @@ void bounceInPlaceAndStale() {
               db.execAndGet("SELECT min(clip_id) FROM audio_clips WHERE clip_id NOT IN (7,8)").getInt64()==9 &&
               db.execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==1,
           "the supplied next ID belongs to the bounce and the crossing source uses two other IDs");
+    check(p.store->getAutomationData(91,{})==automation,"Bounce in Place leaves the live Volume envelope byte-exact");
     check(History(*p.store).undo().ok && p.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==1,"Bounce in Place undo restores the source whole");
     options.replace.reset();options.destination.clipId=20;options.destination.mediaId=21;
     bool edited=false;render::Control control;

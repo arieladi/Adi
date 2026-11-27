@@ -203,6 +203,8 @@ void PrimaryButtonSlider::mouseDoubleClick(const juce::MouseEvent &event) {
 }
 
 bool PrimaryButtonSlider::keyPressed(const juce::KeyPress &key) {
+    if (!isEnabled())
+        return false;
     if (!default_ || key.getModifiers().isAnyModifierKeyDown())
         return juce::Slider::keyPressed(key);
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) {
@@ -219,7 +221,8 @@ bool PrimaryButtonSlider::keyPressed(const juce::KeyPress &key) {
         return juce::Slider::keyPressed(key);
     if (!valueEntry_)
         valueEntry_ = std::make_unique<ValueEntry>(getTitle(), [this](const juce::String &text) {
-            setValue(getValueFromText(text), juce::sendNotificationSync);
+            if (isEnabled())
+                setValue(getValueFromText(text), juce::sendNotificationSync);
         });
     const auto bounds = getLocalBounds().withHeight(std::min(getHeight(), 20)).withCentre(getLocalBounds().getCentre());
     valueEntry_->open(*this, bounds, getTextFromValue(getValue()), first);
@@ -392,19 +395,23 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     delay.setMouseDragSensitivity(kDelayDragPixels);
     delay.textFromValueFunction = [](double v) { return juce::String(v, 2); };
     // Typed with or without its unit: "10", "10 ms", "-2.5ms".
-    delay.valueFromTextFunction = [](const juce::String &text) {
-        return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
+    delay.valueFromTextFunction = [this](const juce::String &text) {
+        auto number = text.trim();
+        if (number.endsWithIgnoreCase("ms"))
+            number = number.dropLastCharacters(2);
+        return valueNumber(number).value_or(delay.getValue());
     };
     delay.updateText();
     keepLatency.setTitle("Keep Latency");
-    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio, stored with the track; recording does not "
-                           "follow it yet. Right-click In or Auto for the same switch.");
+    keepLatency.setTooltip("Keep the monitored timing of audio takes outside loop recording when Monitor is In or Auto. "
+                           "Turn off to apply the driver's latency correction.");
     keepLatency.setClickingTogglesState(false);
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
     setDelayTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
+    delay.enableValueEdits(0, .1);
     delay.onDragStart = [this] { dragging_ = true; };
     delay.onDragEnd = [this] {
         dragging_ = false;
@@ -426,6 +433,10 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     cueVolume.setTitle("Cue Volume");
     cueVolume.setTooltip("The level of cued tracks and the metronome at Cue Out.");
     cueVolume.setScrollWheelEnabled(false);
+    cueVolume.valueFromTextFunction = [this](const juce::String &text) {
+        return levelValue(text, kCueFloorDb).value_or(cueVolume.getValue());
+    };
+    cueVolume.enableValueEdits(0, .1);
     cueVolume.onDragStart = [this] { cueDragging_ = true; };
     cueVolume.onDragEnd = [this] {
         cueDragging_ = false;
