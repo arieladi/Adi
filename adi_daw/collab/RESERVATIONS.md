@@ -24,7 +24,12 @@ Main is at 1.23. PLAN PD-10's register of pending minors is this table. Minors l
 | 1.23 | engine | the send taps, `routing_send_taps` (DF-E22, ADR-0245 d10) | #677 (#665 closed, superseded) | landed (#677) |
 | 1.24 | engine | the rack macro side tables: the saved chain selector and its settings, macro settings, enabled mappings, mapping breakpoint curves and authored target caps, keyed by (device, parameter id) (DEV-06, ADR-0060 d3-d5, ADR-0203 d15) | none yet: `engine/dev06-rack-macros` plays the macros without it | reserved; lands after DEV-03 and 3 December (ADR-0249 d3); the saved selector waits for DEV-02 |
 | 1.25 | engine | the modulation route side tables (source, target device and parameter, depth, curve points, mode, bipolar, enable), persisted and undoable; outputs never persist (DEV-07, ADR-0230 d4, XC-16) | none yet: engine queue item 12 | reserved; lands after DEV-06 (ADR-0249 d3) |
-| 1.26 | — | the next minor, by reservation here | — | free |
+| 1.26 | the session seat (engine, lent) | Session View's data: `scenes`, `clip_slots`, `clip_launch` and the essential extension `org.adidaw.session` (TM-SV-02, ADR-0101 d2, d4); slot clips stay out of the Arrangement's accessor and its SQL readers | none yet: `seats/session-chain` | reserved 27 November |
+| 1.27 | the pitch seat (engine, lent) | the Pitch Editor's clip-owned edit rows: stable note identities against the source's hash and the analysis version, authored edits in the project because ADIA is evictable (`docs/CLIP-VIEW-ADDITIONS.md` C1; plan row TM-PE-01, owed under DF-R3); with them, in the same minor, the marker `clip_pitch_extractions` owned by an extraction's output clip, which outlives the audio source | none yet: `seats/pitch-chain` | reserved 27 November |
+| 1.28 | the basics routing session (engine, lent) | SC-404, a MIDI track's own output: one optional row per track holding the endpoint's identifier, its saved name and a MIDI channel 1 to 16; it goes with the track on delete, Undo and duplicate | none yet: the routing chain | reserved 27 November |
+| 1.29 | — | the next minor, by reservation here | — | free |
+
+**The order of the minors.** The file on main is at 1.23. Minors 1.24 and 1.25 belong to engine rows whose branches have not landed (DEV-06, DEV-07). A later minor is staged under its number and switched on only when every minor below it is on main: 1.26, 1.27 and 1.28 wait for 1.24 and 1.25, which win lands or renumbers first.
 
 Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win); chain volume and pan, a side table (DF-E73, ADR-0253 d8); AU-06's Arrangement clip-envelope modulation streams (ADR-0230 d4, M6); engine-win queue item 8, only if the device ref must store the VST3 class ID. From ADR-0254, each reserved when its row starts: MX-39's per-device gain-match flag and fixed gain; TM-FC-05's lane kind that plays along with the main lane; AGT-12, only if a request's scope needs a new object beside `agent_requests`.
 
@@ -34,7 +39,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0263**.
+Next free: **ADR-0264**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -58,6 +63,10 @@ Claimed by open pull requests, or reserved for a named PLAN row before its pull 
 | `routing.setSendTap` | #677 (landed); #665 closed | engine |
 | `lane.restore` | #662 (landed) | engine-win |
 | `noteExpression.write` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the `note_expression` AEXP rows; DF-W12's gain (3) and pan (4) are existing dimensions | engine |
+| `scene.create`, `scene.delete`, `scene.reorder`, `scene.rename`, `scene.setTempo`, `session.setSlotClip`, `session.clearSlot`, `session.setLaunchMode`, `session.setLaunchQuant`, `session.setFollowAction` (edits); `session.launchClip`, `session.launchScene`, `session.stopTrack`, `session.stopAll` (ephemeral); `transport.setLaunchQuantization` (TM-SV-01) and `capture.sessionPerformance` (TM-SV-04) | none yet: `seats/session-chain`. Further names (a scene's signature and enable, the Stop button, clip settings, a scene's cancel, slot record) keep the `scene.` and `session.` prefixes and are listed in the seat's report as they are added | the session seat |
+| `clip.setPitchEdits` | none yet: `seats/pitch-chain`; one batch replaces a clip's edit rows and captures the previous rows for Undo | the pitch seat |
+| `clip.splitPitchSegment`, `clip.mergePitchSegments` | none yet: `seats/pitch-chain`; each carries the resolved source-bound edit image, so Undo, Redo and replay use captured bytes | the pitch seat |
+| `scene.setSignature`, `scene.setEnabled`, `session.setStopButton`, `session.setLaunchSettings`, `session.cancelSceneLaunch`, `session.backToArrangement`, `session.setFollowActionsEnabled` | none yet: `seats/session-chain` | the session seat |
 | `noteExpression.clear` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the same rows | engine |
 
 ## PLAN rows on loan (ADR-0252)
@@ -74,6 +83,11 @@ are in the seat's queue (`collab/prompts/2026-11-22-gemini-queue.md` for gemini)
 | CO-01, the collaboration core | engine | gemini | `src/adi/collab/**` (new), `tests/test_collab_*.cpp`, their lines in `CMakeLists.txt`; its schema minor, if a slice needs one, reserved in the table above first | after 3 December | reserved |
 | the rows of `docs/SANITY-CHECK.md` (fixes; ADR-0257 d2) | each row's owner seat | the six basics sessions (`collab/prompts/2026-11-27-basics-*.md`) | the files each queue names, for its own rows only | now, in win's stacks | lent 27 November, until the owner seat next runs |
 | DF-E89, the Release warnings (a fix) | engine, engine-win and devices | gemini | the 54 units its sweep named, for those warnings only (`collab/prompts/2026-11-27-gemini-basics.md`) | now | lent 27 November |
+| TM-WT-04, the stretcher that follows tempo | engine | the stretcher seat | new files for the streaming players and the real-time stretcher, their tests; small changes in the shared session and graph, named in its report | after the basics, as one bundle | lent 27 November by the director's word (`collab/prompts/2026-11-27-engine-seats.md`) |
+| TM-SV-02, TM-SV-03, TM-SV-04, Session View's engine | engine | the session seat | new files for the tables, ops and launch engine, their tests; schema minor 1.26 | after the basics, as one bundle | lent 27 November |
+| TM-PE-01, the Pitch Editor's engine (row owed, DF-R3); TM-WT-09's note finder | engine | the pitch seat | new files for the analysis, the edits and the render, their tests; schema minor 1.27; the optional ADIA section `PNOT` for a source's pitch notes | after the basics, as one bundle | lent 27 November |
+| TM-MD-04, TM-MD-07, TM-WT-01 and TM-WT-05's analysis, and the query service of ADR-0261 d12 | engine | the library seat | the library's analysis worker, descriptors, classifier and query, their tests | after the basics, as one bundle | lent 27 November |
+| DF-E92 and DEV-27's engine half, the plug-in server | engine, with win for `third_party/` | the server seat | `docs/ENGINE-PLUGIN-SERVER.md`, the latency probe, the client behind the device contract, their tests | after the basics, as one bundle | lent 27 November |
 | N76 and DF-E82, the preview player (with SC-123) | engine | the basics browser session (`collab/prompts/2026-11-27-basics-browser.md`) | the preview source and its cue path, the Browser's preview row, their tests | now, in win's stacks | lent 27 November (ADR-0261 d14) |
 | the analyser files (fixes; `collab/prompts/2026-11-27-basics-analysers.md`) | mixview | the basics analysers session | `src/juce/ui_analysis.*`, `src/juce/ui_mix_analysers.cpp`, `src/adi/ui/shared_analysis*`, the loudness meter under `src/adi/mix/`, their tests | now, in win's stacks | lent by the director's word of 27 November, until the Mix View seat next runs |
 | the audio device and file rows (SC-376 to SC-391, SC-405, SC-428; `collab/prompts/2026-11-27-basics-device.md`) | each row's owner seat | the Windows 10 walk session | the files its queue names, for its own rows only | now, in win's stacks | lent 27 November |

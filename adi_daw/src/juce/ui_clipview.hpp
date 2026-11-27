@@ -53,9 +53,16 @@ class NoteEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    void modifierKeysChanged(const juce::ModifierKeys &) override;
+    void focusLost(FocusChangeType) override;
     // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A, Esc, and 0 to
     // deactivate (manual 10.5).
     bool keyPressed(const juce::KeyPress &) override;
+    juce::TextButton &previewButton() noexcept { return preview_; }
+    bool keySounding(int key) const noexcept;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // The lane's height (manual 10.1: the divider between the key tracks and the lanes drags to
     // resize them): never lower than its header needs, and it leaves the key tracks four rows.
@@ -325,6 +332,12 @@ class NoteEditor final : public juce::Component {
         std::unordered_map<std::uint64_t, bool> index_;
     };
     enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch, LaneSize };
+    juce::TextButton preview_{"Preview"};
+    std::array<std::uint64_t, 2> soundingKeys_{};
+    bool pianoPreviewHeld_ = false;
+    void audition(std::int64_t track, int key, int velocity = 100, bool held = false);
+    void auditionSelected();
+    void releasePianoPreview();
     int laneHeight_ = kVelocityHeight, laneFrom_ = 0;
     // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
     // now (all in the song's ticks), and the notes it carries.
@@ -376,6 +389,10 @@ class NoteEditor final : public juce::Component {
     // the previous and next note in time, left and right to those on the same key. Shift extends.
     bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
+    std::optional<juce::Point<int>> hover_;
+    juce::ModifierKeys hoverMods_;
+    juce::MouseCursor::StandardCursorType cursorAt(juce::Point<int>, const juce::ModifierKeys &) const;
+    void updateCursor();
     bool copying_ = false, folded_ = false, drawMode_ = false, scaleFolded_ = false;
     // The key tracks shown, after either fold or none.
     void refold();
@@ -564,7 +581,7 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain
     };
     // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
@@ -636,6 +653,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
+    juce::Rectangle<int> warpBox() const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
     bool typeField(Field, const juce::String &);
@@ -644,6 +662,7 @@ class ClipViewPanel final : public juce::Component {
     // The field's Set button.
     bool setFieldHere(Field);
     bool toggleLoop();
+    bool toggleWarp();
     // The field open for typing, and its editor.
     Field editing() const noexcept { return editing_; }
     juce::TextEditor &fieldEditor() noexcept { return editor_; }
@@ -715,11 +734,16 @@ class ClipViewPanel final : public juce::Component {
     void read(const SnapshotReader &);
     friend class NoteEditor;
     bool commit(TrackEdit);
+    bool setGain(double db);
+    double draggedGain() const noexcept;
     std::int64_t fieldTicks(Field) const noexcept;
-    std::int64_t draggedTicks() const noexcept;
-    std::pair<std::int64_t, std::int64_t> draggedSignature() const noexcept;
-    void openEditor(Field);
+    std::int64_t adjustedTicks(Field, int part, int steps) const noexcept;
+    std::pair<std::int64_t, std::int64_t> adjustedSignature(int part, int steps) const noexcept;
+    void adjustField(Field, int part, int steps);
+    juce::String fieldText(Field);
+    void openEditor(Field, int part = 0);
     void closeEditor();
+    bool stepEditedField(const juce::KeyPress &);
     void showScaleMenu(bool roots);
     // A field of the Functions tab: the number it holds and its range; null for any other field.
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
@@ -749,6 +773,7 @@ class ClipViewPanel final : public juce::Component {
     std::uint64_t generation_ = 0, statusStamp_ = 0;
     bool read_ = false;
     std::optional<engine::ClipDetails> details_;
+    juce::String gainText_, draggedGainText_;
     std::string problem_;
     const engine::ClipNode *node_ = nullptr;
     // The edited clip's track's name, from this frame's snapshot: what an unnamed clip's title reads.
@@ -762,11 +787,19 @@ class ClipViewPanel final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
-    int pressPart_ = 0, dragSteps_ = 0;
+    int pressPart_ = 0, dragSteps_ = 0, editPart_ = 0;
     std::size_t chord_ = 0, quantizeValue_ = 0, duration_ = 1; // Grid
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
-    juce::TextEditor editor_;
+    juce::String editorReading_;
+    class FieldEditor final : public juce::TextEditor {
+      public:
+        explicit FieldEditor(ClipViewPanel &owner) : owner_(owner) {}
+        bool keyPressed(const juce::KeyPress &key) override;
+
+      private:
+        ClipViewPanel &owner_;
+    } editor_{*this};
 };
 
 // The Clip View's top edge: dragging it grows the view, and dragging it to the window's foot

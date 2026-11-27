@@ -32,6 +32,11 @@ inline LoopEdit setMetronome(const TransportSettings &t, bool on) {
         edit.ops.push_back(track_edits_detail::op("transport.setMetronome", {{"on", on}}, "Metronome"));
     return edit;
 }
+inline LoopEdit setMetronomeOptions(Payload changes) {
+    LoopEdit edit;
+    edit.ops.push_back(track_edits_detail::op("transport.setMetronomeOptions", std::move(changes), "Metronome Options"));
+    return edit;
+}
 inline LoopEdit setCountIn(const TransportSettings &t, int bars) {
     LoopEdit edit;
     if (t.countInBars != bars)

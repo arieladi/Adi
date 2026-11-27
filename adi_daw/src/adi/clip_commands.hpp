@@ -20,13 +20,16 @@ struct ClipCopy {
     bool ok=false;
     std::string error,sourceFile;
     Payload image;
+    Payload envelopes; // null when copied with envelopes locked or from a take lane
 };
 struct ClipCut {ClipCopy copy;PreparedEdit edit;};
 [[nodiscard]] ClipCut prepareCutClip(Store&,std::int64_t,double referenceRate);
+[[nodiscard]] ClipCut prepareCutClip(Store&,std::int64_t,const edit_plan::Options&);
 /// These prepare on the Store owner thread, off the callback. A background
 /// worker can use its own snapshot connection. Keep its document generation
 /// with the result and commit on that same live project's owner thread.
 [[nodiscard]] ClipCopy copyClip(Store&,std::int64_t,double referenceRate);
+[[nodiscard]] ClipCopy copyClip(Store&,std::int64_t,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit preparePaste(Store&,const ClipCopy&,std::int64_t newId,
                                         std::int64_t track,TimePoint,double referenceRate);
 [[nodiscard]] PreparedEdit prepareDuplicate(Store&,std::int64_t sourceId,std::int64_t newId,
@@ -81,6 +84,7 @@ struct RangeCopy {
     RangeSelection selection;
     std::vector<Payload> images; // clipped material, offsets relative to selection
     bool clearsRange=true; // explicit clips clear only where their images land
+    std::vector<Payload> envelopes; // per track for full ranges, per image for explicit clips
 };
 struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 struct MidiConsolidation {
@@ -98,8 +102,9 @@ struct MidiConsolidation {
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,double referenceRate);
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,const edit_plan::Options&);
 [[nodiscard]] RangeCopy copyRange(Store&,const RangeSelection&,double referenceRate);
-[[nodiscard]] RangeCopy copySelectedClips(Store&,const RangeSelection&,std::span<const std::int64_t>,double referenceRate);
-[[nodiscard]] RangeCut prepareCutClips(Store&,const RangeSelection&,std::span<const std::int64_t>,double referenceRate);
+[[nodiscard]] RangeCopy copyRange(Store&,const RangeSelection&,const edit_plan::Options&);
+[[nodiscard]] RangeCopy copySelectedClips(Store&,const RangeSelection&,std::span<const std::int64_t>,const edit_plan::Options&);
+[[nodiscard]] RangeCut prepareCutClips(Store&,const RangeSelection&,std::span<const std::int64_t>,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDeleteRange(Store&,const RangeSelection&,double referenceRate,std::int64_t reserveClipId=0);
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
                                             TimePoint at,double referenceRate,bool insertTime=false);

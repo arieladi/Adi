@@ -24,6 +24,7 @@ struct AudioMemoryTakeSpec {
 struct RecordingTarget {
     std::int64_t trackId=0;
     std::vector<std::uint32_t> channels; // indices in the current AudioIo.in
+    std::optional<std::int64_t> placementOffsetSamples{}; // linear take override for this track
 };
 /// Explicit frozen sample-domain loop contract. One row per nonempty pass,
 /// allocated before callback publication. Musical loop retiming ends this job.
@@ -40,6 +41,8 @@ struct RecordedPass {
 // at song zero. An unrepresentable sample position cannot be placed.
 [[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
                                                                  std::int64_t offsetSamples) noexcept;
+[[nodiscard]] std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,
+                                                      double errorMilliseconds) noexcept;
 // Intersect a latency-corrected linear take with its captured punch bounds.
 [[nodiscard]] std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,
     std::uint64_t frames,std::int64_t offsetSamples,const RecordingPunchWindow&) noexcept;
@@ -57,13 +60,16 @@ struct RecordedTrack {
     std::int64_t trackId=0;
     std::uint16_t channels=0;
     std::filesystem::path file;
+    std::optional<std::int64_t> placementOffsetSamples{};
 };
 struct AudioRecordingPreview {
     struct Track {
         std::int64_t trackId=0;
         std::vector<std::uint32_t> channels; // indices into the preview's unique input channels
+        std::optional<std::int64_t> placementOffsetSamples{}; // linear track override
     };
-    std::int64_t startSample=0; // clip position on the timeline after the placement correction
+    std::int64_t startSample=0; // clip position on the timeline after the default placement correction
+    std::int64_t rawStartSample=0; // captured start used by a track's linear override
     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
     std::vector<Track> tracks;
     struct PunchedPlacement {
@@ -76,7 +82,8 @@ struct AudioRecordingPreview {
         std::int64_t startSample;
         std::uint64_t sourceStartFrame, frames;
     };
-    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames) const noexcept;
+    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames,
+                                   std::optional<std::int64_t> trackOffsetSamples = {}) const noexcept;
 };
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.

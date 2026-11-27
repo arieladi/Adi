@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/cue_settings.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
+#include "adi/engine/audio_recording.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
@@ -157,6 +160,249 @@ void compensatedAndClick() {
     Fixture click;click.main.value=click.reference.value=0;click.op("cue.setOutput",{{"first",2}});click.op("transport.setMetronome",{{"on",true}});
     check(click.load(),"Cue metronome fixture loads");click.session.transport().play();click.process(b);
     check(std::all_of(b.wide[0].begin(),b.wide[0].end(),[](double v){return v==0;}) && std::any_of(b.wide[2].begin(),b.wide[2].end(),[](double v){return std::abs(v)>0.01;}),"metronome follows Cue Out and leaves Main untouched");
+}
+void metronomeOptions() {
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
+                       "INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    constexpr auto shortBar = 4 * textproj::kPPQ;
+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;
+    f.store->db().exec("INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES (" +
+                       std::to_string(shortBar) + ",3,16),(" + std::to_string(regularBar) + ",4,4)");
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&
+              f.op("transport.setCountIn", {{"bars", 1}}) && f.load(),
+          "SC-256: load the metronome and capture fixture with a 3/16 bar");
+    Block b(128);
+    const auto hasClick = [&] {
+        return std::any_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames,
+                           [](double value) { return std::abs(value) > 0.01; });
+    };
+    const auto at = [&](std::int64_t sample) {
+        f.session.transport().locate(sample);
+        f.session.transport().play();
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+    };
+    at(12000);
+    check(!hasClick(), "Auto in 4/4 leaves the first eighth-note offbeat quiet");
+    check(f.op("transport.setMetronomeOptions", {{"eighthNotes", true}}), "save eighth-note clicks");
+    at(12000);
+    check(hasClick(), "the eighth-note option adds a click on the offbeat");
+    const auto attackAt = [&](std::int64_t sample) {
+        constexpr int lead = 8;
+        f.session.transport().play(false);
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+        at(sample - lead);
+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + lead + 1,
+                           [](double value) { return value == 0.0; }) &&
+               std::abs(b.wide[2][lead + 1]) > 0.01;
+    };
+    check(attackAt(96000 + 6000), "an eighth note does not divide a 3/16 bar, so Auto clicks on the second sixteenth");
+    check(attackAt(114000 + 12000) && readTransportSettings(*f.store).metronomeOptions.eighthNotes,
+          "the saved eighth-note rhythm resumes on the first offbeat of the next 4/4 bar");
+    at(0);
+    const auto classic = b.wide[2];
+    check(f.op("transport.setMetronomeOptions", {{"sound", 1}}), "select Wood");
+    at(0);
+    const auto wood = b.wide[2];
+    check(f.op("transport.setMetronomeOptions", {{"sound", 2}}), "select Bell");
+    at(0);
+    check(hasClick() && classic != wood && classic != b.wide[2] && wood != b.wide[2],
+          "the three synthesized sounds render distinct PCM");
+    check(f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}), "select recording-only playback");
+    const auto saved = readTransportSettings(*f.store).metronomeOptions;
+    check(saved.recordingOnly && saved.eighthNotes && saved.sound == MetronomeSound::Bell && !History(*f.store).canUndo(),
+          "each option persists independently and stays outside undo");
+    OpRequest invalid;
+    invalid.opType = "transport.setMetronomeOptions";
+    invalid.payload = {{"sound", 9}};
+    check(!OpJournal(*f.store).commit(invalid).ok && readTransportSettings(*f.store).metronomeOptions == saved,
+          "unsupported sounds are refused without changing options");
+    at(0);
+    check(!hasClick(), "recording-only mode is silent during ordinary playback");
+
+    std::string why;
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    const std::array<float, 128> input{};
+    const float* channels[]{input.data()};
+    b.io.in = channels;
+    b.io.numIn = 1;
+    check(f.op("transport.setLoop", {{"on", false}, {"start", textproj::kPPQ / 2}, {"end", textproj::kPPQ}}) &&
+              f.op("transport.setPunch", {{"in", true}, {"out", false}}),
+          "set Punch-In at the first eighth-note offbeat");
+    const auto punchSettings = readTransportSettings(*f.store);
+    check(punchSettings.punchIn && !punchSettings.loopEnabled && punchSettings.metronomeOptions == saved,
+          "loop, punch and metronome settings read back together");
+    check(f.session.startRecording(take, why), "start real audio capture");
+    at(0);
+    check(!hasClick(), "the rolling click stays quiet through the armed punch lead-in");
+    at(12000 - b.io.frames / 2);
+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames / 2,
+                      [](double value) { return value == 0.0; }) && hasClick(),
+          "a callback spanning Punch-In sounds the eighth-note click only on its captured half");
+    f.session.recording().stop(true);
+    at(12000);
+    check(!hasClick(), "the recording-only click stops when audio capture ends");
+    check(f.op("transport.setPunch", {{"in", false}, {"out", false}}), "clear punch before MIDI capture");
+
+    const std::array<std::int64_t, 1> midiTracks{3};
+    check(f.session.startMidiInputCapture(midiTracks, why), "start real MIDI capture");
+    at(0);
+    check(hasClick(), "the rolling click sounds during MIDI-only capture");
+    f.session.midiInputCapture().stop();
+    at(0);
+    check(!hasClick(), "the recording-only click stops when MIDI capture ends");
+    f.session.transport().play(false);
+    {
+        auto block = f.session.beginRender();
+        check(block.startPlayback(0, true), "start the meter-based Count-In");
+    }
+    f.process(b);
+    check(hasClick() && f.session.transport().countInRemaining() > 0,
+          "Count-In still sounds with the recording-only gate closed");
+    for (int elapsed = b.io.frames; elapsed <= 12000; elapsed += b.io.frames)
+        f.process(b);
+    check(!hasClick(), "eighth-note playback keeps the Count-In on signature beats");
+}
+void automationOnlyRecordingClick() {
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&
+              f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),
+          "load a recording-only click with no armed audio or MIDI tracks");
+    Block block(64);
+    const auto hasClick = [&](bool playing) {
+        f.session.transport().locate(0);
+        f.session.transport().play(playing);
+        auto render = f.session.beginRender();
+        check(render.process(block.io, false), "render without audio or MIDI capture");
+        block.io.streamTimeSamples += block.io.frames;
+        return std::any_of(block.wide[2].begin(), block.wide[2].begin() + block.io.frames,
+                           [](double sample) { return std::abs(sample) > .01; });
+    };
+    f.session.setAutomationWriteState(true, true);
+    f.session.setRecordingForDevices(true);
+    check(!hasClick(false), "a recording request waits for playback before sounding the click");
+    check(hasClick(true), "a rolling automation-only recording sounds the recording-only click");
+    f.session.setRecordingForDevices(false);
+    f.session.setAutomationWriteState(true, false);
+    check(!hasClick(true), "the recording-only click stops when automation recording ends");
+}
+void compensatedPunchClick() {
+    constexpr int latency = 100, punchFrames = 24, callbackFrames = 64;
+    constexpr auto punchInTick = textproj::kPPQ / 2;
+    constexpr auto punchOutTick = punchInTick + textproj::kPPQ / 1000; // rounds to 24 frames at 48 kHz
+    constexpr auto punchInSample = 12000;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.effects(latency);
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&
+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", punchOutTick}}) &&
+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),
+          "load a recording-only click for a punch shorter than graph latency");
+
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    std::string why;
+    check(f.session.startRecording(take, why), "arm a real capture for the compensated punch");
+    const std::array<float, callbackFrames> input{};
+    const float* channels[]{input.data()};
+    Block b(callbackFrames);
+    b.io.in = channels;
+    b.io.numIn = 1;
+    const auto step = [&] {
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+    };
+    const auto silent = [&](int first, int end) {
+        return std::all_of(b.wide[2].begin() + first, b.wide[2].begin() + end,
+                           [](double sample) { return sample == 0.0; });
+    };
+    f.session.transport().locate(punchInSample - callbackFrames);
+    f.session.transport().play();
+    step();
+    check(silent(0, callbackFrames), "the compensated punch lead-in is silent");
+    step(); // Both capture edges pass in this callback, while the heard clock is still behind Punch-In.
+    check(silent(0, callbackFrames), "the armed take stays quiet until the punch is heard");
+    step();
+    constexpr int heardIn = latency - callbackFrames, heardOut = heardIn + punchFrames;
+    check(silent(0, heardIn + 1) && std::abs(b.wide[2][heardIn + 1]) > 0.01 &&
+          std::abs(b.wide[2][heardOut - 1]) > 0.01 && silent(heardOut, callbackFrames),
+          "the delayed click begins at heard Punch-In and closes at heard Punch-Out");
+    step();
+    check(silent(0, callbackFrames), "the click remains quiet after heard Punch-Out");
+}
+void locateOutsideMidiPunchSilencesClick() {
+    constexpr int frames = 64;
+    constexpr auto punchInTick = textproj::kPPQ / 2;
+    constexpr int punchInSample = 12000;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&
+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", 2 * punchInTick}}) &&
+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),
+          "load a recording-only click for a MIDI punch");
+    const std::array<std::int64_t, 1> tracks{3};
+    std::string why;
+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI capture");
+    Block b(frames);
+    f.session.transport().locate(punchInSample);
+    f.session.transport().play();
+    f.process(b);
+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording &&
+              b.wide[2][0] == 0.0 && std::abs(b.wide[2][1]) > 0.01,
+          "MIDI capture hears the click attack at Punch-In");
+    b.io.streamTimeSamples += frames;
+    f.session.transport().locate(0);
+    f.process(b);
+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,
+                      [](double sample) { return sample == 0.0; }),
+          "locating an active MIDI take before Punch-In excludes every frame of the new lead-in");
+}
+void formatChangeClearsPendingRecordingClick() {
+    constexpr int latency = 100, frames = 64;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.effects(latency);
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),
+          "load a delayed recording-only click");
+    const std::array<std::int64_t, 1> tracks{3};
+    std::string why;
+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI recording ahead of the format change");
+    Block b(frames);
+    f.session.transport().play();
+    f.process(b);
+    const auto silent = [&] {
+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,
+                           [](double sample) { return sample == 0.0; });
+    };
+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording && silent(),
+          "the first beat is queued behind the delay while MIDI is captured");
+    b.io.streamTimeSamples += frames;
+    f.session.prepare(44100, 256);
+    f.process(b);
+    check(f.session.transport().playing() && f.session.midiInputCapture().state() != MidiCaptureState::Recording &&
+              silent(),
+          "a live format change leaves playback running and discards the old recording click");
 }
 void offline() {
     Fixture f;f.effects();f.store->db().exec("UPDATE tracks SET muted=1 WHERE id=2");f.op("cue.setOutput",{{"first",2}});f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
@@ -353,11 +599,12 @@ void coldReference() {
 void allocation() {
     Fixture f;f.effects(100);f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
     f.op("cue.setOutput",{{"first",2}});f.op("cue.setReference",{{"on",true},{"id",2}});f.op("transport.setMetronome",{{"on",true}});
+    f.op("transport.setMetronomeOptions", {{"sound", 2}, {"eighthNotes", true}});
     check(f.load(Precision::Float64),"allocation fixture loads off-thread");f.session.transport().play();Block b(128);
     allocations.store(0);countAllocations.store(true);for(int i=0;i<50;++i)f.process(b);countAllocations.store(false);
     check(allocations.load()==0,"Cue graph copy, reference ramp, volume and metronome allocate nothing");
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

@@ -1268,6 +1268,28 @@ void midiClips() {
           "over an existing clip nothing is made on any track, and the track is named");
     check(insertMidiClips(snapshot, {3}, 8 * beat, 9 * beat).refusal.empty(), "right after a clip is free");
 }
+void loopPlayhead() {
+    engine::ClipDetails clip;
+    clip.posTicks = 8 * beat;
+    clip.lengthTicks = 12 * beat;
+    clip.startMarkerTicks = beat;
+    clip.loopEnabled = true;
+    clip.loopStartTicks = 2 * beat;
+    clip.loopLengthTicks = 2 * beat;
+    check(noteEditorPlayheadTick(clip, 8 * beat + beat / 2) == 8 * beat + beat / 2,
+          "the pickup before the loop plays on its original beat");
+    check(noteEditorPlayheadTick(clip, 11 * beat) == 9 * beat &&
+              noteEditorPlayheadTick(clip, 15 * beat + beat / 2) == 9 * beat + beat / 2,
+          "the loop end and later repeats map back to the notes' first occurrence");
+    check(noteEditorPlayheadTick(clip, 20 * beat) == 20 * beat,
+          "the end of the selected clip returns to song time");
+    clip.startMarkerTicks = 5 * beat;
+    check(noteEditorPlayheadTick(clip, 8 * beat) == 6 * beat,
+          "a clip that starts inside a later loop occurrence opens at that source phase");
+    clip.loopEnabled = false;
+    check(noteEditorPlayheadTick(clip, 12 * beat) == 12 * beat,
+          "a linear clip plays on the Arrangement time axis");
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1302,6 +1324,7 @@ int main(int argc, char **argv) {
     scaleMode();
     noteFilters();
     clipTime();
+    loopPlayhead();
     intervals();
     noteStretch();
     midiClips();

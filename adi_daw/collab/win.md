@@ -6,6 +6,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-27, night — the eighth stack on main; a checker on a second PC; five engine seats; collaboration ruled (ADR-0263)
+
+**Landed:** #818, the eighth basics stack: the analysers chain and ADR-0262 with the Browser's agreed sheet. #819 (eighteen speed rows marked on main), #820 (the five engine seats' queue), #821 (their reservations): prompts and the register only.
+
+**The ninth stack waits.** `land/basics-1127k` is `basics/integrate-1` (eight chains, about 200 commits) on the eighth stack, with two fixes of win's: a local in the Settings folder chooser that hid a JUCE member (MSVC C4458), and `JUCE_LOG_ASSERTIONS` on the window suite in Debug builds only. The gemini seat's review of the integrator's branch found 18 verified faults, 12 of them high, most of them where two merged chains collide; win checked four and all held, one of which (an unsigned passed as a stream size) fails the 32-bit check. The integrator is fixing all 18; the stack lands after.
+
+**A second PC checks landings now.** By the director's word, a PC of his with 24 threads and 64 GB runs win's landing check over SSH from the lead PC. The whole check from nothing took about nine and a half minutes there (headless build 2 min 39 s, 280 suites 2 min 24 s, the window build and its four suites under four minutes), against 90 minutes on the lead PC, where it also stalled twice in one day. Its build tools are on one drive and everything that grows on another, by his word; it builds Debug code without debug files because that drive writes slowly. He also lifted the two-job limit on the lead PC.
+
+**Win's own checkout was stale in one thing:** the JUCE it builds against was 9.0.2 while the project pins 9.0.5, which showed as "not a member of juce" on the integrator's branch. Brought to the pin.
+
+**Five engine seats build ahead** (`collab/prompts/2026-11-27-engine-seats.md`), by his word that tokens to spare should be used: the stretcher that follows tempo, Session View's engine, the Pitch Editor's engine, listening to the library, the plug-in server's first study. Each took its seat, pushed a first slice with every suite passing, and ended its turn; a second paste told them the first proof was the start. Reserved for them: schema minors 1.26 and 1.27, their op names, the ADIA section `PNOT`. The pitch seat's plan row (TM-PE-01) is owed with DF-R3.
+
+**Collaboration.** He put ADR-0182's design to his outside panel with a brief win gathered from the record. It confirmed the shape and found gaps. His answers are ADR-0263: Undo keeps working after sharing and sends a reversal; presence that says where each person is working, on a heartbeat that expires by itself; tempo as mine or theirs in the first version; a shared cloud folder studied beside the bucket; everything shared locked with a project key carried in the invitation; an optional helper in the owner's own account, built late; each person's own agent sharing labelled proposals; eleven refinements of the collision design. The ADI project holds nobody's data: one song, one storage, the owner's.
+
+**Next free:** ADR-0264; schema minor 1.28; DF-W62, DF-R4, DF-C10, DF-E93; SC-433.
+
+---
+
 ## 2026-11-27, evening — the seventh stack on main; the Browser's second sheet and his four choices (ADR-0262); the analysers chain
 
 **Landed:** #817, the seventh basics stack: the speed chain, two Clang 14 lines, the Mac session's fix for Apple's library, and ADR-0261 with the director's four answers (the floating search as the Mac's own search, opening on samples; Sync on from the start; in-time preview with the real-time stretcher; the agent's hidden half started now). #815 and #816, prompts only: the Browser queue rewritten with one owner, and the agent seat's queue. #814 was closed as carried by #817.

@@ -13,6 +13,8 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -274,6 +276,58 @@ void placement() {
     f.store->db().exec("UPDATE clips SET time_base=0,pos_ns=NULL,length_ns=NULL,pos_ticks=576576,length_ticks=1153152; DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(576576,60,0)");
     f.load(4096);f.session.transport().locate(2300);const auto out=f.render(4096);
     check(out[99]==0 && out[100]==f.media[0] && out[101]==f.media[2],"tick placement integrates tempo map");
+}
+void unwarpedTempoChanges() {
+    constexpr auto start = textproj::kPPQ;
+    constexpr int sourceFrames = 800;
+    for (const bool trimmed : {false, true}) {
+        Fixture f(48000, 2, sourceFrames);
+        f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+        const auto drop = ui::dropAudio(*SnapshotBuilder::fromStore(*f.store), 1, start,
+            "Source", ui::AudioImport{1, 48000, sourceFrames, {}, 0});
+        if (!OpJournal(*f.store).commit(drop.ops).ok)
+            throw std::runtime_error("could not place the unwarped test clip");
+        const int audible = trimmed ? 600 : sourceFrames;
+        if (trimmed) {
+            OpRequest resize;
+            resize.opType = "clip.resize";
+            resize.payload = {{"id", drop.clip}, {"pos", start}, {"length", 144144}};
+            if (!OpJournal(*f.store).commit(resize).ok)
+                throw std::runtime_error("could not trim the unwarped test clip");
+        }
+        f.load(1024);
+        const auto atTempo = [&](int bpm, const char* checkName) {
+            const auto snapshot = SnapshotBuilder::fromStore(*f.store);
+            const auto* track = snapshot->findTrack(1);
+            const auto& clip = *track->clips.front();
+            const auto first = 48000 * 60 / bpm;
+            f.session.transport().locate(first - 1);
+            const auto out = f.render(1024);
+            const auto end = std::llround(snapshot->tempo->ticksToSeconds(clip.posTicks + clip.lengthTicks) * 48000);
+            bool exact = clip.posTicks == start && end == first + audible;
+            for (std::size_t channel = 0; channel < 2; ++channel) {
+                for (std::size_t frame = 0; frame < 1024; ++frame) {
+                    const auto expected = frame > 0 && frame <= static_cast<std::size_t>(audible)
+                        ? f.media[(frame - 1) * 2 + channel] : 0.0f;
+                    exact = exact && out[channel * 1024 + frame] == expected;
+                }
+            }
+            check(exact, checkName);
+        };
+        atTempo(120, "unwarped clip starts on its beat and plays its authored span");
+        for (const int bpm : {240, 60}) {
+            const auto edit = ui::setTempoAt(SnapshotBuilder::fromStore(*f.store)->tempo->events, 0, std::to_string(bpm), true);
+            if (!OpJournal(*f.store).commit(edit.ops).ok || !f.session.refresh(*f.store))
+                throw std::runtime_error("could not change the tempo for unwarped playback");
+            atTempo(bpm, bpm == 240
+                ? "raising the tempo preserves unwarped PCM and its full projected duration"
+                : "lowering the tempo preserves unwarped PCM and leaves no silent arrangement tail");
+        }
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store), "undo the slower tempo");
+        atTempo(240, "tempo undo restores the exact unwarped endpoint");
+        check(History(*f.store).redo().ok && f.session.refresh(*f.store), "redo the slower tempo");
+        atTempo(60, "tempo redo restores the exact unwarped endpoint");
+    }
 }
 void takeLanePlayback() {
     Fixture f;
@@ -1592,6 +1646,23 @@ void unsupported() {
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
     }
 }
+void missingMediaOnUnplayedClips() {
+    for (const bool missing : {false, true}) {
+        Fixture f;
+        f.add(1, 0, 500, 0, 1000);
+        f.add(2, 0, 500, 0, 1000);
+        f.store->db().exec("UPDATE clips SET muted=1 WHERE id=1;"
+                           "UPDATE audio_clips SET reverse=1 WHERE clip_id=2");
+        if (missing) fs::rename(f.dir.path() / "audio.wav", f.dir.path() / "moved.wav");
+        f.load(64);
+        const auto* playback = f.session.clips();
+        check(playback->mediaUnavailable(1) == missing, "a muted clip reports whether its source file is missing");
+        check(playback->mediaUnavailable(2) == missing, "a reversed clip reports whether its source file is missing");
+        const auto pcm = f.render(64);
+        check(playback->externalSources().empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0.f; }),
+              "checking skipped clip media leaves both clips out of playback");
+    }
+}
 
 void highRates() {
     auto nsHigh = [](std::int64_t frames, double rate) {
@@ -1765,6 +1836,7 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
@@ -1776,6 +1848,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();absoluteLinearEndSamples();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
+        if(only=="all" || only=="unplayed-media")missingMediaOnUnplayedClips();
         if(only=="all" || only=="segments")segmentsAndCrop();
         if(only=="all" || only=="ahead")readAhead();
         if(only=="all" || only=="relative")relativeProject();

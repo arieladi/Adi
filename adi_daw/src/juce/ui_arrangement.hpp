@@ -257,6 +257,10 @@ class ArrangementCanvas final : public juce::Component,
         float scaleBottom = 0;     // the lane's own foot, which the values scale to
     };
     std::vector<LaneBody> laneBodies() const;
+    bool hasAutomationSelection() const;
+    void clearAutomationSelection();
+    std::optional<std::vector<automation::LaneSpec>> automationRangeLanes() const;
+    void selectAutomationSpan(std::int64_t begin, std::int64_t end);
     struct AutomationPick {
         std::int64_t track = 0;
         std::uint64_t point = 0;
@@ -333,6 +337,9 @@ class ArrangementCanvas final : public juce::Component,
     bool beginClipRename(std::int64_t clip);
     std::int64_t renamingClip() const noexcept { return renamingClip_; }
     RenameEditor clipEditor;
+    RenameEditor &automationValueEditor() noexcept { return automationValueEditor_; }
+    const juce::String &automationValueReadout() const noexcept { return automationValueReadout_; }
+    void resetAutomationValueInput();
 
   private:
     struct DropPreview {
@@ -377,6 +384,32 @@ class ArrangementCanvas final : public juce::Component,
         bool stepped = false, cancelled = false;
     };
     std::optional<AutomationStroke> automationStroke_;
+    bool automationSelectionDown(const juce::MouseEvent &);
+    void rememberAutomationSelection();
+    std::optional<Selection> automationSelection_;
+    std::vector<std::pair<std::int64_t, AutomationTarget>> automationSelectionTargets_;
+    struct AutomationValueAddress {
+        AutomationTarget target;
+        std::int64_t track=0,lane=0,data=0,tick=0;
+        std::optional<std::uint64_t> point;
+        double value=0;
+        juce::Point<int> anchor;
+    };
+    std::optional<AutomationValueAddress> automationValueAt(juce::Point<float>,bool snapToGrid,
+                                                           bool allowAdd) const;
+    void automationContextMenu(const juce::MouseEvent &);
+    void beginAutomationValueEdit(const AutomationValueAddress &);
+    void commitAutomationValue();
+    void endAutomationValueEdit(bool refocus=true);
+    bool resolveAutomationValue(const AutomationValueAddress &,const TrackEnvelope &) const;
+    void showAutomationValue(const AutomationTarget &,double,juce::Point<float>);
+    void clearAutomationValueReadout();
+    void paintAutomationValueReadout(juce::Graphics &) const;
+    RenameEditor automationValueEditor_;
+    std::optional<AutomationValueAddress> automationValueAddress_;
+    juce::String automationValueReadout_;
+    juce::GlyphArrangement automationValueGlyphs_;
+    juce::Rectangle<float> automationValueReadoutBounds_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
@@ -391,8 +424,10 @@ class ArrangementCanvas final : public juce::Component,
     bool arrow(bool forward, const juce::ModifierKeys &);
     // The nearest clip edge on the selected track after `tick`, or before it; `tick` if none.
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
-    // Deletes or switches the selected clip: one op, through the root.
-    bool clipEdit(const char *op, Payload payload, const char *label);
+    enum class ResizeEdge { None, Left, Right };
+    void beginResize(const engine::ClipNode &, std::int64_t track, ResizeEdge);
+    void resizeTo(std::int64_t tick, std::int64_t minLength);
+    std::optional<std::int64_t> commitResize();
     // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
@@ -401,10 +436,12 @@ class ArrangementCanvas final : public juce::Component,
     struct RangeDrag {
         Selection from;
         std::int64_t to;
+        bool cancelled = false;
     };
     std::optional<RangeDrag> rangeDrag_;
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
-    std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    ResizeEdge resizeEdge_ = ResizeEdge::None;
     bool keyResize_ = false;
     // A plain press on the bar of one of several selected clips keeps them for the drag; released
     // without one, it selects that clip alone, from where it was pressed.
@@ -422,8 +459,8 @@ class ArrangementCanvas final : public juce::Component,
     // with the track it lands on (`clipsAcross`); the track a clip is drawn on while dragging.
     std::vector<std::pair<std::int64_t, std::int64_t>> movingAcross_;
     std::int64_t movingTargetOf(std::int64_t clip) const noexcept;
-    // The clip's bar under a point, and whether the point is on its right edge.
-    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
+    // The clip's bar under a point and the edge closest to the pointer, if within reach.
+    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, ResizeEdge &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
     void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
     // An audio clip's waveform in its body, from `left` to `right` and `top` to `bottom`, the clip
@@ -556,11 +593,11 @@ class ArrangementView final : public juce::Component {
     // Live's right-click menu for the track area and the headers.
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
     // Re-Enable Automation the lanes' menu ends with (AU-04).
-    void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
-    // A test replaces the menu: one placed by screen position makes a window of its own, which a run with
-    // no display cannot have (the headers' Solo has the same seam, `onMenu`).
-    std::function<void(juce::Point<int>, bool, const engine::AutomationLaneNode *)> onContextMenu;
+    void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr,
+                     const std::function<void(juce::PopupMenu &)> &configure = {});
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
+    // Headless tests receive the menu and its hit context without opening a native popup.
+    std::function<void(juce::Point<int>,bool,const engine::AutomationLaneNode *,const juce::PopupMenu &)> onContextMenu;
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
