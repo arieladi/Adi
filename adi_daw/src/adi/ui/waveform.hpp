@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -28,10 +29,12 @@ struct PunchedPreviewRange {
 
 inline std::optional<PunchedPreviewRange> punchedPreviewRange(
     const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,
-    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {
+    std::uint32_t sampleRate, const engine::TempoMap &tempo,
+    std::optional<std::int64_t> trackOffset = {}) noexcept {
     if (sampleRate == 0)
         return std::nullopt;
-    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);
+    const auto offset = trackOffset.value_or(punch.offsetSamples);
+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, offset, punch.window);
     if (!range)
         return std::nullopt;
     const auto rate = static_cast<double>(sampleRate);
@@ -91,6 +94,14 @@ class WaveformCache {
         if (!audio.mediaInfo || audio.mediaInfo->missing || audio.mediaInfo->contentHash.empty())
             return nullptr;
         return peaks(audio.mediaId, audio.mediaInfo->contentHash);
+    }
+    // A verified relink preserves valid peaks; a failed build may try the new path.
+    void retry(const std::string &hash) {
+        std::lock_guard lock(mutex_);
+        if (kept_.contains(hash))
+            return;
+        asked_.erase(hash);
+        std::erase_if(queue_, [&hash](const Request &request) { return request.hash == hash; });
     }
     std::shared_ptr<const media::MediaPeaks> peaks(const engine::SampleSlotNode &slot) {
         if (slot.empty || slot.missing || sampleKey(slot).empty())
@@ -259,38 +270,49 @@ class WaveformCache {
     std::jthread worker_; // last: stopped and joined before the rest goes
 };
 // Where a clip's timeline tick falls in its file: the source frame, or none outside its source
-// window (before the clip, or past `sourceLengthFrames`). Unwarped, the tempo map's seconds from the
-// clip's start at the file's rate; warped, the clip's warp markers (AWRP v1: a source-window frame
-// and the source's musical tick, from the clip's start), between them straight, and none past the
-// last. A map that does not read is taken as unwarped.
+// window. Unwarped, seconds from the clip's placement are added to its source offset and converted
+// at the file's rate. Warped, ticks from the placement are added to the source offset, then mapped
+// between warp markers (AWRP v1: a frame and a musical tick, both relative to the source window).
+// A map that does not read is taken as unwarped.
 class ClipSourceMap {
   public:
     ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate)
-        : pos_(clip.posTicks), rate_(sampleRate), tempo_(tempo), audio_(*clip.audio) {
+        : pos_(clip.posTicks), offsetTicks_(clip.contentOffsetTicks), rate_(sampleRate), tempo_(tempo),
+          audio_(*clip.audio) {
         if (audio_.warpEnabled && audio_.warpMarkers)
             if (auto read = audio::readWarpMap(*audio_.warpMarkers, static_cast<std::uint64_t>(audio_.sourceLengthFrames)))
                 markers_ = std::move(read.markers);
         if (tempo_ != nullptr)
             startSeconds_ = tempo_->ticksToSeconds(pos_);
+        if (markers_.empty()) {
+            if (clip.contentOffsetNs)
+                offsetSeconds_ = static_cast<double>(*clip.contentOffsetNs) * 1e-9;
+            else if (pos_ < 0 || offsetTicks_ < 0 || offsetTicks_ > std::numeric_limits<std::int64_t>::max() - pos_)
+                offsetSeconds_ = std::numeric_limits<double>::infinity();
+            else
+                offsetSeconds_ = tempo_ != nullptr ? tempo_->ticksToSeconds(pos_ + offsetTicks_) - startSeconds_
+                                                   : static_cast<double>(offsetTicks_) * fallbackSecondsPerTick;
+        }
     }
     std::optional<double> frameAt(std::int64_t tick) const {
-        const auto into = tick - pos_;
-        if (into < 0)
+        if (pos_ < 0 || tick < pos_)
             return std::nullopt;
+        const auto into = tick - pos_;
         double frame = 0;
         if (markers_.size() >= 2) {
-            const auto after = std::upper_bound(markers_.begin(), markers_.end(), into,
-                                                [](std::int64_t t, const WarpMarker &m) { return t < m.tick; });
-            if (after == markers_.begin() || after == markers_.end())
+            if (offsetTicks_ < 0 || offsetTicks_ >= markers_.back().tick - into)
                 return std::nullopt;
+            const auto sourceTick = into + offsetTicks_;
+            const auto after = std::upper_bound(markers_.begin(), markers_.end(), sourceTick,
+                                                [](std::int64_t t, const WarpMarker &m) { return t < m.tick; });
             const auto &b = *after, &a = *(after - 1);
-            frame = static_cast<double>(a.sourceFrame) + static_cast<double>(into - a.tick) *
+            frame = static_cast<double>(a.sourceFrame) + static_cast<double>(sourceTick - a.tick) *
                                                              static_cast<double>(b.sourceFrame - a.sourceFrame) /
-                                                             static_cast<double>(std::max<std::int64_t>(1, b.tick - a.tick));
+                                                             static_cast<double>(b.tick - a.tick);
         } else {
             const double seconds = tempo_ != nullptr ? tempo_->ticksToSeconds(tick) - startSeconds_
-                                                     : static_cast<double>(into) / textproj::kPPQ / 2.; // 120 BPM
-            frame = seconds * rate_;
+                                                     : static_cast<double>(into) * fallbackSecondsPerTick;
+            frame = (offsetSeconds_ + seconds) * rate_;
         }
         if (frame < 0 || frame >= static_cast<double>(audio_.sourceLengthFrames))
             return std::nullopt;
@@ -298,8 +320,9 @@ class ClipSourceMap {
     }
 
   private:
-    std::int64_t pos_;
-    double rate_, startSeconds_ = 0;
+    static constexpr double fallbackSecondsPerTick = .5 / textproj::kPPQ; // 120 BPM
+    std::int64_t pos_, offsetTicks_;
+    double rate_, startSeconds_ = 0, offsetSeconds_ = 0;
     const engine::TempoMap *tempo_;
     const engine::AudioClipSource &audio_;
     std::vector<WarpMarker> markers_;

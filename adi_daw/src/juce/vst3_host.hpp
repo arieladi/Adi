@@ -346,6 +346,7 @@ private:
     std::weak_ptr<DeviceEditor> editor_;
     PlayHead playHead_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
+    mutable unsigned stateStreams_ = 0; ///< message thread, JUCE's last complete chunk or loaded image
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
     std::vector<juce::AudioProcessorParameter*> handles_;

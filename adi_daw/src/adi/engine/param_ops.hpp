@@ -77,6 +77,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -155,6 +156,11 @@ public:
     /// THIS event was accepted. Commit ALL appended requests (even on refusal:
     /// an older gesture may have completed), writing takeBlobs/writeBlobs first
     /// as for drain. Every call belongs to the same owner/message thread.
+    // Owner-side observation of accepted, non-echo hosted-editor input. Returning
+    // true consumes its scalar edit in favor of an Arrangement envelope pass.
+    using NativeAutomation = std::function<bool(std::int64_t,const device::ParamDescriptor&,ParamEventKind,
+        double,double,const std::shared_ptr<const gesture::OwnerToken>&)>;
+    void setNativeAutomation(NativeAutomation);
     bool uiEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
                  double value, std::int64_t nowMs, std::vector<OpRequest>& out);
     /// Explicit non-automatable configuration opt-in. Uses the same capture,
@@ -210,27 +216,29 @@ public:
                          std::vector<OpRequest>& out);
 
     struct SnapshotAllResult {
-        struct StaleDevice {
-            std::int64_t deviceId = 0;
-            std::string name;
-            std::string issue;
-        };
         gesture::Status status;
         std::optional<std::int64_t> failedDevice;
+        std::vector<std::int64_t> staleDevices;
         std::size_t journalOps = 0;
         std::size_t stateOps = 0;
-        std::vector<StaleDevice> staleDevices;
         [[nodiscard]] bool ok() const noexcept { return status.ok(); }
     };
+    enum class SnapshotGestures { Completed, FinishOpen };
+    enum class SnapshotPolicy { RequireAll, UseStoredOnCaptureFailure };
 
     /// Owner thread, after attachSession. Resolve completed captured gestures,
     /// then durably save live device state without relying on stateEpoch.
     /// Successful zero journalOps means unchanged. Failure reports the
     /// refused device when available and counts any prior durable writes.
-    /// An unavailable remote capture leaves its stored bytes and reports a
-    /// stale device while the other captures continue (ADR-0261 d23).
+    /// Explicit save actions may finish open edits at their last accepted value
+    /// and leave failed plug-in reads in staleDevices while saving other devices.
     /// Call before publishing a named snapshot, copying or closing the Store.
-    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs,
+                                                SnapshotGestures = SnapshotGestures::Completed,
+                                                SnapshotPolicy = SnapshotPolicy::RequireAll);
+    /// As for snapshotAll, but read fresh state from the selected device only.
+    [[nodiscard]] SnapshotAllResult snapshotDeviceState(std::int64_t deviceId, std::int64_t nowMs,
+                                                        SnapshotGestures);
 
     struct DevicePresetState {
         std::map<std::string, double> parameters;
@@ -301,6 +309,12 @@ public:
     /// as of the last drain; -1 when none, or the device is not attached.
     /// Live's temporary entry, and the Master Focus Dial's target (ADR-0130).
     [[nodiscard]] std::int32_t lastTouched(std::int64_t deviceId) const noexcept;
+    /// Owner thread. Advances on another native touch even if lastTouched()
+    /// is unchanged. Zero means no touch on the current live attachment.
+    [[nodiscard]] std::uint64_t lastTouchSequence(std::int64_t deviceId) const noexcept;
+    /// Current attachment's chronological native touches. Consume the span
+    /// before draining again or changing attachments.
+    [[nodiscard]] std::span<const ParameterTouch> recentTouches(std::int64_t deviceId) const noexcept;
 
     /// How close is "the same value" for `applied` (decision 3). Default 1e-6,
     /// the capture's own echo tolerance.
