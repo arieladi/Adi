@@ -1856,7 +1856,8 @@ target_sources(adi_core PRIVATE
     src/adi/audio/pitch_render.cpp src/adi/audio/pitch_audition.cpp
     src/adi/audio/pitch_segments.cpp src/adi/audio/pitch_commands.cpp
     src/adi/media/clip_pitch.cpp src/adi/media/clip_pitch_render.cpp
-    src/adi/pitch_edit_store.cpp src/adi/pitch_midi.cpp src/adi/pitch_clip_scale.cpp)
+    src/adi/pitch_edit_store.cpp src/adi/pitch_midi.cpp src/adi/pitch_clip_scale.cpp
+    src/adi/pitch_reanalysis.cpp)
 if(WIN32)
     target_link_libraries(adi_core PRIVATE advapi32)
 endif()
@@ -1905,6 +1906,10 @@ add_test(NAME adi_pitch_clip_scale_tests COMMAND adi_pitch_clip_scale_tests)
 add_executable(adi_pitch_audition_tests tests/test_pitch_audition.cpp)
 target_link_libraries(adi_pitch_audition_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pitch_audition_tests COMMAND adi_pitch_audition_tests)
+add_executable(adi_pitch_reanalysis_tests tests/test_pitch_reanalysis.cpp)
+target_link_libraries(adi_pitch_reanalysis_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_reanalysis_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_reanalysis_tests COMMAND adi_pitch_reanalysis_tests)
 
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
