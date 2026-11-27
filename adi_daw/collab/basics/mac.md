@@ -94,6 +94,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/midi-chain` | `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Yes | All 50 production targets built. Passed 54/54, including window and mixer 33/33, acceptance 3/3, and affected and session 18/18. This merge includes the speed landing and the MIDI Clip View fixture. The standalone VST3 probe also passed. |
 | `origin/basics/plugins-chain` | `1e5f0c78cd1cb6325f68bfa43725eaa88cfdd42e` | Yes | All 50 production targets built. Passed 41/41, including window and mixer 33/33, acceptance 3/3, and affected and session 5/5. The plug-in checks cover VST3 program selection and preset-file loading. The standalone VST3 probe also passed. |
 | `origin/basics/clips-chain` | `981baad23b87aaafc15b80678a0a89568b623118` | Yes | All 50 production targets built. Passed 56/56, including window and mixer 33/33, acceptance 3/3, and affected and session 20/20. This revision integrates the speed landing and canonicalizes the VST3 fixture path for the CLI render check. |
+| `origin/basics/clips-chain` | `58017abdace734bad68713e723559e7078698b8f` | Yes | All 50 production targets built. Passed 42/42, including window and mixer 33/33, acceptance 3/3, and affected and session 6/6. Clip and window checks cover Reverse Clip(s), selected ranges, loop repeats, and Undo. |
 
 ## Nine-step window walk
 
