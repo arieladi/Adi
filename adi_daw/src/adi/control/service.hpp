@@ -50,6 +50,7 @@
 namespace adi::control {
 
 class AgentWriteGate;
+class ProjectAccess;
 
 /// AI-AGENT §2. Ordered: a higher tier can do everything a lower one can.
 enum class Tier { Observe = 0, Propose = 1, Apply = 2 };
@@ -102,6 +103,9 @@ struct RequestMeta {
     std::shared_ptr<const ConsentDestination> readDestination = {};
     /// Captured by a trusted transport before a frame waits in its own queue.
     std::optional<std::uint64_t> receivedAgentEpoch = {};
+    /// The open project instance a trusted host started this run for.
+    /// A copied file can have the same wire handle.
+    std::shared_ptr<const ProjectAccess> boundProject = {};
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
@@ -156,7 +160,7 @@ struct MethodSpec {
     std::function<Outcome(CallContext&, const Json& params)> run;
     /// Project and application tier caps. Checked before replay and again on
     /// the owner. The API cannot give the caller a higher tier.
-    std::function<Tier(Tier, const Json& params)> restrictTier = {};
+    std::function<Tier(Tier, const Json& params, const RequestMeta&)> restrictTier = {};
     const AgentWriteGate* agentWrites = nullptr;
 };
 

@@ -96,12 +96,15 @@ public:
     void clear();
     [[nodiscard]] std::shared_ptr<ProjectAccess> find(std::string_view handle) const;
     [[nodiscard]] std::vector<std::shared_ptr<ProjectAccess>> all() const;
+    [[nodiscard]] bool contains(const std::shared_ptr<ProjectAccess>&) const;
 
     /// ADR-0232 d2: `params.project` names a bound project. A name that is
     /// not bound is refused (−32602) and touches nothing (AC-17). Omitting it
     /// is allowed only when the host opted in with allowImplicitSingle() and
     /// exactly one project is bound -- adi-mcp, which serves one file.
-    [[nodiscard]] std::shared_ptr<ProjectAccess> resolve(const Json& params, RpcError& error) const;
+    /// A trusted host may also require the exact open instance.
+    [[nodiscard]] std::shared_ptr<ProjectAccess> resolve(
+        const Json& params, RpcError& error, const std::shared_ptr<const ProjectAccess>& boundProject = {}) const;
     /// For a host bound to one project for its whole life (adi-mcp --project).
     /// Never for the app, where projects open and close (ADR-0068).
     void allowImplicitSingle(bool allow);

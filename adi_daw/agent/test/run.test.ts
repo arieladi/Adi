@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { once } from "node:events";
 import { setTimeout as wait } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { checkProvider, runAgent } from "../src/run.js";
 import type { RunRequest, ToolName, ToolPort } from "../src/run.js";
@@ -108,20 +110,24 @@ async function listen(server: Server) {
   return `http://127.0.0.1:${address.port}`;
 }
 
+function replyToProbe(request: IncomingMessage, response: ServerResponse) {
+  request.resume();
+  response.writeHead(200, { "Content-Type": "text/event-stream" });
+  const chunk = { id: "chatcmpl-local", object: "chat.completion.chunk", model: "stub", created: 1 };
+  response.write(`data: ${JSON.stringify({ ...chunk, choices: [
+    { index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: null },
+  ] })}\n\n`);
+  response.end(`data: ${JSON.stringify({ ...chunk, choices: [
+    { index: 0, delta: {}, finish_reason: "stop" },
+  ], usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } })}\n\ndata: [DONE]\n\n`);
+}
+
 describe("provider checks", () => {
   it.each(["local", "lan"] as const)("makes an actual OpenAI-compatible %s model request", async kind => {
     let requestedPath = "";
     const server = createServer((request, response) => {
       requestedPath = request.url ?? "";
-      request.resume();
-      response.writeHead(200, { "Content-Type": "text/event-stream" });
-      const chunk = { id: "chatcmpl-local", object: "chat.completion.chunk", model: "stub", created: 1 };
-      response.write(`data: ${JSON.stringify({ ...chunk, choices: [
-        { index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: null },
-      ] })}\n\n`);
-      response.end(`data: ${JSON.stringify({ ...chunk, choices: [
-        { index: 0, delta: {}, finish_reason: "stop" },
-      ], usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } })}\n\ndata: [DONE]\n\n`);
+      replyToProbe(request, response);
     });
     try {
       const endpoint = await listen(server);
@@ -132,6 +138,49 @@ describe("provider checks", () => {
       server.close();
     }
   });
+
+  it.each([["local", "127.0.0.1"], ["lan", "localhost"]] as const)(
+    "uses a direct %s loopback connection when Node starts with an ambient proxy", async (kind, host) => {
+      let requests = 0;
+      let proxyRequests = 0;
+      const endpoint = createServer((request, response) => {
+        ++requests;
+        replyToProbe(request, response);
+      });
+      const proxy = createServer((_request, response) => {
+        ++proxyRequests;
+        response.writeHead(502).end();
+      });
+      proxy.on("connect", (_request, socket) => {
+        ++proxyRequests;
+        socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+      });
+      try {
+        const providerUrl = await listen(endpoint);
+        const proxyUrl = await listen(proxy);
+        const destination = new URL("/v1", providerUrl);
+        destination.hostname = host;
+        const helper = fileURLToPath(new URL("../dist/main.js", import.meta.url));
+        const child = spawn(process.execPath, [helper], {
+          env: { ...process.env, NODE_USE_ENV_PROXY: "1", NO_PROXY: "", no_proxy: "",
+            HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, https_proxy: proxyUrl },
+          stdio: ["pipe", "pipe", "pipe"],
+          timeout: 4000,
+        });
+        const exit = once(child, "close");
+        let stdout = "";
+        child.stdout.setEncoding("utf8").on("data", (part: string) => { stdout += part; });
+        child.stdin.end(JSON.stringify({ type: "check", id: "direct-loopback",
+          provider: { kind, model: "stub", endpoint: destination.href } }) + "\n");
+        expect(await exit).toEqual([0, null]);
+        expect(proxyRequests).toBe(0);
+        expect(requests).toBe(1);
+        expect(JSON.parse(stdout)).toEqual({ type: "ready", id: "direct-loopback", ok: true });
+      } finally {
+        endpoint.close();
+        proxy.close();
+      }
+    });
 
   it("never follows a redirect or treats an off-machine server as local", async () => {
     let redirects = 0;

@@ -85,11 +85,12 @@ int fixtureHelper(std::string_view mode, const std::optional<fs::path>& marker) 
         emit({{"type", "ended"}, {"id", id}, {"reason", "completed"}, {"steps", 2}, {"tokens", 19}});
         return 0;
     }
-    if (mode == "repeat") {
-        const auto args = Json{{"names", Json::array({"clip.setName"})}};
+    if (mode == "repeat" || mode == "repeat-read") {
+        const bool reading = mode == "repeat-read";
+        const auto args = reading ? Json{{"level", 0}} : Json{{"names", Json::array({"clip.setName"})}};
         for (const std::string_view call : {"first", "second", "third"}) {
-            tool(call, "ops_describe", args);
-            if (call != "third" && result(call) != Json::object()) return 7;
+            tool(call, reading ? "project_read" : "ops_describe", args);
+            if (call != "third" && !result(call).is_object()) return 7;
         }
         return 0;
     }
@@ -99,6 +100,14 @@ int fixtureHelper(std::string_view mode, const std::optional<fs::path>& marker) 
     }
     if (mode == "malformed") {
         tool("wrong-shape", "ops_describe", Json::array());
+        return 0;
+    }
+    if (mode == "two-proposals" || mode == "tool-after-answer") {
+        if (mode == "tool-after-answer") emit({{"type", "answer"}, {"id", id}, {"text", "finished"}});
+        const auto args = Json{{"baseHead", 17}, {"ops", Json::array()}};
+        tool("first-proposal", "changeset_propose", args);
+        if (mode == "two-proposals" && result("first-proposal").is_object())
+            tool("second-proposal", "changeset_propose", args);
         return 0;
     }
     if (mode == "hold") {
@@ -247,6 +256,8 @@ void testTrustedDispatch(const fs::path& executable) {
             }
             check(meta.runPolicy == policy && policy && policy->readRemarks.load(),
                   "the proposal sees the same taint state as the earlier read");
+            check(arguments.value("request", std::string{}) == "a synthetic request",
+                  "the proposal records the actual request instead of the helper's wording");
             key = meta.idempotencyKey.value_or(std::string{});
             return Outcome::ok({{"queued", true}});
         });
@@ -266,20 +277,25 @@ void testTrustedDispatch(const fs::path& executable) {
 
 void testBounds(const fs::path& executable) {
     std::puts("[invalid tools and repeated calls are decided by the host]");
-    for (const std::string_view mode : {"repeat", "unauthorized", "malformed"}) {
+    for (const std::string_view mode : {"repeat", "repeat-read", "unauthorized", "malformed", "two-proposals",
+                                        "tool-after-answer"}) {
         Fixture fixture(mode.data());
         const auto launch = fixtureLaunch(executable, std::string(mode));
         if (!ready(fixture, launch)) continue;
         int calls = 0;
         const auto result = run(fixture, launch, RunOrigin::Direct,
-            [&](std::string_view, const Json&, const RequestMeta&, std::stop_token) {
+            [&](std::string_view method, const Json&, const RequestMeta&, std::stop_token) {
                 ++calls;
+                if (method == "project.read") return Outcome::ok({{"head", 17}});
                 return Outcome::ok(Json::object());
             });
         const auto job = fixture.jobs.get(kOwner, result.job);
-        if (mode == "repeat") {
+        if (mode == "repeat" || mode == "repeat-read") {
             check(result.reason == "repeated_tool_call" && calls == 2,
                   "the third identical call is refused before dispatch");
+        } else if (mode == "two-proposals") {
+            check(result.reason == "changeset_limit" && calls == 1,
+                  "a run cannot publish a second proposal");
         } else {
             check(result.reason == "unexpected_helper_event" && calls == 0,
                   "malformed or unlisted tool calls never reach the dispatcher");

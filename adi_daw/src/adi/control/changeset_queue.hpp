@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -25,6 +26,8 @@
 #include <vector>
 
 namespace adi::control {
+
+class ProjectAccess;
 
 /// Stale is computed from the current head and can clear after Undo.
 enum class Review { AwaitingReview, Applied, Rejected, Stale, Expired };
@@ -45,6 +48,7 @@ struct QueuedChangeset {
     /// Mandatory review even when the effective tier is Apply (ADR-0261 d8).
     bool requiresReview = false;
     std::string projectUuid;      ///< machine-local log routing, never shown on the wire
+    std::weak_ptr<ProjectAccess> projectAccess;  ///< exactly the attachment that previewed the edit
 };
 
 struct RejectedChangeset {

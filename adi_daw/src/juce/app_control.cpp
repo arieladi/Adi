@@ -400,6 +400,7 @@ AgentRunResult AppControl::runAgent(const AgentLaunch& launch, std::string_view 
                            origin, [&](std::string_view method, const Json& args, RequestMeta meta,
                                        std::stop_token stop) {
         meta.receivedAgentEpoch = epoch;
+        meta.boundProject = active;
         return impl_->agentTool(who, method, args, meta, stop);
     });
 }
@@ -422,8 +423,9 @@ agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
         const bool changed = impl_->queue.setState(id, entry->credential, Review::Rejected, "user", "review");
         return {changed, changed ? agent::Refusal::None : agent::Refusal::Invalid, {}};
     }
-    auto project = impl_->projects.find(entry->project);
-    if (!project) return {false, agent::Refusal::ReadOnly, "the project is no longer open"};
+    const auto project = entry->projectAccess.lock();
+    if (!project || !impl_->projects.contains(project))
+        return {false, agent::Refusal::ReadOnly, "the proposal's original project is no longer open"};
     auto result = project->applyChangeset(entry->changeset, impl_->options.limits);
     if (result.ok) {
         impl_->queue.setState(id, entry->credential, Review::Applied, "user", "review");

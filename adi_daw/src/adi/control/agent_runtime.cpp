@@ -231,9 +231,13 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
             result.reason = "cancelled";
             (void)jobs_.workerFinished(result.job, JobState::Cancelled);
         } else if (result.reason == "completed") {
-            (void)jobs_.workerFinished(result.job, JobState::Completed);
+            const auto completed = jobs_.complete(result.job);
+            if (!completed || completed->state != JobState::Completed) {
+                result.reason = completed && completed->state == JobState::Cancelled ? "cancelled" : "unavailable";
+            }
         } else {
-            (void)jobs_.fail(result.job, result.reason);
+            const auto failed = jobs_.fail(result.job, result.reason);
+            if (failed && failed->state == JobState::Cancelled) result.reason = "cancelled";
         }
     };
     if (!stop->stop_requested() && child.start(launch.command, error) &&
@@ -241,6 +245,7 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
               {"provider", providerJson(launch.provider)}})) {
         int calls = 0;
         bool answered = false;
+        bool proposed = false;
         Json head = nullptr;
         std::unordered_map<std::string, int> repeats;
         while (!stop->stop_requested() && remaining() > 0ms) {
@@ -269,7 +274,7 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
             const auto method = controlMethod(field(*event, "name"));
             const auto supplied = event->find("args");
             auto args = supplied == event->end() ? Json::object() : *supplied;
-            if (type != "tool" || method.empty() || callId.empty() || !args.is_object()) {
+            if (answered || type != "tool" || method.empty() || callId.empty() || !args.is_object()) {
                 result.reason = "unexpected_helper_event";
                 break;
             }
@@ -278,20 +283,36 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
                 break;
             }
             if (method != "ops.describe") args["project"] = projectHandle;
-            if (++repeats[dumpJson(Json::array({method, args, head}))] > kSameCallBudget) {
+            const bool proposes = method == "changeset.propose";
+            if (proposes) {
+                if (proposed) {
+                    result.reason = "changeset_limit";
+                    break;
+                }
+                args["request"] = request;
+            }
+            const auto callKey = dumpJson(Json::array({method, args, head}));
+            if (++repeats[callKey] > kSameCallBudget) {
                 result.reason = "repeated_tool_call";
                 break;
             }
             if (stop->stop_requested()) break;
-            if (method == "changeset.propose") meta.idempotencyKey = result.job + ":" + callId;
+            if (proposes) meta.idempotencyKey = result.job + ":" + callId;
             else meta.idempotencyKey.reset();
             const auto outcome = tool(method, args, meta, *stop);
             Json response = {{"type", "tool_result"}, {"call", callId}};
             if (outcome.error) {
                 response["error"] = {{"code", outcome.error->code}, {"message", outcome.error->message}};
             } else {
+                if (proposes) proposed = true;
                 response["result"] = outcome.result;
-                if (method == "project.read" && outcome.result.contains("head")) head = outcome.result.at("head");
+                if (method == "project.read" && outcome.result.contains("head") && outcome.result.at("head") != head) {
+                    // Charge the first read to the head it actually returned.
+                    const auto prior = repeats.find(callKey);
+                    if (--prior->second == 0) repeats.erase(prior);
+                    head = outcome.result.at("head");
+                    ++repeats[dumpJson(Json::array({method, args, head}))];
+                }
             }
             if (!send(response)) break;
             (void)jobs_.progress(result.job, static_cast<double>(calls) / kToolBudget);

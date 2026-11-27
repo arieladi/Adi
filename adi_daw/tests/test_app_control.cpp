@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "adi/control/agent_runtime.hpp"
 #include "adi/control/mcp.hpp"
 #include "adi/device_presets.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -23,6 +24,7 @@
 #include <deque>
 #include <filesystem>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -119,7 +121,46 @@ void approveDisclosure(AppControl& app, const std::string& uuid, ConsentData wan
     require(app.answerConsent(question, ConsentTerm::ThisTime), "the owner approves the disclosure once");
 }
 
-void testAppControl() {
+Json helperReceive() {
+    std::string line;
+    if (!std::getline(std::cin, line)) return nullptr;
+    return Json::parse(line, nullptr, false);
+}
+
+void helperSend(const Json& frame) {
+    std::cout << dumpJson(frame) << std::endl;
+}
+
+int bindingHelper() {
+    const auto start = helperReceive();
+    if (!start.is_object()) return 2;
+    const auto id = start.value("id", std::string{});
+    if (start.value("type", std::string{}) == "check") {
+        helperSend({{"type", "ready"}, {"id", id}, {"ok", true}});
+        return 0;
+    }
+    if (start.value("type", std::string{}) != "run") return 3;
+    const auto head = Json::parse(start.at("request").get_ref<const std::string&>(), nullptr, false);
+    const auto refuses = [&](const char* name, const Json& args) {
+        helperSend({{"type", "tool"}, {"id", id}, {"call", name}, {"name", name}, {"args", args}});
+        const auto reply = helperReceive();
+        return reply.is_object() && reply.value("call", std::string{}) == name &&
+               reply.contains("error") && reply.at("error").value("code", 0) == errc::InvalidParams;
+    };
+    const Json edit = {{"baseHead", head}, {"request", "This proposal belongs to the original file"},
+                       {"ops", Json::array({{{"op", "track.rename"},
+                                             {"payload", {{"id", 101}, {"name", "Wrong helper file"}}}}})}};
+    if (!refuses("changeset_propose", edit) || !refuses("project_read", Json::object()) ||
+        !refuses("browser_catalog", Json::object())) {
+        helperSend({{"type", "ended"}, {"id", id}, {"reason", "fixture_scope_failed"}});
+        return 0;
+    }
+    helperSend({{"type", "answer"}, {"id", id}, {"text", "The original project closed"}});
+    helperSend({{"type", "ended"}, {"id", id}, {"reason", "completed"}});
+    return 0;
+}
+
+void testAppControl(const std::filesystem::path& executable) {
     test::TempDirectory temp("app_control", "live");
     useTestHome(temp.path() / "home");
     std::string error;
@@ -262,6 +303,17 @@ void testAppControl() {
             app.takeConsentQuestions().empty() && app.proposals().empty(),
             "new agent writes are also refused while stopped");
 
+    const auto copyPath = temp.path() / "Another ordinary copy.adi";
+    require(document->saveCopy(copyPath), "an ordinary copy shares the current project UUID");
+    std::string copyError;
+    auto copy = ui::ProjectDocument::open(copyPath, false, {}, copyError);
+    if (!copy) throw std::runtime_error("open ordinary copy: " + copyError);
+    require(copy->store().projectUuid() == uuid, "ordinary Save a Copy preserves the UUID");
+    OpRequest copyEdit;
+    copyEdit.opType = "track.rename";
+    copyEdit.payload = {{"id", 101}, {"name", "Independent copy"}};
+    require(copy->ops().submit(std::move(copyEdit)).ok, "give the ordinary copy a different edit");
+
     app.rearmAgent();
     args["ops"][0]["payload"]["name"] = "Fresh after rearm";
     require(needsConsent(call(callTool(15, "changeset_propose", args, "fresh"))),
@@ -274,7 +326,46 @@ void testAppControl() {
 
     const auto beforeShutdown = OpJournal(document->store()).headSeq();
     require(beforeShutdown.has_value(), "the fresh change moved the committed head");
+    require(OpJournal(copy->store()).headSeq() == beforeShutdown,
+            "the ordinary copy can diverge and still have the same numeric head");
     args["baseHead"] = *beforeShutdown;
+    args["ops"][0]["payload"]["name"] = "Original file only";
+    require(needsConsent(call(callTool(31, "changeset_propose", args, "original only"))),
+            "the external caller asks to preview another edit in the original");
+    approveDisclosure(app, uuid, ConsentData::ChangesetPreview);
+    const auto originalOnly = call(callTool(32, "changeset_propose", args, "original only")).at("structuredContent");
+    const auto originalId = originalOnly.at("id").get<std::string>();
+
+    AgentLaunch launch;
+    launch.command.executable = executable;
+    launch.command.arguments = {"--binding-helper"};
+    launch.provider.kind = AgentProviderKind::Faux;
+    launch.provider.model = "fixture-model";
+    require(app.checkAgent(launch, uuid).canAnswer(), "the self-launched faux helper answers its check");
+    const auto headText = dumpJson(Json(*beforeShutdown));
+    auto run = std::async(std::launch::async, [&] { return app.runAgent(launch, uuid, headText); });
+    auto originalTurn = owner.takeFor(3s);
+    require(static_cast<bool>(originalTurn), "the helper's proposal is waiting on the owner thread");
+    app.attach(copy.get());
+
+    require(app.review(originalId, true).refusal == agent::Refusal::ReadOnly &&
+            OpJournal(copy->store()).headSeq() == beforeShutdown &&
+            copy->view().committed()->findTrack(101)->name == "Independent copy",
+            "a proposal can never be approved against another attachment at the same UUID and head");
+    require(toolError(call(callTool(33, "changeset_status", {{"id", originalId}}, "original status"))) ==
+                errc::InvalidParams &&
+            toolError(call(callTool(34, "changeset_propose", args, "original only"))) == errc::InvalidParams &&
+            app.takeConsentQuestions().empty(),
+            "status and idempotent replay cannot substitute the ordinary copy");
+    originalTurn();
+    const auto finished = run.get();
+    require(finished.reason == "completed" && finished.answer == "The original project closed" &&
+            OpJournal(copy->store()).headSeq() == beforeShutdown &&
+            copy->view().committed()->findTrack(101)->name == "Independent copy",
+            "the parked helper cannot propose, read the project or read its catalogue against the copy");
+    require(app.review(originalId, false).ok, "local review can still discard the closed attachment's proposal");
+    app.attach(document.get());
+
     args["ops"][0]["payload"]["name"] = "Must not run";
     const auto pendingFrame = callTool(17, "changeset_propose", args, "pending");
     auto remote = std::async(std::launch::async, [&] {
@@ -296,9 +387,10 @@ void testAppControl() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        testAppControl();
+        if (argc == 2 && std::string_view(argv[1]) == "--binding-helper") return bindingHelper();
+        testAppControl(std::filesystem::absolute(argv[0]));
         std::puts("PASS -- loopback app control, consent, review, Stop Agent and shutdown");
         return 0;
     } catch (const std::exception& exception) {

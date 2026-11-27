@@ -485,7 +485,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             if (auto e = closedKeys(p, {"project", "level", "tracks", "clips", "fromBar", "toBar"}))
                 return failWith(*e);
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
             // Level 3 is named before the range check, so the refusal says
             // what it is rather than only the range.
@@ -543,7 +543,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project", "query", "offset", "limit"})) return failWith(*e);
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
             std::optional<std::int64_t> offset, limit;
             if (!readInt(p, "offset", 0, std::numeric_limits<std::int32_t>::max(), offset, e) ||
@@ -573,7 +573,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
             std::string err;
             const auto snapshot = project->read(err);
@@ -601,7 +601,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
             std::string err;
             const auto snapshot = project->read(err);
@@ -622,7 +622,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
             const auto frame = project->telemetry();
             Json out = telemetryJson(frame.get(), ctx.steadyMs(), project->live());
@@ -716,11 +716,11 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.idempotent = true;
         m.readOnly = false;
         m.agentWrites = ctx.agentWrites;
-        const auto scopedTier = [&ctx](Tier grant, const Json& params) {
+        const auto scopedTier = [&ctx](Tier grant, const Json& params, const RequestMeta& meta) {
             const auto app = ctx.appTier ? ctx.appTier() : Tier::Propose;
             const auto ceiling = std::min(grant, app);
             RpcError error;
-            const auto project = ctx.projects.resolve(params, error);
+            const auto project = ctx.projects.resolve(params, error, meta.boundProject);
             return project ? std::min(ceiling, project->agentTierOverride().value_or(ceiling)) : ceiling;
         };
         m.restrictTier = scopedTier;
@@ -757,7 +757,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         };
         m.run = [&ctx, &service, scopedTier](CallContext& call, const Json& p) -> Outcome {
             RpcError e;
-            auto project = ctx.projects.resolve(p, e);
+            auto project = ctx.projects.resolve(p, e, call.meta.boundProject);
             if (!project) return failWith(e);
 
             // What the key stands for: the screened params, with the project
@@ -774,7 +774,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             // key is refused, never answered with the old proposal (R2.4).
             if (call.meta.idempotencyKey) {
                 if (auto prior = ctx.queue.findByKey(call.who.credential, *call.meta.idempotencyKey)) {
-                    if (prior->paramsDigest != digest || prior->project != project->handle())
+                    if (prior->paramsDigest != digest || prior->projectAccess.lock() != project)
                         return refusal(errc::InvalidParams, "idempotencyKey reused with different arguments",
                                        "invalid");
                     auto replay = prior->proposal;
@@ -891,6 +891,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.paramsDigest = digest;
             entry.project = project->handle();
             entry.projectUuid = project->projectUuid();
+            entry.projectAccess = project;
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
             entry.createdMs = ctx.steadyMs();
@@ -905,7 +906,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.requiresReview = requiresReview;
 
             const auto latestGrant = service.grants().tierOf(call.who.credential);
-            const Tier tier = latestGrant ? scopedTier(std::min(call.tier, *latestGrant), p) : Tier::Observe;
+            const Tier tier = latestGrant ? scopedTier(std::min(call.tier, *latestGrant), p, call.meta) : Tier::Observe;
             if (tier < Tier::Propose)
                 return Outcome::fail(errc::NotGranted, "not granted");
             if (ctx.agentWrites && !ctx.agentWrites->stillAdmitted(call.agentWriteEpoch))
@@ -968,12 +969,16 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             // applied within the window but first asked about after it is
             // applied, not expired. Stale is worked out on every call and
             // never stored, so a head that comes back makes it current again.
-            auto project = ctx.projects.find(entry->project);
+            auto project = entry->projectAccess.lock();
+            if (!project || !ctx.projects.contains(project) ||
+                (call.meta.boundProject && project != call.meta.boundProject)) {
+                return Outcome::fail(errc::InvalidParams, "the proposal's original project is no longer open");
+            }
             Review state = entry->state;
             std::optional<std::int64_t> headNow;
             std::string headError;
             bool headRead = false;
-            if (state != Review::Applied && state != Review::Rejected && project) {
+            if (state != Review::Applied && state != Review::Rejected) {
                 if (project->wasApplied(entry->changeset.actorDetail)) {
                     ctx.queue.setState(id, call.who.credential, Review::Applied);
                     state = Review::Applied;
@@ -988,7 +993,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     }
                 }
             }
-            if (!headRead && project) headNow = project->head(headError);
+            if (!headRead) headNow = project->head(headError);
             Json out = {{"id", entry->id},
                         {"status", std::string(toString(state))},
                         {"project", entry->project},
@@ -997,14 +1002,13 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                         {"ops", entry->changeset.ops.size()}};
             // A head that could not be read is never reported as null, which
             // on the wire is the root.
-            if (!project) out["headError"] = "the project is no longer open";
-            else if (!headError.empty()) out["headError"] = "cannot read the head";
+            if (!headError.empty()) out["headError"] = "cannot read the head";
             else out["headNow"] = headJson(headNow);
             if (state == Review::Applied) {
                 out["note"] = "applied means it was applied once; it may since have been undone: read the "
                               "project for its current state";
             } else if (state == Review::AwaitingReview) {
-                if (project) out["apply"] = project->applyHint();
+                out["apply"] = project->applyHint();
                 out["changeset"] = changesetJson(entry->changeset);
             } else if (state == Review::Stale) {
                 out["why"] = "the project changed since the changeset was built; read it again and "
@@ -1012,10 +1016,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             } else if (state == Review::Expired) {
                 out["why"] = "it was not applied within 24 hours; read the project again and propose anew";
             }
-            if (project) {
-                if (auto denied = requirePreviewConsent(ctx, call, *project, out))
-                    return std::move(*denied);
-            }
+            if (auto denied = requirePreviewConsent(ctx, call, *project, out))
+                return std::move(*denied);
             return Outcome::ok(std::move(out));
         };
         service.add(std::move(m));

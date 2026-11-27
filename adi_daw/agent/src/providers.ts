@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { lookup } from "node:dns";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
   createModels, fauxAssistantMessage, fauxProvider, fauxToolCall,
 } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
+import { Agent } from "undici";
 import { streamSimple as streamCompatible } from "@earendil-works/pi-ai/api/openai-completions";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
@@ -25,6 +27,13 @@ export interface Provider {
 }
 
 const keychainService = "org.adidaw.agent";
+const providerConnections = new Agent({
+  connect: {
+    // Pin localhost without changing the URL's host or its TLS server name.
+    lookup: (hostname, options, callback) =>
+      lookup(hostname === "localhost" ? "127.0.0.1" : hostname, options, callback),
+  },
+});
 const proposal = {
   baseHead: 8,
   request: "Lower the bass",
@@ -68,7 +77,10 @@ function onlyOrigin(origin: string): typeof globalThis.fetch {
   return (input, options) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== origin) throw new Error("provider request left the consented origin");
-    return fetch(input, { ...options, redirect: "error" });
+    // A loopback URL is exempt from egress consent. An explicit direct
+    // dispatcher keeps Node's ambient proxy configuration out of the route.
+    const direct = { ...options, redirect: "error" as const, dispatcher: providerConnections };
+    return fetch(input, direct);
   };
 }
 
@@ -88,8 +100,8 @@ function endpointOf(config: ProviderConfig): URL {
       endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
     throw new Error("invalid provider endpoint");
   if (config.kind === "local") {
-    if (endpoint.hostname === "localhost") endpoint.hostname = "127.0.0.1";
-    if (!endpoint.hostname.startsWith("127.") && endpoint.hostname !== "[::1]")
+    if (endpoint.hostname !== "localhost" && !endpoint.hostname.startsWith("127.") &&
+        endpoint.hostname !== "[::1]")
       throw new Error("a local provider requires a loopback address");
     // A hostname beginning with 127. is not an IP literal.
     if (endpoint.hostname.startsWith("127.") && !/^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(endpoint.hostname))

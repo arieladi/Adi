@@ -4,6 +4,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace adi::control {
@@ -60,12 +61,22 @@ std::vector<std::shared_ptr<ProjectAccess>> ProjectSet::all() const {
     return projects_;
 }
 
-std::shared_ptr<ProjectAccess> ProjectSet::resolve(const Json& params, RpcError& error) const {
+bool ProjectSet::contains(const std::shared_ptr<ProjectAccess>& project) const {
+    std::lock_guard lock(mutex_);
+    return std::find(projects_.begin(), projects_.end(), project) != projects_.end();
+}
+
+std::shared_ptr<ProjectAccess> ProjectSet::resolve(
+    const Json& params, RpcError& error, const std::shared_ptr<const ProjectAccess>& boundProject) const {
     const auto it = params.is_object() ? params.find("project") : params.end();
     const bool named = params.is_object() && it != params.end() && !it->is_null();
     std::lock_guard lock(mutex_);
+    const auto matchesBinding = [&boundProject](const std::shared_ptr<ProjectAccess>& project) {
+        return !boundProject || project == boundProject;
+    };
     if (!named) {
-        if (implicitSingle_ && projects_.size() == 1) return projects_.front();
+        if (implicitSingle_ && projects_.size() == 1 && matchesBinding(projects_.front()))
+            return projects_.front();
         error = {errc::InvalidParams,
                  projects_.empty() ? "no project is open"
                  : projects_.size() > 1 ? "several projects are open: name one (project.list)"
@@ -79,9 +90,10 @@ std::shared_ptr<ProjectAccess> ProjectSet::resolve(const Json& params, RpcError&
     }
     const auto& wanted = it->get_ref<const std::string&>();
     for (const auto& p : projects_)
-        if (p->handle() == wanted) return p;
+        if (p->handle() == wanted && matchesBinding(p)) return p;
     // AC-17: a request naming a project that is not bound touches nothing.
-    error = {errc::InvalidParams, "no open project has that handle (project.list)", nullptr};
+    error = {errc::InvalidParams, boundProject ? "the run's original project is no longer open"
+                                             : "no open project has that handle (project.list)", nullptr};
     return nullptr;
 }
 

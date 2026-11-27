@@ -17,7 +17,8 @@
     "@earendil-works/pi-agent-core": "1.7.0",
     "@earendil-works/pi-ai": "1.7.0",
     "@earendil-works/pi-mcp": "1.7.0",
-    "@napi-rs/keyring": "2.1.2"
+    "@napi-rs/keyring": "2.1.2",
+    "undici": "7.30.2"
   },
   "devDependencies": {
     "@types/node": "24.19.4",

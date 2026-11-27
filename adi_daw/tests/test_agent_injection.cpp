@@ -241,6 +241,7 @@ void runFixture(const fs::path& node, const fs::path& helper, const fs::path& cl
     require(proposal.project == project && proposal.state == Review::AwaitingReview &&
             proposal.changeset.baseHead == baseline.head && proposal.changeset.ops.size() == 1,
             "the proposal is pending review at the actual head of its source project");
+    require(proposal.changeset.request == kUserRequest, "the preview retains the original user request");
     const auto& op = proposal.changeset.ops.front();
     require(op.opType == fixture.operation && op.payload.at("id") == fixture.target,
             "the proposal contains the exact destructive operation and target");

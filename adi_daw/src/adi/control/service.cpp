@@ -337,12 +337,12 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         finish(Outcome::fail(errc::AgentStopped, "agent writes are stopped"));
         return pending;
     }
-    const auto restrictTier = [spec](Tier grant, const Json& args) {
-        return spec->restrictTier ? std::min(grant, spec->restrictTier(grant, args)) : grant;
+    const auto restrictTier = [spec](Tier grant, const Json& args, const RequestMeta& requestMeta) {
+        return spec->restrictTier ? std::min(grant, spec->restrictTier(grant, args, requestMeta)) : grant;
     };
     Tier ingressTier;
     try {
-        ingressTier = restrictTier(*tier, params);
+        ingressTier = restrictTier(*tier, params, meta);
     } catch (const std::exception& e) {
         pending->take();
         finish(internalError(methodName, e.what()));
@@ -370,7 +370,8 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     std::size_t paramsDigest = 0;
     // A wire reply that discloses project data must go through current
     // consent, including when the client retries an already queued proposal.
-    if (spec->idempotent && meta.idempotencyKey && !meta.readDestination) {
+    // A host-bound call must also recheck the original project attachment.
+    if (spec->idempotent && meta.idempotencyKey && !meta.readDestination && !meta.boundProject) {
         cacheKey = who.credential;
         cacheKey += '\n';
         cacheKey += spec->name;
@@ -447,7 +448,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         }
         Outcome out;
         try {
-            const auto ownerTier = restrictTier(std::min(ingressTier, *granted), params);
+            const auto ownerTier = restrictTier(std::min(ingressTier, *granted), params, meta);
             if (ownerTier < spec->minTier) {
                 finish(Outcome::fail(errc::NotGranted, kNotGranted));
                 return;
