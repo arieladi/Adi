@@ -40,6 +40,7 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
         float velocity = 1.0f;
         bool fade = false;
         std::int64_t fadeElapsed = 0;
+        std::uint64_t serial = 0;
     };
     std::map<std::int64_t, TrackRun> runs;
     for (const auto& start : initial) {
@@ -47,7 +48,7 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
             !std::isfinite(start.velocity) || start.velocity < 0 || start.velocity > 1 ||
             start.fadeElapsed < 0 ||
             !runs.emplace(start.track, TrackRun{false, start.clip, start.sourceTick, begin, begin,
-                start.velocity, start.fade, start.fadeElapsed}).second)
+                start.velocity, start.fade, start.fadeElapsed, start.run}).second)
             return {LaunchCaptureError::InconsistentTrack, {}};
     }
 
@@ -66,14 +67,19 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
         if (at.sample < begin.sample || at.sample > end.sample || at.tick < begin.tick || at.tick > end.tick)
             return {LaunchCaptureError::InvalidRange, {}};
         auto& run = runs.try_emplace(transition.track, TrackRun{true, 0, 0, begin, begin}).first->second;
-        if (run.clip != transition.oldClip || at.sample < run.last.sample || at.tick < run.last.tick)
+        // Capture and Insert Scene retargets the exact material without a run
+        // edge. The original clip still describes the one uninterrupted span.
+        const auto hasRunIdentity = run.serial != 0 && transition.oldRun != 0;
+        const auto sameRun = hasRunIdentity && run.serial == transition.oldRun;
+        const auto sameMaterial = run.clip == transition.oldClip || (sameRun && run.clip > 0 && transition.oldClip > 0);
+        if (!sameMaterial || (hasRunIdentity && !sameRun) || at.sample < run.last.sample || at.tick < run.last.tick)
             return {LaunchCaptureError::InconsistentTrack, {}};
         run.last = at;
         if (run.clip == 0 && transition.newClip == 0 && run.arrangement == transition.arrangement)
             continue;
         close(transition.track, run, at);
         run = {transition.arrangement, transition.newClip, transition.sourceTick, at, at,
-            transition.velocity, transition.fade, 0};
+            transition.velocity, transition.fade, 0, transition.newRun};
     }
     for (const auto& [track, run] : runs)
         close(track, run, end);

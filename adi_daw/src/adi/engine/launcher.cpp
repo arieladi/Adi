@@ -18,6 +18,13 @@ constexpr bool backToArrangementIsImmediate = true;
 constexpr bool stopAllUsesGlobalLaunchQuantization = true;
 constexpr bool scenesUseGlobalLaunchQuantization = true; // L3: scene vs explicit clip setting
 constexpr bool followBypassesGlobalLaunchQuantization = true; // Live 12 manual 16.7
+// While the clock is stopped, a scene with nothing to play settles its Stop
+// buttons without starting the clock. The Live 12.4 empty-scene case is owed.
+constexpr bool emptySceneStartsStoppedTransport = false;
+constexpr bool preserveQuantizedDeadlinesAcrossArrangementWrap = true;
+constexpr bool stopAllCancelsSceneFollow = true;
+constexpr auto bufferWriting = std::numeric_limits<std::uint32_t>::max();
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 
 std::int64_t add(std::int64_t lhs, std::int64_t rhs) noexcept {
     return rhs > lastTick - lhs ? lastTick : lhs + rhs;
@@ -98,6 +105,27 @@ std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept 
     return position;
 }
 
+bool validRegion(const LaunchClipRegion& region) noexcept {
+    return region.start >= 0 && region.end > region.start &&
+        (!region.loop || (region.loop->begin >= region.start && region.loop->end > region.loop->begin &&
+                         region.loop->end <= region.end));
+}
+
+bool regionFits(const LaunchSlot* prepared, const LaunchClipRegion& region) noexcept {
+    return occupied(prepared) && region.start >= prepared->startTick && region.end <= prepared->endTick;
+}
+
+const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<LaunchClipRegion>& region,
+                                LaunchSlot& scratch) noexcept {
+    if (!region || !regionFits(prepared,*region)) return prepared;
+    scratch = *prepared;
+    scratch.startTick = region->start;
+    scratch.endTick = region->end;
+    scratch.loopStartTick = region->loop ? region->loop->begin : 0;
+    scratch.loopEndTick = region->loop ? region->loop->end : 0;
+    return &scratch;
+}
+
 float launchVelocity(const LaunchSlot& slot, float velocity) noexcept {
     const auto amount = std::isfinite(slot.velocityAmount)
         ? std::clamp(slot.velocityAmount, 0.0f, 1.0f) : 0.0f;
@@ -107,7 +135,35 @@ float launchVelocity(const LaunchSlot& slot, float velocity) noexcept {
 
 Launcher::Launcher(std::size_t maximumTracks)
     : tracks_(maximumTracks), scratch_(maximumTracks),
-      activeTracks_(tracks_.data()), spareTracks_(scratch_.data()) {}
+      activeTracks_(tracks_.data()), spareTracks_(scratch_.data()) {
+    for (auto& frame : statusBuffers_) frame.rows = std::make_unique<LaunchTrackStatus[]>(maximumTracks);
+}
+
+bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit) noexcept {
+    if (edit.track <= 0 || edit.clip <= 0 || edit.incarnation == 0 || edit.run == 0 ||
+        !validRegion(edit.region) || edit.rate > ClipUpdateRate::Bar)
+        return false;
+    const auto write = regionWritten_.load(std::memory_order_relaxed);
+    if (write - regionRead_.load(std::memory_order_acquire) == regionMailbox_.size()) return false;
+    regionMailbox_[static_cast<std::size_t>(write % regionMailbox_.size())] = edit;
+    regionWritten_.store(write + 1,std::memory_order_release);
+    return true;
+}
+
+void Launcher::drainRegionEdits(const LaunchBlock& block, const LaunchView& view) noexcept {
+    auto read = regionRead_.load(std::memory_order_relaxed);
+    const auto write = regionWritten_.load(std::memory_order_acquire);
+    while (read != write) {
+        const auto& edit = regionMailbox_[static_cast<std::size_t>(read++ % regionMailbox_.size())];
+        auto* track = findTrack(edit.track);
+        if (!track || track->run.clip != edit.clip || track->run.serial != edit.run ||
+            edit.incarnation != block.incarnation || !regionFits(findClip(view,edit.track,edit.clip),edit.region))
+            continue;
+        if (const auto boundary = nextClipUpdateBoundary(block,block.sample,edit.rate,true))
+            track->regionEdit = RegionPending{edit,*boundary};
+    }
+    regionRead_.store(read,std::memory_order_release);
+}
 
 Launcher::Track* Launcher::findTrack(std::int64_t id) noexcept {
     const std::span active(activeTracks_,trackCount_);
@@ -121,6 +177,10 @@ void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSin
         trackCount_ = 0;
         nextSample_ = -1;
         incarnation_ = block.incarnation;
+        userScene_.reset();
+        followScene_.reset();
+        sceneOrdinal_ = 0;
+        lastPreparedScene_ = 0;
     }
     if (view.tracks.size() == trackCount_ &&
         std::equal(view.tracks.begin(), view.tracks.end(), activeTracks_,
@@ -130,7 +190,9 @@ void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSin
     const auto stopRemovedTrack = [&](const Track& track) {
         if (track.run.clip != 0 && sink.transition) {
             sink.transition(sink.context, {track.id, track.run.clip, 0, 0, block.sample,
-                atSample(block,block.sample), 0, false, track.run.serial, 0});
+                atSample(block,block.sample), 0, false, track.run.serial, 0, 0, 1.0f, false,
+                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,
+                track.run.frames,track.run.velocity,track.run.fade});
         }
     };
     for (const auto id : view.tracks) {
@@ -163,56 +225,69 @@ bool Launcher::valid(const LaunchRequest& request, const LaunchBlock& block,
         return !request.track && !request.scene && !request.clip;
     case LaunchRequestKind::CancelScene:
         return request.scene && *request.scene > 0 && !request.track && !request.clip;
+    case LaunchRequestKind::RetargetRunning:
+        return false; // this gesture is admitted as a separate prepared batch
     }
     return false;
 }
 
 void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
                          const LaunchView& view, std::int64_t now) noexcept {
+    // The owner has already published this scene's clock. Its performed
+    // boundary must remain paired with that published timing generation.
+    if (userScene_ && userScene_->preparedToken &&
+        (request.kind == LaunchRequestKind::ScenePress || request.kind == LaunchRequestKind::CancelScene ||
+         request.kind == LaunchRequestKind::StopAll ||
+         (request.kind == LaunchRequestKind::BackToArrangement && !request.track)))
+        return;
     switch (request.kind) {
     case LaunchRequestKind::CancelScene:
+        if (userScene_ && userScene_->scene == *request.scene) userScene_.reset();
+        if (followScene_ && followScene_->scene == *request.scene) cancelSceneFollow();
         for (auto& track : std::span(activeTracks_,trackCount_)) {
-            for (auto* pending : {&track.user,&track.follow}) {
-                if (*pending && (*pending)->sceneGesture && (*pending)->scene == *request.scene)
-                    pending->reset();
-            }
+            if (track.user && track.user->sceneGesture && track.user->scene == *request.scene)
+                track.user.reset();
         }
         return;
     case LaunchRequestKind::StopAll: {
+        userScene_.reset();
+        if (stopAllCancelsSceneFollow) cancelSceneFollow();
         const auto grid = stopAllUsesGlobalLaunchQuantization ? block.global : LaunchQuantization::None;
-        const Pending stop{Action::Stop,gridForPress(block,grid,now),0,0,1.0f,grid};
+        const Pending stop{Action::Stop,gridForPress(block,grid,now),0,0,1.0f,grid,false,0,false,admission_};
         for (auto& track : std::span(activeTracks_,trackCount_)) track.user = stop;
         return;
     }
     case LaunchRequestKind::BackToArrangement: {
         const auto grid = backToArrangementIsImmediate ? LaunchQuantization::None : block.global;
-        const Pending back{Action::Arrangement,gridForPress(block,grid,now),0,0,1.0f,grid};
-        if (request.track) findTrack(*request.track)->user = back;
-        else for (auto& track : std::span(activeTracks_,trackCount_)) track.user = back;
+        const Pending back{Action::Arrangement,gridForPress(block,grid,now),0,0,1.0f,grid,false,0,false,admission_};
+        const auto handBack = [&](Track& track) {
+            track.user.reset();
+            track.gateStop.reset();
+            // A later, quantized slot press must leave Arrangement audible
+            // from this immediate hand-back until its own due sample.
+            track.back = back;
+        };
+        if (request.track) handBack(*findTrack(*request.track));
+        else {
+            userScene_.reset();
+            cancelSceneFollow();
+            for (auto& track : std::span(activeTracks_,trackCount_)) handBack(track);
+        }
         return;
     }
     case LaunchRequestKind::StopTrack:
         findTrack(*request.track)->user = Pending{Action::Stop,gridForPress(block,block.global,now),
-                                                0,0,1.0f,block.global};
+                                                0,0,1.0f,block.global,false,0,false,admission_};
         return;
-    case LaunchRequestKind::ScenePress: {
-        const auto sceneTick = gridForPress(block,block.global,now);
-        for (auto& track : std::span(activeTracks_,trackCount_)) {
-            const auto* slot = findSlot(view,track.id,*request.scene);
-            if (occupied(slot)) {
-                const auto grid = scenesUseGlobalLaunchQuantization
-                    ? block.global : slot->quantization.value_or(block.global);
-                const auto tick = grid == block.global ? sceneTick : gridForPress(block,grid,now);
-                track.user = Pending{Action::Start,tick,slot->scene,slot->clip,request.velocity,grid,false,0,true};
-            } else if (!slot || slot->hasStop) {
-                track.user = Pending{Action::Stop,sceneTick,*request.scene,0,1.0f,block.global,false,0,true};
-            }
-        }
+    case LaunchRequestKind::ScenePress:
+        armUserScene({*request.scene,gridForPress(block,block.global,now),0,block.global,admission_},
+            request.velocity,block,view,now);
         return;
-    }
     case LaunchRequestKind::SlotPress:
     case LaunchRequestKind::SlotRelease:
         break;
+    case LaunchRequestKind::RetargetRunning:
+        return;
     }
 
     const auto& slot = *addressedSlot(view,request);
@@ -242,13 +317,35 @@ void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
     const auto tick = gridForPress(block,grid,now);
     const auto action = decision.playback == LaunchPlayback::Stop ? Action::Stop : Action::Start;
     const Pending pending{action,tick,slot.scene,slot.clip,request.velocity,grid,
-                          decision.repeat == LaunchRepeat::Hold};
+                          decision.repeat == LaunchRepeat::Hold,0,false,admission_};
     if (edge == LaunchEdge::Release && slot.mode == LaunchMode::Gate) track.gateStop = pending;
     else track.user = pending;
 }
 
+void Launcher::armUserScene(ScenePending scene, float velocity, const LaunchBlock& block,
+                            const LaunchView& view, std::int64_t now) noexcept {
+    const auto displaced = userScene_;
+    scene.velocity = velocity;
+    userScene_ = scene;
+    for (auto& track : std::span(activeTracks_,trackCount_)) {
+        if (displaced && track.user && track.user->sceneGesture && track.user->scene == displaced->scene)
+            track.user.reset();
+        const auto* slot = findSlot(view,track.id,scene.scene);
+        if (occupied(slot)) {
+            const auto grid = scene.preparedToken || scenesUseGlobalLaunchQuantization
+                ? scene.grid : slot->quantization.value_or(scene.grid);
+            const auto tick = grid == scene.grid ? scene.tick : gridForPress(block,grid,now);
+            track.user = Pending{Action::Start,tick,slot->scene,slot->clip,velocity,grid,
+                false,scene.earliestSample,true,scene.admission};
+        } else if (!slot || slot->hasStop) {
+            track.user = Pending{Action::Stop,scene.tick,scene.scene,0,1.0f,scene.grid,
+                false,scene.earliestSample,true,scene.admission};
+        }
+    }
+}
+
 void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock& block,
-                           const LaunchView& view, std::int64_t now) noexcept {
+                           const LaunchView& view, std::int64_t now, std::int64_t earliestSample) noexcept {
     const auto& request = follow.request;
     if (!block.followActionsEnabled || follow.tick < 0 || !valid(request,block,view)) return;
     const auto due = std::max(follow.tick,now);
@@ -257,46 +354,107 @@ void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock&
         const auto& slot = *addressedSlot(view,request);
         const auto grid = slot.quantization.value_or(followGrid);
         const auto tick = launch_quantize::nextGridTick(due,grid,block.meters).value_or(lastTick);
-        findTrack(slot.track)->follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,grid};
+        findTrack(slot.track)->follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
+            grid,false,earliestSample};
     }
     if (request.kind == LaunchRequestKind::StopTrack)
-        findTrack(*request.track)->follow = Pending{Action::Stop,due};
+        findTrack(*request.track)->follow = Pending{Action::Stop,due,0,0,1.0f,
+            LaunchQuantization::None,false,earliestSample};
     if (request.kind == LaunchRequestKind::ScenePress) {
+        followScene_ = ScenePending{*request.scene,due,earliestSample};
         for (auto& track : std::span(activeTracks_,trackCount_)) {
             const auto* slot = findSlot(view,track.id,*request.scene);
+            track.sceneFollow.reset();
             if (occupied(slot)) {
-                track.follow = Pending{Action::Start,due,slot->scene,slot->clip,request.velocity,
-                                      LaunchQuantization::None,false,0,true};
+                track.sceneFollow = Pending{Action::Start,due,slot->scene,slot->clip,request.velocity,
+                    LaunchQuantization::None,false,earliestSample,true};
             } else if (!slot || slot->hasStop) {
-                track.follow = Pending{Action::Stop,due,*request.scene,0,1.0f,
-                                      LaunchQuantization::None,false,0,true};
+                track.sceneFollow = Pending{Action::Stop,due,*request.scene,0,1.0f,
+                    LaunchQuantization::None,false,earliestSample,true};
             }
         }
     }
 }
 
-void Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
+void Launcher::cancelSceneFollow() noexcept {
+    if (!followScene_) return;
+    followScene_.reset();
+    for (auto& track : std::span(activeTracks_,trackCount_)) track.sceneFollow.reset();
+}
+
+void Launcher::discardUnpublishedScene(const LaunchBlock& block) noexcept {
+    if (!block.preparedScenePinned || !userScene_ || !userScene_->preparedToken ||
+        (block.preparedScene && block.preparedScene->token == userScene_->preparedToken)) return;
+    for (auto& track : std::span(activeTracks_,trackCount_)) {
+        if (track.user && track.user->sceneGesture && track.user->scene == userScene_->scene) track.user.reset();
+    }
+    userScene_.reset();
+}
+
+void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool rolling,
+                           const LaunchBlock& block, const LaunchView& view, LaunchSink sink,
+                           std::int32_t offset) noexcept {
+    const bool validScene = std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene);
+    const auto sample = block.sample + offset;
+    const auto tick = rolling && block.sampleAtTick(block.clock,pending.tick) == sample
+        ? pending.tick : atSample(block,sample);
+    if (fromFollow) {
+        for (auto& track : std::span(activeTracks_,trackCount_)) {
+            track.dueScene = validScene ? track.sceneFollow : std::nullopt;
+            track.sceneFollow.reset();
+            if (track.dueScene) {
+                track.dueScene->tick = tick;
+                track.dueScene->earliestSample = sample;
+            }
+        }
+    }
+    if (!validScene) return;
+    if (pending.preparedToken) {
+        for (auto& track : std::span(activeTracks_,trackCount_)) {
+            const auto* slot = findSlot(view,track.id,pending.scene);
+            if (occupied(slot) || !slot || slot->hasStop) {
+                const auto action = occupied(slot) ? Action::Start : Action::Stop;
+                track.dueScene = Pending{action,tick,pending.scene,slot ? slot->clip : 0,pending.velocity,
+                    LaunchQuantization::None,false,sample,true,pending.admission,true};
+                if (track.user && track.user->sceneGesture && track.user->scene == pending.scene)
+                    track.user.reset();
+            }
+        }
+    }
+    if (!fromFollow) cancelSceneFollow();
+    const LaunchSceneTransition edge{pending.scene,sample,tick,offset,++sceneOrdinal_,fromFollow,pending.preparedToken};
+    if (sink.scenePerformed) sink.scenePerformed(sink.context,edge);
+    if (rolling && block.followActionsEnabled && sink.followOnSceneLaunch) {
+        const auto follow = sink.followOnSceneLaunch(sink.context,edge);
+        if (follow && follow->tick > tick && follow->request.kind == LaunchRequestKind::ScenePress)
+            applyFollow(*follow,block,view,tick,sample + 1);
+    }
+}
+
+bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
                           std::int64_t tick) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
-    if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return;
+    if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
     if (pending.action == Action::Start) {
-        if (!occupied(target) || target->clip != pending.clip) return;
+        if (!occupied(target) || target->clip != pending.clip) return false;
     } else if (pending.clip != 0 && previous.clip != pending.clip) {
-        return;
+        return false;
     } else if (pending.sceneGesture) {
         const auto* slot = findSlot(view,track.id,pending.scene);
-        if (slot && (occupied(slot) || !slot->hasStop)) return;
+        if (slot && (occupied(slot) || !slot->hasStop)) return false;
     }
 
     track.follow.reset();
     track.repeat.reset();
+    track.regionEdit.reset();
     track.run = {};
     track.run.arrangement = pending.action == Action::Arrangement;
     if (pending.action == Action::Start) {
         auto position = target->startTick;
-        const auto* oldSlot = findClip(view,track.id,previous.clip);
+        LaunchSlot oldGeometry;
+        const auto* oldSlot = effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry);
         if (oldSlot && target->legato && previous.clip != target->clip) {
             const auto oldPosition = wrapSource(*oldSlot,previous.sourceTick);
             position = legatoUsesPreviousClipRelativePosition
@@ -305,7 +463,7 @@ void Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         position = wrapSource(*target,position);
         if (position >= sourceEnd(*target)) position = target->startTick;
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
-                     ++runSerial_,false,tick,position,position,0};
+                     ++runSerial_,false,tick,position,position,0,0,target->fade};
         if (pending.repeat) {
             const auto next = pending.grid == LaunchQuantization::None && repeatWithoutQuantizationRestartsAtClipEnd
                 ? add(tick,sourceEnd(*target) - position)
@@ -317,34 +475,41 @@ void Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
             }
         }
     }
-    if (previous.arrangement == track.run.arrangement && previous.serial == track.run.serial) return;
+    if (previous.arrangement == track.run.arrangement && previous.serial == track.run.serial) return true;
     const auto followOrdinal = track.run.clip != 0 ? ++track.followOrdinal : 0;
     const LaunchTransition edge{track.id,previous.clip,track.run.clip,track.run.sourceTick,
         block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
-        track.run.velocity,track.run.clip != 0 && target && target->fade};
+        track.run.velocity,track.run.fade,previous.pcmAnchorTick,previous.frames-previous.pcmAnchorFrame,
+        previous.frames,previous.velocity,previous.fade};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
         if (follow && follow->tick > tick && follow->request.track == track.id &&
             (follow->request.kind == LaunchRequestKind::StopTrack ||
              follow->request.kind == LaunchRequestKind::SlotPress)) {
-            applyFollow(*follow,block,view,tick);
-            if (track.follow) track.follow->earliestSample = edge.sample + 1;
+            applyFollow(*follow,block,view,tick,edge.sample + 1);
         }
     }
+    return true;
 }
 
 void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& view,
-                      LaunchSink sink, std::int64_t tick) noexcept {
-    std::int32_t cursor = 0;
+                      LaunchSink sink, std::int64_t tick, std::int32_t cursor,
+                      std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
-    while (cursor < block.frames) {
-        const LaunchSlot* slot = nullptr;
+    while (cursor < end) {
+        const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
-            slot = findSlot(view,track.id,track.run.scene);
-            if (!slot || slot->clip != track.run.clip) slot = findClip(view,track.id,track.run.clip);
-            if (slot) track.run.scene = slot->scene;
+            preparedSlot = findSlot(view,track.id,track.run.scene);
+            if (!preparedSlot || preparedSlot->clip != track.run.clip)
+                preparedSlot = findClip(view,track.id,track.run.clip);
+            if (preparedSlot) {
+                track.run.scene = preparedSlot->scene;
+                track.run.fade = preparedSlot->fade;
+            }
         }
+        LaunchSlot regionGeometry;
+        const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
@@ -357,8 +522,11 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (sourceOffset == cursor && untilEnd > 0 && phaseChangedAtCursor) ++sourceOffset;
         }
         std::optional<Pending>* next = nullptr;
-        auto boundary = block.frames;
-        for (auto* candidate : {&track.user,&track.gateStop,&track.follow,&track.repeat}) {
+        auto boundary = end;
+        bool editRegion = false;
+        const bool prepared = track.dueScene && track.dueScene->prepared;
+        for (auto* candidate : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
+                                prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
             if (!*candidate) continue;
             const auto earliest = static_cast<std::int32_t>(std::clamp<std::int64_t>(
                 (*candidate)->earliestSample - block.sample, 0, block.frames));
@@ -368,14 +536,38 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 next = candidate;
             }
         }
+        if (track.regionEdit) {
+            const auto& pending = *track.regionEdit;
+            if (pending.edit.clip != track.run.clip || pending.edit.run != track.run.serial ||
+                !regionFits(preparedSlot,pending.edit.region)) {
+                track.regionEdit.reset();
+            } else {
+                const auto editSample = pending.edit.rate == ClipUpdateRate::None
+                    ? pending.boundary.sample : block.sampleAtTick(block.clock,pending.boundary.tick);
+                const auto relative = std::max(block.sample,editSample) - block.sample;
+                const auto offset = static_cast<std::int32_t>(std::min<std::int64_t>(
+                    block.frames,std::max<std::int64_t>(cursor,relative)));
+                if (offset < boundary) {
+                    boundary = offset;
+                    next = nullptr;
+                    editRegion = true;
+                }
+            }
+        }
         if (sourceOffset < boundary) {
             boundary = sourceOffset;
             next = nullptr;
+            editRegion = false;
         }
         auto edgeTick = next ? (*next)->tick : sourceTick;
+        if (editRegion) {
+            const auto target = track.regionEdit->boundary.tick;
+            edgeTick = block.sampleAtTick(block.clock,target) == block.sample + boundary
+                ? target : atSample(block,block.sample + boundary);
+        }
         if (offsetAt(block,edgeTick) < boundary)
             edgeTick = atSample(block,block.sample + boundary);
-        const auto nextTick = boundary < block.frames ? edgeTick : atSample(block,block.sample + boundary);
+        const auto nextTick = boundary < end ? edgeTick : atSample(block,block.sample + boundary);
         const auto atSourceEdge = slot && sourceOffset == boundary &&
             (boundary < block.frames || (sourceTick != lastTick &&
              block.sampleAtTick(block.clock,sourceTick) == block.sample + boundary));
@@ -394,19 +586,47 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             cursor = boundary;
             phaseChangedAtCursor = false;
         }
-        if (cursor == block.frames) break;
+        if (cursor == end) break;
         if (next) {
             const auto pending = **next;
             next->reset();
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            transition(track,block,view,sink,pending,cursor,edgeTick);
+            if (transition(track,block,view,sink,pending,cursor,edgeTick)) {
+                if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
+                    track.dueScene.reset();
+                if (pending.prepared) {
+                    for (auto* other : {&track.back,&track.user,&track.gateStop}) {
+                        if (*other && (*other)->earliestSample <= block.sample + cursor &&
+                            offsetAt(block,(*other)->tick) <= cursor) other->reset();
+                    }
+                }
+            }
             phaseChangedAtCursor = phaseChangedAtCursor || run != track.run.serial;
+        } else if (editRegion) {
+            const auto region = track.regionEdit->edit.region;
+            track.regionEdit.reset();
+            track.run.region = region;
+            auto revisedPosition = std::max(track.run.sourceTick,region.start);
+            if (region.loop && revisedPosition >= region.loop->end) {
+                revisedPosition = region.loop->begin + (revisedPosition - region.loop->end) %
+                    (region.loop->end - region.loop->begin);
+            } else if (revisedPosition >= region.end) {
+                revisedPosition = region.start;
+            }
+            if (revisedPosition != track.run.sourceTick) {
+                track.run.sourceTick = track.run.anchorSourceTick = revisedPosition;
+                track.run.anchorTick = edgeTick;
+                track.run.pcmAnchorTick = revisedPosition;
+                track.run.pcmAnchorFrame = track.run.frames;
+                phaseChangedAtCursor = true;
+            }
         } else if (occupied(slot) && loops(*slot)) {
             track.run.sourceTick = track.run.anchorSourceTick = slot->loopStartTick;
             track.run.anchorTick = nextTick;
             track.run.pcmAnchorTick = slot->loopStartTick;
             track.run.pcmAnchorFrame = track.run.frames;
+            ++track.run.completedLoops;
             phaseChangedAtCursor = true;
         } else {
             // A follow action can be due after a one-shot has stopped sounding.
@@ -420,11 +640,134 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
     }
 }
 
+Launcher::RetargetResult Launcher::retarget(std::span<const LaunchRequest> requests,
+                                            const LaunchBlock& block, const LaunchView& view) noexcept {
+    if (requests.empty() || requests.size() > LaunchGestureQueue::capacity || !requests.front().scene)
+        return RetargetResult::Rejected;
+    const auto scene = *requests.front().scene;
+    std::array<std::int64_t, LaunchGestureQueue::capacity> tracks{};
+    std::size_t count = 0;
+    for (const auto& request : requests) {
+        if (request.kind != LaunchRequestKind::RetargetRunning || request.incarnation != block.incarnation ||
+            request.scene != scene || scene <= 0 || !request.track || !request.clip || !request.expectedClip ||
+            *request.clip <= 0 || request.clip == request.expectedClip || request.expectedRun == 0)
+            return RetargetResult::Rejected;
+        const auto* track = findTrack(*request.track);
+        if (!track || track->run.clip != *request.expectedClip || track->run.serial != request.expectedRun)
+            return RetargetResult::Rejected;
+        tracks[count++] = *request.track;
+    }
+    auto* end = tracks.data() + count;
+    std::sort(tracks.data(),end);
+    if (std::adjacent_find(tracks.data(),end) != end)
+        return RetargetResult::Rejected;
+    if (!std::binary_search(view.scenes.begin(),view.scenes.end(),scene))
+        return RetargetResult::PendingView;
+
+    for (const auto& request : requests) {
+        const auto* before = findClip(view,*request.track,*request.expectedClip);
+        const auto* after = findSlot(view,*request.track,scene);
+        if (!occupied(before) || !occupied(after) || after->clip != *request.clip ||
+            before->startTick != after->startTick || before->endTick != after->endTick ||
+            before->loopStartTick != after->loopStartTick || before->loopEndTick != after->loopEndTick ||
+            before->mode != after->mode || before->quantization != after->quantization ||
+            before->legato != after->legato || before->fade != after->fade || before->velocityAmount != after->velocityAmount)
+            return RetargetResult::Rejected;
+    }
+    for (const auto& request : requests) {
+        auto& track = *findTrack(*request.track);
+        const auto rebindRunRequest = [&](std::optional<Pending>& pending) {
+            if (pending && pending->clip == *request.expectedClip) {
+                pending->clip = *request.clip;
+                pending->scene = scene;
+            }
+        };
+        rebindRunRequest(track.repeat);
+        rebindRunRequest(track.gateStop);
+        if (track.user && track.user->action == Action::Stop && !track.user->sceneGesture)
+            rebindRunRequest(track.user);
+        // No new run edge, chase, gain ramp or Follow Action draw. The new
+        // clip section names the copy and the old run's exact clock and age.
+        track.run.clip = *request.clip;
+        track.run.scene = scene;
+    }
+    return RetargetResult::Applied;
+}
+
+void Launcher::drain(const LaunchBlock& block, const LaunchView& view, std::int64_t now) noexcept {
+    ++admission_;
+    if (deferredRetargetSize_ &&
+        retarget(std::span(deferredRetarget_).first(deferredRetargetSize_),block,view) != RetargetResult::PendingView)
+        deferredRetargetSize_ = 0;
+    for (std::size_t remaining = LaunchGestureQueue::capacity; remaining > 0;) {
+        const auto result = gestures_.pop(batch_);
+        if (result.status != LaunchGestureQueue::PopStatus::Ready) break;
+        const auto gesture = std::span(batch_).first(result.size);
+        if (std::any_of(gesture.begin(),gesture.end(),[](const LaunchRequest& request) {
+                return request.kind == LaunchRequestKind::RetargetRunning;
+            })) {
+            switch (retarget(gesture,block,view)) {
+            case RetargetResult::PendingView:
+                std::copy_n(gesture.data(),gesture.size(),deferredRetarget_.data());
+                deferredRetargetSize_ = gesture.size();
+                break;
+            case RetargetResult::Applied:
+                deferredRetargetSize_ = 0;
+                break;
+            case RetargetResult::Rejected:
+                break;
+            }
+        } else if (std::all_of(gesture.begin(),gesture.end(),
+                        [&](const auto& request) { return valid(request,block,view); })) {
+            for (const auto& request : gesture) applyUser(request,block,view,now);
+        }
+        // A producer may refill the ring while it is drained. Bound the
+        // callback's admission work even under continuous owner activity.
+        if (result.size >= remaining) break;
+        remaining -= result.size;
+    }
+}
+
+bool Launcher::admitWhileStopped(const LaunchBlock& block, const LaunchView& view, LaunchSink sink) noexcept {
+    if (!block.tickAtSample || !block.sampleAtTick || block.sample < 0 || view.tracks.size() > tracks_.size())
+        return false;
+    adopt(block,view,sink);
+    discardUnpublishedScene(block);
+    const auto now = atSample(block,block.sample);
+    drain(block,view,now);
+    const auto active = std::span(activeTracks_,trackCount_);
+    const auto fresh = [this](const std::optional<Pending>& pending) {
+        return pending && pending->admission == admission_;
+    };
+    if (std::any_of(active.begin(),active.end(),[&](const Track& track) {
+            return fresh(track.user) && (track.user->action == Action::Start ||
+                (emptySceneStartsStoppedTransport && track.user->sceneGesture));
+        })) return true;
+    if (userScene_ && userScene_->admission == admission_) {
+        const auto scene = *userScene_;
+        userScene_.reset();
+        settleScene(scene,false,false,block,view,sink,0);
+    }
+    for (auto& track : active) {
+        for (auto* request : {&track.back,&track.user,&track.gateStop}) {
+            if (!fresh(*request)) continue;
+            const auto pending = **request;
+            request->reset();
+            transition(track,block,view,sink,pending,0,now);
+        }
+        if (track.run.clip && !occupied(findClip(view,track.id,track.run.clip)))
+            transition(track,block,view,sink,Pending{Action::Stop,now},0,now);
+    }
+    publishStatus(block,view,sink,false,now);
+    return false;
+}
+
 bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchSink sink,
                        std::span<const LaunchFollowRequest> follow) noexcept {
     if (!block.tickAtSample || !block.sampleAtTick || block.frames <= 0 || block.sample < 0 ||
         block.sample > lastTick - block.frames || view.tracks.size() > tracks_.size()) return false;
     adopt(block,view,sink);
+    discardUnpublishedScene(block);
     const auto now = atSample(block,block.sample);
     const auto active = std::span(activeTracks_,trackCount_);
     if (followPass_ != block.followPass) {
@@ -432,6 +775,8 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
             track.followOrdinal = 0;
             track.follow.reset();
         }
+        sceneOrdinal_ = 0;
+        cancelSceneFollow();
         followPass_ = block.followPass;
     }
     if (nextSample_ >= 0 && (block.sample != nextSample_ || now != nextTick_)) {
@@ -442,13 +787,21 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
     }
     if (!block.followActionsEnabled) {
         for (auto& track : active) track.follow.reset();
+        cancelSceneFollow();
     }
     if (nextSample_ >= 0 && block.sample != nextSample_) {
-        // The caller split a transport discontinuity. Re-grid user launches
-        // on the new timeline and preserve the elapsed-time countdowns.
+        // A natural loop must still reach a grid deadline even if the loop is
+        // shorter than its grid. An explicit locate resolves its new grid.
         for (auto& track : active) {
-            for (auto* pending : {&track.user,&track.gateStop}) {
-                if (*pending) (*pending)->tick = gridForPress(block,(*pending)->grid,now);
+            for (auto* pending : {&track.back,&track.user,&track.gateStop}) {
+                if (*pending) {
+                    if (userScene_ && userScene_->preparedToken && (*pending)->sceneGesture &&
+                        (*pending)->scene == userScene_->scene)
+                        continue;
+                    (*pending)->tick = block.arrangementWrap && preserveQuantizedDeadlinesAcrossArrangementWrap
+                        ? add(now,std::max<std::int64_t>(0,(*pending)->tick-nextTick_))
+                        : gridForPress(block,(*pending)->grid,now);
+                }
             }
             for (auto* pending : {&track.follow,&track.repeat}) {
                 if (*pending) {
@@ -456,26 +809,185 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
                     (*pending)->earliestSample = block.sample;
                 }
             }
+            if (track.regionEdit) {
+                auto& pending = *track.regionEdit;
+                if (block.arrangementWrap) {
+                    pending.boundary.tick = add(now,std::max<std::int64_t>(0,pending.boundary.tick-nextTick_));
+                    pending.boundary.sample = block.sampleAtTick(block.clock,pending.boundary.tick);
+                } else if (const auto boundary = nextClipUpdateBoundary(block,block.sample,pending.edit.rate,true)) {
+                    pending.boundary = *boundary;
+                } else {
+                    track.regionEdit.reset();
+                }
+            }
+        }
+        if (userScene_ && !userScene_->preparedToken) {
+            userScene_->tick = block.arrangementWrap && preserveQuantizedDeadlinesAcrossArrangementWrap
+                ? add(now,std::max<std::int64_t>(0,userScene_->tick-nextTick_))
+                : gridForPress(block,userScene_->grid,now);
+        }
+        if (followScene_) {
+            followScene_->tick = add(now,std::max<std::int64_t>(0,followScene_->tick-nextTick_));
+            followScene_->earliestSample = block.sample;
         }
     }
-    for (std::size_t remaining = LaunchGestureQueue::capacity; remaining > 0;) {
-        const auto result = gestures_.pop(batch_);
-        if (result.status != LaunchGestureQueue::PopStatus::Ready) break;
-        const auto gesture = std::span(batch_).first(result.size);
-        if (std::all_of(gesture.begin(),gesture.end(),
-                        [&](const auto& request) { return valid(request,block,view); })) {
-            for (const auto& request : gesture) applyUser(request,block,view,now);
-        }
-        // A producer may refill the ring while it is drained. Bound the
-        // callback's admission work even under continuous owner activity.
-        if (result.size >= remaining) break;
-        remaining -= result.size;
+    drain(block,view,now);
+    drainRegionEdits(block,view);
+    if (block.preparedScene && block.preparedScene->token > lastPreparedScene_) {
+        const auto& scene = *block.preparedScene;
+        lastPreparedScene_ = scene.token;
+        if (scene.tick >= 0 && std::isfinite(scene.velocity) &&
+            std::binary_search(view.scenes.begin(),view.scenes.end(),scene.scene))
+            armUserScene({scene.scene,scene.tick,0,LaunchQuantization::None,admission_,scene.token},
+                scene.velocity,block,view,now);
     }
     for (const auto& due : follow) applyFollow(due,block,view,now);
-    for (auto& track : active) render(track,block,view,sink,now);
+    auto cursor = std::int32_t{0};
+    while (cursor < block.frames) {
+        const auto sceneOffset = [&](const std::optional<ScenePending>& pending) {
+            if (!pending) return block.frames;
+            const auto earliest = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+                pending->earliestSample - block.sample,0,block.frames));
+            return std::max({cursor,earliest,offsetAt(block,pending->tick)});
+        };
+        const auto userOffset = sceneOffset(userScene_);
+        const auto followOffset = sceneOffset(followScene_);
+        const auto end = std::min(userOffset,followOffset);
+        if (end > cursor) {
+            const auto tick = atSample(block,block.sample + cursor);
+            for (auto& track : active) render(track,block,view,sink,tick,cursor,end);
+            cursor = end;
+        }
+        if (cursor == block.frames) break;
+        const bool fromFollow = followOffset < userOffset;
+        auto& next = fromFollow ? followScene_ : userScene_;
+        const auto pending = *next;
+        next.reset();
+        settleScene(pending,fromFollow,true,block,view,sink,cursor);
+    }
     nextSample_ = block.sample + block.frames;
     nextTick_ = atSample(block,nextSample_);
+    publishStatus(block,view,sink,true,nextTick_);
     return true;
+}
+
+LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& block,
+                                        const LaunchView& view, std::int64_t endSample) const noexcept {
+    const auto& run = track.run;
+    LaunchTrackStatus status;
+    status.track = track.id;
+    status.clip = run.clip;
+    status.scene = run.scene;
+    status.sourceTick = run.sourceTick;
+    status.run = run.serial;
+    status.completedLoops = run.completedLoops;
+    if (run.clip) {
+        status.source = LaunchTrackSource::Session;
+        const auto* slot = findSlot(view,track.id,run.scene);
+        if (!slot || slot->clip != run.clip) slot = findClip(view,track.id,run.clip);
+        LaunchSlot regionGeometry;
+        slot = effectiveSlot(slot,run.region,regionGeometry);
+        if (slot && loops(*slot)) {
+            status.loopStartTick = slot->loopStartTick;
+            status.loopLengthTicks = slot->loopEndTick - slot->loopStartTick;
+        } else if (occupied(slot)) {
+            const auto end = add(run.anchorTick,std::max<std::int64_t>(0,slot->endTick - run.anchorSourceTick));
+            status.remainingSamples = std::max<std::int64_t>(0,block.sampleAtTick(block.clock,end) - endSample);
+        }
+    } else if (!run.arrangement) {
+        status.source = LaunchTrackSource::Silence;
+    }
+    const Pending* pending = track.user ? &*track.user : nullptr;
+    if (track.gateStop && (!pending || track.gateStop->tick < pending->tick)) pending = &*track.gateStop;
+    if (track.back && (!pending || track.back->tick <= pending->tick)) pending = &*track.back;
+    if (pending) {
+        if (pending->sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending->scene))
+            return status;
+        const auto* target = pending->scene ? findSlot(view,track.id,pending->scene) : nullptr;
+        LaunchQueuedAction action = LaunchQueuedAction::None;
+        if (occupied(target) && target->clip == pending->clip) action = LaunchQueuedAction::Start;
+        if (pending->action == Action::Stop) {
+            const auto mayStop = pending->clip ? pending->clip == run.clip
+                : !pending->sceneGesture || !target || (!occupied(target) && target->hasStop);
+            action = mayStop ? LaunchQueuedAction::Stop : LaunchQueuedAction::None;
+        }
+        if (pending->action == Action::Arrangement) action = LaunchQueuedAction::BackToArrangement;
+        if (action != LaunchQueuedAction::None) status.queued = {action,pending->clip,pending->scene,pending->tick};
+    }
+    return status;
+}
+
+std::uint32_t Launcher::claimStatusBuffer() noexcept {
+    const auto current = publishedStatus_.load(std::memory_order_relaxed);
+    for (std::uint32_t index = 0; index < statusBufferCount; ++index) {
+        if (index == current) continue;
+        auto idle = std::uint32_t{0};
+        if (statusBuffers_[index].readers.compare_exchange_strong(idle,bufferWriting,
+                std::memory_order_acq_rel,std::memory_order_relaxed)) return index;
+    }
+    return statusBufferCount;
+}
+
+void Launcher::finishStatusBuffer(std::uint32_t index) noexcept {
+    auto& frame = statusBuffers_[index];
+    frame.header.revision = ++statusSerial_;
+    publishedStatus_.store(index,std::memory_order_release);
+    // A reader acquiring the unlocked frame also observes its publication.
+    frame.readers.store(0,std::memory_order_release);
+}
+
+void Launcher::publishStatus(const LaunchBlock& block, const LaunchView& view, LaunchSink sink,
+                             bool playing, std::int64_t endTick) noexcept {
+    const auto index = claimStatusBuffer();
+    const auto endSample = playing ? block.sample + block.frames : block.sample;
+    auto* frame = index < statusBufferCount ? &statusBuffers_[index] : nullptr;
+    if (!frame && !sink.trackStatus) return;
+    auto back = false;
+    for (std::size_t row = 0; row < trackCount_; ++row) {
+        const auto status = trackStatus(activeTracks_[row],block,view,endSample);
+        back = back || status.source != LaunchTrackSource::Arrangement;
+        if (frame) frame->rows[row] = status;
+        if (sink.trackStatus) sink.trackStatus(sink.context,status);
+    }
+    if (frame) {
+        frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back};
+        finishStatusBuffer(index);
+    }
+}
+
+void Launcher::suspendStatus() noexcept {
+    const auto current = publishedStatus_.load(std::memory_order_relaxed);
+    if (current >= statusBufferCount || !statusBuffers_[current].header.transportPlaying) return;
+    const auto index = claimStatusBuffer();
+    if (index >= statusBufferCount) return;
+    const auto& source = statusBuffers_[current];
+    auto& target = statusBuffers_[index];
+    std::copy_n(source.rows.get(),source.header.trackCount,target.rows.get());
+    target.header = source.header;
+    target.header.transportPlaying = false;
+    finishStatusBuffer(index);
+}
+
+bool Launcher::readStatus(std::span<LaunchTrackStatus> out, LaunchStatusHeader& header) const noexcept {
+    constexpr auto attempts = 4;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        const auto index = publishedStatus_.load(std::memory_order_acquire);
+        if (index >= statusBufferCount) return false;
+        const auto& frame = statusBuffers_[index];
+        auto readers = frame.readers.load(std::memory_order_relaxed);
+        if (readers >= bufferWriting - 1 || !frame.readers.compare_exchange_strong(readers,readers + 1,
+                std::memory_order_acq_rel,std::memory_order_relaxed)) continue;
+        if (publishedStatus_.load(std::memory_order_acquire) != index) {
+            frame.readers.fetch_sub(1,std::memory_order_release);
+            continue;
+        }
+        header = frame.header;
+        const auto fits = out.size() >= header.trackCount;
+        if (fits) std::copy_n(frame.rows.get(),header.trackCount,out.data());
+        frame.readers.fetch_sub(1,std::memory_order_release);
+        return fits;
+    }
+    return false;
 }
 
 } // namespace adi::engine

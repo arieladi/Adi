@@ -126,6 +126,7 @@ void mixedTake() {
     auto result = finish(recorder);
     require(result.state == SlotRecordingState::Complete && result.frames == 80 && result.sampleRate == 48000,
             "half-open capture has exactly 80 clip-local frames");
+    require(result.sourceProject == format.sourceProject, "the capture carries its originating document identity");
     require(result.targets.size() == 2 && result.targets[0].slot == targets[0].slot &&
             result.targets[1].slot == targets[1].slot, "completed media and MIDI stay bound to their slots");
     require(result.audio && result.audio->failure == RecordingFailure::None && result.audio->frames == 80 &&
@@ -158,6 +159,15 @@ void mixedTake() {
             result.audio->failure == RecordingFailure::MissingInput && result.midi.empty(),
             "an audio failure never publishes half a mixed capture slice");
     require(!result.audio->discard(), "failed private media can be discarded");
+
+    require(recorder.start(format, targets, error), "prepare writers before queue admission");
+    recorder.cancel();
+    input(recorder, {});
+    result = finish(recorder);
+    require(result.state == SlotRecordingState::Cancelled && result.frames == 0 && result.audio &&
+            result.audio->failure == RecordingFailure::Cancelled && result.audio->directory().empty(),
+            "cancelling an unqueued slot take releases private audio and returns to idle");
+    require(recorder.state() == SlotRecordingState::Idle, "cancelled slot recorder can be armed again");
 }
 
 void interruptionAndReuse() {

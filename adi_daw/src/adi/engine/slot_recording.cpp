@@ -55,12 +55,18 @@ bool SlotInputRecorder::start(AudioRecordingSpec format, std::span<const SlotRec
     hasMidi_ = captureMidi;
     sampleRate_ = format.sampleRate;
     maxFrames_ = format.maxFrames;
+    sourceProject_ = std::move(format.sourceProject);
     targets_ = std::move(frozen);
     clock_ = Transport{};
     beginStream_ = 0;
+    cancel_.store(false, std::memory_order_relaxed);
     error.clear();
     state_.store(SlotRecordingState::Armed, std::memory_order_release);
     return true;
+}
+
+void SlotInputRecorder::cancel() noexcept {
+    cancel_.store(true, std::memory_order_release);
 }
 
 void SlotInputRecorder::finish(SlotRecordingState outcome) noexcept {
@@ -78,6 +84,10 @@ void SlotInputRecorder::process(const AudioIo& io, std::optional<SlotRecordingWi
         // The recorder's existing publisher expects the driver to acknowledge
         // the owner release even when there is no longer a recording window.
         audio_.capture({}, Transport{});
+        return;
+    }
+    if (cancel_.load(std::memory_order_acquire)) {
+        finish(SlotRecordingState::Cancelled);
         return;
     }
     if (!window) {
@@ -152,7 +162,8 @@ std::optional<SlotRecordingResult> SlotInputRecorder::poll(bool deviceStopped) {
     if (current == SlotRecordingState::Idle) return {};
     if (deviceStopped && (current == SlotRecordingState::Armed || current == SlotRecordingState::Recording)) {
         if (hasMidi_) midi_.deviceStopped();
-        current = SlotRecordingState::Interrupted;
+        current = cancel_.load(std::memory_order_acquire)
+            ? SlotRecordingState::Cancelled : SlotRecordingState::Interrupted;
         state_.store(current, std::memory_order_release);
     }
     if (hasMidi_) {
@@ -171,15 +182,17 @@ std::optional<SlotRecordingResult> SlotInputRecorder::poll(bool deviceStopped) {
 
     std::optional<AudioRecordingResult> audio;
     if (hasAudio_) {
-        audio_.stop();
+        audio_.stop(current == SlotRecordingState::Cancelled);
         audio = audio_.poll(deviceStopped);
         if (!audio) return {};
         if (audio->failure != RecordingFailure::None &&
+            audio->failure != RecordingFailure::Cancelled &&
             !(audio->failure == RecordingFailure::NoFrames && clock_.position() == 0))
             current = SlotRecordingState::InputFailure;
     }
     SlotRecordingResult result{current, clock_.position(), sampleRate_, std::move(targets_), std::move(audio),
-                               std::move(midiPackets_), hasMidi_ ? midi_.state() : MidiCaptureState::Idle};
+                               std::move(midiPackets_), hasMidi_ ? midi_.state() : MidiCaptureState::Idle,
+                               std::move(sourceProject_)};
     midiPackets_.clear();
     state_.store(SlotRecordingState::Idle, std::memory_order_release);
     return result;

@@ -47,13 +47,19 @@ struct LaunchDecision {
 }
 
 enum class LaunchRequestKind : std::uint8_t {
-    SlotPress, SlotRelease, ScenePress, StopTrack, BackToArrangement, StopAll, CancelScene
+    SlotPress, SlotRelease, ScenePress, StopTrack, BackToArrangement, StopAll, CancelScene,
+    RetargetRunning
 };
 struct LaunchRequest {
     LaunchRequestKind kind = LaunchRequestKind::SlotPress;
     std::optional<std::int64_t> track, scene, clip;
     std::uint64_t incarnation = 0; ///< checked against the driver's admitted target
     float velocity = 1.0f;
+    // Capture and Insert Scene sends an exact destination and a preimage of
+    // the running slot. The stable run distinguishes a late command from a
+    // relaunch of the same clip ID.
+    std::optional<std::int64_t> expectedClip{};
+    std::uint64_t expectedRun = 0;
     bool operator==(const LaunchRequest &) const = default;
 };
 

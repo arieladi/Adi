@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_gestures.hpp"
 #include "adi/engine/launch_quantize.hpp"
 
+#include <memory>
 #include <vector>
 
 namespace adi::engine {
@@ -25,6 +27,15 @@ struct LaunchView {
     std::span<const std::int64_t> scenes; // ascending positive IDs
 };
 
+struct PreparedSceneLaunch {
+    std::int64_t scene = 0, tick = 0;
+    float velocity = 1.0f;
+    // The producer keeps a stable increasing token across repeated reads.
+    std::uint64_t token = 0;
+    double tempoBpm = 0;
+    std::int32_t signatureNumerator = 0, signatureDenominator = 0;
+};
+
 /// One contiguous range on the rendered generation's transport clock. Split
 /// at a transport wrap. The clock maps non-negative samples and ticks, with
 /// the same projection that placed the Arrangement clips.
@@ -39,6 +50,12 @@ struct LaunchBlock {
     std::int64_t (*sampleAtTick)(const void*, std::int64_t) noexcept = nullptr;
     bool followActionsEnabled = true;
     std::uint64_t followPass = 0;
+    // Set only for a natural Arrangement wrap, never for an explicit locate.
+    bool arrangementWrap = false;
+    std::optional<PreparedSceneLaunch> preparedScene{};
+    double sampleRate = 48000.0;
+    double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
+    bool preparedScenePinned = false; // an absent token then revokes the old published scene
 };
 
 struct LaunchSection {
@@ -62,11 +79,52 @@ struct LaunchTransition {
     std::uint64_t followOrdinal = 0;
     float velocity = 1.0f;
     bool fade = false;
+    std::int64_t oldSourceAnchorTick = 0, oldFramesSinceSourceAnchor = 0;
+    std::int64_t oldFramesSinceStart = 0;
+    float oldVelocity = 1.0f;
+    bool oldFade = false;
 };
 
 struct LaunchFollowRequest {
     LaunchRequest request;
     std::int64_t tick = 0;
+};
+
+struct LaunchSceneTransition {
+    std::int64_t scene = 0, sample = 0, tick = 0;
+    std::int32_t offset = 0;
+    std::uint64_t ordinal = 0;
+    bool fromFollow = false;
+    std::uint64_t preparedToken = 0;
+    double tempoBpm = 0; // filled by the graph when the receipt applies tempo
+    std::int32_t signatureNumerator = 0, signatureDenominator = 0;
+};
+
+enum class LaunchTrackSource : std::uint8_t { Arrangement, Session, Silence };
+enum class LaunchQueuedAction : std::uint8_t { None, Start, Stop, BackToArrangement };
+
+struct LaunchQueuedStatus {
+    LaunchQueuedAction action = LaunchQueuedAction::None;
+    std::int64_t clip = 0, scene = 0, tick = 0;
+    bool operator==(const LaunchQueuedStatus&) const = default;
+};
+
+/// A track's completed render state. Clip/scene/run are zero without a Session
+/// run. An active clip and a different fired slot can coexist on the same track.
+struct LaunchTrackStatus {
+    std::int64_t track = 0, clip = 0, scene = 0, sourceTick = 0;
+    std::uint64_t run = 0, completedLoops = 0;
+    LaunchTrackSource source = LaunchTrackSource::Arrangement;
+    LaunchQueuedStatus queued;
+    std::int64_t loopStartTick = 0, loopLengthTicks = 0, remainingSamples = 0;
+    bool operator==(const LaunchTrackStatus&) const = default;
+};
+
+struct LaunchStatusHeader {
+    std::uint64_t incarnation = 0, revision = 0;
+    std::int64_t endSample = 0, endTick = 0;
+    std::size_t trackCount = 0;
+    bool transportPlaying = false, backToArrangement = false;
 };
 
 struct LaunchSink {
@@ -76,23 +134,44 @@ struct LaunchSink {
     // A returned same-track action belongs to this run and is discarded when
     // another launch replaces it. Its tick must follow the launch tick.
     std::optional<LaunchFollowRequest> (*followOnLaunch)(void*, const LaunchTransition&) noexcept = nullptr;
+    void (*trackStatus)(void*, const LaunchTrackStatus&) noexcept = nullptr;
+    void (*scenePerformed)(void*, const LaunchSceneTransition&) noexcept = nullptr;
+    std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
 /// are established off the audio thread. Sections and transitions for each
 /// track are chronological, with tracks visited in ascending ID order.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324) // mailbox counters occupy separate cache lines
+#endif
 class Launcher {
 public:
     explicit Launcher(std::size_t maximumTracks);
     [[nodiscard]] bool post(std::span<const LaunchRequest> requests) noexcept {
         return gestures_.push(requests);
     }
+    /// Owner only. Queue playback bounds for a single active prepared run.
+    [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&) noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
+    /// Driver only. Drain a stopped block's valid gestures. A surviving fresh
+    /// launch asks the caller to roll the clock; process() then runs it. Fresh
+    /// stops and Back to Arrangement can settle even while the clock is held.
+    [[nodiscard]] bool admitWhileStopped(const LaunchBlock&, const LaunchView&, LaunchSink = {}) noexcept;
+    /// Driver only. Mark the last completed render state as stopped when the
+    /// caller can no longer provide a LaunchView and held transport position.
+    void suspendStatus() noexcept;
+    /// Copy one coherent, completed frame from a non-driver thread. If storage
+    /// is short, fills header with the required trackCount and leaves rows alone.
+    /// Returns false before publication, on contention or on short storage.
+    [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
 
 private:
     enum class Action : std::uint8_t { Start, Stop, Arrangement };
+    enum class RetargetResult : std::uint8_t { Rejected, PendingView, Applied };
     struct Pending {
         Action action;
         std::int64_t tick, scene = 0, clip = 0;
@@ -101,6 +180,8 @@ private:
         bool repeat = false;
         std::int64_t earliestSample = 0;
         bool sceneGesture = false;
+        std::uint64_t admission = 0;
+        bool prepared = false;
     };
     struct Run {
         std::int64_t scene = 0, clip = 0, sourceTick = 0, frames = 0;
@@ -109,32 +190,88 @@ private:
         bool arrangement = true;
         std::int64_t anchorTick = 0, anchorSourceTick = 0;
         std::int64_t pcmAnchorTick = 0, pcmAnchorFrame = 0;
+        std::uint64_t completedLoops = 0;
+        bool fade = false;
+        std::optional<LaunchClipRegion> region{};
+    };
+    struct RegionPending {
+        LaunchClipRegionEdit edit;
+        ClipUpdateBoundary boundary;
     };
     struct Track {
         std::int64_t id = 0;
         Run run;
-        std::optional<Pending> user, gateStop, follow, repeat;
+        std::optional<Pending> user, back, gateStop, follow, repeat, sceneFollow, dueScene;
         std::uint64_t followOrdinal = 0;
+        std::optional<RegionPending> regionEdit{};
+    };
+    struct ScenePending {
+        std::int64_t scene, tick, earliestSample = 0;
+        LaunchQuantization grid = LaunchQuantization::None;
+        std::uint64_t admission = 0;
+        std::uint64_t preparedToken = 0;
+        float velocity = 1.0f;
     };
 
     [[nodiscard]] Track* findTrack(std::int64_t) noexcept;
     void adopt(const LaunchBlock&, const LaunchView&, LaunchSink) noexcept;
     [[nodiscard]] bool valid(const LaunchRequest&, const LaunchBlock&, const LaunchView&) noexcept;
+    [[nodiscard]] RetargetResult retarget(std::span<const LaunchRequest>, const LaunchBlock&,
+                                          const LaunchView&) noexcept;
+    void drain(const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
+    void drainRegionEdits(const LaunchBlock&, const LaunchView&) noexcept;
     void applyUser(const LaunchRequest&, const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
+    void armUserScene(ScenePending, float velocity, const LaunchBlock&, const LaunchView&,
+                      std::int64_t now) noexcept;
     void applyFollow(const LaunchFollowRequest&, const LaunchBlock&, const LaunchView&,
-                     std::int64_t) noexcept;
-    void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t) noexcept;
-    void transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
+                     std::int64_t, std::int64_t earliestSample = 0) noexcept;
+    void cancelSceneFollow() noexcept;
+    void discardUnpublishedScene(const LaunchBlock&) noexcept;
+    void settleScene(const ScenePending&, bool fromFollow, bool rolling, const LaunchBlock&,
+                     const LaunchView&, LaunchSink, std::int32_t offset) noexcept;
+    void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t,
+                std::int32_t begin, std::int32_t end) noexcept;
+    bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
+    [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
+                                                const LaunchView&, std::int64_t) const noexcept;
+    void publishStatus(const LaunchBlock&, const LaunchView&, LaunchSink, bool, std::int64_t) noexcept;
+
+    // The driver only claims a spare frame. Readers pin a published frame with
+    // one bounded atomic reservation while they copy its ordinary row values.
+    static constexpr std::uint32_t statusBufferCount = 3;
+    struct StatusBuffer {
+        mutable std::atomic<std::uint32_t> readers{0};
+        std::unique_ptr<LaunchTrackStatus[]> rows;
+        LaunchStatusHeader header;
+    };
+    [[nodiscard]] std::uint32_t claimStatusBuffer() noexcept;
+    void finishStatusBuffer(std::uint32_t) noexcept;
 
     LaunchGestureQueue gestures_;
     std::array<LaunchRequest, LaunchGestureQueue::capacity> batch_{};
+    // The owner may enqueue the captured scene while the driver is finishing
+    // an older pinned graph. Keep one literal transfer until that scene exists.
+    std::array<LaunchRequest, LaunchGestureQueue::capacity> deferredRetarget_{};
+    std::size_t deferredRetargetSize_ = 0;
+    std::array<LaunchClipRegionEdit, LaunchGestureQueue::capacity> regionMailbox_{};
+    alignas(64) std::atomic<std::uint64_t> regionWritten_{0};
+    alignas(64) std::atomic<std::uint64_t> regionRead_{0};
     std::vector<Track> tracks_, scratch_;
     Track* activeTracks_ = nullptr;
     Track* spareTracks_ = nullptr;
     std::size_t trackCount_ = 0;
-    std::uint64_t incarnation_ = 0, runSerial_ = 0, followPass_ = 0;
+    std::uint64_t incarnation_ = 0, runSerial_ = 0, followPass_ = 0, admission_ = 0;
+    std::optional<ScenePending> userScene_, followScene_;
+    std::uint64_t sceneOrdinal_ = 0;
+    std::uint64_t lastPreparedScene_ = 0;
     std::int64_t nextSample_ = -1, nextTick_ = 0;
+    std::array<StatusBuffer,statusBufferCount> statusBuffers_;
+    std::atomic<std::uint32_t> publishedStatus_{statusBufferCount};
+    std::uint64_t statusSerial_ = 0;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace adi::engine

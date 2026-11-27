@@ -415,9 +415,12 @@ struct Model {
     std::vector<Track> tracks;
     std::vector<MixerStrip> strips;
     std::vector<Lane> lanes;
-    std::vector<Clip> clips;
+    std::vector<Clip> clips; // Arrangement main and take lanes
+    std::vector<Clip> slotClips;
     std::vector<AudioClip> audioClips;
     std::vector<Note> notes;
+    std::vector<Note> slotNotes;
+    std::vector<std::string> slotProblems;
     std::vector<controllers::Lane> controllers;
     std::vector<Marker> markers;
     std::vector<Media> media;

@@ -41,6 +41,16 @@ Rows 6 to 17 are the readings Master Reference v1.0 and v1.1 asked for (ADR-0203
 
 Rows 18 to 29 are the new readings `docs/PLAN.md` §7.1 names (its §8.4), each closing the plan row it cites. They are taken on the measurement seat (G-1: the second Windows machine's Live 12.4, a fresh profile for factory defaults, never while the director uses it) through the harness of ADR-0220; its relay rule (d4) is the only way a row here is struck, and the plan's rows stay "built, not verified" until then.
 
+### Session View engine readings
+
+Use the installed Live 12.4 on G-1 and write the results to `collab/seats/session.md`.
+
+| Plan row | Cases on Live 12.4 |
+|---|---|
+| TM-SV-02 | Inspect Stop buttons on fresh Audio and MIDI tracks, the raw dormant Scene tempo and signature, and default launch settings, Fade and RAM. Repeat after a scene's clock values have been set and disabled. |
+| TM-SV-03 | M3-LAUNCH L1/L2 and the launch half of M-LIVE-CLIP. Record exact and adjacent grid presses, Gate and Toggle release before the boundary, Repeat with None, Stop All, velocity, unequal Legato loops and Back to Arrangement (N2, N3, N5, N10–N12). Record each Fade edge with Fade on and off at 44.1, 48 and 96 kHz (N8). Read which prepared clip properties switch on the Clip Update Rate and how their phase changes (manual §8.14). |
+| TM-SV-04 | M3-LAUNCH L3/L4/L6. Compare None, Global and explicit follow quantization, scene versus clip at the same boundary, Previous at the first slot, Other at a singleton, Chance A/B, scene Follow Stop, Cancel Scene Launch, and timers across disable and re-enable (N6/N7). Read whether a scene's performed tempo enters Undo (N9). Record a Session performance, then Undo and reopen the Set. See [queued target cases](ENGINE-SESSION-QUEUED-TARGETS.md) for the move and delete fixtures. |
+
 Any listening row can start from a generated project:
 
 ```bat

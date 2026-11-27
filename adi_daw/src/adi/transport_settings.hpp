@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/launch_quantization.hpp"
 #include <cstdint>
 #include <optional>
 namespace adi {
@@ -11,6 +12,8 @@ struct TransportSettings {
     std::int32_t countInBars = 0;               // none, 1, 2 or 4; applies only to a record start
     std::optional<std::int64_t> songStartTicks; // absent: insert marker/time selection
     bool punchIn=false,punchOut=false;         // the loop brace's start and end, independent of Loop
+    std::optional<LaunchQuantization> launchQuantization = std::nullopt;
+    bool followActionsEnabled = true;
     friend bool operator==(const TransportSettings&,const TransportSettings&)=default;
 };
 TransportSettings readTransportSettings(const Store&);

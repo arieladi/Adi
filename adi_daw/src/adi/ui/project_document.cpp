@@ -5,6 +5,7 @@
 #include "adi/bounce_commands.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/freeze_commands.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
@@ -260,7 +261,7 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
         )
         SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips
             WHERE lane_id IS NULL AND track_id IN subtree
-    )sql");
+    )sql" + engine::excludeSlotClips(store.db(), "clips.id"));
     ends.bind(1, track.id);
     long double end = 0;
     while (ends.executeStep()) {
@@ -2806,7 +2807,8 @@ void ProjectDocument::landTake() {
                                    "JOIN clips c ON c.track_id=p.track_id AND c.lane_id IS NULL "
                                    "AND c.pos_ticks=p.pos_ticks AND c.length_ticks=p.length_ticks "
                                    "JOIN audio_clips a ON a.clip_id=c.id AND a.media_id=pa.media_id "
-                                   "AND a.src_start_frames=pa.src_start_frames WHERE p.id=?");
+                                   "AND a.src_start_frames=pa.src_start_frames WHERE p.id=?" +
+                                   engine::excludeSlotClips(store_->db(), "c.id"));
             for (const auto id : lastPassClips) {
                 main.bind(1, id);
                 if (main.executeStep())

@@ -16,15 +16,23 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
 struct NoteExpressionsRead;
+struct TempoMap;
 class LaunchAudioRuntime;
+class LaunchAudioProject;
 struct ClipMediaSource {
     std::int64_t clipId = 0, mediaId = 0;
     std::filesystem::path path;
     std::string storedBlake3;
 };
 // Read the media hints and immutable rows off the callback. No Store survives.
-std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&);
+std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
+inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
+/// Owner-only. Empty when this project has no Session scene list.
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
+    std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
+    std::uint64_t incarnation, std::vector<std::string>& problems,
+    std::uint64_t residentBudget = kSessionResidentPcmBudget);
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
@@ -40,7 +48,7 @@ public:
     void useMonitoredInput(std::int64_t track) noexcept;
     /// Owner only, before publishing. A launched track still needs a source
     /// when it has no Arrangement clips.
-    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>);
+    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>, bool createIfMissing = true);
     /// Owner only, before publishing. The span object outlives rendering of this
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
@@ -74,6 +82,10 @@ public:
     bool primeAt(const Transport& snapshot,const Transport& alternate,
                  std::chrono::milliseconds timeout = std::chrono::seconds(10),
                  bool waitForPendingWarp = true);
+    /// Owner, before publishing a private paged source bank. Admit just this
+    /// private track's initial/loop window without replacing other requests.
+    bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
+                      std::chrono::milliseconds timeout);
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }
@@ -106,12 +118,13 @@ public:
     void setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest*) noexcept;
     std::uint32_t underrunSamples() const noexcept;
     std::uint32_t readErrors() const noexcept;
+    [[nodiscard]] std::uint64_t pageBytesCeiling() const noexcept;
     // Off-callback owner snapshot of terminal asynchronous decode diagnostics.
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
     bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
-                      std::stop_token stop = {});
+                      std::stop_token stop = {}, std::optional<std::int64_t> track = {});
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
