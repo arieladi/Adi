@@ -1267,6 +1267,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // Every edit is already in the file (ADR-0203 d13). Keep the window
     // responsive while an archive finishes before quitting.
     void systemRequestedQuit() override {
+        if (reloadingHistory_) {
+            quitAfterHistoryReload_ = true;
+            return;
+        }
         if (quitAfterExport_ || pluginStateQuit_.pending())
             return;
         confirmExportInterruption("Quitting ADI", [this] { finishQuit(); });
@@ -1411,9 +1415,10 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         return installed;
     }
-    bool install(const juce::File &file, bool create, std::unique_ptr<ProjectDocument> next, ProjectPluginLoad plugins) {
+    bool install(const juce::File &file, bool create, std::unique_ptr<ProjectDocument> next,
+                 ProjectPluginLoad plugins, bool afterHistoryReload = false) {
         const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
-        if (document_ && !document_->requirePluginState()) {
+        if (document_ && !afterHistoryReload && !document_->requirePluginState()) {
             report(document_->error());
             if (create) {
                 const auto path = next->store().path();
@@ -1439,8 +1444,8 @@ class AdiApplication final : public juce::JUCEApplication,
         detachAudio();
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
-        const bool takeSettled = !document_ || document_->settleRecording();
-        if (document_) {
+        const bool takeSettled = afterHistoryReload || !document_ || document_->settleRecording();
+        if (document_ && !afterHistoryReload) {
             if (!takeSettled)
                 report("The last take was still being saved and could not be kept; the new project opened.");
             else if (auto landed = document_->takeLanded(); landed && !landed->ok)
@@ -1458,7 +1463,8 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // The timer and posted callbacks read root_; the window's teardown can run them (walk-A A27).
         releaseWindow(window_, root_);
-        closeProject(takeSettled);
+        if (!afterHistoryReload)
+            closeProject(takeSettled);
         document_ = std::move(next);
         projectPlugins_ = std::move(plugins);
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
@@ -1474,7 +1480,7 @@ class AdiApplication final : public juce::JUCEApplication,
             // Only an Untitled-specific folder, never the user's chosen projects folder.
             if (file.getParentDirectory().getParentDirectory() == projectsFolder(*settings_))
                 untitledFolder_ = path.parent_path();
-        } else if (!testLaunch()) {
+        } else if (!afterHistoryReload && !testLaunch()) {
             commands_->rememberProject(file);
         }
         if (diagnosticLog_)
@@ -1955,6 +1961,13 @@ class AdiApplication final : public juce::JUCEApplication,
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());
+        };
+        root->restoreStoredHistory = [this](HistoryRestoreTarget target) {
+            const auto generation = installGeneration_;
+            confirmExportInterruption("Restoring a stored project version", [this, generation, target] {
+                pendingHistoryReload_ = {generation, target};
+            });
+            return true;
         };
         // The audio clips' waveforms, from the document's own worker (N40).
         root->arrangement.waveforms = &document_->waveforms();
@@ -3045,7 +3058,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
     }
     void changeListenerCallback(juce::ChangeBroadcaster *) override {
-        if (!settings_ || noAudio_)
+        if (!settings_ || noAudio_ || reloadingHistory_)
             return;
         applyInputChannels(); // a device with other inputs, or none
         const auto setup = manager_.getAudioDeviceSetup();
@@ -3072,6 +3085,78 @@ class AdiApplication final : public juce::JUCEApplication,
         root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
                                                document_->landingTake());
     }
+    void reloadStoredHistory() {
+        if (!pendingHistoryReload_)
+            return;
+        const auto [generation, target] = *pendingHistoryReload_;
+        pendingHistoryReload_.reset();
+        if (!document_ || !root_ || installGeneration_ != generation || quitAfterExport_ ||
+            pluginStateQuit_.pending())
+            return;
+        if (projectOpen_ || projectSave_ || installingDocument_) {
+            root_->say("Wait for the project to finish opening or saving before restoring a version.");
+            return;
+        }
+        if (document_->recording() || document_->landingTake()) {
+            root_->say("Wait for the take to finish before restoring a version.");
+            return;
+        }
+        const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
+        const juce::ScopedValueSetter<bool> reloading(reloadingHistory_, true);
+        if (!document_->requirePluginState()) {
+            root_->say(document_->error());
+            return;
+        }
+        const auto path = document_->store().path();
+        const juce::File file(juce::String::fromUTF8(media::pathUtf8(path).c_str()));
+        const auto openingHead = root_->undoHistory.openingHead;
+        const auto openedUtc = root_->undoHistory.openedUtc;
+        const auto openingLabel = root_->undoHistory.rootLabel;
+        const bool needsFirstSave = root_->needsFirstSave;
+        const bool historyWasVisible = historyWindow_ && historyWindow_->isVisible();
+        window_->setEnabled(false);
+        if (historyWindow_)
+            historyWindow_->setEnabled(false);
+        detachAudio();
+        const bool showingSnapshots = root_->undoHistory.snapshotsTab.getToggleState();
+        ProjectDocument::HistoryReload result;
+        {
+            const ScopedLoadingMarker marker(projectPlugins_.guard.get(), path);
+            result = document_->reopenAtStoredHistory(target, juce::Time::currentTimeMillis() * 1000);
+        }
+        if (result.document) {
+            install(file, false, std::move(result.document), projectPlugins_, true);
+            root_->needsFirstSave = needsFirstSave;
+            root_->undoHistory.openingHead = openingHead;
+            root_->undoHistory.openedUtc = openedUtc;
+            root_->undoHistory.rootLabel = openingLabel;
+            if (historyWasVisible) {
+                if (showingSnapshots)
+                    root_->undoHistory.snapshotsTab.onClick();
+                root_->undoHistory.refresh();
+                historyWindow_ = std::make_unique<UndoHistoryWindow>(root_->undoHistory);
+                historyWindow_->setVisible(true);
+            }
+            root_->say(result.error.empty() ? "Restored project version." : result.error);
+        } else if (!result.replayBaseChanged) {
+            window_->setEnabled(true);
+            if (historyWindow_)
+                historyWindow_->setEnabled(true);
+            if (!noAudio_)
+                attachAudio();
+            root_->undoHistory.refresh();
+            root_->say(result.error.empty() ? "Restored project version." : result.error);
+        } else {
+            mainMeterSource_.reset();
+            floating_.reset();
+            historyWindow_.reset();
+            releaseWindow(window_, root_);
+            document_.reset();
+            untitledIdentity_.reset();
+            untitledFolder_.clear();
+            report(result.error);
+        }
+    }
     void timerCallback() override {
         if (ticking_)
             return;
@@ -3084,6 +3169,9 @@ class AdiApplication final : public juce::JUCEApplication,
             advanceProjectOpen();
         pollProjectRecovery();
         pollProjectBackups();
+        reloadStoredHistory();
+        if (std::exchange(quitAfterHistoryReload_, false))
+            systemRequestedQuit();
         if (!document_) {
             pollCollectAndExport();
             return;
@@ -3192,6 +3280,8 @@ class AdiApplication final : public juce::JUCEApplication,
     std::optional<PendingProjectOpen> projectOpen_;
     std::unique_ptr<ProjectProgressWindow> openProgress_;
     bool installingDocument_ = false, ticking_ = false;
+    std::optional<std::pair<std::uint64_t, HistoryRestoreTarget>> pendingHistoryReload_;
+    bool reloadingHistory_ = false, quitAfterHistoryReload_ = false;
     struct PendingProjectSave {
         juce::File file;
         SaveKind kind;

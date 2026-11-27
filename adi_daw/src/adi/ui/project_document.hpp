@@ -84,6 +84,14 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     static std::unique_ptr<OpenJob> startOpen(const std::filesystem::path &, bool create, engine::DeviceLoader,
                                               const RecordingDefaults *defaults = nullptr);
+    struct HistoryReload {
+        std::unique_ptr<ProjectDocument> document;
+        std::string error;
+        bool replayBaseChanged = false;
+    };
+    // The caller must stop audio before calling and replace this document if the replay base changes.
+    // If the target cannot be opened, try to restore and open the previous head.
+    HistoryReload reopenAtStoredHistory(HistoryRestoreTarget, std::int64_t nowUtc);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,

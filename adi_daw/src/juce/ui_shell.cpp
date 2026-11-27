@@ -1516,8 +1516,27 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     undoHistory.restoreOpening = [this] {
         return restoreHistory([this] {
             return submitter_.restoreOpening(undoHistory.openingHead, juce::Time::currentTimeMillis() * 1000);
+        }, [this] {
+            return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{undoHistory.openingHead});
         });
     };
+    if (!submitter_.store().readOnly()) {
+        undoHistory.revertSnapshot = [this](std::int64_t id) {
+            return restoreHistory([this, id] {
+                return submitter_.revertSnapshot(id, juce::Time::currentTimeMillis() * 1000);
+            }, [this, id] {
+                return restoreStoredHistory && restoreStoredHistory(HistorySnapshotTarget{id});
+            });
+        };
+        undoHistory.renameSnapshot = [this](std::int64_t id, const std::string &name) {
+            const auto result = History(submitter_.store()).renameSnapshot(id, name);
+            return result.ok || fail(result.error);
+        };
+        undoHistory.removeSnapshot = [this](std::int64_t id) {
+            const auto result = History(submitter_.store()).removeSnapshot(id);
+            return result.ok || fail(result.error);
+        };
+    }
     setOpaque(true);
     setWantsKeyboardFocus(true);
     // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
@@ -4594,14 +4613,25 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
-    return restoreHistory([this, txnId] { return submitter_.restore(txnId); });
+    return restoreHistory([this, txnId] { return submitter_.restore(txnId); }, [this, txnId] {
+        if (!restoreStoredHistory)
+            return false;
+        const auto timeline = submitter_.timeline();
+        const auto step = std::find_if(timeline.steps.begin(), timeline.steps.end(), [txnId](const auto &entry) {
+            return entry.step.txnId == txnId;
+        });
+        return step != timeline.steps.end() && restoreStoredHistory(HistoryHeadTarget{step->step.lastSeq});
+    });
 }
-bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &restore) {
+bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &restore,
+                                     const std::function<bool()> &reload) {
     if (recordingHoldsHistory())
         return fail(kRecordingHistoryMessage);
     if (settleEdits && !settleEdits())
         return false;
     const auto result = restore();
+    if (result.sessionReloadRequired && reload())
+        return true;
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
     arrangement.followPaused = true; // as an undo pauses it

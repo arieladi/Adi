@@ -10,32 +10,65 @@ juce::String historyTime(std::int64_t utcMicros) {
 } // namespace
 UndoHistoryPanel::UndoHistoryPanel() {
     setTitle("Undo History");
-    list.setTitle("Undo History steps");
     list.setModel(this);
     list.setRowHeight(kRowHeight);
     list.setColour(juce::ListBox::backgroundColourId, look::panel);
     list.setColour(juce::ListBox::outlineColourId, look::outline);
     list.setOutlineThickness(1);
     addAndMakeVisible(list);
+    for (auto *tab : {&stepsTab, &snapshotsTab})
+        addAndMakeVisible(tab);
+    for (auto *button : {&revertButton, &renameButton, &removeButton, &cancelButton})
+        addChildComponent(button);
+    addChildComponent(snapshotName);
+    snapshotName.setTitle("Snapshot name");
+    stepsTab.onClick = [this] { showSnapshots(false); };
+    snapshotsTab.onClick = [this] { showSnapshots(true); };
+    revertButton.onClick = [this] { revertSelectedSnapshot(); };
+    renameButton.onClick = [this] { renameSelectedSnapshot(); };
+    removeButton.onClick = [this] {
+        if (const auto *snapshot = selectedSnapshot(); snapshot && removeSnapshot && removeSnapshot(snapshot->id))
+            refresh();
+    };
+    cancelButton.onClick = [this] { cancelSnapshotRename(); };
+    snapshotName.onTextChange = [this] {
+        if (renaming_)
+            renameButton.setEnabled(snapshotName.getText().trim().isNotEmpty());
+    };
+    snapshotName.onReturnKey = [this] { renameSelectedSnapshot(); };
+    snapshotName.onEscapeKey = [this] { cancelSnapshotRename(); };
+    showSnapshots(false);
 }
 UndoHistoryPanel::~UndoHistoryPanel() { list.setModel(nullptr); }
 void UndoHistoryPanel::refresh() {
+    std::optional<std::int64_t> selected;
+    if (const auto *snapshot = selectedSnapshot())
+        selected = snapshot->id;
     rows_.clear();
+    snapshots_.clear();
+    currentStep_ = -1;
     error_.clear();
     if (!read) {
         list.updateContent();
+        updateSnapshotActions();
         return;
     }
     const auto timeline = read();
     if (!timeline.error.empty()) {
         error_ = timeline.error;
         list.updateContent();
+        updateSnapshotActions();
         return;
     }
     std::map<std::int64_t, std::string> branchNames;
     for (const auto &b : timeline.branches)
         branchNames[b.id] = b.name;
-    int current = -1;
+    int currentSnapshot = -1;
+    for (const auto &snapshot : timeline.snapshots) {
+        if (selected == snapshot.id)
+            currentSnapshot = static_cast<int>(snapshots_.size());
+        snapshots_.push_back({snapshot.id, snapshot.name, historyTime(snapshot.createdUtc)});
+    }
     const bool atOpening = timeline.headSeq == openingHead;
     for (const auto &s : timeline.steps) {
         Row row;
@@ -55,7 +88,7 @@ void UndoHistoryPanel::refresh() {
                 if (snap.id == id)
                     row.detail += (row.detail.empty() ? "" : ", ") + std::string("◆ ") + snap.name;
         if (row.current)
-            current = static_cast<int>(rows_.size());
+            currentStep_ = static_cast<int>(rows_.size());
         rows_.push_back(std::move(row));
     }
     // The opening event has its own row even when earlier edits remain visible.
@@ -70,14 +103,16 @@ void UndoHistoryPanel::refresh() {
             if (snap.opSeq == openingHead)
                 root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
         if (root.current)
-            current = static_cast<int>(rows_.size());
+            currentStep_ = static_cast<int>(rows_.size());
         rows_.push_back(std::move(root));
     }
     list.updateContent();
+    const int current = showSnapshots_ ? currentSnapshot : currentStep_;
     if (current >= 0)
         list.selectRow(current, true, true);
     else
         list.deselectAllRows();
+    updateSnapshotActions();
     repaint();
 }
 void UndoHistoryPanel::paint(juce::Graphics &g) {
@@ -88,17 +123,112 @@ void UndoHistoryPanel::paint(juce::Graphics &g) {
         g.drawFittedText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().reduced(8), juce::Justification::topLeft, 3);
     }
 }
-void UndoHistoryPanel::resized() { list.setBounds(getLocalBounds().reduced(4)); }
-int UndoHistoryPanel::getNumRows() { return static_cast<int>(rows_.size()); }
-void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width, int height, bool selected) {
-    if (index < 0 || index >= static_cast<int>(rows_.size()))
+void UndoHistoryPanel::resized() {
+    auto area = getLocalBounds().reduced(4);
+    auto tabs = area.removeFromTop(25);
+    stepsTab.setBounds(tabs.removeFromLeft(76).reduced(2, 0));
+    snapshotsTab.setBounds(tabs.removeFromLeft(96).reduced(2, 0));
+    area.removeFromTop(4);
+    if (showSnapshots_) {
+        auto actions = area.removeFromBottom(25);
+        if (renaming_) {
+            cancelButton.setBounds(actions.removeFromRight(62).reduced(2, 0));
+            renameButton.setBounds(actions.removeFromRight(84).reduced(2, 0));
+            snapshotName.setBounds(actions.reduced(2, 0));
+        } else {
+            revertButton.setBounds(actions.removeFromLeft(65).reduced(2, 0));
+            renameButton.setBounds(actions.removeFromLeft(76).reduced(2, 0));
+            removeButton.setBounds(actions.removeFromLeft(76).reduced(2, 0));
+        }
+        area.removeFromBottom(4);
+    }
+    list.setBounds(area);
+}
+void UndoHistoryPanel::showSnapshots(bool shouldShow) {
+    renaming_.reset();
+    list.deselectAllRows();
+    showSnapshots_ = shouldShow;
+    stepsTab.setToggleState(!showSnapshots_, juce::dontSendNotification);
+    snapshotsTab.setToggleState(showSnapshots_, juce::dontSendNotification);
+    list.setTitle(showSnapshots_ ? "Project snapshots" : "Undo History steps");
+    list.updateContent();
+    if (!showSnapshots_ && currentStep_ >= 0)
+        list.selectRow(currentStep_, true, true);
+    updateSnapshotActions();
+    list.repaint();
+}
+const UndoHistoryPanel::SnapshotRow *UndoHistoryPanel::selectedSnapshot() const {
+    const int index = list.getSelectedRow();
+    return showSnapshots_ && index >= 0 && index < static_cast<int>(snapshots_.size()) ?
+               &snapshots_[static_cast<std::size_t>(index)] : nullptr;
+}
+void UndoHistoryPanel::updateSnapshotActions() {
+    const auto *snapshot = selectedSnapshot();
+    if (!snapshot || renaming_ != snapshot->id)
+        renaming_.reset();
+    const bool editing = renaming_.has_value();
+    revertButton.setVisible(showSnapshots_ && !editing);
+    removeButton.setVisible(showSnapshots_ && !editing);
+    renameButton.setVisible(showSnapshots_);
+    cancelButton.setVisible(editing);
+    snapshotName.setVisible(editing);
+    renameButton.setButtonText(editing ? "Save Name" : "Rename");
+    revertButton.setEnabled(snapshot && static_cast<bool>(revertSnapshot));
+    renameButton.setEnabled(snapshot && static_cast<bool>(renameSnapshot) &&
+                            (!editing || snapshotName.getText().trim().isNotEmpty()));
+    removeButton.setEnabled(snapshot && static_cast<bool>(removeSnapshot));
+    resized();
+}
+void UndoHistoryPanel::revertSelectedSnapshot() {
+    if (const auto *snapshot = selectedSnapshot(); snapshot && revertSnapshot && revertSnapshot(snapshot->id))
+        refresh();
+}
+void UndoHistoryPanel::renameSelectedSnapshot() {
+    const auto *snapshot = selectedSnapshot();
+    if (!snapshot || !renameSnapshot)
         return;
-    const auto &row = rows_[static_cast<std::size_t>(index)];
+    if (!renaming_) {
+        renaming_ = snapshot->id;
+        snapshotName.setText(juce::String::fromUTF8(snapshot->name.c_str()), false);
+        updateSnapshotActions();
+        if (isShowing())
+            snapshotName.grabKeyboardFocus();
+        snapshotName.selectAll();
+        return;
+    }
+    const auto name = snapshotName.getText().trim();
+    if (name.isNotEmpty() && renameSnapshot(*renaming_, name.toStdString())) {
+        renaming_.reset();
+        refresh();
+    }
+}
+void UndoHistoryPanel::cancelSnapshotRename() {
+    renaming_.reset();
+    updateSnapshotActions();
+}
+int UndoHistoryPanel::getNumRows() { return static_cast<int>(showSnapshots_ ? snapshots_.size() : rows_.size()); }
+void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width, int height, bool selected) {
+    if (index < 0 || index >= getNumRows())
+        return;
     // Live's rows (manual 5.4.2, its figure): a rule under each, the selected one lit.
     if (selected)
         g.fillAll(look::selection);
     g.setColour(look::separator.withAlpha(0.6f));
     g.fillRect(0, height - 1, width, 1);
+    if (showSnapshots_) {
+        const auto &snapshot = snapshots_[static_cast<std::size_t>(index)];
+        const int timeWidth = std::min(width / 2, 120);
+        g.setColour(look::text);
+        g.setFont(look::font(look::fontBody));
+        g.drawText(juce::String::fromUTF8(snapshot.name.c_str()), 6, 0, std::max(0, width - timeWidth - 12),
+                   height, juce::Justification::centredLeft, true);
+        g.setColour(look::textDim);
+        g.setFont(look::font(look::fontCaption));
+        if (timeWidth > 6)
+            g.drawText(snapshot.time, width - timeWidth, 0, timeWidth - 6, height, juce::Justification::centredRight, true);
+        return;
+    }
+    const auto &row = rows_[static_cast<std::size_t>(index)];
     // An undone step, or one on another branch, greyed, as Live greys the steps after the current one.
     g.setColour(row.applied ? look::text : look::textDim.withAlpha(0.7f));
     g.setFont(look::font(look::fontBody, row.current));
@@ -123,6 +253,15 @@ bool UndoHistoryPanel::restoreRow(int index) {
     refresh();
     return done;
 }
-void UndoHistoryPanel::listBoxItemClicked(int row, const juce::MouseEvent &) { restoreRow(row); }
-void UndoHistoryPanel::returnKeyPressed(int lastRowSelected) { restoreRow(lastRowSelected); }
+void UndoHistoryPanel::listBoxItemClicked(int row, const juce::MouseEvent &) {
+    if (!showSnapshots_)
+        restoreRow(row);
+}
+void UndoHistoryPanel::returnKeyPressed(int lastRowSelected) {
+    if (showSnapshots_ && !renaming_)
+        revertSelectedSnapshot();
+    else if (!showSnapshots_)
+        restoreRow(lastRowSelected);
+}
+void UndoHistoryPanel::selectedRowsChanged(int) { updateSnapshotActions(); }
 } // namespace adi::ui

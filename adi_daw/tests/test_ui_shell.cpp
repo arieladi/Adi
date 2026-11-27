@@ -12583,6 +12583,135 @@ void restoreReopenedProject(AppCommands &commands, const std::filesystem::path &
               document->store().db().execAndGet("SELECT name FROM tracks WHERE id=3").getString() == "Saved Pads",
           "SC-155: the opening row returns to the original branch's saved state");
 }
+void snapshotVersions(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "history-versions.adi";
+    std::string error;
+    auto document = ProjectDocument::open(path, true, {}, error);
+    check(document != nullptr, "SC-156: open a project for snapshot actions");
+    if (!document)
+        return;
+    const auto renameKeys = [](ProjectDocument &doc, const std::string &name) {
+        OpRequest request;
+        request.opType = "track.rename";
+        request.payload = {{"id", 2}, {"name", name}};
+        request.label = name;
+        return doc.ops().submit(std::move(request)).ok;
+    };
+    constexpr std::int64_t yesterday = 1'700'000'000'000'000;
+    constexpr std::int64_t today = yesterday + 86'400'000'000;
+    check(renameKeys(*document, "Yesterday's keys"), "SC-156: edit before taking yesterday's snapshot");
+    History history(document->store());
+    const auto archived = history.takeSnapshot("Yesterday", yesterday, 0);
+    for (int i = 0; i < 7; ++i)
+        check(renameKeys(*document, "Keys " + std::to_string(i)), "SC-156: add an undo step");
+    const auto recent = history.takeSnapshot("Today", today, 0);
+    UndoRetentionPolicy retention;
+    retention.maxTransactions = 4;
+    check(archived.ok && recent.ok && history.setUndoRetentionPolicy(retention).ok &&
+              renameKeys(*document, "Unsaved version"),
+          "SC-156: compact older steps and continue editing");
+    const auto timeline = history.readTimeline();
+    check(timeline.snapshots.size() == 2 && timeline.snapshots.back().storedStateHash &&
+              std::none_of(timeline.steps.begin(), timeline.steps.end(), [&](const auto &step) {
+                  return step.step.lastSeq == timeline.snapshots.back().opSeq;
+              }),
+          "SC-156: the older named version has a stored state and no undo step");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "history-versions");
+    root.afterEdit = [&] { document->synchronise(); };
+    auto &panel = root.undoHistory;
+    panel.setSize(320, 420);
+    panel.refresh();
+    panel.snapshotsTab.onClick();
+    check(panel.snapshots().size() == 2 && panel.snapshots().front().id == recent.id &&
+              panel.snapshots().back().id == archived.id && panel.snapshots().back().time.isNotEmpty() &&
+              panel.snapshots().front().time != panel.snapshots().back().time,
+          "SC-156: dated versions appear newest first independent of the undo step list");
+    if (panel.snapshots().size() != 2)
+        return;
+    const auto keysName = [](ProjectDocument &doc) {
+        return doc.store().db().execAndGet("SELECT name FROM tracks WHERE id=2").getString();
+    };
+    const auto departingTip = history.head();
+    panel.list.selectRow(0);
+    panel.revertButton.onClick();
+    check(keysName(*document) == "Keys 6", "SC-156: Revert restores a retained named version");
+    panel.list.selectRow(1);
+    panel.renameButton.onClick();
+    panel.snapshotName.setText("  Sound check  ", false);
+    panel.snapshotName.onReturnKey();
+    check(panel.snapshots().back().name == "Sound check" &&
+              panel.list.getSelectedRow() == 1 && history.listSnapshots().front().name == "Sound check",
+          "SC-156: renaming a compacted version keeps its selection and updates persisted metadata");
+    const auto priorHead = history.head();
+    std::optional<std::int64_t> reloadId;
+    root.restoreStoredHistory = [&](HistoryRestoreTarget target) {
+        if (const auto *snapshot = std::get_if<HistorySnapshotTarget>(&target)) {
+            reloadId = snapshot->id;
+            return true;
+        }
+        return false;
+    };
+    panel.revertButton.onClick();
+    check(reloadId == archived.id && history.head() == priorHead,
+          "SC-156: a compacted revert requests the stopped reload before making any change");
+    if (!reloadId)
+        return;
+    document->prepare(48000, 128);
+    auto active = document->reopenAtStoredHistory(HistorySnapshotTarget{*reloadId}, today + 1);
+    check(!active.replayBaseChanged && !active.error.empty() && history.head() == priorHead,
+          "SC-156: changing replay base refuses while the engine callback is live");
+    document->release();
+    auto result = document->reopenAtStoredHistory(HistorySnapshotTarget{*reloadId}, today + 2);
+    check(result.replayBaseChanged && result.document && result.error.empty(),
+          ("SC-156: a stopped cross-checkpoint revert opens a fresh document: " + result.error).c_str());
+    if (!result.document)
+        return;
+    History reloadedHistory(result.document->store());
+    const auto branches = reloadedHistory.branches();
+    check(keysName(*result.document) == "Yesterday's keys" &&
+              std::any_of(branches.begin(), branches.end(), [&](const auto &branch) { return branch.headSeq == departingTip; }),
+          "SC-156: the stored version plays with the departing work still reachable");
+    check(renameKeys(*result.document, "Fresh edit") && result.document->synchronise(),
+          "SC-156: the reloaded engine can realise new edits");
+    AdiRootComponent reloaded(result.document->view(), result.document->ops(), result.document->mailbox(),
+                              commands, result.document->views(), result.document->sessionState(), "versions-reloaded");
+    auto &reloadedPanel = reloaded.undoHistory;
+    reloadedPanel.openingHead = root.undoHistory.openingHead;
+    reloadedPanel.refresh();
+    reloadedPanel.snapshotsTab.onClick();
+    reloadedPanel.list.selectRow(1);
+    const auto headBeforeRemove = reloadedHistory.head();
+    reloadedPanel.removeButton.onClick();
+    check(reloadedPanel.snapshots().size() == 1 && reloadedPanel.snapshots().front().id == recent.id &&
+              reloadedHistory.head() == headBeforeRemove,
+          "SC-156: Remove deletes only the selected snapshot metadata");
+    reloadedPanel.stepsTab.onClick();
+    check(!reloadedPanel.rows().empty() && reloadedPanel.rows().back().root,
+          "SC-156: the project opening remains at the bottom of Steps");
+    std::optional<HistoryRestoreTarget> returnTarget;
+    reloaded.restoreStoredHistory = [&](HistoryRestoreTarget target) {
+        returnTarget = target;
+        return true;
+    };
+    const auto step = std::find_if(reloadedPanel.rows().begin(), reloadedPanel.rows().end(),
+                                   [](const auto &row) { return row.label == "Unsaved version"; });
+    if (step != reloadedPanel.rows().end())
+        reloadedPanel.restoreRow(static_cast<int>(step - reloadedPanel.rows().begin()));
+    check(returnTarget && std::holds_alternative<HistoryHeadTarget>(*returnTarget) &&
+              std::get<HistoryHeadTarget>(*returnTarget).seq == departingTip,
+          "SC-156: the departing branch's retained step requests the same stopped reload");
+    returnTarget.reset();
+    reloadedPanel.restoreRow(static_cast<int>(reloadedPanel.rows().size()) - 1);
+    check(returnTarget && std::holds_alternative<HistoryHeadTarget>(*returnTarget) &&
+              std::get<HistoryHeadTarget>(*returnTarget).seq == root.undoHistory.openingHead,
+          "SC-156: the original opening remains reachable after crossing a baseline");
+    if (returnTarget) {
+        auto returned = result.document->reopenAtStoredHistory(*returnTarget, today + 3);
+        check(returned.document && returned.error.empty() && keysName(*returned.document) == "Unsaved version",
+              "SC-156: a second stopped reload can open the departing version again");
+    }
+}
 void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
@@ -25663,6 +25792,7 @@ int main(int argc, char **argv) {
     trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("restoreReopenedProject", [&] { restoreReopenedProject(commands, temp.path()); });
+    trace("snapshotVersions", [&] { snapshotVersions(commands, temp.path()); });
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });

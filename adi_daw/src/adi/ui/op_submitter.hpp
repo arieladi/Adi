@@ -80,6 +80,7 @@
 #include "adi/ops.hpp"
 
 #include <concepts>
+#include <variant>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -94,6 +95,9 @@ class Store;
 }
 
 namespace adi::ui {
+struct HistorySnapshotTarget { std::int64_t id; };
+struct HistoryHeadTarget { std::optional<std::int64_t> seq; };
+using HistoryRestoreTarget = std::variant<HistorySnapshotTarget, HistoryHeadTarget>;
 
 /// A batch the engine prepared (ADR-0153): its ops, and in `options` the undo
 /// head it expects. `clip_edit::PreparedEdit`, `PreparedDevicePaste`,
@@ -183,6 +187,13 @@ public:
     // into a list that can be reordered or compacted while the project is open.
     History::Result restoreOpening(std::optional<std::int64_t> head, std::int64_t nowUtc) {
         auto result = History(store_).moveTo(head, nowUtc);
+        if (result.ok && result.opsApplied != 0)
+            view_.refresh(store_, overrides());
+        return result;
+    }
+
+    History::Result revertSnapshot(std::int64_t id, std::int64_t nowUtc) {
+        auto result = History(store_).revertToSnapshot(id, nowUtc);
         if (result.ok && result.opsApplied != 0)
             view_.refresh(store_, overrides());
         return result;

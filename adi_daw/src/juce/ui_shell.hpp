@@ -504,6 +504,8 @@ class AdiRootComponent final : public juce::Component,
     std::function<void(const juce::File &)> openRecentProject;
     std::function<void()> openProjectBackup;
     std::function<void()> afterEdit;
+    // The app stops audio and reloads the document for cross-checkpoint navigation.
+    std::function<bool(HistoryRestoreTarget)> restoreStoredHistory;
     std::function<std::int64_t()> retainedDeviceId;
     std::function<bool(std::string &)> beforeDeleteTrack;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
@@ -1017,7 +1019,7 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
-    bool restoreHistory(const std::function<History::Result()> &);
+    bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);

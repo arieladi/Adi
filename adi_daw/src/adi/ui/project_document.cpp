@@ -514,6 +514,57 @@ std::unique_ptr<ProjectDocument::OpenJob> ProjectDocument::startOpen(const std::
     return std::unique_ptr<OpenJob>(new OpenJob(path, create, std::move(loader), defaults));
 }
 
+ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRestoreTarget target,
+                                                                       std::int64_t nowUtc) {
+    HistoryReload out;
+    if (!deviceStopped_.load(std::memory_order_acquire)) {
+        out.error = "Stop the audio device before restoring a stored version.";
+        return out;
+    }
+    if (recording() || landingTake()) {
+        out.error = "Wait for the take to finish before restoring a version.";
+        return out;
+    }
+    if (!settleParameters()) {
+        out.error = error_;
+        return out;
+    }
+    History history(*store_);
+    const auto priorHead = history.head();
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    const auto *snapshot = std::get_if<HistorySnapshotTarget>(&target);
+    const auto result = snapshot ? history.revertToSnapshot(snapshot->id, nowUtc, prepared)
+                                 : history.moveTo(std::get<HistoryHeadTarget>(target).seq, nowUtc, prepared);
+    if (!result.ok) {
+        out.error = result.error;
+        return out;
+    }
+    if (!result.sessionReloadRequired) {
+        if (result.opsApplied != 0) {
+            view_.refresh(*store_, session_.overriddenLanes());
+            if (!synchronise())
+                out.error = error_;
+        }
+        return out;
+    }
+    out.replayBaseChanged = true;
+    out.document = open(store_->path(), false, renderLoader_, out.error);
+    if (out.document)
+        return out;
+    const auto rollback = history.moveTo(priorHead, nowUtc, prepared);
+    if (!rollback.ok) {
+        out.error += " The previous version could not be restored: " + rollback.error;
+        return out;
+    }
+    std::string reloadError;
+    out.document = open(store_->path(), false, renderLoader_, reloadError);
+    if (out.document)
+        out.error += " The previous version was reopened.";
+    else
+        out.error += " Reopen the project to return to the previous version: " + reloadError;
+    return out;
+}
+
 std::unique_ptr<ProjectDocument> ProjectDocument::OpenJob::takeDocument() {
     return phase_ == Phase::ready ? std::move(document_) : nullptr;
 }
