@@ -422,6 +422,7 @@ class SampleEditor final : public juce::Component {
     std::optional<std::int64_t> insert() const noexcept { return insert_; }
     bool playFromInsert();
     std::int64_t sourceTick(std::int64_t arrangementTick) const noexcept;
+    std::pair<std::int64_t, std::int64_t> sourceRange(std::int64_t from, std::int64_t to) const;
     ArrangementPlayhead playhead;
 
   private:
@@ -815,6 +816,7 @@ class ClipViewPanel final : public juce::Component {
     std::int64_t clip_ = 0, wanted_ = 0;
     struct ArrangementRange {
         std::int64_t clip, from, to;
+        std::pair<std::int64_t, std::int64_t> source;
         bool operator==(const ArrangementRange &) const = default;
     };
     std::optional<ArrangementRange> fittedRange_;
