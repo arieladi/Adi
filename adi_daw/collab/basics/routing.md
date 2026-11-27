@@ -14,6 +14,8 @@ The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (3,155,492
 
 The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes) is retained because exclusive use could not be established. The D: copy was verified. The checkout and guest build and cache are on D:. New host downloads and temporary staging use `D:\adi-routing-vm\runtime\downloads` and `D:\adi-routing-vm\runtime\tmp`.
 
+The inactive C: image ``%TEMP%\adi-routing-linux\build.qcow2`` (197,120 bytes) and attached read-only seed ``%TEMP%\adi-routing-linux\seed.iso`` (55,296 bytes) were also retained.
+
 C: had **15,574,282,240 bytes free (14.50 GiB)** at the final post-move measurement.
 
 ## For the director
