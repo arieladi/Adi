@@ -3290,26 +3290,90 @@ double automationDragValue(const engine::AutomationLaneNode &lane, const Automat
         value = std::min(value, *lane.maxValue);
     return value;
 }
+constexpr auto kAutomationHold = static_cast<std::uint8_t>(engine::CurveShape::Hold);
+constexpr auto kAutomationLinear = static_cast<std::uint8_t>(engine::CurveShape::Linear);
+constexpr float kAutomationCurveSampleSpacing = 4.f;
+constexpr int kAutomationCurveSampleLimit = 512;
+
 struct AutomationMark {
     juce::Point<float> at;
-    bool hold = false;
+    std::int64_t time = 0;
+    double value = 0.0;
+    std::uint8_t curve = kAutomationLinear;
+    float tension = 0.f;
+    const engine::AutomationCurveSlice *slice = nullptr;
     std::uint64_t id = 0;
     bool selected = false;
+    const engine::AutomationPointNode *sliceEnd = nullptr;
 };
-juce::Path automationPath(std::span<const AutomationMark> points, float left, float right) {
-    juce::Path line;
-    line.startNewSubPath(left, points.front().at.y);
-    const AutomationMark *previous = nullptr;
-    for (const auto &p : points) {
-        if (previous && previous->hold)
-            line.lineTo(p.at.x, previous->at.y);
-        line.lineTo(p.at);
-        previous = &p;
+
+struct AutomationCurveProjection {
+    const ArrangementGeometry &geometry;
+    const AutomationRange &range;
+    float top, bottom;
+    const engine::TempoMap *tempo;
+    double rate;
+
+    AutomationMark mark(std::int64_t time, double value, std::uint8_t curve = kAutomationLinear,
+                        float tension = 0.f, const engine::AutomationCurveSlice *slice = nullptr,
+                        std::uint64_t id = 0, bool selected = false,
+                        const engine::AutomationPointNode *sliceEnd = nullptr) const {
+        return {{static_cast<float>(geometry.x(time)), automationY(value, range, top, bottom)},
+                time, value, curve, tension, slice, id, selected, sliceEnd};
     }
-    line.lineTo(right, points.back().at.y);
-    return line;
-}
+
+    bool held(const AutomationMark &point) const { return range.flipped || point.curve == kAutomationHold; }
+
+    void appendSegment(juce::Path &line, const AutomationMark &from, const AutomationMark &to,
+                       float left, float right) const {
+        if (held(from)) {
+            line.lineTo(to.at.x, from.at.y);
+        } else {
+            const float visibleFrom = std::max(from.at.x, left), visibleTo = std::min(to.at.x, right);
+            // Point edits retain the source domain when the two endpoints retain their values
+            // and remain neighbors, even when their times change.
+            const auto *slice = from.sliceEnd && (from.sliceEnd->id != to.id || from.sliceEnd->value != to.value)
+                                    ? nullptr : from.slice;
+            const bool clamped = std::min(from.value, to.value) < range.minimum ||
+                                 std::max(from.value, to.value) > range.maximum;
+            const bool straight = !slice && !clamped && (from.curve == kAutomationLinear || from.tension == 0.f) &&
+                                  (!tempo || tempo->events.size() < 2);
+            if (!straight && visibleFrom < visibleTo) {
+                const auto first = automationCurveTime(from.time, tempo, rate);
+                const auto last = automationCurveTime(to.time, tempo, rate);
+                const int steps = static_cast<int>(std::clamp(
+                    std::ceil((visibleTo - visibleFrom) / kAutomationCurveSampleSpacing), 1.f,
+                    static_cast<float>(kAutomationCurveSampleLimit)));
+                for (int sample = 0; sample <= steps; ++sample) {
+                    const float x = std::lerp(visibleFrom, visibleTo,
+                                              static_cast<float>(sample) / static_cast<float>(steps));
+                    if (x == from.at.x || x == to.at.x)
+                        continue;
+                    const auto tick = geometry.tick(x);
+                    const auto phase = last > first ? (automationCurveTime(tick, tempo, rate) - first) / (last - first)
+                                                   : (x - from.at.x) / (to.at.x - from.at.x);
+                    const auto value = automationSegmentValue(from.value, to.value, phase, from.curve,
+                                                              from.tension, slice);
+                    line.lineTo(x, automationY(value, range, top, bottom));
+                }
+            }
+        }
+        line.lineTo(to.at);
+    }
+
+    juce::Path path(std::span<const AutomationMark> points, float left, float right) const {
+        juce::Path line;
+        line.startNewSubPath(left, points.front().at.y);
+        line.lineTo(points.front().at);
+        for (std::size_t i = 1; i < points.size(); ++i)
+            appendSegment(line, points[i - 1], points[i], left, right);
+        line.lineTo(right, points.back().at.y);
+        return line;
+    }
+};
 constexpr float kPointHit = 5.f;
+constexpr float kCurveTensionDragPixels = 60.f;
+constexpr float kAutomationCurveHitPixels = 5.f;
 juce::String automationValueText(const AutomationTarget &target,double value,bool forEditing=false) {
     juce::String number;
     if(target.footIsSilence && value==kAutomationSilenceDb)number="-inf";
@@ -3390,6 +3454,9 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         const auto &target = body.target;
         const auto range = automationRange(target);
         const auto env = envelopeOf(*current, target);
+        const AutomationCurveProjection projection{geo, range, body.top, body.scaleBottom,
+            env.lane && env.lane->timeBase != 0 ? nullptr : current->tempo.get(), view.root.editRate()};
+        const auto curvePreview = automationCurvePreview(body, env);
         const bool selectedLane = hasSpan && automationLaneSelected(body);
         const auto *keyboard = keyboardAutomationDraft_ &&
             keyboardAutomationDraft_->address.track == body.track->id &&
@@ -3420,7 +3487,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         }
         std::vector<AutomationMark> points;
         if (env.data != nullptr)
-            for (const auto &p : env.data->points) {
+            for (std::size_t index = 0; index < env.data->points.size(); ++index) {
+                const auto &p = env.data->points[index];
                 const bool dragged = pointDrag_ && pointDrag_->track == body.track->id &&
                                      pointDrag_->target == target && pointDrag_->point == p.id;
                 const bool moved = dragLane && !drag->spliceBounds &&
@@ -3430,13 +3498,17 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                                          : dragged ? pointValue_
                                          : keyboard && keyboard->address.point == p.id ? keyboard->value : p.value;
                 const bool selected = selectedLane && p.time >= from && p.time < to;
-                points.push_back({{static_cast<float>(geo.x(time)), automationY(value, range, body.top, body.scaleBottom)},
-                                  range.flipped || p.curve == 0, p.id, selected || moved});
+                const bool shaped = curvePreview && curvePreview->point == p.id;
+                const auto *sliceEnd = !shaped && value == p.value && p.curveSlice && index + 1 < env.data->points.size()
+                                           ? &env.data->points[index + 1] : nullptr;
+                points.push_back(projection.mark(time, value, shaped ? curvePreview->curve : p.curve,
+                    shaped ? curvePreview->tension : p.tension, sliceEnd ? &*p.curveSlice : nullptr,
+                    p.id, selected || moved, sliceEnd));
             }
         if ((dragLane && drag->timeDelta != 0) ||
             (pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->target == target))
             std::stable_sort(points.begin(), points.end(),
-                             [](const auto &a, const auto &b) { return a.at.x < b.at.x; });
+                             [](const auto &a, const auto &b) { return a.time < b.time; });
         const float right = static_cast<float>(getWidth());
         const auto paintStored = [&] {
             g.setColour(look::record.withAlpha(.9f));
@@ -3445,7 +3517,7 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                 g.drawLine(0, y, right, y, 1.f);
                 return;
             }
-            g.strokePath(automationPath(points, 0, right), juce::PathStrokeType(1.f));
+            g.strokePath(projection.path(points, 0, right), juce::PathStrokeType(1.f));
             for (const auto &p : points) {
                 const auto box = juce::Rectangle<float>(7, 7).withCentre(p.at);
                 const auto matches = [&](const auto &pick) {
@@ -3469,15 +3541,14 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                 paintStored();
             }
             g.setColour(look::record);
-            g.strokePath(automationPath(draft, left, std::max(rightEdge, left + 1.f)), juce::PathStrokeType(1.f));
+            g.strokePath(projection.path(draft, left, std::max(rightEdge, left + 1.f)), juce::PathStrokeType(1.f));
         };
         if (dragLane && drag->spliceBounds && drag->valueDelta != 0) {
             std::vector<AutomationMark> draft;
             draft.reserve(dragLane->points.size());
             for (const auto &point : dragLane->points) {
                 const auto value = automationDragValue(*env.lane, target, point.value, drag->valueDelta);
-                draft.push_back({{static_cast<float>(geo.x(point.time)), automationY(value, range, body.top, body.scaleBottom)},
-                                 range.flipped || point.curve == 0});
+                draft.push_back(projection.mark(point.time, value, point.curve, point.tension));
             }
             paintReplacement(draft, static_cast<float>(geo.x(drag->spliceBounds->first)),
                              static_cast<float>(geo.x(drag->spliceBounds->second)));
@@ -3504,8 +3575,7 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         std::vector<AutomationMark> draft;
         draft.reserve(stroke->values.size());
         for (const auto &[tick, value] : stroke->values)
-            draft.push_back({{static_cast<float>(geo.x(tick)), automationY(value, range, body.top, body.scaleBottom)},
-                             stroke->stepped || range.flipped});
+            draft.push_back(projection.mark(tick, value, stroke->stepped ? kAutomationHold : kAutomationLinear));
         paintReplacement(draft, left, end);
     }
 }
@@ -3628,7 +3698,8 @@ std::optional<ArrangementCanvas::AutomationValueAddress> ArrangementCanvas::auto
         const auto raw=std::max<std::int64_t>(0,view.geometry.tick(at.x));
         result.tick=snapToGrid?view.geometry.snap(raw,false):raw;
         result.value=view.root.automationCurrent(result.target);
-        if(envelope.data)result.value=envelopeValue(*envelope.data,result.tick).value_or(result.value);
+        if(envelope.data)result.value=envelopeValue(*envelope.data,result.tick,result.target.stepped,
+                                                     current->tempo.get(),view.root.editRate()).value_or(result.value);
     }
     return result;
 }
@@ -3949,94 +4020,69 @@ bool ArrangementCanvas::beginSelectedAutomationDrag(const AutomationPick &pick, 
 bool ArrangementCanvas::beginAutomationSegmentDrag(const juce::MouseEvent &e) {
     if (e.getNumberOfClicks() > 1 || e.mods.isCommandDown())
         return false;
-    const auto current = view.root.current();
-    if (!current)
-        return false;
     constexpr float lineHit = 4.f, segmentHit = 8.f;
-    const auto &geometry = view.geometry;
     const auto at = e.position;
-    for (const auto &body : laneBodies()) {
-        if (at.y < body.top || at.y > body.bottom)
-            continue;
-        const auto envelope = envelopeOf(*current, body.target);
-        if (!envelope.data || !envelope.lane || !editableEnvelope(envelope))
-            continue;
+    const auto segment = automationSegmentAt(at, segmentHit);
+    if (!segment || (segment->distance <= lineHit && !e.mods.isShiftDown()))
+        return false;
+    const auto current = view.root.current();
+    const auto &geometry = view.geometry;
+    const auto &body = segment->body;
+    const auto envelope = envelopeOf(*current, body.target);
+    const auto &points = envelope.data->points;
+    const auto &leftPoint = points[segment->rightIndex - 1], &rightPoint = points[segment->rightIndex];
+    const auto range = automationRange(body.target);
 
-        const auto &points = envelope.data->points;
-        // Only actual bounded segments participate. Before the first point and after the last, the
-        // line still inserts a breakpoint as before.
-        const auto right = std::upper_bound(points.begin(), points.end(), at.x, [&](float x, const auto &point) {
-            return x < static_cast<float>(geometry.x(point.time));
-        });
-        if (right == points.begin() || right == points.end())
-            continue;
-        const auto &leftPoint = *(right - 1), &rightPoint = *right;
-        const auto range = automationRange(body.target);
-        const auto position = [&](const auto &point) {
-            return juce::Point<float>{static_cast<float>(geometry.x(point.time)),
-                                      automationY(point.value, range, body.top, body.scaleBottom)};
+    AutomationDrag drag;
+    drag.origin = at;
+    drag.anchorTick = geometry.tick(at.x);
+    drag.height = std::max(1.f, body.scaleBottom - body.top);
+    drag.generation = view.root.committedGeneration();
+    drag.verticalOnly = true;
+    AutomationDragLane lane{body.track->id, envelope.lane->id, envelope.data->id, body.target, {}};
+    const auto [begin, end] = std::minmax(geometry.selection.start, geometry.selection.end);
+    if (hasAutomationSelection() && automationLaneSelected(body) &&
+        begin <= drag.anchorTick && drag.anchorTick < end) {
+        drag.spliceBounds.emplace(begin, end);
+
+        const auto boundary = [&](std::int64_t tick, auto next) {
+            if (next == points.begin())
+                return AutomationDragPoint{0, tick, next->value, 0, 0.f};
+            const auto &previous = *(next - 1);
+            double value = previous.value;
+            if (next != points.end() && tick != previous.time && !range.flipped && previous.curve != 0) {
+                const auto tempo = current->tempo.get();
+                const auto rate = view.root.editRate();
+                const auto first = automationCurveTime(previous.time, tempo, rate);
+                const auto lastSample = automationCurveTime(next->time, tempo, rate);
+                const auto fraction = lastSample > first
+                    ? (automationCurveTime(tick, tempo, rate) - first) / (lastSample - first)
+                    : static_cast<double>(tick - previous.time) / static_cast<double>(next->time - previous.time);
+                value = automationSegmentValue(previous.value, next->value, fraction, previous.curve,
+                                               previous.tension, previous.curveSlice ? &*previous.curveSlice : nullptr);
+            }
+            const auto curve = next == points.end() || range.flipped ? std::uint8_t{0} : previous.curve;
+            return AutomationDragPoint{0, tick, value, curve, previous.tension};
         };
-        const auto from = position(leftPoint), to = position(rightPoint);
-        const bool held = range.flipped || leftPoint.curve == 0;
-        const auto corner = held ? juce::Point<float>{to.x, from.y} : to;
-        juce::Point<float> nearest;
-        float distance = juce::Line<float>(from, corner).getDistanceFromPoint(at, nearest);
-        if (held)
-            distance = std::min(distance, juce::Line<float>(corner, to).getDistanceFromPoint(at, nearest));
-        if (distance > segmentHit || (distance <= lineHit && !e.mods.isShiftDown()))
-            continue;
-
-        AutomationDrag drag;
-        drag.origin = at;
-        drag.anchorTick = geometry.tick(at.x);
-        drag.height = std::max(1.f, body.scaleBottom - body.top);
-        drag.generation = view.root.committedGeneration();
-        drag.verticalOnly = true;
-        AutomationDragLane lane{body.track->id, envelope.lane->id, envelope.data->id, body.target, {}};
-        const auto [begin, end] = std::minmax(geometry.selection.start, geometry.selection.end);
-        if (hasAutomationSelection() && automationLaneSelected(body) &&
-            begin <= drag.anchorTick && drag.anchorTick < end) {
-            drag.spliceBounds.emplace(begin, end);
-
-            const auto boundary = [&](std::int64_t tick, auto next) {
-                if (next == points.begin())
-                    return AutomationDragPoint{0, tick, next->value, 0, 0.f};
-                const auto &previous = *(next - 1);
-                double value = previous.value;
-                if (next != points.end() && tick != previous.time && !range.flipped && previous.curve != 0) {
-                    const auto fraction = static_cast<double>(tick - previous.time) /
-                                          static_cast<double>(next->time - previous.time);
-                    const auto &source = previous.curveSlice;
-                    const engine::CurveSlice slice = source
-                        ? engine::CurveSlice{source->begin, source->end, source->sourceFirst, source->sourceLast}
-                        : engine::CurveSlice{};
-                    value = engine::curveSliceValue(previous.value, next->value, fraction, previous.curve,
-                                                    previous.tension, source ? &slice : nullptr);
-                }
-                const auto curve = next == points.end() || range.flipped ? std::uint8_t{0} : previous.curve;
-                return AutomationDragPoint{0, tick, value, curve, previous.tension};
-            };
-            // Begin takes the settled value after any coincident points. End takes the incoming
-            // value before the untouched envelope resumes, which matters at a held step.
-            const auto afterBegin = std::upper_bound(points.begin(), points.end(), begin,
-                                                    [](auto tick, const auto &point) { return tick < point.time; });
-            const auto beforeEnd = std::lower_bound(points.begin(), points.end(), end,
-                                                    [](const auto &point, auto tick) { return point.time < tick; });
-            lane.points.push_back(boundary(begin, afterBegin));
-            for (auto point = afterBegin; point != beforeEnd; ++point)
-                lane.points.push_back({point->id, point->time, point->value, point->curve, point->tension});
-            lane.points.push_back(boundary(end, beforeEnd));
-        } else {
-            lane.points = {{leftPoint.id, leftPoint.time, leftPoint.value, leftPoint.curve, leftPoint.tension},
-                           {rightPoint.id, rightPoint.time, rightPoint.value, rightPoint.curve, rightPoint.tension}};
-            if (lane.points[0].id > lane.points[1].id)
-                std::swap(lane.points[0], lane.points[1]);
-        }
-        drag.lanes.push_back(std::move(lane));
-        automationDrag_ = std::move(drag);
-        return true;
+        // Begin takes the settled value after any coincident points. End takes the incoming
+        // value before the untouched envelope resumes, which matters at a held step.
+        const auto afterBegin = std::upper_bound(points.begin(), points.end(), begin,
+                                                [](auto tick, const auto &point) { return tick < point.time; });
+        const auto beforeEnd = std::lower_bound(points.begin(), points.end(), end,
+                                                [](const auto &point, auto tick) { return point.time < tick; });
+        lane.points.push_back(boundary(begin, afterBegin));
+        for (auto point = afterBegin; point != beforeEnd; ++point)
+            lane.points.push_back({point->id, point->time, point->value, point->curve, point->tension});
+        lane.points.push_back(boundary(end, beforeEnd));
+    } else {
+        lane.points = {{leftPoint.id, leftPoint.time, leftPoint.value, leftPoint.curve, leftPoint.tension},
+                       {rightPoint.id, rightPoint.time, rightPoint.value, rightPoint.curve, rightPoint.tension}};
+        if (lane.points[0].id > lane.points[1].id)
+            std::swap(lane.points[0], lane.points[1]);
     }
-    return false;
+    drag.lanes.push_back(std::move(lane));
+    automationDrag_ = std::move(drag);
+    return true;
 }
 
 void ArrangementCanvas::updateAutomationDrag(const juce::MouseEvent &e) {
@@ -4121,6 +4167,41 @@ bool ArrangementCanvas::commitAutomationDrag(const AutomationDrag &drag) {
     return true;
 }
 
+std::optional<ArrangementCanvas::AutomationCurvePreview>
+ArrangementCanvas::automationCurvePreview(const LaneBody &body, const TrackEnvelope &envelope) const {
+    if (!automationCurveDrag_ || view.root.drawMode() || !envelope.lane || !envelope.data)
+        return std::nullopt;
+    const auto &drag = *automationCurveDrag_;
+    if (drag.cancelled || drag.generation != view.root.committedGeneration() ||
+        drag.tension == drag.initialTension || drag.left.track != body.track->id ||
+        drag.left.target != body.target || drag.left.lane != envelope.lane->id || drag.left.data != envelope.data->id)
+        return std::nullopt;
+    const auto shape = drag.tension == 0 ? engine::CurveShape::Linear : engine::CurveShape::Bezier;
+    return AutomationCurvePreview{drag.left.point, static_cast<std::uint8_t>(shape), drag.tension};
+}
+
+void ArrangementCanvas::commitAutomationCurve(const AutomationPick &left, std::uint64_t right,
+                                              std::uint8_t shape, float tension) {
+    if (!view.root.automationMode() || view.root.drawMode() || !automationPickIsCurrent(left))
+        return;
+    const auto current = view.root.current();
+    const auto envelope = envelopeOf(*current, left.target);
+    if (!editableEnvelope(envelope))
+        return;
+    const auto &points = envelope.data->points;
+    const auto point = std::find_if(points.begin(), points.end(), [&](const auto &value) {
+        return value.id == left.point;
+    });
+    if (point == points.end() || std::next(point) == points.end() || std::next(point)->id != right ||
+        (point->curve == shape && point->tension == tension))
+        return;
+    auto request = automation::setCurve(left.data, left.lane, nullptr, Payload::array({left.point}), shape, tension);
+    request.label = shape == static_cast<std::uint8_t>(engine::CurveShape::Linear) ? "Straighten Automation Segment"
+                                                                                : "Bend Automation Segment";
+    if (view.root.submitEdits({std::move(request)}))
+        view.changed();
+}
+
 void ArrangementCanvas::finishAutomationPointClick(const AutomationPick &pick) {
     if (automationPointClick_ == AutomationPointClick::None || !automationPickIsCurrent(pick))
         return;
@@ -4187,6 +4268,17 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
         repaint();
         return true;
     }
+    if (e.mods.withoutMouseButtons() == juce::ModifierKeys(juce::ModifierKeys::altModifier)) {
+        if (const auto segment = automationSegmentAt(at, kAutomationCurveHitPixels);
+            segment && !segment->held && segment->diagonal) {
+            const float tension = segment->curve == static_cast<std::uint8_t>(engine::CurveShape::Bezier)
+                                      ? segment->tension : 0.f;
+            automationCurveDrag_ = AutomationCurveDrag{segment->left, segment->right.point,
+                view.root.committedGeneration(), at.y, tension, tension,
+                segment->rightValue > segment->leftValue ? 1.f : -1.f};
+            return true;
+        }
+    }
     if (beginAutomationSegmentDrag(e))
         return true;
     // Shift extends and Ctrl/Cmd picks, as without the mode.
@@ -4207,7 +4299,7 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     auto value = view.root.automationCurrent(target);
     if (const auto current = view.root.current())
         if (const auto env = envelopeOf(*current, target); env.data != nullptr)
-            value = envelopeValue(*env.data, tick, target.stepped).value_or(value);
+            value = envelopeValue(*env.data, tick, target.stepped, current->tempo.get(), view.root.editRate()).value_or(value);
     pointAdded_ = true;
     if (view.root.addAutomationPoint(track, target, tick, value))
         if (const auto current = view.root.current())
@@ -4222,6 +4314,51 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     repaint();
     return true;
 }
+std::optional<ArrangementCanvas::AutomationSegmentHit> ArrangementCanvas::automationSegmentAt(
+    juce::Point<float> at, float maxDistance) const {
+    const auto current = view.root.current();
+    if (!current)
+        return std::nullopt;
+    const auto &geometry = view.geometry;
+    std::optional<AutomationSegmentHit> hit;
+    for (const auto &body : laneBodies()) {
+        if (at.y < body.top || at.y > body.bottom)
+            continue;
+        const auto envelope = envelopeOf(*current, body.target);
+        if (!envelope.data || !envelope.lane || !editableEnvelope(envelope))
+            continue;
+        const auto &points = envelope.data->points;
+        // The horizontal extensions outside the authored knots aren't editable segments.
+        const auto right = std::upper_bound(points.begin(), points.end(), at.x, [&](float x, const auto &point) {
+            return x < static_cast<float>(geometry.x(point.time));
+        });
+        if (right == points.begin() || right == points.end())
+            continue;
+        const auto &leftPoint = *(right - 1), &rightPoint = *right;
+        const auto range = automationRange(body.target);
+        const AutomationCurveProjection projection{geometry, range, body.top, body.scaleBottom,
+            current->tempo.get(), view.root.editRate()};
+        const auto from = projection.mark(leftPoint.time, leftPoint.value, leftPoint.curve, leftPoint.tension,
+                                          leftPoint.curveSlice ? &*leftPoint.curveSlice : nullptr);
+        const auto to = projection.mark(rightPoint.time, rightPoint.value);
+        juce::Path path;
+        path.startNewSubPath(from.at);
+        projection.appendSegment(path, from, to, 0.f, static_cast<float>(getWidth()));
+        juce::Point<float> nearest;
+        path.getNearestPoint(at, nearest);
+        const float distance = nearest.getDistanceFrom(at);
+        if (distance > maxDistance || (hit && hit->distance <= distance))
+            continue;
+        const auto pick = [&](const auto &point) {
+            return AutomationPick{body.track->id, point.id, body.target, envelope.lane->id, envelope.data->id};
+        };
+        hit = AutomationSegmentHit{body, pick(leftPoint), pick(rightPoint), leftPoint.value, rightPoint.value,
+            leftPoint.curve, leftPoint.tension, distance, static_cast<std::size_t>(right - points.begin()),
+            projection.held(from), from.at.y != to.at.y};
+    }
+    return hit;
+}
+
 std::optional<ArrangementCanvas::LaneBody> ArrangementCanvas::automationLineAt(juce::Point<float> at) const {
     // The lane whose envelope, as paintAutomation draws it, passes within a few pixels of `at`.
     const auto current = view.root.current();
@@ -4234,16 +4371,17 @@ std::optional<ArrangementCanvas::LaneBody> ArrangementCanvas::automationLineAt(j
         const auto &target = body.target;
         const auto range = automationRange(target);
         const auto env = envelopeOf(*current, target);
+        const AutomationCurveProjection projection{view.geometry, range, body.top, body.scaleBottom,
+            env.lane && env.lane->timeBase != 0 ? nullptr : current->tempo.get(), view.root.editRate()};
         std::vector<AutomationMark> points;
         if (env.data != nullptr)
             for (const auto &p : env.data->points)
-                points.push_back({{static_cast<float>(view.geometry.x(p.time)),
-                                   automationY(p.value, range, body.top, body.scaleBottom)},
-                                  range.flipped || p.curve == 0});
+                points.push_back(projection.mark(p.time, p.value, p.curve, p.tension,
+                                                 p.curveSlice ? &*p.curveSlice : nullptr));
         if (points.empty())
-            points.push_back({{0, automationY(view.root.automationCurrent(target), range, body.top, body.scaleBottom)}});
+            points.push_back(projection.mark(0, view.root.automationCurrent(target)));
         juce::Point<float> nearest;
-        automationPath(points, 0, static_cast<float>(getWidth())).getNearestPoint(at, nearest);
+        projection.path(points, 0, static_cast<float>(getWidth())).getNearestPoint(at, nearest);
         if (nearest.getDistanceFrom(at) <= kLineHit)
             return body;
     }
@@ -4653,6 +4791,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     automationStroke_.reset();
     automationDrag_.reset();
+    automationCurveDrag_.reset();
     pointDrag_.reset();
     automationPointClick_ = AutomationPointClick::None;
     ignoringAutomationClick_ = false;
@@ -4855,6 +4994,15 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (ignoringAutomationClick_ || e.mods.isPopupMenu())
         return;
+    if (automationCurveDrag_) {
+        auto &drag = *automationCurveDrag_;
+        if (!drag.cancelled) {
+            const auto delta = (e.position.y - drag.originY) / kCurveTensionDragPixels;
+            drag.tension = std::clamp(drag.initialTension + delta * drag.direction, -1.f, 1.f);
+            repaint();
+        }
+        return;
+    }
     if (automationStroke_) {
         if (view.root.automationMode() && view.root.drawMode())
             updateAutomationStroke(e);
@@ -5004,6 +5152,17 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
     if (ignoringAutomationClick_)
         return;
+    if (automationCurveDrag_) {
+        auto drag = std::move(*automationCurveDrag_);
+        automationCurveDrag_.reset();
+        if (!drag.cancelled && e.mouseWasDraggedSinceMouseDown() &&
+            drag.generation == view.root.committedGeneration() && drag.tension != drag.initialTension) {
+            const auto shape = drag.tension == 0 ? engine::CurveShape::Linear : engine::CurveShape::Bezier;
+            commitAutomationCurve(drag.left, drag.right, static_cast<std::uint8_t>(shape), drag.tension);
+        }
+        repaint();
+        return;
+    }
     if (automationStroke_) {
         const bool drawing = view.root.automationMode() && view.root.drawMode();
         if (drawing)
@@ -5340,6 +5499,14 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     if (view.root.automationMode() && barAt(e.x, e.y, titleTrack, titleEdge) == nullptr) {
         if (view.root.drawMode() || ignoringAutomationClick_ || automationPointAt(e.position))
             return;
+        if (e.mods.withoutMouseButtons() == juce::ModifierKeys(juce::ModifierKeys::altModifier)) {
+            if (const auto segment = automationSegmentAt(e.position, kAutomationCurveHitPixels);
+                segment && !segment->held && segment->diagonal) {
+                const auto shape = static_cast<std::uint8_t>(engine::CurveShape::Linear);
+                commitAutomationCurve(segment->left, segment->right.point, shape, 0.f);
+                return;
+            }
+        }
         // Elsewhere on a lane a double-click is the envelope's too: off the line it adds a breakpoint
         // there (manual 25.5.2; on the line the first press added it); it neither makes a clip nor opens one.
         for (const auto &body : laneBodies())
@@ -5439,7 +5606,8 @@ void ArrangementCanvas::focusAutomationKeyboardLane(const AutomationLaneKey &lan
     const auto envelope = envelopeOf(*current, lane.second);
     double value = view.root.automationCurrent(lane.second);
     if (envelope.data)
-        value = envelopeValue(*envelope.data, tick, lane.second.stepped).value_or(value);
+        value = envelopeValue(*envelope.data, tick, lane.second.stepped,
+                              current->tempo.get(), view.root.editRate()).value_or(value);
     for (const auto &line : laneBodies())
         if (line.track->id == lane.first && line.target == lane.second) {
             showAutomationValue(lane.second, value,
@@ -5561,7 +5729,8 @@ bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
         } else {
             address.value = view.root.automationCurrent(target);
             if (envelope.data)
-                address.value = envelopeValue(*envelope.data, tick, target.stepped).value_or(address.value);
+                address.value = envelopeValue(*envelope.data, tick, target.stepped,
+                                              current->tempo.get(), view.root.editRate()).value_or(address.value);
         }
         const auto x = static_cast<float>(view.geometry.x(tick));
         auto y = static_cast<float>(getHeight()) / 2;
@@ -5696,6 +5865,11 @@ bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
+    if (automationCurveDrag_ && code == juce::KeyPress::escapeKey) {
+        automationCurveDrag_->cancelled = true;
+        repaint();
+        return true;
+    }
     if (automationDrag_ && code == juce::KeyPress::escapeKey) {
         automationDrag_->cancelled = true;
         repaint();

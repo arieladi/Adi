@@ -18,6 +18,7 @@
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -17051,6 +17052,133 @@ void lockEnvelopes(const std::filesystem::path &parent) {
     }
 }
 
+void automationCurveGestures(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-curve-gestures.adi", true, {}, error);
+    check(document != nullptr, "a project for arrangement curve gestures");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto middle = 3 * bar / 2;
+    constexpr auto linear = static_cast<std::uint8_t>(engine::CurveShape::Linear);
+    constexpr auto bezier = static_cast<std::uint8_t>(engine::CurveShape::Bezier);
+    const auto pan = panTarget(track);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-curve-gestures");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.left = 0;
+    geometry.scale = 48;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    const bool authored = root.addAutomationPoint(track, pan, bar, -.75, true) &&
+                          root.addAutomationPoint(track, pan, 2 * bar, .75, true);
+    root.frame();
+    check(authored, "two exact Pan breakpoints define a diagonal segment");
+    if (!authored)
+        return;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == pan;
+    });
+    const auto load = [&] { return envelopeOf(*root.current(), pan); };
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto envelope = load();
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points();
+    check(body != bodies.end() && original.size() == 2 && original.front().curve == linear,
+          "the two original, linear Pan points are visible");
+    if (body == bodies.end() || original.size() != 2)
+        return;
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto beforeDrag = undoStep();
+    const auto resetTo = [&](auto step) {
+        // The legacy Alt gesture can add a point and then move it, as two edits.
+        for (int edits = 0; undoStep() != step && edits < 2; ++edits)
+            if (!root.command(AppCommands::Undo))
+                break;
+        root.frame();
+        return undoStep() == step;
+    };
+    const auto position = [&](double value) {
+        const auto fraction = static_cast<float>((value - pan.minimum) / (pan.maximum - pan.minimum));
+        return juce::Point<float>{static_cast<float>(geometry.x(middle)),
+                                  body->scaleBottom - fraction * (body->scaleBottom - body->top)};
+    };
+    const juce::ModifierKeys bend(juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier);
+    const auto start = position(0.), dragged = start.translated(0.f, 24.f);
+    canvas.mouseDown(pressAt(canvas, start, bend));
+    canvas.mouseDrag(dragAt(canvas, start, dragged, bend));
+    check(points() == original && undoStep() == beforeDrag, "Alt-drag previews the curve without writing a point or step");
+    canvas.mouseUp(dragAt(canvas, start, dragged, bend));
+    root.frame();
+    const auto edited = points();
+    bool bent = edited.size() == 2 && edited.front().curve > linear && edited.front().tension != 0;
+    if (bent) {
+        auto expected = original;
+        expected.front().curve = edited.front().curve;
+        expected.front().tension = edited.front().tension;
+        bent = edited == expected;
+    }
+    check(bent && undoStep() != beforeDrag, "Alt-drag shapes the outgoing curve without moving or adding breakpoints");
+    if (bent)
+        check(root.command(AppCommands::Undo) && undoStep() == beforeDrag && points() == original,
+              "one Undo restores the original straight segment");
+    if (!resetTo(beforeDrag))
+        return;
+
+    const auto envelope = load();
+    constexpr double tension = .75;
+    auto curve = automation::setCurve(envelope.data->id, envelope.lane->id, nullptr,
+                                     Payload::array({original.front().id}), bezier, tension);
+    const bool seeded = root.submitEdits({std::move(curve)});
+    root.frame();
+    check(seeded, "the engine stores a Bezier segment for the existing breakpoints");
+    if (!seeded)
+        return;
+    const auto beforeInsert = undoStep();
+    const auto stored = points();
+    const auto value = engine::curveValue(stored.front().value, stored.back().value, .5, bezier, tension);
+    const auto curved = position(value);
+    const auto line = canvas.automationLineAt(curved);
+    check(line && line->target == pan && curved.getDistanceFrom(start) > 8.f,
+          "the visible line hits at the engine's curved midpoint, away from the straight chord");
+    canvas.mouseDown(pressAt(canvas, curved));
+    canvas.mouseUp(pressAt(canvas, curved));
+    root.frame();
+    const auto inserted = points();
+    check(inserted.size() == 3 && inserted[1].time == middle && std::abs(inserted[1].value - value) < 1.e-9,
+          "clicking the curved line inserts the evaluated value at that time");
+    if (!resetTo(beforeInsert))
+        return;
+
+    canvas.mouseDown(pressAt(canvas, curved, bend));
+    canvas.mouseUp(pressAt(canvas, curved, bend));
+    const auto now = juce::Time::getCurrentTime();
+    const juce::MouseEvent twice{juce::Desktop::getInstance().getMainMouseSource(), curved,
+        bend, 1.f, 0.f, 0.f, 0.f, 0.f, &canvas, &canvas, now, curved, now, 2, false};
+    canvas.mouseDown(twice);
+    canvas.mouseUp(twice);
+    canvas.mouseDoubleClick(twice);
+    root.frame();
+    check(points() == original && undoStep() != beforeInsert,
+          "Alt-double-click straightens just the segment and preserves the two endpoints");
+    if (points() == original && undoStep() != beforeInsert)
+        check(root.command(AppCommands::Undo) && points() == stored && undoStep() == beforeInsert,
+              "one Undo restores the curve after straightening");
+}
+
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
@@ -23757,6 +23885,7 @@ int main(int argc, char **argv) {
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
     trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
+    trace("automationCurveGestures", [&] { automationCurveGestures(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
     trace("reenableArrangementEnvelope", [&] { reenableArrangementEnvelope(commands, temp.path()); });

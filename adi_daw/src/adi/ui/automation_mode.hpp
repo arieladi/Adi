@@ -13,6 +13,7 @@
 #pragma once
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/parameter_feed.hpp"
@@ -297,10 +298,20 @@ inline std::vector<OpRequest> deleteAutomationPoint(const TrackEnvelope &env, st
     ops.back().label = "Delete Automation Point";
     return ops;
 }
-// The value the envelope holds at `tick`: before its first point the first value, after its last the
-// last, linear between (the curve's bend is the engine's; the drawing joins the points straight).
+// The engine places musical knots at rounded samples before evaluating a curve.
+inline double automationCurveTime(std::int64_t tick, const engine::TempoMap *tempo, double rate) noexcept {
+    return tempo && rate > 0.0 ? std::round(tempo->ticksToSeconds(tick) * rate) : static_cast<double>(tick);
+}
+inline double automationSegmentValue(double from, double to, double fraction, std::uint8_t curve,
+                                     float tension, const engine::AutomationCurveSlice *source) noexcept {
+    const auto slice = source ? engine::CurveSlice{source->begin, source->end, source->sourceFirst, source->sourceLast}
+                              : engine::CurveSlice{};
+    return engine::curveSliceValue(from, to, fraction, curve, tension, source ? &slice : nullptr);
+}
+// After coincident breakpoints the last point at their time is the effective one.
 inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode &data, std::int64_t tick,
-                                           bool held = false) {
+                                           bool held = false, const engine::TempoMap *tempo = nullptr,
+                                           double rate = 0.0) {
     const auto &p = data.points;
     if (p.empty())
         return std::nullopt;
@@ -311,9 +322,12 @@ inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode 
     const auto &left = *(right - 1);
     if (right == p.end() || held || left.curve == 0)
         return left.value;
-    const auto span = static_cast<double>(right->time - left.time);
-    const auto position = static_cast<double>(tick - left.time) / span;
-    return left.value + (right->value - left.value) * position;
+    const auto begin = automationCurveTime(left.time, tempo, rate);
+    const auto end = automationCurveTime(right->time, tempo, rate);
+    const auto position = end > begin ? (automationCurveTime(tick, tempo, rate) - begin) / (end - begin)
+                                      : static_cast<double>(tick - left.time) / static_cast<double>(right->time - left.time);
+    return automationSegmentValue(left.value, right->value, position, left.curve, left.tension,
+                                  left.curveSlice ? &*left.curveSlice : nullptr);
 }
 // What a mixer control shows of its lane (Live 12 manual 25.4; ADR-0162): whether a lane the engine plays
 // automates it, whether a manual change has overridden that lane, and while it is followed the value its
@@ -334,7 +348,7 @@ inline FollowedLane followedLane(const engine::Snapshot &snapshot, std::string_v
     if (!out.overridden && lane->timeBase == 0)
         for (const auto &data : lane->envelopes)
             if (data && !data->clipId)
-                out.value = envelopeValue(*data, tick);
+                out.value = envelopeValue(*data, tick, false, snapshot.tempo.get(), snapshot.sampleRate);
     return out;
 }
 } // namespace adi::ui

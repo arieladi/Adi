@@ -462,10 +462,34 @@ class ArrangementCanvas final : public juce::Component,
         std::optional<std::pair<std::int64_t, std::int64_t>> spliceBounds;
     };
     bool beginSelectedAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
+    struct AutomationSegmentHit {
+        LaneBody body;
+        AutomationPick left, right;
+        double leftValue = 0.0, rightValue = 0.0;
+        std::uint8_t curve = 0;
+        float tension = 0.f, distance = 0.f;
+        std::size_t rightIndex = 0;
+        bool held = false, diagonal = false;
+    };
+    std::optional<AutomationSegmentHit> automationSegmentAt(juce::Point<float>, float maxDistance) const;
+    struct AutomationCurvePreview {
+        std::uint64_t point;
+        std::uint8_t curve;
+        float tension;
+    };
+    std::optional<AutomationCurvePreview> automationCurvePreview(const LaneBody &, const TrackEnvelope &) const;
     bool beginAutomationSegmentDrag(const juce::MouseEvent &);
     void updateAutomationDrag(const juce::MouseEvent &);
     bool commitAutomationDrag(const AutomationDrag &);
     std::optional<AutomationDrag> automationDrag_;
+    struct AutomationCurveDrag {
+        AutomationPick left;
+        std::uint64_t right = 0, generation = 0;
+        float originY = 0, initialTension = 0, tension = 0, direction = 1;
+        bool cancelled = false;
+    };
+    std::optional<AutomationCurveDrag> automationCurveDrag_;
+    void commitAutomationCurve(const AutomationPick &left, std::uint64_t right, std::uint8_t shape, float tension);
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     enum class AutomationPointClick { None, Delete, Select };
     AutomationPointClick automationPointClick_ = AutomationPointClick::None;
