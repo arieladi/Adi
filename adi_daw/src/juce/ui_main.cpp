@@ -14,6 +14,7 @@
 #include "juce/juce_device_loader.hpp"
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
+#include "app_control.hpp"
 #include "app_midi_ports.hpp"
 #include "ui_export.hpp"
 #include "ui_floating.hpp"
@@ -274,6 +275,7 @@ class AdiApplication final : public juce::JUCEApplication,
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
+        syncControlHost();
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
         // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
@@ -878,6 +880,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void shutdown() override {
         stopTimer();
+        appControl_.reset();
         clearProjectOpen();
         stopProjectSave();
         // The normal Quit path waits in the message loop. Keep ownership here
@@ -984,6 +987,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void install(const juce::File &file, bool create, std::unique_ptr<ProjectDocument> next, ProjectPluginLoad plugins) {
         const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
+        if (appControl_) appControl_->attach(nullptr);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         hotSwap_.reset();
@@ -1015,6 +1019,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The timer and posted callbacks read root_; the window's teardown can run them (walk-A A27).
         releaseWindow(window_, root_);
         document_ = std::move(next);
+        if (appControl_) appControl_->attach(document_.get());
         projectPlugins_ = std::move(plugins);
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
             -> std::optional<engine::RouteChoice> {
@@ -2158,6 +2163,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
+                    syncControlHost();
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
@@ -2242,6 +2248,43 @@ class AdiApplication final : public juce::JUCEApplication,
         root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
                                                document_->landingTake());
     }
+    void syncControlHost() {
+        if (testLaunch() || settings_->get("control.enabled") != true) {
+            if (appControl_) appControl_->stop();
+            controlSettings_.clear();
+            return;
+        }
+        const auto port = settings_->get("control.port");
+        const auto origins = settings_->get("control.allowedOrigins");
+        const auto location = settings_->get("control.tokenLocation");
+        const auto tier = settings_->get("agent.tier");
+        const auto maxOps = settings_->get("agent.maxOpsPerRequest");
+        const auto minute = settings_->get("agent.maxOpsPerMinute");
+        const auto stamp = Payload::array({port, origins, location, tier, maxOps, minute}).dump();
+        if (stamp == controlSettings_) return;
+        controlSettings_ = stamp;
+        control::AppControlOptions options;
+        options.port = port.get<std::uint16_t>();
+        auto tokens = juce::StringArray::fromTokens(juce::String(origins.get<std::string>()), ",", "");
+        tokens.trim();
+        tokens.removeEmptyStrings();
+        for (const auto& origin : tokens) options.allowedOrigins.push_back(origin.toStdString());
+        options.writeDiscoveryFile = location == "file";
+        options.tier = control::tierFromString(tier.get<std::string>()).value_or(control::Tier::Propose);
+        options.limits.maxOps = maxOps.get<std::size_t>();
+        options.maxOpsPerMinute = minute.get<std::size_t>();
+        if (!appControl_) {
+            appControl_ = std::make_unique<control::AppControl>([](control::Task action) {
+                juce::MessageManager::callAsync(std::move(action));
+            }, std::move(options));
+        } else {
+            appControl_->configure(std::move(options));
+        }
+        appControl_->attach(document_.get());
+        std::string error;
+        if (!appControl_->start(error)) juce::Logger::writeToLog(juce::String(error));
+    }
+
     void timerCallback() override {
         if (ticking_)
             return;
@@ -2258,6 +2301,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (appControl_) appControl_->tick(document_.get());
         if (root_) {
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
@@ -2331,6 +2375,8 @@ class AdiApplication final : public juce::JUCEApplication,
     bool controlTest_ = false;
     bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
+    std::unique_ptr<control::AppControl> appControl_;
+    std::string controlSettings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
     // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes

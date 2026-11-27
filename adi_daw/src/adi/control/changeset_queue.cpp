@@ -78,6 +78,14 @@ void ChangesetQueue::add(QueuedChangeset entry) {
     }
 }
 
+std::vector<QueuedChangeset> ChangesetQueue::forReview() const {
+    std::lock_guard lock(mutex_);
+    std::vector<QueuedChangeset> result;
+    for (const auto& entry : entries_)
+        if (entry.state == Review::AwaitingReview) result.push_back(entry);
+    return result;
+}
+
 bool ChangesetQueue::setState(std::string_view id, const std::string& credential, Review state) {
     std::lock_guard lock(mutex_);
     for (auto& e : entries_) {

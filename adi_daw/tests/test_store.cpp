@@ -183,6 +183,46 @@ void testProjectUuid() {
     check(store && storedUuid(*store) == backfilled, "later writable opens keep the same id");
 }
 
+void testHeadlessApplyLease() {
+    section("headless Apply requires exclusive access to the project");
+    Scratch scratch("headless_apply");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto editor = Store::create(path, error);
+    check(editor != nullptr, "the editor owns a writable Store");
+    if (!editor) return;
+
+    OpRequest rename;
+    rename.opType = "project.setName";
+    rename.payload = {{"name", "Editor"}};
+    check(OpJournal(*editor).commit(rename).ok, "the editor commits a starting head");
+    const auto head = OpJournal(*editor).headSeq();
+    auto reader = Store::open(path, error, true);
+    check(reader && reader->readOnly() && OpJournal(*reader).headSeq() == head,
+          "a read-only preview can see the open editor's committed work");
+    const auto refused = Store::openForHeadlessApply(path, error);
+    check(!refused && error == StoreError::ExclusiveAccessRequired &&
+              OpJournal(*editor).headSeq() == head,
+          "headless Apply refuses the editor's shared lease and leaves its head alone");
+
+    editor.reset();
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a remaining read-only Store also holds a shared lease");
+    reader.reset();
+    auto writer = Store::openForHeadlessApply(path, error);
+    check(writer && error == StoreError::Ok && !writer->readOnly(),
+          "headless Apply opens writable once all shared leases are released");
+    if (!writer) return;
+    check(!Store::open(path, error), "a competing editor cannot open during headless Apply");
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a second headless writer cannot share the exclusive lease");
+    check(OpJournal(*writer).headSeq() == head, "the exclusive writer sees the same starting head");
+    writer.reset();
+    const auto reopened = Store::open(path, error);
+    check(reopened && OpJournal(*reopened).headSeq() == head,
+          "normal access resumes after the exclusive writer releases its lease");
+}
+
 // --- SPEC 3.3: the WAL sidecar rule -----------------------------------------
 
 void testWalSidecarRule() {
@@ -453,6 +493,7 @@ int main() {
     testCreateAndOpen();
     testNewProjectDefaults();
     testProjectUuid();
+    testHeadlessApplyLease();
     testWalSidecarRule();
     testIdentityAndVersionGates();
     testBlobRoundTrip();

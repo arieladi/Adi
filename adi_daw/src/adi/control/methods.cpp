@@ -243,8 +243,12 @@ bool leavesMachine(const ConsentDestination& destination) {
     return destination.externalMcp || !isLoopbackDestination(destination.endpoint);
 }
 
+bool external(const CallContext& call) {
+    return call.meta.readDestination && leavesMachine(*call.meta.readDestination);
+}
+
 std::vector<ConsentItem> projectReadDisclosure(const Json& result) {
-    std::array<std::size_t, static_cast<std::size_t>(ConsentData::PluginState) + 1> sizes{};
+    std::array<std::size_t, static_cast<std::size_t>(ConsentData::ChangesetPreview) + 1> sizes{};
     const auto add = [&sizes](const Json& section, const char* key, ConsentData kind) {
         const auto value = section.find(key);
         if (value != section.end() && !value->empty())
@@ -278,7 +282,8 @@ std::vector<ConsentItem> projectReadDisclosure(const Json& result) {
 }
 
 std::optional<Outcome> requireReadConsent(ControlContext& ctx, const CallContext& call,
-                                           const ProjectAccess& project, const Json& result) {
+                                           const ProjectAccess& project, const Json& result,
+                                           std::optional<ConsentData> whole = std::nullopt) {
     const auto& destination = call.meta.readDestination;
     if (!destination || !leavesMachine(*destination)) return std::nullopt;
     auto decision = ConsentDecision::Unavailable;
@@ -286,8 +291,10 @@ std::optional<Outcome> requireReadConsent(ControlContext& ctx, const CallContext
         const auto bytes = dumpJson(result);
         const auto fingerprint = media::blake3Bytes(std::as_bytes(std::span(bytes)));
         if (!fingerprint) return Outcome::fail(errc::ConsentRequired, "cannot identify the disclosure");
+        auto disclosure = whole ? std::vector<ConsentItem>{{*whole, bytes.size()}}
+                                : projectReadDisclosure(result);
         ConsentRequest request{project.projectUuid(), *destination, ConsentCapability::ProjectRead,
-                               projectReadDisclosure(result), {}, fingerprint.hex};
+                               std::move(disclosure), {}, fingerprint.hex};
         const auto now = ctx.nowUtcMicros ? ctx.nowUtcMicros() / 1'000'000 :
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
@@ -296,6 +303,20 @@ std::optional<Outcome> requireReadConsent(ControlContext& ctx, const CallContext
     }
     if (decision == ConsentDecision::Allowed) return std::nullopt;
     return Outcome::fail(errc::ConsentRequired, "project disclosure requires the local user's consent");
+}
+
+std::optional<Outcome> requirePreviewConsent(ControlContext& ctx, const CallContext& call,
+                                              const ProjectAccess& project, const Json& proposal) {
+    if (!external(call)) return std::nullopt;
+    auto disclosure = proposal;
+    // A retry re-previews the same content with a new server-issued id and
+    // timestamp. These server fields do not identify the approved payload.
+    disclosure.erase("id");
+    if (auto cs = disclosure.find("changeset"); cs != disclosure.end()) {
+        cs->erase("actorDetail");
+        cs->erase("createdUtc");
+    }
+    return requireReadConsent(ctx, call, project, disclosure, ConsentData::ChangesetPreview);
 }
 
 void recordRemarkRead(ControlContext& ctx, const CallContext& call) {
@@ -339,7 +360,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                                    {"tier", std::string(toString(spec->minTier))}});
             Json projects = Json::array();
             for (const auto& pr : ctx.projects.all())
-                projects.push_back({{"project", pr->handle()}, {"label", pr->label()}, {"live", pr->live()}});
+                projects.push_back({{"project", pr->handle()},
+                                    {"label", external(call) ? "project" : pr->label()}, {"live", pr->live()}});
             return Outcome::ok({{"server", {{"name", ctx.serverName}, {"version", ctx.serverVersion}}},
                                 {"tier", std::string(toString(call.tier))},
                                 {"methods", std::move(methods)},
@@ -354,13 +376,18 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.name = "project.list";
         m.summary = "The open projects, by handle";
         m.paramsSchema = {{"type", "object"}, {"properties", Json::object()}, {"additionalProperties", false}};
-        m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {})) return failWith(*e);
             Json out = Json::array();
             for (const auto& pr : ctx.projects.all()) {
+                Json row = {{"project", pr->handle()},
+                            {"label", external(call) ? "project" : pr->label()}, {"live", pr->live()}};
+                if (external(call)) {
+                    out.push_back(std::move(row));
+                    continue;
+                }
                 std::string err;
                 const auto head = pr->head(err);
-                Json row = {{"project", pr->handle()}, {"label", pr->label()}, {"live", pr->live()}};
                 // A head that could not be read is never reported as null,
                 // which on the wire is the root.
                 if (err.empty()) row["head"] = headJson(head);
@@ -451,14 +478,14 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.summary = "Sample rate, ppq, length, tempo, meter, key, schema, head and counts; the transport "
                     "when a running engine plays the project";
         m.paramsSchema = onlyProjectSchema();
-        m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
             std::string err;
             const auto snapshot = project->read(err);
-            if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
+            if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project");
             Json out = manifest(snapshot.model, snapshot.head, project->handle(), project->label(),
                                 project->fileSchema());
             if (project->live()) {
@@ -468,6 +495,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                                         {"positionSamples", frame->transport->positionSamples},
                                         {"sampleRate", frame->transport->sampleRate}};
             }
+            if (auto denied = requireReadConsent(ctx, call, *project, out, ConsentData::ProjectMetadata))
+                return std::move(*denied);
             return Outcome::ok(std::move(out));
         };
         service.add(std::move(m));
@@ -477,15 +506,18 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.name = "project.graph";
         m.summary = "Tracks as a tree, every routing row by kind, implicit outputs and device chains";
         m.paramsSchema = onlyProjectSchema();
-        m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
             std::string err;
             const auto snapshot = project->read(err);
-            if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
-            return Outcome::ok(graph(snapshot.model, project->handle()));
+            if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project");
+            auto out = graph(snapshot.model, project->handle());
+            if (auto denied = requireReadConsent(ctx, call, *project, out, ConsentData::ProjectGraph))
+                return std::move(*denied);
+            return Outcome::ok(std::move(out));
         };
         service.add(std::move(m));
     }
@@ -495,7 +527,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.summary = "Live meters the engine already publishes, labelled honestly, and what is not "
                     "measured yet";
         m.paramsSchema = onlyProjectSchema();
-        m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
@@ -503,6 +535,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             const auto frame = project->telemetry();
             Json out = telemetryJson(frame.get(), ctx.steadyMs(), project->live());
             out["project"] = project->handle();
+            if (auto denied = requireReadConsent(ctx, call, *project, out, ConsentData::Telemetry))
+                return std::move(*denied);
             return Outcome::ok(std::move(out));
         };
         service.add(std::move(m));
@@ -650,6 +684,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     if (prior->paramsDigest != digest || prior->project != project->handle())
                         return refusal(errc::InvalidParams, "idempotencyKey reused with different arguments",
                                        "invalid");
+                    if (auto denied = requirePreviewConsent(ctx, call, *project, prior->proposal))
+                        return std::move(*denied);
                     return Outcome::ok(prior->proposal);
                 }
             }
@@ -689,6 +725,9 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             limits.measureClipImpact = call.tier == Tier::Apply && project->allowsAutomaticApply();
             const agent::Preview pv = project->preview(cs, limits);
             if (!pv.ok) {
+                if (external(call))
+                    return refusal(pv.refusal == agent::Refusal::Stale ? errc::Stale : errc::InvalidParams,
+                                   "changeset preview refused", agent::toString(pv.refusal));
                 Json data = {{"refusal", agent::toString(pv.refusal)}};
                 if (pv.refusal == agent::Refusal::Stale) {
                     // The head the check found, read again now: what to build
@@ -742,6 +781,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                              {"apply", project->applyHint()}};
             if (diffCut) proposal["diffTruncated"] = true;
             if (pv.changes.size() > kMaxChangesShown) proposal["changesTruncated"] = true;
+            if (auto denied = requirePreviewConsent(ctx, call, *project, proposal))
+                return std::move(*denied);
 
             QueuedChangeset entry;
             entry.id = id;
@@ -867,6 +908,10 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                              "propose anew (a stale changeset is never rebased)";
             } else if (state == Review::Expired) {
                 out["why"] = "it was not applied within 24 hours; read the project again and propose anew";
+            }
+            if (project) {
+                if (auto denied = requirePreviewConsent(ctx, call, *project, out))
+                    return std::move(*denied);
             }
             return Outcome::ok(std::move(out));
         };

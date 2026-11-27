@@ -38,6 +38,11 @@ void ProjectSet::add(std::shared_ptr<ProjectAccess> project) {
     projects_.push_back(std::move(project));
 }
 
+void ProjectSet::clear() {
+    std::lock_guard lock(mutex_);
+    projects_.clear();
+}
+
 std::shared_ptr<ProjectAccess> ProjectSet::find(std::string_view handle) const {
     std::lock_guard lock(mutex_);
     for (const auto& p : projects_)

@@ -726,7 +726,7 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_control adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -865,6 +865,10 @@ add_library(adi_control STATIC
     src/adi/control/consent.cpp
     src/adi/control/consent_file.cpp
     src/adi/control/consent_scope.cpp
+    src/adi/control/session_discovery.cpp
+    src/adi/control/loopback_listener.cpp
+    src/adi/control/loopback_bridge.cpp
+    src/adi/control/live_project.cpp
     src/adi/control/jsonrpc.cpp
     src/adi/control/service.cpp
     src/adi/control/telemetry.cpp
@@ -874,8 +878,19 @@ add_library(adi_control STATIC
     src/adi/control/changeset_queue.cpp
     src/adi/control/methods.cpp
     src/adi/control/mcp.cpp
-    src/adi/control/stdio_server.cpp)
+    src/adi/control/stdio_server.cpp
+    src/juce/app_control.cpp)
+if(NOT EXISTS "${ADI_THIRD_PARTY}/cpp-httplib/httplib.h")
+    message(FATAL_ERROR "Run adi_daw/tools/fetch_external.sh --build-only for cpp-httplib")
+endif()
+target_include_directories(adi_control SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_control PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
 target_link_libraries(adi_control PUBLIC adi_changeset adi_core PRIVATE adi_warnings)
+if(WIN32)
+    target_link_libraries(adi_control PRIVATE bcrypt ws2_32)
+endif()
 
 add_executable(adi_mcp tools/adi-mcp/main.cpp)
 target_link_libraries(adi_mcp PRIVATE adi_control adi_settings adi_changeset adi_core adi_warnings)
@@ -889,10 +904,33 @@ add_executable(adi_consent_tests tests/test_consent.cpp)
 target_link_libraries(adi_consent_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
 
+add_executable(adi_loopback_listener_tests tests/test_loopback_listener.cpp)
+target_include_directories(adi_loopback_listener_tests SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_loopback_listener_tests PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
+target_link_libraries(adi_loopback_listener_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_loopback_listener_tests COMMAND adi_loopback_listener_tests)
+
+add_executable(adi_app_control_tests tests/test_app_control.cpp)
+target_include_directories(adi_app_control_tests SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_app_control_tests PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
+target_link_libraries(adi_app_control_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_app_control_tests COMMAND adi_app_control_tests)
+
+add_executable(adi_loopback_bridge_tests tests/test_loopback_bridge.cpp)
+target_link_libraries(adi_loopback_bridge_tests PRIVATE adi_control adi_warnings)
+add_dependencies(adi_loopback_bridge_tests adi_mcp)
+target_compile_definitions(adi_loopback_bridge_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_test(NAME adi_loopback_bridge_tests COMMAND adi_loopback_bridge_tests)
+
 add_executable(adi_control_mcp_tests tests/test_control_mcp.cpp)
 target_link_libraries(adi_control_mcp_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
-add_dependencies(adi_control_mcp_tests adi_mcp)
-target_compile_definitions(adi_control_mcp_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_dependencies(adi_control_mcp_tests adi_mcp adi_tool)
+target_compile_definitions(adi_control_mcp_tests PRIVATE
+    ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>" ADI_TOOL_PATH="$<TARGET_FILE:adi_tool>")
 add_test(NAME adi_control_mcp_tests COMMAND adi_control_mcp_tests)
 
 # The read levels on a seeded project, called directly (AGT-02; R5.6, R5.11).
@@ -2162,6 +2200,9 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+if(TARGET adi_app)
+    target_link_libraries(adi_app PRIVATE adi_control)
+endif()
 include(cmake/stereo_envelope_meter.cmake)
 include(cmake/triggered_scope.cmake)
 # WTS-01, win's weekly headless proof of the one usable session (ADR-0248 d2, d12). Off by default: it

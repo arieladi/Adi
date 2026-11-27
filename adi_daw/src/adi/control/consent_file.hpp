@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,5 +26,18 @@ inline constexpr std::size_t kConsentFileMaxBytes = 256 * 1024;
 /// Run a read-modify-write under the stable sibling lock across processes.
 /// Acquiring a busy or unsafe lock fails closed and does not call the action.
 [[nodiscard]] bool withConsentFileLock(const std::filesystem::path&, const std::function<void()>&);
+
+struct PrivateFileLock;
+struct PrivateFileLockAttempt {
+    std::shared_ptr<PrivateFileLock> lock;
+    bool busy = false;
+};
+
+/// Acquire the stable sibling lock, optionally creating it. A busy lock is
+/// distinct from a missing, unreadable, or unsafe lock file.
+[[nodiscard]] PrivateFileLockAttempt lockPrivateFile(const std::filesystem::path&, bool create);
+
+/// Remove an ordinary owner-only file while its stable lock is held.
+[[nodiscard]] bool removePrivateFile(const std::filesystem::path&);
 
 }  // namespace adi::control::detail

@@ -3,6 +3,7 @@
 // adi-mcp: ADI's MCP server over stdio (CTL-08; ADR-0233; docs/CONTROL-MCP.md).
 //
 //   adi-mcp --project <file.adi> [--tier observe|propose]
+//   adi-mcp --connect [--port <port>]
 //   adi-mcp --version
 //
 // A client (Claude Code, Cursor, Claude Desktop, the adi-agent sidecar)
@@ -12,11 +13,11 @@
 // changeset in ADI or with `adi_tool propose ... --apply`.
 //
 // The tier is the user's: the `agent.tier` setting caps it, and --tier can
-// only lower it. Apply is not reachable here at all. `--connect` (a running
-// ADI, through the discovery record) comes with the control listener (CTL-04)
-// and Q-O's answer.
+// only lower it in headless mode. With `--connect`, the live ADI host owns
+// permissions, disclosures, and the user's review queue.
 
 #include "adi/control/headless_project.hpp"
+#include "adi/control/loopback_bridge.hpp"
 #include "adi/control/mcp.hpp"
 #include "adi/control/methods.hpp"
 #include "adi/control/stdio_server.hpp"
@@ -24,11 +25,13 @@
 #include "adi/version.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -52,6 +55,8 @@ int usage() {
                  "\n"
                  "  adi-mcp --project <file.adi> [--tier observe|propose]\n"
                  "                 read the project, propose changesets; never applies them\n"
+                 "  adi-mcp --connect [--port <port>]\n"
+                 "                 use the running ADI session; --port reads ADI_CONTROL_TOKEN\n"
                  "  adi-mcp --version\n");
     return 2;
 }
@@ -78,6 +83,8 @@ std::string processSecret() {
 int run(const std::vector<fs::path>& args) {
     std::optional<fs::path> project;
     std::optional<Tier> asked;
+    bool connect = false;
+    std::optional<std::uint16_t> port;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string word = utf8(args[i]);
         if (word == "--version") {
@@ -86,6 +93,15 @@ int run(const std::vector<fs::path>& args) {
         }
         if (word == "--project" && i + 1 < args.size()) {
             project = args[++i];
+        } else if (word == "--connect") {
+            connect = true;
+        } else if (word == "--port" && i + 1 < args.size()) {
+            const auto text = utf8(args[++i]);
+            unsigned value = 0;
+            const auto converted = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size() ||
+                value == 0 || value > std::numeric_limits<std::uint16_t>::max()) return usage();
+            port = static_cast<std::uint16_t>(value);
         } else if (word == "--tier" && i + 1 < args.size()) {
             asked = tierFromString(utf8(args[++i]));
             if (!asked || *asked == Tier::Apply) return usage();
@@ -93,7 +109,7 @@ int run(const std::vector<fs::path>& args) {
             return usage();
         }
     }
-    if (!project) return usage();
+    if (connect ? project.has_value() || asked.has_value() : !project || port) return usage();
 
 #if defined(_WIN32)
     // MCP frames are lines of UTF-8; text mode would turn \n into \r\n.
@@ -101,6 +117,7 @@ int run(const std::vector<fs::path>& args) {
     (void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
     std::ios::sync_with_stdio(false);
+    if (connect) return runLoopbackBridge(std::cin, std::cout, std::cerr, port);
 
     // The user's settings: agent.tier caps the tier (AI-AGENT 2), and
     // agent.maxOpsPerRequest is the per-request cap (ADR-0203 d20).

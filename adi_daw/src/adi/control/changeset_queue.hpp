@@ -70,6 +70,8 @@ public:
     /// The entry with this id, only if this credential owns it.
     [[nodiscard]] std::optional<QueuedChangeset> find(std::string_view id,
                                                       const std::string& credential) const;
+    /// Owner-side review seam. Never exposed by the control transport.
+    [[nodiscard]] std::vector<QueuedChangeset> forReview() const;
     void add(QueuedChangeset entry);
     /// Moves an owned entry to `state`; false when there is none to move.
     bool setState(std::string_view id, const std::string& credential, Review state);

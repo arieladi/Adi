@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -28,6 +29,32 @@
 #endif
 
 namespace adi::control::detail {
+
+struct PrivateFileLock {
+#if defined(_WIN32)
+    PrivateFileLock(HANDLE folder, HANDLE guard) : folder_(folder), guard_(guard) {}
+    ~PrivateFileLock() {
+        CloseHandle(guard_);
+        CloseHandle(folder_);
+    }
+#else
+    PrivateFileLock(int folder, int guard) : folder_(folder), guard_(guard) {}
+    ~PrivateFileLock() {
+        (void)::close(guard_);
+        (void)::close(folder_);
+    }
+#endif
+    PrivateFileLock(const PrivateFileLock&) = delete;
+    PrivateFileLock& operator=(const PrivateFileLock&) = delete;
+
+private:
+#if defined(_WIN32)
+    HANDLE folder_, guard_;
+#else
+    int folder_, guard_;
+#endif
+};
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -49,15 +76,16 @@ std::optional<std::string> readBounded(std::size_t maximum, Read read) {
     }
 }
 
-std::string stageName() {
+fs::path stageName(fs::path name) {
 #if defined(_WIN32)
     const auto pid = GetCurrentProcessId();
 #else
     const auto pid = ::getpid();
 #endif
     static std::atomic<std::uint64_t> sequence{0};
-    return ".adi-consent-" + std::to_string(pid) + "-" +
-           std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+    name += ".stage-" + std::to_string(pid) + "-" +
+            std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+    return name;
 }
 
 #if defined(_WIN32)
@@ -184,7 +212,7 @@ bool writeFile(const fs::path& file, std::string_view contents) {
     if (!directory || !security.verifies(directory.handle, true)) return false;
 
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
-        const auto stage = folder / stageName();
+        const auto stage = folder / stageName(file.filename());
         bool ready = false;
         {
             const NativeFile output(CreateFileW(stage.c_str(), GENERIC_WRITE, 0, security.attributes(),
@@ -207,24 +235,35 @@ bool writeFile(const fs::path& file, std::string_view contents) {
     return false;
 }
 
-bool lockAndRun(const fs::path& file, const std::function<void()>& action) {
+bool eraseFile(const fs::path& file) {
+    PrivateSecurity security;
+    if (!security.init()) return false;
+    const NativeFile directory(openDirectory(file.parent_path()));
+    if (!directory) return missing(GetLastError());
+    if (!security.verifies(directory.handle, true) || !canReplace(file, security)) return false;
+    return DeleteFileW(file.c_str()) || missing(GetLastError());
+}
+
+PrivateFileLockAttempt tryLock(const fs::path& file, bool create) {
     const auto folder = file.parent_path();
     PrivateSecurity security;
-    if (!security.init() || !makeDirectory(folder, security)) return false;
-    const NativeFile directory(openDirectory(folder));
-    if (!directory || !security.verifies(directory.handle, true)) return false;
+    if (!security.init() || (create && !makeDirectory(folder, security))) return {};
+    NativeFile directory(openDirectory(folder));
+    if (!directory || !security.verifies(directory.handle, true)) return {};
 
     auto lock = file;
     lock += ".lock";
-    const NativeFile guard(CreateFileW(lock.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                       FILE_SHARE_READ | FILE_SHARE_WRITE, security.attributes(), OPEN_ALWAYS,
-                                       FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!guard || !security.verifies(guard.handle, false)) return false;
+    NativeFile guard(CreateFileW(lock.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, security.attributes(),
+                                  create ? OPEN_ALWAYS : OPEN_EXISTING,
+                                  FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!guard || !security.verifies(guard.handle, false)) return {};
     OVERLAPPED range{};
     if (!LockFileEx(guard.handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                    0, 1, 0, &range)) return false;
-    action();
-    return true; // closing the separate lock handle releases the byte lock
+                    0, 1, 0, &range)) return {nullptr, GetLastError() == ERROR_LOCK_VIOLATION};
+    auto held = std::make_shared<PrivateFileLock>(directory.handle, guard.handle);
+    directory.handle = guard.handle = INVALID_HANDLE_VALUE;
+    return {std::move(held), false};
 }
 
 #else
@@ -314,7 +353,7 @@ bool writeFile(const fs::path& file, std::string_view contents) {
 
     const auto name = file.filename();
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
-        const auto stage = stageName();
+        const auto stage = stageName(name);
         const NativeFile output(::openat(directory.handle, stage.c_str(),
                                          O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
         if (!output) {
@@ -331,22 +370,35 @@ bool writeFile(const fs::path& file, std::string_view contents) {
     return false;
 }
 
-bool lockAndRun(const fs::path& file, const std::function<void()>& action) {
+bool eraseFile(const fs::path& file) {
     const auto folder = file.parent_path();
-    if (!makeDirectory(folder)) return false;
     const NativeFile directory(openDirectory(folder));
-    if (!directory || !verifies(directory.handle, true)) return false;
+    if (!directory) return errno == ENOENT;
+    if (!verifies(directory.handle, true)) return false;
+
+    const auto name = file.filename();
+    if (!canReplace(directory.handle, name)) return false;
+    if (::unlinkat(directory.handle, name.c_str(), 0) != 0) return errno == ENOENT;
+    return syncFile(directory.handle, true);
+}
+
+PrivateFileLockAttempt tryLock(const fs::path& file, bool create) {
+    const auto folder = file.parent_path();
+    if (create && !makeDirectory(folder)) return {};
+    NativeFile directory(openDirectory(folder));
+    if (!directory || !verifies(directory.handle, true)) return {};
 
     auto lock = file.filename();
     lock += ".lock";
-    const NativeFile guard(::openat(directory.handle, lock.c_str(),
-                                    O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
-    if (!guard || !verifies(guard.handle, false)) return false;
+    const int flags = O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | (create ? O_CREAT : 0);
+    NativeFile guard(::openat(directory.handle, lock.c_str(), flags, 0600));
+    if (!guard || !verifies(guard.handle, false)) return {};
     int status;
     do { status = ::flock(guard.handle, LOCK_EX | LOCK_NB); } while (status < 0 && errno == EINTR);
-    if (status != 0) return false;
-    action();
-    return true; // closing the separate lock descriptor releases the lock
+    if (status != 0) return {nullptr, errno == EWOULDBLOCK || errno == EAGAIN};
+    auto held = std::make_shared<PrivateFileLock>(directory.handle, guard.handle);
+    directory.handle = guard.handle = -1;
+    return {std::move(held), false};
 }
 
 #endif
@@ -379,7 +431,28 @@ bool writeConsentFile(const fs::path& file, std::string_view contents) {
 bool withConsentFileLock(const fs::path& file, const std::function<void()>& action) {
     if (audio::onAudioThread || !action) return false;
     try {
-        return usablePath(file) && lockAndRun(file, action);
+        const auto lock = lockPrivateFile(file, true);
+        if (!lock.lock) return false;
+        action();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+PrivateFileLockAttempt lockPrivateFile(const fs::path& file, bool create) {
+    if (audio::onAudioThread) return {};
+    try {
+        if (usablePath(file)) return tryLock(file, create);
+    } catch (...) {
+    }
+    return {};
+}
+
+bool removePrivateFile(const fs::path& file) {
+    if (audio::onAudioThread) return false;
+    try {
+        return usablePath(file) && eraseFile(file);
     } catch (...) {
         return false;
     }

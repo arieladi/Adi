@@ -93,6 +93,7 @@ public:
 class ProjectSet {
 public:
     void add(std::shared_ptr<ProjectAccess> project);
+    void clear();
     [[nodiscard]] std::shared_ptr<ProjectAccess> find(std::string_view handle) const;
     [[nodiscard]] std::vector<std::shared_ptr<ProjectAccess>> all() const;
 

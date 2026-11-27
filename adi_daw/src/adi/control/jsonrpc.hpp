@@ -63,6 +63,7 @@ struct Incoming {
     Json id = nullptr;
     std::string method;
     Json params = nullptr;   ///< an object, or null when absent
+    Json meta = nullptr;     ///< interpreted only by the raw control RPC route
     RpcError error;          ///< Invalid only
 };
 

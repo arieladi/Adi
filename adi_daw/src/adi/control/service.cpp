@@ -359,7 +359,9 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     //    digest: a retry with another head is not answered with the old one.
     std::string cacheKey;
     std::size_t paramsDigest = 0;
-    if (spec->idempotent && meta.idempotencyKey) {
+    // A wire reply that discloses project data must go through current
+    // consent, including when the client retries an already queued proposal.
+    if (spec->idempotent && meta.idempotencyKey && !meta.readDestination) {
         cacheKey = who.credential;
         cacheKey += '\n';
         cacheKey += spec->name;

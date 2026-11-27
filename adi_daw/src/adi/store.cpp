@@ -226,6 +226,7 @@ const char* toString(StoreError e) {
         case StoreError::AlreadyExists: return "a file already exists at that path";
         case StoreError::CannotCreate:  return "could not create the database";
         case StoreError::CannotOpen:    return "could not open the database";
+        case StoreError::ExclusiveAccessRequired: return "the project requires exclusive access for headless Apply";
         case StoreError::NotAnAdiFile:  return "not a .adi file (application_id mismatch)";
         case StoreError::SchemaTooNew:  return "schema is newer than this build; opened read-only";
         case StoreError::SchemaCorrupt: return "schema present but unreadable";
@@ -479,12 +480,26 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
                                    bool readOnly) {
+    return openWithLease(path, err, readOnly, false);
+}
+
+std::unique_ptr<Store> Store::openForHeadlessApply(const std::filesystem::path& path, StoreError& err) {
+    return openWithLease(path, err, false, true);
+}
+
+std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, StoreError& err,
+                                           bool readOnly, bool exclusive) {
     if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
     std::shared_ptr<media::ProjectFileLease> lease;
     std::error_code leaseError;
     if(!path.empty() && path!=std::filesystem::path(":memory:")){
-        lease=media::ProjectFileLease::openShared(path,leaseError);
-        if(!lease){err=StoreError::CannotOpen;return nullptr;}
+        lease = exclusive ? media::ProjectFileLease::openExclusive(path, leaseError)
+                          : media::ProjectFileLease::openShared(path, leaseError);
+        if (!lease) {
+            err = exclusive && leaseError != std::errc::no_such_file_or_directory
+                ? StoreError::ExclusiveAccessRequired : StoreError::CannotOpen;
+            return nullptr;
+        }
     }
     std::unique_ptr<SQLite::Database> db;
     try {

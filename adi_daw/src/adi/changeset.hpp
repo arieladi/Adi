@@ -106,6 +106,7 @@ struct ApplyResult {
     Refusal refusal = Refusal::None;
     std::string error;
     std::int64_t txnId = 0;
+    std::vector<std::int64_t> seqs = {};
 };
 
 /// Commits the whole changeset as one transaction, actor `agent`, with its

@@ -523,7 +523,7 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
             }
         };
         OpJournal journal(store);
-        const CommitResult res = journal.commit(reqs, options);   // ONE transaction (§6.2)
+        CommitResult res = journal.commit(reqs, options);   // ONE transaction (§6.2)
         if (res.stale) {
             const auto show = [](std::optional<std::int64_t> s) {
                 return s ? std::to_string(*s) : std::string("the root");
@@ -541,6 +541,7 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
         }
         r.ok = true;
         r.txnId = res.txnId;
+        r.seqs = std::move(res.seqs);
         return r;
     } catch (const std::exception& e) {
         r.refusal = Refusal::Invalid;

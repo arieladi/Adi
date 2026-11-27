@@ -1368,6 +1368,51 @@ void setHome(const fs::path& p) {
 #endif
 }
 
+void testHeadlessApplyBinary() {
+    section("adi_tool propose: preview an open project, apply only when closed");
+    ProjectFile file("headless_apply");
+    StoreError error{};
+    auto editor = Store::open(file.path, error);
+    check(editor != nullptr, "the app's Store opens the test project");
+    if (!editor) return;
+    const auto head = OpJournal(*editor).headSeq();
+    const auto bytes = fileBytes(file.path);
+    const auto changeset = file.temp.path() / "changeset.json";
+    const auto log = file.temp.path() / "propose.log";
+    {
+        std::ofstream out(changeset, std::ios::binary);
+        out << dumpJson({{"request", "Rename the song"},
+                         {"baseHead", head ? Json(*head) : Json(nullptr)},
+                         {"ops", Json::array({{{"op", "project.setName"},
+                                                {"payload", {{"name", "After Apply"}}}}})}});
+        if (!out) throw std::runtime_error("cannot write the changeset fixture");
+    }
+    const auto propose = [&](bool apply) {
+        auto command = quote(fs::path(ADI_TOOL_PATH)) + " propose " + quote(file.path) + " " + quote(changeset);
+        if (apply) command += " --apply";
+        command += " > " + quote(log) + " 2>&1";
+#if defined(_WIN32)
+        command = "\"" + command + "\"";
+#endif
+        return std::system(command.c_str());
+    };
+
+    check(propose(false) == 0 && fileBytes(log).find("not applied") != std::string::npos &&
+              fileBytes(file.path) == bytes && OpJournal(*editor).headSeq() == head,
+          "preview reads a snapshot without writing the active project");
+    check(propose(true) != 0 && fileBytes(log).find("exclusive access") != std::string::npos &&
+              OpJournal(*editor).headSeq() == head &&
+              editor->db().execAndGet("SELECT name FROM project").getString() == "Song",
+          "Apply refuses an open project without moving its head or changing its name");
+    editor.reset();
+
+    check(propose(true) == 0, "the same headless Apply succeeds after the editor closes");
+    const auto saved = Store::open(file.path, error, true);
+    check(saved && OpJournal(*saved).headSeq() != head &&
+              saved->db().execAndGet("SELECT name FROM project").getString() == "After Apply",
+          "the authorized Apply changes the persisted name and advances the head");
+}
+
 void testBinary() {
     section("adi-mcp, the binary, over pipes");
     ProjectFile f("binary");
@@ -1555,6 +1600,7 @@ int runAll() {
     testProjectionDetails();
     testStatusStaleAndExpired();
     testSweepAbandonedScratch();
+    testHeadlessApplyBinary();
     testBinary();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

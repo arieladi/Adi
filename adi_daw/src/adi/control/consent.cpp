@@ -21,7 +21,7 @@
 namespace adi::control {
 namespace {
 
-constexpr int kLastKind = static_cast<int>(ConsentData::PluginState);
+constexpr int kLastKind = static_cast<int>(ConsentData::ChangesetPreview);
 
 bool local(const ConsentRequest& request) {
     return request.capability != ConsentCapability::PluginHosting &&

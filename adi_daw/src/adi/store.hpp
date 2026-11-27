@@ -51,6 +51,7 @@ enum class StoreError {
     AlreadyExists,   // create() on a path that exists -- never silently truncate
     CannotCreate,
     CannotOpen,
+    ExclusiveAccessRequired,
     NotAnAdiFile,    // wrong application_id: a SQLite file, but not ours
     SchemaTooNew,    // major > ours; opened read-only instead (SPEC §11)
     SchemaCorrupt,
@@ -150,6 +151,8 @@ public:
     /// table on this connection, so every reader sees "no rows".
     static std::unique_ptr<Store> open(const std::filesystem::path&, StoreError&,
                                        bool readOnly = false);
+    /// The headless changeset writer must be the only holder of this project.
+    static std::unique_ptr<Store> openForHeadlessApply(const std::filesystem::path&, StoreError&);
 
     /// SPEC §3.3. Checkpoints the WAL and returns the journal to DELETE mode, so
     /// what is left on disk is exactly one self-contained file. Idempotent; the
@@ -260,6 +263,8 @@ private:
 
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
+    static std::unique_ptr<Store> openWithLease(const std::filesystem::path&, StoreError&,
+                                               bool readOnly, bool exclusive);
     struct CopyState;
     friend class StoreFileSave;
     CopyState saveCopyImpl(const std::filesystem::path&, StoreFileCollision,
