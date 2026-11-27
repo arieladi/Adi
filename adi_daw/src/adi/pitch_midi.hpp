@@ -7,6 +7,7 @@
 #include "adi/media/clip_pitch.hpp"
 #include "adi/ops.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -70,6 +71,34 @@ struct PitchMidiResult {
         return problem == PitchMidiProblem::None && data.has_value();
     }
 };
+
+enum class PitchMidiBendMode { Static, Continuous };
+
+struct PitchMidiBendEvent {
+    enum class Kind { InitialCenter, Attack, Movement, ReleaseCenter };
+
+    std::int64_t tick; // Clip-relative. A release can occur at the clip end.
+    std::uint64_t noteId; // Zero for InitialCenter.
+    std::uint16_t word; // 0..16383 with center at 8192.
+    Kind kind;
+    bool operator==(const PitchMidiBendEvent&) const = default;
+};
+
+struct PitchMidiChannelBend {
+    std::uint8_t channel;
+    int rangeSemitones;
+    std::vector<PitchMidiBendEvent> events;
+};
+
+// Owner-side conversion of a monophonic pitch projection with keepTuning and,
+// for continuous mode, includePitchCurve. The explicit sensitivity is 1..24
+// semitones in both directions. Notes keep their projected keys, with tuning
+// carried by these words. A MIDI consumer uses the same channel sensitivity and
+// orders same-tick events as note-off, release center, attack bend, note-on.
+// A continuous contour samples linear segments at their projected knots and at
+// intervals of at most 1/192 quarter note, coalescing identical movement words.
+[[nodiscard]] PitchMidiResult<PitchMidiChannelBend> projectPitchMidiChannelBend(
+    const PitchMidiProjection&, PitchMidiBendMode, int rangeSemitones, std::stop_token = {});
 
 struct PreparedPitchMidi;
 using PitchMidiPreparation = PitchMidiResult<PreparedPitchMidi>;

@@ -497,27 +497,137 @@ void amplitudeExtraction() {
           "pre-cancelled volume projection returns no prepared data");
 }
 
+void channelBendExtraction() {
+    PitchMidiProjection projected;
+    projected.lengthTicks = 2 * quarter;
+    NoteRecord note{};
+    note.start_ticks = quarter / 4;
+    note.dur_ticks = quarter;
+    note.note_id = 1;
+    note.key = 57;
+    note.channel = 3;
+    note.tuning_cents = -100;
+    projected.notes.push_back(note);
+    note.start_ticks += note.dur_ticks;
+    note.dur_ticks = quarter / 4;
+    note.note_id = 2;
+    note.key = 60;
+    note.tuning_cents = 200;
+    projected.notes.push_back(note);
+
+    const auto staticBends = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 2);
+    using Kind = PitchMidiBendEvent::Kind;
+    const std::vector<PitchMidiBendEvent> expected{
+        {0, 0, 8192, Kind::InitialCenter},
+        {quarter / 4, 1, 4096, Kind::Attack},
+        {5 * quarter / 4, 1, 8192, Kind::ReleaseCenter},
+        {5 * quarter / 4, 2, 16383, Kind::Attack},
+        {3 * quarter / 2, 2, 8192, Kind::ReleaseCenter}};
+    check(staticBends && staticBends.data->channel == 3 && staticBends.data->rangeSemitones == 2 &&
+          staticBends.data->events == expected,
+          "static bend keeps initial and final rests centered and resets before an adjacent note attacks");
+
+    const auto point = [](std::int64_t tick, float value) {
+        ExpressionPoint point{};
+        point.time_ticks = tick;
+        point.value = value;
+        point.curve = static_cast<std::uint8_t>(Curve::Linear);
+        return point;
+    };
+    projected.pitchCurves = {{1, {point(0, -1), point(quarter, 2)}},
+                            {2, {point(0, 0), point(quarter / 4, 0)}}};
+    const auto continuous = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Continuous, 2);
+    check(continuous && continuous.data->events.size() > expected.size() &&
+          continuous.data->events[1] == PitchMidiBendEvent{quarter / 4, 1, 0, Kind::Attack} &&
+          continuous.data->events.back() == expected.back(),
+          "continuous bend combines note tuning with pitch expression and reaches the negative endpoint");
+    if (continuous) {
+        const auto& events = continuous.data->events;
+        const auto has = [&events](PitchMidiBendEvent event) {
+            return std::find(events.begin(), events.end(), event) != events.end();
+        };
+        check(has({3 * quarter / 4, 1, 6144, Kind::Movement}) &&
+              has({5 * quarter / 4 - 1, 1, 12287, Kind::Movement}) &&
+              std::equal(expected.begin() + 2, expected.end(), events.end() - 3),
+              "sustained linear contour produces timed movement through release and centers between notes");
+    }
+
+    check(projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 0).problem == PitchMidiProblem::Edits &&
+          projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 25).problem == PitchMidiProblem::Edits,
+          "ordinary channel bend requires an explicit 1 to 24 semitone sensitivity");
+    const auto overflow = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 1);
+    check(overflow.problem == PitchMidiProblem::Edits && !overflow.data && overflow.detail,
+          "a bend beyond sensitivity fails without publishing clamped data");
+    projected.pitchCurves[0].points.back().value = 3.125f;
+    check(projectPitchMidiChannelBend(projected, PitchMidiBendMode::Continuous, 2).problem == PitchMidiProblem::Edits,
+          "out-of-range contour endpoint fails even at the exclusive note end");
+    projected.pitchCurves.pop_back();
+    check(projectPitchMidiChannelBend(projected, PitchMidiBendMode::Continuous, 24).problem == PitchMidiProblem::Edits,
+          "continuous bend requires the projected pitch contour for every note");
+    --projected.notes.back().start_ticks;
+    const auto overlap = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 2);
+    check(overlap.problem == PitchMidiProblem::Edits && !overlap.data && overlap.detail,
+          "a one-tick overlap cannot share the channel bend stream");
+
+    PitchMidiProjection longSustain;
+    longSustain.lengthTicks = 6000 * quarter;
+    note.start_ticks = 0;
+    note.dur_ticks = longSustain.lengthTicks;
+    note.tuning_cents = 0;
+    longSustain.notes.push_back(note);
+    longSustain.pitchCurves = {{note.note_id, {point(0, -1), point(note.dur_ticks, 1)}}};
+    const auto budget = projectPitchMidiChannelBend(longSustain, PitchMidiBendMode::Continuous, 2);
+    check(budget.problem == PitchMidiProblem::Edits && !budget.data && budget.detail &&
+          budget.detail->find("sample budget") != std::string::npos,
+          "long changing contours have a bounded sample workload even when MIDI words coalesce");
+
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    check(projectPitchMidiChannelBend(projected, PitchMidiBendMode::Static, 2, cancelled.get_token()).problem ==
+          PitchMidiProblem::Cancelled, "pre-cancelled channel bend returns no projection");
+
+    Fixture f;
+    f.warp();
+    PitchMidiOptions options;
+    options.keepTuning = true;
+    options.includePitchCurve = true;
+    f.analysis.analysis.notes[1].curve = {{4800, 5700}, {9600, 5727.5}, {14399, 5750}};
+    const auto warp = projectPitchMidi(*f.store, f.analysis, {}, options);
+    check(static_cast<bool>(warp), "projection captures a source contour through Warp");
+    if (!warp) return;
+    const auto warpedBends = projectPitchMidiChannelBend(*warp.data, PitchMidiBendMode::Continuous, 2);
+    check(warpedBends && warpedBends.data->events.size() > 10 &&
+          warpedBends.data->events[1] == PitchMidiBendEvent{0, 1, 8192, Kind::Attack} &&
+          std::find(warpedBends.data->events.begin(), warpedBends.data->events.end(),
+                    PitchMidiBendEvent{quarter / 4, 1, 9318, Kind::Movement}) != warpedBends.data->events.end() &&
+          warpedBends.data->events.back() == PitchMidiBendEvent{3 * quarter, 3, 8192, Kind::ReleaseCenter},
+          "channel bend uses the captured Warp contour and exact clip-end reset");
+}
+
 void callback() {
     Fixture f;
     unsigned allocations = callbackAllocations.load();
-    PitchMidiProblem projectionProblem, preparationProblem;
+    PitchMidiProblem projectionProblem, preparationProblem, bendProblem;
     // Built before the scope: an MSVC Debug std::vector allocates even when empty.
     const audio::PitchEditState noEdits;
+    const PitchMidiProjection projected;
     {
         audio::CallbackScope scope;
         projectionProblem = projectPitchMidi(*f.store, f.analysis, noEdits).problem;
         preparationProblem = preparePitchMidi(*f.store, f.analysis).problem;
+        bendProblem = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Continuous, 2).problem;
     }
     check(projectionProblem == PitchMidiProblem::Realtime &&
-          preparationProblem == PitchMidiProblem::Realtime && callbackAllocations.load() == allocations,
-          "worker-only projection and preparation refuse a callback without allocation");
+          preparationProblem == PitchMidiProblem::Realtime && bendProblem == PitchMidiProblem::Realtime &&
+          callbackAllocations.load() == allocations,
+          "worker-only projection, channel bend and preparation refuse a callback without allocation");
 }
 }
 
 int main() {
     try {
         projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); durableGeometry();
-        amplitudeExtraction(); callback();
+        amplitudeExtraction(); channelBendExtraction(); callback();
     }
     catch (const std::exception& error) { check(false, error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

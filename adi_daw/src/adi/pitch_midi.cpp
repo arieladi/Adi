@@ -8,9 +8,11 @@
 #include "adi/edit_rows.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/pitch_edit_store.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -744,6 +746,99 @@ template<class T>
 PitchMidiResult<T> errorResult(const CaptureError& error) {
     return error.detail ? fail<T>(error.problem, error.detail) : fail<T>(error.problem);
 }
+
+PitchMidiChannelBend channelBend(const PitchMidiProjection& projection, PitchMidiBendMode mode,
+                                 int range, std::stop_token stop) {
+    constexpr auto sampleStep = textproj::kPPQ / 192;
+    constexpr std::uint16_t center = 8192;
+    using Kind = PitchMidiBendEvent::Kind;
+    cancellation(stop);
+    if (range < 1 || range > 24)
+        throw CaptureError{PitchMidiProblem::Edits, "MIDI bend sensitivity must be 1 through 24 semitones"};
+    if (projection.notes.empty())
+        throw CaptureError{PitchMidiProblem::Empty, "no projected notes for channel bend"};
+    if (projection.lengthTicks <= 0 || projection.lengthTicks > maxTick)
+        throw CaptureError{PitchMidiProblem::Edits, "invalid MIDI channel bend clip length"};
+    if (mode != PitchMidiBendMode::Static && mode != PitchMidiBendMode::Continuous)
+        throw CaptureError{PitchMidiProblem::Edits, "unknown MIDI channel bend mode"};
+    if (mode == PitchMidiBendMode::Continuous && projection.pitchCurves.size() != projection.notes.size())
+        throw CaptureError{PitchMidiProblem::Edits, "continuous channel bend needs one pitch contour per note"};
+
+    PitchMidiChannelBend result{projection.notes.front().channel, range, {}};
+    const auto append = [&result](std::int64_t tick, std::uint64_t note, std::uint16_t word, Kind kind) {
+        if (result.events.size() == maxRecords)
+            throw CaptureError{PitchMidiProblem::Edits, "MIDI channel bend event budget exceeded"};
+        result.events.push_back({tick, note, word, kind});
+    };
+    const auto bendWord = [range](double semitones) {
+        if (!std::isfinite(semitones) || std::abs(semitones) > range)
+            throw CaptureError{PitchMidiProblem::Edits, "pitch exceeds the requested MIDI bend sensitivity"};
+        return engine::semitonesToBendWord(semitones, range);
+    };
+    append(0, 0, center, Kind::InitialCenter);
+    std::int64_t lastEnd = 0;
+    std::uint64_t lastId = 0;
+    std::size_t samples = 0;
+    const auto countSample = [&samples, stop] {
+        cancellation(stop);
+        if (samples == maxRecords)
+            throw CaptureError{PitchMidiProblem::Edits, "MIDI channel bend contour sample budget exceeded"};
+        ++samples;
+    };
+    for (std::size_t i = 0; i < projection.notes.size(); ++i) {
+        cancellation(stop);
+        const auto& note = projection.notes[i];
+        if (note.channel != result.channel || note.channel > 15 || note.note_id <= lastId ||
+            note.start_ticks < 0 || note.start_ticks >= projection.lengthTicks || note.dur_ticks <= 0 ||
+            note.dur_ticks > projection.lengthTicks - note.start_ticks)
+            throw CaptureError{PitchMidiProblem::Edits, "invalid projected note for channel bend"};
+        if (note.start_ticks < lastEnd)
+            throw CaptureError{PitchMidiProblem::Edits, "overlapping projected notes cannot share a channel bend"};
+        lastEnd = note.start_ticks + note.dur_ticks;
+        lastId = note.note_id;
+        const auto tuning = static_cast<double>(note.tuning_cents) / 100;
+        if (mode == PitchMidiBendMode::Static) {
+            append(note.start_ticks, lastId, bendWord(tuning), Kind::Attack);
+        } else {
+            const auto& curve = projection.pitchCurves[i];
+            if (curve.noteId != lastId || curve.points.size() < 2 || curve.points.front().time_ticks != 0 ||
+                curve.points.back().time_ticks != note.dur_ticks ||
+                curve.points.front().curve != static_cast<std::uint8_t>(Curve::Linear))
+                throw CaptureError{PitchMidiProblem::Edits, "invalid projected channel bend contour endpoints"};
+            auto from = tuning + curve.points.front().value;
+            auto fromTick = std::int64_t{0};
+            auto sent = bendWord(from);
+            append(note.start_ticks, lastId, sent, Kind::Attack);
+            for (const auto& point : std::span(curve.points).subspan(1)) {
+                countSample();
+                const auto to = tuning + point.value;
+                const auto word = bendWord(to);
+                if (point.time_ticks <= fromTick || point.time_ticks > note.dur_ticks ||
+                    point.curve != static_cast<std::uint8_t>(Curve::Linear))
+                    throw CaptureError{PitchMidiProblem::Edits, "invalid projected channel bend contour point"};
+                if (sent != word) {
+                    const auto sample = [&](std::int64_t tick) {
+                        countSample();
+                        const auto fraction = static_cast<double>(tick - fromTick) /
+                                              static_cast<double>(point.time_ticks - fromTick);
+                        const auto next = engine::semitonesToBendWord(std::lerp(from, to, fraction), range);
+                        if (next == sent) return;
+                        append(note.start_ticks + tick, lastId, next, Kind::Movement);
+                        sent = next;
+                    };
+                    const auto lastTick = std::min(point.time_ticks, note.dur_ticks - 1);
+                    for (auto tick = fromTick + sampleStep; tick < lastTick; tick += sampleStep) sample(tick);
+                    if (lastTick > fromTick) sample(lastTick);
+                }
+                fromTick = point.time_ticks;
+                from = to;
+            }
+        }
+        append(lastEnd, lastId, center, Kind::ReleaseCenter);
+    }
+    cancellation(stop);
+    return result;
+}
 } // namespace
 
 PitchMidiResult<PitchMidiProjection> projectPitchMidi(
@@ -761,6 +856,16 @@ PitchMidiResult<PitchMidiProjection> projectPitchMidi(
         return errorResult<PitchMidiProjection>(error);
     } catch (const std::exception& error) {
         return fail<PitchMidiProjection>(PitchMidiProblem::Storage, error.what());
+    }
+}
+
+PitchMidiResult<PitchMidiChannelBend> projectPitchMidiChannelBend(
+    const PitchMidiProjection& projection, PitchMidiBendMode mode, int rangeSemitones, std::stop_token stop) {
+    if (audio::onAudioThread) return fail<PitchMidiChannelBend>(PitchMidiProblem::Realtime);
+    try {
+        return {PitchMidiProblem::None, channelBend(projection, mode, rangeSemitones, stop), {}};
+    } catch (const CaptureError& error) {
+        return errorResult<PitchMidiChannelBend>(error);
     }
 }
 
