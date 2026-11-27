@@ -207,26 +207,68 @@ struct Event {
     std::int64_t begin, end;
     std::uint8_t key, velocity;
     float tuning;
-    struct Point { std::int64_t at; float semis; };
-    std::vector<Point> curve;
+    struct Point { std::int64_t at; double value; };
+    std::vector<Point> curve, volume;
 };
+
+std::span<const float> sourceSamples(const audio::PitchNote& note, const PitchMidiOptions& options) {
+    return options.velocitySource.subspan(static_cast<std::size_t>(note.startFrame),
+        static_cast<std::size_t>(note.endFrame - note.startFrame));
+}
+
+double rms(std::span<const float> frames, std::stop_token stop) {
+    double energy = 0;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (i % 4096 == 0) cancellation(stop);
+        const double sample = frames[i];
+        if (!std::isfinite(sample))
+            throw CaptureError{PitchMidiProblem::Source, "the volume source contains non-finite audio"};
+        energy += sample * sample;
+    }
+    return std::sqrt(energy / static_cast<double>(frames.size()));
+}
 
 std::uint8_t velocityFor(const audio::PitchNote& note, const audio::PitchNoteEdit& edit,
                          const PitchMidiOptions& options) {
-    if (options.velocitySource.empty()) return options.velocity;
-    const auto frames = options.velocitySource.subspan(static_cast<std::size_t>(note.startFrame),
-        static_cast<std::size_t>(note.endFrame - note.startFrame));
-    double energy = 0;
-    for (std::size_t i = 0; i < frames.size(); ++i) {
-        if (i % 4096 == 0) cancellation(options.stop);
-        const double sample = frames[i];
-        if (!std::isfinite(sample))
-            throw CaptureError{PitchMidiProblem::Source, "dynamic velocity source contains non-finite audio"};
-        energy += sample * sample;
-    }
-    const auto rms = std::sqrt(energy / static_cast<double>(frames.size()));
-    const auto level = std::min(1.0, rms * std::numbers::sqrt2 * std::pow(10.0, edit.gainDb / 20));
+    if (options.velocitySource.empty() || options.volumeMode != PitchMidiVolumeMode::Velocity) return options.velocity;
+    const auto level = std::min(1.0, rms(sourceSamples(note, options), options.stop) *
+        std::numbers::sqrt2 * std::pow(10.0, edit.gainDb / 20));
     return static_cast<std::uint8_t>(std::clamp(std::lround(options.velocity * level), 1L, 127L));
+}
+
+double curveAt(std::span<const Event::Point> points, double at) {
+    const auto after = std::upper_bound(points.begin(), points.end(), at,
+        [](double value, const auto& point) { return value < static_cast<double>(point.at); });
+    if (after == points.begin()) return after->value;
+    const auto before = std::prev(after);
+    if (after == points.end()) return before->value;
+    const auto progress = (at - static_cast<double>(before->at)) / static_cast<double>(after->at - before->at);
+    return std::lerp(before->value, after->value, progress);
+}
+
+std::uint64_t windowFrame(const media::ClipPitchAnalysis& analysis, std::uint64_t frame) {
+    return analysis.reversed ? analysis.sourceEndFrame - frame : frame - analysis.sourceStartFrame;
+}
+
+template<class Add>
+void addWarpEdges(const media::ClipPitchAnalysis& analysis, std::uint64_t begin, std::uint64_t end,
+                  const Clock& clock, std::stop_token stop, const Add& add) {
+    if (!clock.warped()) return;
+    const auto windowBegin = windowFrame(analysis, analysis.reversed ? end : begin);
+    const auto windowEnd = windowFrame(analysis, analysis.reversed ? begin : end);
+    auto marker = std::upper_bound(clock.source.warp.begin(), clock.source.warp.end(), windowBegin,
+        [](auto frame, const auto& value) { return frame < static_cast<std::uint64_t>(value.sourceFrame); });
+    for (; marker != clock.source.warp.end() && static_cast<std::uint64_t>(marker->sourceFrame) < windowEnd; ++marker) {
+        cancellation(stop);
+        const auto frame = static_cast<std::uint64_t>(marker->sourceFrame);
+        add(analysis.reversed ? analysis.sourceEndFrame - frame : analysis.sourceStartFrame + frame);
+    }
+}
+
+void sortCurve(std::vector<Event::Point>& points) {
+    std::stable_sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+    points.erase(std::unique(points.begin(), points.end(),
+        [](const auto& a, const auto& b) { return a.at == b.at; }), points.end());
 }
 
 double originalPitchAt(const audio::PitchNote& note, double frame) {
@@ -257,8 +299,7 @@ void buildCurve(Event& event, const audio::PitchNote& note, const audio::PitchNo
                             - 100 * event.key - event.tuning) / 100;
         if (!std::isfinite(semis) || std::abs(semis) > 48)
             throw CaptureError{PitchMidiProblem::Edits, "extracted pitch curve exceeds native expression range"};
-        const auto windowFrame = analysis.reversed ? analysis.sourceEndFrame - frame : frame - analysis.sourceStartFrame;
-        event.curve.push_back({clock.atFrame(windowFrame), static_cast<float>(semis)});
+        event.curve.push_back({clock.atFrame(windowFrame(analysis, frame)), semis});
     };
     add(begin);
     for (const auto& point : note.curve) {
@@ -267,22 +308,54 @@ void buildCurve(Event& event, const audio::PitchNote& note, const audio::PitchNo
         const auto frame = edit.startFrame + static_cast<std::uint64_t>(std::llround(fraction * editedLength));
         if (frame > begin && frame < end) add(frame);
     }
-    // A Warp slope change inside a pitched note changes the rate of its bend.
-    if (clock.warped()) {
-        const auto windowBegin = analysis.reversed ? analysis.sourceEndFrame - end : begin - analysis.sourceStartFrame;
-        const auto windowEnd = analysis.reversed ? analysis.sourceEndFrame - begin : end - analysis.sourceStartFrame;
-        auto marker = std::upper_bound(clock.source.warp.begin(), clock.source.warp.end(), windowBegin,
-            [](auto frame, const auto& value) { return frame < static_cast<std::uint64_t>(value.sourceFrame); });
-        for (; marker != clock.source.warp.end() && static_cast<std::uint64_t>(marker->sourceFrame) < windowEnd; ++marker) {
-            cancellation(options.stop);
-            const auto frame = static_cast<std::uint64_t>(marker->sourceFrame);
-            add(analysis.reversed ? analysis.sourceEndFrame - frame : analysis.sourceStartFrame + frame);
-        }
-    }
+    addWarpEdges(analysis, begin, end, clock, options.stop, add);
     add(end);
-    std::stable_sort(event.curve.begin(), event.curve.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
-    event.curve.erase(std::unique(event.curve.begin(), event.curve.end(),
-        [](const auto& a, const auto& b) { return a.at == b.at; }), event.curve.end());
+    sortCurve(event.curve);
+}
+
+void buildVolume(Event& event, const audio::PitchNote& note, const audio::PitchNoteEdit& edit,
+                 const media::ClipPitchAnalysis& analysis, std::uint64_t begin, std::uint64_t end,
+                 const Clock& clock, const PitchMidiOptions& options, std::size_t remaining) {
+    constexpr std::size_t meterWindowsPerSecond = 200;
+    constexpr double minimumGain = 1e-6; // -120 dB, finite silence
+    constexpr double maximumGain = 4.0; // native per-note gain's host range
+    const auto frames = sourceSamples(note, options);
+    const auto window = std::max(std::size_t{1}, clock.rate / meterWindowsPerSecond);
+    const auto count = (frames.size() - 1) / window + 1;
+    if (count > remaining)
+        throw CaptureError{PitchMidiProblem::Edits, "source volume meter point budget exceeded"};
+    const double gain = std::numbers::sqrt2 * std::pow(10.0, edit.gainDb / 20);
+    std::vector<Event::Point> levels;
+    levels.reserve(count);
+    for (std::size_t first = 0; first < frames.size();) {
+        const auto size = std::min(window, frames.size() - first);
+        const auto level = rms(frames.subspan(first, size), options.stop) * gain;
+        levels.push_back({static_cast<std::int64_t>(first + size / 2), level});
+        first += size;
+    }
+
+    const auto sourceLength = static_cast<double>(frames.size());
+    const auto destinationLength = static_cast<double>(edit.endFrame - edit.startFrame);
+    const auto add = [&](std::uint64_t frame) {
+        if (event.volume.size() == remaining)
+            throw CaptureError{PitchMidiProblem::Edits, "mapped volume point budget exceeded"};
+        const auto fraction = static_cast<double>(frame - edit.startFrame) / destinationLength;
+        const auto amplitude = curveAt(levels, fraction * sourceLength);
+        const auto value = options.volumeMode == PitchMidiVolumeMode::NoteGain
+            ? 20 * std::log10(std::clamp(amplitude, minimumGain, maximumGain))
+            : std::min(amplitude, 1.0);
+        event.volume.push_back({clock.atFrame(windowFrame(analysis, frame)), value});
+    };
+    add(begin);
+    for (const auto& point : levels) {
+        cancellation(options.stop);
+        const auto fraction = static_cast<double>(point.at) / sourceLength;
+        const auto frame = edit.startFrame + static_cast<std::uint64_t>(std::llround(fraction * destinationLength));
+        if (frame > begin && frame < end) add(frame);
+    }
+    addWarpEdges(analysis, begin, end, clock, options.stop, add);
+    add(end);
+    sortCurve(event.volume);
 }
 
 std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const audio::PitchAnalysis& notes,
@@ -295,8 +368,12 @@ std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const 
         throw CaptureError{PitchMidiProblem::Edits, "invalid or duplicate source pitch note selection"};
     if (options.velocity == 0 || options.velocity > 127)
         throw CaptureError{PitchMidiProblem::Edits, "MIDI velocity must be 1 through 127"};
+    if (options.volumeMode == PitchMidiVolumeMode::ChannelController && options.volumeController >= 120)
+        throw CaptureError{PitchMidiProblem::Edits, "volume requires an ordinary controller from 0 through 119"};
+    if (options.volumeMode != PitchMidiVolumeMode::Velocity && options.velocitySource.empty())
+        throw CaptureError{PitchMidiProblem::Source, "continuous volume requires the verified full source"};
     if (!options.velocitySource.empty() && options.velocitySource.size() != analysis.source.frames)
-        throw CaptureError{PitchMidiProblem::Source, "dynamic velocity requires the verified full source"};
+        throw CaptureError{PitchMidiProblem::Source, "volume PCM must cover the verified full source"};
 
     // Transition addresses the immediately preceding destination note, which
     // can be unselected or originate at a later source index after a move.
@@ -333,7 +410,7 @@ std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const 
         const auto a = clock.atFrame(beginFrame), b = clock.atFrame(endFrame);
         if (a >= b) continue;
         Event event{a, b, key, velocityFor(note, edit, options),
-                    options.keepTuning ? static_cast<float>(adjustment) : 0.0f, {}};
+                    options.keepTuning ? static_cast<float>(adjustment) : 0.0f, {}, {}};
         if (options.includePitchCurve) {
             const auto prior = std::lower_bound(timeline.begin(), timeline.end(), edit.startFrame,
                 [](const auto& item, auto at) { return item.endFrame < at; });
@@ -343,42 +420,76 @@ std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const 
                 throw CaptureError{PitchMidiProblem::Edits, "source pitch curve point budget exceeded"};
             curvePoints += event.curve.size();
         }
+        if (options.volumeMode != PitchMidiVolumeMode::Velocity) {
+            buildVolume(event, note, edit, analysis, begin, end, clock, options, maxRecords - curvePoints);
+            curvePoints += event.volume.size();
+        }
         events.push_back(std::move(event));
     }
     std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.begin < b.begin; });
     return events;
 }
 
-float curveAt(std::span<const Event::Point> points, std::int64_t at) {
-    const auto after = std::upper_bound(points.begin(), points.end(), at,
-        [](auto value, const auto& point) { return value < point.at; });
-    if (after == points.begin()) return after->semis;
-    const auto before = std::prev(after);
-    if (after == points.end()) return before->semis;
-    const auto progress = static_cast<double>(at - before->at) / static_cast<double>(after->at - before->at);
-    return static_cast<float>(std::lerp(static_cast<double>(before->semis), static_cast<double>(after->semis), progress));
+template<class Add>
+void projectCurve(std::span<const Event::Point> points, const NoteRecord& note, std::int64_t begin,
+                  std::int64_t end, std::int64_t timeline, const Clock& clock, std::stop_token stop, const Add& add) {
+    add(0, curveAt(points, static_cast<double>(begin)));
+    auto point = std::upper_bound(points.begin(), points.end(), begin,
+        [](auto position, const auto& value) { return position < value.at; });
+    for (; point != points.end() && point->at < end; ++point) {
+        cancellation(stop);
+        const auto ticks = clock.relativeTicks(timeline + (point->at - begin)) - note.start_ticks;
+        if (ticks > 0 && ticks < note.dur_ticks) add(ticks, point->value);
+    }
+    add(note.dur_ticks, curveAt(points, static_cast<double>(end)));
 }
 
-PitchMidiProjection::PitchCurve projectCurve(const Event& event, const NoteRecord& note,
-    std::int64_t begin, std::int64_t end, std::int64_t timeline, const Clock& clock) {
-    PitchMidiProjection::PitchCurve curve{note.note_id, {}};
-    const auto add = [&curve](std::int64_t time, float value) {
+PitchMidiProjection::NoteCurve noteExpression(std::span<const Event::Point> points, const NoteRecord& note,
+    std::int64_t begin, std::int64_t end, std::int64_t timeline, const Clock& clock, std::stop_token stop,
+    std::size_t remaining) {
+    PitchMidiProjection::NoteCurve curve{note.note_id, {}};
+    const auto add = [&curve, remaining](std::int64_t time, double value) {
         ExpressionPoint point{};
         point.time_ticks = time;
-        point.value = value;
+        point.value = static_cast<float>(value);
         point.curve = static_cast<std::uint8_t>(Curve::Linear);
         if (!curve.points.empty() && curve.points.back().time_ticks == time) curve.points.back() = point;
-        else curve.points.push_back(point);
+        else {
+            if (curve.points.size() == remaining)
+                throw CaptureError{PitchMidiProblem::Edits, "extracted note expression point budget exceeded"};
+            curve.points.push_back(point);
+        }
     };
-    add(0, curveAt(event.curve, begin));
-    auto point = std::upper_bound(event.curve.begin(), event.curve.end(), begin,
-        [](auto position, const auto& value) { return position < value.at; });
-    for (; point != event.curve.end() && point->at < end; ++point) {
-        const auto ticks = clock.relativeTicks(timeline + (point->at - begin)) - note.start_ticks;
-        if (ticks > 0 && ticks < note.dur_ticks) add(ticks, point->semis);
-    }
-    add(note.dur_ticks, curveAt(event.curve, end));
+    projectCurve(points, note, begin, end, timeline, clock, stop, add);
     return curve;
+}
+
+void appendController(PitchMidiProjection& result, std::span<const Event::Point> source, const NoteRecord& note,
+                      std::int64_t begin, std::int64_t end, std::int64_t timeline, const Clock& clock,
+                      std::stop_token stop) {
+    auto& points = result.volumeCurve->points;
+    const auto add = [&points, &note, &result](std::int64_t time, double value) {
+        const bool release = time == note.dur_ticks;
+        AutomationPoint point{};
+        // ACTL's final point must be inside the half-open clip. Hold across
+        // rests so the next note's attack cannot affect this note's level.
+        point.time = note.start_ticks + (release ? time - 1 : time);
+        point.value = value;
+        point.curve = static_cast<std::uint8_t>(release ? Curve::Hold : Curve::Linear);
+        if (!points.empty() && points.back().time == point.time) {
+            if (release && note.dur_ticks == 1) points.back().curve = point.curve;
+            else {
+                point.point_id = points.back().point_id;
+                points.back() = point;
+            }
+        } else {
+            if (points.size() >= maxRecords - result.notes.size())
+                throw CaptureError{PitchMidiProblem::Edits, "extracted CC volume point budget exceeded"};
+            point.point_id = points.size() + 1;
+            points.push_back(point);
+        }
+    };
+    projectCurve(source, note, begin, end, timeline, clock, stop, add);
 }
 
 PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
@@ -393,7 +504,9 @@ PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
     const Clock clock(source, time, analysis.analysis.sampleRate,
                       analysis.sourceEndFrame - analysis.sourceStartFrame);
     const auto events = collectNotes(analysis, notes, edits, options, clock);
-    PitchMidiProjection result{clock.positionTicks, clock.lengthTicks, {}, {}};
+    PitchMidiProjection result{clock.positionTicks, clock.lengthTicks, {}, {}, {}, {}};
+    if (options.volumeMode == PitchMidiVolumeMode::ChannelController)
+        result.volumeCurve.emplace(PitchMidiProjection::ControllerCurve{options.volumeController, {}});
     std::size_t points = 0;
     const auto intersecting = [&events](std::int64_t begin) {
         return std::lower_bound(events.begin(), events.end(), begin,
@@ -410,7 +523,8 @@ PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
             const auto first = clock.relativeTicks(atTimeline);
             const auto last = clock.relativeTicks(offset + (clippedEnd - begin));
             if (last <= first) continue;
-            if (result.notes.size() == maxRecords)
+            if (result.notes.size() == maxRecords ||
+                (result.volumeCurve && result.notes.size() >= maxRecords - result.volumeCurve->points.size()))
                 throw CaptureError{PitchMidiProblem::Edits, "extracted note count exceeds the MIDI stream budget"};
             NoteRecord note{};
             note.note_id = result.notes.size() + 1;
@@ -423,11 +537,18 @@ PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
             note.probability = 10000;
             result.notes.push_back(note);
             if (!at->curve.empty()) {
-                auto expression = projectCurve(*at, note, clippedBegin, clippedEnd, atTimeline, clock);
-                if (expression.points.size() > maxRecords - points)
-                    throw CaptureError{PitchMidiProblem::Edits, "extracted pitch curve point budget exceeded"};
+                auto expression = noteExpression(at->curve, note, clippedBegin, clippedEnd, atTimeline,
+                                                 clock, options.stop, maxRecords - points);
                 points += expression.points.size();
                 result.pitchCurves.push_back(std::move(expression));
+            }
+            if (options.volumeMode == PitchMidiVolumeMode::NoteGain) {
+                auto expression = noteExpression(at->volume, note, clippedBegin, clippedEnd, atTimeline,
+                                                 clock, options.stop, maxRecords - points);
+                points += expression.points.size();
+                result.gainCurves.push_back(std::move(expression));
+            } else if (result.volumeCurve) {
+                appendController(result, at->volume, note, clippedBegin, clippedEnd, atTimeline, clock, options.stop);
             }
         }
     };
@@ -478,6 +599,11 @@ Payload binary(std::span<const std::byte> bytes) {
     return Payload::binary(std::move(image));
 }
 
+Payload controllerData(const PitchMidiProjection::ControllerCurve& curve) {
+    const auto bytes = writeStream<AutomationPoint>(FourCC::Controller, curve.points, 1, StreamFlags::SortedByTime);
+    return binary(bytes);
+}
+
 Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t track, std::int64_t clip,
                   std::int64_t stream, const std::string& title, RowIds& ids) {
     auto& db = store.db();
@@ -489,10 +615,21 @@ Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t tr
     for (const auto& child : childTables()) children[child.table] = Payload::array();
     children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams",
         {{"id", stream}, {"clip_id", clip}, {"stream_kind", "notes"}, {"data", binary(noteBytes)}})});
-    for (const auto& curve : midi.pitchCurves) {
-        const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression, curve.points, 1, StreamFlags::SortedByTime);
-        children["note_expression"].push_back({{"id", ids.next("note_expression")}, {"clip_id", clip},
-            {"note_id", curve.noteId}, {"dimension", static_cast<int>(ExpressionDim::Pitch)}, {"data", binary(bytes)}});
+    const auto expression = [&children, &ids, clip](std::span<const PitchMidiProjection::NoteCurve> curves,
+                                                    ExpressionDim dimension) {
+        for (const auto& curve : curves) {
+            const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression, curve.points, 1, StreamFlags::SortedByTime);
+            children["note_expression"].push_back({{"id", ids.next("note_expression")}, {"clip_id", clip},
+                {"note_id", curve.noteId}, {"dimension", static_cast<int>(dimension)}, {"data", binary(bytes)}});
+        }
+    };
+    expression(midi.pitchCurves, ExpressionDim::Pitch);
+    expression(midi.gainCurves, ExpressionDim::Gain);
+    if (midi.volumeCurve) {
+        children["event_streams"].push_back(edit::defaultRow(db, "event_streams",
+            {{"id", ids.next("event_streams")}, {"clip_id", clip}, {"stream_kind", "cc"},
+             {"channel", 0}, {"controller", midi.volumeCurve->controller},
+             {"data", controllerData(*midi.volumeCurve)}}));
     }
     return {{"id", clip}, {"row", row}, {"children", std::move(children)}, {"alias_links", Payload::array()}};
 }
@@ -569,12 +706,17 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
         {{"id", track}, {"kind", "midi"}, {"name", title},
          {"parent", parent ? Payload(*parent) : Payload(nullptr)}, {"index", index}},
         label, "track", track);
-    if (midi.pitchCurves.empty()) {
+    if (midi.pitchCurves.empty() && midi.gainCurves.empty()) {
         const auto bytes = writeStream<NoteRecord>(FourCC::Notes, midi.notes, 1, StreamFlags::SortedByTime);
+        auto controllers = Payload::array();
+        if (midi.volumeCurve) {
+            controllers.push_back({{"id", ids.next("event_streams")}, {"channel", 0},
+                {"controller", midi.volumeCurve->controller}, {"bytes", controllerData(*midi.volumeCurve)}});
+        }
         addRequest(requests, "capture.createMidi",
             {{"clip", {{"id", clip}, {"track", track}, {"kind", "midi"}, {"name", title},
                        {"pos", midi.positionTicks}, {"length", midi.lengthTicks}}},
-             {"controllers", Payload::array()}, {"notes", {{"id", stream}, {"bytes", binary(bytes)}}}},
+             {"controllers", std::move(controllers)}, {"notes", {{"id", stream}, {"bytes", binary(bytes)}}}},
             label, "clip", clip);
     } else {
         edit::RowEdits rows(store.db());

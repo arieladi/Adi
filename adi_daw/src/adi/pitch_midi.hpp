@@ -16,6 +16,7 @@
 namespace adi::clip_edit {
 
 enum class PitchMidiContent { EditedPitch, DetectedMelody };
+enum class PitchMidiVolumeMode { Velocity, NoteGain, ChannelController };
 
 struct PitchMidiOptions {
     PitchMidiContent content = PitchMidiContent::EditedPitch;
@@ -23,8 +24,8 @@ struct PitchMidiOptions {
     std::uint8_t velocity = 100;
     bool keepTuning = false;
     bool includePitchCurve = false;
-    // When supplied, a verified full-source mono PCM buffer allows dynamic
-    // velocity from each segment's RMS and authored segment gain.
+    // A verified full-source mono PCM buffer supplies RMS and authored gain to
+    // dynamic velocity or the selected continuous volume mode.
     std::span<const float> velocitySource;
     // Empty prepares a new MIDI track. The owner can identify a previous
     // extraction on a selected destination for explicit whole replacement.
@@ -32,6 +33,10 @@ struct PitchMidiOptions {
     std::optional<std::int64_t> destinationTrack;
     std::optional<std::int64_t> previousExtractionClip;
     std::stop_token stop;
+    // Both continuous modes keep the configured fixed attack velocity. An
+    // ordinary channel controller uses channel zero and a CC from 0 to 119.
+    PitchMidiVolumeMode volumeMode = PitchMidiVolumeMode::Velocity;
+    std::uint8_t volumeController = 7;
 };
 
 enum class PitchMidiProblem { None, Realtime, Cancelled, Source, Edits, Empty, Storage };
@@ -39,12 +44,21 @@ enum class PitchMidiProblem { None, Realtime, Cancelled, Source, Edits, Empty, S
 struct PitchMidiProjection {
     std::int64_t positionTicks = 0, lengthTicks = 0;
     std::vector<NoteRecord> notes;
-    struct PitchCurve {
+    struct NoteCurve {
         std::uint64_t noteId;
         std::vector<ExpressionPoint> points;
     };
+    using PitchCurve = NoteCurve;
     // Native AEXP pitch (semitones relative to the output key and tuning).
     std::vector<PitchCurve> pitchCurves;
+    // Native AEXP Gain (dB relative to a full-scale sine).
+    std::vector<NoteCurve> gainCurves;
+    struct ControllerCurve {
+        std::uint8_t controller;
+        std::vector<AutomationPoint> points;
+    };
+    // Native ACTL (channel zero, clip-relative ticks and normalized values).
+    std::optional<ControllerCurve> volumeCurve;
 };
 
 template<class Data>

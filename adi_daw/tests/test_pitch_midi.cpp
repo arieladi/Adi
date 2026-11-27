@@ -5,8 +5,10 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/warp_map.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/pitch_edit_store.hpp"
@@ -377,6 +379,124 @@ void durableGeometry() {
           "a reattached source ignores an older source's dormant authored geometry");
 }
 
+void amplitudeExtraction() {
+    Fixture f;
+    f.warp();
+    installPitchSchema(*f.store);
+    audio::PitchEditState state;
+    const std::array commands{audio::PitchEditCommand{1, audio::PitchSetGain{20 * std::log10(2.0)}},
+                              audio::PitchEditCommand{1, audio::PitchSetTiming{7200,16800}}};
+    if (audio::applyPitchEdits(f.analysis.analysis, state, commands) != audio::PitchEditError::None)
+        throw std::runtime_error("invalid amplitude fixture");
+    const auto authored = prepareClipPitchEdits(f.analysis, state);
+    if (!authored.request || !OpJournal(*f.store).commit(*authored.request).ok)
+        throw std::runtime_error("could not store segment gain");
+    auto& db = f.store->db();
+    const auto before = digestProject(*f.store).text;
+    const std::array<std::size_t, 1> selected{1};
+    PitchMidiOptions options;
+    options.selectedNotes = selected;
+    options.velocity = 97;
+    options.volumeMode = PitchMidiVolumeMode::NoteGain;
+    check(preparePitchMidi(*f.store, f.analysis, options).problem == PitchMidiProblem::Source,
+          "continuous volume requires source PCM");
+    std::vector<float> pcm(static_cast<std::size_t>(f.analysis.source.frames), 0.5f);
+    std::fill_n(pcm.begin() + 4800, 4800, 0.25f);
+    options.velocitySource = pcm;
+    const auto prepared = preparePitchMidi(*f.store, f.analysis, options);
+    check(prepared && prepared.data->projection.gainCurves.size() == 1 &&
+          prepared.data->projection.notes[0].vel_on == 97,
+          "per-note gain preserves the fixed attack velocity");
+    if (!prepared) return;
+    const auto placed = commitPitchMidi(*f.store, *prepared.data);
+    const auto clip = engine::readClipDetails(*f.store, prepared.data->midiClip, true, true);
+    const auto after = digestProject(*f.store).text;
+    check(placed.ok && clip.clip && clip.clip->notes.size() == 1 &&
+          clip.clip->notes[0].startTicks == quarter / 8 && clip.clip->notes[0].durationTicks == quarter / 2 &&
+          clip.clip->noteExpressions.curves.size() == 1, "authored timing and AEXP gain commit to a new MIDI track");
+    if (clip.clip && clip.clip->noteExpressions.curves.size() == 1) {
+        const auto& gain = clip.clip->noteExpressions.curves.front();
+        check(gain.dimension == static_cast<int>(ExpressionDim::Gain) && gain.points.size() > 2 &&
+              gain.points.front().time_ticks == 0 && gain.points.back().time_ticks == quarter / 2 &&
+              std::abs(gain.points.front().value + 3.0103f) < 0.001f &&
+              std::abs(gain.points.back().value - 3.0103f) < 0.001f,
+              "gain AEXP round-trips a measured six-dB source step plus authored gain");
+        engine::Event native;
+        native.type = engine::EventType::NoteExpression;
+        native.dim = static_cast<std::uint16_t>(ExpressionDim::Gain);
+        native.paramId = engine::kNativeNoteExpressionUnits;
+        native.value = gain.points.back().value;
+        engine::MpeOut host;
+        check(engine::noteExpressionOut(native, {}, host) &&
+              std::abs(host.plain - std::numbers::sqrt2) < 1e-6 &&
+              std::abs(host.value - std::numbers::sqrt2 / 4) < 1e-6,
+              "native note expression converts persisted dB to linear CLAP and normalized VST3 gain");
+    }
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == after &&
+          History(*f.store).undo().ok, "one undo and redo capture the new track's gain stream exactly");
+
+    options.volumeMode = PitchMidiVolumeMode::ChannelController;
+    options.volumeController = 121;
+    check(preparePitchMidi(*f.store, f.analysis, options).problem == PitchMidiProblem::Edits,
+          "channel mode messages are refused as volume controllers");
+    options.volumeController = 7;
+    const auto newController = preparePitchMidi(*f.store, f.analysis, options);
+    check(newController && commitPitchMidi(*f.store, *newController.data).ok &&
+          controllers::readLanes(*f.store, newController.data->midiClip).lanes.size() == 1 &&
+          History(*f.store).undo().ok && digestProject(*f.store).text == before,
+          "new-track native Capture journals volume and undo in the same batch");
+    f.store->db().exec("UPDATE tracks SET kind='midi' WHERE id=2");
+    options.destinationTrack = 2;
+    options.volumeController = 11;
+    const auto controllerBefore = digestProject(*f.store).text;
+    const auto controller = preparePitchMidi(*f.store, f.analysis, options);
+    check(controller && controller.data->projection.volumeCurve &&
+          controller.data->projection.notes[0].vel_on == 97, "ACTL mode also preserves the fixed attack");
+    if (!controller) return;
+    const auto controllerCommit = commitPitchMidi(*f.store, *controller.data);
+    const auto lanes = controllers::readLanes(*f.store, controller.data->midiClip);
+    check(controllerCommit.ok && lanes.ok && lanes.lanes.size() == 1 &&
+          lanes.lanes[0].controller == 11 && lanes.lanes[0].channel == 0 &&
+          lanes.lanes[0].points.size() > 2 &&
+          lanes.lanes[0].points.front().timeTicks == quarter / 8 &&
+          std::abs(lanes.lanes[0].points.front().value - std::numbers::sqrt2 / 2) < 1e-6 &&
+          lanes.lanes[0].points.back().value == 1,
+          "ACTL round-trips selected CC and clamps normalized gain at unity");
+    const auto controllerAfter = digestProject(*f.store).text;
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == controllerBefore &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == controllerAfter &&
+          History(*f.store).undo().ok && db.execAndGet("SELECT count(*) FROM tracks").getInt() == 2,
+          "selected-track ACTL is one undo step and creates no extra tracks");
+
+    f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=11");
+    f.analysis.reversed = true;
+    options.volumeMode = PitchMidiVolumeMode::NoteGain;
+    const auto reversed = projectPitchMidi(*f.store, f.analysis, state, options);
+    check(reversed && reversed.data->gainCurves.front().points.front().value > 3 &&
+          reversed.data->gainCurves.front().points.back().value < -3,
+          "volume observations reverse with their edited segment");
+
+    f.store->db().exec("UPDATE audio_clips SET reverse=0 WHERE clip_id=11;"
+        "UPDATE clips SET length_ticks=23063040,loop_enabled=1,"
+        "loop_start_ticks=5765760,loop_len_ticks=5765760 WHERE id=11");
+    f.analysis.reversed = false;
+    options.volumeMode = PitchMidiVolumeMode::ChannelController;
+    const std::array<std::size_t, 1> loopNote{2};
+    options.selectedNotes = loopNote;
+    const auto looped = projectPitchMidi(*f.store, f.analysis, state, options);
+    check(looped && looped.data->notes.size() == 3 && looped.data->volumeCurve &&
+          looped.data->volumeCurve->points.back().time == 4 * quarter - 1 &&
+          std::any_of(looped.data->volumeCurve->points.begin(), looped.data->volumeCurve->points.end(),
+              [](const auto& point) { return point.time == 3 * quarter; }),
+          "loop repetition places CC attacks and keeps the final point inside the clip");
+    std::stop_source stopped;
+    stopped.request_stop();
+    options.stop = stopped.get_token();
+    check(projectPitchMidi(*f.store, f.analysis, state, options).problem == PitchMidiProblem::Cancelled,
+          "pre-cancelled volume projection returns no prepared data");
+}
+
 void callback() {
     Fixture f;
     unsigned allocations = callbackAllocations.load();
@@ -393,7 +513,10 @@ void callback() {
 }
 
 int main() {
-    try { projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); durableGeometry(); callback(); }
+    try {
+        projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); durableGeometry();
+        amplitudeExtraction(); callback();
+    }
     catch (const std::exception& error) { check(false, error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
