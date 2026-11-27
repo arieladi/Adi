@@ -2267,7 +2267,11 @@ bool Session::applyPerformedTempoAt(const Store& store, std::optional<double> bp
     std::vector<rows::TempoEvent> candidate(playbackModel_.tempo.begin(), split);
     if (!candidate.empty() && split != playbackModel_.tempo.end() && candidate.back().curve != 0)
         candidate.back().rampSpan = tempoSpan(candidate.back(), *split);
-    if (candidate.empty() && tick > 0) candidate.push_back({0, 120, 0, 0});
+    if (candidate.empty() && tick > 0) {
+        // Before the first stored point the shared clock holds its BPM.
+        const auto firstBpm = TempoMap::fromRows(playbackModel_.tempo).bpmAt(0);
+        candidate.push_back({0, firstBpm, 0, 0});
+    }
     if (bpm) candidate.push_back({tick, *bpm, 0, 0});
     else appendAuthoredTempo(candidate, model_.tempo, tick);
     if (candidate.size() > 4096) {

@@ -129,8 +129,18 @@ timeline range. The streaming R3 path supports time ratios and effective pitch
 scales from 0.5 to 2. The prepared path still serves unsupported configurations,
 with a clip diagnostic when a ramp falls outside the streaming domain.
 
-`WarpClipPlayer::launchAt` prepares a value on the driver from a quantized
-project tick and the clip's Legato phase. Rendering and page demand use that
-placement with the current shared clock. The Session launcher can bind this
-seam to its scene and slot transitions. Measurements for ADI's generated
-playback and export fixtures and the Live readings owed are in the seat report.
+`WarpClipPlayer::launchAt` projects a stored Session slot from its quantized
+launch tick and source phase. Resident and paged Beats, Texture and Re-Pitch
+use the effective clock from the persisted slot graph. The scheduler's Legato
+forecast warms the upcoming source pages. A cold page miss emits silence and
+counts an underrun while the worker fills the request.
+
+Supported fixed-clock R3 slots use aligned worker PCM. The track reports the
+maximum source delay across its Arrangement clips and Session media banks.
+The driver delays Session PCM and its Arrangement replacement mask together.
+A scheduled R3 Legato tempo scene can switch when both banks have primed the
+target's full bounded playback window. A larger candidate that cannot supply
+that phase leaves the current scene and clock playing.
+
+The stretcher seat report records the measurements for playback, export and
+scheduled scenes, along with the outstanding Live reference readings.
