@@ -14009,6 +14009,8 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
         check(false, "read the Sample Editor's source");
         return;
     }
+    // Older media rows and formats without a known bit depth leave this column null.
+    imported.media.payload.at("row")["bit_depth"] = nullptr;
     auto placed = dropAudio(*document->view().current(), track, 4 * beat, "Eight Beats", imported);
     if (!placed.refusal.empty() || !document->ops().submit(std::move(placed.ops)).ok || !document->synchronise()) {
         check(false, "place the Sample Editor's source on the track");
@@ -14083,9 +14085,9 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
     settings.set("files.sampleEditorOpens", oldMode, {}, why);
     const auto readings = panel.readings();
     check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
-              readings.sampleProperties == "48000 Hz   16 bit   1 ch" &&
+              readings.sampleProperties == juce::String::fromUTF8("48000 Hz   — bit   1 ch") &&
               panel.headerArea().contains(panel.sampleNameBox()) && !panel.sampleNameBox().isEmpty(),
-          "the Sample Editor header gives the source filename and format independently of the clip name");
+          "the Sample Editor header shows the source and its available properties when bit depth is unknown");
     const auto sourcePath = std::filesystem::weakly_canonical(wav);
     const auto sameName = sourcePath.parent_path() / "another-folder" / sourcePath.filename();
     const auto revealSample = [&] {

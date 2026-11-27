@@ -4650,7 +4650,7 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
                 for (const auto &layer : others_)
                     if ((layer.media ? (*layer.media).*member : std::nullopt) != value)
                         return juce::String("*");
-                return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String("—")) + unit;
+                return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String::fromUTF8("—")) + unit;
             };
             out.sampleProperties = measure(&engine::AudioMediaIdentity::sampleRate, " Hz") + "   " +
                                    measure(&engine::AudioMediaIdentity::bitDepth, " bit") + "   " +
