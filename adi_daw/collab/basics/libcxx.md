@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 01:11 IST — basics/integrate-2 `f02bd171caca744ea91898f6c4a8d733488f2e3a`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered CTest suites passed.
+
+Win reported the same rescaling diagnostic on macOS. The landing stack carries the equivalent two-cast fix in [`7c59f39e`](https://github.com/arieladi/Adi/commit/7c59f39e536edfe980b6df584edf44cf1646fb59).
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 00:59 IST — basics/integrate-2 `f02bd171caca744ea91898f6c4a8d733488f2e3a`, Apple-width check
 
 With `-mlong-double-64`, Clang 20 and libc++ rejected two implicit conversions in `adi_daw/src/adi/clip_commands.cpp`. The new sample rate at `509:73` and the old sample rate at `509:84` are both `int64_t`. The other 21 registered translation units mentioning `long double` passed. The full Linux x86-64 build is in progress.
