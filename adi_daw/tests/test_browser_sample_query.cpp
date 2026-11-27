@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/library/browser_sample_publication.hpp"
 #include "adi/library/browser_sample_query.hpp"
 #include "adi/library/index.hpp"
 #include "adi/library/sample_analysis_catalog.hpp"
@@ -13,6 +14,7 @@
 #endif
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -393,6 +395,114 @@ void combinedSamples() {
           swaps[1].file == hat && swaps[1].contentHash == hatRecord->contentHash,
           "ranked swaps carry exact decoded content hashes and include only the first identical file");
 }
+
+void publicationGenerations() {
+    test::TempDirectory temp{"browser_sample_query", "publication"};
+    const auto indexedRoot = temp.path() / "indexed";
+    fs::create_directory(indexedRoot);
+    const auto indexed = indexedRoot / "Indexed.wav";
+    const auto indexedAlias = indexedRoot / "Indexed Alias.wav";
+    const auto unindexed = temp.path() / "Unindexed.wav";
+    writeSample(indexed, 81);
+    fs::copy_file(indexed, indexedAlias);
+    writeSample(unindexed, 97);
+    const auto paths = [&] {
+        Listing files;
+        files.files = {{"Indexed Alias.wav", indexedAlias, {}}, {"Indexed.wav", indexed, {}},
+                       {"Pending.wav", temp.path() / "Pending.wav", {}}, {"Unindexed.wav", unindexed, {}}};
+        return std::make_shared<const FilenameIndex>(std::move(files));
+    };
+
+    std::string error;
+    auto index = Index::open(temp.path() / "library.sqlite", error);
+    Volume volume;
+    MarkerVolumeProvider provider;
+    if (!index || !provider.identify(indexedRoot, volume, error) || !index->scan(volume).ok)
+        throw std::runtime_error("could not index publication fixture: " + error);
+    index->waitIdle();
+    const auto indexedEntries = index->entries();
+    if (indexedEntries.size() != 2 || indexedEntries[0].hash.empty() || indexedEntries[0].hash != indexedEntries[1].hash)
+        throw std::runtime_error("fixture index did not hash its source");
+    std::vector<BrowserIndexedSample> observations;
+    for (const auto& entry : indexedEntries)
+        observations.push_back({indexedRoot / entry.relativePath, entry.hash, entry.size, entry.modifiedNs});
+    const auto& entry = indexedEntries[1];
+    const std::array<std::size_t, 4> shown{3, 1, 0, 99};
+    media::AnalysisCache cache(temp.path() / "analyzed");
+    audio::DecodeCache decode(temp.path() / "decoded");
+    SampleAnalysisCatalog catalog(cache, decode, index.get());
+    BrowserSamplePublication<FilenameIndex> publisher(catalog);
+    check(publisher.replace(1, paths(), observations, shown), "aligned jobs install for the first shown generation");
+    check(publisher.prioritize(1, shown), "visible row indices reprioritize the installed job keys");
+    auto pending = publisher.snapshot(1);
+    BrowserSampleQuery<FilenameIndex>::Results result;
+    if (!pending) throw std::runtime_error("pending filename publication is missing");
+    pending->query(WordQuery("Pending"), nullptr, {}, result);
+    check(result.matches.size() == 1 && result.matches[0].row == 2 && !pending->analysis(2),
+          "files without measurements retain their aligned filename row");
+    check(catalog.worker().stats().pending == 2,
+          "exact indexed observations deduplicate equal hashes, and pending filenames enqueue no work");
+    catalog.worker().resume();
+    check(catalog.worker().waitIdle(), "the indexed and unindexed rows finish");
+    const auto original = publisher.snapshot(1);
+    if (!original || !original->analysis(0) || !original->analysis(1) || !original->analysis(3))
+        throw std::runtime_error("first publication did not attach both measurements");
+    check(original->analysis(1)->contentHash == entry.hash && original->analysis(0) == original->analysis(1) &&
+          publisher.snapshot(1) == original && !pending->analysis(1) && original->browser()->listing().files.size() == 4,
+          "a current indexed record attaches without mutating the retained pending publication");
+
+    // Both jobs race a same-size replacement. The indexed job can see a warm
+    // cache hit while the unindexed job reads the new bytes under an old key.
+    catalog.worker().pause();
+    check(publisher.replace(2, paths(), observations, shown), "the second listing keeps the captured file revisions");
+    const auto indexedStamp = fs::last_write_time(indexed);
+    const auto unindexedStamp = fs::last_write_time(unindexed);
+    const auto replacement = temp.path() / "replacement.wav";
+    writeSample(replacement, 6700);
+    writeSample(unindexed, 7800);
+    fs::last_write_time(replacement, indexedStamp);
+    fs::remove(indexed);
+    fs::rename(replacement, indexed);
+    fs::last_write_time(unindexed, unindexedStamp + std::chrono::seconds(1));
+    check(fs::file_size(indexed) == entry.size && fs::file_size(unindexed) == entry.size,
+          "the raced source edits change revision and keep the same WAV length");
+    catalog.worker().resume();
+    check(catalog.worker().waitIdle(), "measurement worker gets through the raced requests");
+    const auto raced = publisher.snapshot(2);
+    check(raced && raced->analysis(0) && !raced->analysis(1) && !raced->analysis(3),
+          "attach-time checks reject warm old-hash data and new bytes produced for an old unindexed key");
+    check(!publisher.snapshot(1) && !publisher.prioritize(1, shown) && !publisher.replace(1, paths(), observations, shown),
+          "late refresh, priority and replacement cannot revive a superseded generation");
+
+    const auto rescanned = index->scan(volume);
+    const auto afterScan = index->entries();
+    check(rescanned.ok && afterScan.size() == 2 && afterScan[1].hash == entry.hash,
+          "the unchanged size and indexed timestamp can still carry the previous content hash");
+    catalog.worker().pause();
+    check(publisher.replace(3, paths(), observations, shown), "a rescan captures the exact new source revisions");
+    const auto beforeResume = publisher.snapshot(3);
+    check(beforeResume && beforeResume->analysis(0) && !beforeResume->analysis(1) && !beforeResume->analysis(3),
+          "a changed revision starts pending instead of borrowing an old effective record");
+    catalog.worker().resume();
+    check(catalog.worker().waitIdle(), "the changed observations can be measured under their current revisions");
+    const auto revised = publisher.snapshot(3);
+    check(revised && revised->analysis(0) && revised->analysis(1) && revised->analysis(3) &&
+          revised->analysis(1)->contentHash != entry.hash && revised->analysis(1)->descriptors.brightnessHz > 6000.f &&
+          revised->analysis(3)->contentHash != original->analysis(3)->contentHash &&
+          original->analysis(3)->descriptors.brightnessHz < 300.f,
+          "the corrected publication recomputes both changed sounds and retains old snapshot measurements separately");
+
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    check(!publisher.replace(4, paths(), observations, shown, cancelled.get_token()) && publisher.snapshot(3) == revised,
+          "a cancelled rescan cannot replace the current catalogue generation");
+    bool refused = false;
+    {
+        audio::CallbackScope callback;
+        refused = !publisher.snapshot(3) && !publisher.prioritize(3, shown);
+    }
+    check(refused, "audio callbacks cannot refresh or reprioritize a library publication");
+}
 } // namespace
 
 int main() {
@@ -400,6 +510,7 @@ int main() {
         searchableReadOnlyTags();
         measuredFits();
         combinedSamples();
+        publicationGenerations();
     } catch (const std::exception& error) {
         check(false, error.what());
     }

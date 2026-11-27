@@ -79,3 +79,20 @@ The worker passes each decoded block to both the descriptor analysis and the
 fixed-rate Warp analyser. ALIB and AWTM publish under the same verified
 source hash. A warm job reuses both. A timing configuration change keeps
 the existing library descriptors and computes the requested timing once.
+
+## Browser analysis publication
+
+Use `BrowserSamplePublication` on the listing owner worker. Give `replace`
+the immutable Browser sample listing, its increasing generation, optional
+indexed size and timestamp observations, and the shown row offsets. It
+captures native file revisions before installing the catalogue queue. The
+shown rows go first once the replacement commits. `prioritize` can move new
+shown rows ahead while the generation is active. Existing pause state holds.
+
+`snapshot(generation)` returns an immutable listing and aligned catalogue
+results with filename matches available while measurements are pending.
+Measurements may attach only if the captured native revision still matches.
+A file that changes before its measurement attaches stays pending until a
+new listing. Earlier immutable snapshots remain valid for their callers.
+Use the same snapshot in both search callers. For All, `queryCombined`
+joins the shared and Current Project results before ranking and limiting.
