@@ -31,3 +31,9 @@ B. Should Stop Agent end ordinary user-started jobs that contain no agent? The r
 - Connect `takeConsentQuestions` and `answerConsent` to the local consent prompt. The question carries destination, capability, kinds and byte counts. The window owns its wording and declined state. Drive progress and Cancel from the built-in runs’ JobBook owner `adi-agent`. Drive the fixed Stop command and re-arm from `stopAgent(surface)`, `agentStopped` and `rearmAgent`.
 - `browser.catalog` reads the live Browser’s device, plug-in and preset lists. Similar and matching samples still need DF-C7 and its sample-index inputs. View filtering needs the DF-R2 reservations and a session filter owner shared by Arrangement and Mixer.
 - Use the agreed Browser sheet, ADR-0262 and `collab/window/design/proposals/browser-2.png`, for the AI width, proposal card and floating review, and the floating search entry from Mix View. The chain leaves the label, pane and review window for that work.
+
+## Verification after item 11
+
+- `d68937dc5` ties approval, proposal replay and the built-in run's tools to the exact open project. A divergent Save a Copy at the same UUID and head could previously receive the original's proposal. The regression reproduced it against the old build and now refuses it. Reopening a file creates a fresh attachment and needs a fresh proposal.
+- The host saves the user's own request, allows one successful changeset per run, counts identical reads at the returned head, and refuses tool calls after the answer. Cancel is checked at the job's answer publication point. The new host regressions failed on the old boundary and pass on the corrected build.
+- Provider requests use a direct connection to the consented origin. Two Node 24 regressions previously reached an ambient proxy for loopback configuration. The locked helper passes all 15 tests on Node 22.19.0 and 24.22.3. The corrected Linux Werror build passes 16 focused CTest suites and all five validators.
