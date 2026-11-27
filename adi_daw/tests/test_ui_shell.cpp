@@ -5387,15 +5387,30 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
     check(!root.capturing() && clipsOn() == 0 && root.error().find("Nothing imported") != std::string::npos,
           "cancelled, nothing lands and the Status Bar says so");
     check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 2, "a new drop reads again");
-    if (pending) std::exchange(pending, nullptr)({capture()}, "");
+    if (pending) std::exchange(pending, nullptr)({{capture(), {}}}, "");
     check(!root.capturing() && clipsOn() == 1, "read, the clip lands as the plain drop always did");
+    {
+        // SC-389: one bad file among the dropped: the others land, one step, and the bad one is named.
+        const auto clipsBefore = clipsOn();
+        check(root.dropAudioFiles({{wav.string(), "Long"}, {(dir / "Broken.wav").string(), "Broken"}}, audioTrack, 0, false) &&
+                  asked.size() == 3 && asked.back().size() == 2,
+              "SC-389: two files are read together");
+        if (pending) std::exchange(pending, nullptr)({{capture(), {}}, {std::nullopt, "it is not audio ADI can read"}}, "");
+        check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos &&
+                  root.error().find("not audio") != std::string::npos && root.error().find("other file came in") != std::string::npos,
+              ("SC-389: the good file lands and the bad one is named, with why: " + root.error()).c_str());
+        check(root.dropAudioFiles({{(dir / "Broken.wav").string(), "Broken"}}, audioTrack, 0, false), "SC-389: a lone bad file");
+        if (pending) std::exchange(pending, nullptr)({{std::nullopt, "it is not audio ADI can read"}}, "");
+        check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos,
+              "SC-389: alone, it is refused, named");
+    }
     const auto before = clipsOn();
-    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 3, "a third drop");
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 5, "a third drop");
     auto stale = capture();
     check(root.submitEdit("track.rename", {{"id", audioTrack}, {"name", "Renamed meanwhile"}}, "Rename Track"),
           "the project changes while the file is read");
     root.frame();
-    if (pending) std::exchange(pending, nullptr)({stale}, "");
+    if (pending) std::exchange(pending, nullptr)({{stale, {}}}, "");
     check(clipsOn() == before && root.error().find("changed while the files were read") != std::string::npos,
           "a capture older than the project is refused, not landed with ids another row may hold");
     settings.set("editing.importOptions", wasOptions, {}, why);

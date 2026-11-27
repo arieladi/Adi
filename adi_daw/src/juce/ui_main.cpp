@@ -1175,7 +1175,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto now = juce::Time::currentTimeMillis() * 1000;
             import_ = std::thread([this, paths = std::move(paths), finished = std::move(done), installed, asker,
                                    project, now, running = importing_, stop = importStop_.get_token()] {
-                std::vector<AudioImport> captured;
+                std::vector<AdiRootComponent::CapturedFile> captured;
                 std::string why;
                 std::int64_t nextId = 0;
                 for (std::size_t i = 0; i < paths.size() && why.empty(); ++i) {
@@ -1192,11 +1192,18 @@ class AdiApplication final : public juce::JUCEApplication,
                     });
                     AudioImport one;
                     one.firstFreeId = nextId;
-                    if (!ProjectDocument::captureImport(project, paths[i], now, one, why, stop))
-                        break;
+                    std::string bad;
+                    if (!ProjectDocument::captureImport(project, paths[i], now, one, bad, stop)) {
+                        if (stop.stop_requested()) {
+                            why = "Cancelled.";
+                            break;
+                        }
+                        captured.push_back({std::nullopt, bad}); // SC-389: named, and the others go on
+                        continue;
+                    }
                     if (!one.media.opType.empty())
                         nextId = std::max(nextId, one.mediaId + 1);
-                    captured.push_back(std::move(one));
+                    captured.push_back({std::move(one), {}});
                 }
                 running->store(false);
                 juce::MessageManager::callAsync([this, finished, installed, asker, captured = std::move(captured), why] {

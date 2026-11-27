@@ -3554,7 +3554,7 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         const auto generation = view_.generation();
         const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
         const bool started = captureAudio(unique, [safe, files, track, pos, separate, unique, generation](
-                                                      std::vector<AudioImport> captured, const std::string &why) {
+                                                      std::vector<CapturedFile> captured, const std::string &why) {
             if (!safe)
                 return;
             safe->capturing_ = false;
@@ -3567,16 +3567,24 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
                 return;
             }
             std::vector<DroppedAudio> dropped;
+            std::vector<std::pair<std::string, std::string>> failed;
             for (std::size_t i = 0; i < files.size(); ++i) {
                 const auto at = static_cast<std::size_t>(
                     std::find(unique.begin(), unique.end(), files[i].first) - unique.begin());
-                DroppedAudio file{files[i].second, captured[at]};
-                if (std::find_if(files.begin(), files.begin() + static_cast<std::ptrdiff_t>(i),
-                                 [&](const auto &f) { return f.first == files[i].first; }) != files.begin() + static_cast<std::ptrdiff_t>(i))
+                const bool again = std::find_if(files.begin(), files.begin() + static_cast<std::ptrdiff_t>(i),
+                                                [&](const auto &f) { return f.first == files[i].first; }) !=
+                                   files.begin() + static_cast<std::ptrdiff_t>(i);
+                if (!captured[at].import) {
+                    if (!again)
+                        failed.emplace_back(files[i].second, captured[at].why);
+                    continue; // SC-389: the others still come in
+                }
+                DroppedAudio file{files[i].second, *captured[at].import};
+                if (again)
                     file.import.media = {}; // a file dropped twice is captured, and imported, once
                 dropped.push_back(std::move(file));
             }
-            (void)safe->landPlainDrop(files, track, pos, separate, std::move(dropped));
+            (void)safe->landWhatRead(files, track, pos, separate, std::move(dropped), failed);
         });
         if (!started)
             return fail("The last drop is still being read.");
@@ -3588,9 +3596,13 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     // Each file captured before the batch lands: a new pool row takes an id past the ones the files
     // before it took, and a file dropped twice is captured once.
     std::vector<DroppedAudio> dropped;
+    std::vector<std::pair<std::string, std::string>> failed;
+    std::vector<std::string> bad;
     std::int64_t nextId = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
         const auto &[path, name] = files[i];
+        if (std::find(bad.begin(), bad.end(), path) != bad.end())
+            continue; // SC-389: a bad file dropped twice is named once
         DroppedAudio file{name, {}};
         std::size_t seen = 0;
         while (seen < i && files[seen].first != path)
@@ -3601,14 +3613,45 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         } else {
             file.import.firstFreeId = nextId;
             std::string why;
-            if (!importAudio(path, file.import, why))
-                return fail(why.empty() ? "The file could not be imported." : why);
+            if (!importAudio(path, file.import, why)) {
+                // SC-389: one bad file never stops the others; it is named when they have landed.
+                failed.emplace_back(name, why.empty() ? std::string("it could not be read") : why);
+                bad.push_back(path);
+                continue;
+            }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
         }
         dropped.push_back(std::move(file));
     }
-    return landPlainDrop(files, track, pos, separate, std::move(dropped));
+    return landWhatRead(files, track, pos, separate, std::move(dropped), failed);
+}
+bool AdiRootComponent::landWhatRead(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                                    std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped,
+                                    const std::vector<std::pair<std::string, std::string>> &failed) {
+    // SC-389: what was read lands, one undo step; what was not is named, with why.
+    const auto said = [&failed](std::size_t landed) {
+        std::string line;
+        if (failed.size() == 1)
+            line = "\u201c" + failed[0].first + "\u201d could not be imported: " + failed[0].second;
+        else {
+            line = std::to_string(failed.size()) + " files could not be imported:";
+            for (std::size_t i = 0; i < failed.size(); ++i)
+                line += (i ? "; " : " ") + ("\u201c" + failed[i].first + "\u201d (" + failed[i].second + ")");
+        }
+        if (landed > 0)
+            line += landed == 1 ? std::string(". The other file came in.")
+                                : ". The other " + std::to_string(landed) + " came in.";
+        return line;
+    };
+    if (dropped.empty())
+        return failed.empty() ? fail("Drop an audio file.") : fail(said(0));
+    const auto landed = dropped.size();
+    if (!landPlainDrop(files, track, pos, separate, std::move(dropped)))
+        return false;
+    if (!failed.empty())
+        say(said(landed));
+    return true;
 }
 bool AdiRootComponent::landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files,
                                      std::int64_t track, std::int64_t pos, bool separate,

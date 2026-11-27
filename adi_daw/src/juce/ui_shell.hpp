@@ -450,7 +450,13 @@ class AdiRootComponent final : public juce::Component,
     // app's import worker): `done` comes on the message thread with each file's capture in order, or with
     // why not ("Cancelled." after cancelCapture). False when it could not start. Set, a plain drop uses it
     // and the window stays alive; unset, `importAudio` reads them in place.
-    using CaptureDone = std::function<void(std::vector<AudioImport> captured, const std::string &why)>;
+    // One result per file asked, in order: its capture, or why it could not be imported (SC-389: one bad
+    // file never stops the others). `why` alone says the whole read stopped ("Cancelled.").
+    struct CapturedFile {
+        std::optional<AudioImport> import;
+        std::string why;
+    };
+    using CaptureDone = std::function<void(std::vector<CapturedFile> captured, const std::string &why)>;
     std::function<bool(std::vector<std::string> utf8Paths, CaptureDone done)> captureAudio;
     std::function<void()> cancelCapture;
     // Whether a plain drop's files are still being read (Esc cancels).
@@ -1017,6 +1023,9 @@ class AdiRootComponent final : public juce::Component,
     std::optional<PendingImport> importing_;
     bool landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
                        std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped);
+    bool landWhatRead(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                      std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped,
+                      const std::vector<std::pair<std::string, std::string>> &failed);
     bool capturing_ = false; // SC-377
     bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
                    bool separate);
