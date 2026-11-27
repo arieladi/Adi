@@ -75,11 +75,11 @@ struct Block {
         io.frames = frames;
         io.numOut = 2;
     }
-    void render(SamplePreview &preview, double rate = 48000., double gain = 1.) {
+    void render(SamplePreview &preview, double rate = 48000., double gain = 1., int firstChannel = 0) {
         pcm[0].fill(0);
         pcm[1].fill(0);
         const audio::CallbackScope scope;
-        preview.mix(io, rate, 0, gain);
+        preview.mix(io, rate, firstChannel, gain);
     }
 };
 void wav(const std::filesystem::path &path, float first, float second, std::size_t frames) {
@@ -120,6 +120,18 @@ void native(const std::filesystem::path &folder) {
         return block.pcm[0][0] != 0.f;
     }) && block.pcm[0][0] == .25f && block.pcm[1][0] == -.125f,
           "native WAV audition reaches the standalone first pair");
+    preview.play(longFile);
+    block.io.outputChannels.enabled = 0xc0; // only physical 7/8
+    block.render(preview);
+    check(!SamplePreview::canOutput(block.io, 0) && preview.status().position == 0. &&
+              block.pcm[0][0] == 0.f && block.pcm[1][0] == 0.f,
+          "SC-431: preview for missing 1/2 cannot leak into the physical 7/8 buffers");
+    check(await([&] {
+        block.render(preview, 48000., 1., 6);
+        return block.pcm[0][0] != 0.f;
+    }) && block.pcm[0][0] == .25f && block.pcm[1][0] == -.125f,
+          "SC-431: preview named for physical 7/8 uses the granted packed pair");
+    block.io.outputChannels = {};
 
     preview.play(shortFile, .5);
     std::size_t heard = 0;

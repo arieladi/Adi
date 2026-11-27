@@ -44,7 +44,7 @@ class SamplePreview {
 
     [[nodiscard]] bool active() const noexcept;
     [[nodiscard]] static bool canOutput(const AudioIo &, int firstChannel) noexcept;
-    // Audio thread. Adds to a complete stereo pair, never to inputs or a graph
+    // Audio thread. Adds to a complete physical stereo pair, never to inputs or a graph
     // tap. No allocation, locks, decoding or filesystem access here.
     void mix(const AudioIo &, double deviceRate, int firstChannel, double gain) noexcept;
 

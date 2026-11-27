@@ -1715,10 +1715,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
-        // Cue Out's stereo pairs (MX-08): as many outputs as the device has open, to the highest.
-        root->outputChannels = [this] {
-            const auto *device = manager_.getCurrentAudioDevice();
-            return device != nullptr ? device->getActiveOutputChannels().getHighestBit() + 1 : 0;
+        // The same granted channel map the bridge passes to the engine's Cue bus.
+        root->physicalOutputChannels = [this] {
+            return bridge_ ? bridge_->physicalOutputChannels() : std::nullopt;
         };
         root->externalAudioInputs = [this] { return document_->externalAudioInputs(); };
         root->externalInputMeter = document_->externalInputMeter();

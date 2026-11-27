@@ -1126,16 +1126,24 @@ bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
            juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
 }
 void MixerStrip::cueOutMenu() {
-    // The device's outputs in stereo pairs, 1/2 first (Main's); the one in use ticked (MX-08).
-    const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
+    // The physical pairs enabled on the device, with the saved pair ticked (MX-08).
+    const auto &channels = panel_.root.physicalOutputChannels;
+    const auto outputs = channels ? channels() : std::nullopt;
     const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
     juce::PopupMenu m;
-    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
+    for (int pair = 0; pair < engine::OutputChannelMap::maximumChannels; pair += 2) {
+        if (outputs ? outputs->packedPair(pair) < 0 : pair != 0)
+            continue;
         m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
                   [safe = SafePointer<MixerStrip>(this), pair] {
                       if (safe)
                           safe->panel_.root.setCueOutput(pair);
                   });
+    }
+    if (m.getNumItems() == 0) {
+        panel_.root.say("Enable a stereo output pair in Settings > Audio.");
+        return;
+    }
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {

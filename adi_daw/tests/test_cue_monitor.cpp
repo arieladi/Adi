@@ -170,7 +170,7 @@ void samplePreview() {
     f.main.value = f.reference.value = 0;
     f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
     f.session.setSamplePreview(&preview);
-    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("cue.setVolume", {{"db", -6.020599913279624}}) && f.load(),
+    check(f.op("cue.setOutput", {{"first", 6}}) && f.op("cue.setVolume", {{"db", -6.020599913279624}}) && f.load(),
           "sample preview uses the song's Cue Out and Cue Volume");
     const auto source = f.temp.path() / "audition.wav";
     std::array<float, 8192> pcm;
@@ -188,6 +188,7 @@ void samplePreview() {
     const float* inputs[]{input.data()};
     block.io.in = inputs;
     block.io.numIn = 1;
+    block.io.outputChannels.enabled = 0x3c; // physical 3/4 and 5/6
     auto process = [&] {
         f.process(block);
         block.io.streamTimeSamples += block.io.frames;
@@ -201,6 +202,10 @@ void samplePreview() {
     check(f.session.startRecording(take, why), "start a concurrent audio take");
     f.session.transport().play();
     preview.play(source);
+    process();
+    check(preview.status().position == 0. && block.wide[2].back() == 0. && block.wide[3].back() == 0.,
+          "SC-431: a song's preview stays silent while its physical Cue Out is missing");
+    block.io.outputChannels.enabled = 0xcc; // physical 3/4 and 7/8
     using namespace std::chrono_literals;
     const auto waitUntil = [](auto ready) {
         const auto end = std::chrono::steady_clock::now() + 5s;
@@ -216,7 +221,7 @@ void samplePreview() {
         return near(block.wide[2].back(), .25) && near(block.wide[3].back(), -.125);
     });
     check(heard && block.wide[0].back() == 0 && block.wide[1].back() == 0,
-          "sample preview plays at half gain on Cue 3/4 and is silent on Main 1/2");
+          "SC-431: sample preview plays at half gain on physical Cue 7/8 and leaves Main silent");
     f.session.recording().stop();
     process();
     std::optional<AudioRecordingResult> result;
@@ -232,6 +237,33 @@ void samplePreview() {
                   std::all_of(recorded.begin(), recorded.end(), [](float sample) { return sample == .125f; }),
               "the take contains the input samples only while audition is audible");
     }
+}
+void sparseCueOutput() {
+    const auto render = [](int first, std::uint64_t enabled) {
+        Fixture fixture;
+        fixture.main.value = fixture.reference.value = 0.;
+        check(fixture.op("cue.setOutput", {{"first", first}}) &&
+                  fixture.op("transport.setMetronome", {{"on", true}}) && fixture.load(),
+              "SC-431: load the metronome with a physical Cue Out");
+        Block block(512, std::popcount(enabled));
+        block.io.outputChannels.enabled = enabled;
+        fixture.session.transport().play();
+        fixture.process(block);
+        std::array<bool, 4> audible{};
+        for (std::size_t channel = 0; channel < audible.size(); ++channel)
+            audible[channel] = std::ranges::any_of(block.wide[channel], [](double value) { return std::abs(value) > 0.01; });
+        return audible;
+    };
+    constexpr std::uint64_t physical1and2and7and8 = 0xc3;
+    constexpr std::uint64_t physical1and2and3and7 = 0x47;
+    check(render(2, physical1and2and7and8) == std::array{false, false, false, false},
+          "SC-431: a missing Cue Out cannot leak the metronome into the next enabled pair");
+    check(render(2, physical1and2and3and7) == std::array{false, false, false, false},
+          "SC-431: one connected half of a missing stereo pair stays silent");
+    check(render(6, physical1and2and7and8) == std::array{false, false, true, true},
+          "SC-431: Cue Out 7/8 reaches its packed buffer positions past holes");
+    check(render(6, 0xc1) == std::array{false, true, true, false},
+          "SC-431: a single earlier output shifts the packed pair by one channel");
 }
 void metronomeOptions() {
     Fixture f;
@@ -654,5 +686,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

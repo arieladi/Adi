@@ -2,6 +2,7 @@
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
 #include "../src/juce/builtin_host.hpp"
+#include "../src/juce/device_bridge.hpp"
 #include "../src/juce/ui_diagnostic_log.hpp"
 #include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
@@ -21782,6 +21783,58 @@ void heldOutputKeepsInput(const std::filesystem::path &dir) {
           "the free input is open, inputs 1/2 on, though the output is not");
     check(why.contains("Settings"), "and it says where to choose another output");
 }
+void missingCueOutputStatus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "missing-cue.adi", true, {}, error);
+    check(document != nullptr, "SC-431: open a project for the Cue Out notice");
+    if (!document)
+        return;
+    OpRequest cue;
+    cue.opType = "cue.setOutput";
+    cue.payload = {{"first", 2}};
+    check(document->ops().submit(cue).ok && document->synchronise(), "SC-431: the opened project keeps Cue Out 3/4");
+    device::DeviceBridge bridge(*document);
+    ListedAudioType::Device driver("Sparse outputs", {}, false);
+    driver.outs = 8;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "missing-cue");
+    root.setSize(1000, 650);
+    root.physicalOutputChannels = [&] { return bridge.physicalOutputChannels(); };
+    const auto configure = [&](bool third, bool fourth) {
+        juce::BigInteger enabled;
+        enabled.setRange(0, 2, true);
+        enabled.setBit(2, third);
+        enabled.setBit(3, fourth);
+        enabled.setRange(6, 2, true);
+        driver.open({}, enabled, 48000., 256);
+        bridge.audioDeviceAboutToStart(&driver);
+        root.frame();
+    };
+    const juce::String notice = "Cue Out 3/4 unavailable. Metronome and sample preview are silent.";
+    check(!root.status.messageText().contains("Cue Out"), "SC-431: no notice before the device has granted outputs");
+    configure(false, false);
+    check(root.status.messageText() == notice && root.status.getTooltip() == notice && root.current()->cue.firstOutputChannel == 2,
+          "SC-431: the opening frame names the absent pair and both silent functions without changing the song");
+    root.say("An unrelated project message.");
+    configure(true, false);
+    root.frame();
+    check(root.error() == "An unrelated project message." &&
+              root.status.messageText() == "An unrelated project message.  " + notice,
+          "SC-431: a half-present pair remains missing and the notice preserves other status messages");
+    configure(true, true);
+    check(root.status.messageText() == "An unrelated project message." && root.status.getTooltip().isEmpty(),
+          "SC-431: reconnecting the pair clears only its notice");
+    configure(false, false);
+    root.afterEdit = [&] { document->synchronise(); };
+    check(root.setCueOutput(6), "SC-431: the saved route can choose the available physical 7/8 pair");
+    root.frame();
+    check(!root.status.messageText().contains("Cue Out"), "SC-431: switching the song to the enabled pair removes the notice");
+    const auto bounds = root.status.messageField().translated(root.status.getX(), root.status.getY());
+    std::printf("SC-431 Status Bar message field %d,%d %dx%d\n", bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight());
+    check(bounds == juce::Rectangle<int>(35, 620, 581, 22),
+          "SC-431: the notice shares the existing Status Bar message rectangle at 1000 by 650");
+    bridge.audioDeviceStopped();
+}
 // Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
 // (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
 // application's 20 ms timer then reads its root pointer, which must be null by then: it read the
@@ -25747,6 +25800,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
+    trace("missingCueOutputStatus", [&] { missingCueOutputStatus(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
