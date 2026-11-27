@@ -295,11 +295,11 @@ void modelAndRefusals() {
 }
 void workerFailure() {
     Fixture f;
-    f.store->db().exec("UPDATE audio_clips SET warp_mode='re-pitch',transpose_semis=1");
+    f.store->db().exec("UPDATE audio_clips SET warp_mode='complexPro',formant_shift=48");
     f.load(Precision::Float32);
     check(!f.session.clips()->waitForWarp(),"offline Warp wait refuses a failed render");
     const auto problems=f.session.clips()->decodeProblems();
-    check(problems.size()==1 && problems.front().find("clips#7: Re-Pitch derives pitch")!=std::string::npos,
+    check(problems.size()==1 && problems.front().find("clips#7: invalid warp source, rate, pitch or anchor count")!=std::string::npos,
           "the Warp worker keeps the failed clip's diagnostic");
 }
 void replacementSourceInvalidatesWarp() {
