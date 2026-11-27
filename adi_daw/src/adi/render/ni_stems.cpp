@@ -133,6 +133,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         job.encoding.dither = audio::WavDither::None;
         Control renderControl = control;
         renderControl.publicationHooks = {}; // internal WAVs are private staging outputs
+        renderControl.wavProgress = {};
         renderControl.progress = [&](JobId current, std::uint64_t done, std::uint64_t total) {
             if (total > 999990ULL * 1024)
                 throw std::runtime_error("NI export exceeds AAC packet limit");

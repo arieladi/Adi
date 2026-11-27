@@ -130,3 +130,9 @@
 29057 Arm Selected Tracks: C
 29058 Volume, Pan and Meters: 
 29059 Switch Clip and Device Views: Shift+Tab, F12
+29060 Arrangement Record (Alternate Start): Shift+F9
+29061 Computer MIDI Keyboard: M
+29062 Import MIDI File...: 
+29063 Export MIDI Clip...: Cmd+Shift+E
+29064 About ADI: 
+29065 Import Audio File...: 

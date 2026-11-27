@@ -4,11 +4,11 @@
 #include "adi/library/volume.hpp"
 #include "adi/media/media_ops.hpp"
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <map>
 #include <set>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,6 +42,37 @@ struct LibraryListing {
     std::vector<LibraryFile> samples; // by name, case-insensitive
     std::string error;                // the first folder that could not be read, and why
 };
+// Provision a new default User Library once. An existing library belongs to
+// the user, who may move or remove any of its initial folders.
+inline bool provisionDefaultUserLibrary(const std::filesystem::path& root, std::string& error) {
+    namespace fs = std::filesystem;
+    error.clear();
+    std::error_code status;
+    if (!fs::create_directories(root, status)) {
+        if (!status) return true;
+        error = "The User Library could not be created: " + status.message();
+        return false;
+    }
+    std::vector<fs::path> created;
+    for (const auto* name : {"Clips", "Defaults", "Grooves", "Presets", "Samples"}) {
+        const auto folder = root / name;
+        if (fs::create_directory(folder, status))
+            created.push_back(folder);
+        if (status) {
+            error = std::string("The User Library's ") + name + " folder could not be created: " + status.message();
+            // Leave anything another owner put here. Only undo empty directories we created.
+            const auto removeDirectory = [&status](const fs::path& path) {
+                if (fs::is_directory(fs::symlink_status(path, status)))
+                    (void)fs::remove(path, status);
+            };
+            for (auto it = created.rbegin(); it != created.rend(); ++it)
+                removeDirectory(*it);
+            removeDirectory(root);
+            return false;
+        }
+    }
+    return true;
+}
 // The extensions the engine's decoders read (adi/audio/decode.hpp's formats).
 inline bool isAudioFile(const std::filesystem::path &path) {
     auto ext = media::pathUtf8(path.extension());
@@ -53,16 +84,15 @@ inline bool isAudioFile(const std::filesystem::path &path) {
 }
 // Registers and scans each folder, then lists the index's present files under them, each file once
 // (a folder inside another lists through the outer one). A folder that cannot be registered or
-// scanned is left out and named in `error`; the others list. `stop`, when it reads true between two
-// folders, ends the scan early: what was scanned so far is listed. An index that throws is an error,
-// never an exception out of here.
+// scanned is left out and named in `error`; the others list. A stopped scan ends early, leaving
+// the index's last complete scan of that folder intact.
 inline LibraryListing scanLibrary(library::Index &index, const std::vector<LibraryFolder> &folders,
-                                  library::VolumeIdentityProvider &volumes, const std::atomic<bool> *stop = nullptr) {
+                                  library::VolumeIdentityProvider &volumes, std::stop_token stop = {}) {
     LibraryListing out;
     try {
         std::map<std::string, std::size_t> byVolume;
         for (const auto &folder : folders) {
-            if (stop != nullptr && stop->load())
+            if (stop.stop_requested())
                 break;
             if (folder.root.empty())
                 continue;
@@ -75,7 +105,9 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
             }
             if (byVolume.contains(volume.id))
                 continue; // the same folder named twice
-            if (const auto scanned = index.scan(volume); !scanned.ok) {
+            if (const auto scanned = index.scan(volume, {}, stop); !scanned.ok) {
+                if (scanned.cancelled)
+                    break;
                 if (out.error.empty())
                     out.error = folder.name + " could not be scanned: " + scanned.error;
                 continue;

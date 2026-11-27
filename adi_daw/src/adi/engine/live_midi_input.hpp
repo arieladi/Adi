@@ -2,6 +2,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/midi_memory.hpp"
 #include "adi/engine/midi_monitoring.hpp"
 
 #include <array>
@@ -43,11 +44,39 @@ public:
         std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         mutable NodeId slot = kInvalidNode;
     };
+    struct History {
+        History(std::int64_t identity, std::int64_t track, std::uint32_t rate)
+            : memory(identity, track, rate, NoteChannelBase::Zero, 16384), inputId(identity), sampleRate(rate) {}
+        MidiMemory memory;
+        const std::int64_t inputId;
+        const std::uint32_t sampleRate;
+        std::uint64_t inputEpoch = 0; // audio driver only
+        std::uint64_t consumed = 0; // owner only, first uncaptured serial
+    };
+    struct PreviewVoice {
+        Event off;
+        std::int64_t track = 0;
+        std::uint64_t epoch = 0, earliestRelease = 0, releaseAt = 0;
+    };
+    struct PreviewRoute {
+        const Node* node = nullptr;
+        PreviewVoice* voice = nullptr;
+        std::int64_t track = 0;
+        mutable NodeId slot = kInvalidNode;
+    };
 
     bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
+                std::span<const std::shared_ptr<History>>,
                 const Transport&, MidiInputCapture*, RecordingPunch, const RecordingPunchWindow&) noexcept;
+    [[nodiscard]] std::uint64_t historyRevision() const noexcept { return historyRevision_.load(); }
+    // A separate owner-to-driver queue keeps audition out of Track input and recording.
+    bool preview(const PreviewRoute&, int key, int velocity, bool held) noexcept;
+    void stopPreview() noexcept;
+    void clearPreviewDevice() noexcept; // owner, driver quiescent
+    void renderPreview(const GraphHost::RenderBlock&, std::int32_t frames,
+                       std::span<const PreviewRoute>, double sampleRate) noexcept;
 
 private:
     struct Timed {
@@ -60,9 +89,25 @@ private:
     std::array<Timed, capacity> ring_{};
     std::atomic<std::size_t> read_{0}, written_{0};
     std::atomic<std::uint64_t> epoch_{1};
+    std::atomic<std::uint64_t> historyRevision_{0};
     std::uint64_t renderedEpoch_ = 1;
     std::uint64_t generation_ = 0;
     std::uint64_t voiceSerial_ = 0;
+
+    struct PreviewCommand {
+        const Node* node = nullptr; // null is a release request
+        std::int64_t track = 0;
+        std::uint64_t epoch = 0;
+        int key = 0, velocity = 0;
+        bool held = false;
+    };
+    bool pushPreview(PreviewCommand) noexcept;
+    static constexpr std::size_t previewCapacity = 128;
+    std::array<PreviewCommand, previewCapacity> previewRing_{};
+    std::atomic<std::size_t> previewRead_{0}, previewWritten_{0};
+    std::atomic<std::uint64_t> previewEpoch_{1};
+    std::uint64_t previewGeneration_ = 0, previewClock_ = 0;
+    PreviewVoice* activePreview_ = nullptr;
 
     void deliver(const GraphHost::RenderBlock&, const Route&, const Event&) noexcept;
     static void release(const GraphHost::RenderBlock&, const Route&, std::int32_t frame) noexcept;

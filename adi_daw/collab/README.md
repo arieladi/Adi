@@ -349,6 +349,7 @@ subject, say so in your log instead of writing it twice.
 | 0260 | win | `win/adr-0260` | the Jam: three templates, a Mark command with a riff list, rule-made grooves, Make Session after the Foundry, backing to the Cue output | used |
 | 0261 | win | `win/adr-0261-browser-ai` | the Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, the plug-in server carried whole | used |
 | 0262 | win | `win/adr-0262-sheet` | the Browser's second sheet and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, four buttons | used |
+| 0263 | win | `win/adr-0263-collab` | working together at different times: Undo that reverses, a heartbeat for presence, tempo as mine or theirs, a shared folder studied beside the bucket, eleven refinements of the collision design | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
