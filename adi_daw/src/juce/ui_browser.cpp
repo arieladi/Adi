@@ -331,9 +331,8 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     ready_ = ready;
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
-    sidebar_.resize(baseEntries_);
-    auto addFolder = sidebar_.back();
-    sidebar_.pop_back();
+    auto addFolder = std::move(sidebar_.back());
+    sidebar_.resize(baseEntries_ - 1);
     for (auto &e : sidebar_)
         if (e.name == "User Library" && !e.heading)
             e.place.clear();

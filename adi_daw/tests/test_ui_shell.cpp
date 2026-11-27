@@ -11850,7 +11850,7 @@ void browserStartupLabel(AppCommands &commands, const std::filesystem::path &dir
                   browser.sidebar()[static_cast<std::size_t>(browser.selected())].place == "browser-startup-place",
               "SC-121: Open restores the remembered Place as soon as the listing contains it");
         browser.setListing({});
-        check(label(browser) == "All" && !browser.rows().empty(),
+        check(label(browser) == "All" && !browser.rows().empty() && browser.sidebar().back().name == "Add Folder...",
               "SC-121: a label that is no longer shown falls back to All");
         check(prefs.set("browser.lastLabel", "label:AI", {}, error), "SC-121: simulate an unavailable saved label");
         browser.restoreLabel(prefs);
