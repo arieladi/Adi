@@ -1135,7 +1135,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return document_->pluginStateWarning();
             report(document_->error());
             return std::nullopt;
-        }, [this] { quit(); });
+        }, [] { juce::JUCEApplicationBase::quit(); });
         if (!warning)
             return;
         const auto options = juce::MessageBoxOptions()
