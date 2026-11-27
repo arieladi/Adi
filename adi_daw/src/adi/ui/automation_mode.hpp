@@ -194,8 +194,6 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
     if (devices != nullptr) {
         for (const auto &d : *devices) {
             if (d.track != track) continue;
-            if (d.activatorAvailable)
-                out.push_back(deviceActivatorTarget(d));
             const auto &parameters = d.declarations();
             const auto touched = d.pluginTouch
                 ? std::find_if(parameters.begin(), parameters.end(), [&](const auto &p) { return p.id == d.pluginTouch->parameter; })
@@ -205,6 +203,8 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
                     target->lastTouched = true;
                     out.push_back(std::move(*target));
                 }
+            if (d.activatorAvailable)
+                out.push_back(deviceActivatorTarget(d));
             for (auto p = parameters.begin(); p != parameters.end(); ++p)
                 if (p != touched)
                     if (auto target = deviceTarget(d, *p))
