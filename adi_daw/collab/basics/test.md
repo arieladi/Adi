@@ -16,6 +16,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-201 | `basics/test-chain` at `afceb2556` | Pitch, cents and the supported Warp controls are already integrated. Clip and engine seats. | The peerless Clip View, Warp actions and real audio playback suites checked the existing controls and renderer. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-435 | `basics/test-chain` at `a07084ccc` | Resize Main and pinned Returns from the top edge with the bottom held. Arrangement and mixer seats. | The headless fixture moved the Main header and Return mixer hit zones and measured their anchored bounds. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-436 | `basics/test-chain` at `51d7e02c3` | Update lane, header and mixer together throughout the drag. Arrangement and mixer seats. | Peerless divider pixels and actual strip bounds changed before release, including when pinned growth recycles the mixer slots. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-434 | `basics/test-chain` at `6684a5b50` | Offer all 70 track colour slots using the ADR-0211 fallback palette. Arrangement seat. | The display-free fixture painted and hit-tested all 70 slots, refused spacer clicks, and checked saved colour and Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -103,6 +104,14 @@ In the 1440×900 group fixture, the dragged row begins at lane-local y80. The fo
 
 The secondary 1200×720 fixture has a 345 px lane body and three pinned 48 px rows. An upward 72 px Return drag moves its top from lane-local y201 to y129, increases its height to 120 px, and leaves Main at y297. A regular mixer strip leaves view as the pinned foot grows. The test checks the active mixer component keeps the Return ID and follows the new geometry before mouse-up.
 
+### SC-434 · Track colour chooser
+
+The palette goes from a single row of 14 swatches to five rows of 14. The component grows from 246 × 22 px to 246 × 90 px. Swatches remain 14 × 14 px on a 17 px pitch, with the first at `(4,4)` and the last at `(225,72)`. A display-free software paint and hit test visited all 70 entries and six spacer or exterior points. The shell regression checks assignment beyond the former row and Undo.
+
+ADR-0211 d3 specifies repeating the 14 tracked swatches until the approved colours are available. The complete measured table is cited under the first Live 12 checkpoint in `collab/win.md`. It was recorded in the private measurement folder. The 70 addresses are usable, and exact RGB parity remains pending that table.
+
 ## For the director
 
 SC-441. Retest ordinary Play on the Mac with the same project and device. If the click is silent, record the Cue Out pair, Cue Volume and Click While Recording setting. Keep the selected Cue route while checking those settings.
+
+SC-434. Please supply the measured 70-colour table cited in collab/win.md. I recommend using that table to replace the temporary modulo-fourteen palette in the existing 70 slots.
