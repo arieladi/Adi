@@ -31,6 +31,10 @@
 #include <tuple>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #ifndef ADI_SCHEMA_HISTORY_DIR
 #error "ADI_SCHEMA_HISTORY_DIR must name docs/format/history"
 #endif
@@ -152,6 +156,7 @@ void testUpgradeEachMinor() {
         adi::test::TempDirectory temp("migrate", ("up" + std::to_string(minor)).c_str());
         const auto p = buildOld(temp.path(), minor);
         const auto fresh = freshObjects(temp.path());
+        fs::path backupPath;
         check(userVersion(p) == 1000 + minor, v + ": the fixture really is " + v);
 
         StoreError e = StoreError::Ok;
@@ -160,6 +165,16 @@ void testUpgradeEachMinor() {
             check(s != nullptr && e == StoreError::Ok, v + ": opens for writing");
             if (!s) continue;
             check(s->upgradedFromMinor() == minor, v + ": reports what it upgraded from");
+            backupPath = s->upgradeBackupPath();
+            check(!backupPath.empty() && backupPath.parent_path() == p.parent_path() && fs::is_regular_file(backupPath),
+                  v + ": reports a safety copy beside the source");
+            if (!backupPath.empty() && fs::is_regular_file(backupPath)) {
+                SQLite::Database original(backupPath.string(), SQLite::OPEN_READONLY);
+                check(original.execAndGet("PRAGMA user_version").getInt() == 1000 + minor &&
+                          original.execAndGet("SELECT name FROM tracks WHERE id=1").getString() == "Keys" &&
+                          original.execAndGet("PRAGMA quick_check").getString() == "ok",
+                      v + ": the copy holds the original version and data");
+            }
             check(s->schemaMinor() == kSchemaMinor, v + ": now reports the current minor");
             check(s->db().execAndGet("SELECT count(*) FROM clip_warp_fade_domains").getInt() == 0,
                   v + ": migration creates no retained Warp fades for existing clips");
@@ -187,8 +202,9 @@ void testUpgradeEachMinor() {
         }
         {
             auto s = Store::open(p, e);
-            check(s && !s->upgradedFromMinor().has_value(),
-                  v + ": the next open has nothing to upgrade");
+            check(s && !s->upgradedFromMinor().has_value() && s->upgradeBackupPath().empty() &&
+                      !backupPath.empty() && fs::is_regular_file(backupPath),
+                  v + ": the next open leaves the original safety copy in place");
         }
     }
 }
@@ -340,6 +356,43 @@ void testProjectMigrationRefusesDataLoss() {
     }
 }
 
+void testUpgradeCopiesCommittedWal() {
+    section("the safety copy includes a change committed to the WAL");
+    adi::test::TempDirectory temp("migrate", "upgrade-wal");
+    const auto p = buildOld(temp.path(), 8);
+    SQLite::Database prior(p.string(), SQLite::OPEN_READWRITE);
+    check(prior.execAndGet("PRAGMA journal_mode=WAL").getString() == "wal", "the old writer enters WAL mode");
+    prior.exec("PRAGMA wal_autocheckpoint=0");
+    prior.exec("UPDATE tracks SET name='Uncheckpointed Keys' WHERE id=1");
+    StoreError error{};
+    const auto upgraded = Store::open(p, error);
+    check(upgraded && error == StoreError::Ok && !upgraded->upgradeBackupPath().empty(),
+          "writable open migrates after publishing the safety copy");
+    if (!upgraded || upgraded->upgradeBackupPath().empty())
+        return;
+    SQLite::Database original(upgraded->upgradeBackupPath().string(), SQLite::OPEN_READONLY);
+    check(original.execAndGet("PRAGMA user_version").getInt() == 1008 &&
+              original.execAndGet("SELECT name FROM tracks WHERE id=1").getString() == "Uncheckpointed Keys" &&
+              original.execAndGet("PRAGMA journal_mode").getString() == "delete",
+          "a standalone old-format copy keeps committed data from the WAL");
+}
+
+#ifndef _WIN32
+void testUpgradeRequiresSafetyCopy() {
+    if (geteuid() == 0) return; // Root can write to the fixture regardless of the mode.
+    section("an unwritable directory prevents upgrading the source");
+    adi::test::TempDirectory temp("migrate", "upgrade-protected");
+    const auto p = buildOld(temp.path(), 8);
+    const auto before = readFile(p);
+    fs::permissions(temp.path(), fs::perms::owner_write, fs::perm_options::remove);
+    StoreError error{};
+    const auto result = Store::open(p, error);
+    fs::permissions(temp.path(), fs::perms::owner_write, fs::perm_options::add);
+    check(!result && error == StoreError::MigrationBackupFailed, "open explains why it cannot make a safety copy");
+    check(readFile(p) == before, "the original project stays byte-for-byte unchanged");
+}
+#endif
+
 // --- how it runs -------------------------------------------------------------------
 
 std::vector<std::string> g_trace;
@@ -377,7 +430,7 @@ void testOrder() {
     long lastCreate = -1;
     for (std::size_t i = 0; i < g_trace.size(); ++i)
         if (g_trace[i].rfind("CREATE", 0) == 0) lastCreate = static_cast<long>(i);
-    const long version = at("PRAGMA user_version");
+    const long version = at("PRAGMA user_version =");
     const long meta = at("UPDATE adi_meta");
     check(version > lastCreate && version > meta && lastCreate >= 0,
           "user_version is set after every CREATE and the adi_meta update (at " +
@@ -397,6 +450,10 @@ int runAll() {
     testFailureLeavesTheOldFile();
     testProjectDefaultMigration();
     testProjectMigrationRefusesDataLoss();
+    testUpgradeCopiesCommittedWal();
+#ifndef _WIN32
+    testUpgradeRequiresSafetyCopy();
+#endif
     testOrder();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);

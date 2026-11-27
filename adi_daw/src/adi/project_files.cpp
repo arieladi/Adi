@@ -550,6 +550,25 @@ std::string StoreFileSave::closeReplacedProject() {
     return folded ? std::string{} : "old project is still in use; its WAL could not be folded";
 }
 
+fs::path Store::copyBeforeMigration(SQLite::Database& source, int fromMinor, std::int64_t now,
+                                    const std::shared_ptr<media::ProjectFileLease>& sourceLease) {
+    // The migration connection holds the writer lock. Read the committed
+    // image, including pages in a WAL, without using the writer as backup source.
+    const auto folder = media::projectFolder(source);
+    const auto backupPath = folder / ("Before upgrade from 1." + std::to_string(fromMinor) + "-" +
+                                      std::to_string(now) + ".adi");
+    SQLite::Database reader(sqlite3_db_filename(source.getHandle(), "main"), SQLite::OPEN_READONLY);
+    const auto copied = writeFileCopy(backupPath, folder, sourceLease,
+        kSchemaMajor, StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+            SQLite::Backup backup(destination, reader);
+            if (backup.executeStep() != SQLITE_DONE)
+                throw std::runtime_error("pre-upgrade database snapshot was incomplete");
+        });
+    if (!copied.ok || !copied.durable)
+        throw std::runtime_error("could not publish a durable safety copy");
+    return backupPath;
+}
+
 StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCollision collision) const {
     auto result=saveCopyImpl(output,collision);
     return {result.ok,std::move(result.error),std::move(result.warning)};

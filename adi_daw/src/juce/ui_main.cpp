@@ -2046,8 +2046,14 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
-        if (const auto notice = synchronizedProjectNotice(document_->store()); !notice.empty())
-            root_->say(withWarning(root_->error(), notice));
+        auto openNotice = synchronizedProjectNotice(document_->store());
+        if (const auto from = document_->store().upgradedFromMinor()) {
+            const auto name = media::pathUtf8(document_->store().upgradeBackupPath().filename());
+            openNotice = withWarning("Project upgraded from 1." + std::to_string(*from) +
+                                     ". The original version was saved as " + name + ".", openNotice);
+        }
+        if (!openNotice.empty())
+            root_->say(withWarning(root_->error(), openNotice));
         return true;
     }
     // SC-320 (ADR-0258 d16): the project opened with its plug-ins held off because one brought ADI down

@@ -222,7 +222,9 @@ std::vector<std::string> tablesAddedAfter(int fromMinor) {
     return out;
 }
 
-bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
+namespace {
+bool migrateSchema(SQLite::Database& db, int fromMinor, std::string& error,
+                   const std::function<void()>& beforeUpgrade = {}) {
     const auto& steps = migrationSteps();
     // The table must cover every minor exactly once, in order; a gap would
     // leave a file claiming a version whose objects it lacks.
@@ -243,7 +245,14 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
 
     try {
         const auto& objects = currentSchemaObjects();
-        SQLite::Transaction txn(db);
+        db.setBusyTimeout(5000);
+        SQLite::Transaction txn(db, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto version = db.execAndGet("PRAGMA user_version").getInt();
+        // Another opener can finish the migration while we acquire the writer lock.
+        if (version == kUserVersion) return true;
+        if (version != kSchemaMajor * 1000 + fromMinor)
+            throw std::runtime_error("project version changed before upgrade");
+        if (beforeUpgrade) beforeUpgrade();
         for (const auto& step : steps) {
             if (step.toMinor <= fromMinor) continue;
             for (const auto& name : step.objects) {
@@ -291,6 +300,12 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
     }
 }
 
+} // namespace
+
+bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
+    return migrateSchema(db, fromMinor, error);
+}
+
 const char* toString(StoreError e) {
     switch (e) {
         case StoreError::Ok:            return "ok";
@@ -301,6 +316,8 @@ const char* toString(StoreError e) {
         case StoreError::SchemaTooNew:  return "schema is newer than this build; opened read-only";
         case StoreError::SchemaCorrupt: return "schema present but unreadable";
         case StoreError::SqlError:      return "sql error";
+        case StoreError::MigrationBackupFailed:
+            return "could not save a safety copy before upgrade. The project was left unchanged.";
         case StoreError::MigrationFailed:
             return "an older 1.x file could not be upgraded; it was left unchanged";
         case StoreError::SyncJournalUnavailable:
@@ -612,15 +629,22 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     // place readers are protected, rather than a guard in every reader.
     // A newer minor is never touched (SPEC §11): `minor < kSchemaMinor` only.
     std::optional<int> upgradedFrom;
+    std::filesystem::path upgradeBackup;
     int openedMinor = minor;
     if (major == kSchemaMajor && minor < kSchemaMinor) {
         if (!effectiveReadOnly) {
             std::string why;
-            if (!migrateToCurrent(*db, minor, why)) {
-                err = StoreError::MigrationFailed;
+            bool copying = false;
+            if (!migrateSchema(*db, minor, why, [&] {
+                copying = true;
+                upgradeBackup = copyBeforeMigration(*db, minor, nowUtcMicros(), lease);
+                copying = false;
+            })) {
+                err = copying ? StoreError::MigrationBackupFailed : StoreError::MigrationFailed;
                 return nullptr;
             }
-            upgradedFrom = minor;
+            if (!upgradeBackup.empty())
+                upgradedFrom = minor;
             openedMinor = kSchemaMinor;
         } else {
             try {
@@ -642,6 +666,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     store->major_ = major;
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
+    store->upgradeBackup_ = std::move(upgradeBackup);
     if (!store->applySessionPragmas()) {
         err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
         return nullptr;

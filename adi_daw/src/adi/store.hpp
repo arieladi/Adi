@@ -56,6 +56,7 @@ enum class StoreError {
     SqlError,
     MigrationFailed, // an older 1.x file could not be upgraded; it is unchanged (ADR-0144)
     SyncJournalUnavailable, // the writable connection could not leave WAL safely
+    MigrationBackupFailed, // the safety copy could not be published, so no upgrade ran
 };
 
 const char* toString(StoreError);
@@ -216,6 +217,7 @@ public:
     /// The minor the file had before this open upgraded it; nullopt when no
     /// upgrade happened (ADR-0144).
     [[nodiscard]] std::optional<int> upgradedFromMinor() const { return upgradedFrom_; }
+    [[nodiscard]] const std::filesystem::path& upgradeBackupPath() const { return upgradeBackup_; }
 
     [[nodiscard]] SQLite::Database& db() { return *db_; }
     [[nodiscard]] const SQLite::Database& db() const { return *db_; }
@@ -280,6 +282,8 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
+    static std::filesystem::path copyBeforeMigration(SQLite::Database&, int fromMinor, std::int64_t now,
+                                                      const std::shared_ptr<media::ProjectFileLease>&);
     friend class StoreFileSave;
     CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
     static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
@@ -309,6 +313,7 @@ private:
     mutable std::string lastError_;
     std::string clientId_;
     std::string clientLabel_;
+    std::filesystem::path upgradeBackup_;
 };
 
 // --- upgrading an older 1.x file (ADR-0144, SPEC §11) -------------------------
