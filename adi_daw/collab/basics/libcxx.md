@@ -6,6 +6,10 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026, 23:50 IST — libcxx/seats/server-chain `5cce04174ef3834163f3bd66ece335cb10440c13`
+
+The fixed Server branch built with Clang 20, libc++, Pd and the strict flags. All 290 headless suites passed, including the AudioGridder transport fixture. JUCE Debug also linked libc++ and libc++abi, and all three offscreen window suites passed.
+
 ### 27 November 2026 — seats/server-chain `548025a7`
 
 The headless build failed while compiling `adi_daw/src/juce/audiogridder_transport.cpp`. The parsers at `315:16`, `316` and `687` instantiate nlohmann input adapters for `std::byte`. Pinned nlohmann derives those traits from libc++'s undefined `std::char_traits<std::byte>` at `adi_daw/third_party/json/include/nlohmann/detail/meta/type_traits.hpp:191:22`. The subsequent missing `int_type` errors have the same cause.
