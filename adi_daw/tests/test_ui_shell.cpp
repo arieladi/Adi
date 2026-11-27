@@ -2,6 +2,7 @@
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
 #include "../src/juce/builtin_host.hpp"
+#include "../src/juce/device_bridge.hpp"
 #include "../src/juce/ui_diagnostic_log.hpp"
 #include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
@@ -3534,15 +3535,19 @@ void browserSidebarScroll(AppCommands &commands, const std::filesystem::path &di
                                                   document->views(), document->sessionState(), "browser-sidebar");
     auto &browser = root->browser;
     browser.setSize(308, 443); // The Browser column in a 1200×720 Compact window with Info shown.
+    const auto last = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
+    check(browser.sidebar().back().name == "Add Folder..." &&
+              browser.sidebarArea().contains(browser.sidebarRowBounds(last())),
+          "SC-127: the shorter default roster fits in the default viewport");
+    browser.setSize(308, 240);
     const auto viewport = browser.sidebarArea();
     const auto scroll = [&](float delta) {
         juce::MouseWheelDetails wheel{};
         wheel.deltaY = delta;
         browser.mouseWheelMove(pressAt(browser, viewport.getCentre().toFloat()), wheel);
     };
-    const auto last = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
     check(browser.sidebar().back().name == "Add Folder..." && !viewport.contains(browser.sidebarRowBounds(last())),
-          "SC-124: the default viewport initially crops Add Folder");
+          "SC-124: the shorter viewport initially crops Add Folder");
     scroll(-10.f);
     check(viewport.contains(browser.sidebarRowBounds(last())) &&
               browser.sidebarRowBounds(last()).getBottom() == viewport.getBottom(),
@@ -6629,15 +6634,13 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             if (browser.sidebar()[i].name == "User Library")
                 user = static_cast<int>(i);
         }
-        int addedSamples = -1, addedDrums = -1, drumsLabel = -1;
+        int addedSamples = -1, addedDrums = -1;
         for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
             const auto &e = browser.sidebar()[i];
             if (e.name == "Samples" && !e.samples)
                 addedSamples = static_cast<int>(i);
             if (e.name == "Drums" && !e.place.empty())
                 addedDrums = static_cast<int>(i);
-            if (e.name == "Drums" && e.place.empty() && !e.heading)
-                drumsLabel = static_cast<int>(i);
         }
         root.say({});
         browser.choose(samples);
@@ -6702,11 +6705,10 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         browser.choose(addedDrums);
         check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
               "an addedFolder Drums folder inside the User Library lists the file under it");
-        browser.choose(drumsLabel);
-        check(browser.shown().empty() && root.error().find("devices lane") != std::string::npos,
-              "the Drums category stays the catalogue's, whatever a folder is called, and says what it waits for");
         browser.setListing(listing, true);
-        check(browser.selected() == drumsLabel, "a new listing keeps the label chosen");
+        check(addedDrums >= 0 && browser.selected() == addedDrums &&
+                  !browser.sidebar()[static_cast<std::size_t>(browser.selected())].place.empty(),
+              "a new listing keeps the added Drums folder by its Place identity");
         browser.setListing(listing, false);
         browser.choose(samples);
         check(root.error().find("still being indexed") != std::string::npos,
@@ -6815,6 +6817,74 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         browser.setListing({});
     }
+}
+void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-roster.adi", true, {}, error);
+    check(document != nullptr, "SC-127: a project for the Browser roster");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-roster");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    const auto names = [&] {
+        juce::StringArray labels;
+        for (const auto &entry : browser.sidebar())
+            labels.add(entry.name);
+        return labels;
+    };
+    const juce::StringArray roster{"Categories", "All", "Sounds", "Instruments", "Audio Effects", "Pd Devices",
+                                   "Plug-Ins", "Samples", "", "Places", "User Library", "Add Folder..."};
+    check(names() == roster, "SC-127: the empty Browser has the ordered built roster and no empty Collections group");
+    const juce::Rectangle<int> first(4, 28, 113, 19);
+    const int lastRow = roster.size() - 1;
+    check(browser.sidebarRowBounds(0) == first &&
+              browser.sidebarRowBounds(lastRow) == first.translated(0, 19 * lastRow),
+          "SC-127: the built roster has its usual row sizes and fits in the default column");
+
+    settings::AppSettings prefs(appdata::App::Daw, dir / "browser-roster-settings.json");
+    const auto currentLabel = [&] {
+        return browser.selected() < 0 ? juce::String{} : browser.sidebar()[static_cast<std::size_t>(browser.selected())].name;
+    };
+    for (const auto *hidden : {"Favorites", "Current Project", "MIDI Effects", "Grooves", "AI"}) {
+        check(prefs.set("browser.lastLabel", "label:" + std::string(hidden), {}, error),
+              "SC-127: an old hidden label can still be read from settings");
+        browser.restoreLabel(prefs);
+        check(currentLabel() == "All", "SC-127: a hidden label restores to All");
+    }
+    const int sounds = roster.indexOf("Sounds");
+    root.say({});
+    browser.choose(sounds);
+    check(currentLabel() == "Sounds" && browser.rows().empty() && root.error().empty(),
+          "SC-127: Sounds is selectable even without saved presets");
+
+    const auto libraryPath = dir / "browser-roster-library";
+    const auto written = preset::write(libraryPath, {{"internal", "org.adidaw.builtin.oneshot", {}},
+                                                    "Dusty Keys", "OneShot", {}, {}});
+    const auto other = preset::write(libraryPath, {{"internal", "org.adidaw.builtin.reverb", {}},
+                                                  "Clean Reverb", "Reverb", {}, {}});
+    LibraryListing listing;
+    listing.places = {{"Drums", dir, "local-drums"}};
+    listing.samples = {{"Dusty Keys.wav", dir / "Dusty Keys.wav", "local-drums"}};
+    browser.setListing(std::move(listing));
+    browser.setDevicePresets(preset::list(libraryPath));
+    const auto namesWithPlace = names();
+    check(currentLabel() == "Sounds" && browser.shown().empty() && browser.rows().size() == 2 &&
+              browser.rows()[0].savedPreset && browser.rows()[0].savedPreset->path == other &&
+              browser.rows()[1].savedPreset && browser.rows()[1].savedPreset->path == written &&
+              namesWithPlace[namesWithPlace.size() - 2] == "Drums",
+          "SC-127: Sounds lists only device presets by name, and a user's Drums folder is still a Place");
+    browser.search.setText("KEYS dusty", false);
+    browser.search.onTextChange();
+    std::filesystem::path picked;
+    browser.loadDevicePreset = [&](const std::filesystem::path &path) {
+        picked = path;
+        return true;
+    };
+    check(browser.rows().size() == 1 && browser.load(0) && picked == written &&
+              preset::read(picked).name == "Dusty Keys",
+          "SC-127: Sounds filters by word through LibraryQuery and uses the saved-preset loader");
 }
 void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -22159,6 +22229,58 @@ void heldOutputKeepsInput(const std::filesystem::path &dir) {
           "the free input is open, inputs 1/2 on, though the output is not");
     check(why.contains("Settings"), "and it says where to choose another output");
 }
+void missingCueOutputStatus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "missing-cue.adi", true, {}, error);
+    check(document != nullptr, "SC-431: open a project for the Cue Out notice");
+    if (!document)
+        return;
+    OpRequest cue;
+    cue.opType = "cue.setOutput";
+    cue.payload = {{"first", 2}};
+    check(document->ops().submit(cue).ok && document->synchronise(), "SC-431: the opened project keeps Cue Out 3/4");
+    device::DeviceBridge bridge(*document);
+    ListedAudioType::Device driver("Sparse outputs", {}, false);
+    driver.outs = 8;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "missing-cue");
+    root.setSize(1000, 650);
+    root.physicalOutputChannels = [&] { return bridge.physicalOutputChannels(); };
+    const auto configure = [&](bool third, bool fourth) {
+        juce::BigInteger enabled;
+        enabled.setRange(0, 2, true);
+        enabled.setBit(2, third);
+        enabled.setBit(3, fourth);
+        enabled.setRange(6, 2, true);
+        driver.open({}, enabled, 48000., 256);
+        bridge.audioDeviceAboutToStart(&driver);
+        root.frame();
+    };
+    const juce::String notice = "Cue Out 3/4 unavailable. Metronome and sample preview are silent.";
+    check(!root.status.messageText().contains("Cue Out"), "SC-431: no notice before the device has granted outputs");
+    configure(false, false);
+    check(root.status.messageText() == notice && root.status.getTooltip() == notice && root.current()->cue.firstOutputChannel == 2,
+          "SC-431: the opening frame names the absent pair and both silent functions without changing the song");
+    root.say("An unrelated project message.");
+    configure(true, false);
+    root.frame();
+    check(root.error() == "An unrelated project message." &&
+              root.status.messageText() == "An unrelated project message.  " + notice,
+          "SC-431: a half-present pair remains missing and the notice preserves other status messages");
+    configure(true, true);
+    check(root.status.messageText() == "An unrelated project message." && root.status.getTooltip().isEmpty(),
+          "SC-431: reconnecting the pair clears only its notice");
+    configure(false, false);
+    root.afterEdit = [&] { document->synchronise(); };
+    check(root.setCueOutput(6), "SC-431: the saved route can choose the available physical 7/8 pair");
+    root.frame();
+    check(!root.status.messageText().contains("Cue Out"), "SC-431: switching the song to the enabled pair removes the notice");
+    const auto bounds = root.status.messageField().translated(root.status.getX(), root.status.getY());
+    std::printf("SC-431 Status Bar message field %d,%d %dx%d\n", bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight());
+    check(bounds == juce::Rectangle<int>(35, 620, 581, 22),
+          "SC-431: the notice shares the existing Status Bar message rectangle at 1000 by 650");
+    bridge.audioDeviceStopped();
+}
 // Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
 // (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
 // application's 20 ms timer then reads its root pointer, which must be null by then: it read the
@@ -24830,15 +24952,18 @@ int main(int argc, char **argv) {
                   "Alt/Option+5 moves the focus to the browser, ringed");
             juce::Component &browserKeys = browserPanel;
             const juce::KeyPress down(juce::KeyPress::downKey), up(juce::KeyPress::upKey);
-            browserPanel.choose(1); // Favorites, before the Categories group.
-            const int favorites = browserPanel.selected();
+            const auto &labels = browserPanel.sidebar();
+            const auto samples = std::ranges::find(labels, juce::String("Samples"), &BrowserPanel::Entry::name);
+            const int sampleIndex = static_cast<int>(samples - labels.begin());
+            browserPanel.choose(sampleIndex);
             browserKeys.keyPressed(down);
-            const auto nextCategory = browserPanel.sidebar()[static_cast<std::size_t>(browserPanel.selected())].name;
+            const auto nextPlace = labels[static_cast<std::size_t>(browserPanel.selected())].name;
             browserKeys.keyPressed(up);
             const int back = browserPanel.selected();
+            browserPanel.choose(1); // All, the first visible label below the Categories heading.
             browserKeys.keyPressed(up);
-            check(favorites == 1 && nextCategory == "All" && back == 1 && browserPanel.selected() == 1 &&
-                      integrated.error() == "Favorites is not listed yet.",
+            check(samples != labels.end() && nextPlace == "User Library" &&
+                      back == sampleIndex && browserPanel.selected() == 1 && labels[1].name == "All",
                   "the arrows move between the sidebar's labels, past the headings");
             integrated.command(AppCommands::ToggleDeviceView);
             check(!integrated.state().docked && integrated.command(AppCommands::FocusDeviceView) &&
@@ -26135,6 +26260,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
+    trace("missingCueOutputStatus", [&] { missingCueOutputStatus(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
@@ -26175,6 +26301,7 @@ int main(int argc, char **argv) {
     trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });

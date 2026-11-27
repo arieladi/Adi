@@ -13,6 +13,10 @@ enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, Pl
 constexpr auto kLastLabel = "browser.lastLabel";
 constexpr auto kAllLabel = "label:All";
 constexpr auto kFirstLabel = "label:Instruments";
+bool presetNameLess(const preset::Entry &a, const preset::Entry &b) {
+    const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
+    return order != 0 ? order < 0 : a.path < b.path;
+}
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     g.setColour(look::text);
     const float x = r.getX(), y = r.getY(), w = r.getWidth(), h = r.getHeight();
@@ -115,13 +119,10 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
 BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
-    sidebar_ = {{"Collections", None, true}, {"Favorites", Favorite},  {{}, None, true},
-                {"Categories", None, true},  {"All", All},             {"Sounds", Sounds},       {"Drums", Drums},
-                {"Instruments", Instruments}, {"Audio Effects", AudioFx}, {"MIDI Effects", MidiFx},
-                {"Pd Devices", Pd},          {"Plug-Ins", PlugIns},    {"Clips", Clips},
-                {"Samples", Samples, false, true},        {"Grooves", Grooves},     {"Templates", Templates},
-                {{}, None, true},            {"Places", None, true},   {"Packs", Packs},
-                {"User Library", User},      {"Current Project", Project},
+    sidebar_ = {{"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
+                {"Instruments", Instruments}, {"Audio Effects", AudioFx},
+                {"Pd Devices", Pd}, {"Plug-Ins", PlugIns}, {"Samples", Samples, false, true},
+                {{}, None, true}, {"Places", None, true}, {"User Library", User},
                 {"Add Folder...", AddFolder}};
     setTitle("Browser");
     setTooltip("Live's browser: your sounds, devices, plug-ins and files.");
@@ -369,10 +370,7 @@ void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
         devicePresets_[entry.deviceKey].push_back(std::move(entry));
     for (auto &[key, children] : devicePresets_) {
         (void)key;
-        std::sort(children.begin(), children.end(), [](const preset::Entry &a, const preset::Entry &b) {
-            const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
-            return order != 0 ? order < 0 : a.path < b.path;
-        });
+        std::sort(children.begin(), children.end(), presetNameLess);
     }
     refill();
 }
@@ -424,6 +422,7 @@ void BrowserPanel::refill(int selectRow) {
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
     const bool all = chosen.glyph == All;
+    const bool sounds = chosen.glyph == Sounds;
     const bool swappingDevices = hotSwap_ && !hotSwap_->samples;
     const bool showPlugins = swappingDevices || all || chosen.glyph == PlugIns;
     using Role = ::adi::detail::DeviceRole;
@@ -437,6 +436,11 @@ void BrowserPanel::refill(int selectRow) {
         hits.samples.swap(shown_);
         queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_}, hits);
         hits.samples.swap(shown_);
+    } else if (sounds) {
+        queryLibrary(query, {nullptr, {}, {}, &devicePresets_}, hits);
+        std::ranges::sort(hits.presets, presetNameLess, [](const preset::Entry *entry) -> const preset::Entry & {
+            return *entry;
+        });
     } else if (library_ && !browsePlace && (samples || !chosen.place.empty())) {
         library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
     }
@@ -1165,7 +1169,7 @@ void BrowserPanel::choose(int i) {
                 return;
             }
         }
-        if (entry.glyph == All)
+        if (entry.glyph == All || entry.glyph == Sounds)
             return;
         const bool library = entry.samples || entry.glyph == User;
         if (!entry.place.empty()) {
@@ -1187,15 +1191,9 @@ void BrowserPanel::choose(int i) {
                 root_.say("Plug-ins list in the application, from its plug-in scan.");
             else
                 root_.say(pluginScanStatus(pluginScan_));
-        } else if (!library)
-            // The other categories say what they wait for (D4; N15).
-            root_.say(entry.name == "MIDI Effects" || entry.name == "Sounds" ||
-                              entry.name == "Drums"
-                          ? (entry.name + " wait for the devices lane's instruments and MIDI effects.").toStdString()
-                          : (entry.name + " is not listed yet.").toStdString());
-        else if (!ready_)
+        } else if (library && !ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
-        else if (rows_.empty())
+        else if (library && rows_.empty())
             root_.say(listing().places.empty() || (!entry.samples && entry.place.empty())
                           ? "Choose Add Folder in the Browser to list samples."
                           : (entry.name + " holds no audio files.").toStdString());

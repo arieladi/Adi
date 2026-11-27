@@ -310,9 +310,10 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     } else if (!io.exporting && buffers.activeFilter != MainAudition::Stereo) {
         buffers.activeFilter = MainAudition::Stereo;
     }
-    const auto first=scene->settings.firstOutputChannel;
+    const auto physicalFirst=scene->settings.firstOutputChannel;
+    const auto first=io.packedOutputPair(physicalFirst);
     auto* preview=impl_->preview;
-    const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,first);
+    const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,physicalFirst);
     const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
     if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render && !sampleActive) {
         impl_->volume={scene->gain,scene->gain,0,0};
@@ -336,6 +337,7 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     }
     if(click.render || sampleActive) {
         AudioIo cueIo=io;cueIo.out=nullptr;cueIo.out64=cue;cueIo.numOut=2;
+        cueIo.outputChannels={}; // local stereo bus, not the physical device
         if(click.render)click.render(click.context,cueIo);
         if(sampleActive)preview->mix(cueIo,buffers.sampleRate,0,1.);
     }
@@ -371,9 +373,9 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
             const auto index=static_cast<std::size_t>(i);
             const double r=reference[c][index]*ref*gain;
             add(c,i,r);
-            // Shared physical pair gets each signal once. Separate Cue Out
-            // also receives the exclusive reference, past Main's chain.
-            add(first+c,i,cue[c][index]*main*gain+(first==0?0:r));
+            // An output shared with Main already has the reference. Cue Out
+            // also receives it on its separate outputs, past Main's chain.
+            if(first>=0)add(first+c,i,cue[c][index]*main*gain+(first+c<2?0:r));
         }
     }
 }

@@ -360,7 +360,7 @@ class ShortcutsPage final : public juce::Component, private juce::ChangeListener
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
-class StatusBar final : public juce::Component {
+class StatusBar final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit StatusBar(AdiRootComponent &);
     void paint(juce::Graphics &) override;
@@ -383,6 +383,9 @@ class StatusBar final : public juce::Component {
     juce::TextButton playbackIssues{""};
     bool setPlaybackProblems(const std::vector<std::string> &problems);
     std::function<void(const std::vector<std::string> &)> onPlaybackProblems;
+    void setMissingCueOutput(std::optional<int> firstChannel);
+    juce::String messageText() const;
+    juce::Rectangle<int> messageField() const noexcept { return {35, 8, std::max(0, getWidth() - 419), 22}; }
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     DetailButton clipToggle{*this, true};
@@ -403,6 +406,8 @@ class StatusBar final : public juce::Component {
     juce::String audioDeviceProblem_;
     std::vector<std::string> playbackProblems_;
     juce::String playbackIssueLabel_;
+    std::optional<int> missingCueOutput_;
+    juce::String cueOutputProblem_;
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
     std::optional<int> exportPercent_;
@@ -568,9 +573,9 @@ class AdiRootComponent final : public juce::Component,
     // the command toggles the setting. Unset, the setting changes and the session hears it at the next
     // project open.
     std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
-    // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
-    // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
-    std::function<int()> outputChannels;
+    // The current audio device's granted physical output channels, read on the message thread.
+    // Empty when no device is running, and Cue Out offers the default 1/2.
+    std::function<std::optional<engine::OutputChannelMap>()> physicalOutputChannels;
     std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
     std::shared_ptr<ExternalInputMeter> externalInputMeter;
     std::function<void()> configureExternalInputs;

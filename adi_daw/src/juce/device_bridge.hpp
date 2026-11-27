@@ -55,6 +55,9 @@ public:
     void setRequestedBlockSize(std::int32_t frames) { requested_ = frames; }
 
     [[nodiscard]] const DeviceCore& core() const { return core_; }
+    [[nodiscard]] std::optional<engine::OutputChannelMap> physicalOutputChannels() const noexcept {
+        return core_.isOpen() ? std::optional(outputChannels_) : std::nullopt;
+    }
 
     /// Non-empty when the device is running at a size other than the one
     /// requested. ADR-0049: reported, never silently corrected.
@@ -68,12 +71,18 @@ public:
     // --- juce::AudioIODeviceCallback ---------------------------------------
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
-        if (device == nullptr) return;
+        // A failed driver restart can still call back with a closed device.
+        if (device == nullptr || !device->isOpen()) return;
 
         // The granted size, read back from the device. Never `requested_`:
         // asking CoreAudio for 8192 returns 4096 and says nothing (ADR-0049).
         const auto granted = static_cast<std::int32_t>(device->getCurrentBufferSizeSamples());
         const double rate = device->getCurrentSampleRate();
+        const auto active = device->getActiveOutputChannels();
+        outputChannels_.enabled = 0;
+        for (int channel = 0; channel < engine::OutputChannelMap::maximumChannels; ++channel)
+            if (active[channel])
+                outputChannels_.enabled |= std::uint64_t{1} << channel;
 
         // A restart on a live stream is a RECONFIGURATION, not a fresh open:
         // the processor keeps its state and the stream clock stays continuous,
@@ -91,7 +100,7 @@ public:
                                           float* const* out, int numOut,
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
-        core_.process(out, numOut, in, numIn, numSamples);
+        core_.process(out, numOut, in, numIn, numSamples, outputChannels_);
     }
 
     void audioDeviceStopped() override {
@@ -146,6 +155,7 @@ private:
     };
     engine::BlockProcessor* proc_ = nullptr;
     DeviceCore core_;
+    engine::OutputChannelMap outputChannels_;
     std::int32_t requested_ = 0;
     OpenResult last_;
     DeviceName currentDevice_;

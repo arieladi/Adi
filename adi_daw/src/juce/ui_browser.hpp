@@ -56,7 +56,8 @@ class BrowserList final : public juce::ListBox {
 // track or into the chain. An entry
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
-// (DF-W34); double-click, Enter and drag load through the engine's insert (N57). The other categories say what they wait for.
+// (DF-W34); double-click, Enter and drag load through the engine's insert (N57).
+// Sounds lists the user's saved device presets (SC-85).
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient,
                            public juce::FileDragAndDropTarget, private juce::ListBoxModel {
   public:

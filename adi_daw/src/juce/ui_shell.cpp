@@ -1343,6 +1343,30 @@ bool StatusBar::setPlaybackProblems(const std::vector<std::string> &problems) {
     repaint();
     return true;
 }
+void StatusBar::setMissingCueOutput(std::optional<int> firstChannel) {
+    if (firstChannel == missingCueOutput_)
+        return;
+    missingCueOutput_ = firstChannel;
+    cueOutputProblem_ = firstChannel ? "Cue Out " + juce::String(*firstChannel + 1) + "/" +
+                                           juce::String(*firstChannel + 2) + " unavailable. Metronome and sample preview are silent."
+                                     : juce::String{};
+    setTooltip(cueOutputProblem_);
+    repaint();
+}
+juce::String StatusBar::messageText() const {
+    auto text = audioDeviceProblem_;
+    if (!root_.error().empty()) {
+        if (text.isNotEmpty())
+            text << "  ";
+        text << juce::String(root_.error());
+    }
+    if (cueOutputProblem_.isNotEmpty()) {
+        if (text.isNotEmpty())
+            text << "  ";
+        text << cueOutputProblem_;
+    }
+    return text.isNotEmpty() ? text : root_.selectionText();
+}
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
     // field, the selected track's box; 22 pt fields with the frame's 8 pt around them.
@@ -1352,8 +1376,7 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
-    const int messageWidth = std::max(0, w - 419);
-    auto actions = juce::Rectangle<int>(35, 11, messageWidth, 16).reduced(4, 0);
+    auto actions = messageField().withY(11).withHeight(16).reduced(4, 0);
     const bool showAudio = audioSettings.isVisible(), showIssues = playbackIssues.isVisible();
     if (showAudio) {
         const int availableWidth = showIssues ? actions.getWidth() / 2 : actions.getWidth();
@@ -1417,7 +1440,7 @@ void StatusBar::setExportProgress(std::optional<int> percent) {
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
-    const juce::Rectangle<int> message(35, 8, std::max(0, w - 419), 22);
+    const auto message = messageField();
     const juce::Rectangle<int> second = secondField(), track(w - 162, 8, 124, 22);
     for (auto r : {message, second, track}) {
         g.setColour(look::band);
@@ -1475,19 +1498,14 @@ void StatusBar::paint(juce::Graphics &g) {
         controls::roundButton(g, c, state);
         look::triangle(g, c.reduced(5.f), -juce::MathConstants<float>::halfPi, controls::labelColour(state));
     }
-    const bool error = !root_.error().empty();
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
-    const bool audioProblem = audioDeviceProblem_.isNotEmpty();
-    auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
-    if (audioProblem && error)
-        text << "  " << juce::String(root_.error());
     const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
                              (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0);
     auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
     if (exportProgressText_.isNotEmpty())
         g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);
-    g.drawText(text, textArea, juce::Justification::centredLeft);
+    g.drawText(messageText(), textArea, juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
@@ -1762,6 +1780,12 @@ void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
+    const auto outputs = physicalOutputChannels ? physicalOutputChannels() : std::nullopt;
+    std::optional<int> missingCue;
+    if (const auto *snapshot = reader_->get(); snapshot != nullptr && outputs &&
+                                              outputs->packedPair(snapshot->cue.firstOutputChannel) < 0)
+        missingCue = snapshot->cue.firstOutputChannel;
+    status.setMissingCueOutput(missingCue);
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;

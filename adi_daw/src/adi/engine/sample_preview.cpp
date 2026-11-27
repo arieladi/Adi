@@ -392,12 +392,16 @@ bool SamplePreview::active() const noexcept {
            state.failed.load(std::memory_order_acquire) != revision;
 }
 bool SamplePreview::canOutput(const AudioIo &io, int firstChannel) noexcept {
-    return !io.exporting && firstChannel >= 0 && io.numOut >= 2 && firstChannel <= io.numOut - 2 &&
-           (outputPair(io.out, firstChannel) || outputPair(io.out64, firstChannel));
+    const auto packed = io.packedOutputPair(firstChannel);
+    return !io.exporting && packed >= 0 && (outputPair(io.out, packed) || outputPair(io.out64, packed));
 }
-void SamplePreview::mix(const AudioIo &io, double deviceRate, int firstChannel, double gain) noexcept {
-    if (io.frames <= 0 || !canOutput(io, firstChannel) || !(deviceRate >= 1.) || !std::isfinite(deviceRate) ||
+void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst, double gain) noexcept {
+    const auto firstChannel = io.packedOutputPair(physicalFirst);
+    if (io.frames <= 0 || io.exporting || firstChannel < 0 || !(deviceRate >= 1.) || !std::isfinite(deviceRate) ||
         !(gain >= 0.) || !std::isfinite(gain))
+        return;
+    const bool narrow = outputPair(io.out, firstChannel), wide = outputPair(io.out64, firstChannel);
+    if (!narrow && !wide)
         return;
     auto &state = *impl_;
     const auto wanted = state.requested.load(std::memory_order_acquire);
@@ -413,7 +417,6 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int firstChannel, 
     const auto available = state.written.load(std::memory_order_acquire);
     while (next != available && state.queue[static_cast<std::size_t>(next % state.queue.size())].revision < wanted)
         ++next;
-    const bool narrow = outputPair(io.out, firstChannel), wide = outputPair(io.out64, firstChannel);
     for (std::int32_t i = 0; i < io.frames; ++i) {
         while (next != available) {
             const auto &candidate = state.queue[static_cast<std::size_t>(next % state.queue.size())];
