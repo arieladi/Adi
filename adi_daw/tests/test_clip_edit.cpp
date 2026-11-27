@@ -403,6 +403,42 @@ void rangeCommands() {
     check(!bad.ok,"paste refuses a mismatched track mapping");
 }
 
+void rangeMoveRefusalsAndNoOps() {
+    Project project;
+    auto& store=*project.store;
+    auto& db=store.db();
+    db.exec("DELETE FROM clips;"
+            "UPDATE tracks SET kind='midi' WHERE id=21;"
+            "INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Alias');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,alias_of) VALUES"
+            "(8,21,'midi',0,5765760,NULL),(9,22,'midi',0,5765760,8);"
+            "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,8,'notes',X'010203')");
+    constexpr std::int64_t beat=5765760;
+    const edit_plan::Options options{48000,{}};
+    const auto head=OpJournal(store).headSeq();
+    const clip_edit::RangeSelection whole{{21},{0,0},{0,beat}};
+    const clip_edit::RangeSelection middle{{21},{0,beat/4},{0,3*beat/4}};
+    const auto empty=clip_edit::prepareMoveRange(store,{{21},{0,beat},{0,2*beat}},{0,0},options);
+    check(empty.ok && empty.requests.empty() && clip_edit::commitPrepared(store,empty).ok,
+          "SC-180 moving empty time over a clip does not clear it");
+    const auto same=clip_edit::prepareMoveRange(store,middle,middle.begin,options);
+    check(same.ok && same.requests.empty() && clip_edit::commitPrepared(store,same).ok,
+          "SC-180 moving to the original position does not split the source");
+
+    const auto ownsAlias=clip_edit::prepareMoveRange(store,whole,{0,2*beat},options);
+    const auto crossesAliasSource=clip_edit::prepareMoveRange(store,middle,{0,2*beat},options);
+    const auto alias=clip_edit::prepareMoveRange(store,{{22},whole.begin,whole.end},{0,2*beat},options);
+    check(!ownsAlias.ok && ownsAlias.error.find("linked clips")!=std::string::npos &&
+          !crossesAliasSource.ok && crossesAliasSource.error.find("linked clips")!=std::string::npos &&
+          !alias.ok && alias.error.find("linked clips")!=std::string::npos,
+          "SC-180 refuses incoming and outgoing alias links before copying or splitting");
+    check(OpJournal(store).headSeq()==head && db.execAndGet("SELECT count(*) FROM clips").getInt()==2 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=8 AND pos_ticks=0 AND length_ticks=5765760").getInt()==1 &&
+          db.execAndGet("SELECT alias_of FROM clips WHERE id=9").getInt64()==8 &&
+          db.execAndGet("SELECT hex(data) FROM event_streams WHERE id=61 AND clip_id=8").getString()=="010203",
+          "SC-180 no-ops and refusals leave the original rows, note bytes, and journal intact");
+}
+
 void clockSharing() {
     Project p;auto& db=p.store->db();auto previous=SnapshotBuilder::fromStore(*p.store);
     db.exec("INSERT INTO clip_playback_details(clip_id) VALUES(7)");
@@ -1239,4 +1275,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();consolidateMidi();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();rangeMoveRefusalsAndNoOps();consolidateMidi();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

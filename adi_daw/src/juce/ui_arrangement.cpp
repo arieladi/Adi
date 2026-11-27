@@ -4558,25 +4558,35 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
     }
     if (!sel.pickedClips.empty()) {
         std::vector<AdiRootComponent::ClipPlace> clips;
-        auto first = std::numeric_limits<std::int64_t>::max();
+        constexpr auto maxTick = std::numeric_limits<std::int64_t>::max();
+        auto first = maxTick;
+        std::int64_t latestEnd = 0;
         if (const auto current = view.root.current())
             for (const auto &row : current->tracks)
                 if (row)
                     for (const auto &clip : row->clips)
                         if (clip && geo.clipSelected(clip->id)) {
+                            if (clip->posTicks < 0 || clip->lengthTicks < 0 ||
+                                clip->lengthTicks > maxTick - clip->posTicks) {
+                                view.root.say("A selected clip has an invalid timeline span.");
+                                return true;
+                            }
                             first = std::min(first, clip->posTicks);
+                            latestEnd = std::max(latestEnd, clip->posTicks + clip->lengthTicks);
                             clips.push_back({clip->id, row->id, clip->posTicks});
                         }
         if (clips.size() != geo.selectedClips().size() || clips.empty()) {
             view.root.say("A selected clip is no longer in the Arrangement.");
             return true;
         }
+        if (forward && first == maxTick) {
+            view.root.say("The clips would move past the end of the timeline.");
+            return true;
+        }
         const auto delta = geo.nextGridLine(first, forward) - first;
         if (delta == 0)
             return true;
-        if (delta > 0 && std::any_of(clips.begin(), clips.end(), [delta](const auto &clip) {
-                return clip.position > std::numeric_limits<std::int64_t>::max() - delta;
-            })) {
+        if (delta > 0 && std::max({latestEnd, sel.start, sel.end}) > maxTick - delta) {
             view.root.say("The clips would move past the end of the timeline.");
             return true;
         }

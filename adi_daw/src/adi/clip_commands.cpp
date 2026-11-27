@@ -756,7 +756,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 
 namespace {
 RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
-                        std::span<const std::int64_t> selectedClips={}) {
+                        std::span<const std::int64_t> selectedClips={},bool rejectLinked=false) {
     RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
@@ -776,7 +776,10 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 if(root.at(length).is_null())throw std::runtime_error("copy range needs finite clip extents");
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(result.clearsRange && last<=begin)continue;
-                auto image=captureDeleted(context,id);captureMediaKeys(store,image);
+                auto image=captureDeleted(context,id);
+                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
+                    throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
                 if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
                 if(result.clearsRange && last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
@@ -1125,11 +1128,18 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     return prepareRangePlacement(store,copy,tracks,at,options,false);
 }
 PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimePoint at,const edit_plan::Options& options) {
+    PreparedEdit result;
     try {
-        Read read(store.db());
-        const auto copy=copyRange(store,selection,options.referenceRate);
-        return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
-    } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
+        validRange(selection);validRate(options.referenceRate);Read read(store.db());
+        edit::TimeMap time(store.db());
+        if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
+            const auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{},true);
+            if(!copy.ok)throw std::runtime_error(copy.error);
+            if(!copy.images.empty())return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
+        }
+        result.sourceFile=filename(store);result.ok=true;
+    } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
 }
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     try {
