@@ -4337,13 +4337,14 @@ bool AdiRootComponent::setTrackAudioOutput(std::int64_t id, std::int64_t destina
     }
 }
 
-bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+bool AdiRootComponent::setAudioInput(std::int64_t id, std::string_view ref) {
     const auto current = view_.current();
     const auto *track = current ? current->findTrack(id) : nullptr;
     if (!track || track->kind != "audio")
-        return fail("External audio inputs are available on audio tracks.");
+        return fail("Audio inputs are available on audio tracks.");
     const auto choices = audioInputs();
-    if (std::none_of(choices.begin(), choices.end(), [&](const auto &choice) { return choice.ref == ref; }))
+    if (ref != kResamplingInput &&
+        std::none_of(choices.begin(), choices.end(), [&](const auto &choice) { return choice.ref == ref; }))
         return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
     if (track->inputRef && *track->inputRef == ref)
         return true;

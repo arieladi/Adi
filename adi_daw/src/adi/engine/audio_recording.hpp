@@ -18,6 +18,7 @@ class Transport;
 struct AudioMemorySnapshot;
 struct TempoMap;
 namespace recording_recovery { struct OwnedPlan; }
+enum class RecordingSource { PhysicalInput, MainMix };
 struct AudioMemoryTakeSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // resolved by recording::captureMemory on the owner
@@ -25,8 +26,9 @@ struct AudioMemoryTakeSpec {
 };
 struct RecordingTarget {
     std::int64_t trackId=0;
-    std::vector<std::uint32_t> channels; // indices in the current AudioIo.in
+    std::vector<std::uint32_t> channels; // indices in AudioIo.in, or 0/1 for MainMix
     std::optional<std::int64_t> placementOffsetSamples{}; // linear take override for this track
+    RecordingSource source = RecordingSource::PhysicalInput;
 };
 /// Explicit frozen sample-domain loop contract. One row per nonempty pass,
 /// allocated before callback publication. Musical loop retiming ends this job.
@@ -173,6 +175,20 @@ public:
                                          RecordingPunch=RecordingPunch::Within,
                                          const RecordingPunchWindow& = {}, const TempoMap* clock=nullptr,
                                          std::uint64_t clockGeneration=0)noexcept;
+    struct RenderSlice {
+        void* context = nullptr;
+        // Main output, when requested, is copied in stereo from the just-rendered graph.
+        bool (*process)(void*, std::span<const std::int64_t> recordingTracks,
+                        std::span<const std::int64_t> resamplingTracks, const AudioIo* mainOutput) noexcept = nullptr;
+    };
+    struct SliceResult {
+        bool rendered = false, captured = false;
+    };
+    // Pins the same recorder job across graph rendering. Physical-only takes keep
+    // their pre-render write. Mixed inputs have one common post-render write.
+    SliceResult captureAndRender(const AudioIo&, const Transport&, RecordingPunch,
+                                 const RecordingPunchWindow&, const TempoMap*, std::uint64_t clockGeneration,
+                                 RenderSlice) noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

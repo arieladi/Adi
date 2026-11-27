@@ -874,7 +874,7 @@ class AdiRootComponent final : public juce::Component,
     std::vector<std::int64_t> audioOutputChoices(std::int64_t track) const;
     bool setTrackAudioOutput(std::int64_t track, std::int64_t destination);
     bool setTrackMidiOutput(std::int64_t track, std::optional<rows::MidiOutput>);
-    bool setExternalAudioInput(std::int64_t id, std::string_view ref);
+    bool setAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
     bool toggleRecord(bool alternate = false);

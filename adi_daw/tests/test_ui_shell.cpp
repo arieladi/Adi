@@ -16793,8 +16793,13 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
             }
             check(marked && picked, "SC-23: the chooser marks its saved input and selects by the configured name");
         };
+        strip.onRoutingMenu = [](MixerStrip::RoutingChooser, juce::PopupMenu) {
+            check(false, "SC-23: the click reached a different routing chooser");
+        };
         strip.mouseDown(pressAt(strip, at, juce::ModifierKeys::leftButtonModifier));
+        strip.onRoutingMenu = {};
         strip.onAudioInputMenu = {};
+        root.frame();
         const auto *track = root.current()->findTrack(4);
         check(requests == 1 && track && track->inputRef && *track->inputRef == ref,
               "SC-23: clicking the chooser writes the selected physical input");
@@ -16813,6 +16818,21 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
     if (vertical)
         choose(*vertical, {12.f, 54.f}, "Spoken word", "ext:mono:2", "Keys");
     check(configured == 2, "SC-23: both input menus reach Audio Settings");
+    // Reacquire each strip after changing the layout. The Arrangement can
+    // recycle the old strip when the Mixer View reduces its visible rows.
+    root.command(AppCommands::ToggleMixerView);
+    root.frame();
+    horizontal = findAudio(root.mixer);
+    check(horizontal != nullptr, "SC-269: the Arrangement exposes the Resampling chooser");
+    if (horizontal)
+        choose(*horizontal, {12.f, 8.f}, "Resampling", "resampling", "Spoken word");
+    root.command(AppCommands::ToggleMixerView);
+    root.resizeMixerView(360);
+    root.frame();
+    vertical = findAudio(root.mixerView);
+    check(vertical != nullptr, "SC-269: the Mixer exposes the selected Resampling source");
+    if (vertical)
+        choose(*vertical, {12.f, 38.f}, "Spoken word", "ext:mono:2", "Resampling");
     document->release();
 }
 void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir) {

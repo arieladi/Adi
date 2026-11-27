@@ -114,9 +114,9 @@ struct Session::InputMonitors {
     public:
         Source(const InputMonitors& owner, const Transport& transport,
                const std::span<const std::int64_t>& recordingTracks, std::int64_t track,
-               std::array<std::int32_t, 2> channels, std::vector<ClipPlayback::SampleRange> ranges)
+               std::array<std::int32_t, 2> sourceChannels, std::vector<ClipPlayback::SampleRange> ranges)
             : owner_(owner), transport_(transport), recordingTracks_(recordingTracks), track_(track),
-              channels_(channels), ranges_(std::move(ranges)) {
+              channels_(sourceChannels), ranges_(std::move(ranges)) {
             std::sort(ranges_.begin(), ranges_.end());
             std::size_t count = 0;
             for (const auto& range : ranges_) {
@@ -369,6 +369,10 @@ bool Session::startRecording(const AudioRecordingSpec& options,std::string& erro
         const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
         if(track==model_.tracks.end() || !recordArmed(*track) || (track->kind!="audio" && track->kind!="midi")) {
             error="Recording target must be an armed audio or MIDI track";return false;
+        }
+        if (target.source == RecordingSource::MainMix && (track->kind != "audio" || spec_.channels < 2)) {
+            error = "Resampling needs Main stereo and an armed audio track";
+            return false;
         }
     }
     if(!options.recoveryProjectUuid.empty() && options.sourceProject!=recordingProject_) {
@@ -3100,10 +3104,6 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
         return process(tail, captureRecording);
     }
-    session_.recordingAudioTracks_ = captureRecording
-        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow,
-                                       timing ? &timing->tempo : nullptr, graph_.generation())
-        : std::span<const std::int64_t>{};
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
     if (timing) {
@@ -3115,11 +3115,6 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
                                     session_.transport_, capture, punch, punchWindow);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
-    auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
-    if (inputMonitors) {
-        inputMonitors->input = io.in;
-        inputMonitors->channels = io.numIn;
-    }
     const auto* midiSink = timing && timing->spec.performanceState && !block.exporting && !io.exporting &&
                            io.streamTimeSamples >= 0 &&
                            io.streamTimeSamples <= std::numeric_limits<std::int64_t>::max() - io.frames
@@ -3128,21 +3123,44 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         session_.midiHardwareRouting_ = timing->midiHardwareRouting;
         if (midiSink->reset) midiSink->reset(midiSink->context);
     }
-    session_.midiHardwareSink_ = midiSink;
-    session_.midiHardwareStreamSample_ = io.streamTimeSamples;
-    const bool rendered = graph_.process(block);
-    session_.midiHardwareSink_ = nullptr;
+    struct RenderContext {
+        RenderBlock& driver;
+        const AudioIo& block;
+        InputMonitors* monitors;
+        const MidiHardwareSink* midi;
+    };
+    RenderContext renderContext{*this, block, timing ? timing->inputMonitors.get() : nullptr, midiSink};
+    const auto render = [](void* raw, std::span<const std::int64_t> tracks,
+                           std::span<const std::int64_t> resampling, const AudioIo* mainOutput) noexcept {
+        const auto& call = *static_cast<RenderContext*>(raw);
+        auto& liveSession = call.driver.session_;
+        liveSession.recordingAudioTracks_ = tracks;
+        if (call.monitors) {
+            call.monitors->input = call.block.in;
+            call.monitors->channels = call.block.numIn;
+        }
+        liveSession.midiHardwareSink_ = call.midi;
+        liveSession.midiHardwareStreamSample_ = call.block.streamTimeSamples;
+        const bool rendered = call.driver.graph_.process(call.block, resampling);
+        liveSession.midiHardwareSink_ = nullptr;
+        liveSession.recordingAudioTracks_ = {};
+        if (call.monitors) {
+            call.monitors->input = nullptr;
+            call.monitors->channels = 0;
+        }
+        return rendered && (!mainOutput || call.driver.graph_.copyMainOutput(*mainOutput));
+    };
+    const auto slice = captureRecording
+        ? session_.recording_->captureAndRender(io, transport, punch, punchWindow,
+                                               timing ? &timing->tempo : nullptr, graph_.generation(),
+                                               {&renderContext, render})
+        : AudioInputRecorder::SliceResult{render(&renderContext, {}, {}, nullptr), false};
     // MIDI can still report Recording after a locate outside the punch. Only
     // a playing slice inside the punch can contribute to the capture gate.
-    const bool capturing = captureRecording && (!session_.recordingAudioTracks_.empty() ||
+    const bool capturing = captureRecording && (slice.captured ||
         (transport.playing() && punch == RecordingPunch::Within &&
          session_.midiInputCapture_->state() == MidiCaptureState::Recording));
-    session_.recordingAudioTracks_ = {};
-    if (inputMonitors) {
-        inputMonitors->input = nullptr;
-        inputMonitors->channels = 0;
-    }
-    if (!rendered) return false;
+    if (!slice.rendered) return false;
     session_.noteClickCapture(capturing);
     session_.mainLoudness_.process(block);
     const bool rollingClick = timing && timing->settings.metronome && session_.transport_.playing() &&

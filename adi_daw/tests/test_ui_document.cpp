@@ -2068,6 +2068,91 @@ void externalInputRecording(const std::filesystem::path &dir) {
     doc->release();
 }
 
+void resamplingRecording(const std::filesystem::path &dir) {
+    for (const bool mixed : {false, true}) {
+        WorkerTone songSource, destinationSource;
+        std::string error;
+        auto doc = ui::ProjectDocument::open(dir / (mixed ? "mixed-main.adi" : "main-only.adi"), true, {}, error);
+        check(doc != nullptr, "SC-269: open a project for resampling");
+        if (!doc)
+            continue;
+        const auto edit = [&](const char *type, Payload payload) {
+            OpRequest request;
+            request.opType = type;
+            request.payload = std::move(payload);
+            return doc->ops().submit(request).ok;
+        };
+        const bool setup = edit("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Song"}}) &&
+                           edit("track.create", {{"id", 9}, {"kind", "return"}, {"name", "Return"}}) &&
+                           edit("routing.connect", {{"id", 91}, {"srcKind", "track"}, {"src", 4},
+                                                    {"dstKind", "track"}, {"dst", 9}, {"kind", "send"}}) &&
+                           edit("routing.setGain", {{"id", 91}, {"db", 0.0}}) &&
+                           edit("routing.setSendTap", {{"id", 91}, {"tap", "pre_fx"}}) &&
+                           edit("track.setInput", {{"id", 4}, {"input", "resampling"}}) &&
+                           edit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                           (!mixed || (edit("track.create", {{"id", 10}, {"kind", "audio"}, {"name", "Mic"}}) &&
+                                       edit("track.setInput", {{"id", 10}, {"input", "ext:mono:1"}}) &&
+                                       edit("track.setMonitorMode", {{"id", 10}, {"mode", 0}}) &&
+                                       edit("track.setArm", {{"id", 10}, {"armed", true}}))) &&
+                           doc->synchronise();
+        check(setup, "SC-269: arm Resampling alongside a pre-FX send and an optional mono physical input");
+        if (!setup)
+            continue;
+        doc->session().setSourcesFor([&](std::int64_t track) {
+            if (track == 4)
+                return std::vector<engine::Node *>{&destinationSource};
+            if (track == 8)
+                return std::vector<engine::Node *>{&songSource};
+            return std::vector<engine::Node *>{};
+        });
+        if (mixed) {
+            check(doc->session().setPrecision(engine::Precision::Float64), "SC-269: resample a double graph");
+            doc->setExternalAudioInputs({{"ext:mono:1", "Mic", {0}}});
+        }
+        constexpr int frames = 64, blocks = 12;
+        constexpr std::uint32_t takeFrames = frames * blocks;
+        constexpr auto start = textproj::kPPQ;
+        doc->prepare(48000, frames);
+        const bool started = doc->startRecording(start, mixed ? 1 : 0, false, 100);
+        check(started, "SC-269: begin a Main take with or without physical I/O");
+        if (!started) {
+            doc->release();
+            continue;
+        }
+        std::array<float, frames> input{}, right{};
+        const float *inputs[]{input.data()};
+        float *outputs[]{input.data(), right.data()}; // input may share the driver's output buffer
+        for (int block = 0; block < blocks; ++block) {
+            input.fill(0.375f);
+            doc->process({mixed ? outputs : nullptr, mixed ? inputs : nullptr, mixed ? 2 : 0, mixed ? 1 : 0,
+                          frames, block * frames});
+        }
+        doc->release();
+        check(doc->settleRecording(), "SC-269: finalise the shared take");
+        const auto result = doc->takeLanded();
+        check(result && result->ok && result->clips.size() == (mixed ? 2u : 1u),
+              "SC-269: Main lands as an ordinary Arrangement take");
+        const auto verify = [&](int track, std::uint16_t width, float value, bool internal) {
+            SQLite::Statement clip(doc->store().db(),
+                                   "SELECT c.pos_ticks, m.rel_path FROM clips c JOIN audio_clips a ON c.id=a.clip_id "
+                                   "JOIN media_files m ON a.media_id=m.id WHERE c.track_id=?");
+            clip.bind(1, track);
+            if (!clip.executeStep() || (internal && clip.getColumn(0).getInt64() != start))
+                return false;
+            audio::WavReader wav(media::projectFolder(doc->store()) / media::pathFromUtf8(clip.getColumn(1).getString()));
+            std::vector<float> samples(static_cast<std::size_t>(takeFrames) * width);
+            return wav.channels() == width && wav.frames() == takeFrames &&
+                   wav.read(samples.data(), takeFrames) == takeFrames &&
+                   std::all_of(samples.begin() + static_cast<std::ptrdiff_t>(samples.size() / 2), samples.end(),
+                               [value](float sample) { return std::abs(sample - value) < 0.0001f; });
+        };
+        check(verify(4, 2, 0.125f, true),
+              "SC-269: Main includes the song and excludes the destination and its send, with no hardware offset");
+        if (mixed)
+            check(verify(10, 1, 0.375f, false), "SC-269: a mixed take keeps the original aliased physical input");
+    }
+}
+
 void recordingBitDepth(const std::filesystem::path &dir) {
     std::string error;
     const auto settingsFile = dir / "settings.json";
@@ -4868,6 +4953,8 @@ int main(int argc, char **argv) {
         test::TempDirectory recordDir("ui_document", "record");
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());
+        test::TempDirectory resamplingDir("ui_document", "resampling");
+        resamplingRecording(resamplingDir.path());
         arrangementRecord(recordDir.path());
         test::TempDirectory midiRecordingDir("ui_document", "record-midi");
         arrangementMidiRecord(midiRecordingDir.path() / "midi.adi", false);

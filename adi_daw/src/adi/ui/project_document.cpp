@@ -3269,7 +3269,11 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return true;
     }
     const auto availableInputs = static_cast<std::uint32_t>(std::max(0, inputs));
-    if (!armed.audio.empty() && availableInputs == 0 && !externalAudioInputs_) {
+    if (availableInputs == 0 && !externalAudioInputs_ &&
+        std::any_of(armed.audio.begin(), armed.audio.end(), [&](std::int64_t id) {
+            const auto *track = current->findTrack(id);
+            return !track || track->inputRef != kResamplingInput;
+        })) {
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
         return false;
     }
@@ -3329,6 +3333,12 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
     for (const auto id : armed.audio) {
         const auto *track = current->findTrack(id);
+        if (track && track->inputRef == kResamplingInput) {
+            // Main is already on the project's callback clock. The hardware
+            // input's round-trip correction does not apply to this stereo bus.
+            spec.targets.push_back({id, {0, 1}, 0, engine::RecordingSource::MainMix});
+            continue;
+        }
         const auto channels = track ? channelsForInput(track->inputRef, inputs) : std::span<const std::uint32_t>{};
         if (channels.empty() || std::any_of(channels.begin(), channels.end(), [availableInputs](auto channel) {
                 return channel >= availableInputs;

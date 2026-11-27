@@ -59,11 +59,20 @@ bool Graph::preparationCurrent() const noexcept {
 }
 
 bool Graph::connect(NodeId from, NodeId to, Bus bus) {
+    return connectTrackRoute(from, to, bus, 0);
+}
+
+bool Graph::connectTrackRoute(NodeId from, NodeId to, Bus bus, std::int64_t sourceTrack) {
     const auto n = static_cast<NodeId>(slots_.size());
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return false;
     Slot& dst = slots_[static_cast<std::size_t>(to)];
-    if (bus == Bus::Sidechain) dst.sidechains.push_back(from);
-    else                       dst.inputs.push_back(from);
+    auto& inputs = bus == Bus::Sidechain ? dst.sidechains : dst.inputs;
+    auto& trackIds = bus == Bus::Sidechain ? dst.sidechainTrackIds : dst.inputTrackIds;
+    if (sourceTrack != 0 && trackIds.empty())
+        trackIds.resize(inputs.size(), 0);
+    if (sourceTrack != 0 || !trackIds.empty())
+        trackIds.push_back(sourceTrack);
+    inputs.push_back(from);
     prepared_ = false;
     return true;
 }
@@ -1423,7 +1432,13 @@ void Graph::accumulate(RenderState& r, std::vector<Acc*>& dst, const Slot& src, 
     delay.endEdge(edge, src.silent);
 }
 
+bool Graph::excludedTrack(const std::vector<std::int64_t>& trackIds, std::size_t edge) const noexcept {
+    return !excludedTracks_.empty() && !trackIds.empty() &&
+           std::binary_search(excludedTracks_.begin(), excludedTracks_.end(), trackIds[edge]);
+}
+
 bool Graph::mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                const std::vector<std::int64_t>& trackIds,
                 std::vector<float*>& dst, std::vector<double*>& wide,
                 std::int32_t begin, std::int32_t frames) noexcept {
     if (inputs.empty()) return false;
@@ -1448,7 +1463,7 @@ bool Graph::mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<D
     // found, the scan for the last one below ran off the front of the list.
     std::size_t live = 0;
     for (std::size_t k = 0; k < inputs.size(); ++k) {
-        const bool a = idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k]);
+        const bool a = excludedTrack(trackIds, k) || idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k]);
         r.asleep_[k] = a ? 1 : 0;
         if (!a) ++live;
     }
@@ -1510,6 +1525,7 @@ void Graph::accumulateLast(RenderState& r, std::vector<float*>& dst, const std::
 }
 
 bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                    const std::vector<std::int64_t>& trackIds,
                     std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept {
     if (inputs.empty()) return false;
     // At 64 the sources are double already, so even one input is a copy
@@ -1518,7 +1534,7 @@ bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vect
     std::size_t live = 0;
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
-        const bool asleep = idle(src, delays[k]);
+        const bool asleep = excludedTrack(trackIds, k) || idle(src, delays[k]);
         if (!asleep) ++live;
         accumulate<double, double>(r, wide, src, delays[k], begin, frames, k == 0, asleep);
     }
@@ -1894,8 +1910,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         NodeIo nio;
         bool anyMain = false;
         if (!wide) {
-            anyMain = mix(r, s.inputs, s.inDelays, r.mixPtrs_, r.mixWidePtrs_, begin, n);
-            const bool anySide = mix(r, s.sidechains, s.sideDelays, r.sidePtrs_, r.sideWidePtrs_, begin, n);
+            anyMain = mix(r, s.inputs, s.inDelays, s.inputTrackIds, r.mixPtrs_, r.mixWidePtrs_, begin, n);
+            const bool anySide = mix(r, s.sidechains, s.sideDelays, s.sidechainTrackIds, r.sidePtrs_, r.sideWidePtrs_, begin, n);
             nio.in = anyMain ? r.mixPtrs_.data() : nullptr;
             nio.sidechain = anySide ? r.sidePtrs_.data() : nullptr;
             nio.out = s.chanPtrs.data();
@@ -1903,8 +1919,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             // ADR-0207 d2 at 64: the sums stay double. A node that processes
             // double reads them there; any other is handed them narrowed,
             // once, and its float output is widened after it runs.
-            anyMain = mixWide(r, s.inputs, s.inDelays, r.mixWidePtrs_, begin, n);
-            const bool anySide = mixWide(r, s.sidechains, s.sideDelays, r.sideWidePtrs_, begin, n);
+            anyMain = mixWide(r, s.inputs, s.inDelays, s.inputTrackIds, r.mixWidePtrs_, begin, n);
+            const bool anySide = mixWide(r, s.sidechains, s.sideDelays, s.sidechainTrackIds, r.sideWidePtrs_, begin, n);
             if (s.doubles) {
                 nio.in64 = anyMain ? r.mixWidePtrs_.data() : nullptr;
                 nio.sidechain64 = anySide ? r.sideWidePtrs_.data() : nullptr;
@@ -2128,6 +2144,10 @@ std::optional<std::int64_t> Graph::outputLatencyOf(NodeId id) const noexcept {
 }
 
 void Graph::process(const AudioIo& io) noexcept {
+    processWithExcludedTracks(io, {});
+}
+
+void Graph::processWithExcludedTracks(const AudioIo& io, std::span<const std::int64_t> excluded) noexcept {
     renderedFrames_ = 0;
     // Silence first and unconditionally, before any early return. A callback
     // that returns without writing hands the driver whatever was in that
@@ -2143,6 +2163,7 @@ void Graph::process(const AudioIo& io) noexcept {
 
     if (!ok_ || !prepared_) return;
     if (io.frames <= 0 || io.frames > maxFrames_) return;
+    excludedTracks_ = excluded;
 
     // Direct graphs have no GraphHost physical-block pin. Keep their fallback IDs
     // unique across graph replacement; the normal Session path performs no RMW.
@@ -2238,6 +2259,7 @@ void Graph::process(const AudioIo& io) noexcept {
     // to it, so advancing it early would make everything due one block late.
     now_ += frames;
     renderedFrames_ = frames;
+    excludedTracks_ = {};
 }
 
 // ---------------------------------------------------------------------------

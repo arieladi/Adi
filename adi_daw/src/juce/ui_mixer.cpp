@@ -1042,10 +1042,10 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         chooser(0, outputLabel(), true);
         return;
     }
-    // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
-    chooser(0, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String("Ext. In"), true);
-    chooser(1, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(audioInputLabel()),
-            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
+    const bool resampling = audioInputIsResampling();
+    chooser(0, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String(resampling ? "Resampling" : "Ext. In"), true);
+    chooser(1, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(resampling ? "Stereo" : audioInputLabel()),
+            midi_ || (!resampling && static_cast<bool>(panel_.root.externalAudioInputs)));
     if (rows > 2)
         drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
     chooser(3, outputLabel(), true);
@@ -1060,16 +1060,21 @@ const char *MixerStrip::audioInputLabel() const {
             return input->label.c_str();
     return track && track->inputRef ? "Unavailable" : "No Input";
 }
+bool MixerStrip::audioInputIsResampling() const {
+    const auto *track = panel_.root.reader().findTrack(track_);
+    return track && track->inputRef == kResamplingInput;
+}
 bool MixerStrip::onAudioInput(juce::Point<int> at) const noexcept {
     if (kind_ != "audio" || !panel_.root.externalAudioInputs)
         return false;
     if (panel_.vertical()) {
         const auto width = getWidth() - 10;
         return io_ > 0 && (juce::Rectangle<int>(4, kMixerTop + 15, width, 13).contains(at) ||
-                           juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at));
+                           (!audioInputIsResampling() && juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at)));
     }
     return showsInOut() && (juce::Rectangle<int>(5, 3, 70, 13).contains(at) ||
-                            ((getHeight() - 1) / 17 > 1 && juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
+                            (!audioInputIsResampling() && (getHeight() - 1) / 17 > 1 &&
+                             juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
 }
 juce::PopupMenu MixerStrip::audioInputMenu() {
     juce::PopupMenu menu;
@@ -1084,7 +1089,7 @@ juce::PopupMenu MixerStrip::audioInputMenu() {
         juce::PopupMenu::Item item(juce::String::fromUTF8(input.label.c_str()));
         item.setID(-1).setTicked(inputSelected).setAction([safe, id = track_, ref = input.ref] {
             if (safe)
-                safe->panel_.root.setExternalAudioInput(id, ref);
+                safe->panel_.root.setAudioInput(id, ref);
         });
         if (panel_.root.externalInputMeter)
             item.setCustomComponent(new InputMenuRow(input, panel_.root.externalInputMeter, inputSelected));
@@ -1092,6 +1097,10 @@ juce::PopupMenu MixerStrip::audioInputMenu() {
     }
     if (choices.empty())
         menu.addItem("No enabled inputs", false, false, [] {});
+    menu.addItem("Resampling", true, track->inputRef == kResamplingInput, [safe, id = track_] {
+        if (safe)
+            safe->panel_.root.setAudioInput(id, kResamplingInput);
+    });
     menu.addSeparator();
     menu.addItem("Configure...", static_cast<bool>(panel_.root.configureExternalInputs), false, [safe] {
         if (safe && safe->panel_.root.configureExternalInputs)
@@ -1374,9 +1383,10 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         return;
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
-    chooser(15, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String("Ext. In"), true);
-    chooser(31, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(audioInputLabel()),
-            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
+    const bool resampling = audioInputIsResampling();
+    chooser(15, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String(resampling ? "Resampling" : "Ext. In"), true);
+    chooser(31, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(resampling ? "Stereo" : audioInputLabel()),
+            midi_ || (!resampling && static_cast<bool>(panel_.root.externalAudioInputs)));
     label(46, "Monitor");
     drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");

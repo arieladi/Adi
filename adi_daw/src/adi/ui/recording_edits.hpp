@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 namespace adi::ui {
+inline constexpr std::string_view kResamplingInput = "resampling";
+
 // An enabled external input. Its reference stores physical channel numbers,
 // and its channels are indices in the current driver's packed input buffer.
 struct ExternalAudioInput {

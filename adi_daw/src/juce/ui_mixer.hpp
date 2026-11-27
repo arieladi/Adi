@@ -242,6 +242,7 @@ class MixerStrip final : public juce::Component,
     int selectedStereoOutput(RoutingChooser) const;
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
+    bool audioInputIsResampling() const;
     void showAudioInputMenu();
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
