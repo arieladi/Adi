@@ -9,6 +9,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-124 | `basics/browser-chain` at `e6ff43de1` | Scroll Browser labels by wheel and reveal keyboard selections. Browser seat. | Peerless wheel, keyboard, paint and refresh checks passed. Debug Werror, all 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-125, SC-132 | `basics/browser-chain` at `d205b620e` | Add and remove Places from the Browser, including folder drops and read-only folders. Browser, application and library seats. | Peerless chooser/menu/drop tests passed. A read-only folder and a copied User Library marker also passed a direct smoke test. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-126 | `basics/browser-chain` at `2a3da1da4` | Show a Place as a directory tree while typed searches stay flat. Browser and library seats. | Peerless keyboard, folder, duplicate name and search checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-123 | `basics/browser-chain` at `7a1e22ab9` | Audition a sample through the app-owned streaming Cue player with keyboard and waveform control. Browser, application and engine seats. | Headless streaming, Cue, live recording isolation, key rebinding and waveform seek passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -94,6 +95,14 @@ The closed Drums triangle draws in `(137,105.5,5,8)`, and the open triangle draw
 
 The peerless shell fixture covers disclosure clicks, Right, Left, Enter, duplicate filenames, file-only drag, and clearing the search. An additional fixture checks empty folders in indexed and read-only Places. The shared query tests and a direct hierarchy smoke check ran with DISPLAY unset and warnings as errors. The integrated window gate is separate.
 
+### SC-123 Browser preview
+
+In the 256 × 320 Compact software fixture, the preview row is (24, 295, 228, 21) before and after. The former decorative 11 × 11 ring has center (37, 305). It keeps that geometry inside the new 26 × 21 switch at (24, 295). The waveform and its 1 px cursor occupy (54, 298, 194, 15), inside the existing row. For a click at x=151 in that fixture, playback starts at 97/193 of the source duration.
+
+Preview on/off and Preview Selected are app commands `browser.toggle-preview` (29066) and `browser.preview-selected` (29067). Shift+Return and Right are assignable defaults while the sample list has focus and auto Preview is off. Space never auditions. The app stores the toggle under `browser.previewEnabled`. The app-owned service can mix a standalone audition to outputs 1 and 2; the current Browser is shown by a project window.
+
 ## For the director
 
 This session owns the Browser queue.
+
+SC-123. The default auto Preview setting starts off and the standalone level starts at −12 dB, both named constants. Enabling auto Preview waits for a selection gesture, and clicking the same selected row replays after the previous preview ends. These readings await an actual Live comparison. The preview row remains in today's location for the next item, SC-429.
