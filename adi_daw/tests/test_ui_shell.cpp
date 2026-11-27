@@ -8359,7 +8359,12 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     browser.mouseDown(pressAt(browser, pointFor(dropRow), popup));
     check(menuRequests == 2 && remove, "SC-125: a configured extra Place offers Remove from Places");
     if (remove) remove();
-    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({media::pathUtf8(chosen)}) &&
+    // The setting holds a folder as the system writes it (on Windows with backslashes).
+    const auto asSystemText = [](fs::path path) {
+        const auto native = path.make_preferred().u8string();
+        return std::string(reinterpret_cast<const char *>(native.data()), native.size());
+    };
+    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({asSystemText(chosen)}) &&
               fs::is_regular_file(dropped / "Rim.wav"),
           "SC-125: Remove uses the row’s identity even for equal names and leaves its media on disk");
 
