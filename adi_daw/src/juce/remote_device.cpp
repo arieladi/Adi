@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <exception>
 #include <future>
 #include <limits>
@@ -31,6 +32,16 @@ struct StateRequest {
     bool restoring = false;
 };
 
+// The SPSC cursors start 64 bytes apart. Explicit padding keeps the type at
+// the atomic's natural alignment and avoids MSVC's C4324 in containing types.
+struct RingCursor {
+    static constexpr std::size_t kSpacing = 64;
+    std::atomic<std::size_t> index{0};
+    std::array<std::byte, kSpacing - sizeof(index)> padding{};
+};
+static_assert(sizeof(RingCursor) == RingCursor::kSpacing);
+static_assert(alignof(RingCursor) == alignof(std::atomic<std::size_t>));
+
 // Like ParamEditCapture, one producer and one consumer each own an index.
 // Reservations let both sides use preallocated audio and event storage in
 // place, including while a packet spans several graph segments.
@@ -38,18 +49,18 @@ template <class Packet>
 class PacketRing {
 public:
     Packet* reserve() noexcept {
-        const auto write = write_.load(std::memory_order_relaxed);
-        return next(write) != read_.load(std::memory_order_acquire) ? &packets_[write] : nullptr;
+        const auto write = write_.index.load(std::memory_order_relaxed);
+        return next(write) != read_.index.load(std::memory_order_acquire) ? &packets_[write] : nullptr;
     }
     void publish() noexcept {
-        write_.store(next(write_.load(std::memory_order_relaxed)), std::memory_order_release);
+        write_.index.store(next(write_.index.load(std::memory_order_relaxed)), std::memory_order_release);
     }
     Packet* front() noexcept {
-        const auto read = read_.load(std::memory_order_relaxed);
-        return read != write_.load(std::memory_order_acquire) ? &packets_[read] : nullptr;
+        const auto read = read_.index.load(std::memory_order_relaxed);
+        return read != write_.index.load(std::memory_order_acquire) ? &packets_[read] : nullptr;
     }
     void pop() noexcept {
-        read_.store(next(read_.load(std::memory_order_relaxed)), std::memory_order_release);
+        read_.index.store(next(read_.index.load(std::memory_order_relaxed)), std::memory_order_release);
     }
     auto& storage() noexcept { return packets_; } // Owner only, before starting the worker.
 
@@ -57,8 +68,7 @@ private:
     static constexpr std::size_t kSlots = 4; // Three packets plus the SPSC sentinel.
     static constexpr std::size_t next(std::size_t index) noexcept { return (index + 1) % kSlots; }
     std::array<Packet, kSlots> packets_;
-    alignas(64) std::atomic<std::size_t> write_{0};
-    alignas(64) std::atomic<std::size_t> read_{0};
+    RingCursor write_, read_;
 };
 
 struct AudioPacket {

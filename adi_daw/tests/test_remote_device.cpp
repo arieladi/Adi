@@ -13,7 +13,6 @@
 #include <thread>
 
 namespace {
-thread_local bool audit = false;
 int allocations = 0;
 int checks = 0;
 int failures = 0;
@@ -213,8 +212,11 @@ void realtimeDeadline() {
     samples.right.fill(2.0f);
     samples.outLeft.fill(1.0f);
     samples.outRight.fill(1.0f);
-    const auto first = samples.io(0, 8, 1);
-    const audio::CallbackScope callback;
+    auto first = samples.io(0, 8, 1);
+    const engine::Event expression{2, engine::EventType::NoteExpression, 3, 2, 91, 60, 0.123456789};
+    const engine::DeviceTransport transport;
+    first.events = {&expression, 1};
+    first.deviceTransport = &transport;
     // A watchdog releases the fixture even if processing mistakenly waits.
     std::jthread watchdog([&trace](std::stop_token stop) {
         const auto deadline = std::chrono::steady_clock::now() + 1s;
@@ -223,18 +225,20 @@ void realtimeDeadline() {
         trace.frozen.store(false, std::memory_order_release);
         trace.frozen.notify_one();
     });
-    audit = true;
-    remote.process(first);
-    audit = false;
+    {
+        const audio::CallbackScope callback;
+        remote.process(first);
+    }
     const auto waitUntil = std::chrono::steady_clock::now() + 1s;
     while (!trace.entered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < waitUntil)
         std::this_thread::yield();
     check(trace.entered.load(std::memory_order_acquire), "worker is still handling the withheld reply");
 
     const auto second = samples.io(8, 8, 2);
-    audit = true;
-    remote.process(second);
-    audit = false;
+    {
+        const audio::CallbackScope callback;
+        remote.process(second);
+    }
     const bool returnedWhileWithheld = trace.frozen.load(std::memory_order_acquire);
     watchdog.request_stop();
     watchdog.join();
@@ -398,7 +402,7 @@ void graphIsolation() {
 }  // namespace
 
 void adi::test::countReplacedNew() noexcept {
-    if (audit) ++allocations;
+    if (audio::onAudioThread) ++allocations;
 }
 
 int main() {
