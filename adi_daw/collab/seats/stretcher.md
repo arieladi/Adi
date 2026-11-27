@@ -2,7 +2,8 @@ Codex took the stretcher seat on 27 November 2026.
 
 ## Still unbuilt
 
-- A continuing R3 Session run across a variable or performed clock and an arbitrary-phase R3 Legato launch still need worker-page admission for the effective clock and run anchor.
+- A continuing R3 Session run under an arbitrary tempo change, or a Legato target outside the primed worker window, still needs driver admission keyed to the exact launch and loop anchors.
+- A tempo scene that mixes a continuing native Warp run with a fixed media track still needs per-bank clock projection.
 
 The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC report contains no stretcher entry or fix branch. Live 12.4 reference measurements are tracked under Readings owed.
 
@@ -25,6 +26,7 @@ The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC repor
 | TM-WT-04 compensated Session R3 worker | Use aligned worker pages for supported paged R3 media. Register each track's maximum Arrangement and slot delay, including both scene banks. Keep the prepared path for ratios or pitch outside the worker domain. | Forcing the prepared path reported zero graph delay. On the worker path a stored scene performs at 96,000, the graph reports 2,048 frames, both independent dry references are exact, and the two Complex landmarks are 0 and 42 frames from the grid at 0.626 and 0.630 FS. The +12.25 semitone fallback still plays. The measured callback allocated nothing and performed no file I/O. | `72a0ad0a9` on the companion chain. |
 | TM-WT-04 clock prefix before a late first event | Seed a performed tempo change from the effective authored BPM when the first stored event follows the requested boundary. | The old graph played a 90 BPM fixture at 120 BPM through its prelude and moved MIDI edges to frames 30,000 and 42,000. The new graph keeps the edges at 40,000 and 56,000, holds 90 BPM up to the bar, and performs 140 BPM at frame 128,000. The external-tempo suite passed 102 checks. | `fcbf1ee4f` on the stretcher chain. |
 | TM-WT-04 active slot gain through tempo adoption | Carry the live gain identity across a tempo-only projection of the same stored clip and launch data, while assigning new PCM identities. | The old graph prepare raised a half-gain landmark from its expected −0.350 FS to −0.700 FS before the scene. The continuing run now stays at −0.350 FS and its four post-bar landmarks are exact. Legato changes run and plays its own full gain within one sample. An authored gain update in the same batch establishes its own baseline. | `d02d2a883` on the companion chain. |
+| TM-WT-04 bounded scheduled R3 Legato | Prime the full R3 target window in both fixed-clock banks before exposing an arbitrary inherited phase. Refuse a tempo scene when the new bank falls outside that bound. | The previous graph rejected the Legato scene. Now a persisted 120→140 BPM scene performs at frame 96,000 and inherits 0.4 beat. Complex lands within 20 frames and both dry cues are exact with 2,048 samples of compensation. A 90 BPM target requiring 18,667 frames exceeds the 16,384-frame bound, and the active 120 BPM run continues. Zero callback allocations. | `cfe86affa` on the companion chain. The combined strict gate passed 10/10 suites. |
 
 The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, page publication, physical delay and clip diagnostics. `CMakeLists.txt` registers the engines and tests. `docs/ENGINE-WARP.md` records the playback contract. The Warp work requires no format, operation or register reservation.
 
