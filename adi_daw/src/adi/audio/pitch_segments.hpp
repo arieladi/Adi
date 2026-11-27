@@ -48,9 +48,10 @@ using PitchSegmentationCommand = std::variant<PitchSplitSegment, PitchGlueSegmen
 [[nodiscard]] bool validPitchSegmentation(const PitchSegmentation&, std::uint64_t sourceFrames);
 
 // Null geometry uses the automatic notes and assigns initial IDs in source
-// order, starting at one. Explicit geometry derives pitch summaries using
-// actual observations from the automatic analysis. Only owner-worker code
-// prepares or changes a draft.
+// order, starting at one. Explicit geometry uses actual observations from
+// the automatic analysis to derive pitch summaries. A span can include
+// unvoiced source frames and must contain at least one observation. Only
+// owner-worker code prepares or changes a draft.
 [[nodiscard]] PitchSegmentDraftResult draftPitchSegments(const PitchAnalysis&, const PitchEditState&,
                                                          const PitchSegmentation* geometry = nullptr);
 

@@ -41,15 +41,12 @@ bool resolveNote(const PitchAnalysis& source, const PitchSegmentSpan& span, Pitc
 
     result.startFrame = span.startFrame;
     result.endFrame = span.endFrame;
-    auto covered = span.startFrame;
-    for (; note != source.notes.end() && covered < span.endFrame; ++note) {
-        if (note->startFrame > covered) return false;
-        const auto first = firstPointAt(*note, covered);
+    for (; note != source.notes.end() && note->startFrame < span.endFrame; ++note) {
+        const auto first = firstPointAt(*note, span.startFrame);
         const auto last = firstPointAt(*note, span.endFrame);
         result.curve.insert(result.curve.end(), first, last);
-        covered = note->endFrame;
     }
-    return covered >= span.endFrame && summarizePitchNote(result, scratch);
+    return summarizePitchNote(result, scratch);
 }
 
 PitchSegmentation originalGeometry(const PitchAnalysis& source) {

@@ -277,10 +277,15 @@ void authoredGeometry() {
     check(history.undo().ok && fixture.row() == original, "undo restores exact original array-form CBOR");
     check(history.redo().ok && fixture.row() == afterSplit, "redo restores exact geometry-form CBOR");
 
-    auto impossible = *stored.edits;
-    impossible.segmentation->segments[1].endFrame = 550;
+    auto corrected = *stored.edits;
+    corrected.segmentation->segments[1].endFrame = 550;
+    const auto intoGap = resolveClipPitchEdits(corrected, base);
+    check(intoGap.state && intoGap.adjustedAnalysis && intoGap.adjustedAnalysis->notes[1].endFrame == 550,
+          "stored geometry projects over an unvoiced edge at its exact frame");
+    auto impossible = corrected;
+    impossible.segmentation->segments[1].startFrame = 510;
     check(!resolveClipPitchEdits(impossible, base).state,
-          "stored geometry cannot project outside the available detector frames");
+          "stored geometry still rejects a segment with no detector observations");
 
     const PitchSegmentation empty{{}, geometry.nextId};
     const auto deleted = OpJournal(*fixture.store).commit(request(base, {}, &empty));

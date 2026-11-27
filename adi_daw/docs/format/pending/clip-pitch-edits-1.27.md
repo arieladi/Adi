@@ -19,6 +19,8 @@ The ordinary CBOR record is the array of edit rows. Authored geometry wraps
 that array under `rows` alongside `segmentation` with `nextId` and `segments`.
 Each segment has a stable ID and a half-open range in the original source
 clock. The detector's measurements rebuild the authored segments' contours.
+An authored span may include unvoiced audio when it retains at least one
+measured voiced point.
 An explicitly empty geometry retains its row and suppresses the analyzed
 segments while retaining the source signal for playback.
 

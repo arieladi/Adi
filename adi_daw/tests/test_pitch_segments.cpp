@@ -101,9 +101,10 @@ void refusesWithoutMutating() {
     check(!validPitchSegmentation(malformed, original.sourceFrames) && !draftPitchSegments(original, {}, &malformed),
           "persisted segment IDs must be unique");
     malformed = initial;
-    malformed.segments[0].startFrame = 99;
+    malformed.segments[0].startFrame = 0;
+    malformed.segments[0].endFrame = 100;
     check(validPitchSegmentation(malformed, original.sourceFrames) && !draftPitchSegments(original, {}, &malformed),
-          "safe storage geometry must still be covered by immutable detected source notes");
+          "explicit storage geometry must include at least one measured observation");
     malformed = initial;
     malformed.nextId = 2;
     check(!validPitchSegmentation(malformed, original.sourceFrames), "high-water ID must cover all live IDs");
@@ -178,12 +179,70 @@ void correctSourceBoundaries() {
     std::printf("Corrected source start from frame 100 to 150, nominal pitch 6110.00 to 6129.90 cents\n");
 }
 
+void includeUnvoicedSource() {
+    const auto original = source();
+    auto prepared = draftPitchSegments(original, {});
+    if (!prepared) {
+        check(false, "unvoiced edge fixture prepares");
+        return;
+    }
+    auto& draft = *prepared.draft;
+    const PitchSegmentationCommand edgeExtensions[] = {
+        PitchSetSegmentBoundary{1, PitchBoundary::Start, 0},
+        PitchSetSegmentBoundary{2, PitchBoundary::End, 700},
+        PitchSetSegmentBoundary{3, PitchBoundary::End, original.sourceFrames}
+    };
+    check(applyPitchSegmentation(original, draft, edgeExtensions) == PitchEditError::None &&
+          draft.geometry.segments == std::vector<PitchSegmentSpan>{{1, 0, 300}, {2, 300, 700}, {3, 700, 1200}} &&
+          draft.analysis.notes[0].startFrame == 0 && draft.analysis.notes[1].endFrame == 700 &&
+          draft.analysis.notes[2].endFrame == original.sourceFrames &&
+          draft.analysis.notes[0].curve == original.notes[0].curve &&
+          draft.analysis.notes[1].curve == original.notes[1].curve &&
+          draft.analysis.notes[2].curve == original.notes[2].curve,
+          "correction can include unvoiced leading or trailing audio without borrowing observations or rounding bounds");
+
+    const PitchSegmentationCommand glueAfterCorrection[] = {PitchGlueSegments{2, 3}};
+    check(applyPitchSegmentation(original, draft, glueAfterCorrection) == PitchEditError::None &&
+          draft.geometry.segments == std::vector<PitchSegmentSpan>{{1, 0, 300}, {2, 300, 1200}} &&
+          draft.analysis.notes[1].curve == std::vector<PitchPoint>{{300, 6400}, {499, 6400}, {701, 6900}, {899, 6900}} &&
+          std::abs(draft.analysis.notes[1].pitchCents - 6650) < 1e-9,
+          "explicitly covering the gap makes the pieces contiguous for Glue and preserves only actual observations");
+
+    prepared = draftPitchSegments(original, {});
+    if (!prepared) return;
+    auto& interior = *prepared.draft;
+    const PitchSegmentationCommand absorb[] = {
+        PitchDeleteSegment{3}, PitchSetSegmentBoundary{2, PitchBoundary::End, 850}
+    };
+    check(applyPitchSegmentation(original, interior, absorb) == PitchEditError::None &&
+          interior.geometry.segments == std::vector<PitchSegmentSpan>{{1, 100, 300}, {2, 300, 850}} &&
+          interior.analysis.notes[0] == original.notes[0] &&
+          interior.analysis.notes[1].curve == std::vector<PitchPoint>{{300, 6400}, {499, 6400}, {701, 6900}} &&
+          interior.analysis.notes[1].pitchCents == 6400,
+          "interior gap derives summary only from measured points and leaves untouched notes exact");
+    const auto reloaded = draftPitchSegments(original, interior.edits, &interior.geometry);
+    check(reloaded && reloaded.draft->analysis == interior.analysis && reloaded.draft->geometry == interior.geometry,
+          "persisted source bounds across an interior gap reconstruct the same working analysis");
+
+    const auto before = interior;
+    const PitchSegmentationCommand pureGap[] = {
+        PitchSetSegmentBoundary{1, PitchBoundary::Start, 90},
+        PitchSetSegmentBoundary{2, PitchBoundary::Start, 510},
+        PitchSetSegmentBoundary{2, PitchBoundary::End, 700}
+    };
+    check(applyPitchSegmentation(original, interior, pureGap) == PitchEditError::InvalidValue &&
+          interior.geometry == before.geometry && interior.analysis == before.analysis &&
+          interior.edits.notes == before.edits.notes,
+          "an entirely unvoiced span refuses and rolls back every command in the batch");
+}
+
 } // namespace
 
 int main() {
     splitGlueDelete();
     refusesWithoutMutating();
     correctSourceBoundaries();
+    includeUnvoicedSource();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

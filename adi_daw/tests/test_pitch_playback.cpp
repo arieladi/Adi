@@ -183,6 +183,19 @@ void run() {
           "Session uses durable split geometry and shifts only the edited child");
     std::printf("Durable split at frame %u, left %.3f Hz, right %.3f Hz\n", sourceFrames / 2, leftHz, rightHz);
 
+    const std::array deletion{
+        audio::PitchSegmentationCommand{audio::PitchDeleteSegment{draft.draft->geometry.segments.front().id}},
+        audio::PitchSegmentationCommand{audio::PitchDeleteSegment{draft.draft->geometry.segments.back().id}}};
+    if (audio::applyPitchSegmentation(analysis.data->analysis, *draft.draft, deletion) != audio::PitchEditError::None)
+        throw std::runtime_error("delete pitch segments");
+    const auto onlyGeometry = clip_edit::prepareClipPitchEdits(*analysis.data, draft.draft->edits, &draft.draft->geometry);
+    if (!onlyGeometry.request || !OpJournal(*store).commit(*onlyGeometry.request).ok)
+        throw std::runtime_error("commit empty pitch geometry");
+    engine::Session deleteSession;
+    load(deleteSession, *store);
+    check(deleteSession.clips()->waitForWarp() && render(deleteSession, 6000) == original,
+          "deleting every segment restores the source PCM without silencing the clip");
+
     writeTone(file, 300);
     engine::Session changed;
     load(changed, *store);

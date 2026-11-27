@@ -217,7 +217,8 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
                                               audio::DecodeCache* decodeCache, AnalysisCache* analysisCache) {
     if (audio::onAudioThread) return fail(ClipPitchRenderProblem::Realtime);
     if (stop.stop_requested()) return fail(ClipPitchRenderProblem::Cancelled);
-    if (!plan.edits || plan.edits->rows.empty()) return fail(ClipPitchRenderProblem::Edits, "no Pitch Editor edit set");
+    if (!plan.edits || (plan.edits->rows.empty() && !plan.edits->segmentation))
+        return fail(ClipPitchRenderProblem::Edits, "no Pitch Editor edit set");
     const auto& saved = *plan.edits;
     if (plan.source.empty() || plan.sourceFrames == 0 || plan.sourceStart > saved.sourceFrames ||
         plan.sourceFrames > saved.sourceFrames - plan.sourceStart)
