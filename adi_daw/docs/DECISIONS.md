@@ -20796,7 +20796,7 @@ computer and on a server; Stop Agent's key.
 | `collab/README.md` | ADR 0261 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0262; DF-W62, DF-R4, DF-C10, DF-E93; SC-433 |
 
-## ADR-0262 — The Browser's second sheet, and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, and four buttons — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON FOUR CHOICES (W, X, Y, Z) FROM A PICTURE; SETTLES WHAT ADR-0261 d19 LEFT TO THE SHEET; ADDS TO ADR-0148 AND ADR-0243 d4; THE ANALYSER QUEUE'S NAMES**
+## ADR-0262 — The Browser's second sheet, and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, and four buttons — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON FOUR CHOICES (W, X, Y, Z) FROM A PICTURE, AND "agreed" FOR THE SHEET; SETTLES WHAT ADR-0261 d19 LEFT TO THE SHEET; ADDS TO ADR-0148 AND ADR-0243 d4; THE ANALYSER QUEUE'S NAMES**
 
 **What this records.** ADR-0261 d19 owed the director a picture before any of these was built: the AI
 label and its mode, the filters by what a sound measures, the preview row that waits, a server's mark,
@@ -20822,10 +20822,10 @@ twice (on samples, and moved to AI). Four choices on it were his. His words: "W 
 4. **The floating search has four buttons (Z a):** Samples, Devices (with plug-ins and presets), AI and
    Commands. It opens on Samples; the mouse or the left and right arrows move between them. With no
    agent the AI button is not shown (ADR-0261 d3).
-5. **What the sheet is.** He chose from proposal 2 and raised nothing else on it. He has not said the
-   word "agreed" for the whole sheet. Win takes the four answers as leave to build from it, and the first
-   built surface is shown to him against the picture, as ADR-0243 d1 asks of every surface. On the sheet
-   and not chosen by him, so still his to change: the six filter groups' names (Type, Length, Key, Tempo,
+5. **The sheet is agreed.** He chose from proposal 2, and when win noted that he had not agreed the sheet
+   as a whole he answered: "oh, then ill say it now = agreed". It is the Browser's sheet under ADR-0243 d1:
+   seats build the look of these parts from it, and each built part is shown to him against it. Drawn by
+   win and not asked of him one by one, so the first to check when they are built: the six filter groups' names (Type, Length, Key, Tempo,
    Tone, Hits), the columns of a sample's row (length, tempo, key), the head of the AI pane, the
    "Sessions" place.
 6. **The analyser queue's names** (the session's recommendations, taken by win; ADI's own words for
