@@ -3732,7 +3732,7 @@ constexpr std::pair<automation::Shape, const char *> kArrangementShapes[]{
     {automation::Shape::ADSR, "ADSR"},
 };
 
-bool discreteAutomationShape(const AdiRootComponent &root, std::int64_t track, const AutomationTarget &target,
+bool discreteAutomationEnvelope(const AdiRootComponent &root, std::int64_t track, const AutomationTarget &target,
                              const engine::AutomationLaneNode *lane) {
     if (target.stepped || (lane && lane->valueDomain == "enum"))
         return true;
@@ -3758,7 +3758,8 @@ bool discreteAutomationShape(const AdiRootComponent &root, std::int64_t track, c
 void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
     const auto edit = automationValueAt(e.position, view.snaps(e.mods), true);
     const auto current = view.root.current();
-    const auto *lane = edit && current ? envelopeOf(*current, edit->target).lane : view.automationLaneAt(e.y);
+    const auto envelope = edit && current ? envelopeOf(*current, edit->target) : TrackEnvelope{};
+    const auto *lane = edit ? envelope.lane : view.automationLaneAt(e.y);
     const auto &geometry = view.geometry;
     const auto &selection = geometry.selection;
     auto [begin, end] = std::minmax(selection.start, selection.end);
@@ -3781,9 +3782,14 @@ void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
         }
     }
 
+    const bool simplifySelection = useSelection && automationSelectionTargets_.size() == 1 &&
+                                   lane && envelope.data && envelope.data->points.size() >= 3 &&
+        std::any_of(envelope.data->points.begin(), std::prev(envelope.data->points.end()),
+                    [](const auto &point) { return point.curve != kAutomationHold; });
     const auto generation = view.root.committedGeneration();
     const juce::Component::SafePointer<ArrangementCanvas> safe(this);
-    view.contextMenu(e.getScreenPosition(), false, lane, [safe, edit, lane, rangeBegin, rangeEnd, generation](juce::PopupMenu &menu) {
+    view.contextMenu(e.getScreenPosition(), false, lane,
+                     [safe, edit, lane, rangeBegin, rangeEnd, generation, simplifySelection](juce::PopupMenu &menu) {
         if (safe == nullptr || !edit)
             return;
         menu.addSeparator();
@@ -3794,7 +3800,7 @@ void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
         });
         if (rangeBegin < 0 || rangeEnd <= rangeBegin || (lane && lane->timeBase != 0))
             return;
-        const bool discrete = discreteAutomationShape(safe->view.root, edit->track, edit->target, lane);
+        const bool discrete = discreteAutomationEnvelope(safe->view.root, edit->track, edit->target, lane);
         juce::PopupMenu shapes;
         for (const auto &[shape, label] : kArrangementShapes) {
             if (shape != automation::Shape::Square && discrete)
@@ -3805,6 +3811,11 @@ void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
             });
         }
         menu.addSubMenu("Insert Shape", std::move(shapes));
+        if (simplifySelection && !discrete)
+            menu.addItem("Simplify Envelope", [safe, address = *edit, rangeBegin, rangeEnd, generation] {
+                if (safe != nullptr)
+                    safe->simplifyAutomationEnvelope(address, rangeBegin, rangeEnd, generation);
+            });
     });
 }
 
@@ -3822,7 +3833,7 @@ void ArrangementCanvas::insertAutomationShape(const AutomationValueAddress &addr
         return;
     }
     if (shape != automation::Shape::Square &&
-        discreteAutomationShape(view.root, address.track, target, envelope.lane))
+        discreteAutomationEnvelope(view.root, address.track, target, envelope.lane))
         return;
 
     const auto rate = view.root.editRate();
@@ -3920,6 +3931,23 @@ void ArrangementCanvas::insertAutomationShape(const AutomationValueAddress &addr
     } catch (const std::exception &error) {
         view.root.say(error.what());
     }
+}
+
+void ArrangementCanvas::simplifyAutomationEnvelope(const AutomationValueAddress &address, std::int64_t begin,
+                                                    std::int64_t end, std::uint64_t generation) {
+    const auto current = view.root.current();
+    if (!current || view.root.committedGeneration() != generation) {
+        view.root.say("The envelope changed. Open Simplify Envelope again.");
+        return;
+    }
+    const auto envelope = envelopeOf(*current, address.target);
+    if (!envelope.lane || !envelope.data || !resolveAutomationValue(address, envelope) ||
+        !editableEnvelope(envelope) || discreteAutomationEnvelope(view.root, address.track, address.target, envelope.lane))
+        return;
+
+    const auto tolerance = automation::kSimplifyRelativeTolerance * (address.target.maximum - address.target.minimum);
+    if (view.root.simplifyAutomationRange(envelope.lane->id, begin, end, tolerance))
+        focusIfShowing(*this);
 }
 
 void ArrangementCanvas::beginAutomationValueEdit(const AutomationValueAddress &address) {

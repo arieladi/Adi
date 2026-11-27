@@ -16883,6 +16883,126 @@ void automationShapeMenu(AppCommands &commands, const std::filesystem::path &dir
           "the fresh Square starts at the unsnapped marker, spans one full grid cell, and preserves the base");
 }
 
+void simplifyAutomationEnvelope(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-simplify.adi", true, {}, error);
+    check(document != nullptr, "a project for the Simplify Envelope menu");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, panLane = 31, activatorLane = 32;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto begin = 7 * bar / 8, end = 25 * bar / 8;
+    const auto pan = panTarget(track);
+    const auto activator = activatorTarget(track);
+    auto panPoints = automation::writePoints(41, panLane, nullptr, Payload::array({
+        {{"id", 1}, {"time", bar / 2}, {"value", -.5}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 2}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 3}, {"time", 3 * bar / 2}, {"value", -.125}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 4}, {"time", 2 * bar}, {"value", .125}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 5}, {"time", 5 * bar / 2}, {"value", .375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 6}, {"time", 3 * bar}, {"value", .625}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 7}, {"time", 7 * bar / 2}, {"value", .5}, {"curve", 1}, {"tension", 0.}}
+    }));
+    auto heldPoints = automation::writePoints(42, activatorLane, nullptr, Payload::array({
+        {{"id", 1}, {"time", bar}, {"value", 0}, {"curve", 0}, {"tension", 0.}},
+        {{"id", 2}, {"time", 2 * bar}, {"value", 1}, {"curve", 0}, {"tension", 0.}},
+        {{"id", 3}, {"time", 3 * bar}, {"value", 0}, {"curve", 0}, {"tension", 0.}}
+    }));
+    const bool seeded = document->ops().submit({
+        automation::createLane(automationLaneSpec(pan, 0, panLane)),
+        automation::createLane(automationLaneSpec(activator, 0, activatorLane)),
+        std::move(panPoints), std::move(heldPoints)}).ok && document->synchronise();
+    check(seeded, "continuous Pan and discrete Track Activator automation are authored");
+    if (!seeded)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-simplify");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid = {false, true, false, 0, 1};
+    root.arrangement.changed();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&](auto tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto show = [&](const AutomationTarget &target) -> std::optional<ArrangementCanvas::LaneBody> {
+        root.showAutomation(track, target);
+        root.frame();
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == target)
+                return body;
+        return std::nullopt;
+    };
+    const auto select = [&](const ArrangementCanvas::LaneBody &body) {
+        const float y = body.bottom - 5.f;
+        const juce::Point<float> start{x(begin), y}, finish{x(end), y};
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, finish));
+        canvas.mouseUp(dragAt(canvas, start, finish));
+        root.frame();
+        return canvas.hasAutomationSelection() && geometry.selection.start == begin && geometry.selection.end == end;
+    };
+    const auto open = [&](const ArrangementCanvas::LaneBody &body) {
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Simplify Envelope" && item.getItem().isEnabled)
+                    action = item.getItem().action;
+        };
+        const auto popup = pressAt(canvas, {x(2 * bar), (body.top + body.scaleBottom) / 2.f},
+                                   juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        return action;
+    };
+
+    const auto panBody = show(pan);
+    const auto before = root.current();
+    check(panBody && before, "the Pan lane and source snapshot are available");
+    if (!panBody || !before)
+        return;
+    const auto original = envelopeOf(*before, pan);
+    const auto other = envelopeOf(*before, activator);
+    check(panBody && original.data && other.data, "the original envelopes are readable");
+    if (!panBody || !original.data || !other.data)
+        return;
+    check(!open(*panBody), "a marker alone does not offer Simplify Envelope");
+    check(select(*panBody), "the exact Pan time range is selected");
+    auto action = open(*panBody);
+    check(static_cast<bool>(action), "the selected continuous envelope offers Simplify Envelope");
+    if (action) {
+        const auto head = OpJournal(document->store()).headSeq();
+        action();
+        root.frame();
+        const auto applied = root.current();
+        const auto reduced = envelopeOf(*applied, pan);
+        const auto unchanged = envelopeOf(*applied, activator);
+        const auto &old = original.data->points;
+        check(reduced.data && reduced.data->points == std::vector<engine::AutomationPointNode>{
+                  old[0], old[1], old[5], old[6]} &&
+                  unchanged.data && unchanged.data->encoded == other.data->encoded,
+              "Simplify drops only the redundant selected Pan knots and preserves the exterior and other lane");
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == head,
+              "Simplify is one Undo step");
+        root.frame();
+        const auto undone = envelopeOf(*root.current(), pan);
+        check(undone.data && undone.data->encoded == original.data->encoded,
+              "Undo restores the exact original Pan stream");
+    }
+
+    const auto activatorBody = show(activator);
+    check(activatorBody && select(*activatorBody), "the exact Track Activator time range is selected");
+    if (activatorBody)
+        check(!open(*activatorBody), "the discrete Hold envelope does not offer Simplify Envelope");
+}
+
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;
     auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
@@ -24214,6 +24334,7 @@ int main(int argc, char **argv) {
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationCurveGestures", [&] { automationCurveGestures(commands, temp.path()); });
     trace("automationShapeMenu", [&] { automationShapeMenu(commands, temp.path()); });
+    trace("simplifyAutomationEnvelope", [&] { simplifyAutomationEnvelope(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
     trace("reenableArrangementEnvelope", [&] { reenableArrangementEnvelope(commands, temp.path()); });

@@ -122,10 +122,11 @@ std::map<std::int64_t, Payload> currentRows(std::vector<Payload> stored, const c
 }
 } // namespace
 
-void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds &ids,
-                         const edit::TimeMap &time, std::int64_t laneId, std::int64_t begin,
-                         std::int64_t end, std::span<const NativeSpliceKnot> replacement,
-                         double rate, OpTransactionInputs *guards, std::size_t budget) {
+static void stageSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds &ids,
+                        const edit::TimeMap &time, std::int64_t laneId, std::int64_t begin,
+                        std::int64_t end, std::span<const NativeSpliceKnot> replacement,
+                        double rate, OpTransactionInputs *guards, std::size_t budget,
+                        std::optional<double> simplification) {
     require(!audio::onAudioThread, "automation splice belongs off the audio callback");
     require(!store.readOnly(), "project is read-only");
     require(std::isfinite(rate) && rate > 0 && rate <= 768000,
@@ -148,6 +149,10 @@ void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds
     require(base64 == 0 || base64 == 1, "automation lane clock is unknown");
     const auto base = static_cast<int>(base64);
     require(lane->at("owner_kind") != "clip", "splice needs a global automation lane");
+    require(!simplification || lane->at("value_domain") != "enum",
+            "Simplify Envelope does not change enum automation");
+    require(!simplification || (std::isfinite(*simplification) && *simplification >= 0),
+            "Simplify Envelope needs a finite nonnegative tolerance");
     guardRow(guards, "automation_lanes", laneId, storedLane);
     if (guards)
         (void)guardedRows(store, "tempo_map", Payload::object(), guards);
@@ -184,6 +189,8 @@ void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds
                                    range.at("source_first"), range.at("source_last")};
         }
     } else {
+        if (simplification)
+            return;
         dataId = ids.next("automation_data");
         guardRow(guards, "automation_data", dataId, std::nullopt);
         original.header = {
@@ -205,11 +212,14 @@ void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds
         incoming.push_back(
             {knot.point, sampleAt(time, base, knot.point.time, rate), knot.slice});
     }
-    auto splice = planEnvelopeSplice(
-        original.knots, lane->at("default_value"),
-        {{begin, sampleAt(time, base, begin, rate)}, {end, sampleAt(time, base, end, rate)}},
-        incoming, budget);
+    const SpliceBounds bounds{{begin, sampleAt(time, base, begin, rate)},
+                              {end, sampleAt(time, base, end, rate)}};
+    auto splice = simplification
+        ? planEnvelopeSimplification(original.knots, bounds, *simplification, budget)
+        : planEnvelopeSplice(original.knots, lane->at("default_value"), bounds, incoming, budget);
     require(splice.ok, splice.error.c_str());
+    if (splice.knots.empty())
+        return;
     for (const auto &knot : original.knots)
         require((lane->at("min_value").is_null() ||
                  knot.point.value >= lane->at("min_value").get<double>()) &&
@@ -281,11 +291,19 @@ void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds
     edits.set("automation_data", dataId, row);
 }
 
-PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
+void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds &ids,
+                         const edit::TimeMap &time, std::int64_t laneId, std::int64_t begin,
+                         std::int64_t end, std::span<const NativeSpliceKnot> replacement,
+                         double rate, OpTransactionInputs *guards, std::size_t budget) {
+    stageSplice(store, edits, ids, time, laneId, begin, end, replacement, rate, guards, budget, {});
+}
+
+static PreparedEnvelopeSplice prepareSplice(Store &store, std::int64_t laneId, std::int64_t begin,
                                              std::int64_t end,
                                              std::span<const NativeSpliceKnot> replacement,
                                              double rate, std::size_t budget, std::string_view label,
-                                             std::optional<Payload> selection) {
+                                             std::optional<Payload> selection,
+                                             std::optional<double> simplification) {
     PreparedEnvelopeSplice result;
     try {
         require(!audio::onAudioThread, "automation splice belongs off the audio callback");
@@ -299,9 +317,13 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         const edit::TimeMap time(db);
         clip_edit::CopyIds ids(db);
         edit::RowEdits edits(db);
-        stageEnvelopeSplice(store, edits, ids, time, laneId, begin, end, replacement, rate,
-                            &inputs, budget);
+        stageSplice(store, edits, ids, time, laneId, begin, end, replacement, rate,
+                    &inputs, budget, simplification);
         const auto changes = edits.changes();
+        if (simplification && changes.empty()) {
+            result.ok = true;
+            return result;
+        }
         OpContext context{store, db};
         std::string validation;
         require(edit::validateRows(context, {{"changes", changes}}, validation),
@@ -323,5 +345,20 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         result.requests.clear();
     }
     return result;
+}
+PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
+                                             std::int64_t end,
+                                             std::span<const NativeSpliceKnot> replacement,
+                                             double rate, std::size_t budget, std::string_view label,
+                                             std::optional<Payload> selection) {
+    return prepareSplice(store, laneId, begin, end, replacement, rate, budget, label,
+                         std::move(selection), {});
+}
+
+PreparedEnvelopeSplice prepareSimplifyEnvelope(Store &store, std::int64_t laneId, std::int64_t begin,
+                                                std::int64_t end, double rate, double maxValueError,
+                                                std::optional<Payload> selection) {
+    return prepareSplice(store, laneId, begin, end, {}, rate, kSplicePointBudget, "Simplify Envelope",
+                         std::move(selection), maxValueError);
 }
 } // namespace adi::automation

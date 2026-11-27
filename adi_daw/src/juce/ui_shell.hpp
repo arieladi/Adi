@@ -835,6 +835,7 @@ class AdiRootComponent final : public juce::Component,
     bool submitAutomationMove(std::vector<OpRequest> requests, std::span<const TrackEnvelope> envelopes);
     bool replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
                                 std::span<const automation::NativeSpliceKnot>, const char *label);
+    bool simplifyAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end, double tolerance);
     bool transformAutomationRange(std::int64_t lane, const edit::AutomationTransform &, const char *label);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                               std::int64_t begin, std::int64_t end,
