@@ -59,6 +59,7 @@ void AppCommands::reload() {
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
+    envelopesLocked_ = !flag(settings_, "editing.automationFollowsClips", true);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
@@ -313,6 +314,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
         {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
         {"view.switch-detail-view", "View"}, // SwitchDetailView
+        {"options.lock-envelopes", "Options"}, // LockEnvelopes
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -429,6 +431,16 @@ bool AppCommands::setDelayCompensation(bool on, std::string &why) {
     delayCompensation_ = on; // in force from here, as every Settings change is
     return settings_.save(why);
 }
+bool AppCommands::setEnvelopesLocked(bool locked, std::string &why) {
+    if (!settings_.set("editing.automationFollowsClips", !locked, {}, why))
+        return false;
+    envelopesLocked_ = locked;
+    const bool saved = settings_.save(why);
+    manager.commandStatusChanged();
+    if (onEnvelopeLockChanged)
+        onEnvelopeLockChanged();
+    return saved;
+}
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
         return false;
@@ -538,7 +550,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
+                                  "Lock Envelopes"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -883,6 +896,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case AutomationMode: // manual 25.2, 41.7: A, the View menu's; the names bar's switch too
         info.addDefaultKeypress('a', 0);
         info.setTicked(active_ != nullptr && active_->automationMode());
+        info.setActive(active_ != nullptr);
+        break;
+    case LockEnvelopes:
+        info.setTicked(envelopesLocked());
         info.setActive(active_ != nullptr);
         break;
     case DeleteAutomation:
@@ -1369,8 +1386,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(namesBar);
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
     // The bar over the track names (the Arrangement sheet): Flip Sides; the track row's sections, which
-    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; and the two that
-    // wait for the engine's automation.
+    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; Automation Mode
+    // and Lock Envelopes.
     namesBar.flip.onClick = [this] { command(AppCommands::SwapPanels); };
     namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
     namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
@@ -1380,7 +1397,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
     namesBar.automation.onClick = [this] { setAutomationMode(!automationMode_); };
-    namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
+    namesBar.lock.onClick = [this] { command(AppCommands::LockEnvelopes); };
+    namesBar.lock.setToggleState(commands_.envelopesLocked(), juce::dontSendNotification);
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -1595,6 +1613,9 @@ void AdiRootComponent::frame() noexcept {
         arrangement.geometry.selection = session_.selection();
         dirty_.mark(DirtySet::Layout);
     }
+    const bool envelopesLocked = commands_.envelopesLocked();
+    if (namesBar.lock.getToggleState() != envelopesLocked)
+        namesBar.lock.setToggleState(envelopesLocked, juce::dontSendNotification);
     // The Info View is app-scoped: a toggle in another window shows here too.
     if (infoShown_ != commands_.infoView()) {
         infoShown_ = commands_.infoView();
@@ -5234,6 +5255,15 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::AutomationMode:
         setAutomationMode(!automationMode_);
         return true;
+    case AppCommands::LockEnvelopes: {
+        std::string why;
+        const bool saved = commands_.setEnvelopesLocked(!commands_.envelopesLocked(), why);
+        namesBar.lock.setToggleState(commands_.envelopesLocked(), juce::dontSendNotification);
+        if (!saved)
+            return fail(why.empty() ? "Lock Envelopes could not be saved." : why);
+        say({});
+        return true;
+    }
     case AppCommands::DeleteAutomation: {
         if (!canDeleteShownAutomation())
             return false;
@@ -5679,11 +5709,13 @@ const std::vector<MenuEntries> &menuBar() {
         // other Options entries is to be read on Live 12 (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
-         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::LockEnvelopes, 0,
+          C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
-         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::LockEnvelopes, 0,
+          C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the

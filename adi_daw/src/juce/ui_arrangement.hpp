@@ -562,10 +562,6 @@ class NamesBar final : public juce::Component {
     BarButton automation, lock;
     // Show's least width: "Show" and a few letters of the view.
     static constexpr int kShowMin = 80;
-    // What Automation Mode and Lock Envelopes say while they wait.
-    static constexpr const char *kAutomationWaits =
-        "Automation Mode waits for the engine's automation lanes (window log, N26).";
-    static constexpr const char *kLockWaits = "Lock Envelopes waits for the engine's automation lanes (window log, N26).";
 
   private:
     // The two groups' boxes, drawn behind their cells.

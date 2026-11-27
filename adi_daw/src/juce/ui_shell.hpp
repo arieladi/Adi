@@ -185,7 +185,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArmSelected,
         ToggleTrackMixer,
         SwitchDetailView,
-        LastId = SwitchDetailView
+        LockEnvelopes,
+        LastId = LockEnvelopes
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -225,6 +226,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Delay is unavailable, its stored values kept. An application setting, not an undo step.
     bool delayCompensation() const noexcept { return delayCompensation_; }
     bool setDelayCompensation(bool on, std::string &why);
+    // Lock Envelopes inverts the app's Automation follows clips setting.
+    bool envelopesLocked() const noexcept { return envelopesLocked_; }
+    bool setEnvelopesLocked(bool locked, std::string &why);
+    std::function<void()> onEnvelopeLockChanged;
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -307,6 +312,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
     bool delayCompensation_ = true;
+    bool envelopesLocked_ = false;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;

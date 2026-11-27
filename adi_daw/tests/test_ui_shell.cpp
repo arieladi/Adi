@@ -956,13 +956,8 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0 && lanes.heightFor(1) == mainHeight,
               "Alt+U unfolds Main as well as every group");
     }
-    // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
-    // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
+    // On the bar over the names: Automation Mode switches on and off (AU-01).
     {
-        root.say({});
-        root.namesBar.lock.onClick();
-        check(root.error().rfind("Lock Envelopes waits for the engine's automation", 0) == 0,
-              "a click on Lock Envelopes says what it waits for");
         root.namesBar.automation.onClick();
         check(root.automationMode(), "a click on Automation Mode turns it on");
         root.namesBar.automation.onClick();
@@ -16784,6 +16779,130 @@ void automationKeyboardEdits(AppCommands &commands, const std::filesystem::path 
           "Alt+Up returns to Volume while both envelopes remain unchanged");
 }
 
+void lockEnvelopes(const std::filesystem::path &parent) {
+    const auto dir = parent / "lock-envelopes";
+    std::filesystem::create_directories(dir);
+    settings::AppSettings settings(appdata::App::Daw, dir / "settings.json");
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation.adi", true, {}, error);
+    check(document != nullptr, "a project for Lock Envelopes");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, clipId = 81;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto start = bar, destination = 4 * bar, inside = bar / 2;
+    constexpr double breakpointValue = -23.;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", clipId}, {"track", track}, {"kind", "midi"}, {"pos", start},
+                    {"length", bar}, {"name", "Clip with Volume automation"}};
+    const bool madeClip = document->ops().submit(clip).ok && document->synchronise();
+    check(madeClip, "a MIDI clip occupies the original time range");
+    if (!madeClip)
+        return;
+
+    auto content = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(),
+        commands, document->views(), document->sessionState(), "lock-envelopes");
+    AdiWindow window(std::move(content), commands, false);
+    window.setSize(1440, 900);
+    auto &root = window.root();
+    root.afterEdit = [&] { document->synchronise(); };
+    const auto volume = volumeTarget(track);
+    const bool authored = root.addAutomationPoint(track, volume, start + inside, breakpointValue, true);
+    root.frame();
+    check(authored, "the Volume breakpoint lies inside the clip's time range");
+    if (!authored)
+        return;
+
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, volume) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points();
+    const auto clipAt = [&](std::int64_t tick) {
+        const auto *lane = root.reader().findTrack(track);
+        return lane && lane->clips.size() == 1 && lane->clips.front()->id == clipId &&
+               lane->clips.front()->posTicks == tick && lane->clips.front()->lengthTicks == bar;
+    };
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto baseline = undoStep();
+    const auto lockId = AppCommands::commandFor("options.lock-envelopes");
+    const auto menuMatches = [&](bool locked) {
+        auto *barMenu = window.menu();
+        if (lockId == 0 || barMenu == nullptr)
+            return false;
+        const auto index = barMenu->getMenuBarNames().indexOf("Options");
+        if (index < 0)
+            return false;
+        const auto menu = barMenu->getMenuForIndex(index, "Options");
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            const auto &item = it.getItem();
+            if (item.itemID == lockId)
+                return item.text == "Lock Envelopes" && item.isEnabled && item.isTicked == locked;
+        }
+        return false;
+    };
+    auto &button = root.namesBar.lock;
+    const auto follows = [&] { return settings.get("editing.automationFollowsClips") == true; };
+    check(clipAt(start) && original.size() == 1 && original.front().time == start + inside &&
+              original.front().value == breakpointValue && follows() && !button.getToggleState(),
+          "the MIDI clip and breakpoint start in place with envelopes unlocked");
+    check(menuMatches(false), "Options lists Lock Envelopes unchecked by default");
+
+    button.onClick();
+    root.frame();
+    const settings::AppSettings savedLock(appdata::App::Daw, settings.file());
+    check(!follows() && savedLock.get("editing.automationFollowsClips") == false &&
+              button.getToggleState() && menuMatches(true) && undoStep() == baseline,
+          "the padlock toggles and saves the setting, ticks Options, and adds no Undo step");
+    const auto move = [&] {
+        const bool moved = root.placeClips({{clipId, track, destination}}, "Move Clip");
+        root.frame();
+        return moved && clipAt(destination);
+    };
+    const bool movedLocked = move();
+    check(movedLocked && points() == original,
+          "moving a locked clip leaves the Volume breakpoint at its original time and ID");
+    if (undoStep() != baseline) {
+        const bool undone = root.command(AppCommands::Undo);
+        root.frame();
+        check(undone && clipAt(start) && points() == original && undoStep() == baseline,
+              "one Undo restores the clip before replaying the move");
+        if (!undone || !clipAt(start) || undoStep() != baseline)
+            return;
+    } else if (!clipAt(start)) {
+        return;
+    }
+
+    button.onClick();
+    root.frame();
+    check(follows() && !button.getToggleState() && menuMatches(false) && undoStep() == baseline,
+          "a second padlock click unlocks the envelopes and unticks Options");
+    const bool movedUnlocked = move();
+    const auto unlocked = points();
+    const auto hasPoint = [&](std::int64_t tick) {
+        return std::any_of(unlocked.begin(), unlocked.end(), [&](const auto &point) {
+            return point.time == tick && point.value == breakpointValue;
+        });
+    };
+    check(movedUnlocked && hasPoint(destination + inside) && !hasPoint(start + inside),
+          "replaying the move unlocked carries the Volume breakpoint with the MIDI clip");
+
+    if (lockId != 0) {
+        const auto beforeMenu = undoStep();
+        const bool invoked = root.command(lockId);
+        root.frame();
+        check(invoked && !follows() && button.getToggleState() && menuMatches(true) && undoStep() == beforeMenu,
+              "the Options command locks the same setting and updates the padlock without an edit");
+    }
+}
+
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
@@ -20863,7 +20982,8 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::LockEnvelopes, 0,
+                                                   C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
@@ -20880,7 +21000,8 @@ int main(int argc, char **argv) {
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::LockEnvelopes, 0,
+                                                   C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
@@ -23490,6 +23611,7 @@ int main(int argc, char **argv) {
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
+    trace("lockEnvelopes", [&] { lockEnvelopes(temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
