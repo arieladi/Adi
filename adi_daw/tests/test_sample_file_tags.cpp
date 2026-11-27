@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <locale>
 #include <stdexcept>
 #include <string_view>
 
@@ -135,6 +136,37 @@ void wavTags(const std::filesystem::path& directory) {
     wav.pop_back();
     writeFixture(path, wav);
     check(!readSampleFileTags(path).acidBpm, "truncated RIFF envelope returns no metadata");
+}
+
+void bpmGrammar(const std::filesystem::path& directory) {
+    struct CommaDecimal final : std::numpunct<char> {
+        char do_decimal_point() const override { return ','; }
+    };
+    struct RestoreLocale {
+        std::locale previous;
+        ~RestoreLocale() { std::locale::global(previous); }
+    } restore{std::locale::global(std::locale(std::locale::classic(), new CommaDecimal))};
+
+    const auto path = directory / "tempo-grammar.wav";
+    const auto parse = [&](std::string_view text) {
+        std::string frames;
+        appendId3Frame(frames, "TBPM", text);
+        auto riff = pcmRiff();
+        appendChunk(riff, "id3 ", id3Tag(4, frames), true);
+        writeFixture(path, riffEnvelope("RIFF", riff));
+        return readSampleFileTags(path).tagBpm;
+    };
+    check(parse(" 1.25E+2 bPm\t") == 125., "tempo is locale-independent with a signed exponent and mixed-case suffix");
+    check(parse(".1e+2BPM") == 10. && parse("10.") == 10. && parse("9.99e2") == 999.,
+          "general decimals accept either side of the point and both finite range boundaries");
+    check(parse("1500e-1") == 150., "tempo supports a negative exponent");
+    check(!parse("+") && !parse("+120 BPM") && !parse("BPM") && !parse(""),
+          "leading plus and empty tempo fields are refused");
+    check(!parse("0x1.ep+6") && !parse("120,5") && !parse("12'0") && !parse("120/1") && !parse("120 B.P.M."),
+          "hexadecimal tempo, locale punctuation and invalid suffixes are refused");
+    check(!parse("120e+") && !parse("120 bpm extra") && !parse("9.99") && !parse("1000") &&
+              !parse("1e+999") && !parse("nan"),
+          "incomplete, trailing, non-finite and out-of-range values are refused");
 }
 
 void wavSamplerTags(const std::filesystem::path& directory) {
@@ -442,6 +474,7 @@ void matroskaTags(const std::filesystem::path& directory) {
 int main() {
     const adi::test::TempDirectory temporary("sample_file_tags", "metadata");
     wavTags(temporary.path());
+    bpmGrammar(temporary.path());
     wavSamplerTags(temporary.path());
     rf64Tags(temporary.path());
     aiffTags(temporary.path());

@@ -8,7 +8,10 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <ios>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <string_view>
 
 #include <apetag.h>
@@ -65,13 +68,18 @@ std::optional<double> bpmInRange(double value) {
 
 std::optional<double> parseBpm(std::string_view value) {
     value = trim(value);
-    if (value.empty()) return {};
+    if (value.size() > maxTagBytes) return {};
+    if (value.size() >= 3 && lower(value.substr(value.size() - 3)) == "bpm")
+        value = trim(value.substr(0, value.size() - 3));
+    // Keep decimal/exponent notation and parse in the classic locale on
+    // standard libraries with only the integral from_chars overloads.
+    if (value.empty() || value.front() == '+' || value.find_first_not_of("-+eE.0123456789") != value.npos)
+        return {};
     double number = 0;
-    const auto end = value.data() + value.size();
-    const auto parsed = std::from_chars(value.data(), end, number);
-    if (parsed.ec != std::errc{}) return {};
-    const std::string_view suffix{parsed.ptr, static_cast<std::size_t>(end - parsed.ptr)};
-    if (!trim(suffix).empty() && lower(trim(suffix)) != "bpm") return {};
+    std::istringstream input{std::string(value)};
+    input.imbue(std::locale::classic());
+    input >> std::noskipws >> number;
+    if (input.fail() || !input.eof()) return {};
     return bpmInRange(number);
 }
 
