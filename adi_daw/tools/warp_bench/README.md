@@ -91,3 +91,24 @@ at tick zero, so the same six eighth notes span two dotted quarters. The
 preparer computes a second `midi_grid` reference directly from the MIDI time
 signature and tempo. The `midi_grid_audit` section reports those downbeat
 scores separately while the main table continues to use the published labels.
+
+## Prepare the Live 12.4 workstation readings
+
+Run from `adi_daw` with Python 3. The kit uses only the standard library.
+
+```sh
+python tools/warp_bench/live_acceptance_fixtures.py /path/outside/checkout/live-warp-readings
+```
+
+Open the generated `manifest.json` on the workstation. Its `workstation_cases`
+entries give the inputs, actions and observations to record for M2-A-WARP 1, 6
+and 8, L-MEDIA-6, and TM-WT-05. `fixtures` gives the original source frame
+labels, exact lengths, ACID fields, and SHA-256 hashes of the WAV and its PCM.
+The ACID comparison holds the 8-second PCM constant across the untagged,
+120 BPM, and 90 BPM copies. The two tagged files each describe a complete 4/4
+loop of that duration. The diagnostic input has a labelled 375 Hz tone region.
+
+Keep each independent import trial in a fresh output folder so generated Live
+analysis sidecars stay local to that trial. Keep the exported WAVs, visible
+marker observations and saved-map evidence with the respective case. The
+manifest labels source material and procedures for a future Live measurement.
