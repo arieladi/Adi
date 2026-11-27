@@ -2,9 +2,11 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/pitch_edit.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <numbers>
 
 namespace {
 
@@ -100,6 +102,68 @@ void driftAndTransition() {
     untransposed.pitchShiftCents = 0;
     check(near(pitchCorrectionCents(second, untransposed, 300, &preceding), 0),
           "transition has no effect on a note with zero transpose");
+}
+
+void driftPreservesVibrato() {
+    constexpr std::uint32_t rate = 48000;
+    std::vector<float> voice(rate);
+    double phase = 0;
+    for (std::size_t i = 0; i < voice.size(); ++i) {
+        const auto progress = static_cast<double>(i) / rate;
+        const auto deviation = 64 * (progress - 0.5) + 24 * std::cos(12 * std::numbers::pi * progress);
+        const auto hz = 220 * std::exp2(deviation / 1200);
+        const auto edge = std::min(i, voice.size() - 1 - i);
+        const auto gain = std::min(1.0, static_cast<double>(edge) / 360);
+        voice[i] = static_cast<float>(gain * (0.35 * std::sin(phase) + 0.17 * std::sin(2 * phase + 0.4)));
+        phase = std::remainder(phase + 2 * std::numbers::pi * hz / rate, 2 * std::numbers::pi);
+    }
+    const auto measured = analyzePitch(voice, rate);
+    check(measured && measured.analysis->notes.size() == 1, "the modulated voice has one detected note");
+    if (!measured || measured.analysis->notes.size() != 1) return;
+    const auto& analysis = *measured.analysis;
+    const auto& source = analysis.notes.front();
+    check(source.driftCents > 50 && source.driftCents < 80 &&
+          source.vibratoCents > 12 && source.vibratoCents < 22,
+          "the voice fixture has measurable drift and vibrato");
+
+    std::vector<double> scratch;
+    const auto measureCorrection = [&](const PitchEditState& state) {
+        auto corrected = source;
+        const auto edit = resolvePitchNoteEdit(analysis, state, 0);
+        for (auto& point : corrected.curve)
+            point.cents += pitchCorrectionCents(source, edit, static_cast<double>(point.frame));
+        check(summarizePitchNote(corrected, scratch), "corrected observations can be measured");
+        return corrected;
+    };
+    PitchEditState state;
+    const PitchEditCommand half{0, PitchSetDrift{0.5}};
+    check(applyPitchEdits(analysis, state, std::span{&half, 1}) == PitchEditError::None, "ordinary drift edits are valid");
+    const auto halfway = measureCorrection(state);
+    check(std::abs(halfway.driftCents - source.driftCents / 2) < 1e-7 &&
+          std::abs(halfway.vibratoCents - source.vibratoCents) < 1e-7,
+          "half drift leaves the full measured vibrato");
+
+    const PitchEditCommand straightenDrift{0, PitchSetDrift{0}};
+    check(applyPitchEdits(analysis, state, std::span{&straightenDrift, 1}) == PitchEditError::None,
+          "ordinary drift straightening is valid");
+    const auto straightened = measureCorrection(state);
+    check(std::abs(straightened.driftCents) < 1e-7 &&
+          std::abs(straightened.vibratoCents - source.vibratoCents) < 1e-7,
+          "straightening drift removes the measured slope and retains vibrato");
+    std::printf("Drift slope %.4f -> %.4f cents, vibrato residual RMS %.4f -> %.4f cents\n",
+                source.driftCents, straightened.driftCents, source.vibratoCents, straightened.vibratoCents);
+
+    const PitchEditCommand neutral{0, PitchSetDrift{1}};
+    check(applyPitchEdits(analysis, state, std::span{&neutral, 1}) == PitchEditError::None && state.notes.empty() &&
+          applyPitchEdits(analysis, state, std::span{&neutral, 1}) == PitchEditError::None && state.notes.empty(),
+          "ordinary drift reset is neutral and leaves no sparse row on repeated application");
+
+    const PitchEditCommand straightenCurve{0, PitchSetStraighten{1}};
+    check(applyPitchEdits(analysis, state, std::span{&straightenCurve, 1}) == PitchEditError::None,
+          "whole-curve straightening still has a separate command");
+    const auto flattened = measureCorrection(state);
+    check(std::abs(flattened.driftCents) < 1e-7 && flattened.vibratoCents < 1e-7,
+          "whole-curve straightening removes both slope and vibrato");
 }
 
 void anchoredTiltAndRangedStraighten() {
@@ -234,6 +298,7 @@ void rejectsMalformedInput() {
 int main() {
     contourAndLevel();
     driftAndTransition();
+    driftPreservesVibrato();
     anchoredTiltAndRangedStraighten();
     scaleAndTiming();
     rejectsMalformedInput();

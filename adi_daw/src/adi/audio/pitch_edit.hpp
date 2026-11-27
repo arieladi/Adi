@@ -61,7 +61,9 @@ struct PitchSetStraighten { double amount; };
 struct PitchSetTilt { double cents; };
 struct PitchSetFormant { double cents; };
 struct PitchSetGain { double db; }; // Negative infinity mutes the selected note.
-struct PitchSetDrift { double amount; bool preserveExpression; };
+// A new drift adjustment leaves the residual pitch expression intact. An
+// explicit false retains the full-variation control supported by older edits.
+struct PitchSetDrift { double amount; bool preserveExpression = true; };
 struct PitchSetTransition { std::uint64_t frames; };
 struct PitchQuantize { engine::ScaleContext scale; double tonicCents; };
 struct PitchReset {};
@@ -100,8 +102,9 @@ enum class PitchEditError {
 // Straighten blends toward nominal pitch within the selected source range,
 // tapering at the range's interior edges. Tilt adds a first-to-last change
 // around the anchor, plus independent linear offsets on either side that
-// reach zero at the anchor. Drift retains this fraction of the source pitch
-// variation, or of the fitted linear trend with preserveExpression.
+// reach zero at the anchor. Drift retains a fraction of the fitted trend by
+// default, leaving residual vibrato. Stored edits with preserveExpression
+// disabled apply drift to the whole source pitch variation.
 // For adjacent destination spans, an incoming transition blends the previous
 // transpose offset into the current one over at most half the destination note.
 [[nodiscard]] double pitchCorrectionCents(

@@ -80,7 +80,7 @@ PitchEditError updateEdit(const PitchAnalysis& analysis, PitchNoteEdit& edit, co
             edit.gainDb = change.db;
         } else if constexpr (std::is_same_v<Change, PitchSetDrift>) {
             edit.drift = change.amount;
-            edit.preserveExpression = change.preserveExpression;
+            edit.preserveExpression = change.amount != 1 && change.preserveExpression;
         } else if constexpr (std::is_same_v<Change, PitchSetTransition>) {
             edit.transitionFrames = change.frames;
         } else if constexpr (std::is_same_v<Change, PitchQuantize>) {
