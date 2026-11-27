@@ -1054,6 +1054,15 @@ void Launcher::suspendStatus() noexcept {
     finishStatusBuffer(index);
 }
 
+bool Launcher::anyRunningClip(const void* context,
+    bool (*matches)(const void*, std::int64_t track, std::int64_t clip) noexcept) const noexcept {
+    for (std::size_t index = 0; index < trackCount_; ++index) {
+        const auto& track = activeTracks_[index];
+        if (track.run.clip && matches(context,track.id,track.run.clip)) return true;
+    }
+    return false;
+}
+
 bool Launcher::readStatus(std::span<LaunchTrackStatus> out, LaunchStatusHeader& header) const noexcept {
     constexpr auto attempts = 4;
     for (int attempt = 0; attempt < attempts; ++attempt) {

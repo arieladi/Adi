@@ -1353,6 +1353,25 @@ bool Session::rebuild() {
     } else {
         primeWhilePlaying(*nextClips, *timing);
     }
+    timing->protectActiveWorkerWarp = primeExternalAt_.has_value() && !timing->preparedScene;
+    if (timing->protectActiveWorkerWarp) {
+        const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+        if (prior && prior->launchAudio) {
+            DriverClock clock;
+            std::array<LaunchTrackStatus,kMaximumStoredLaunchTracks> tracks{};
+            LaunchStatusHeader status;
+            if (readDriverClock(clock) && clock.playing && readLaunchStatus(tracks,status) &&
+                status.transportPlaying && status.incarnation == prior->launchAudio->incarnation()) {
+                for (const auto& track : std::span(tracks).first(status.trackCount)) {
+                    if (!prior->launchAudio->dropsWorkerWarp(timing->launchAudio.get(),clock.sample,
+                                                            track.track,track.clip)) continue;
+                    error_ = "Session clips#" + std::to_string(track.clip) +
+                             ": external tempo has no source for the running worker-stretched slot";
+                    return false;
+                }
+            }
+        }
+    }
     if (externalPublishGuard_ && *externalPublishGuard_ && !(*externalPublishGuard_)()) {
         error_ = "external tempo preparation became stale";
         return false;
@@ -3115,9 +3134,15 @@ void Session::prepareSourceReadiness(TimingView& timing, const ClipPlayback& cli
 }
 
 bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const noexcept {
-    if (!delayedSourceReadiness || !session->transport_.playing()) return true;
+    if (!session->transport_.playing()) return true;
     const auto* previous = dynamic_cast<const TimingView*>(before);
-    if (!previous || previous->session != session || !previous->authoredPerformanceTempo ||
+    if (!previous || previous->session != session) return true;
+    // A launch can settle after the owner's last status observation.
+    if (protectActiveWorkerWarp && previous->launchAudio && session->launchAudioDriver_ &&
+        session->launchAudioDriver_->dropsRunningWorkerWarp(*previous->launchAudio,launchAudio.get(),
+                                                           session->transport_.position()))
+        return false;
+    if (!delayedSourceReadiness || !previous->authoredPerformanceTempo ||
         previous->tempoRevision == tempoRevision || previous->spec.sampleRate != spec.sampleRate ||
         previous->spec.channels != spec.channels || previous->spec.maxFrames != spec.maxFrames ||
         previous->spec.precision != spec.precision || previous->spec.delayCompensation != spec.delayCompensation)

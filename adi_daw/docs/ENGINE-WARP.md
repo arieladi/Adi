@@ -147,6 +147,9 @@ The driver delays Session PCM and its Arrangement replacement mask together.
 A scheduled R3 Legato tempo scene can switch when both banks have primed the
 target's full bounded playback window. A larger candidate that cannot supply
 that phase leaves the current scene and clock playing.
+An external tempo update that would drop a running worker R3 slot keeps the
+active graph. The driver rechecks the slot at adoption if a launch settles
+after the owner prepared the candidate.
 
 The stretcher seat report records the measurements for playback, export and
 scheduled scenes, along with the outstanding Live reference readings.

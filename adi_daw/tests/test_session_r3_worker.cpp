@@ -228,6 +228,77 @@ void workerTempoScene(SceneCase variant) {
                 static_cast<long long>(playback.performedAt),static_cast<long long>(playback.enteredPhase),
                 static_cast<long long>(before),static_cast<long long>(after),allocations);
 }
+enum class ExternalCase { Active, Idle, StartsDuringPreparation };
+
+void workerExternalTempo(ExternalCase variant) {
+    const bool active = variant == ExternalCase::Active;
+    const bool late = variant == ExternalCase::StartsDuringPreparation;
+    test::TempDirectory folder{"session_r3_worker","external tempo"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path()/"r3_external.adi",error);
+    require(static_cast<bool>(store),"create the external-tempo R3 project");
+    test::applySessionSchema(store->db());
+    auto& db = store->db();
+    db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'External Worker R3',48000);"
+            "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+            "(1,'audio','R3 slots',0),(9,'master','Main',1);"
+            "INSERT INTO scenes(id,ord) VALUES(10,0);"
+            "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+    addSlot(*store,101,10,0.65f,quarter/2,toneOffset,false);
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{},SessionSpec{2,rate,blockFrames})) throw std::runtime_error(session.error());
+    const auto delay = session.graph().currentGraph()->latencySamples();
+    require(delay == 2048,"the persisted Complex slot starts with worker PDC");
+    constexpr std::int64_t finish = 40000;
+    const auto frames = static_cast<std::size_t>(finish);
+    Playback playback{session,{std::vector<float>(frames),std::vector<float>(frames)}};
+    if (active) require(launchScene(*store,session,10),"launch the persisted R3 slot");
+    else session.transport().play();
+    playback.through(blockFrames);
+    std::array<LaunchTrackStatus,2> tracks{};
+    LaunchStatusHeader status;
+    require(session.readLaunchStatus(tracks,status) && status.trackCount == 1 &&
+        (active ? tracks[0].clip == 101 && tracks[0].run != 0 : tracks[0].clip == 0),
+        "observe the driver-owned source before preparing the new clock");
+    auto run = tracks[0].run;
+    const bool accepted = session.setExternalTempoAt(*store,140,quarter/2,[&] {
+        if (!late) return true;
+        // Let the old driver start the slot after owner readiness has passed
+        // and before publishing the external tempo candidate.
+        require(launchScene(*store,session,10),"start the slot during preparation");
+        playback.through(2 * blockFrames);
+        require(session.readLaunchStatus(tracks,status) && tracks[0].clip == 101 && tracks[0].run != 0,
+            "observe the newly started driver-owned R3 run");
+        run = tracks[0].run;
+        return true;
+    });
+    const auto diagnostic = session.error();
+    playback.through(finish);
+    if (active || late) {
+        const auto later = 12000 + toneOffset + (late ? blockFrames : 0);
+        const auto nearest = playback.pcm[0].begin()+later+delay;
+        const auto peak = *std::max_element(nearest-256,nearest+257);
+        std::printf("Active R3 external prepare %s, later peak %.6f, BPM %.0f\n",accepted ? "accepted" : "refused",
+                    static_cast<double>(peak),session.beginRender().bpmAtTick(quarter/2));
+        if (late) require(accepted,"the owner observed the idle old bank before the slot started");
+        else require(!accepted && diagnostic.find("Session clips#101") != std::string::npos,
+            "name the unsupported active R3 slot before publishing external tempo");
+        require(session.readLaunchStatus(tracks,status) && tracks[0].run == run && peak > 0.4f &&
+            session.beginRender().bpmAtTick(quarter/2) == 120 && session.beginRender().latencySamples() == delay,
+            "keep the old run, clock and audible compensated loop until adoption is safe");
+        if (late) {
+            session.transport().play(false);
+            require(session.beginRender().bpmAtTick(quarter/2) == 140,
+                "adopt the held clock after stopping the protected R3 run");
+        }
+    } else {
+        require(accepted && session.beginRender().bpmAtTick(quarter/2) == 140,
+            "an idle fixed slot does not block the ordinary external tempo path");
+    }
+}
 } // namespace
 
 int main() {
@@ -235,6 +306,9 @@ int main() {
         workerTempoScene(SceneCase::Restart);
         workerTempoScene(SceneCase::Legato);
         workerTempoScene(SceneCase::LegatoColdAfterRetime);
+        workerExternalTempo(ExternalCase::Active);
+        workerExternalTempo(ExternalCase::Idle);
+        workerExternalTempo(ExternalCase::StartsDuringPreparation);
     }
     catch (const std::exception& error) { std::fprintf(stderr,"FAIL: %s\n",error.what()); return 1; }
 }

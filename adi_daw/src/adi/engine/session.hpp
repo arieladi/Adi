@@ -687,6 +687,7 @@ private:
         ClipPlayback::Readiness delayedSourceReadiness;
         std::uint64_t tempoRevision=0;
         bool authoredPerformanceTempo=false;
+        bool protectActiveWorkerWarp=false;
         std::shared_ptr<InputMonitors> inputMonitors;
         std::shared_ptr<LaunchAudioRuntime> launchAudio;
         std::shared_ptr<const ClipProject> launchSource;

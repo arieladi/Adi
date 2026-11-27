@@ -13,6 +13,7 @@ struct NodeIo;
 class Transport;
 class LaunchFollowPlayer;
 class LaunchCaptureBuffer;
+class LaunchAudioRuntime;
 
 struct LaunchSceneClock {
     std::int64_t scene = 0;
@@ -76,6 +77,8 @@ public:
     [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus> tracks, LaunchStatusHeader& header) const noexcept {
         return launcher_.readStatus(tracks, header);
     }
+    [[nodiscard]] bool dropsRunningWorkerWarp(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
+                                              std::int64_t sample) const noexcept;
     void suspend() noexcept {
         if (wasPlaying_) launcher_.suspendStatus();
         wasPlaying_ = false;
@@ -138,6 +141,8 @@ public:
     [[nodiscard]] bool postRegionEdit(LaunchAudioDriver&, const LaunchClipRegionEdit&, std::int64_t sample) const noexcept;
     [[nodiscard]] const std::shared_ptr<const LaunchAudioProject>& mediaAt(std::int64_t sample) const noexcept;
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
+    [[nodiscard]] bool dropsWorkerWarp(const LaunchAudioRuntime* after, std::int64_t sample,
+                                       std::int64_t track, std::int64_t clip) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 
 private:

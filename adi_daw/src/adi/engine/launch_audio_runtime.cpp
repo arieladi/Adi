@@ -172,6 +172,27 @@ const std::shared_ptr<const LaunchAudioProject>& LaunchAudioRuntime::mediaAt(std
     return beforeClock_ && sample < clockSample_ ? beforeClock_ : project_;
 }
 
+bool LaunchAudioRuntime::dropsWorkerWarp(const LaunchAudioRuntime* after, std::int64_t sample,
+                                        std::int64_t track, std::int64_t clip) const noexcept {
+    const auto* source = hasTrack(track) ? mediaAt(sample)->clip(clip) : nullptr;
+    return source && source->latencySamples() > 0 &&
+        (!after || !after->hasTrack(track) || !after->mediaAt(sample)->clip(clip));
+}
+
+bool LaunchAudioDriver::dropsRunningWorkerWarp(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
+                                               std::int64_t sample) const noexcept {
+    struct Check {
+        const LaunchAudioRuntime& before;
+        const LaunchAudioRuntime* after;
+        std::int64_t sample;
+    };
+    const Check check{before,after,sample};
+    return launcher_.anyRunningClip(&check,[](const void* opaque, std::int64_t track, std::int64_t clip) noexcept {
+        const auto& query = *static_cast<const Check*>(opaque);
+        return query.before.dropsWorkerWarp(query.after,query.sample,track,clip);
+    });
+}
+
 std::uint64_t LaunchAudioRuntime::gainRevision() const noexcept {
     if (compatibleGainRevision_ != 0) return compatibleGainRevision_;
     // The before-clock bank still governs the gain of the outgoing run.

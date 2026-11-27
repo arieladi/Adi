@@ -177,6 +177,9 @@ public:
     /// is short, fills header with the required trackCount and leaves rows alone.
     /// Returns false before publication, on contention or on short storage.
     [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
+    /// Driver only, at a graph boundary before consuming the next gestures.
+    [[nodiscard]] bool anyRunningClip(const void*,
+        bool (*matches)(const void*, std::int64_t track, std::int64_t clip) noexcept) const noexcept;
 
 private:
     enum class Action : std::uint8_t { Start, Stop, Arrangement };
