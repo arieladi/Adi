@@ -6,6 +6,15 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026 — seats/pitch-chain `e772da3e`
+
+The modified file passed native x86-64 Clang syntax checking. It failed with `-mlong-double-64` on the following implicit conversions. The full headless build and suite are pending.
+
+- `adi_daw/src/adi/pitch_midi.cpp:195:84` converts the source-frame delta to `long double`. Explicitly cast the result of the integer subtraction before dividing.
+- `adi_daw/src/adi/pitch_midi.cpp:196:68` converts the tick delta to `long double`. Explicitly cast the result of the integer subtraction before multiplying.
+
+The fixed file passed both Clang syntax checks and GCC syntax checking. One fix commit `0ef9c557e` is on [libcxx/seats/pitch-chain](https://github.com/arieladi/Adi/tree/libcxx/seats/pitch-chain).
+
 ### 27 November 2026 — main `6f96847b`, JUCE
 
 JUCE Debug built with Clang 20, Pd and the same strict warnings. Both `juceaide` and the ADI executable resolved libc++ and libc++abi. The UI document, window state and UI shell suites passed offscreen. No source fix was needed.
