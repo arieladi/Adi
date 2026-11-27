@@ -22,3 +22,5 @@ C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. T
 ## For the director
 
 For the SC-261 Linux gate, I recommend running the unchanged window suites on native Linux. The guest measured a 779.89 ms browser search against the 40 ms SC-421 bound and a 752.30 ms owner turn against the SC-415 relative bound. Both fixtures and their feature paths match main. The upstream source equivalent to this item's base passed these suites in the [main Linux UI job](https://github.com/arieladi/Adi/actions/runs/46020442251/job/140578472188). The measurements above are from the item head in this session's guest.
+
+Reserve a schema minor for SC-404's native per-track MIDI output. I recommend an optional track-owned row holding the endpoint identifier, saved endpoint name, and MIDI channel 1–16. The row should cascade on track deletion and participate in Undo and track duplication. The port host, event delivery, and chooser work can proceed while the number is assigned.
