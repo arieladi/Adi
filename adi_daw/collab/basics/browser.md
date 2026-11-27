@@ -15,6 +15,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-127 | `basics/browser-chain` at `6286d5a37` | Keep working labels and list saved presets under Sounds. Browser seat. | The roster, fallback and preset search and load passed headless. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-128 | `basics/browser-chain` at `3bdc44247` | Ship an original starter drum kit under Drums and Samples. Browser, library and packaging seats. | The headless roster and read-only listing, deterministic WAV generator and relocated Linux installer smoke passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-432 | `basics/browser-chain` at `e073649db` | Register a stable Hot-Swap command for the active device or sample slot. Window seat. | Headless command ordering, focus, rebinding and menu-label checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-424 | `basics/browser-chain` at `d1ad41dcd` | Reopen a collapsed Browser from the Info shortcut, menu command or Status Bar button. Window seat. | Headless command and layout tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -217,6 +218,10 @@ An explicitly added Hits or Loops subfolder still opens as an ordinary Place. Th
 The command is `Hot-Swap`, stable WIN-04 ID `browser.hot-swap`, numeric slot 29068, Browser category. The Live, Cubase and Bitwig keymaps each assign Q. In the focused sample tile it targets the chosen slot. In a device title or its controls it targets that device. Retained ordinary Stack cards share their owning strip. The context menu reads the current shortcut and retains the target it was opened on.
 
 Component positions are calculated from the existing layout. For an ordinary unfolded device panel 220 × 140, the title Hot-Swap button is `(145,1,17,15)` before and after. In an 84-pixel-high sample tile, its Hot-Swap button is `(4,66,17,15)` before and after. The context menu action stays at its existing place. Its right-side shortcut label is Q by default and changes to the first assigned key after a rebind. No menu or window is shown by the test.
+
+### SC-424 remainder
+
+At 1440 × 900 Compact, the Info gesture previously left the collapsed Browser and Info with empty bounds. It now restores the Browser to `(8,35,308,623)` and Info to `(8,666,308,196)`. On the right these are `(1124,35,308,623)` and `(1124,666,308,196)`. The selected side and width are retained. With the Browser already open, the same controls still toggle only Info. The regression invokes the shortcut, View menu command and Status Bar button without opening a native menu.
 
 ## For the director
 
