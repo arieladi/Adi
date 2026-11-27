@@ -77,3 +77,10 @@ the SQLite catalogue in a Unicode path with one deduplicated mapped identity.
 The merged ParamOps, Session and both regressions also compiled as Windows
 x64 objects with warnings as errors. The second merge from main was the
 reservation update at `ed3da057c` in chain `7dfc9c8a7`.
+
+The strict merged Linux build passed all 292 CTests in 252.41 seconds,
+including both acceptance suites and the performance suite. The five
+validators and SPEC ABI layout check passed. The file-binding change at
+`548025a7a` then passed both targeted CTests with the rebuilt archive. The
+fresh JUCE render suite passed with the same four nonfatal JUCE Debug
+assertions seen in the earlier passing run.
