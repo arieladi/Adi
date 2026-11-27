@@ -47,7 +47,7 @@ Tables readTables(const Store& store) {
         SQLite::Statement columns(store.db(),"PRAGMA table_xinfo(\""+name+"\")");
         while(columns.executeStep())schema.push_back(adi::detail::captureQueryRow(columns));
         std::string queryText="SELECT * FROM \""+name+"\"";
-        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.loop','cue.controls')";
+        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.metronomeOptions','transport.loop','cue.controls')";
         if(name=="state_blobs")queryText+=" WHERE hash_blake3 IN (SELECT s.state_hash FROM plugin_state s JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.format='internal' AND s.stream_role LIKE 'sample:%')";
         SQLite::Statement query(store.db(),queryText);
         while(query.executeStep())rows.push_back(adi::detail::captureQueryRow(query));
@@ -71,6 +71,8 @@ std::vector<std::uint8_t> imageBytes(const Tables& rows,const TransportSettings&
     Payload value=rows;
     value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,
         transport.loopStartTicks,transport.loopEndTicks,transport.punchIn,transport.punchOut};
+    const auto &click = transport.metronomeOptions;
+    value["@metronomeOptions"]={click.recordingOnly,click.eighthNotes,static_cast<int>(click.sound)};
     value["@cue"]={cue.cueMode,cue.soloInPlace,cue.referenceOn,cue.referenceFromRole,cue.firstOutputChannel,
         cue.volumeDb,cue.referenceTrack,cue.projectReferenceTrack,cue.selectedTracks};
     return Payload::to_cbor(value);

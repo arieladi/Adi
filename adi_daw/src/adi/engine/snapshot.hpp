@@ -129,6 +129,7 @@ struct ClipNode {
     std::optional<std::int64_t> color{}; // absent inherits the track colour
     std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
     std::optional<double> fadeInTension,fadeOutTension;
+    std::int64_t contentOffsetTicks=0;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain

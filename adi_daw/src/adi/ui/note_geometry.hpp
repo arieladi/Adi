@@ -86,6 +86,19 @@ struct ClipWindow {
     }
 };
 
+// The editor draws a repeated pass over the same source notes and loop brace.
+// The prefix before the loop and positions outside the clip keep song time.
+inline std::int64_t noteEditorPlayheadTick(const engine::ClipDetails &clip, std::int64_t songTick) noexcept {
+    const auto window = ClipWindow::of(clip);
+    const auto length = clip.loopLengthTicks.value_or(0);
+    if (!clip.loopEnabled || length <= 0 || songTick < window.pos || songTick >= window.end())
+        return songTick;
+    const auto source = window.toSource(songTick);
+    if (source < clip.loopStartTicks)
+        return songTick;
+    return window.toArrangement(clip.loopStartTicks + (source - clip.loopStartTicks) % length);
+}
+
 // The note ruler: key tracks, their height, the scroll and Fold.
 struct KeyTracks {
     static constexpr int kMinHeight = 4, kMaxHeight = 40, kDefaultHeight = 12;

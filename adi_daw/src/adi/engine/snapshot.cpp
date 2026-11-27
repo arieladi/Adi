@@ -45,7 +45,7 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.muted == b.muted && a.gainDb == b.gainDb && a.color == b.color && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
-           a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
+           a.contentOffsetTicks==b.contentOffsetTicks && a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
            a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
            a.controllers == b.controllers && a.midiPreview == b.midiPreview;
@@ -340,6 +340,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.name = st.getColumn(6).getString();
             c.fadeInTicks=st.getColumn(7).getInt64();c.fadeOutTicks=st.getColumn(8).getInt64();
             c.fadeInCurve=st.getColumn(9).getInt64();c.fadeOutCurve=st.getColumn(10).getInt64();
+            c.contentOffsetTicks=st.getColumn(11).getInt64();
             if(const auto it=fadeShapes.find(c.id);it!=fadeShapes.end()) {
                 c.fadeInTension=it->second.in;c.fadeOutTension=it->second.out;
                 c.contentOffsetNs=it->second.offset;c.loopBeginNs=it->second.loopBegin;
@@ -363,7 +364,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                     c.lengthTicks=std::max(std::int64_t{0},end-c.posTicks);
                 }
             }
-            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64());
+            projectFadeHandles(c,*snap->tempo,c.contentOffsetTicks);
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 

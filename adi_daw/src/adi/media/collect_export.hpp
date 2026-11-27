@@ -5,8 +5,12 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 namespace adi { class Store; }
 namespace adi::media {
+namespace detail {
+std::string portableFilename(std::string name, std::string_view fallback);
+}
 struct FileResult {
     bool ok = false;
     std::string error;

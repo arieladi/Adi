@@ -15,9 +15,9 @@
 namespace adi::ui {
 class ExportPage final : public juce::Component {
   public:
-    // `tracks`: the Rendered Track choices after Main, each a track id and its name.
+    // `tracks`: the project's track choices, including Main with ID zero.
     // `meters`: the project's time signatures, for Render Start and Length.
-    ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t, std::string>> tracks,
+    ExportPage(ExportChoices initial, std::vector<ExportTrack> tracks,
                std::vector<textproj::Meter> meters);
     ~ExportPage() override;
     // The choices as the page holds them now.
@@ -43,7 +43,7 @@ class ExportPage final : public juce::Component {
     void read();   // the controls into `choices_`
     void judge();  // `refusals_`, and Export enabled when there are none
     ExportChoices choices_;
-    std::vector<std::pair<std::int64_t, std::string>> tracks_;
+    std::vector<ExportTrack> tracks_;
     std::vector<textproj::Meter> meters_;
     bool startOk_ = true, lengthOk_ = true;
     juce::String shownStart_, shownLength_;

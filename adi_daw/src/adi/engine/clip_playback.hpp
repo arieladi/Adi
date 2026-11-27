@@ -44,6 +44,11 @@ public:
     const std::vector<std::string>& problems() const noexcept;
     // Source errors for Session's export, Freeze and analysis preflight.
     [[nodiscard]] std::span<const std::string> fatalProblems() const noexcept;
+    // Whether this clip's audio file could not be opened or used. Clip settings
+    // that the engine cannot play have separate diagnostics in problems().
+    bool mediaUnavailable(std::int64_t clipId) const noexcept;
+    // A clip whose source file is absent already contributes silence.
+    void appendExportBlockingProblems(std::vector<std::string>&) const;
     // Off-callback owner view of the external files successfully selected
     // by this generation, including Session's frozen-source substitutions.
     // Names the original input to decode/warp, not a second media resolver or

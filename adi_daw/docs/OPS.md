@@ -411,10 +411,14 @@ silent truncation in JSON, a non-issue in CBOR.
 optional literal `id` and `tension` preserve an existing canonical tempo event
 through HI-01's remove/insert preview and commit (ADR-0216). Omitted fields
 retain the historical allocation/default behavior. `project.removeTempoEvent`
-captures `pos`, `bpm`, `curve`, `id` and `tension` in its insert inverse. No
-opcode, schema or ramp algorithm changes. The existing-row gesture producer
-requires an exactly round-trippable canonical typed row and preserves every
-field except BPM; see `ENGINE-GESTURES.md`.
+captures `pos`, `bpm`, `curve`, `id` and `tension` in its insert inverse. Both
+operations reproject the tick lengths of non-looping Warp-off audio clips at
+their existing musical starts to preserve their audible duration. The
+inverse records the prior and projected lengths of changed clips for Undo
+and Redo. Older entries without those lengths replay only the tempo event.
+The existing-row gesture producer requires an exactly round-trippable
+canonical typed row and preserves every tempo-event field except BPM. See
+`ENGINE-GESTURES.md`.
 
 Native key changes and ADR-0178 tuning definitions use the explicit-ID
 payloads in `ENGINE-TUNING-EDITS.md`. Inserts never upsert. Replacing a tuning
