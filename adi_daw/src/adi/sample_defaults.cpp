@@ -4,6 +4,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -56,7 +57,8 @@ SampleDefaultsCapture captureSampleDefaults(Store& store,std::int64_t clipId,dou
     SampleDefaultsCapture result;
     try {
         std::optional<SQLite::Transaction> read;if(sqlite3_get_autocommit(store.db().getHandle())!=0)read.emplace(store.db(),SQLite::TransactionBehavior::DEFERRED);
-        const auto copied=copyClip(store,clipId,referenceRate);if(!copied.ok)throw std::runtime_error(copied.error);
+        edit_plan::Options options{referenceRate,{}};options.policy.automationFollowsClips=false;
+        const auto copied=copyClip(store,clipId,options);if(!copied.ok)throw std::runtime_error(copied.error);
         const auto& image=copied.image;const auto& root=image.at("row");if(root.at("kind")!="audio")throw std::runtime_error("sample defaults need an audio clip");
         known(root,{"id","track_id","lane_id","kind","name","color","time_base","pos_ticks","pos_ns","length_ticks","length_ns","loop_enabled","loop_start_ticks","loop_len_ticks","content_offset_ticks","muted","gain_db","fade_in_ticks","fade_out_ticks","fade_in_curve","fade_out_curve","alias_of"});
         const auto* source=child(image,"audio_clips");if(!source)throw std::runtime_error("audio clip has no source attachment");

@@ -184,7 +184,7 @@ void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     root.setSize(1200, 800);
     UiPeerRoot peer;
     peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0); peer.addAndMakeVisible(root);
-    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(), "component peer has no OS window");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "component uses the software peer");
     auto publication = std::make_shared<ParameterPublication>(); publication->push_back(eqData(40));
     auto &strip = root.devices;
     strip.setVisible(true); strip.publication = [&] { return publication; };

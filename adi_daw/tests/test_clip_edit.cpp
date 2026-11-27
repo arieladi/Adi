@@ -254,7 +254,8 @@ void clipboardAndSplits() {
     db.exec("INSERT INTO clip_playback_details(clip_id,in_tension) VALUES(8,0.4)");
     db.exec("INSERT INTO automation_segment_ranges(id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last) VALUES(72,71,8,0,0.2,0.7,0,1)");
     db.exec("UPDATE clips SET kind='midi',alias_of=8 WHERE id=9");
-    const auto clipboard=clip_edit::copyClip(*p.store,8,48000);
+    edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+    const auto clipboard=clip_edit::copyClip(*p.store,8,locked);
     check(clipboard.ok,"copy captures complete opaque native clip data without decoding/re-encoding blobs");
     OpRequest remove;remove.opType="clip.delete";remove.payload={{"id",8}};
     check(OpJournal(*p.store).commit(remove).ok,"delete captures core, all native children and external alias links");
@@ -268,8 +269,7 @@ void clipboardAndSplits() {
           db.execAndGet("SELECT alias_of FROM clips WHERE id=9").getInt64()==8,"undo returns future bytes, every native child and aliases exactly");
     // This fixture tests opaque copying and existing alias ownership. Keep its
     // authored global lanes locked and place into free space; overlap and
-    // unlocked-automation admission have their own placement fixtures.
-    edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+    // unlocked automation have their own placement fixtures.
     const auto pasted=clip_edit::preparePaste(*p.store,clipboard,18,21,{0,11531520},locked);
     check(pasted.ok && clip_edit::commitPrepared(*p.store,pasted).ok,"paste prepared image as one independent clip");
     check(db.execAndGet("SELECT id FROM event_streams WHERE clip_id=18").getInt64()>100 &&
@@ -294,7 +294,7 @@ void clipboardAndSplits() {
     db.exec("INSERT INTO lanes(id,track_id,ord,name,kind) VALUES(301,21,0,'Comp','take')");
     db.exec("UPDATE clips SET lane_id=301 WHERE id=8");
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'audio','Destination')");
-    const auto laneCopy=clip_edit::copyClip(*p.store,8,48000);
+    const auto laneCopy=clip_edit::copyClip(*p.store,8,locked);
     const auto lanePaste=clip_edit::preparePaste(*p.store,laneCopy,70,22,{0,0},locked);
     check(lanePaste.ok && clip_edit::commitPrepared(*p.store,lanePaste).ok &&
           db.execAndGet("SELECT lane_id IS NULL FROM clips WHERE id=70").getInt()==1,"paste to another track clears the source track's comp lane");

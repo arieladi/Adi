@@ -2,6 +2,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/automation_splice_store.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/digest.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/automation.hpp"
@@ -293,6 +294,48 @@ void exactBoundaries(const std::filesystem::path &directory) {
     }
 }
 
+void stagedSplices(const std::filesystem::path &directory) {
+    auto store = project(directory / "staged.adi", 1);
+    auto &db = store->db();
+    const std::int64_t ms = 1000000;
+    stream(*store, std::vector{point(0, 0.1), point(300 * ms, 0.9)}, 1);
+    const auto before = rows(*store);
+    const edit::TimeMap time(db);
+    edit::RowEdits edits(db);
+    clip_edit::CopyIds ids(db);
+    const auto addedLane = ids.next("automation_lanes");
+    edits.set("automation_lanes", addedLane,
+              edit::defaultRow(db, "automation_lanes",
+                               {{"id", addedLane}, {"owner_kind", "track"}, {"owner_id", 1},
+                                {"time_base", 1}, {"param_ref", "pan"}}));
+    for (const auto lane : {std::int64_t{2}, addedLane}) {
+        stageEnvelopeSplice(*store, edits, ids, time, lane, 100 * ms, 200 * ms,
+                            std::vector{point(100 * ms, 0.7), point(200 * ms, 0.7)}, 48000);
+        stageEnvelopeSplice(*store, edits, ids, time, lane, 150 * ms, 250 * ms,
+                            std::vector{point(150 * ms, 0.3), point(250 * ms, 0.3)}, 48000);
+    }
+    check(detail::sameSqlValue(rows(*store), before), "staged splices do not write project rows");
+    OpRequest request;
+    request.opType = "arranger.splice";
+    request.payload = {{"id", 0}, {"changes", edits.changes()}};
+    const auto committed = OpJournal(*store).commit(request);
+    check(committed.ok && committed.seqs.size() == 1,
+          "overlapping splices on existing and new envelopes commit together");
+    if (!committed.ok)
+        return;
+    const auto after = rows(*store);
+    const auto knots = decoded(*store, 1);
+    const auto rendered = program(knots);
+    check(engine::valueAt(rendered, 125 * 48) == 0.7 &&
+              engine::valueAt(rendered, 175 * 48) == 0.3 &&
+              std::abs(engine::valueAt(rendered, 275 * 48) - (0.1 + 0.8 * 275.0 / 300)) < 3e-12,
+          "the later splice replaces the overlap and preserves both outside pieces");
+    check(db.execAndGet("SELECT count(*) FROM automation_data").getInt() == 2 &&
+              History(*store).undo().ok && detail::sameSqlValue(rows(*store), before) &&
+              History(*store).redo().ok && detail::sameSqlValue(rows(*store), after),
+          "the two staged lanes each have one data row and one exact Undo and Redo");
+}
+
 void guards(const std::filesystem::path &directory) {
     const std::vector<std::string> mutations{
         "UPDATE automation_lanes SET default_value=0.3 WHERE id=2",
@@ -540,6 +583,7 @@ int main() {
         adi::test::TempDirectory temp("automation", "splice-store");
         curves(temp.path());
         exactBoundaries(temp.path());
+        stagedSplices(temp.path());
         guards(temp.path());
         failuresAndAbsence(temp.path());
         layouts(temp.path());
