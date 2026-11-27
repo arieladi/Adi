@@ -383,7 +383,8 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
         std::unique_ptr<const std::vector<float>> rendered;
         std::span<const float> window;
         if (channels <= 2) {
-            std::vector<float>().swap(mono);
+            // Counted construction can report iterator-proxy allocation failure in MSVC Debug.
+            std::vector<float>(std::size_t{0}).swap(mono);
             rendered = renderChannels(pcm, channels, effective, *edits.state, stop);
             window = std::span(*rendered).subspan(first * channels, count * channels);
         } else {
@@ -408,8 +409,8 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
             original.prepared->frames != corrected.prepared->frames)
             return fail(ClipPitchRenderProblem::Dsp, "Pitch Editor comparison clocks do not match");
 
-        std::vector<float>().swap(pcm);
-        std::vector<float>().swap(mono);
+        std::vector<float>(std::size_t{0}).swap(pcm);
+        std::vector<float>(std::size_t{0}).swap(mono);
         rendered.reset();
         auto dry = readComparisonSide(*original.prepared, comparisonRate, comparisonFrames, stop);
         auto edited = readComparisonSide(*corrected.prepared, comparisonRate, comparisonFrames, stop);
