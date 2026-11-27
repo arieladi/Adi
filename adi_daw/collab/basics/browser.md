@@ -37,6 +37,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-133 | `basics/browser-chain` at `01cf03a9b` | Persist Favorites and seven rebindable color marks for Browser items. Browser, window and Settings seats. | Headless key, popup, search and round-trip persistence checks passed. Debug Werror, all 18 no-display UI suites, Settings and all 3 acceptance suites passed. | Pushed |
 | SC-134 | `basics/browser-chain` at `66cdcb395` | List owned recordings and bounces under Current Project and in All. Project, library and Browser seats. | Headless fixtures committed recorded and bounced media, checked All deduplication, and measured the 200,000-file search. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-136 | `basics/browser-chain` at `bba910fb6` | Wire the existing Browser Hide and Name controls and hide Groove Pool until MI-05. Browser seat. | The peerless test exercised both sort directions, folder hierarchy, multi-selection and the Browser collapse. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-137 | `basics/browser-chain` at `862cea353` | Browse ADI and MIDI files in Places and All, and open a project by double-click. Browser, library and application seats. | Headless typed-tree, flat query, audio-only audition, open routing and index tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -348,6 +349,18 @@ At 1440 × 900 Compact with the Browser on the left, its top round button still 
 The Groove Pool button occupied `(8,638.5,19,19)` in that fixture and is now hidden. Its space stays part of the Browser background while MI-05 is pending. The peerless test clicks the existing controls, checks an expanded folder and a two-file selection through both sort directions, then checks the dock collapse.
 
 All nine updated software references changed exactly 93 pixels each, confined to the former Groove Pool button. The Hide and Name controls retain their prior default pixels.
+
+# SC-137 Browse projects and MIDI
+
+A Place now presents native ADI projects and standard MIDI filenames alongside audio, in its normal folder tree and flat word-query results. All includes those file types. Samples, sample Hot-Swap, the preview player and the existing sample drag retain their audio scope. Project activation uses the same native path and application-owned open callback as Open Recent, including the application's export-interruption and project-open handling. MIDI appears as a file and the existing MIDI import workflow remains separate. The index format stays the same, with recognition occurring when indexed or read-only directory entries are published.
+
+At Browser size 308 × 443 px and with the preview hidden, both versions use content list bounds (119, 46, 185, 393) and a 19 px row height. The collapsed Session directory remains at list y = 0, Browser y = 46. Once open, the Kick row remains at list y = 19, Browser y = 65. The added Old Pattern.SMF, Song Set.ADI and Verse.mid rows are at Browser y = 84, 103 and 122, respectively. The expanded rows keep the existing 12 px indentation, presenting their existing 13 px icons at Browser x = 137 and their names at x = 155. The preview stays hidden for the project and MIDI selections.
+
+The peerless fixture pre-seeds and reopens an existing library database, exercises a second read-only Place, opens a real project path through the application seam, checks the sample drag and Hot-Swap scopes and checks the shared All query. It invokes the list model directly without showing a native window or menu.
+
+Integrated on SC-136 as 0c0927741. The sorted fixture adds checks for a selected project row moving from the third file slot to the second with 19 px steps inside the open folder. The integrated fixture enables actual Favorites settings and checks that only the audio row can be marked. The integrated library query suite and the studio kit's alias smoke both ran headlessly. The latter confirmed one copy of each file in Samples with either scan order while treating an explicitly added Hits alias as an ordinary read-only Place. The app, shell, Browser and shell tests compiled with the Debug flags in syntax mode. The original focused peerless UI run passed 11 checks; the full integrated UI runtime gate belongs to the chain.
+
+The final adaptation, 3ad30607d on afb2508f9, keeps SC-134’s sorted hash lookup for exact paths. The duplicate fixture verifies that the project-owned audio display name takes the shared slot when the same path matches both sources. Distinct ADI project and MIDI files with the same stems keep their own matches.
 
 ## For the director
 
