@@ -126,3 +126,5 @@
 29053 Live 12 Manual: 
 29054 Keyboard Shortcuts: 
 29055 Automation Mode: A
+29056 Delete Automation: Cmd+Backspace
+29057 Arm Selected Tracks: C

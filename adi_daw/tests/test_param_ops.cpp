@@ -481,7 +481,7 @@ void testTheWholeLoopThroughTheJournal() {
 /// that answers from its own timer instead.
 class Sampler final : public device::DeviceInstance {
 public:
-    Sampler() {
+    explicit Sampler(bool presetControls = false) {
         device::ParamDescriptor c;
         c.id = "cutoff"; c.name = "Cutoff";
         params_.push_back(c);
@@ -489,6 +489,21 @@ public:
         g.id = "gain"; g.name = "Gain";
         params_.push_back(g);
         values_ = {0.5, 0.25};
+        if (presetControls) {
+            device::ParamDescriptor configure;
+            configure.id = "configure";
+            configure.name = "Configuration";
+            configure.automatable = false;
+            configure.configurable = true;
+            params_.push_back(configure);
+            values_.push_back(.75);
+            device::ParamDescriptor meter;
+            meter.id = "meter";
+            meter.name = "Read-only meter";
+            meter.automatable = false;
+            params_.push_back(meter);
+            values_.push_back(.8);
+        }
         id_.format = "test"; id_.name = "Sampler";
     }
     [[nodiscard]] const device::DeviceIdentity& identity() const noexcept override { return id_; }
@@ -951,6 +966,53 @@ void testTheStateLoopThroughTheJournal() {
     }
 }
 
+void testReadPresetState() {
+    section("SC-85 -- capture a coherent live preset without project changes");
+    const adi::test::TempDirectory scratch("param_ops", "read_preset");
+    StoreError storeError = StoreError::Ok;
+    auto store = Store::createEmpty(scratch.path() / "p.adi", storeError);
+    check(store != nullptr, "create live preset project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name) VALUES(1,'midi','Keys'),(9,'master','Master');"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','preset.sampler','Sampler','instrument');"
+        "INSERT INTO device_chains(id,track_id) VALUES(10,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(100,10,0,1,'A'),(101,10,1,1,'B');");
+    Session session;
+    const auto loader = [](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+        auto plugin = std::make_unique<Sampler>(true);
+        plugin->stateless = request.device->id == 101;
+        return plugin;
+    };
+    check(session.load(*store, loader, SessionSpec{}), "load preset Session");
+    auto* sampler = dynamic_cast<Sampler*>(session.instanceFor(100));
+    if (!sampler) { check(false, "resolve the preset device"); return; }
+    ParamOps ops;
+    check(ops.attachSession(session) == 2, "attach both preset devices");
+    sampler->changePatchSilently(13);
+    check(sampler->setParam("cutoff", device::ParamValue::fromNormalized(.625)), "change the live cutoff without writing a row");
+    std::string error;
+    const auto saved = ops.readDevicePresetState(100, error);
+    check(saved && error.empty() && saved->parameters.size() == 3 && !saved->parameters.contains("meter") &&
+          saved->parameters.at("cutoff") == .625 && saved->parameters.at("configure") == .75 &&
+          saved->state.size() == 1 && saved->state.at("chunk").front() == std::byte{13},
+          "save the current writable values and opaque state, skipping the meter");
+    const auto stateless = ops.readDevicePresetState(101, error);
+    check(stateless && stateless->parameters.size() == 3 && stateless->state.empty() && error.empty(),
+          "a device without opaque streams still exports its parameters");
+    sampler->refuseSave = true;
+    check(!ops.readDevicePresetState(100, error) && !error.empty(), "refuse an incomplete declared stream");
+    sampler->refuseSave = false;
+    sampler->afterSave = [&] { sampler->drag(0, .75); };
+    check(!ops.readDevicePresetState(100, error) && error.find("changed") != std::string::npos,
+          "a control change during serialization refuses the snapshot");
+    check(!ops.readDevicePresetState(100, error) && !error.empty(), "capture leaves the queued edit for its normal owner");
+    check(!ops.readDevicePresetState(999, error) && !error.empty(), "an unknown device cannot export state");
+    check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == 0 &&
+          store->db().execAndGet("SELECT count(*) FROM plugin_state").getInt() == 0 && sampler->loads == 0,
+          "reading a preset does not write history, save project state or reload the instance");
+}
+
 void testSnapshotAll() {
     section("PD-03 -- save every silent changed device before a snapshot or close");
     const adi::test::TempDirectory scratch("param_ops", "snapshot_all");
@@ -1075,6 +1137,7 @@ int main() {
     testRowsFollowTheChunk();
     testASaveWritesTheFirstRow();
     testSnapshotAll();
+    testReadPresetState();
     testAStatelessDeviceWritesItsMoves();
     testAnUndoneChunkReseedsTheCapture();
     testTheStateLoopThroughTheJournal();

@@ -134,6 +134,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.docked = j.at("docked").get<bool>();
         state.aiChatOpen = j.value("aiChat", false);
         state.timelineLeft = j.value("timelineLeft", 0.);
+        // Windows saved before timeline zoom was persisted used the original scale.
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
         state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);
@@ -178,6 +179,11 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
         state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        if (const auto saved = j.find("infoAnalyserMode"); saved != j.end()) {
+            const auto mode = integerOr(*saved, -1);
+            if (mode >= 0 && mode <= static_cast<int>(InfoAnalyserMode::ClassicScope))
+                state.infoAnalyserMode = static_cast<InfoAnalyserMode>(mode);
+        }
         const auto palette = j.value("analysisPalette", std::string("adi"));
         const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
         state.analysisPalette = knownPalette ? palette : "adi";
@@ -186,7 +192,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
-        state.follow = j.value("follow", false);
+        state.follow = j.value("follow", state.follow);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);
@@ -269,6 +275,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixViewDetached", state.mixViewDetached},
                             {"mixview.stack.search", state.mixStackSearch},
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"infoAnalyserMode", static_cast<int>(state.infoAnalyserMode)},
                             {"clipView", state.clipView},
                             {"clipViewHeight", state.clipViewHeight},
                             {"noteGridSnap", state.noteGridSnap},

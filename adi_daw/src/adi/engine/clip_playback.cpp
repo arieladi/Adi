@@ -425,6 +425,7 @@ public:
     std::int32_t maxFrames;
     std::int32_t channels;
     std::int64_t track;
+    const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
     // ADR-0207 d2: the clips of one track are a mix point, summed in double
@@ -445,9 +446,11 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
+        const bool recording = recordingTracks && !recordingTracks->empty() &&
+            std::binary_search(recordingTracks->data(), recordingTracks->data() + recordingTracks->size(), track);
+        if(!transport.playing() || recording || (!clips.empty() && clips.front()->monitorInputOnly)){
             if(io.blockOffset==0) {
-                // Only the live source callback looks ahead while stopped.
+                // Keep looking ahead while output is suppressed so playback can resume.
                 // Candidate preparation keeps the captured transport intact.
                 auto nextPlay=transport;
                 if(!nextPlay.playing())nextPlay.play();
@@ -624,12 +627,20 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
                 if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
                 spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
-                auto prepared=audio::prepareWarp(spec);
-                if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
-                clip->warped=std::move(prepared.prepared);
-                clip->reader=std::make_shared<WavSource>(clip->warped->file);
-                clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
-                clip->length=static_cast<std::int64_t>(clip->warped->frames);
+                // A take with unchanged timing can play its original window directly.
+                const bool identity = spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
+                    spec.transposeSemis == 0 && spec.formantScale == 1 &&
+                    std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
+                        return anchor.sourceFrame == anchor.outputFrame;
+                    });
+                if (!identity) {
+                    auto prepared=audio::prepareWarp(spec);
+                    if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
+                    clip->warped=std::move(prepared.prepared);
+                    clip->reader=std::make_shared<WavSource>(clip->warped->file);
+                    clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
+                    clip->length=static_cast<std::int64_t>(clip->warped->frames);
+                }
             }
             std::int64_t endTicks=origin;
             if(row.timeBase==0) {
@@ -766,6 +777,14 @@ std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int6
 void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
     for (auto& clip : impl_->clips)
         if (clip->track == id) clip->monitorInputOnly = true;
+}
+void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std::int64_t>& recordingTracks) noexcept {
+    for (auto& track : impl_->tracks) {
+        if (track->track == id) {
+            track->recordingTracks = &recordingTracks;
+            break;
+        }
+    }
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {

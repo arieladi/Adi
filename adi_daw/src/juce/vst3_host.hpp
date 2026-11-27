@@ -112,6 +112,14 @@ private:
 /// Identity as the format records it, so a missing plugin can still be named.
 DeviceIdentity identityOf(const juce::PluginDescription& desc);
 
+/// SC-312: a plug-in's MIDI map read from the parameters it declares, for a plug-in whose edit
+/// controller the host cannot reach (JUCE keeps a separate controller private: every JUCE-built plug-in,
+/// Surge XT among them). JUCE's VST3 wrapper declares its map as parameters named "MIDI CC <channel>|
+/// <controller>", controller 0..127 a CC, 128 channel aftertouch, 129 the pitch bend, and its
+/// `IMidiMapping` answers exactly that table. Fills every entry the caps do not have yet; true when any
+/// was found. Other names are ignored.
+bool mapDeclaredMidiControllers(const std::vector<ParamDescriptor>& params, engine::ExpressionCaps& caps);
+
 /// One VST3, behind the format-agnostic contract.
 class Vst3Device final : public DeviceInstance,
                          private juce::AudioProcessorListener {
@@ -411,6 +419,11 @@ private:
     std::vector<std::uint32_t> followedSeen_;    ///< message thread: the sequence last handed over
     std::atomic<std::uint32_t> followedEpoch_{0};
     std::uint32_t followedHanded_ = 0;           ///< message thread
+    // SC-332: the plug-in said its parameters' titles changed (restartComponent(kParamTitlesChanged),
+    // from any thread); the next message-thread pump reads the names and units again.
+    std::atomic<std::uint32_t> titlesEpoch_{0};
+    std::uint32_t titlesRead_ = 0;               ///< message thread
+    void readTitles();
     /// Each VST3 ParamID with its index, sorted, for the audio thread's lookup (no allocation).
     std::vector<std::pair<std::uint32_t, std::int32_t>> wireIndex_;
     /// Audio thread: record that the processor was sent `value` for `wireId`.

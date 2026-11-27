@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ui_floating.hpp"
+#if JUCE_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <chrono>
 namespace adi::ui {
 namespace {
@@ -198,8 +207,9 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
     if (raw->owned && !raw->scaled) {
-        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
-        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        // A plug-in's own window takes the plug-in's size: the window fits it; it is resized from
+        // outside only when the plug-in can be (setUserResizable, SC-328), each size then asked of the
+        // plug-in. A kept place moves it, never sizes it.
         raw->window->setContentNonOwned(raw->component.getComponent(), true);
         raw->window->setResizable(false, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
@@ -339,8 +349,59 @@ void FloatingHost::setAlwaysOnTop(const std::string &key, bool onTop) {
     if (it == entries_.end())
         return;
     it->second->onTop = onTop;
-    if (it->second->window)
-        it->second->window->setAlwaysOnTop(onTop);
+    if (!it->second->window)
+        return;
+    // SC-313: an owned window floats above ADI's own window, not above every program.
+    if (native_ && it->second->ownedKind &&
+        floatAboveOwner(*it->second->window, root_.getTopLevelComponent(), onTop)) {
+        it->second->window->setAlwaysOnTop(false);
+        return;
+    }
+    it->second->window->setAlwaysOnTop(onTop);
+}
+bool FloatingHost::floatAboveOwner(juce::Component &window, juce::Component *owner, bool on) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner != nullptr ? owner->getPeer() : nullptr;
+    if (peer == nullptr || (on && ownerPeer == nullptr))
+        return false;
+    const auto hwnd = static_cast<HWND>(peer->getNativeHandle());
+    // A topmost window stays topmost whatever its owner: take that off first.
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT,
+                      on ? reinterpret_cast<LONG_PTR>(static_cast<HWND>(ownerPeer->getNativeHandle())) : 0);
+    return true;
+#else
+    juce::ignoreUnused(window, owner, on);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyOwnedBy(juce::Component &window, juce::Component &owner) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner.getPeer();
+    return peer != nullptr && ownerPeer != nullptr &&
+           GetWindow(static_cast<HWND>(peer->getNativeHandle()), GW_OWNER) == static_cast<HWND>(ownerPeer->getNativeHandle());
+#else
+    juce::ignoreUnused(window, owner);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyTopmost(juce::Component &window) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    return peer != nullptr &&
+           (GetWindowLongPtrW(static_cast<HWND>(peer->getNativeHandle()), GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+#else
+    juce::ignoreUnused(window);
+    return false;
+#endif
+}
+void FloatingHost::setUserResizable(const std::string &key, bool resizable) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end() || !it->second->owned || it->second->scaled || !it->second->window)
+        return;
+    it->second->window->setResizable(resizable, false);
 }
 bool FloatingHost::alwaysOnTop(const std::string &key) const {
     const auto it = entries_.find(key);
@@ -433,7 +494,9 @@ void FloatingHost::close(const std::string &key) {
         e.component->setBounds(e.dockBounds);
     }
     // The content before its window: a plug-in's editor tears its native view down while the
-    // window that parents it still exists.
+    // window that parents it still exists. Its frame callback goes first: an editor that pumps
+    // messages as it closes lets the window's clock fire, which must not reach the freed editor (SC-321).
+    e.onFrame = nullptr;
     e.zoomed.reset();
     e.owned.reset();
     entries_.erase(it);
@@ -472,7 +535,8 @@ void FloatingHost::closeAll(bool remember) {
             e.component->setBounds(e.dockBounds);
         }
         // The content before its window: a plug-in's editor tears its native view down while
-        // the window that parents it still exists.
+        // the window that parents it still exists; its frame callback first (SC-321).
+        e.onFrame = nullptr;
         e.zoomed.reset();
         e.owned.reset();
         entries_.erase(entries_.begin());
