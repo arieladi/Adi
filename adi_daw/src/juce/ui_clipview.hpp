@@ -413,6 +413,7 @@ class SampleEditor final : public juce::Component {
     bool playFromSource(std::int64_t tick);
     std::int64_t sourceSecondsToTicks(double seconds) const noexcept;
     double sourceTicksToSeconds(std::int64_t ticks) const noexcept;
+    std::int64_t playheadTick(std::int64_t arrangementTick) const;
     std::int64_t startMarker() const noexcept;
     std::int64_t endMarker() const noexcept;
     double frameAt(std::int64_t source, double rate, const engine::AudioClipSource &) const noexcept;

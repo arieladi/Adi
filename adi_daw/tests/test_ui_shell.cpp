@@ -12626,6 +12626,37 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     driver.play(false);
     document->mailbox().publish(driver);
     root.frame();
+
+    if (const auto *clip = panel.node()) {
+        const auto id = clip->id, start = clip->posTicks;
+        const auto changeAt = start + 8 * beat;
+        const bool arranged = root.submitEdit("clip.resize", {{"id", id}, {"pos", start}, {"length", 12 * beat}},
+                                              "Extend the looped clip") &&
+                              root.submitEdit("project.insertTempoEvent", {{"pos", changeAt}, {"bpm", 60.}, {"curve", 0}},
+                                              "Slow down inside the looped clip");
+        check(arranged, "extend the loop and change tempo after it has already repeated");
+        if (arranged) {
+            root.frame();
+            const auto *tempo = root.reader().tempo();
+            const auto rate = document->mailbox().sampleRate() > 0 ? document->mailbox().sampleRate()
+                                                                   : root.reader().sampleRate();
+            const auto probe = changeAt + beat / 4;
+            driver.locate(std::llround(tempo->ticksToSeconds(probe) * rate));
+            driver.play(true);
+            document->mailbox().publish(driver);
+            root.arrangement.followPaused = false;
+            edit.time.left = 50.;
+            root.frame();
+            const auto repeatedSource = 4 * beat + beat / 2;
+            const auto pixel = edit.time.x(repeatedSource);
+            check(edit.sourceTick(root.timelineTick()) > 8 * beat && edit.playhead.isVisible() &&
+                      std::abs(pixel - edit.playhead.getX()) < 1.,
+                  "Follow pages to the audible repeat after a tempo change, beyond the unrolled source end");
+            driver.play(false);
+            document->mailbox().publish(driver);
+            root.frame();
+        }
+    }
     commands.detach(root);
 }
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
