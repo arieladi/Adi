@@ -9,6 +9,7 @@
 #include "ui_arrangement.hpp"
 #include "ui_controls.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <span>
@@ -89,6 +90,11 @@ class HotSwapButton final : public juce::Button {
     HotSwapButton() : juce::Button("Hot-Swap") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+class RevealSampleButton final : public juce::Button {
+  public:
+    RevealSampleButton() : juce::Button("Show Sample in Folder") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // A built-in's sample slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
@@ -112,15 +118,17 @@ class SampleTile final : public juce::Component,
     void itemDropped(const SourceDetails &) override;
     // Refresh the selected slot from the project snapshot.
     void refresh();
-    // The slot as the snapshot holds it; none when it was never assigned (empty).
-    void show(const engine::SampleSlotNode *);
     // A file dropped: assigns the slot (one undo step), or says why not.
     bool drop(const juce::String &path);
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
+    const juce::String &fileName() const noexcept { return fileName_; }
+    juce::Rectangle<int> fileNameBounds() const noexcept;
+    juce::Rectangle<int> waveformBounds() const noexcept;
     juce::TextButton clear{"Clear"};
     juce::ComboBox slotChooser;
     HotSwapButton hotSwapButton;
+    RevealSampleButton reveal;
     std::function<bool()> targetValid;
     const std::int64_t device;
     std::int32_t slot;
@@ -133,7 +141,11 @@ class SampleTile final : public juce::Component,
     std::vector<DeclaredSlot> slots_;
     State state_ = State::Empty;
     bool dropPreview_ = false;
-    std::string problem_;
+    std::shared_ptr<const engine::SampleSlotNode> presented_;
+    juce::String fileName_;
+    WaveformCache *waveformsSeen_ = nullptr;
+    std::uint64_t peaksSeen_ = 0;
+    std::shared_ptr<const media::MediaPeaks> peaks_;
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
@@ -403,6 +415,7 @@ class DeviceChainStrip final : public juce::Component,
     // each one undo step, its refusal said in the Status Bar.
     std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
     std::function<bool(std::int64_t device, std::int32_t slot)> clearSample;
+    std::function<void(const std::filesystem::path &)> revealSample;
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:

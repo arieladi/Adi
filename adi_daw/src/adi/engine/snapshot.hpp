@@ -182,9 +182,9 @@ struct RemarkNode {
 struct SampleSlotNode {
     std::int64_t deviceId=0;
     std::int32_t slot=0;
-    std::string name,uid,mediaHash,stateHash,problem;
+    std::string name,uid,mediaHash,stateHash,problem,fileName;
     std::optional<std::int64_t> mediaId;
-    bool empty=true,missing=false,hasDerivedState=false;
+    bool empty=true,missing=false,hasDerivedState=false,filePresent=false;
     friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
 };
 

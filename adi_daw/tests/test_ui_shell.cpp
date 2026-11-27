@@ -4747,6 +4747,9 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.arrangement.waveforms = &document->waveforms();
+    std::vector<std::filesystem::path> revealedSamples;
+    root.devices.revealSample = [&](const std::filesystem::path &file) { revealedSamples.push_back(file); };
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
@@ -4790,9 +4793,11 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     check(swappingDevice == dev && swappingSlot == 1, "the sample tile opens the Browser for its exact slot");
     const auto wav = dir / "oneshot-sample.wav";
     {
-        std::vector<float> silence(256);
+        std::array<float, 256> samples{};
+        for (std::size_t i = 0; i < samples.size() / 2; ++i)
+            samples[i] = i % 2 == 0 ? .75f : -.75f;
         audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
-        writer.write(silence.data(), 256);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
     }
     const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
     check(tile.isInterestedInFileDrag(juce::StringArray(path)), "the tile takes a file from the desktop");
@@ -4808,12 +4813,34 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
               tile.state() == SampleTile::State::Loaded && document->ops().nextUndo() &&
               document->ops().nextUndo()->label == "Assign device sample",
           "a file dropped from the desktop loads OneShot's slot 1, one undo step; the tile shows it loaded");
+    const auto wave = tile.waveformBounds();
+    check(tile.getWidth() == 90 && tile.getHeight() == 84 && tile.fileName() == "oneshot-sample.wav" &&
+              tile.getTooltip() == tile.fileName() && tile.fileNameBounds() == juce::Rectangle<int>(6, 20, 78, 14) &&
+              wave == juce::Rectangle<int>(6, 35, 78, 29) && tile.reveal.getBounds() == juce::Rectangle<int>(26, 66, 17, 15) &&
+              tile.hotSwapButton.getBounds() == juce::Rectangle<int>(4, 66, 17, 15) &&
+              tile.clear.getBounds() == juce::Rectangle<int>(50, 67, 36, 13) && tile.reveal.isVisible() && tile.reveal.isEnabled(),
+          "SC-291: the loaded tile fits the full filename tooltip, waveform and folder action beside Hot-Swap and Clear");
+    tile.reveal.onClick();
+    check(revealedSamples.size() == 1 && std::filesystem::equivalent(revealedSamples.front(), wav),
+          "SC-291: the folder action resolves the assigned sample file");
+    auto &waveforms = document->waveforms();
+    for (int i = 0; i < 5000 && waveforms.delivered() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    root.frame();
+    const juce::Point<int> loud{wave.getX() + wave.getWidth() / 4, wave.getCentreY() - 4};
+    const juce::Point<int> silent{wave.getX() + 3 * wave.getWidth() / 4, loud.y};
+    check(renderedPixel(tile, loud) == look::value && renderedPixel(tile, silent) != look::value,
+          "SC-291: the loaded waveform distinguishes the loud and silent halves of the source");
     const auto undone = [&] {
         const bool ok = root.command(AppCommands::Undo);
         refresh();
         return ok && tile.state() == SampleTile::State::Empty;
     };
     check(undone(), "undo empties OneShot's slot");
+    tile.reveal.onClick();
+    check(tile.fileName().isEmpty() && !tile.reveal.isVisible() && revealedSamples.size() == 1 &&
+              renderedPixel(tile, loud) != look::value,
+          "SC-291: Undo clears the waveform and filename and invalidates the former Reveal action");
     // Off the tile: a file dropped on the controls loads the slot too, as Live's Simpler takes one.
     auto &panel = *panels[0];
     check(panel.isInterestedInFileDrag(juce::StringArray(path)), "OneShot's whole panel takes a file from the desktop");
@@ -4832,6 +4859,21 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     tile.itemDropped(fromBrowser);
     refresh();
     check(tile.state() == SampleTile::State::Loaded, "a sample dragged from the browser loads OneShot's slot");
+    const auto replacement = dir / "oneshot-replacement.wav";
+    {
+        const std::array<float, 256> samples{};
+        audio::WavWriter writer(replacement, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    check(tile.drop(juce::String::fromUTF8(media::pathUtf8(replacement).c_str())),
+          "SC-291: the assigned sample can be replaced in place");
+    tile.reveal.onClick();
+    check(revealedSamples.size() == 1, "SC-291: a stale tile cannot reveal the newly assigned sample");
+    refresh();
+    tile.reveal.onClick();
+    check(tile.fileName() == "oneshot-replacement.wav" && revealedSamples.size() == 2 &&
+              std::filesystem::equivalent(revealedSamples.back(), replacement),
+          "SC-291: assigning a replacement refreshes the displayed filename and folder action");
     // The Sampler's slots are declared too: its panel draws the first, by its declared name.
     root.arrangement.geometry.selection.track = 3;
     refresh();

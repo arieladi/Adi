@@ -5,6 +5,7 @@
 #include "ui_value_entry.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/builtin_catalog.hpp"
+#include "adi/media/media_ops.hpp"
 #include "juce/pd_declarations.hpp"
 #include "mix_eq_host.hpp"
 #include "adi/mix/eq/Preview.hpp"
@@ -271,6 +272,32 @@ void HotSwapButton::paintButton(juce::Graphics &g, bool over, bool down) {
     g.setColour(down ? look::accent : over ? look::text : look::outline);
     g.strokePath(arrows, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
+void RevealSampleButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto bounds = getLocalBounds().toFloat();
+    const auto state = controls::stateOf(false, over, down, isEnabled());
+    controls::button(g, bounds, state);
+    const auto folder = bounds.withSizeKeepingCentre(11.f, 8.f);
+    juce::Path shape;
+    shape.startNewSubPath(folder.getX(), folder.getBottom());
+    shape.lineTo(folder.getX(), folder.getY());
+    shape.lineTo(folder.getX() + 4.f, folder.getY());
+    shape.lineTo(folder.getX() + 6.f, folder.getY() + 2.f);
+    shape.lineTo(folder.getRight(), folder.getY() + 2.f);
+    shape.lineTo(folder.getRight(), folder.getBottom());
+    shape.closeSubPath();
+    g.setColour(controls::labelColour(state));
+    g.strokePath(shape, juce::PathStrokeType(1.f));
+}
+namespace {
+std::shared_ptr<const engine::SampleSlotNode> sampleSlot(const engine::Snapshot *snapshot, std::int64_t device,
+                                                         std::int32_t slot) {
+    if (snapshot)
+        for (const auto &node : snapshot->sampleSlots)
+            if (node && node->deviceId == device && node->slot == slot)
+                return node;
+    return {};
+}
+} // namespace
 SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::vector<DeclaredSlot> slots)
     : device(d), slot(slots.front().id), strip_(s), slots_(std::move(slots)) {
     setWantsKeyboardFocus(true);
@@ -285,6 +312,31 @@ SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::vector<Declared
     addChildComponent(hotSwapButton);
     hotSwapButton.setTitle("Hot-Swap Sample");
     hotSwapButton.setTooltip("Browse samples for this slot (Q).");
+    addChildComponent(reveal);
+    reveal.setTitle("Show Sample in Folder");
+    reveal.onClick = [this] {
+        if (targetValid && !targetValid()) return;
+        const auto current = strip_.root.current();
+        const auto selected = sampleSlot(current.get(), device, slot);
+        if (!selected || selected != presented_ || !selected->filePresent || !selected->mediaId)
+            return;
+        try {
+            auto &store = strip_.root.editStore();
+            std::string error;
+            const auto row = media::mediaRow(store.db(), *selected->mediaId);
+            const auto file = media::resolveMedia(media::projectFolder(store), row, error);
+            if (file.empty()) {
+                strip_.root.say(error.empty() ? "The sample file is unavailable." : error);
+                return;
+            }
+            if (strip_.revealSample)
+                strip_.revealSample(file);
+            else
+                juce::File(juce::String::fromUTF8(media::pathUtf8(file).c_str())).revealToUser();
+        } catch (const std::exception &failure) {
+            strip_.root.say(failure.what());
+        }
+    };
     addChildComponent(slotChooser);
     if (slots_.size() > 1) {
         slotChooser.setTitle("Sample Slot");
@@ -310,34 +362,54 @@ void SampleTile::choose(const DeclaredSlot &choice) {
     repaint();
 }
 void SampleTile::refresh() {
-    if (const auto *snapshot = strip_.root.reader().get()) {
-        for (const auto &node : snapshot->sampleSlots)
-            if (node && node->deviceId == device && node->slot == slot) {
-                show(node.get());
-                return;
-            }
-        show(nullptr);
+    const auto next = sampleSlot(strip_.root.reader().get(), device, slot);
+    const bool changed = next != presented_;
+    if (changed) {
+        presented_ = next;
+        state_ = !next || next->empty ? State::Empty : next->missing ? State::Missing : State::Loaded;
+        const bool loaded = state_ == State::Loaded;
+        fileName_ = juce::String{};
+        if (loaded) {
+            fileName_ = juce::String::fromUTF8(next->fileName.c_str());
+            if (fileName_.isEmpty()) fileName_ = next->filePresent ? "Sample" : "Embedded sample";
+        }
+        clear.setVisible(state_ != State::Empty);
+        reveal.setVisible(loaded);
+        const bool canReveal = loaded && next->filePresent && next->mediaId;
+        reveal.setEnabled(canReveal);
+        reveal.setTooltip(canReveal ? "Show the sample file in its folder." : "This sample is embedded in the device preset.");
+        if (next && !next->problem.empty())
+            setTooltip(juce::String::fromUTF8(next->problem.c_str()));
+        else
+            setTooltip(fileName_.isNotEmpty() ? fileName_ : "Drop a sample file here, from the desktop or the browser.");
+        repaint();
+    }
+    auto *cache = strip_.root.arrangement.waveforms;
+    const auto delivered = cache ? cache->delivered() : 0;
+    if (!changed && waveformsSeen_ == cache && peaksSeen_ == delivered) return;
+    waveformsSeen_ = cache;
+    peaksSeen_ = delivered;
+    auto peaks = cache && state_ == State::Loaded ? cache->peaks(*next) : nullptr;
+    if (peaks_ != peaks) {
+        peaks_ = std::move(peaks);
+        repaint(waveformBounds());
     }
 }
 void SampleTile::resized() {
     slotChooser.setBounds(3, 2, getWidth() - 6, 17);
     hotSwapButton.setBounds(4, getHeight() - 18, 17, 15);
+    reveal.setBounds(26, getHeight() - 18, 17, 15);
     clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13);
+}
+juce::Rectangle<int> SampleTile::fileNameBounds() const noexcept {
+    return getLocalBounds().reduced(6, 0).withTrimmedTop(20).withHeight(14);
+}
+juce::Rectangle<int> SampleTile::waveformBounds() const noexcept {
+    return getLocalBounds().reduced(6, 0).withTrimmedTop(35).withTrimmedBottom(20);
 }
 void SampleTile::mouseDown(const juce::MouseEvent &event) {
     if (event.mods.isLeftButtonDown())
         focusIfShowing(*this);
-}
-void SampleTile::show(const engine::SampleSlotNode *node) {
-    const auto next = node == nullptr || node->empty ? State::Empty : node->missing ? State::Missing : State::Loaded;
-    const auto problem = node != nullptr ? node->problem : std::string();
-    if (next == state_ && problem == problem_)
-        return;
-    state_ = next;
-    problem_ = problem;
-    clear.setVisible(state_ != State::Empty);
-    setTooltip(problem_.empty() ? "Drop a sample file here, from the desktop or the browser." : juce::String(problem_));
-    repaint();
 }
 void SampleTile::paint(juce::Graphics &g) {
     // A drop well, as Live's sample tiles: the slot's name, then its state.
@@ -364,11 +436,30 @@ void SampleTile::paint(juce::Graphics &g) {
     if (!slotChooser.isVisible())
         g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
     g.setFont(look::font(11.f));
-    const char *what = state_ == State::Empty ? "Drop a sample" : state_ == State::Missing ? "File missing" : "Sample loaded";
-    g.setColour(state_ == State::Empty     ? juce::Colour(0xff8a8a8a)
-                : state_ == State::Missing ? juce::Colour(0xffe5352b)
-                                           : look::textOnBand);
-    g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
+    if (state_ != State::Loaded) {
+        const bool missing = state_ == State::Missing;
+        g.setColour(missing ? juce::Colour(0xffe5352b) : juce::Colour(0xff8a8a8a));
+        g.drawFittedText(missing ? "File missing" : "Drop a sample", 6, 18, getWidth() - 12,
+                         std::max(14, getHeight() - 38), juce::Justification::centred, 2);
+        return;
+    }
+    g.drawText(fileName_, fileNameBounds(), juce::Justification::centredLeft, true);
+    const auto area = waveformBounds();
+    if (!peaks_ || peaks_->channels == 0 || area.isEmpty()) return;
+    const auto channels = std::min(peaks_->channels, 2u);
+    const auto framesPerPixel = static_cast<double>(peaks_->frames) / area.getWidth();
+    const float band = static_cast<float>(area.getHeight()) / static_cast<float>(channels);
+    g.setColour(look::value);
+    for (int x = 0; x < area.getWidth(); ++x) {
+        for (std::uint32_t ch = 0; ch < channels; ++ch) {
+            const auto peak = peakSpan(*peaks_, x * framesPerPixel, (x + 1) * framesPerPixel, ch);
+            if (!peak) continue;
+            const float centre = static_cast<float>(area.getY()) + band * (static_cast<float>(ch) + .5f);
+            const float top = centre - std::clamp(peak->maximum, -1.f, 1.f) * band * .5f;
+            const float bottom = centre - std::clamp(peak->minimum, -1.f, 1.f) * band * .5f;
+            g.fillRect(static_cast<float>(area.getX() + x), top, 1.f, std::max(1.f, bottom - top));
+        }
+    }
 }
 bool SampleTile::drop(const juce::String &path) {
     setDropPreview(false);

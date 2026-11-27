@@ -658,24 +658,36 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
             }
             if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
-            node.mediaId.reset();node.missing=false;
+            node.mediaId.reset();node.fileName.clear();node.missing=false;node.filePresent=false;
             if(!node.empty && node.problem.empty()) {
                 const bool embedded = slots.getColumn(4).getString() == device::kPresetSampleStateHint;
-                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
-                node.missing=!embedded;
+                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing,orig_name FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
                 if(media.executeStep()) {
                     node.mediaId=media.getColumn(0).getInt64();
-                    if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.missing=false;
+                    node.fileName=media.getColumn(4).getString();
+                    if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.filePresent=true;
                     else if(media.getColumn(3).getInt()==0) {
                         std::error_code ec;bool present=false;
                         if(!media.getColumn(1).isNull()) {
                             const auto relative=media::pathFromUtf8(media.getColumn(1).getString());
                             if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
                         }
+                        if(!present && !node.fileName.empty()) {
+                            const auto name=media::pathFromUtf8(node.fileName).filename();
+                            if(!name.empty())present=std::filesystem::is_regular_file(media::projectFolder(store)/"audio"/name,ec);
+                        }
                         if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
-                        node.missing=!present && !embedded;
+                        node.filePresent=present;
+                    }
+                    if (node.filePresent && node.fileName.empty()) {
+                        for (const int pathColumn : {1, 2}) {
+                            if (media.getColumn(pathColumn).isNull()) continue;
+                            node.fileName = media::pathUtf8(media::pathFromUtf8(media.getColumn(pathColumn).getString()).filename());
+                            if (!node.fileName.empty()) break;
+                        }
                     }
                 }
+                node.missing=!node.filePresent && !embedded;
             }
         }catch(const std::exception& exception){node.problem=exception.what();node.missing=true;}
         const auto old=previousSlots.find({node.deviceId,node.slot});
