@@ -5388,7 +5388,8 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
           "cancelled, nothing lands and the Status Bar says so");
     check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 2, "a new drop reads again");
     if (pending) std::exchange(pending, nullptr)({{capture(), {}}}, "");
-    check(!root.capturing() && clipsOn() == 1, "read, the clip lands as the plain drop always did");
+    root.frame(); // the window's view of the project takes the landed clip on its next frame
+    check(!root.capturing() && clipsOn() == 1, ("read, the clip lands as the plain drop always did: " + root.error()).c_str());
     {
         // SC-389: one bad file among the dropped: the others land, one step, and the bad one is named.
         const auto clipsBefore = clipsOn();
@@ -5396,11 +5397,13 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
                   asked.size() == 3 && asked.back().size() == 2,
               "SC-389: two files are read together");
         if (pending) std::exchange(pending, nullptr)({{capture(), {}}, {std::nullopt, "it is not audio ADI can read"}}, "");
+        root.frame();
         check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos &&
                   root.error().find("not audio") != std::string::npos && root.error().find("other file came in") != std::string::npos,
               ("SC-389: the good file lands and the bad one is named, with why: " + root.error()).c_str());
         check(root.dropAudioFiles({{(dir / "Broken.wav").string(), "Broken"}}, audioTrack, 0, false), "SC-389: a lone bad file");
         if (pending) std::exchange(pending, nullptr)({{std::nullopt, "it is not audio ADI can read"}}, "");
+        root.frame();
         check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos,
               "SC-389: alone, it is refused, named");
     }
@@ -5411,8 +5414,9 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
           "the project changes while the file is read");
     root.frame();
     if (pending) std::exchange(pending, nullptr)({{stale, {}}}, "");
+    root.frame();
     check(clipsOn() == before && root.error().find("changed while the files were read") != std::string::npos,
-          "a capture older than the project is refused, not landed with ids another row may hold");
+          ("a capture older than the project is refused, not landed with ids another row may hold: " + root.error()).c_str());
     settings.set("editing.importOptions", wasOptions, {}, why);
     commands.detach(root);
     document->release();
@@ -21725,8 +21729,11 @@ int main(int argc, char **argv) {
                     if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Audio Input Device")
                         inputBox = box;
                 std::string kept;
-                if (inputBox != nullptr) {
-                    inputBox->setSelectedId(1, juce::sendNotificationSync);
+                if (inputBox != nullptr && inputBox->onChange) {
+                    // The user's pick of No Device, as the box reports it (JUCE says nothing when the box
+                    // already shows it, as it does with no input open).
+                    inputBox->setSelectedId(1, juce::dontSendNotification);
+                    inputBox->onChange();
                     kept = settings.get("audio.inputDevice").get<std::string>();
                 }
                 check(inputBox != nullptr && kept == kNoInputDevice,
@@ -21735,10 +21742,13 @@ int main(int argc, char **argv) {
                 settings.set("audio.inputDevice", std::string(), {}, unset);
             }
             // SC-380: Live's Hardware Setup under the device's lines; with no device open, there is no panel.
+            // A device the suite opens (Windows Audio here) has no panel of its own either.
             check(page != nullptr && y("Channel Configuration") < y("Hardware Setup") && y("Hardware Setup") < y("Sample Rate") &&
-                      page->hardware.isShowing() && !page->hardware.isEnabled() &&
+                      page->hardware.isVisible() && !page->hardware.isEnabled() &&
                       page->hardware.getTooltip().isNotEmpty(),
-                  "Hardware Setup stands under Channel Configuration, off with no device open, and says why");
+                  ("Hardware Setup stands under Channel Configuration, off with no panel to open, and says why: " +
+                   (page != nullptr ? page->hardware.getTooltip().toStdString() : std::string()))
+                      .c_str());
             // The two pages at twice their size, for the PR's pictures (ADI_UI_PARITY).
             if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
                 pictures.isNotEmpty())
