@@ -12686,12 +12686,27 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
               "double click adds an interior Warp marker without changing either source anchor");
         if (added.size() == 3) {
             sample.mouseDown(eventAt(added[1].tick));
-            sample.mouseDrag(eventAt(2 * textproj::kPPQ));
-            sample.mouseUp(eventAt(2 * textproj::kPPQ));
+            const auto betweenGridLines = 2 * textproj::kPPQ + textproj::kPPQ / 10;
+            sample.mouseDrag(eventAt(betweenGridLines));
+            sample.mouseUp(eventAt(betweenGridLines));
             root.frame();
             const auto moved = markers();
             check(moved.size() == 3 && moved[1].sourceFrame == added[1].sourceFrame && moved[1].tick > added[1].tick,
                   "dragging a Warp marker changes only its tick");
+            sample.time.grid.fixed = true;
+            sample.time.grid.fixedQuarters = .25;
+            const bool quantized = sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
+            root.frame();
+            const auto snapped = markers();
+            check(quantized && snapped.size() == 3 && snapped[1].sourceFrame == added[1].sourceFrame &&
+                      snapped[1].tick == 2 * textproj::kPPQ && snapped.front() == before.front() &&
+                      snapped.back() == before.back() && root.undoTitle(false) == "Undo Quantize Audio",
+                  "Ctrl+U quantizes a Warp marker to the Sample Editor grid in one edit");
+            if (quantized) {
+                check(root.command(AppCommands::Undo), "audio quantize can be undone");
+                root.frame();
+                check(markers() == moved, "Undo keeps the marker's pre-quantize time");
+            }
             check(sample.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete is consumed by the selected Warp marker");
             root.frame();
             check(markers() == before, "deleting the interior marker restores a straight map");
