@@ -79,6 +79,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/tracks-chain` | `c5ffe712a46c0d444c7b9a39ad02e0ede6cb6eb3` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The shell suite exercises Arrangement Main Cue Out and Cue Volume, shared settings across views, and complete stereo output pairs. |
 | `origin/basics/tracks-chain` | `03da2ac8633f61ddc350711292d33303934c71cf` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The shell suite exercises assigning track colors to main clips, take lanes, and nested group contents, with one Undo. |
 | `origin/basics/tracks-chain` | `572400342667a00082a01f8e17f0a2695869192d` | Yes | All 50 production targets built. Passed 41/41, including window and mixer 33/33, acceptance 3/3, and affected and session 5/5. The shell suite covers focused Monitor reset and the Track Activator accent for Monitor In. |
+| `origin/basics/analysers-chain` | `ab3547fd0ffefe837a6a8a1332fed2329461f97b` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Checks include Auto Gain cross-rate DSP, envelope metering, shared analysis, and the spectrum slope. |
 
 ## Nine-step window walk
 
