@@ -34,6 +34,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-129 | `basics/browser-chain` at `634911602` | Give Browser results and Places a context menu with an available file or folder action. Browser seat. | The headless popup seam covered files, built-ins, presets, plug-ins, nested and added folders, removal and immutable action targets. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-130 | `basics/browser-chain` at `766f8d607` | Clear the Browser search field with Escape or its x while retaining mode-specific text. Browser seat. | The headless suite verified both controls, immediate filtering, the text bounds and Hot-Swap mode restoration. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-131 | `basics/browser-chain` at `599e89c8d` | Rescan the Browser library in the background without reopening ADI. Browser and application seats. | A headless regression wrote and indexed a new sample through the rescan path and preserved selection, scroll, search, audition state and open folders. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-133 | `basics/browser-chain` at `01cf03a9b` | Persist Favorites and seven rebindable color marks for Browser items. Browser, window and Settings seats. | Headless key, popup, search and round-trip persistence checks passed. Debug Werror, all 18 no-display UI suites, Settings and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -291,8 +292,18 @@ Candidate commit `bf679368e` follows the exact SC-129 head `5a3c052ee`. The prod
 
 A standalone Linux smoke with `DISPLAY` unset also scanned the same real index and configured folder twice. The second worker publication included a file created after the first scan, the query found it within the same portable Place ID, and its folder remained visible in the published tree.
 
+### SC-133 Favorites and collection colors
+
+Browser-local coordinates, from the 308 × 443 peerless fixture. Before, Categories was (4, 28, 113, 19), All (4, 47, 113, 19), and Add Folder at the end of the default roster was (4, 256, 113, 19). After, Collections is (4, 28, 113, 19), Favorites is (4, 47, 113, 19), and the spacer is (4, 66, 113, 19). Categories is (4, 85, 113, 19), All (4, 104, 113, 19), and Add Folder is (4, 313, 113, 19). Categories and Places rows move down 57 px. Content begins at x=119, and its 19 px rows have the same bounds before and after. In the software paint test of a 113 × 19 result, Favorite is an outlined (101, 7, 5, 5) square and Red a filled (94, 7, 5, 5) square. Marks pack from the right at 7 px intervals and reserve their width from the row's name. Before, there were no Favorites or color marks.
+
+The existing result popup offers Add to Favorites or Remove from Favorites and a Collection Colors submenu. The numeric bindings 1–7 use the normal Browser shortcut registry. Favorites appears even empty. It contains any sample, built-in device, or plug-in carrying an explicit Favorite or color mark, and uses the Browser's usual search. Marks remain in application preferences. Samples use their normalized indexed paths, devices use their built-in UIDs, and plug-ins use format, UID, and an optional shell member.
+
+The Device, Mixer and Mix View software fixtures return to the exact Browser results pixels from before SC-127. The restored Favorites row lets the keyboard focus fixture exercise its original first-label path. The changed area is confined to the Browser results between `(133,84)` and `(310,474)`, exclusive.
+
 ## For the director
 
 This session owns the Browser queue.
 
 SC-123. The default auto Preview setting starts off and the standalone level starts at −12 dB, both named constants. Enabling auto Preview waits for a selection gesture, and clicking the same selected row replays after the previous preview ends. These readings await an actual Live comparison. The preview row remains in today's location for the next item, SC-429.
+
+SC-133. Keep the provisional color order Red, Orange, Yellow, Green, Blue, Purple, Gray and the single combined Favorites view until the Collections sheet is reviewed. The seven marks toggle independently on the focused list's lead row. Keep unresolved sample paths so their marks return if the folder comes back, and keep distinct files separate when their names match. A sample moved to a different path takes a new identity until there is a relink rule.
