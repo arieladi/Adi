@@ -2178,7 +2178,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             return false;
         }
     }
-    spec.placementOffsetSamples = deviceLatencySamples;
+    spec.placementOffsetSamples = spec.loop ? 0 : deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     spec.format = format;
@@ -2195,7 +2195,10 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                      ". Choose an enabled input under Audio From.";
             return false;
         }
-        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end())});
+        const bool keep = !spec.loop && track->recording.keepMonitoringLatency &&
+                          recordState(states, id).monitor != Monitor::Off;
+        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end()),
+                                keep ? std::optional<std::int64_t>{0} : std::nullopt});
     }
     std::string why;
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
@@ -2346,6 +2349,7 @@ void ProjectDocument::landTake() {
     std::vector<std::int64_t> lastPassClips;
     recording::RecordingEdit edit;
     std::string unplacedAudio;
+    std::size_t skippedAudioTracks = 0;
     try {
         RowIds rows(store_->db());
         std::vector<recording::ClipIds> ids;
@@ -2370,7 +2374,6 @@ void ProjectDocument::landTake() {
                 auto name = shownTrackName(current, track.trackId);
                 const auto clip = rows.next("clips");
                 ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : name, std::move(name)});
-                outcome.clips.push_back(clip);
             }
         }
         std::vector<recording::MidiLinearTake> takes;
@@ -2391,7 +2394,6 @@ void ProjectDocument::landTake() {
                 auto name = shownTrackName(current, span.track);
                 takes.push_back({span.track, clip, span.start, span.end - span.start,
                                  name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});
-                outcome.clips.push_back(clip);
             }
         }
         if (!loopTake) {
@@ -2400,10 +2402,14 @@ void ProjectDocument::landTake() {
             if (edit.audioOutsidePunch && hasMidi) {
                 unplacedAudio = std::move(edit.error);
                 hasAudio = false;
-                outcome.clips.clear();
+                edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
+            }
+            if (edit.ok) {
+                if (hasAudio)
+                    skippedAudioTracks = ids.size() - edit.placedAudioClips.size();
+                outcome.clips = std::move(edit.placedAudioClips);
                 for (const auto &take : takes)
                     outcome.clips.push_back(take.clip);
-                edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
             }
         }
     } catch (const std::exception &error) {
@@ -2466,6 +2472,11 @@ void ProjectDocument::landTake() {
         else if (!audioProblem.empty())
             outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
                                        : outcome.message + " Audio recording ended: " + audioProblem + "." + audioLocation;
+        if (skippedAudioTracks > 0) {
+            outcome.message += skippedAudioTracks == 1 ? " Audio on one track fell outside its compensated punch range."
+                : " Audio on " + std::to_string(skippedAudioTracks) + " tracks fell outside their compensated punch ranges.";
+            outcome.message += audioLocation;
+        }
     }
     if (!midiProblem.empty())
         outcome.message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";

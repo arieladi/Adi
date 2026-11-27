@@ -986,10 +986,12 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             applyInputChannels();
             const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
-            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            const auto correction = engine::recordingLatencyCorrection(
+                device::reportedRoundTripLatency(*audioDevice), audioDevice->getCurrentSampleRate(),
+                settings_->get("audio.driverErrorCompensationMs").get<double>());
             const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
             const auto format = recordingWavFormat(settings_->get("record.bitDepth").get<int>());
-            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder, format)) {
+            if (!document_->startRecording(insertTick, inputs, playing, correction, recordFolder, format)) {
                 root_->say(document_->error());
                 return false;
             }

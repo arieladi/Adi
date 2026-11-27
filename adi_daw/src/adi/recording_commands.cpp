@@ -329,7 +329,7 @@ engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemor
     }
 }
 std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& store,const engine::AudioRecordingResult& recorded,
-    std::span<const ClipIds> ids,RecordingEdit& result) {
+    std::span<const ClipIds> ids,RecordingEdit& result,std::span<const std::size_t> sourceIndices) {
     if(store.readOnly())throw std::runtime_error("project is read-only");
     if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
     result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
@@ -347,10 +347,14 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     const auto ownedFolder=fs::weakly_canonical(folder);
     RecordingFileNames names(folder);
     auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;
+    const auto chosen = sourceIndices.empty() ? ids.size() : sourceIndices.size();
+    // The private directory still owns every raw source until the caller can recover the skipped tracks.
+    files->keepPrivate = chosen != ids.size();
     std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;
     std::vector<PreparedSource> sources;
-    sources.reserve(ids.size());
-    for(std::size_t index=0;index<ids.size();++index) {
+    sources.reserve(chosen);
+    for(std::size_t ordinal=0;ordinal<chosen;++ordinal) {
+        const auto index = sourceIndices.empty() ? ordinal : sourceIndices[ordinal];
         const auto& target=recorded.tracks[index];const auto& wanted=ids[index];
         if(wanted.clip<=0 || wanted.media<=0 || !clipIds.insert(wanted.clip).second || !mediaIds.insert(wanted.media).second)
             throw std::runtime_error("recording needs distinct positive clip and media allocation ids");
@@ -461,41 +465,59 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
                 recorded.frames > static_cast<std::uint64_t>(ceiling - recorded.startSample) ||
                 recorded.sampleRate < 8000 || recorded.sampleRate > 768000)
                 throw std::runtime_error("recording is not a completed attachable take");
-            const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames,
-                                                               placementOffsetSamples, punch);
-            if (!range) {
-                result.audioOutsidePunch = punch.active() &&
-                    engine::recordingPlacementRange(recorded.startSample, recorded.frames, placementOffsetSamples, {}).has_value();
-                throw std::runtime_error(result.audioOutsidePunch ? "no audio remains within the compensated punch range"
-                                                                  : "recording latency placement overflows the song clock");
+            if (ids.empty() || ids.size() != recorded.tracks.size())
+                throw std::runtime_error("recording needs one clip and media allocation per captured track");
+            struct Placement {
+                engine::RecordedPass range;
+                std::int64_t beginTick, endTick;
+            };
+            std::vector<Placement> placements;
+            std::vector<std::size_t> sourceIndices;
+            placements.reserve(ids.size());
+            sourceIndices.reserve(ids.size());
+            for (std::size_t index = 0; index < ids.size(); ++index) {
+                const auto offset = recorded.tracks[index].placementOffsetSamples.value_or(placementOffsetSamples);
+                const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, punch);
+                if (!range) {
+                    if (punch.active() && engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, {}))
+                        continue;
+                    throw std::runtime_error("recording latency placement overflows the song clock");
+                }
+                // Several ticks can project to the same sample. Prefer the authored brace at a clipped edge.
+                const auto beginTick = punch.in && range->timelineStartSample == punch.in->sample
+                    ? punch.in->tick : tickAt(tempo, range->timelineStartSample, recorded.sampleRate);
+                const auto endTick = punch.out && range->timelineEndSample == punch.out->sample
+                    ? punch.out->tick : tickAt(tempo, range->timelineEndSample, recorded.sampleRate);
+                if (endTick <= beginTick)
+                    throw std::runtime_error("recording has no representable musical extent");
+                placements.push_back({*range, beginTick, endTick});
+                sourceIndices.push_back(index);
+            }
+            if (placements.empty()) {
+                result.audioOutsidePunch = true;
+                throw std::runtime_error("no audio remains within the compensated punch range");
             }
             if (punch.in)
                 validatePunchBoundary(tempo, *punch.in, recorded.sampleRate);
             if (punch.out)
                 validatePunchBoundary(tempo, *punch.out, recorded.sampleRate);
-            const auto start = range->timelineStartSample;
-            const auto end = range->timelineEndSample;
-            // Several ticks can project to the same sample. Use the authored
-            // brace at a clipped edge so even the edit range stays inside it.
-            const auto beginTick = punch.in && start == punch.in->sample
-                ? punch.in->tick : tickAt(tempo, start, recorded.sampleRate);
-            const auto endTick = punch.out && end == punch.out->sample
-                ? punch.out->tick : tickAt(tempo, end, recorded.sampleRate);
-            if (endTick <= beginTick)
-                throw std::runtime_error("recording has no representable musical extent");
-            auto sources = prepareSources(store, recorded, ids, result);
-            for (std::size_t index = 0; index < ids.size(); ++index) {
+            auto sources = prepareSources(store, recorded, ids, result, sourceIndices);
+            for (std::size_t ordinal = 0; ordinal < placements.size(); ++ordinal) {
+                const auto index = sourceIndices[ordinal];
                 const auto& target = recorded.tracks[index];
                 const auto& wanted = ids[index];
-                auto& source = sources[index];
+                const auto& [range, beginTick, endTick] = placements[ordinal];
+                auto& source = sources[ordinal];
                 if (source.mediaEdit) {
                     source.mediaEdit->label = label;
                     result.requests.push_back(std::move(*source.mediaEdit));
                 }
-                const RecordedPiece take{wanted.clip, start, end, range->sourceStartFrame,
-                    wanted.name.empty() ? std::string("Recording") : wanted.name, std::pair{beginTick,endTick}};
+                const RecordedPiece take{wanted.clip, range.timelineStartSample, range.timelineEndSample,
+                    range.sourceStartFrame, wanted.name.empty() ? std::string("Recording") : wanted.name,
+                    std::pair{beginTick, endTick}};
                 place(recordedImage(store, tempo, take, target.trackId, source.mediaId, recorded.sampleRate),
                       target.trackId, beginTick, endTick);
+                result.placedAudioClips.push_back(wanted.clip);
             }
         } else {
             result.sourceProject = identity(store);

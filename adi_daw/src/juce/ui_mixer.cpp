@@ -394,8 +394,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     delay.updateText();
     keepLatency.setTitle("Keep Latency");
-    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio, stored with the track; recording does not "
-                           "follow it yet. Right-click In or Auto for the same switch.");
+    keepLatency.setTooltip("Keep the monitored timing of audio takes outside loop recording when Monitor is In or Auto. "
+                           "Turn off to apply the driver's latency correction.");
     keepLatency.setClickingTogglesState(false);
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);

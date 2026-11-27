@@ -46,6 +46,7 @@ struct MidiTakePass {
 struct RecordingEdit {
     bool ok=false;
     bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch
+    std::vector<std::int64_t> placedAudioClips; // linear clip IDs prepared from the placeable tracks
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;
@@ -57,7 +58,7 @@ private:
     struct PreparedSource;
     std::vector<std::size_t> groupEnds_;
     static std::vector<PreparedSource> prepareSources(Store&,const engine::AudioRecordingResult&,
-        std::span<const ClipIds>,RecordingEdit&);
+        std::span<const ClipIds>,RecordingEdit&,std::span<const std::size_t> sourceIndices={});
     static RecordingEdit prepareLinear(Store&,const engine::AudioRecordingResult*,std::span<const ClipIds>,
         std::span<const MidiLinearTake>,double,std::int64_t);
     std::shared_ptr<Files> files_;
@@ -84,8 +85,8 @@ private:
 /// current musical clock exactly. Does not change project rows or publish files.
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
-/// Subtract the caller's signed latency offset from the timeline start. A
-/// correction past song zero places the first captured frame at zero.
+/// Subtract each track's captured signed latency offset from the timeline start,
+/// using the caller's offset for tracks without one. Clamp the start at song zero.
 [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
     std::int64_t placementOffsetSamples=0);
 /// Publish a linear audio and MIDI take together in one placement and Undo.
