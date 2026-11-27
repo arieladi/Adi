@@ -4,7 +4,6 @@ Codex took the library seat on 27 November 2026.
 
 ## Still unbuilt in the library rows
 
-- TM-MD-04 and TM-WT-01. Coordinate a cold Warp request and background indexing of the same content and timing configuration so they share the timing work.
 - TM-MD-04 and TM-WT-05. Refresh published library measurements when authored metadata changes, so filtering, preview and Warp see the same answer for the same source hash.
 - TM-MD-07. Supply analysis jobs and stable source identities from each Browser listing generation to the headless publication and prioritize displayed files.
 - TM-MD-04, TM-WT-01 and TM-WT-05. Run the prepared workstation fixtures on Live 12.4 and record the remaining measurements. This execution environment has no Live 12.4 host.
@@ -87,6 +86,7 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 | Windows checker, library test scheduling | Chain `f9f761fd4`. Fetched and merged `origin/main`, already at `6f96847b0`, and merged the checker fix from `wincheck/main` `9734b0c44`. Generated CTest metadata confirms `RUN_SERIAL` with the original 120 s timeout. Three library suites passed locally in 3.33 s. | Pushed. The checker measured the Windows starvation on main. Its log has yet to list a native build of the library chain. |
 | TM-MD-04, TM-WT-01 and TM-WT-05, Live measurement kit | Chain `af28c4cf3`. The fixture generator produces 12 WAVs and a case manifest. Two runs and a repeat generated identical bytes. Independent RIFF and audio read-back confirmed pickup and tempo changes, a 375 Hz diagnostic tone, identical PCM across ACID controls with 120 and 90 BPM tags, and the exact 45/52.5/60/90 s boundaries from the earlier readings. | Pushed. The manifest distinguishes authored fixture values from the measurements to take on Live 12.4. |
 | TM-MD-07, combined sample results and swap order | Chain `12b5367a9`. The headless query joins shared and Current Project matches before applying measured filters, rank and limit. Duplicate paths keep the project label and the shared measurement while the project copy is pending. Ranked swaps keep the first path for each content hash and omit a retained reference after rescan. The same fixture passed with the actual Browser matcher and with the native test index. A top-64 common-tag query on 200,000 records took 5.46 ms median. | Pushed. |
+| TM-MD-04 and TM-WT-01, concurrent timing work | Chain `f48b0ac5c`. Native Warp and the catalog hold one in-flight timing computation for each cache folder, content hash and analyser settings. Two concurrent cold readers previously consumed two PCM passes. The same test now measures one pass and identical timing results. Cancellation, recursive acquisition and retry after a failed ADIA write passed. Both focused warnings-as-errors suites passed in 13.82 s. | Pushed. |
 
 The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% tempo tolerance. A dash means the comparator supplied no matching labelled output.
 
