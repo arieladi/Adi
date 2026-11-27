@@ -36,6 +36,7 @@ I took the server engine seat on 27 November 2026.
 | DEV-27 stored controls on Session open | Tested stock controls through `Session::load` and its normal `plugin_params` restore. | The authorized device and server both observe the stored 0.625. The strict full run passed all 291 tests. Chain `76e8b92c5`. | Session restore proved. |
 | DEV-27 native manifest validation | Made narrow wire integers shift in unsigned arithmetic under instrumentation. | Strict ASan and UBSan rejected all 118 truncated prefixes, duplicate selector, overlong field and nonfinite feedback. Windows native TCP passed after the fix. Chain `b1359ca50`. | Wire bytes and rejection behavior verified. |
 | DF-E92 main merge and SC-430 | Merged `origin/main` at `6e684bda4`. Shared ParamOps now uses main's best-effort stale-state receipt and keeps the remote worker's diagnostic for strict captures. | Chain `8fa1ac1e7`. The focused regression checks the strict diagnostic, preservation during a best-effort save and retention after reopening. The merged build is running. | Merge pushed. |
+| DEV-27 export preflight | Reused the named remote-device check before staging, including signed-delay ranges that render no graph block. | Baseline wrote 32 frames with the server unavailable. The fixed run named the device and server, wrote zero frames and produced no WAV. The same local placeholder still exported 32 silent frames. A granted server matched all 1,732 local samples. Chain `03ad65157`. | Leading-silence and ordinary remote export checked. |
 
 ## For the director
 
