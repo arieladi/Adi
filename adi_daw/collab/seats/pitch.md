@@ -2,19 +2,19 @@
 
 ## Still unbuilt
 
-- Separate wire op names for split and merge, pending reservation. The individual journal actions have exact Undo and Redo through `clip.setPitchEdits`.
+- Separate `clip.splitPitchSegment` and `clip.mergePitchSegments` wire operations are now reserved on main and being registered. The initial journal actions already have exact Undo and Redo.
 - Native 1.27 activation and its ordered upgrade/creation gates after the genuine lower migrations. The staged DDL and text projection checks pass.
 - Installed-DAW reference runs C5V-001 through C5V-030. The documentary matrix is available on the research branch. [C5V-001–030](https://github.com/arieladi/Adi/blob/58b42d6037d1b2ea9e50a166379312ecb6a5a84f/adi_daw/docs/daws/cubase-15.md#L273-L451)
 - Chord-event quantization needs a chord-event model. The Standard MIDI File encoder carries channel bends. Native clip import still needs to reconstruct them.
-- Durable MIDI extraction provenance, native storage and playback of channel-wide pitch bend, and plug-in-specific extraction modes. Static and continuous bend-word projection is available.
+- The reserved output-owned extraction marker is now being staged with exact replacement history. Native storage and playback of channel-wide pitch bend and plug-in-specific extraction modes remain open.
 - Reference decisions for selected-segment flattening and timing inheritance. Pitch-edited Reverse plus Warp and whole-event pitch-only flatten are built.
 
 ## For win, 27 November continuation
 
-- Reserve `clip.splitPitchSegment` and `clip.mergePitchSegments`. Each will carry the resolved source-bound edit image so Undo/Redo and replay use captured bytes. Boundary correction can continue through the existing reserved edit operation.
+- Win reserved `clip.splitPitchSegment` and `clip.mergePitchSegments` on main in `4b038566`. Each carries a resolved source-bound edit image. Boundary correction uses `clip.setPitchEdits`.
 - Please retest the final continuation head with the Windows checker. The reported MIDI fixture fix has been merged.
 - Validate how the VST3 host reports standard Tuning and Volume separately. Authored AEXP already carries semitones and dB through the native route. A verified instrument-specific extraction needs the actual destination capability, separate from a custom physical X mapping or a JUCE MIDI fallback.
-- For automatic extraction replacement, reserve the output-owned `clip_pitch_extractions` marker in the staged 1.27 shape. Existing creation and placement images would capture it. The marker survives deleting the audio source.
+- Win reserved the output-owned `clip_pitch_extractions` marker in staged 1.27 in `4b038566`. It survives removing the audio source.
 - Confirm the native `event_streams.pitchbend` ACTL value and compatibility contract, and coordinate the shared MIDI playback lane. The schema permits the stream kind. Arrangement chase, loop and centering need its actual semantics.
 
 ## For win
@@ -115,3 +115,4 @@ B. Preserve exact compatible controls by default on split or merge. When a conto
 | Pitch-owned Reverse and Warp | The worker shares the MIDI projection order. Apply source-frame edits, trim and reverse the source window, then apply Warp in playback order. Whole-event pitch flatten keeps that Warp map. | 26 worker and 24 Session/flatten checks passed. An asymmetric marker moved from reversed frame 1,600 to Warp frame 4,800 on the original and corrected lanes. Nonlinear Re-Pitch measured 279.06386 Hz before and after flatten, identical across all 6,144 samples. The previous Session path named the reversed clip silent. | Pushed `6b5ea20e`. Generic reversed Warp without pitch keeps the existing refusal. |
 | MSVC Debug worker allocation path | Use the repository’s counted construction when releasing temporary vectors in pitch render and comparison. Iterator-proxy allocation failure can reach normal resource handling. | Source audit matched the existing `publisher.hpp` workaround. The exact head’s native Windows rerun remains open. | Pushed `fc4c1eee`. |
 | MSVC shadow review of MIDI fixtures | Give the bend fixture helper and its return record distinct names. The sustained-note test now uses the renamed helper too. | The strict syntax review found the shadow. GCC compiled the corrected fixture with `-Wshadow` and warnings as errors. | Pushed `46c9288c`. |
+| Sung-scale MIDI file verification | Independently decoded the real VocalSet exercise with Mido. | Both files carried all 17 annotated notes at 960 PPQ. Export rounding added at most 0.251 ms. The worst performed-reference onset and offset errors were 34.082 and 22.472 ms. The continuous contour reached 208.926 cents, so ±1 and ±2 refused while ±3 succeeded. At ±3, wire quantization was at most 0.018 cents and held-contour error at p95 was 2.160 cents. Both files preserved all 16 same-tick handoffs and 17 release resets. | Verified the pushed `cd328b29` encoder. [Audio](https://zenodo.org/records/1442513) · [Annotations](https://zenodo.org/records/7061507) |
