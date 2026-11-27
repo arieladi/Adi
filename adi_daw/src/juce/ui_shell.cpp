@@ -2603,6 +2603,11 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                             sel.marked = true;
                         }
     };
+    const auto chooseClips = [&](const std::vector<std::int64_t> &ids) {
+        chooseClip(ids.front());
+        sel.picked.clear();
+        sel.pickedClips.assign(std::next(ids.begin()), ids.end());
+    };
     const auto timeSelection = [&](std::int64_t first, std::int64_t last, std::int64_t a, std::int64_t b) {
         sel.track = first;
         sel.toTrack = last == first ? 0 : last;
@@ -2655,8 +2660,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             const auto copies = copyClips(places, "Duplicate Clips");
             if (copies.empty())
                 return false;
-            chooseClip(copies.front());
-            sel.pickedClips.assign(std::next(copies.begin()), copies.end());
+            chooseClips(copies);
         } else {
             clip_edit::RangeSelection group{{}, {0, begin}, {0, end}};
             for (auto lane = firstLane; lane <= lastLane; ++lane)
@@ -2796,10 +2800,24 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                                 " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " +
                                 kindWord(clipTrackKind(*target)) + " track.");
             }
-            if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
+            auto paste = clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options);
+            std::vector<std::int64_t> pastedClips;
+            if (paste.ok && !rangeCopy.clearsRange) {
+                for (const auto &effect : edit_plan::describe(paste).effects)
+                    if (effect.kind == edit_plan::EffectKind::Created)
+                        for (const auto &clip : effect.after)
+                            pastedClips.push_back(clip.id);
+                if (pastedClips.empty() || pastedClips.size() != rangeCopy.images.size())
+                    return fail("The paste did not identify every copied clip.");
+            }
+            if (!commitEdit(std::move(paste)))
                 return false;
-            const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
-            timeSelection(targets.front(), targets.back(), at, at + length);
+            if (rangeCopy.clearsRange) {
+                const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
+                timeSelection(targets.front(), targets.back(), at, at + length);
+            } else {
+                chooseClips(pastedClips);
+            }
         }
         succeeded();
         return true;
@@ -2885,7 +2903,8 @@ bool AdiRootComponent::canTimeCommand(int id) const {
     const auto &sel = arrangement.geometry.selection;
     if (id == AppCommands::PasteTime) {
         const auto &held = commands_.clipClipboard().held;
-        return (std::holds_alternative<clip_edit::TimeCopy>(held) || std::holds_alternative<clip_edit::RangeCopy>(held)) &&
+        const auto *range = std::get_if<clip_edit::RangeCopy>(&held);
+        return (std::holds_alternative<clip_edit::TimeCopy>(held) || (range && range->clearsRange)) &&
                (sel.marked || sel.start != sel.end);
     }
     return sel.start != sel.end;
@@ -2952,8 +2971,8 @@ bool AdiRootComponent::timeCommand(int id) {
             select(at, at + time->ticks);
             return done();
         }
-        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held)) {
-            // A plain copy's material, with its length of time inserted across the whole Set first
+        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held); range && range->clearsRange) {
+            // A time range's material, with its length of time inserted across the whole Set first
             // (every track, the locators, the loop); the material lands on the tracks it came from.
             if (!commitEdit(clip_edit::preparePasteRange(store, *range, range->selection.tracks, {0, at}, rate, true)))
                 return false;

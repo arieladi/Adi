@@ -5403,14 +5403,29 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
               "SC-179: one Undo restores the full arrangement");
     };
 
+    const auto selectedCopy = [&](std::int64_t track, std::int64_t at) {
+        const auto *row = root.reader().findTrack(track);
+        return row != nullptr && std::any_of(row->clips.begin(), row->clips.end(), [&](const auto &clip) {
+            return clip->posTicks == at && arrangement.geometry.clipSelected(clip->id);
+        });
+    };
     pickBoth();
     check(root.keyPressed(copyKey), "SC-179: Copy two clips");
     marker(2, pasteAt);
+    juce::ApplicationCommandInfo pasteTime(AppCommands::PasteTime);
+    commands.getCommandInfo(AppCommands::PasteTime, pasteTime);
+    check((pasteTime.flags & juce::ApplicationCommandInfo::isDisabled) != 0 &&
+              !root.command(AppCommands::PasteTime) && root.error().find("no time to paste") != std::string::npos &&
+              clipsOf(2) == upper && clipsOf(3) == between && clipsOf(20) == lower,
+          "SC-179: Paste Time is inactive and refuses an explicit clip copy without shifting material");
     check(root.keyPressed(pasteKey), "SC-179: paste the two clips at the new marker");
     root.frame();
     check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {pasteAt, bar}, {gapAt, bar / 4}} &&
               clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {pasteAt + 2 * bar, bar / 2}},
           "SC-179: Paste preserves clip offsets and leaves the unpicked material in the gaps");
+    check(arrangement.geometry.selectedClips().size() == 2 &&
+              selectedCopy(2, pasteAt) && selectedCopy(20, pasteAt + 2 * bar),
+          "SC-179: Paste selects just the two inserted clips");
     undoOne("SC-179: undo Paste");
 
     pickBoth();
@@ -5427,12 +5442,6 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {offset, bar}, {gapAt, bar / 4}} &&
               clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {offset + 2 * bar, bar / 2}},
           "SC-179: Duplicate places both clips at their original offsets after the selection");
-    const auto selectedCopy = [&](std::int64_t track, std::int64_t at) {
-        const auto *row = root.reader().findTrack(track);
-        return row != nullptr && std::any_of(row->clips.begin(), row->clips.end(), [&](const auto &clip) {
-            return clip->posTicks == at && arrangement.geometry.clipSelected(clip->id);
-        });
-    };
     check(arrangement.geometry.selectedClips().size() == 2 &&
               selectedCopy(2, offset) && selectedCopy(20, offset + 2 * bar),
           "SC-179: both duplicates are selected");
