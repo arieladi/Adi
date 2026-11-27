@@ -150,6 +150,59 @@ void absorbingPromotedPrefix() {
     check(edits.size()==2 && edit(edits[0],0.1,0.2,true) && edit(edits[1],0.2,0.8),
           "same-drain promotion preserves closed edits and merges only its own prefix");
 }
+void sparseMaintenance() {
+    ParamEditCapture capture(16);
+    capture.setQuietMs(10);
+    capture.setEchoTtlMs(4);
+    for (const std::int64_t device : {1, 2})
+        for (std::int32_t parameter = 0; parameter < 2000; ++parameter)
+            capture.seed(device, parameter, 0.25);
+    std::vector<ParamEdit> edits;
+    std::vector<ParamActivity> activities;
+    capture.expectEcho(2, 1999, 0.8, 0);
+    capture.expectEcho(1, 999, 0.6, 0);
+    send(capture, K::Value, 0.7, 2, 7);
+    send(capture, K::Value, 0.4, 1, 1500);
+    capture.drainLifecycle(1, edits, activities);
+    capture.cancelEcho(2, 1999);
+    capture.cancel(2, 7);
+    send(capture, K::Value, 0.5, 2, 0);
+    send(capture, K::Value, 0.6, 1, 999);
+    capture.drainLifecycle(5, edits, activities);
+    activities.clear();
+    const auto completed = capture.drainLifecycle(15, edits, activities);
+    check(completed == 3 && edits.size() == 3 && edit(edits[0], 0.25, 0.6, true, 1, 999) &&
+          edit(edits[1], 0.25, 0.4, true, 1, 1500) && edit(edits[2], 0.25, 0.5, true, 2, 0),
+          "quiet gestures complete in key order with their original seed and skip canceled work");
+    check(activities.size() == 3 && activities[0].kind == ParamActivityKind::QuietEnd &&
+          activities[0].event.paramIndex == 999 && activities[1].event.paramIndex == 1500 &&
+          activities[2].event.deviceId == 2 && capture.stats().guardsExpired == 1 &&
+          capture.stats().echoesSwallowed == 0, "one remaining guard expires before its new Value");
+
+    send(capture, K::Value, 0.8, 2, 7);
+    send(capture, K::Value, 0.9, 1, 1500);
+    activities.clear();
+    capture.drainLifecycle(16, edits, activities, true);
+    check(edits.size() == 3 && activities.size() == 4 && activities[2].kind == ParamActivityKind::Absorbed &&
+          activities[2].event.deviceId == 1 && activities[2].before == 0.4 &&
+          activities[3].kind == ParamActivityKind::Absorbed && activities[3].event.deviceId == 2 &&
+          activities[3].before == 0.25,
+          "absorbed activity keeps key order and canceled control resumes at its seeded value");
+
+    capture.setQuietMs(0);
+    bool drained = true;
+    allocations.store(0);
+    counting.store(true);
+    for (std::int64_t now = 17; now < 37; ++now) {
+        edits.clear();
+        activities.clear();
+        const bool pushed = capture.push({2, 7, K::Value, 0.7});
+        const auto reported = capture.drainLifecycle(now, edits, activities);
+        drained = drained && pushed && reported == 1 && activities.size() == 2;
+    }
+    counting.store(false);
+    check(drained && allocations.load() == 0, "a warmed control drains without allocation on a large seeded map");
+}
 void e() {
     ParamEditCapture c(3); c.seed(1, 2, 0.1); std::vector<ParamEdit> out;
     send(c, K::Begin); send(c, K::Value, 0.7); send(c, K::End);
@@ -269,7 +322,7 @@ int main(int argc, char** argv) {
         {"a", a}, {"b", b}, {"c", c}, {"d", d}, {"e", e}, {"f", f},
         {"g", g}, {"h", h}, {"i", i}, {"j", j}, {"k", k}, {"l", l},
         {"promotion", promoteImplicit}, {"absorbing-touch", absorbingTouches},
-        {"absorbing-prefix", absorbingPromotedPrefix}};
+        {"absorbing-prefix", absorbingPromotedPrefix}, {"sparse-maintenance", sparseMaintenance}};
     for (const auto& t : cases) if (argc == 1 || std::strcmp(argv[1], t.name) == 0) {
         std::printf("[param edits %s]\n", t.name); t.run();
     }
