@@ -103,6 +103,8 @@ struct TrackState {
     std::uint64_t prefix=0;
     std::uint32_t serial=0;
     std::atomic<std::uint32_t> dropped{0};
+    std::uint32_t noteOnsets = 0;
+    std::atomic<std::uint64_t> noteActivity{0}; // onset count and held flag, published together
 };
 struct Scheduled { std::int64_t time; std::size_t note; bool on; };
 class Source final : public Node {
@@ -120,6 +122,7 @@ public:
     std::vector<ExpressionSample> expressionSamples;
     std::vector<MidiMonitorRange> monitorRanges;
     bool monitorInputOnly = false;
+    bool meterNotes = false;
     std::shared_ptr<const MidiControllerProgram> controls;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
@@ -381,6 +384,7 @@ public:
         for(auto& a:state->active)if(!a.used) {
             auto e=n.start;e.frame=frame;e.noteId=state->prefix | ++state->serial;
             if(!out.push(e))return;
+            if (meterNotes) ++state->noteOnsets;
             a.note=n;a.used=true;a.pending=false;a.releasing=false;a.sounding=false;a.retryOn=false;a.occurrence=n.start.noteId;
             a.retainedOn=0;a.retainedOff=0;
             a.generation=generation;
@@ -436,7 +440,21 @@ public:
         }
         return true;
     }
-    void sourceEvents(EventList& out,std::int32_t frames) noexcept override {
+    void publishNoteActivity(bool held) noexcept {
+        const auto reading = (std::uint64_t{state->noteOnsets} << 1) | static_cast<std::uint64_t>(held);
+        if (state->noteActivity.load(std::memory_order_relaxed) != reading)
+            state->noteActivity.store(reading, std::memory_order_relaxed);
+    }
+    void release() override {
+        if (meterNotes) publishNoteActivity(false);
+    }
+    void sourceEvents(EventList& out, std::int32_t frames) noexcept override {
+        scheduleEvents(out, frames);
+        if (meterNotes && frames > 0)
+            publishNoteActivity(!notes.empty() && transport.playing() && std::any_of(state->active.begin(), state->active.end(),
+                [](const Active& note) { return note.used && !note.releasing; }));
+    }
+    void scheduleEvents(EventList& out,std::int32_t frames) noexcept {
         if (frames <= 0)
             return;
         // A rejected zero must remain owned even after its lane disappears.
@@ -670,8 +688,8 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     for(const auto& track:model.tracks) {
         auto& s=state->tracks[track.id].audio;if(!s) {s=std::make_shared<TrackState>();s->prefix=(++state->trackIdentity)<<32;}
         auto source = std::make_unique<Source>(transport, s, generation);
-        source->monitorInputOnly = honorMonitoring && track.monitorMode == 1 &&
-                                   (track.kind == "midi" || track.kind == "instrument");
+        source->meterNotes = track.kind == "midi" || track.kind == "instrument";
+        source->monitorInputOnly = honorMonitoring && track.monitorMode == 1 && source->meterNotes;
         impl_->tracks.emplace(track.id, std::move(source));
     }
     MidiControllerPrograms controls(model, rate);
@@ -884,6 +902,13 @@ std::span<const MidiMonitorRange> MidiClips::monitorRanges(std::int64_t track) c
     if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
         return source->second->monitorRanges;
     return {};
+}
+MidiNoteActivity MidiClips::noteActivity(std::int64_t track) const noexcept {
+    const auto source = impl_->tracks.find(track);
+    if (source == impl_->tracks.end() || !source->second->meterNotes)
+        return {};
+    const auto reading = source->second->state->noteActivity.load(std::memory_order_relaxed);
+    return {static_cast<std::uint32_t>(reading >> 1), (reading & 1u) != 0};
 }
 const std::vector<std::string>& MidiClips::problems() const noexcept{return impl_->problems;}
 }

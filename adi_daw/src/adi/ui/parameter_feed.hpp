@@ -70,6 +70,7 @@ struct DevicePanelData {
     const auto &parameters() const noexcept { return cachedRecords ? *cachedRecords : records; }
     // Copied nonfatal runtime status; availability and editing remain independent.
     std::string processingIssue{};
+    std::string loadIssue{}; // why a plug-in is a placeholder
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.

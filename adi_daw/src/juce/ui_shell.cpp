@@ -310,6 +310,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"view.automation-mode", "View"}, // AutomationMode
         {"edit.delete-automation", "Edit"}, // DeleteAutomation
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
+        {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
+        {"view.switch-detail-view", "View"}, // SwitchDetailView
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -535,7 +537,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -594,6 +596,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case SwitchDetailView:
+        info.addDefaultKeypress(juce::KeyPress::tabKey, shift);
+        info.addDefaultKeypress(juce::KeyPress::F12Key, 0);
+        info.setActive(active_ != nullptr && active_->arrangement.isVisible());
         break;
     case ToggleInfoView:
         // Shift+? : one platform reports the shifted character, the other the key.
@@ -729,12 +736,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case DetachMixView: // ADR-0209 d11: docked in the centre, or in a window onto any display
         info.setTicked(active_ != nullptr && active_->state().mixViewDetached);
         break;
-    case ToggleReferenceTrack: // ADR-0209 §4, d11: the reference track, hidden by default
-        info.setTicked(active_ != nullptr && active_->state().showReference);
+    case ToggleReferenceTrack: { // ADR-0209 §4, d11: the reference track, hidden by default
+        const bool assigned = active_ != nullptr && active_->referenceTrack() != 0;
+        info.setActive(assigned);
+        info.setTicked(assigned && active_->state().showReference);
+        if (!assigned)
+            info.description = AdiRootComponent::kNoReferenceTrack;
         break;
+    }
     case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
         info.addDefaultKeypress('r', shift);
-        info.setTicked(active_ != nullptr && active_->reference().on());
+        info.setActive(false);
+        info.description = active_ != nullptr && active_->referenceTrack() != 0
+            ? AdiRootComponent::kReferencePlaybackUnavailable : AdiRootComponent::kNoReferenceTrack;
         break;
     case InsertReturnTrack: // §18.4, §42.19: Ctrl/Cmd+Alt+T
         info.addDefaultKeypress('t', cmd | juce::ModifierKeys::altModifier);
@@ -746,6 +760,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleSends: // §42.1: Hide/Show Sends, Ctrl/Cmd+Alt+S
         info.addDefaultKeypress('s', cmd | juce::ModifierKeys::altModifier);
         info.setTicked(active_ != nullptr && active_->state().sends);
+        break;
+    case ToggleTrackMixer:
+        info.setTicked(active_ != nullptr && active_->state().trackMixer);
         break;
     case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
         info.setTicked(active_ != nullptr && active_->state().mixerInOut);
@@ -1092,6 +1109,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
     const auto id = manager.getKeyMappings()->findCommandForKeyPress(key);
+    if (id == SwitchDetailView && tabMovesFocus_ &&
+        key == juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0))
+        return false;
     // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (id >= FoldToNotes && id <= HighlightScales)
@@ -1136,7 +1156,7 @@ bool AppCommands::perform(const InvocationInfo &info) {
 }
 StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     // Live's corners: the Info View's toggle on the left, the Detail View's on the right.
-    for (auto *b : {&infoToggle, &detailToggle}) {
+    for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     }
@@ -1144,15 +1164,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
     infoToggle.onClick = [this] { root_.command(AppCommands::ToggleInfoView); };
     detailToggle.setTitle("Detail View");
-    detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4.");
-    detailToggle.onClick = [this] { root_.command(AppCommands::ToggleDeviceView); };
+    detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4. Alt-click shows both views.");
     addAndMakeVisible(clipToggle);
     clipToggle.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     clipToggle.setColour(juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
     clipToggle.setTitle("Clip View");
-    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3.");
+    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3. Alt-click shows both views.");
     clipToggle.setClickingTogglesState(false);
-    clipToggle.onClick = [this] { clipClicked(); };
     clipToggle.addMouseListener(this, false);
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
@@ -1191,11 +1209,14 @@ void StatusBar::resized() {
     const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
     audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
 }
-void StatusBar::clipClicked() {
-    // The end of a drag in the selector is not a click.
-    if (std::exchange(selectorDragged_, false))
+void StatusBar::DetailButton::clicked(const juce::ModifierKeys &mods) {
+    // Letting go after a drag in the Clip View selector only finishes the drag.
+    if (clip_ && std::exchange(bar_.selectorDragged_, false))
         return;
-    root_.command(AppCommands::ToggleClipView);
+    if (mods.isAltDown())
+        bar_.root_.setDetailViews(true, true);
+    else
+        bar_.root_.command(clip_ ? AppCommands::ToggleClipView : AppCommands::ToggleDeviceView);
 }
 void StatusBar::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent != &clipToggle)
@@ -1284,7 +1305,7 @@ void StatusBar::paint(juce::Graphics &g) {
         g.strokePath(arrow, juce::PathStrokeType(look::line, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     // The corner buttons: round, in the shared button's colours, with Live's triangles.
-    for (auto *b : {&infoToggle, &detailToggle}) {
+    for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         const auto c = b->getBounds().toFloat();
         const auto state = controls::stateOf(false, b->isOver(), b->isDown(), b->isEnabled());
         controls::roundButton(g, c, state);
@@ -1347,6 +1368,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
     namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
     namesBar.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
+    namesBar.mixer.onClick = [this] { command(AppCommands::ToggleTrackMixer); };
     namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
@@ -1370,8 +1392,10 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     reader_.emplace(view_.current());
     setSize(1200, 720);
     frame();
+    juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
@@ -1570,10 +1594,9 @@ void AdiRootComponent::frame() noexcept {
         infoShown_ = commands_.infoView();
         resized();
     }
-    if (infoShown_)
+    if (!infoArea_.isEmpty())
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
-    infoSpectrum.setBounds(infoArea_.reduced(look::border));
-    infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
+    infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
@@ -1590,6 +1613,13 @@ void AdiRootComponent::frame() noexcept {
     if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&
         arrangement.follow(timelineTick(), commands_.followByPage()))
         dirty_.mark(DirtySet::Content);
+    // Cross-view selection navigation has a destination. Edits and Undo can restore selections without scrolling.
+    const auto selectedTrack = session_.selection().track;
+    if (arrangement.isVisible()) {
+        if (const auto track = std::exchange(revealInLanes_, 0); track != 0 && track == selectedTrack &&
+            arrangement.geometry.reveal(reader(), track, false))
+            dirty_.mark(DirtySet::Layout);
+    }
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
@@ -1606,8 +1636,12 @@ void AdiRootComponent::frame() noexcept {
     else
         followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
-    if (mixerView.isVisible())
+    if (mixerView.isVisible()) {
+        if (const auto track = std::exchange(revealInMixer_, 0); track != 0 && track == selectedTrack &&
+            arrangement.geometry.inView(track))
+            mixerView.reveal(arrangement.geometry.rows(reader()).find(track));
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    }
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
@@ -1700,6 +1734,7 @@ void AdiRootComponent::resized() {
             child->setVisible(false);
         browserArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
         clipArea_ = deviceArea_ = infoArea_ = {};
+        infoSpectrum.setBounds({});
         if (mixViewPanel.getParentComponent() == this) {
             mixViewPanel.setBounds(mixViewArea_);
             if (!mixViewPanel.isVisible() && reader_) mixViewPanel.frame(reader());
@@ -1711,9 +1746,8 @@ void AdiRootComponent::resized() {
     if (mixViewPanel.getParentComponent() == this)
         mixViewPanel.setVisible(false);
     arrangement.setVisible(true);
-    // The detail row: Live's Info View and Device View. The strip never goes below its
-    // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
-    // a row when it can.
+    // The detail row below the tracks. The Device View grows upward from its floor
+    // (ADR-0203 d7), leaving the ruler and a row when there is room.
     // Live 12's Clip View stacks above the Device View (manual 8); the Device View leaves it its
     // floor, and it takes what it asks for while the arrangement keeps its ruler and a row.
     const int clipFloor = state_.clipView ? kClipViewFloor + gap : 0;
@@ -1725,8 +1759,7 @@ void AdiRootComponent::resized() {
                          ? std::min(clipRoom, std::max(kClipViewFloor, std::min(state_.clipViewHeight, clipRoom - 100)))
                          : 0;
     const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
-    const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
-    const int rowY = bottom - row;
+    const int rowY = bottom - detail;
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
@@ -1757,17 +1790,27 @@ void AdiRootComponent::resized() {
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
     const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
-                          : juce::Rectangle<int>();
-    // The Arrangement sheet makes the Info box as wide as the Browser column. With the Browser
-    // closed, use its stored width within the available detail space.
-    const int storedBrowserWidth = slots[browserLeft ? 0 : 1].width - gap;
-    const int infoW = bw > 0 ? browserArea_.getWidth() : std::clamp(storedBrowserWidth, 0, w / 2);
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
-    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
-                           : juce::Rectangle<int>();
+    // The Browser column spans the working area. Info takes its width and sits at its foot.
+    browserArea_ = bw > gap ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, body)
+                            : juce::Rectangle<int>{};
+    infoArea_ = {};
+    if (infoShown_ && !browserArea_.isEmpty()) {
+        // Keep the Browser's search and preview bars usable in a short window.
+        const int browserBars = 2 * BrowserPanel::kBarHeight + look::border;
+        const int infoHeight = std::min(state_.deviceFloor, std::max(0, body - browserBars - gap));
+        if (infoHeight > 0) {
+            infoArea_ = browserArea_.removeFromBottom(infoHeight);
+            browserArea_.setHeight(browserArea_.getHeight() - gap);
+        }
+    }
+    infoSpectrum.setBounds(infoArea_.reduced(look::border));
+    if (infoArea_.isEmpty())
+        infoSpectrum.setVisible(false);
+    const int detailX = browserLeft ? gap + bw : gap;
+    const int detailWidth = std::max(0, w - bw - 2 * gap);
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(detailX, rowY, detailWidth, clip) : juce::Rectangle<int>{};
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(detailX, bottom - dock, detailWidth, dock)
+                           : juce::Rectangle<int>{};
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
     // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
     // then the track controls, then the clips, as Bitwig and Cubase have them (the
@@ -1822,6 +1865,7 @@ void AdiRootComponent::resized() {
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
     namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
     namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+    namesBar.mixer.setToggleState(state_.trackMixer, juce::dontSendNotification);
     namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
     namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
@@ -1953,14 +1997,40 @@ void AdiRootComponent::mouseUp(const juce::MouseEvent &e) {
         !e.mouseWasDraggedSinceMouseDown() && (state_.mixView || setMixView(true, state_.mixViewDetached)))
         chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
 }
+void AdiRootComponent::globalFocusChanged(juce::Component *) { repaint(); }
+void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
+    const auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (!focused || !isParentOf(focused))
+        return;
+    const auto containsFocus = [focused](const juce::Component &panel) {
+        return panel.isVisible() && (&panel == focused || panel.isParentOf(focused));
+    };
+    const juce::Component *owner = nullptr;
+    if (containsFocus(arrangement.overview) || containsFocus(namesBar))
+        owner = &arrangement;
+    else
+        for (const auto *panel : std::array<const juce::Component *, 8>{
+                 &transport, &browser, &arrangement, &mixer, &mixerView, &devices, &clipView, &mixViewPanel})
+            if (containsFocus(*panel)) {
+                owner = panel;
+                break;
+            }
+    if (owner && owner->getWidth() > 8) {
+        g.setColour(look::focus);
+        g.fillRect(owner->getX() + 4, owner->getY() + 1, std::min(32, owner->getWidth() - 8), 2);
+    }
+}
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
-    // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
-    // nothing. In Live they switch to Session View, which ADI does not have yet.
+    // With Use Tab Key to Move Focus off, Shift+Tab switches the Detail View.
+    // Tab's Arrangement/Session switch waits for Session View.
     const auto mods = key.getModifiers();
     const bool plainTab = key.getKeyCode() == juce::KeyPress::tabKey && !mods.isCommandDown() &&
                           !mods.isCtrlDown() && !mods.isAltDown();
-    if (plainTab && !commands_.tabMovesFocus())
+    if (plainTab && !commands_.tabMovesFocus()) {
+        if (mods.isShiftDown())
+            commands_.key(key, *this);
         return true;
+    }
     // With Wrap Tab Navigation off, Tab stops at the area's last control (Shift+Tab at its
     // first) instead of going round to the other end.
     if (plainTab && !commands_.wrapTabNavigation())
@@ -2012,12 +2082,12 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
-    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Volume (always shown)").setTicked(true).setEnabled(false));
     if (viewMenu)
         menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerTrackOptions, "Track Options");
-    menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
-    menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Crossfader (requires Session View)").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Performance Impact (requires per-track CPU timings)").setEnabled(false));
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
     return menu;
@@ -2025,7 +2095,7 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
 juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     // Live 12's Arrangement Track Controls submenu (the View menu; manual 6.1: "You can customize
     // which controls are shown"; 18.7: Track Options holds Track Delay): the track controls' In/Out
-    // and Sends, with their keys. Volume always shows in ADI; Track Options is the rows' Track Delay
+    // and Sends, with their keys. Volume is also the M selector; Track Options is the rows' Track Delay
     // box, the D selector's (Live 11's). Live 12's full list is to be measured: its 6.1 says track
     // delays are the mixer's only. First, ADI's side panel of track controls, shown or hidden whole,
     // which the View menu held as "Arrangement Track Controls" before the submenu.
@@ -2035,7 +2105,7 @@ juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleInOut);
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
-    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleTrackMixer, "Volume");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleTrackOptions);
     return menu;
 }
@@ -2045,21 +2115,22 @@ void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
     arrangement.firstShownIfHidden();
     dirty_.mark(DirtySet::All);
 }
-std::int64_t AdiRootComponent::referenceTrack() const noexcept { return mixProvider_->reference(reader().tracks()); }
-bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
-    const bool was = reference_.on();
-    if (down)
-        reference_.press(nowMs);
-    else
-        reference_.release(nowMs);
-    if (reference_.on() == was)
-        return false;
-    // What sounds is the engine's: the reference on the cue path, the Main bypassed (N23).
-    say(!reference_.on()             ? "Reference off."
-        : referenceTrack() == 0     ? "No track is the Reference yet: a track's role arrives with the format (N38)."
-                                    : "Reference on: it plays on the cue path once the engine routes it (N23).");
-    dirty_.mark(DirtySet::Layout);
-    return true;
+std::int64_t AdiRootComponent::referenceTrack() const noexcept { return referenceTrack(reader()); }
+void AdiRootComponent::addReferenceCommand(juce::PopupMenu &menu, int command) {
+    const bool assigned = referenceTrack() != 0;
+    juce::String label;
+    if (command == AppCommands::PlayReference)
+        label = assigned ? "Play Reference (no monitor connection)" : "Play Reference (no track assigned)";
+    else if (!assigned)
+        label = "Reference Track (no track assigned)";
+    menu.addCommandItem(&commands_.manager, command, std::move(label));
+}
+std::int64_t AdiRootComponent::referenceTrack(const SnapshotReader &snapshot) const noexcept {
+    const auto provided = mixProvider_->reference(snapshot.tracks());
+    if (provided != 0 && snapshot.findTrack(provided)) return provided;
+    if (const auto *current = snapshot.get(); current && snapshot.findTrack(current->cue.projectReferenceTrack))
+        return current->cue.projectReferenceTrack;
+    return 0;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     const auto now = input.ms();
@@ -2067,9 +2138,6 @@ bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     bool handled = false;
     if (latch_.held() && !input.down(latch_.key()))
         handled = latchKey(0, latch_.key(), false, now);
-    // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !input.down('r'))
-        return referenceKey(false, now) || handled;
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
 bool AdiRootComponent::latches(int command) noexcept {
@@ -2183,11 +2251,19 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
     dirty_.mark(DirtySet::Layout);
     return true;
 }
-void AdiRootComponent::publishSelection() {
+void AdiRootComponent::publishSelection(SelectionOrigin origin) {
+    const auto before = session_.selection().track;
     std::string why;
     if (!session_.select(arrangement.geometry.selection, why))
         fail(why);
     selectionGeneration_ = session_.generation();
+    const auto track = session_.selection().track;
+    if (track != before) {
+        revealInLanes_ = origin == SelectionOrigin::Mixer ? track : 0;
+        revealInMixer_ = origin == SelectionOrigin::Arrangement ? track : 0;
+        if (origin != SelectionOrigin::Other)
+            dirty_.mark(DirtySet::Layout);
+    }
 }
 bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const char *label) {
     OpRequest request;
@@ -3086,9 +3162,10 @@ juce::String AdiRootComponent::selectionText() const {
         const auto at = barPosition(tick, meters);
         return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
     };
-    auto seconds = [this](std::int64_t tick) {
-        const auto *tempo = reader_->tempo();
-        const int t = tempo ? static_cast<int>(tempo->ticksToSeconds(tick)) : 0;
+    const auto *tempo = reader_->tempo();
+    const auto timeAt = [tempo](std::int64_t tick) { return tempo ? tempo->ticksToSeconds(tick) : 0.; };
+    const auto seconds = [](double elapsed) {
+        const auto t = static_cast<std::int64_t>(elapsed);
         return juce::String(t / 60) + ":" + juce::String(t % 60).paddedLeft('0', 2);
     };
     if (s.start != s.end) {
@@ -3096,10 +3173,10 @@ juce::String AdiRootComponent::selectionText() const {
         const auto length = barSpan(a, b - a, meters);
         return "Time Selection   Start: " + where(a) + "   End: " + where(b) + "   Length: " +
                juce::String(length.bar) + "." + juce::String(length.beat) + "." +
-               juce::String(length.sixteenth) + "   (Duration: " + seconds(b - a) + ")";
+               juce::String(length.sixteenth) + "   (Duration: " + seconds(timeAt(b) - timeAt(a)) + ")";
     }
     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
-           seconds(s.marked ? s.insert : 0) + ")";
+           seconds(timeAt(s.marked ? s.insert : 0)) + ")";
 }
 std::string AdiRootComponent::undoTitle(bool redo) const {
     const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
@@ -4383,6 +4460,37 @@ bool AdiRootComponent::setPositionAt(const std::string &text) {
     arrangement.placeInsertMarker(*tick);
     return true;
 }
+bool AdiRootComponent::setTempoChange(std::int64_t pos, const std::string &text) {
+    const auto bpm = parseTempo(text);
+    if (!bpm) return fail("Type a tempo from 20 to 999 BPM, such as 128 or 97.50.");
+    if (pos < 0) return fail("A tempo change cannot precede the start of the song.");
+    constexpr auto *label = "Change Tempo";
+    CommitOptions options;
+    std::vector<OpRequest> ops;
+    auto &store = submitter_.store();
+    Payload payload{{"pos", pos}, {"bpm", *bpm}, {"curve", 0}};
+    // The playback snapshot omits row identity and ramp tension. Preserve both when editing an
+    // authored event, and guard the read and replacement against another edit of the project.
+    try {
+        options.expectHead.emplace(History(store).head());
+        SQLite::Statement stmt(store.db(), "SELECT id,bpm,curve,tension FROM tempo_map WHERE pos_ticks=?");
+        stmt.bind(1, pos);
+        if (stmt.executeStep()) {
+            if (stmt.getColumn(1).getDouble() == *bpm) return true;
+            payload["id"] = stmt.getColumn(0).getInt64();
+            payload["curve"] = stmt.getColumn(2).getInt64();
+            payload["tension"] = stmt.getColumn(3).getDouble();
+            ops.push_back(track_edits_detail::op("project.removeTempoEvent", {{"pos", pos}}, label));
+        }
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+    ops.push_back(track_edits_detail::op("project.insertTempoEvent", std::move(payload), label));
+    ops.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(ops, [&](Store &target, Actor) {
+        return OpJournal(target).commit(ops, options);
+    }));
+}
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
     const auto current = view_.current();
     if (!current || !current->tempo)
@@ -4434,6 +4542,20 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
 }
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }
+bool AdiRootComponent::setDetailViews(bool showClip, bool showDevices) {
+    const bool previousClip = std::exchange(state_.clipView, showClip);
+    const bool previousDevices = std::exchange(state_.docked, showDevices);
+    if (!persist()) {
+        state_.clipView = previousClip;
+        state_.docked = previousDevices;
+        return fail(error_);
+    }
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    resized();
+    return true;
+}
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -4602,7 +4724,9 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::Stop:
     case AppCommands::ContinuePlay: {
         // Space plays from the insert marker, Shift+Space from where it stopped.
-        const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
+        const bool wasPlaying = mailbox_.desiredPlaying();
+        const bool rewind = id == AppCommands::Stop && !wasPlaying;
+        const bool play = id != AppCommands::Stop && !wasPlaying;
         const bool fromMarker = play && id == AppCommands::PlayStop;
         // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
         if (!play && recording && recording() && stopRecording)
@@ -4619,6 +4743,8 @@ bool AdiRootComponent::command(int id) {
             locate(arrangement.geometry.selection.insert);
         using Command = TransportMailbox::Command;
         mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
+        if (rewind)
+            arrangement.showInsertMarkerAt(0);
         break;
     }
     case AppCommands::ArrangementRecord:
@@ -4704,6 +4830,8 @@ bool AdiRootComponent::command(int id) {
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
     case AppCommands::ToggleReferenceTrack:
+        if (referenceTrack(SnapshotReader(view_.current())) == 0)
+            return fail(kNoReferenceTrack);
         state_.showReference = !state_.showReference;
         if (!persist()) {
             state_.showReference = !state_.showReference;
@@ -4713,31 +4841,19 @@ bool AdiRootComponent::command(int id) {
         arrangement.firstShownIfHidden();
         break;
     case AppCommands::PlayReference:
-    {
-        // The key goes down; keyStateChanged lets it go. From a menu, a tap: up at the moment it went
-        // down, however long the machine took between the two (DF-W18).
-        const auto now = input.ms();
-        referenceKey(true, now);
-        if (!input.down('r'))
-            referenceKey(false, now);
-        return true;
-    }
+        return fail(referenceTrack(SnapshotReader(view_.current())) == 0 ? kNoReferenceTrack : kReferencePlaybackUnavailable);
     case AppCommands::ToggleMixView:
         return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
-        state_.clipView = !state_.clipView;
-        if (!persist()) {
-            state_.clipView = !state_.clipView;
-            return fail(error_);
-        }
-        break;
+        return setDetailViews(!state_.clipView, state_.docked);
     case AppCommands::ToggleDeviceView:
-        state_.docked = !state_.docked;
-        if (!persist()) {
-            state_.docked = !state_.docked;
-            return fail(error_);
-        }
-        break;
+        return setDetailViews(state_.clipView, !state_.docked);
+    case AppCommands::SwitchDetailView: {
+        if (!arrangement.isVisible())
+            return false;
+        const bool showClip = !state_.clipView || (state_.docked && devices.hasKeyboardFocus(true));
+        return setDetailViews(showClip, !showClip);
+    }
     case AppCommands::Follow:
         state_.follow = !state_.follow;
         if (!persist()) {
@@ -4749,6 +4865,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleOverview:
     case AppCommands::ToggleInOut:
     case AppCommands::ToggleSends:
+    case AppCommands::ToggleTrackMixer:
     case AppCommands::ToggleMixerInOut:
     case AppCommands::ToggleMixerSends:
     case AppCommands::ToggleTrackOptions:
@@ -4756,6 +4873,7 @@ bool AdiRootComponent::command(int id) {
         auto &shown = id == AppCommands::ToggleOverview  ? state_.overview
                       : id == AppCommands::ToggleInOut   ? state_.inOut
                       : id == AppCommands::ToggleSends   ? state_.sends
+                      : id == AppCommands::ToggleTrackMixer ? state_.trackMixer
                       : id == AppCommands::ToggleMixerSends ? state_.mixerSends
                       : id == AppCommands::ToggleTrackOptions ? state_.trackOptions
                       : id == AppCommands::ToggleMixerTrackOptions ? state_.mixerTrackOptions
@@ -5063,7 +5181,7 @@ const std::vector<MenuEntries> &menuBar() {
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
+          C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::SwitchDetailView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::AutomationMode, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
@@ -5118,6 +5236,8 @@ class ShellMenu final : public juce::MenuBarModel {
                         menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
                     else if (id == kMixerControlsMenu)
                         menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
+                    else if (id == AppCommands::ToggleReferenceTrack || id == AppCommands::PlayReference)
+                        root.addReferenceCommand(menu, id);
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }

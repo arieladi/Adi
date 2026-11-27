@@ -119,6 +119,20 @@ void laneMarkerTransport() {
     });
     check(transport.position() == 2048 && transport.countInRemaining() == 96000 && mailbox.playing(),
           "SC-02: a lane press queued with Record leaves its count-in in place");
+
+    mailbox.post(Command::Stop);
+    mailbox.drain(transport);
+    check(!mailbox.playing() && transport.position() == 2048,
+          "Stop during count-in cancels the start while keeping its position");
+    mailbox.post(Command::Stop);
+    mailbox.drain(transport);
+    check(mailbox.position() == 0 && transport.position() == 0 && !mailbox.playing(),
+          "SC-75: Stop while already stopped locates the driver at the song start");
+    mailbox.post(Command::LocateMarker, 8192);
+    mailbox.post(Command::Continue);
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 0,
+          "SC-75: a later lane selection does not replace the reset Continue position");
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
@@ -678,8 +692,9 @@ int main() {
     transport.advance(64);
     mailbox.publish(transport);
     check(mailbox.position() == 64, "driver position feedback");
-    for (int i = 0; i < 16; ++i)
-        check(mailbox.post(TransportMailbox::Command::Stop), "bounded queue accepts capacity");
+    check(mailbox.post(TransportMailbox::Command::Stop), "queue a Stop while playing");
+    for (int i = 1; i < 16; ++i)
+        check(mailbox.post(TransportMailbox::Command::Locate, 64), "bounded queue accepts capacity");
     check(!mailbox.post(TransportMailbox::Command::Play), "full queue refuses without overwrite");
     mailbox.drain(transport);
     check(!transport.playing(), "queued stop survives saturation");

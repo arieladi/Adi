@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/media/peaks.hpp"
 #include "adi/ops.hpp"
 #include "juce/pd_samples.hpp"
 #include <span>
@@ -24,5 +25,7 @@ struct BuiltinSampleInfo {
 [[nodiscard]] Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,
     const std::filesystem::path& source,const std::filesystem::path& playable,double rate);
 [[nodiscard]] BuiltinSampleInfo inspectBuiltinSample(const Payload&);
+// Preview the original-rate backup in a portable, fileless sample preset off the owner thread.
+[[nodiscard]] media::PeakResult buildBuiltinSamplePeaks(const Payload&, std::stop_token);
 [[nodiscard]] std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload&,double rate);
 }

@@ -10,7 +10,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels, d.processingIssue,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
+                        d.processingIssue, d.loadIssue,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -89,12 +90,15 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 }
             auto *instance = session.instanceFor(row.id);
             const auto *entry = session.entryFor(row.id);
-            data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&
-                             entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            const bool resolved = entry && !entry->retired && !entry->parked &&
+                                  entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            data.available = resolved && instance && instance->loaded();
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
             if (data.available)
                 data.processingIssue = instance->processingIssue();
+            if (data.plugin && resolved && entry->placeholder)
+                data.loadIssue = entry->error;
             auto &identity = identities_[row.id];
             const bool runtimeSame = instance != nullptr && session.resolveDevice(identity.runtime) == instance;
             const bool unpublished = !entry && identity.runtime.claimIdentity().expired();
