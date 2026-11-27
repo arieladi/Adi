@@ -1,103 +1,1397 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-name: Step 7 UI
+name: Recording chain Linux headless verification
 on:
-  pull_request:
-    # GitHub's default three, plus ready_for_review: a draft runs nothing (the
-    # `if` on `changes`), so marking it ready is what builds it.
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
-  push:
-    branches: [main]
-    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   workflow_dispatch:
 permissions:
   contents: read
-# A pull request's run is cancelled by its next push; main's never is, so every
-# merge burst still ends in a finished run on main. The reasoning is in ci.yml.
-concurrency:
-  group: ui-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  # Whether the shell builds at all: not on a draft, and not for a pull request
-  # that changes only Markdown no build reads (the rule is ci.yml's, in
-  # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
-  # more than this one Linux job does. Its name must not begin "GUI shell /",
-  # which is how land_top.sh finds the three shell checks. land_checks.py reads
-  # this job's name, the workflow's and the matrix's size (a Markdown-only
-  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
-  # they drift from what is written here.
-  changes:
-    name: 'ui: which jobs run'
+  headless:
     runs-on: ubuntu-latest
-    if: ${{ !github.event.pull_request.draft }}
-    outputs:
-      code: ${{ steps.changes.outputs.code }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-      - name: Only Markdown no build reads?
-        id: changes
-        env:
-          # code=false only when the base is main: a stack's top lands with no
-          # new run, so a stacked pull request always builds (the script says why).
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
-  shell:
-    name: GUI shell / ${{ matrix.os }}
-    needs: changes
-    if: needs.changes.outputs.code != 'false'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-    defaults:
-      run:
+          ref: 3e714c094573c8a63674fa619e31f285ffe95631
+          persist-credentials: false
+      - name: Verify the candidate tree
         shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
-      - name: Linux build headers (no display server)
-        if: runner.os == 'Linux'
+        run: |
+          sed 's/^|//; s/|$//' > "$RUNNER_TEMP/recording-candidate.patch" <<'PATCH'
+          |diff --git a/adi_daw/docs/format/SPEC.md b/adi_daw/docs/format/SPEC.md|
+          |index 4835eab4..b7b664fd 100644|
+          |--- a/adi_daw/docs/format/SPEC.md|
+          |+++ b/adi_daw/docs/format/SPEC.md|
+          |@@ -1192,6 +1192,9 @@ storage; WIN-02 owns the window's placement and display-change behavior.|
+          | Reserved `session_state` keys for saved performance controls:|
+          | `transport.metronome` is a JSON boolean; `transport.loop` is JSON|
+          | `{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.|
+          |+`transport.metronomeOptions` is JSON with Boolean `recordingOnly` and|
+          |+`eighthNotes` fields, both off by default. Its integer `sound` selects|
+          |+Classic (0, default), Wood (1), or Bell (2).|
+          | `transport.countIn` is a JSON integer in `0,1,2,4` bars (`0` is None).|
+          | `transport.punch` is JSON `{"in": bool, "out": bool}`. Punch-In excludes audio|
+          | before the loop brace. Punch-Out ends a linear recording at the other edge.|
+          |diff --git a/adi_daw/src/adi/engine/gesture_preview.cpp b/adi_daw/src/adi/engine/gesture_preview.cpp|
+          |index 5cae755d..96b1ae1f 100644|
+          |--- a/adi_daw/src/adi/engine/gesture_preview.cpp|
+          |+++ b/adi_daw/src/adi/engine/gesture_preview.cpp|
+          |@@ -46,7 +46,7 @@ Tables readTables(const Store& store) {|
+          |         SQLite::Statement columns(store.db(),"PRAGMA table_xinfo(\""+name+"\")");|
+          |         while(columns.executeStep())schema.push_back(adi::detail::captureQueryRow(columns));|
+          |         std::string queryText="SELECT * FROM \""+name+"\"";|
+          |-        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.loop','cue.controls')";|
+          |+        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.metronomeOptions','transport.loop','cue.controls')";|
+          |         if(name=="state_blobs")queryText+=" WHERE hash_blake3 IN (SELECT s.state_hash FROM plugin_state s JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.format='internal' AND s.stream_role LIKE 'sample:%')";|
+          |         SQLite::Statement query(store.db(),queryText);|
+          |         while(query.executeStep())rows.push_back(adi::detail::captureQueryRow(query));|
+          |@@ -59,6 +59,8 @@ std::vector<std::uint8_t> imageBytes(const Tables& rows,const TransportSettings&|
+          |     Payload value=rows;|
+          |     value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,|
+          |         transport.loopStartTicks,transport.loopEndTicks,transport.punchIn,transport.punchOut};|
+          |+    const auto &click = transport.metronomeOptions;|
+          |+    value["@metronomeOptions"]={click.recordingOnly,click.eighthNotes,static_cast<int>(click.sound)};|
+          |     value["@cue"]={cue.cueMode,cue.soloInPlace,cue.referenceOn,cue.referenceFromRole,cue.firstOutputChannel,|
+          |         cue.volumeDb,cue.referenceTrack,cue.projectReferenceTrack,cue.selectedTracks};|
+          |     return Payload::to_cbor(value);|
+          |diff --git a/adi_daw/src/adi/engine/session.cpp b/adi_daw/src/adi/engine/session.cpp|
+          |index 47db1933..d86ad844 100644|
+          |--- a/adi_daw/src/adi/engine/session.cpp|
+          |+++ b/adi_daw/src/adi/engine/session.cpp|
+          |@@ -2171,6 +2171,10 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work|
+          |         resetMidiInput();|
+          |         if (transport_.countInRemaining() > 0)|
+          |             transport_.play(false);|
+          |+        countInTail_ = false;|
+          |+        clickCaptureEdgeCount_ = 0;|
+          |+        clickEnvelope_ = 0;|
+          |+        clickWasPlaying_ = false;|
+          |     }|
+          | |
+          |     // Decision 3, second half: same format, graph live, nothing to do. A driver|
+          |@@ -2639,28 +2643,35 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe|
+          |         inputMonitors->channels = io.numIn;|
+          |     }|
+          |     const bool rendered = graph_.process(block);|
+          |+    // MIDI can still report Recording after a locate outside the punch. Only|
+          |+    // a playing slice inside the punch can contribute to the capture gate.|
+          |+    const bool capturing = captureRecording && (!session_.recordingAudioTracks_.empty() |||
+          |+        (transport.playing() && punch == RecordingPunch::Within &&|
+          |+         session_.midiInputCapture_->state() == MidiCaptureState::Recording));|
+          |     session_.recordingAudioTracks_ = {};|
+          |     if (inputMonitors) {|
+          |         inputMonitors->input = nullptr;|
+          |         inputMonitors->channels = 0;|
+          |     }|
+          |     if (!rendered) return false;|
+          |+    session_.noteClickCapture(capturing);|
+          |     session_.mainLoudness_.process(block);|
+          |-    struct ClickContext { Session* session; const TimingView* timing; };|
+          |-    ClickContext click{&session_, timing};|
+          |+    const bool rollingClick = timing && timing->settings.metronome && session_.transport_.playing() &&|
+          |+                              (!timing->settings.metronomeOptions.recordingOnly || session_.recordingClickPending());|
+          |+    struct ClickContext { Session* session; const TimingView* timing; bool rolling; };|
+          |+    ClickContext click{&session_, timing, rollingClick};|
+          |     CueMonitor::Click renderClick;|
+          |-    if (timing && (session_.transport_.countInRemaining() > 0 || session_.countInTailActive() |||
+          |-                   (timing->settings.metronome && session_.transport_.playing()))) {|
+          |+    if (timing && (session_.transport_.countInRemaining() > 0 || session_.countInTailActive() || rollingClick)) {|
+          |         renderClick.context = &click;|
+          |         renderClick.render = [](void* context, const AudioIo& cueIo) noexcept {|
+          |             const auto& call = *static_cast<ClickContext*>(context);|
+          |             if (call.session->transport_.countInRemaining() > 0)|
+          |                 call.session->renderCountIn(*call.timing, cueIo);|
+          |             else|
+          |-                call.session->renderMetronome(*call.timing, cueIo);|
+          |+                call.session->renderMetronome(*call.timing, cueIo, call.rolling);|
+          |         };|
+          |     } else if (timing)|
+          |-        session_.renderMetronome(*timing, AudioIo{});|
+          |+        session_.renderMetronome(*timing, AudioIo{}, false);|
+          |     session_.cueMonitor_.process(session_.graph_, block, renderClick);|
+          |     session_.transport_.advance(io.frames);|
+          |     if (remaining > 0 && session_.transport_.countInRemaining() == 0 &&|
+          |@@ -2731,32 +2742,54 @@ bool Session::countInTailActive() const noexcept {|
+          |            transport_.revision() == countInTailRevision_ &&|
+          |            transport_.streamedFrames() < countInTailLag_;|
+          | }|
+          |+namespace {|
+          |+double clickDecay(MetronomeSound sound, double rate) noexcept {|
+          |+    const double seconds = sound == MetronomeSound::Wood ? 0.002 : sound == MetronomeSound::Bell ? 0.016 : 0.004;|
+          |+    return std::exp(-1.0 / (seconds * rate));|
+          |+}|
+          |+}|
+          |+void Session::triggerClick(bool accent, MetronomeSound sound) noexcept {|
+          |+    clickPhase_ = 0;|
+          |+    clickEnvelope_ = 0.2;|
+          |+    switch (sound) {|
+          |+    case MetronomeSound::Wood: clickFrequency_ = accent ? 1200 : 690; break;|
+          |+    case MetronomeSound::Bell: clickFrequency_ = accent ? 1280 : 960; break;|
+          |+    case MetronomeSound::Classic: clickFrequency_ = accent ? 1760 : 880; break;|
+          |+    }|
+          |+}|
+          |+double Session::nextClickSample(double rate, double decay, MetronomeSound sound) noexcept {|
+          |+    const double fundamental = std::sin(clickPhase_);|
+          |+    double shape = fundamental;|
+          |+    if (sound == MetronomeSound::Wood)|
+          |+        shape = 0.6 * fundamental - 0.4 * std::sin(3 * clickPhase_);|
+          |+    else if (sound == MetronomeSound::Bell)|
+          |+        shape = 0.65 * fundamental + 0.25 * std::sin(2 * clickPhase_) + 0.1 * std::sin(3 * clickPhase_);|
+          |+    clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / rate;|
+          |+    if (clickPhase_ >= 2 * std::numbers::pi)|
+          |+        clickPhase_ -= 2 * std::numbers::pi;|
+          |+    const double value = shape * clickEnvelope_;|
+          |+    clickEnvelope_ *= decay;|
+          |+    return value;|
+          |+}|
+          | // One count-in frame at `heard` frames after the first heard count-in beat;|
+          | // before that beat it only carries the (silent) envelope on.|
+          |-double Session::countInClick(std::int64_t heard, double rate, double decay) noexcept {|
+          |+double Session::countInClick(std::int64_t heard, double rate, double decay, MetronomeSound sound) noexcept {|
+          |     if (heard >= 0) {|
+          |         const auto beat = static_cast<std::int64_t>(|
+          |             std::llround(static_cast<double>(heard) / countInBeatSamples_));|
+          |         const auto boundary = static_cast<std::int64_t>(|
+          |             std::llround(static_cast<double>(beat) * countInBeatSamples_));|
+          |-        if (heard == boundary) {|
+          |-            clickPhase_ = 0;|
+          |-            clickEnvelope_ = 0.2;|
+          |-            clickFrequency_ = beat % countInBeatsPerBar_ == 0 ? 1760 : 880;|
+          |-        }|
+          |+        if (heard == boundary)|
+          |+            triggerClick(beat % countInBeatsPerBar_ == 0, sound);|
+          |     }|
+          |-    const double value = std::sin(clickPhase_) * clickEnvelope_;|
+          |-    clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / rate;|
+          |-    if (clickPhase_ >= 2 * std::numbers::pi)|
+          |-        clickPhase_ -= 2 * std::numbers::pi;|
+          |-    clickEnvelope_ *= decay;|
+          |-    return value;|
+          |+    return nextClickSample(rate, decay, sound);|
+          | }|
+          | void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {|
+          |     const auto heard = transport_.countInElapsed() - countInLag(graph_.renderedLatency());|
+          |-    const double decay = std::exp(-1.0 / (0.004 * timing.sampleRate));|
+          |+    const auto sound = timing.settings.metronomeOptions.sound;|
+          |+    const double decay = clickDecay(sound, timing.sampleRate);|
+          |     for (std::int32_t frame = 0; frame < io.frames; ++frame) {|
+          |-        const double value = countInClick(heard + frame, timing.sampleRate, decay);|
+          |+        const double value = countInClick(heard + frame, timing.sampleRate, decay, sound);|
+          |         for (std::int32_t channel = 0; channel < io.numOut; ++channel) {|
+          |             if (io.out && io.out[channel])|
+          |                 io.out[channel][frame] += static_cast<float>(value);|
+          |@@ -2765,14 +2798,43 @@ void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcep|
+          |         }|
+          |     }|
+          | }|
+          |-void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {|
+          |+void Session::noteClickCapture(bool capturing) noexcept {|
+          |+    if (clickCaptureRevision_ != transport_.revision()) {|
+          |+        clickCaptureRevision_ = transport_.revision();|
+          |+        clickCaptureEdgeCount_ = 0;|
+          |+    }|
+          |+    const bool wasCapturing = clickCaptureEdgeCount_ && clickCaptureEdges_[clickCaptureEdgeCount_ - 1].capturing;|
+          |+    if (capturing == wasCapturing)|
+          |+        return;|
+          |+    if (clickCaptureEdgeCount_ == clickCaptureEdges_.size()) {|
+          |+        // If more than 32 takes fit inside the delay, drop the earliest edge.|
+          |+        // An unheard frame older than the retained history is treated as silent.|
+          |+        std::move(clickCaptureEdges_.begin() + 1, clickCaptureEdges_.end(), clickCaptureEdges_.begin());|
+          |+        --clickCaptureEdgeCount_;|
+          |+    }|
+          |+    clickCaptureEdges_[clickCaptureEdgeCount_++] = {transport_.streamedFrames(), capturing};|
+          |+}|
+          |+|
+          |+bool Session::recordingClickPending() const noexcept {|
+          |+    if (clickCaptureEdgeCount_ == 0)|
+          |+        return false;|
+          |+    const auto& lastEdge = clickCaptureEdges_[clickCaptureEdgeCount_ - 1];|
+          |+    return lastEdge.capturing || transport_.streamedFrames() - lastEdge.streamFrame < graph_.renderedLatency();|
+          |+}|
+          |+|
+          |+void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool rollingClick) noexcept {|
+          |     const bool tail=countInTailActive();|
+          |-    if((!timing.settings.metronome && !tail) || !transport_.playing()) {|
+          |+    if((!rollingClick && !tail) || !transport_.playing()) {|
+          |         clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;|
+          |     }|
+          |     const auto& tempo=timing.tempo;const double rate=timing.sampleRate;|
+          |     const auto latency=graph_.renderedLatency();|
+          |-    const double decay=std::exp(-1.0/(0.004*rate));|
+          |+    const auto options = timing.settings.metronomeOptions;|
+          |+    const double decay = clickDecay(options.sound, rate);|
+          |+    const auto captureEdges = std::span{clickCaptureEdges_}.first(options.recordingOnly ? clickCaptureEdgeCount_ : 0);|
+          |+    auto edge = captureEdges.begin();|
+          |+    bool clickAllowed = !options.recordingOnly;|
+          |+    const auto streamFrame = transport_.streamedFrames();|
+          |     // Heard count-in clock of this callback's first frame (DF-E6 (a)).|
+          |     const auto heard=countInTailTotal_-countInTailLag_+transport_.streamedFrames();|
+          |     for(std::int32_t i=0;i<io.frames;++i) {|
+          |@@ -2780,31 +2842,35 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce|
+          |         if(sample<0 && tail && heard+i<countInTailTotal_) {|
+          |             // The compensated program is not heard yet: the count-in's last|
+          |             // clicks and their decay play on, on the count-in grid.|
+          |-            const double click=countInClick(heard+i,rate,decay);|
+          |+            const double click=countInClick(heard+i,rate,decay,options.sound);|
+          |             for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {|
+          |                 if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);|
+          |                 if(io.out64 && io.out64[c])io.out64[c][i]+=click;|
+          |             }|
+          |             clickWasPlaying_=false;continue;|
+          |         }|
+          |-        if(!timing.settings.metronome){clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;}|
+          |-        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}|
+          |+        if(!rollingClick){clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;}|
+          |+        // Capture changed on the undelayed clock, which can be several|
+          |+        // slices ahead of the timeline heard now, even for a complete punch.|
+          |+        while (edge != captureEdges.end() && edge->streamFrame - streamFrame <= i - latency)|
+          |+            clickAllowed = (edge++)->capturing;|
+          |+        if(sample<0 || !clickAllowed){clickWasPlaying_=false;clickEnvelope_=0;continue;}|
+          |         const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);|
+          |         std::int64_t signature=0,numerator=4,denominator=4;|
+          |         for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;|
+          |-        const auto beatTicks=textproj::kWhole/denominator;|
+          |-        const auto beat=(tick-signature)/beatTicks;|
+          |-        const auto beatTick=signature+beat*beatTicks;|
+          |+        const auto signatureBeat = textproj::kWhole / denominator;|
+          |+        const auto barTicks = signatureBeat * numerator;|
+          |+        const auto barStart = tick - (tick - signature) % barTicks;|
+          |+        const auto interval = options.eighthNotes && metronomeEighthNotesFit(barTicks)|
+          |+            ? kMetronomeEighthNoteTicks : signatureBeat;|
+          |+        const auto beatTick = tick - (tick - barStart) % interval;|
+          |         const double boundary=tempo.ticksToSeconds(beatTick)*rate;|
+          |         const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;|
+          |         const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;|
+          |-        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {|
+          |-            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;|
+          |-        }|
+          |-        const double click=clickEnvelope_*std::sin(clickPhase_);|
+          |-        clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;|
+          |-        if(clickPhase_>=2*std::numbers::pi)clickPhase_-=2*std::numbers::pi;|
+          |-        clickEnvelope_*=decay;if(clickEnvelope_<1e-12)clickEnvelope_=0;|
+          |+        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary))|
+          |+            triggerClick(beatTick == barStart, options.sound);|
+          |+        const double click = nextClickSample(rate, decay, options.sound);|
+          |+        if(clickEnvelope_<1e-12)clickEnvelope_=0;|
+          |         // Default Cue pair until the separate Cue Out routing (N23) is built.|
+          |         for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {|
+          |             if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);|
+          |@@ -2826,6 +2892,9 @@ void Session::release() {|
+          |     if (transport_.countInRemaining() > 0)|
+          |         transport_.play(false);|
+          |     countInTail_ = false;|
+          |+    clickCaptureEdgeCount_ = 0;|
+          |+    clickEnvelope_ = 0;|
+          |+    clickWasPlaying_ = false;|
+          |     // The device has stopped; nothing is rendering. Release the plugins so a|
+          |     // later `prepare` -- at the same format or not -- prepares them again|
+          |     // rather than finding ADR-0090 d5's guard satisfied on a released|
+          |diff --git a/adi_daw/src/adi/engine/session.hpp b/adi_daw/src/adi/engine/session.hpp|
+          |index fd260029..3740b601 100644|
+          |--- a/adi_daw/src/adi/engine/session.hpp|
+          |+++ b/adi_daw/src/adi/engine/session.hpp|
+          |@@ -607,6 +607,15 @@ private:|
+          |     std::int64_t clickLastSample_=-2,clickLastBeat_=-1;|
+          |     bool clickWasPlaying_=false;|
+          |     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;|
+          |+    struct ClickCaptureEdge {|
+          |+        std::int64_t streamFrame;|
+          |+        bool capturing;|
+          |+    };|
+          |+    // Keep recent capture edges on the undelayed stream clock. The audio|
+          |+    // callback reads them back on the same compensated clock as the click.|
+          |+    std::array<ClickCaptureEdge, 64> clickCaptureEdges_{};|
+          |+    std::size_t clickCaptureEdgeCount_ = 0;|
+          |+    std::uint64_t clickCaptureRevision_ = 0;|
+          |     double countInBeatSamples_ = 24000;|
+          |     std::int64_t countInBeatsPerBar_ = 4;|
+          |     std::int32_t countInBars_ = 0, countInDivisionsPerBeat_ = 4;|
+          |@@ -619,9 +628,13 @@ private:|
+          |     std::int64_t countInTailTotal_ = 0, countInTailLag_ = 0;|
+          |     [[nodiscard]] std::int64_t countInLag(std::int32_t latency) const noexcept;|
+          |     [[nodiscard]] bool countInTailActive() const noexcept;|
+          |-    double countInClick(std::int64_t heard, double rate, double decay) noexcept;|
+          |+    void triggerClick(bool accent, MetronomeSound sound) noexcept;|
+          |+    double nextClickSample(double rate, double decay, MetronomeSound sound) noexcept;|
+          |+    double countInClick(std::int64_t heard, double rate, double decay, MetronomeSound sound) noexcept;|
+          |     void renderCountIn(const TimingView &, const AudioIo &) noexcept;|
+          |-    void renderMetronome(const TimingView&,const AudioIo&) noexcept;|
+          |+    void noteClickCapture(bool capturing) noexcept;|
+          |+    [[nodiscard]] bool recordingClickPending() const noexcept;|
+          |+    void renderMetronome(const TimingView&, const AudioIo&, bool rollingClick) noexcept;|
+          |     std::shared_ptr<const ClipProject> clipProject_;|
+          |     // Published graphs retain their own old source generations until reclamation.|
+          |     std::shared_ptr<ClipPlayback> clips_;|
+          |diff --git a/adi_daw/src/adi/ops_catalog.cpp b/adi_daw/src/adi/ops_catalog.cpp|
+          |index 57c93f00..3373b43b 100644|
+          |--- a/adi_daw/src/adi/ops_catalog.cpp|
+          |+++ b/adi_daw/src/adi/ops_catalog.cpp|
+          |@@ -1079,6 +1079,27 @@ bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop|
+          |         set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;|
+          |     }catch(const std::exception& e){error=e.what();return false;}|
+          | }|
+          |+bool transportMetronomeOptions(OpContext &c, const Payload &p, std::string &error) {|
+          |+    if (p.empty()) {|
+          |+        error = "Choose a metronome option to change";|
+          |+        return false;|
+          |+    }|
+          |+    const auto options = readTransportSettings(c.store).metronomeOptions;|
+          |+    const auto sound = p.value("sound", static_cast<std::int64_t>(options.sound));|
+          |+    if (sound < 0 || sound > static_cast<std::int64_t>(MetronomeSound::Bell)) {|
+          |+        error = "Choose a supported metronome sound";|
+          |+        return false;|
+          |+    }|
+          |+    const Payload value{{"recordingOnly", p.value("recordingOnly", options.recordingOnly)},|
+          |+                        {"eighthNotes", p.value("eighthNotes", options.eighthNotes)},|
+          |+                        {"sound", sound}};|
+          |+    SQLite::Statement set(|
+          |+        c.store.db(),|
+          |+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.metronomeOptions',?)");|
+          |+    set.bind(1, value.dump());|
+          |+    set.exec();|
+          |+    return true;|
+          |+}|
+          | bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {|
+          |     const auto bars = p.at("bars").get<std::int64_t>();|
+          |     if (bars != 0 && bars != 1 && bars != 2 && bars != 4) {|
+          |@@ -1281,6 +1302,9 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},|
+          |                                      {"resolved", FieldType::Bool, true}};|
+          | constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};|
+          | constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};|
+          |+constexpr Field kFMetronomeOptions[] = {{"recordingOnly", FieldType::Bool, false},|
+          |+                                        {"eighthNotes", FieldType::Bool, false},|
+          |+                                        {"sound", FieldType::Int, false}};|
+          | constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};|
+          | constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};|
+          | constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},|
+          |@@ -2408,6 +2432,8 @@ const OpDescriptor kHandWritten[] = {|
+          |     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,|
+          |      EngineImpact::Snapshot, kFTransportFlag, false, true,|
+          |      transportMetronome, nullptr, ""},|
+          |+    {"transport.setMetronomeOptions", "Set how the metronome clicks", Scope::Transport, EngineImpact::Snapshot,|
+          |+     kFMetronomeOptions, false, true, transportMetronomeOptions, nullptr, ""},|
+          | };|
+          | |
+          | }  // namespace|
+          |diff --git a/adi_daw/src/adi/transport_settings.cpp b/adi_daw/src/adi/transport_settings.cpp|
+          |index 605bc831..40f72e63 100644|
+          |--- a/adi_daw/src/adi/transport_settings.cpp|
+          |+++ b/adi_daw/src/adi/transport_settings.cpp|
+          |@@ -9,12 +9,21 @@ TransportSettings readTransportSettings(const Store& store) {|
+          |     SQLite::Statement rows(|
+          |         const_cast<SQLite::Database &>(store.db()),|
+          |         "SELECT key,value FROM session_state WHERE key IN "|
+          |-        "('transport.metronome','transport.loop','transport.countIn','transport.songStart','transport.punch')");|
+          |+        "('transport.metronome','transport.metronomeOptions','transport.loop',"|
+          |+        "'transport.countIn','transport.songStart','transport.punch')");|
+          |     while(rows.executeStep()) {|
+          |         try {|
+          |             const auto value=Payload::parse(rows.getColumn(1).getString());|
+          |             if(rows.getColumn(0).getString()=="transport.metronome")result.metronome=value.get<bool>();|
+          |-            else if (rows.getColumn(0).getString() == "transport.countIn") {|
+          |+            else if (rows.getColumn(0).getString() == "transport.metronomeOptions") {|
+          |+                if (const auto item = value.find("recordingOnly"); item != value.end() && item->is_boolean())|
+          |+                    result.metronomeOptions.recordingOnly = item->get<bool>();|
+          |+                if (const auto item = value.find("eighthNotes"); item != value.end() && item->is_boolean())|
+          |+                    result.metronomeOptions.eighthNotes = item->get<bool>();|
+          |+                if (const auto item = value.find("sound"); item != value.end() && item->is_number_integer() &&|
+          |+                    *item >= 0 && *item <= static_cast<int>(MetronomeSound::Bell))|
+          |+                    result.metronomeOptions.sound = static_cast<MetronomeSound>(item->get<int>());|
+          |+            } else if (rows.getColumn(0).getString() == "transport.countIn") {|
+          |                 if (!value.is_number_integer() || value < 0 || value > 4)|
+          |                     continue;|
+          |                 const auto bars = value.get<std::int32_t>();|
+          |diff --git a/adi_daw/src/adi/transport_settings.hpp b/adi_daw/src/adi/transport_settings.hpp|
+          |index 096dd7f7..0f0cbfed 100644|
+          |--- a/adi_daw/src/adi/transport_settings.hpp|
+          |+++ b/adi_daw/src/adi/transport_settings.hpp|
+          |@@ -1,9 +1,21 @@|
+          | // SPDX-License-Identifier: AGPL-3.0-or-later|
+          | #pragma once|
+          |+#include "adi/textproj.hpp"|
+          | #include <cstdint>|
+          | #include <optional>|
+          | namespace adi {|
+          | class Store;|
+          |+enum class MetronomeSound : std::uint8_t { Classic, Wood, Bell };|
+          |+inline constexpr auto kMetronomeEighthNoteTicks = textproj::kWhole / 8;|
+          |+[[nodiscard]] constexpr bool metronomeEighthNotesFit(std::int64_t barTicks) noexcept {|
+          |+    return barTicks > 0 && barTicks % kMetronomeEighthNoteTicks == 0;|
+          |+}|
+          |+struct MetronomeOptions {|
+          |+    bool recordingOnly = false;|
+          |+    bool eighthNotes = false;|
+          |+    MetronomeSound sound = MetronomeSound::Classic;|
+          |+    friend bool operator==(const MetronomeOptions&, const MetronomeOptions&) = default;|
+          |+};|
+          | /// Saved performance state in session_state; deliberately outside undo history.|
+          | struct TransportSettings {|
+          |     bool metronome=false,loopEnabled=false,hasLoop=false;|
+          |@@ -11,6 +23,7 @@ struct TransportSettings {|
+          |     std::int32_t countInBars = 0;               // none, 1, 2 or 4; applies only to a record start|
+          |     std::optional<std::int64_t> songStartTicks; // absent: insert marker/time selection|
+          |     bool punchIn=false,punchOut=false;         // the loop brace's start and end, independent of Loop|
+          |+    MetronomeOptions metronomeOptions;|
+          |     friend bool operator==(const TransportSettings&,const TransportSettings&)=default;|
+          | };|
+          | TransportSettings readTransportSettings(const Store&);|
+          |diff --git a/adi_daw/src/adi/ui/loop_edits.hpp b/adi_daw/src/adi/ui/loop_edits.hpp|
+          |index b25ba7e5..d14761f2 100644|
+          |--- a/adi_daw/src/adi/ui/loop_edits.hpp|
+          |+++ b/adi_daw/src/adi/ui/loop_edits.hpp|
+          |@@ -32,6 +32,11 @@ inline LoopEdit setMetronome(const TransportSettings &t, bool on) {|
+          |         edit.ops.push_back(track_edits_detail::op("transport.setMetronome", {{"on", on}}, "Metronome"));|
+          |     return edit;|
+          | }|
+          |+inline LoopEdit setMetronomeOptions(Payload changes) {|
+          |+    LoopEdit edit;|
+          |+    edit.ops.push_back(track_edits_detail::op("transport.setMetronomeOptions", std::move(changes), "Metronome Options"));|
+          |+    return edit;|
+          |+}|
+          | inline LoopEdit setCountIn(const TransportSettings &t, int bars) {|
+          |     LoopEdit edit;|
+          |     if (t.countInBars != bars)|
+          |diff --git a/adi_daw/src/juce/ui_controlbar.cpp b/adi_daw/src/juce/ui_controlbar.cpp|
+          |index fec969d9..d412232d 100644|
+          |--- a/adi_daw/src/juce/ui_controlbar.cpp|
+          |+++ b/adi_daw/src/juce/ui_controlbar.cpp|
+          |@@ -182,6 +182,10 @@ void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {|
+          |         repaint();|
+          |     }|
+          | }|
+          |+void BarItem::clicked(const juce::ModifierKeys &modifiers) {|
+          |+    if (onModifiedClick)|
+          |+        onModifiedClick(modifiers);|
+          |+}|
+          | void BarItem::mouseDown(const juce::MouseEvent &event) {|
+          |     dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);|
+          |     if (dropdownPress_)|
+          |@@ -389,7 +393,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {|
+          |         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},|
+          |         {&signature, "Time Signature", "Drag, scroll or use Up and Down to adjust the numerator or denominator "|
+          |                                        "at the play location. Click to type a signature such as 3/4."},|
+          |-        {&metronome, "Metronome", "O toggles the metronome. Its menu sets count-in and the shared Cue Volume."},|
+          |+        {&metronome, "Metronome", "O toggles the metronome. Its menu sets the click, Count-In and shared Cue Volume."},|
+          |         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},|
+          |         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "|
+          |                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "|
+          |@@ -511,7 +515,10 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {|
+          |         root_.mark(DirtySet::Transport);|
+          |     };|
+          |     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.|
+          |-    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };|
+          |+    record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {|
+          |+        root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate|
+          |+                                              : AppCommands::ArrangementRecord);|
+          |+    };|
+          |     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };|
+          |     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording|
+          |     // does to the notes already there, once MIDI records (SRF-05).|
+          |@@ -596,11 +603,40 @@ void TransportBar::resized() {|
+          | }|
+          | juce::PopupMenu TransportBar::metronomeMenu() const {|
+          |     juce::PopupMenu menu;|
+          |-    menu.addSectionHeader("Count-In");|
+          |     const auto current = root_.current();|
+          |+    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);|
+          |+    const auto options = current ? current->transport.metronomeOptions : MetronomeOptions{};|
+          |+    const bool enabled = static_cast<bool>(current);|
+          |+    menu.addItem("Enable Only While Recording", enabled, enabled && options.recordingOnly, [safe] {|
+          |+        if (safe)|
+          |+            safe->toggleMetronomeWhileRecording();|
+          |+    });|
+          |+    juce::PopupMenu sounds;|
+          |+    constexpr std::array soundChoices{std::pair{MetronomeSound::Classic, "Classic"},|
+          |+                                      std::pair{MetronomeSound::Wood, "Wood"},|
+          |+                                      std::pair{MetronomeSound::Bell, "Bell"}};|
+          |+    for (const auto &[sound, label] : soundChoices)|
+          |+        sounds.addItem(label, enabled, enabled && options.sound == sound, [safe, value = sound] {|
+          |+            if (safe)|
+          |+                safe->setMetronomeSound(value);|
+          |+        });|
+          |+    menu.addSubMenu("Sound", sounds, enabled);|
+          |+    const bool eighthNotesFit = current && metronomeEighthNotesFit(meterAt(root_.timelineTick(), current->meters).barTicks());|
+          |+    const bool playsEighthNotes = options.eighthNotes && eighthNotesFit;|
+          |+    juce::PopupMenu rhythms;|
+          |+    rhythms.addItem("Auto", enabled, enabled && !playsEighthNotes, [safe] {|
+          |+        if (safe)|
+          |+            safe->setMetronomeEighthNotes(false);|
+          |+    });|
+          |+    rhythms.addItem("1/8", eighthNotesFit, playsEighthNotes, [safe] {|
+          |+        if (safe)|
+          |+            safe->setMetronomeEighthNotes(true);|
+          |+    });|
+          |+    menu.addSubMenu("Rhythm", rhythms, enabled);|
+          |+    menu.addSeparator();|
+          |+    menu.addSectionHeader("Count-In");|
+          |     constexpr std::array choices{std::pair{0, "None"}, std::pair{1, "1 Bar"},|
+          |                                  std::pair{2, "2 Bars"}, std::pair{4, "4 Bars"}};|
+          |-    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);|
+          |     for (const auto &[bars, label] : choices) {|
+          |         menu.addItem(label, static_cast<bool>(current), current && current->transport.countInBars == bars,|
+          |                      [safe, value = bars] {|
+          |@@ -656,7 +692,7 @@ void TransportBar::refresh() {|
+          |     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);|
+          |     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);|
+          |     play.setToggleState(root_.playing(), juce::dontSendNotification);|
+          |-    record.setToggleState(root_.isRecording(), juce::dontSendNotification);|
+          |+    record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);|
+          |     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);|
+          |     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);|
+          |     follow.setToggleState(root_.state().follow, juce::dontSendNotification);|
+          |diff --git a/adi_daw/src/juce/ui_controlbar.hpp b/adi_daw/src/juce/ui_controlbar.hpp|
+          |index 30c97f3c..a8298008 100644|
+          |--- a/adi_daw/src/juce/ui_controlbar.hpp|
+          |+++ b/adi_daw/src/juce/ui_controlbar.hpp|
+          |@@ -36,6 +36,8 @@ class BarItem : public juce::Button {|
+          |     void paintButton(juce::Graphics &, bool over, bool down) override;|
+          |     void mouseDown(const juce::MouseEvent &) override;|
+          |     void mouseUp(const juce::MouseEvent &) override;|
+          |+    void clicked(const juce::ModifierKeys &) override;|
+          |+    std::function<void(const juce::ModifierKeys &)> onModifiedClick;|
+          |     void focusGained(FocusChangeType) override;|
+          |     void focusLost(FocusChangeType) override;|
+          |     void setText(const juce::String &t);|
+          |diff --git a/adi_daw/src/juce/ui_shell.cpp b/adi_daw/src/juce/ui_shell.cpp|
+          |index bb39b555..a8454f79 100644|
+          |--- a/adi_daw/src/juce/ui_shell.cpp|
+          |+++ b/adi_daw/src/juce/ui_shell.cpp|
+          |@@ -63,6 +63,7 @@ void AppCommands::reload() {|
+          |     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";|
+          |     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);|
+          |     exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);|
+          |+    startPlaybackWithRecord_ = flag(settings_, "record.startPlaybackWithRecord", true);|
+          |     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())|
+          |         recordingDefaults_.quantize = quantize.get<std::string>();|
+          |     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);|
+          |@@ -310,6 +311,7 @@ const StableEntry *stableEntry(int id) noexcept {|
+          |         {"view.automation-mode", "View"}, // AutomationMode|
+          |         {"edit.delete-automation", "Edit"}, // DeleteAutomation|
+          |         {"mixer.arm-selected", "Mixer"}, // ArmSelected|
+          |+        {"transport.arrangement-record-alternate", "Transport"}, // ArrangementRecordAlternate|
+          |     }};|
+          |     const auto at = id - AppCommands::PlayStop;|
+          |     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;|
+          |@@ -535,7 +537,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf|
+          |                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",|
+          |                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",|
+          |                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",|
+          |-                                  "Arm Selected Tracks"};|
+          |+                                  "Arm Selected Tracks", "Arrangement Record (Alternate Start)"};|
+          |     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);|
+          |     if (id == Undo || id == Redo) {|
+          |         const bool redo = id == Redo;|
+          |@@ -1009,9 +1011,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf|
+          |         info.addDefaultKeypress('j', cmd | alt);|
+          |         info.setActive(false);|
+          |         break;|
+          |-    case ArrangementRecord: // manual 21.1 and §41.6: F9|
+          |-        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);|
+          |-        info.setTicked(active_ != nullptr && active_->isRecording());|
+          |+    case ArrangementRecord:|
+          |+    case ArrangementRecordAlternate:|
+          |+        info.addDefaultKeypress(juce::KeyPress::F9Key, id == ArrangementRecordAlternate ? shift : 0);|
+          |+        info.setTicked(active_ != nullptr && active_->arrangementRecordEnabled());|
+          |         break;|
+          |     case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)|
+          |         info.setTicked(delayCompensation_);|
+          |@@ -1665,11 +1668,20 @@ bool AdiRootComponent::playFrom(std::int64_t tick) {|
+          |         if (const auto result = submitter_.submit(std::move(request)); !result)|
+          |             return fail(result.error);|
+          |     }|
+          |-    if (!locate(tick))|
+          |+    // Scrub playback keeps its explicitly requested position.|
+          |+    const bool requestedRecording = start && recordPending_;|
+          |+    const bool recordingFromHere = requestedRecording && beginArrangementRecording(tick, true);|
+          |+    if (requestedRecording && !recordingFromHere)|
+          |+        setRecordPending(false);|
+          |+    if (!locate(tick)) {|
+          |+        if (recordingFromHere)|
+          |+            stopRecording();|
+          |         return fail("The project has no tempo map to locate in.");|
+          |+    }|
+          |     if (start)|
+          |         mailbox_.post(TransportMailbox::Command::Play);|
+          |-    error_.clear();|
+          |+    if (!requestedRecording || recordingFromHere)|
+          |+        error_.clear();|
+          |     dirty_.mark(DirtySet::Transport | DirtySet::Status);|
+          |     return true;|
+          | }|
+          |@@ -3633,24 +3645,41 @@ bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view r|
+          |         return true;|
+          |     return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");|
+          | }|
+          |-bool AdiRootComponent::toggleRecord() {|
+          |+void AdiRootComponent::setRecordPending(bool pending) {|
+          |+    if (recordPending_ == pending)|
+          |+        return;|
+          |+    recordPending_ = pending;|
+          |+    mark(DirtySet::Transport);|
+          |+}|
+          |+bool AdiRootComponent::toggleRecord(bool alternate) {|
+          |+    if (recordPending_) {|
+          |+        setRecordPending(false);|
+          |+        return true;|
+          |+    }|
+          |     if (!startRecording || !stopRecording || !recording)|
+          |         return fail("Recording runs in the application, with an audio device.");|
+          |-    if (recording()) {|
+          |-        // Live's Record button again: recording stops, playback goes on.|
+          |+    if (isRecording()) {|
+          |         stopRecording();|
+          |         mark(DirtySet::Transport);|
+          |         return true;|
+          |     }|
+          |     const bool rolling = mailbox_.desiredPlaying();|
+          |-    if (!rolling && !mailbox_.hasRoom(1))|
+          |+    if (!rolling && commands_.startPlaybackWithRecord() == alternate) {|
+          |+        setRecordPending(true);|
+          |+        return true;|
+          |+    }|
+          |+    return beginArrangementRecording(rolling ? timelineTick() : arrangement.geometry.selection.insert, rolling);|
+          |+}|
+          |+bool AdiRootComponent::beginArrangementRecording(std::int64_t takeStart, bool rolling) {|
+          |+    if (!startRecording || !stopRecording || !recording)|
+          |+        return fail("Recording runs in the application, with an audio device.");|
+          |+    if (!rolling && !mailbox_.hasRoom())|
+          |         return fail("Transport command queue is full");|
+          |-    // Where the take begins: the playhead when playing (punch-in), else the insert marker.|
+          |-    const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;|
+          |-    if (!startRecording(arrangement.geometry.selection.insert, rolling))|
+          |-        return false; // the application said why|
+          |-    // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as|
+          |-    // it grows (walk-B B4).|
+          |+    const auto insertTick = rolling ? arrangement.geometry.selection.insert : takeStart;|
+          |+    if (!startRecording(insertTick, rolling))|
+          |+        return false;|
+          |+    setRecordPending(false);|
+          |+    // The armed audio tracks' lanes show the take as it grows.|
+          |     if (const auto *current = reader().get())|
+          |         arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);|
+          |     // A recording start plays the transport: the same op Play writes, so the history's transport state|
+          |@@ -4059,6 +4088,26 @@ bool AdiRootComponent::toggleMetronome() {|
+          |     const auto current = view_.current();|
+          |     return setMetronome(!(current && current->transport.metronome));|
+          | }|
+          |+bool AdiRootComponent::toggleMetronomeWhileRecording() {|
+          |+    const auto current = view_.current();|
+          |+    if (!current)|
+          |+        return fail("The metronome needs an open project.");|
+          |+    return submitTransport(::adi::ui::setMetronomeOptions({{"recordingOnly", !current->transport.metronomeOptions.recordingOnly}}));|
+          |+}|
+          |+bool AdiRootComponent::setMetronomeEighthNotes(bool eighthNotes) {|
+          |+    const auto current = view_.current();|
+          |+    if (!current)|
+          |+        return fail("The metronome needs an open project.");|
+          |+    return current->transport.metronomeOptions.eighthNotes == eighthNotes |||
+          |+           submitTransport(::adi::ui::setMetronomeOptions({{"eighthNotes", eighthNotes}}));|
+          |+}|
+          |+bool AdiRootComponent::setMetronomeSound(MetronomeSound sound) {|
+          |+    const auto current = view_.current();|
+          |+    if (!current)|
+          |+        return fail("The metronome needs an open project.");|
+          |+    return current->transport.metronomeOptions.sound == sound |||
+          |+           submitTransport(::adi::ui::setMetronomeOptions({{"sound", static_cast<int>(sound)}}));|
+          |+}|
+          | bool AdiRootComponent::setCountIn(int bars) {|
+          |     const auto current = view_.current();|
+          |     if (!current)|
+          |@@ -4597,6 +4646,7 @@ bool AdiRootComponent::command(int id) {|
+          |     }|
+          |     // No action carries the presented frame into an edit: OpSubmitter resolves|
+          |     // current store/history state on arrival, even when this window is a frame behind.|
+          |+    bool recordStartRefused = false;|
+          |     switch (id) {|
+          |     case AppCommands::PlayStop:|
+          |     case AppCommands::Stop:|
+          |@@ -4604,9 +4654,19 @@ bool AdiRootComponent::command(int id) {|
+          |         // Space plays from the insert marker, Shift+Space from where it stopped.|
+          |         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();|
+          |         const bool fromMarker = play && id == AppCommands::PlayStop;|
+          |-        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.|
+          |-        if (!play && recording && recording() && stopRecording)|
+          |-            stopRecording();|
+          |+        // Stop clears a waiting request even if the driver cannot accept another command.|
+          |+        if (!play) {|
+          |+            setRecordPending(false);|
+          |+            if (isRecording() && stopRecording)|
+          |+                stopRecording();|
+          |+        }|
+          |+        if (fromMarker && recordPending_) {|
+          |+            // The Record command starts at the normal recording point with the saved Count-In.|
+          |+            if (beginArrangementRecording(arrangement.geometry.selection.insert, false))|
+          |+                break;|
+          |+            recordStartRefused = true;|
+          |+            setRecordPending(false);|
+          |+        }|
+          |         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))|
+          |             return fail("Transport command queue is full");|
+          |         OpRequest request;|
+          |@@ -4615,6 +4675,11 @@ bool AdiRootComponent::command(int id) {|
+          |         const auto result = submitter_.submit(std::move(request));|
+          |         if (!result)|
+          |             return fail(result.error);|
+          |+        // Continue keeps the exact stopped sample owned by the driver's mailbox.|
+          |+        if (play && recordPending_ && !beginArrangementRecording(timelineTick(), true)) {|
+          |+            recordStartRefused = true;|
+          |+            setRecordPending(false);|
+          |+        }|
+          |         if (fromMarker)|
+          |             locate(arrangement.geometry.selection.insert);|
+          |         using Command = TransportMailbox::Command;|
+          |@@ -4622,7 +4687,8 @@ bool AdiRootComponent::command(int id) {|
+          |         break;|
+          |     }|
+          |     case AppCommands::ArrangementRecord:|
+          |-        if (!toggleRecord())|
+          |+    case AppCommands::ArrangementRecordAlternate:|
+          |+        if (!toggleRecord(id == AppCommands::ArrangementRecordAlternate))|
+          |             return false;|
+          |         break;|
+          |     case AppCommands::AutomationMode:|
+          |@@ -5016,7 +5082,8 @@ bool AdiRootComponent::command(int id) {|
+          |     }|
+          |     if (afterEdit)|
+          |         afterEdit();|
+          |-    error_.clear();|
+          |+    if (!recordStartRefused)|
+          |+        error_.clear();|
+          |     resized();|
+          |     return true;|
+          | }|
+          |diff --git a/adi_daw/src/juce/ui_shell.hpp b/adi_daw/src/juce/ui_shell.hpp|
+          |index fbc2299e..932e7072 100644|
+          |--- a/adi_daw/src/juce/ui_shell.hpp|
+          |+++ b/adi_daw/src/juce/ui_shell.hpp|
+          |@@ -175,7 +175,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
+          |         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)|
+          |         DeleteAutomation,|
+          |         ArmSelected,|
+          |-        LastId = ArmSelected|
+          |+        ArrangementRecordAlternate, // Shift+F9: the other Start Playback with Record behavior|
+          |+        LastId = ArrangementRecordAlternate|
+          |     };|
+          |     explicit AppCommands(settings::AppSettings &);|
+          |     void reload();|
+          |@@ -237,6 +238,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
+          |     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless|
+          |     // Ctrl/Cmd is held.|
+          |     bool exclusiveArm() const noexcept { return exclusiveArm_; }|
+          |+    bool startPlaybackWithRecord() const noexcept { return startPlaybackWithRecord_; }|
+          |     // The registry's recording defaults a new track takes (`record.quantize`,|
+          |     // `audio.keepMonitoringLatency`; N31).|
+          |     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }|
+          |@@ -298,6 +300,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
+          |     bool followByPage_ = true;|
+          |     bool exclusiveSolo_ = true;|
+          |     bool exclusiveArm_ = true;|
+          |+    bool startPlaybackWithRecord_ = true;|
+          |     RecordingDefaults recordingDefaults_;|
+          |     bool linkLoop_ = false;|
+          |     bool splitAll_ = true;|
+          |@@ -521,6 +524,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
+          |     // not known).|
+          |     TrackRecordState recordState(std::int64_t track) const;|
+          |     bool isRecording() const { return recording && recording(); }|
+          |+    bool arrangementRecordEnabled() const { return recordPending_ || isRecording(); }|
+          |     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto|
+          |     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;|
+          |     // the new clip and its track are selected. A refusal goes to the Status Bar.|
+          |@@ -741,7 +745,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
+          |     bool setExternalAudioInput(std::int64_t id, std::string_view ref);|
+          |     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,|
+          |     // stops recording and the transport plays on.|
+          |-    bool toggleRecord();|
+          |+    bool toggleRecord(bool alternate = false);|
+          |     // Selects clip `clip` as a click on it would (a recorded take, once it lands).|
+          |     void selectClip(std::int64_t clip);|
+          |     // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the|
+          |@@ -837,6 +841,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
+          |     // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.|
+          |     bool setMetronome(bool on);|
+          |     bool toggleMetronome();|
+          |+    bool toggleMetronomeWhileRecording();|
+          |+    bool setMetronomeEighthNotes(bool eighthNotes);|
+          |+    bool setMetronomeSound(MetronomeSound sound);|
+          |     bool setCountIn(int bars);|
+          |     bool togglePunch(bool start);|
+          |     // Live's Arrangement Loop (manual 6.6), `transport.setLoop` outside undo and saved with the|
+          |@@ -913,6 +920,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
+          |     bool canRenderTrack(TrackRenderAction, const engine::TrackNode &) const;|
+          |     bool renderTrack(TrackRenderAction, std::int64_t);|
+          |     ProjectDocument *trackRenderDocument_ = nullptr;|
+          |+    bool beginArrangementRecording(std::int64_t takeStart, bool rolling);|
+          |+    void setRecordPending(bool pending);|
+          |     bool insertTrack(bool midi);|
+          |     bool deleteTrack();|
+          |     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the|
+          |@@ -948,6 +957,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
+          |     } windowFollower_{*this};|
+          |     unsigned lastDrain_ = 0;|
+          |     bool playing_ = false;|
+          |+    bool recordPending_ = false;|
+          |     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set|
+          |     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)|
+          |     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }|
+          |diff --git a/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt b/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
+          |index bda1f0c2..baaf5253 100644|
+          |--- a/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
+          |+++ b/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
+          |@@ -128,3 +128,4 @@|
+          | 29055 Automation Mode: A|
+          | 29056 Delete Automation: Cmd+Backspace|
+          | 29057 Arm Selected Tracks: C|
+          |+29058 Arrangement Record (Alternate Start): Shift+F9|
+          |diff --git a/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt b/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
+          |index bda1f0c2..baaf5253 100644|
+          |--- a/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
+          |+++ b/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
+          |@@ -128,3 +128,4 @@|
+          | 29055 Automation Mode: A|
+          | 29056 Delete Automation: Cmd+Backspace|
+          | 29057 Arm Selected Tracks: C|
+          |+29058 Arrangement Record (Alternate Start): Shift+F9|
+          |diff --git a/adi_daw/tests/fixtures/ui/keymap-live-pc.txt b/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
+          |index 004ad0e5..b9444a51 100644|
+          |--- a/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
+          |+++ b/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
+          |@@ -128,3 +128,4 @@|
+          | 29055 Automation Mode: A|
+          | 29056 Delete Automation: Cmd+Backspace|
+          | 29057 Arm Selected Tracks: C|
+          |+29058 Arrangement Record (Alternate Start): Shift+F9|
+          |diff --git a/adi_daw/tests/test_cue_monitor.cpp b/adi_daw/tests/test_cue_monitor.cpp|
+          |index 31e98318..b04ff6e0 100644|
+          |--- a/adi_daw/tests/test_cue_monitor.cpp|
+          |+++ b/adi_daw/tests/test_cue_monitor.cpp|
+          |@@ -1,9 +1,12 @@|
+          | // SPDX-License-Identifier: AGPL-3.0-or-later|
+          | #include "adi/cue_settings.hpp"|
+          | #include "adi/dsp/stereo_envelope_meter.hpp"|
+          |+#include "adi/engine/audio_recording.hpp"|
+          |+#include "adi/engine/midi_input_capture.hpp"|
+          | #include "adi/engine/session.hpp"|
+          | #include "adi/history.hpp"|
+          | #include "adi/store.hpp"|
+          |+#include "adi/textproj.hpp"|
+          | #include "temp_directory.hpp"|
+          | #include <SQLiteCpp/SQLiteCpp.h>|
+          | #include <array>|
+          |@@ -158,6 +161,225 @@ void compensatedAndClick() {|
+          |     check(click.load(),"Cue metronome fixture loads");click.session.transport().play();click.process(b);|
+          |     check(std::all_of(b.wide[0].begin(),b.wide[0].end(),[](double v){return v==0;}) && std::any_of(b.wide[2].begin(),b.wide[2].end(),[](double v){return std::abs(v)>0.01;}),"metronome follows Cue Out and leaves Main untouched");|
+          | }|
+          |+void metronomeOptions() {|
+          |+    Fixture f;|
+          |+    f.main.value = f.reference.value = 0;|
+          |+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"|
+          |+                       "INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"|
+          |+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");|
+          |+    constexpr auto shortBar = 4 * textproj::kPPQ;|
+          |+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;|
+          |+    f.store->db().exec("INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES (" +|
+          |+                       std::to_string(shortBar) + ",3,16),(" + std::to_string(regularBar) + ",4,4)");|
+          |+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&|
+          |+              f.op("transport.setCountIn", {{"bars", 1}}) && f.load(),|
+          |+          "SC-256: load the metronome and capture fixture with a 3/16 bar");|
+          |+    Block b(128);|
+          |+    const auto hasClick = [&] {|
+          |+        return std::any_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames,|
+          |+                           [](double value) { return std::abs(value) > 0.01; });|
+          |+    };|
+          |+    const auto at = [&](std::int64_t sample) {|
+          |+        f.session.transport().locate(sample);|
+          |+        f.session.transport().play();|
+          |+        f.process(b);|
+          |+        b.io.streamTimeSamples += b.io.frames;|
+          |+    };|
+          |+    at(12000);|
+          |+    check(!hasClick(), "Auto in 4/4 leaves the first eighth-note offbeat quiet");|
+          |+    check(f.op("transport.setMetronomeOptions", {{"eighthNotes", true}}), "save eighth-note clicks");|
+          |+    at(12000);|
+          |+    check(hasClick(), "the eighth-note option adds a click on the offbeat");|
+          |+    const auto attackAt = [&](std::int64_t sample) {|
+          |+        constexpr int lead = 8;|
+          |+        f.session.transport().play(false);|
+          |+        f.process(b);|
+          |+        b.io.streamTimeSamples += b.io.frames;|
+          |+        at(sample - lead);|
+          |+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + lead + 1,|
+          |+                           [](double value) { return value == 0.0; }) &&|
+          |+               std::abs(b.wide[2][lead + 1]) > 0.01;|
+          |+    };|
+          |+    check(attackAt(96000 + 6000), "an eighth note does not divide a 3/16 bar, so Auto clicks on the second sixteenth");|
+          |+    check(attackAt(114000 + 12000) && readTransportSettings(*f.store).metronomeOptions.eighthNotes,|
+          |+          "the saved eighth-note rhythm resumes on the first offbeat of the next 4/4 bar");|
+          |+    at(0);|
+          |+    const auto classic = b.wide[2];|
+          |+    check(f.op("transport.setMetronomeOptions", {{"sound", 1}}), "select Wood");|
+          |+    at(0);|
+          |+    const auto wood = b.wide[2];|
+          |+    check(f.op("transport.setMetronomeOptions", {{"sound", 2}}), "select Bell");|
+          |+    at(0);|
+          |+    check(hasClick() && classic != wood && classic != b.wide[2] && wood != b.wide[2],|
+          |+          "the three synthesized sounds render distinct PCM");|
+          |+    check(f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}), "select recording-only playback");|
+          |+    const auto saved = readTransportSettings(*f.store).metronomeOptions;|
+          |+    check(saved.recordingOnly && saved.eighthNotes && saved.sound == MetronomeSound::Bell && !History(*f.store).canUndo(),|
+          |+          "each option persists independently and stays outside undo");|
+          |+    OpRequest invalid;|
+          |+    invalid.opType = "transport.setMetronomeOptions";|
+          |+    invalid.payload = {{"sound", 9}};|
+          |+    check(!OpJournal(*f.store).commit(invalid).ok && readTransportSettings(*f.store).metronomeOptions == saved,|
+          |+          "unsupported sounds are refused without changing options");|
+          |+    at(0);|
+          |+    check(!hasClick(), "recording-only mode is silent during ordinary playback");|
+          |+|
+          |+    std::string why;|
+          |+    AudioRecordingSpec take;|
+          |+    take.workFolder = f.temp.path();|
+          |+    take.sampleRate = 48000;|
+          |+    take.targets = {{1, {0}}};|
+          |+    const std::array<float, 128> input{};|
+          |+    const float* channels[]{input.data()};|
+          |+    b.io.in = channels;|
+          |+    b.io.numIn = 1;|
+          |+    check(f.op("transport.setLoop", {{"on", false}, {"start", textproj::kPPQ / 2}, {"end", textproj::kPPQ}}) &&|
+          |+              f.op("transport.setPunch", {{"in", true}, {"out", false}}),|
+          |+          "set Punch-In at the first eighth-note offbeat");|
+          |+    const auto punchSettings = readTransportSettings(*f.store);|
+          |+    check(punchSettings.punchIn && !punchSettings.loopEnabled && punchSettings.metronomeOptions == saved,|
+          |+          "loop, punch and metronome settings read back together");|
+          |+    check(f.session.startRecording(take, why), "start real audio capture");|
+          |+    at(0);|
+          |+    check(!hasClick(), "the rolling click stays quiet through the armed punch lead-in");|
+          |+    at(12000 - b.io.frames / 2);|
+          |+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames / 2,|
+          |+                      [](double value) { return value == 0.0; }) && hasClick(),|
+          |+          "a callback spanning Punch-In sounds the eighth-note click only on its captured half");|
+          |+    f.session.recording().stop(true);|
+          |+    at(12000);|
+          |+    check(!hasClick(), "the recording-only click stops when audio capture ends");|
+          |+    check(f.op("transport.setPunch", {{"in", false}, {"out", false}}), "clear punch before MIDI capture");|
+          |+|
+          |+    const std::array<std::int64_t, 1> midiTracks{3};|
+          |+    check(f.session.startMidiInputCapture(midiTracks, why), "start real MIDI capture");|
+          |+    at(0);|
+          |+    check(hasClick(), "the rolling click sounds during MIDI-only capture");|
+          |+    f.session.midiInputCapture().stop();|
+          |+    at(0);|
+          |+    check(!hasClick(), "the recording-only click stops when MIDI capture ends");|
+          |+    f.session.transport().play(false);|
+          |+    {|
+          |+        auto block = f.session.beginRender();|
+          |+        check(block.startPlayback(0, true), "start the meter-based Count-In");|
+          |+    }|
+          |+    f.process(b);|
+          |+    check(hasClick() && f.session.transport().countInRemaining() > 0,|
+          |+          "Count-In still sounds with the recording-only gate closed");|
+          |+    for (int elapsed = b.io.frames; elapsed <= 12000; elapsed += b.io.frames)|
+          |+        f.process(b);|
+          |+    check(!hasClick(), "eighth-note playback keeps the Count-In on signature beats");|
+          |+}|
+          |+void compensatedPunchClick() {|
+          |+    constexpr int latency = 100, punchFrames = 24, callbackFrames = 64;|
+          |+    constexpr auto punchInTick = textproj::kPPQ / 2;|
+          |+    constexpr auto punchOutTick = punchInTick + textproj::kPPQ / 1000; // rounds to 24 frames at 48 kHz|
+          |+    constexpr auto punchInSample = 12000;|
+          |+    Fixture f;|
+          |+    f.main.value = f.reference.value = 0;|
+          |+    f.effects(latency);|
+          |+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");|
+          |+    check(f.op("cue.setOutput", {{"first", 2}}) &&|
+          |+          f.op("transport.setMetronome", {{"on", true}}) &&|
+          |+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&|
+          |+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", punchOutTick}}) &&|
+          |+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),|
+          |+          "load a recording-only click for a punch shorter than graph latency");|
+          |+|
+          |+    AudioRecordingSpec take;|
+          |+    take.workFolder = f.temp.path();|
+          |+    take.sampleRate = 48000;|
+          |+    take.targets = {{1, {0}}};|
+          |+    std::string why;|
+          |+    check(f.session.startRecording(take, why), "arm a real capture for the compensated punch");|
+          |+    const std::array<float, callbackFrames> input{};|
+          |+    const float* channels[]{input.data()};|
+          |+    Block b(callbackFrames);|
+          |+    b.io.in = channels;|
+          |+    b.io.numIn = 1;|
+          |+    const auto step = [&] {|
+          |+        f.process(b);|
+          |+        b.io.streamTimeSamples += b.io.frames;|
+          |+    };|
+          |+    const auto silent = [&](int first, int end) {|
+          |+        return std::all_of(b.wide[2].begin() + first, b.wide[2].begin() + end,|
+          |+                           [](double sample) { return sample == 0.0; });|
+          |+    };|
+          |+    f.session.transport().locate(punchInSample - callbackFrames);|
+          |+    f.session.transport().play();|
+          |+    step();|
+          |+    check(silent(0, callbackFrames), "the compensated punch lead-in is silent");|
+          |+    step(); // Both capture edges pass in this callback, while the heard clock is still behind Punch-In.|
+          |+    check(silent(0, callbackFrames), "the armed take stays quiet until the punch is heard");|
+          |+    step();|
+          |+    constexpr int heardIn = latency - callbackFrames, heardOut = heardIn + punchFrames;|
+          |+    check(silent(0, heardIn + 1) && std::abs(b.wide[2][heardIn + 1]) > 0.01 &&|
+          |+          std::abs(b.wide[2][heardOut - 1]) > 0.01 && silent(heardOut, callbackFrames),|
+          |+          "the delayed click begins at heard Punch-In and closes at heard Punch-Out");|
+          |+    step();|
+          |+    check(silent(0, callbackFrames), "the click remains quiet after heard Punch-Out");|
+          |+}|
+          |+void locateOutsideMidiPunchSilencesClick() {|
+          |+    constexpr int frames = 64;|
+          |+    constexpr auto punchInTick = textproj::kPPQ / 2;|
+          |+    constexpr int punchInSample = 12000;|
+          |+    Fixture f;|
+          |+    f.main.value = f.reference.value = 0;|
+          |+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"|
+          |+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");|
+          |+    check(f.op("cue.setOutput", {{"first", 2}}) &&|
+          |+          f.op("transport.setMetronome", {{"on", true}}) &&|
+          |+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&|
+          |+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", 2 * punchInTick}}) &&|
+          |+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),|
+          |+          "load a recording-only click for a MIDI punch");|
+          |+    const std::array<std::int64_t, 1> tracks{3};|
+          |+    std::string why;|
+          |+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI capture");|
+          |+    Block b(frames);|
+          |+    f.session.transport().locate(punchInSample);|
+          |+    f.session.transport().play();|
+          |+    f.process(b);|
+          |+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording &&|
+          |+              b.wide[2][0] == 0.0 && std::abs(b.wide[2][1]) > 0.01,|
+          |+          "MIDI capture hears the click attack at Punch-In");|
+          |+    b.io.streamTimeSamples += frames;|
+          |+    f.session.transport().locate(0);|
+          |+    f.process(b);|
+          |+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,|
+          |+                      [](double sample) { return sample == 0.0; }),|
+          |+          "locating an active MIDI take before Punch-In excludes every frame of the new lead-in");|
+          |+}|
+          |+void formatChangeClearsPendingRecordingClick() {|
+          |+    constexpr int latency = 100, frames = 64;|
+          |+    Fixture f;|
+          |+    f.main.value = f.reference.value = 0;|
+          |+    f.effects(latency);|
+          |+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"|
+          |+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");|
+          |+    check(f.op("cue.setOutput", {{"first", 2}}) &&|
+          |+          f.op("transport.setMetronome", {{"on", true}}) &&|
+          |+          f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),|
+          |+          "load a delayed recording-only click");|
+          |+    const std::array<std::int64_t, 1> tracks{3};|
+          |+    std::string why;|
+          |+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI recording ahead of the format change");|
+          |+    Block b(frames);|
+          |+    f.session.transport().play();|
+          |+    f.process(b);|
+          |+    const auto silent = [&] {|
+          |+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,|
+          |+                           [](double sample) { return sample == 0.0; });|
+          |+    };|
+          |+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording && silent(),|
+          |+          "the first beat is queued behind the delay while MIDI is captured");|
+          |+    b.io.streamTimeSamples += frames;|
+          |+    f.session.prepare(44100, 256);|
+          |+    f.process(b);|
+          |+    check(f.session.transport().playing() && f.session.midiInputCapture().state() != MidiCaptureState::Recording &&|
+          |+              silent(),|
+          |+          "a live format change leaves playback running and discards the old recording click");|
+          |+}|
+          | void offline() {|
+          |     Fixture f;f.effects();f.store->db().exec("UPDATE tracks SET muted=1 WHERE id=2");f.op("cue.setOutput",{{"first",2}});f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});|
+          |     f.op("cue.setReference",{{"on",true},{"id",2}});|
+          |@@ -353,11 +575,12 @@ void coldReference() {|
+          | void allocation() {|
+          |     Fixture f;f.effects(100);f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});|
+          |     f.op("cue.setOutput",{{"first",2}});f.op("cue.setReference",{{"on",true},{"id",2}});f.op("transport.setMetronome",{{"on",true}});|
+          |+    f.op("transport.setMetronomeOptions", {{"sound", 2}, {"eighthNotes", true}});|
+          |     check(f.load(Precision::Float64),"allocation fixture loads off-thread");f.session.transport().play();Block b(128);|
+          |     allocations.store(0);countAllocations.store(true);for(int i=0;i<50;++i)f.process(b);countAllocations.store(false);|
+          |     check(allocations.load()==0,"Cue graph copy, reference ramp, volume and metronome allocate nothing");|
+          | }|
+          | |
+          | }|
+          |-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}|
+          |+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}|
+          |     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}|
+          |diff --git a/adi_daw/tests/test_ui_shell.cpp b/adi_daw/tests/test_ui_shell.cpp|
+          |index d760978b..79c9935d 100644|
+          |--- a/adi_daw/tests/test_ui_shell.cpp|
+          |+++ b/adi_daw/tests/test_ui_shell.cpp|
+          |@@ -11377,6 +11377,20 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const|
+          |     constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};|
+          |     const auto freshMenu = bar.metronomeMenu();|
+          |     check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");|
+          |+    check(menuItem(freshMenu, "Classic").isTicked && menuItem(freshMenu, "Auto").isTicked &&|
+          |+              !menuItem(freshMenu, "Enable Only While Recording").isTicked,|
+          |+          "SC-256: a new project uses the Classic sound, signature beat, and ordinary playback");|
+          |+    for (const char *label : {"Enable Only While Recording", "Wood", "1/8"}) {|
+          |+        const auto item = menuItem(bar.metronomeMenu(), label);|
+          |+        check(item.isEnabled && item.action, "SC-256: an option in the metronome menu can be invoked");|
+          |+        if (item.action)|
+          |+            item.action();|
+          |+        root.frame();|
+          |+        check(menuItem(bar.metronomeMenu(), label).isTicked, "SC-256: the saved option is ticked on reopening the menu");|
+          |+    }|
+          |+    const auto options = stored().metronomeOptions;|
+          |+    check(options.recordingOnly && options.eighthNotes && options.sound == MetronomeSound::Wood,|
+          |+          "SC-256: menu selections persist in the project");|
+          |     for (const auto &[label, bars] : countIns) {|
+          |         const auto item = menuItem(bar.metronomeMenu(), label);|
+          |         check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");|
+          |@@ -11578,6 +11592,35 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const|
+          |     root.frame();|
+          |     check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");|
+          |     check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");|
+          |+|
+          |+    constexpr auto shortBar = 4 * textproj::kPPQ;|
+          |+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;|
+          |+    const auto insertMeter = [&](std::int64_t tick, int numerator, int denominator) {|
+          |+        OpRequest request;|
+          |+        request.opType = "project.insertTimeSignature";|
+          |+        request.payload = {{"pos", tick}, {"num", numerator}, {"den", denominator}};|
+          |+        return document->ops().submit(std::move(request)).ok;|
+          |+    };|
+          |+    check(insertMeter(shortBar, 3, 16) && insertMeter(regularBar, 4, 4) && document->synchronise(),|
+          |+          "SC-256: author a 3/16 bar between compatible bars");|
+          |+    document->prepare(48000, 64);|
+          |+    engine::AudioIo clockBlock;|
+          |+    clockBlock.frames = 64;|
+          |+    const auto menuAt = [&](std::int64_t tick) {|
+          |+        check(root.locate(tick), "SC-256: move the timeline to the requested meter");|
+          |+        document->process(clockBlock);|
+          |+        clockBlock.streamTimeSamples += clockBlock.frames;|
+          |+        root.frame();|
+          |+        return bar.metronomeMenu();|
+          |+    };|
+          |+    const auto shortBarMenu = menuAt(shortBar + q / 4);|
+          |+    check(!menuItem(shortBarMenu, "1/8").isEnabled && !menuItem(shortBarMenu, "1/8").isTicked &&|
+          |+              menuItem(shortBarMenu, "Auto").isTicked && stored().metronomeOptions.eighthNotes,|
+          |+          "SC-256: the menu shows effective Auto in 3/16 and retains the saved eighth-note rhythm");|
+          |+    const auto regularBarMenu = menuAt(regularBar + q / 4);|
+          |+    check(menuItem(regularBarMenu, "1/8").isEnabled && menuItem(regularBarMenu, "1/8").isTicked &&|
+          |+              !menuItem(regularBarMenu, "Auto").isTicked,|
+          |+          "SC-256: the menu resumes the saved rhythm in 4/4");|
+          |     root.afterEdit = nullptr;|
+          |     document->release();|
+          | }|
+          |@@ -12913,6 +12956,161 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path|
+          |     check(configured == 2, "SC-23: both input menus reach Audio Settings");|
+          |     document->release();|
+          | }|
+          |+// SC-257: deferred Arrangement Record is UI intent until playback begins.|
+          |+void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {|
+          |+    std::string why;|
+          |+    auto document = ProjectDocument::open(dir / "record-waits.adi", true, {}, why);|
+          |+    check(document != nullptr, "a project for the deferred Arrange Record checks");|
+          |+    if (!document)|
+          |+        return;|
+          |+    document->prepare(48000, 64);|
+          |+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),|
+          |+                          document->sessionState(), "record-waits");|
+          |+    root.afterEdit = [&] { document->synchronise(); };|
+          |+    root.readRecordStates = [&] { return document->recordStates(); };|
+          |+    int starts = 0;|
+          |+    root.startRecording = [&](std::int64_t insertTick, bool playing) {|
+          |+        ++starts;|
+          |+        const bool ok = document->startRecording(insertTick, 2, playing);|
+          |+        if (!ok)|
+          |+            root.say(document->error());|
+          |+        return ok;|
+          |+    };|
+          |+    root.stopRecording = [&] { document->stopRecording(); };|
+          |+    root.recording = [&] { return document->recording(); };|
+          |+    root.setSize(1440, 900);|
+          |+    root.frame();|
+          |+    check(root.armTrack(4, false) && root.setCountIn(1), "arm an audio track and set a one-bar Count-In");|
+          |+|
+          |+    std::array<float, 64> left{}, right{}, outL{}, outR{};|
+          |+    left.fill(.25f);|
+          |+    const float *inputs[]{left.data(), right.data()};|
+          |+    float *outputs[]{outL.data(), outR.data()};|
+          |+    engine::AudioIo io;|
+          |+    io.in = inputs;|
+          |+    io.numIn = 2;|
+          |+    io.out = outputs;|
+          |+    io.numOut = 2;|
+          |+    io.frames = 64;|
+          |+    const auto block = [&] {|
+          |+        document->process(io);|
+          |+        io.streamTimeSamples += io.frames;|
+          |+        root.frame();|
+          |+    };|
+          |+    const juce::ModifierKeys shift(juce::ModifierKeys::shiftModifier);|
+          |+    const juce::KeyPress f9(juce::KeyPress::F9Key), shiftF9(juce::KeyPress::F9Key, shift, 0);|
+          |+    const auto oldPreference = settings.get("record.startPlaybackWithRecord");|
+          |+    const auto setPreference = [&](bool immediate) {|
+          |+        check(settings.set("record.startPlaybackWithRecord", immediate, {}, why), "change the Record setting");|
+          |+        commands.reload();|
+          |+    };|
+          |+    auto &record = root.transport.record;|
+          |+    auto &mailbox = document->mailbox();|
+          |+|
+          |+    setPreference(false);|
+          |+    check(root.keyPressed(f9), "F9 invokes Record");|
+          |+    block();|
+          |+    check(starts == 0 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),|
+          |+          "with the setting off, F9 only lights Record and doesn't prepare capture or play");|
+          |+    check(root.keyPressed(f9), "press Record again without playing");|
+          |+    block();|
+          |+    check(starts == 0 && !record.getToggleState(), "Record again cancels the wait");|
+          |+    record.clicked({});|
+          |+    check(root.command(AppCommands::Stop), "Stop while Record is waiting");|
+          |+    block();|
+          |+    check(starts == 0 && !record.getToggleState() && !mailbox.desiredPlaying(),|
+          |+          "Stop clears the waiting request before it reaches the recorder");|
+          |+    check(root.command(AppCommands::PlayStop), "ordinary Play after cancelling");|
+          |+    block();|
+          |+    check(starts == 0 && mailbox.playing(), "Play after cancelling does not record");|
+          |+    check(root.command(AppCommands::Stop), "stop ordinary playback");|
+          |+    block();|
+          |+    const auto stopped = mailbox.position();|
+          |+|
+          |+    record.clicked({});|
+          |+    check(root.locate(1920, true), "move the insert marker while Record is waiting");|
+          |+    block();|
+          |+    check(mailbox.position() != stopped && starts == 0, "locating preserves the wait and the stopped sample");|
+          |+    check(root.command(AppCommands::ContinuePlay), "Continue consumes the waiting Record");|
+          |+    block();|
+          |+    check(starts == 1 && document->recording() && mailbox.position() == stopped + io.frames,|
+          |+          "Continue records from the exact driver-stopped sample after locating");|
+          |+    check(root.command(AppCommands::Stop), "stop recording from Continue");|
+          |+    block();|
+          |+    check(document->settleRecording(), "settle the take");|
+          |+|
+          |+    record.clicked({});|
+          |+    root.transport.play.onClick();|
+          |+    check(starts == 2 && document->recording() && mailbox.desiredPlaying(), "Play starts a waiting Record");|
+          |+    block();|
+          |+    check(document->session().transport().countInRemaining() > 0 &&|
+          |+              document->session().recording().acceptedFrames() == 0,|
+          |+          "starting a waiting Record through Play observes Count-In before capture");|
+          |+    check(root.command(AppCommands::Stop), "stop the Count-In");|
+          |+    block();|
+          |+    check(document->settleRecording() && !document->recording(), "settle the cancelled start");|
+          |+|
+          |+    check(root.keyPressed(shiftF9) && starts == 3 && document->recording() && mailbox.desiredPlaying(),|
+          |+          "Shift+F9 starts immediately when the setting is off");|
+          |+    check(root.command(AppCommands::Stop), "Stop before the callback consumes Record");|
+          |+    block();|
+          |+    check(document->settleRecording() && !document->recording() && !mailbox.desiredPlaying(),|
+          |+          "rapid Record and Stop leave no queued recording or playback");|
+          |+|
+          |+    setPreference(true);|
+          |+    record.clicked(shift);|
+          |+    block();|
+          |+    check(starts == 3 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),|
+          |+          "Shift+Record waits with the setting on");|
+          |+    check(root.command(AppCommands::Stop), "cancel the shifted Record");|
+          |+    check(root.keyPressed(f9) && starts == 4 && document->recording(),|
+          |+          "unshifted F9 starts immediately when the setting is on");|
+          |+    check(root.command(AppCommands::Stop), "stop the immediate Record");|
+          |+    block();|
+          |+    check(document->settleRecording(), "finish the immediate Record");|
+          |+|
+          |+    record.clicked(shift);|
+          |+    const auto tempo = document->view().current()->tempo;|
+          |+    const auto scrubSample = static_cast<std::int64_t>(tempo->ticksToSeconds(3840) * mailbox.sampleRate());|
+          |+    check(root.playFrom(3840), "scrub playback also consumes a waiting Record");|
+          |+    block();|
+          |+    check(starts == 5 && document->recording() && mailbox.position() == scrubSample + io.frames,|
+          |+          "scrub playback records from the requested position");|
+          |+    check(root.command(AppCommands::Stop), "stop recording from scrub playback");|
+          |+    block();|
+          |+    check(document->settleRecording(), "settle scrub playback's take");|
+          |+|
+          |+    record.clicked(shift);|
+          |+    while (mailbox.post(TransportMailbox::Command::LocateMarker, scrubSample)) {}|
+          |+    check(!root.command(AppCommands::Stop), "Stop reports a full transport mailbox");|
+          |+    block();|
+          |+    check(starts == 5 && !mailbox.desiredPlaying() && !record.getToggleState(),|
+          |+          "Stop cancels a waiting Record even when it cannot queue a transport command");|
+          |+|
+          |+    check(root.armTrack(4, false), "disarm the last audio track before testing refused Record starts");|
+          |+    const auto plays = [&] {|
+          |+        return document->store().db().execAndGet("SELECT count(*) FROM ops WHERE op_type='transport.play'").getInt64();|
+          |+    };|
+          |+    const auto head = OpJournal(document->store()).headSeq();|
+          |+    for (const bool scrub : {false, true}) {|
+          |+        record.clicked(shift);|
+          |+        const auto before = plays();|
+          |+        check(scrub ? root.playFrom(7680) : root.command(AppCommands::ContinuePlay),|
+          |+              "refused pending Record still starts the requested playback");|
+          |+        block();|
+          |+        check(mailbox.playing() && !document->recording() && !document->landingTake() && !record.getToggleState() &&|
+          |+                  root.error() == "Arm a track to record into it." && plays() == before + 1 &&|
+          |+                  OpJournal(document->store()).headSeq() == head,|
+          |+              "playback, its sole journal event and the visible Record refusal agree");|
+          |+        check(root.command(AppCommands::Stop), "stop ordinary playback after refusing capture");|
+          |+        block();|
+          |+    }|
+          |+    check(starts == 7, "Continue and scrub each attempted the waiting capture once");|
+          |+    check(settings.set("record.startPlaybackWithRecord", oldPreference, {}, why), "restore the prior preference");|
+          |+    commands.reload();|
+          |+    document->release();|
+          |+}|
+          |+|
+          | // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the|
+          | // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a|
+          | // document whose callback the test drives with an input.|
+          |@@ -13026,7 +13224,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
+          |           "Arrangement Record is named as Live's and on F9 (manual 21.1) [P:recording#17]");|
+          |     auto &record = root.transport.record;|
+          |     check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");|
+          |-    record.onClick();|
+          |+    record.clicked({});|
+          |     frame();|
+          |     check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit [P:recording#17]");|
+          |     std::array<float, 64> left{}, right{}, outL{}, outR{};|
+          |@@ -18350,12 +18548,14 @@ int main(int argc, char **argv) {|
+          |                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&|
+          |                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&|
+          |                       C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&|
+          |-                      C::LastId == C::ArmSelected,|
+          |+                      C::ArrangementRecordAlternate == C::ArmSelected + 1 &&|
+          |+                      C::LastId == C::ArrangementRecordAlternate,|
+          |                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "|
+          |                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "|
+          |                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "|
+          |                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "|
+          |-                  "Arrangement Record, Delay Compensation, Delete Automation and Arm Selected Tracks, each named");|
+          |+                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks and "|
+          |+                  "Arrangement Record (Alternate Start), each named");|
+          |             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.|
+          |             {|
+          |                 const auto named = [&](int id) {|
+          |@@ -20886,6 +21086,7 @@ int main(int argc, char **argv) {|
+          |     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });|
+          |     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });|
+          |     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });|
+          |+    trace("recordWaitsForPlay", [&] { recordWaitsForPlay(commands, settings, temp.path()); });|
+          |     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });|
+          |     trace("exportPage", [&] { exportPage(commands, temp.path()); });|
+          |     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });|
+          PATCH
+          git apply --index "$RUNNER_TEMP/recording-candidate.patch"
+          test "$(git write-tree)" = c6756cc4075932b65a78f84d72704ffa9641da9d
+          echo "Verified candidate c6756cc4075932b65a78f84d72704ffa9641da9d"
+      - name: Install Linux JUCE build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
-      - name: Fetch pinned sources
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxrandr-dev libxinerama-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
+      - name: Fetch pinned ADI dependencies
         run: bash adi_daw/tools/fetch_external.sh --with-juce
-      - name: Select a short build path
+      - name: Build Debug UI tests
+        shell: bash
         run: |
-          if [ "$RUNNER_OS" = Windows ]; then
-            echo "ADI_UI_BUILD=C:/b/adi-ui-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
-          else
-            echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
-          fi
-      - name: Build root window and UI test tiers
-        run: |
-          cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
-          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests adi_ui_stack_model_tests adi_ui_shared_analysis_tests adi_ui_shared_spectrum_tests adi_ui_mix_functions_tests adi_ui_eq_pages_tests adi_ui_param_capture_tests adi_mix_document_tests adi_mix_pipeline_document_tests adi_mix_limiter_tests adi_mix_limiter_owner_tests adi_mix_clip_tests adi_mix_limit_chain_tests adi_mix_functions_tests adi_mix_render_intent_tests adi_mix_pdc_pin_tests adi_mix_eq_tests adi_mix_eq_host_tests adi_mix_eq_pipeline_tests adi_mix_parameter_feed_tests adi_analyser_taps_tests adi_ui_analysis_comparison_tests adi_ui_spectrum_slope_tests adi_ui_spectrum_average_tests adi_ui_triggered_scope_tests --parallel 2
-      - name: Peerless software renders and synthesised keyboard events
-        run: |
-          # An unset DISPLAY deliberately proves the Linux offscreen path.
-          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_(ui_(shell|window_state|document|stack_model|shared_analysis|shared_spectrum|mix_functions|eq_pages|param_capture|analysis_comparison|spectrum_slope|spectrum_average|triggered_scope)|mix_(document|pipeline_document|limiter|limiter_owner|clip|limit_chain|functions|render_intent|pdc_pin|eq|eq_host|eq_pipeline|parameter_feed)|analyser_taps)_tests$' --output-on-failure
-      - name: Windows native window smoke (no audio device)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
-          if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
-          # WTS-01: the smoke run keeps its settings and logs in a home of its own, never the runner's.
-          $env:ADI_HOME = "$env:ADI_UI_BUILD/home"
-          New-Item -ItemType Directory -Force -Path $env:ADI_HOME | Out-Null
-          $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
-          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
-          $process.Refresh()
-          if ($process.ExitCode -ne 0 -or -not (Test-Path "$env:ADI_UI_BUILD/native-actual.png")) { throw 'Native window smoke failed' }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ui-renders-${{ matrix.os }}
-          path: ${{ env.ADI_UI_BUILD }}/*-actual.png
-          if-no-files-found: ignore
+          cmake -S adi_daw -B "$RUNNER_TEMP/adi" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON \
+            "-DCMAKE_C_FLAGS_DEBUG=-O0 -g1" "-DCMAKE_CXX_FLAGS_DEBUG=-O0 -g1 -fno-var-tracking-assignments"
+          mapfile -t suites < <(ninja -C "$RUNNER_TEMP/adi" -t targets all | sed -nE 's/^(adi_ui_[a-z0-9_]+_tests):.*/\1/p' | sort -u)
+          test "${#suites[@]}" -ge 15
+          cmake --build "$RUNNER_TEMP/adi" --parallel 2 --target "${suites[@]}"
+      - name: Run every UI suite with DISPLAY unset
+        run: env -u DISPLAY -u WAYLAND_DISPLAY ADI_HOME="$RUNNER_TEMP/adi-test-home" ctest --test-dir "$RUNNER_TEMP/adi" -R '^adi_ui_' --output-on-failure --timeout 1800
