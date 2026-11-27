@@ -54,7 +54,8 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
     void mouseUp(const juce::MouseEvent &e) override {
         if (const int at = swatchAt(e.x); at >= 0) {
             pick_(at);
-            triggerMenuItem();
+            if (getParentComponent() != nullptr)
+                triggerMenuItem();
         }
     }
 
