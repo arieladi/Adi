@@ -118,6 +118,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/clips-chain` | `9dd3e871dd2d0998e2c96a399949a7484f217ec6` | Yes | All 50 production targets built. Passed 37/37, including window and mixer 33/33 and affected and session 4/4. The shell and media checks cover Sample Editor source details and revealing exact source media through the Browser. |
 | `origin/basics/clips-chain` | `ef907c196090930c8a7a175e840a5667b3d333d3` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33 and affected and session 7/7. Checks cover clip Pitch and Detune, unwarped PCM and FLAC transposition, and matching waveform timing. |
 | `origin/basics/clips-chain` | `4491344e3f8008301c8f11b46df59a2a7478e941` | Yes | All 50 production targets built. Passed 38/38, including window and mixer 33/33 and affected and session 5/5. The shell and Warp suites cover adding, dragging, and deleting interior Warp markers while retaining fixed endpoints. |
+| `origin/basics/browser-chain` | `f2c761cd85dc60015503117ee41596134fb9f7c4` | Yes | All 51 production targets built. Passed 36/37. `adi_ui_shell_tests`: `4394 checks, 6 failures`. The six rendered reference checks repeat the Browser label rasterization differences confirmed on `e6ff43de` (614 pixels each, 611 in Mid grey). Mac test fix `8af1e0fe` addresses those label comparisons. The shell suite covers preview footer visibility, stable list height, and the reset when switching lists or entering Hot-Swap. |
 
 ## Nine-step window walk
 
