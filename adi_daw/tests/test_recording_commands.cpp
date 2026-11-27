@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/recording_commands.hpp"
+#include "adi/warp_commands.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
@@ -552,6 +553,43 @@ void recordedTakeFollowsTempo() {
     const auto publishedHash = media::blake3File(file);
     check(sourceHash && publishedHash && sourceHash.hex == publishedHash.hex,
           "SC-248: changing tempo leaves the shared recording file byte-identical");
+}
+
+void unwarpedRecordingTempoChanges() {
+    constexpr std::int64_t at120 = 256;
+    Fixture f;
+    f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    auto recorded = f.capture(false, Precision::Float32, false, 300, {}, at120);
+    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Unwarped take"}}};
+    auto prepared = recording::prepareCommit(*f.store, recorded, ids);
+    if (!recording::commit(*f.store, prepared).ok)
+        throw std::runtime_error("could not publish the recording");
+    clip_edit::WarpOptions warp;
+    warp.enabled = false;
+    const auto unwarped = clip_edit::prepareSetWarp(*f.store, 7, warp, 48000);
+    if (!unwarped.ok || !clip_edit::commitPrepared(*f.store, unwarped).ok)
+        throw std::runtime_error("could not disable Warp on the recorded take: " + unwarped.error);
+    for (int bpm : {240, 60}) {
+        std::array<OpRequest, 2> change;
+        change[0].opType = "project.removeTempoEvent";
+        change[0].payload = {{"pos", 0}};
+        change[1].opType = "project.insertTempoEvent";
+        change[1].payload = {{"pos", 0}, {"bpm", bpm}};
+        if (!OpJournal(*f.store).commit(change).ok)
+            throw std::runtime_error("could not change the recording's tempo");
+        const auto snapshot = SnapshotBuilder::fromStore(*f.store);
+        const auto& clip = *snapshot->findTrack(21)->clips.front();
+        const auto first = static_cast<std::size_t>(at120 * 120 / bpm);
+        const auto last = first + 300;
+        bool exact = std::llround(snapshot->tempo->ticksToSeconds(clip.posTicks + clip.lengthTicks) * 48000)
+            == static_cast<std::int64_t>(last);
+        const auto heard = f.play(Precision::Float32);
+        for (std::size_t frame = 0; frame < heard.size(); ++frame)
+            exact = exact && heard[frame] == (frame >= first && frame < last ? Fixture::sample(frame - first) : 0.0f);
+        check(exact, bpm == 240
+            ? "a faster tempo preserves the recorded take's complete PCM and endpoint"
+            : "a slower tempo preserves the recorded take's duration without a silent tail");
+    }
 }
 
 // walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
@@ -1184,6 +1222,7 @@ int main(int argc,char** argv){try{
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     stagedPublicationAndRefresh();stagedPublicationRefusesChangedContent();
+    unwarpedRecordingTempoChanges();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

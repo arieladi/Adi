@@ -9,6 +9,7 @@
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/warp_commands.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
@@ -4680,6 +4681,87 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     commands.detach(root);
     document->release();
 }
+void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "trim-start.adi", true, {}, error);
+    check(document != nullptr, "a project for trimming an audio clip's start");
+    if (!document)
+        return;
+    const auto wav = dir / "trim-start.wav";
+    {
+        std::vector<float> frames(96000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport import;
+    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "read the two-second file");
+    constexpr std::int64_t track = 4, beat = textproj::kPPQ, start = 4 * beat, end = 8 * beat;
+    auto drop = dropAudio(*document->view().current(), track, start, "Trim", import);
+    check(drop.refusal.empty() && document->ops().submit(std::move(drop.ops)).ok && document->synchronise(),
+          "place the audio clip at bar two");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "trim-start");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geo = root.arrangement.geometry;
+    geo.scale = 80;
+    geo.left = 0;
+    root.frame();
+    commands.activate(root);
+    auto &canvas = root.arrangement.canvas;
+    const auto audioClip = [&]() -> const engine::ClipNode * {
+        const auto *row = root.reader().findTrack(track);
+        return row && row->clips.size() == 1 ? row->clips.front().get() : nullptr;
+    };
+    const auto rate = root.editRate();
+    const auto frameAt = [rate](std::int64_t tick) {
+        return std::llround(static_cast<double>(tick) / static_cast<double>(beat) * 0.5 * rate);
+    };
+    const auto checkSpan = [&](std::int64_t pos, const char *message) {
+        const auto *clip = audioClip();
+        const auto offset = clip ? std::llround(static_cast<double>(clip->contentOffsetNs.value_or(0)) * 1e-9 * rate) : -1;
+        check(clip && clip->posTicks == pos && clip->posTicks + clip->lengthTicks == end &&
+                  offset == frameAt(pos) - frameAt(start),
+              message);
+    };
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(std::ceil(geo.x(tick))); };
+    const auto y = static_cast<float>(laneTop(root, track) + 5);
+    auto dragEdge = [&](std::int64_t from, std::int64_t to) {
+        const juce::Point<float> down{x(from) + 1.f, y}, up{x(to), y};
+        canvas.mouseMove(pressAt(canvas, down));
+        const bool resizeCursor = canvas.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+        canvas.mouseDown(pressAt(canvas, down, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseDrag(dragAt(canvas, down, up, juce::ModifierKeys::leftButtonModifier));
+        const bool resizing = canvas.resizingClip() != 0;
+        canvas.mouseUp(dragAt(canvas, down, up));
+        root.frame();
+        check(resizeCursor && resizing, "the left title edge enters a resize gesture");
+    };
+    dragEdge(start, start + beat);
+    checkSpan(start + beat, "dragging the start cuts audio from the beginning and keeps the end fixed");
+    check(root.undoTitle(false) == "Undo Resize Clip", "a left-edge drag makes one Resize Clip edit");
+    dragEdge(start + beat, start - beat);
+    checkSpan(start, "extending the start stops at the beginning of the sample");
+    check(geo.selection.start == start, "the selection uses the clamped start");
+
+    auto &sel = geo.selection;
+    sel = {};
+    sel.track = track;
+    sel.insert = sel.start = sel.end = start;
+    sel.marked = true;
+    const auto press = [&](int key) { return canvas.keyPressed(juce::KeyPress(key)); };
+    const auto step = geo.nextGridLine(start, true) - start;
+    check(press(juce::KeyPress::returnKey) && canvas.keyResizing() &&
+              press(juce::KeyPress::rightKey) && press(juce::KeyPress::returnKey),
+          "Enter at the left edge also lets the arrow keys trim the start");
+    root.frame();
+    checkSpan(start + step, "keyboard trim advances the sample offset and anchors the end");
+    check(sel.insert == start + step && root.command(AppCommands::Undo), "the marker follows the trim and Undo is available");
+    root.frame();
+    checkSpan(start, "Undo restores the clip start and sample offset");
+    commands.detach(root);
+}
+
 // D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel
 // beside its controls, with no wrench (a built-in has no plug-in window). A file dropped assigns the
 // slot and Clear empties it, each one undo step, with Pd; with Pd off the drop says the device does
@@ -7368,7 +7450,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
     open(2);
     check(panel.audio() && panel.toolsArea().isEmpty() && panel.panelWidth() == ClipViewPanel::kPanelWidth &&
-              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldAt(panel.fieldBox(Field::Scale).getCentre()) == Field::None,
+              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldBox(Field::Scale).isEmpty(),
           "an audio clip: the Main panel only, the Sample Editor right beside it, no Scale field");
     open(1);
     const int both = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth;
@@ -12520,6 +12602,74 @@ void arrangementClipColour(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     check(hasColour(look::paletteColour(2)), "SC-37: undo restores the inherited track colour");
 }
+
+void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-warp.adi", true, {}, error);
+    check(document != nullptr, "a project for the Clip View Warp switch");
+    if (!document)
+        return;
+    const auto wav = dir / "clip-warp.wav";
+    {
+        std::vector<float> frames(96000);
+        for (std::size_t i = 0; i < frames.size(); i += 24000)
+            frames[i] = .8f;
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport import;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, import)) {
+        check(false, "read the file for the Warp switch");
+        return;
+    }
+    auto drop = dropAudio(*document->view().current(), 4, 0, "Loop", import);
+    if (!drop.refusal.empty() || !document->ops().submit(std::move(drop.ops)).ok || !document->synchronise()) {
+        check(false, "place a sample on the audio track");
+        return;
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clip-warp");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto *track = root.reader().findTrack(4);
+    const auto id = track && !track->clips.empty() ? track->clips.front()->id : 0;
+    clip_edit::WarpOptions options;
+    options.analysis.sourceBpm = 120;
+    if (!root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), id, options, root.editRate()))) {
+        check(false, "seed a clip with a known source tempo");
+        commands.detach(root);
+        return;
+    }
+    root.frame();
+    root.arrangement.selectClip(4, id);
+    if (!root.state().clipView)
+        root.command(AppCommands::ToggleClipView);
+    root.frame();
+    auto &panel = root.clipView;
+    const auto warped = [&] {
+        const auto *node = panel.node();
+        return node && node->audio && node->audio->warpEnabled;
+    };
+    const auto button = panel.warpBox();
+    check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
+    if (!button.isEmpty()) {
+        const auto click = [&] {
+            panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+            root.frame();
+        };
+        click();
+        check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
+        click();
+        check(warped() && root.undoTitle(false) == "Undo Enable Warp", "the switch re-enables the saved Warp map");
+        check(root.command(AppCommands::Undo), "Undo the Warp switch");
+        root.frame();
+        check(!warped(), "Undo restores the prior Warp state");
+    }
+    commands.detach(root);
+}
+
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
@@ -12594,15 +12744,16 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     const int sourceEnd = static_cast<int>(lanes.x(clip->lengthTicks / 2)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
     // A waveform pixel is much darker than the clip's body around it.
     const auto body = image.getPixelAt(sourceEnd + 20, top + 1).getBrightness();
-    auto darkIn = [&](int x0, int x1) {
+    auto darkIn = [&](const juce::Image &drawn, int x0, int x1) {
         int dark = 0;
-        for (int x = std::max(0, x0); x < std::min(x1, image.getWidth()); ++x)
+        for (int x = std::max(0, x0); x < std::min(x1, drawn.getWidth()); ++x)
             for (int y = top; y < bottom; ++y)
-                if (image.getPixelAt(x, y).getBrightness() < body - .2f)
+                if (drawn.getPixelAt(x, y).getBrightness() < body - .2f)
                     ++dark;
         return dark;
     };
-    const int inside = darkIn(static_cast<int>(lanes.x(0)) + 2, sourceEnd - 1), past = darkIn(sourceEnd + 2, clipEnd - 2);
+    const int sourceBegin = static_cast<int>(lanes.x(0)) + 2;
+    const int inside = darkIn(image, sourceBegin, sourceEnd - 1), past = darkIn(image, sourceEnd + 2, clipEnd - 2);
     check(inside > 200 && past == 0, "waveform pixels inside the clip's body over its file, none past its source window");
     if (inside <= 200 || past != 0)
         std::printf("waveform pixels: %d inside, %d past\n", inside, past);
@@ -12618,6 +12769,51 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
+    const auto clipId = clip->id;
+    const auto waveformHeight = [&] { return darkIn(paintCanvas(), sourceBegin, sourceEnd - 1); };
+    check(root.submitEdit("clip.setGain", {{"id", clipId}, {"gain", -24.}}, "Set Clip Gain"), "lower the audio clip's gain");
+    root.frame();
+    check(waveformHeight() + 40 < inside, "the arrangement waveform shrinks with clip gain");
+    check(root.command(AppCommands::Undo), "undo the lower gain");
+    root.frame();
+    check(waveformHeight() == inside && waves.builds() == 1, "undo restores the waveform height using the same peaks");
+
+    lanes.selection.clip = clipId;
+    check(root.showClipView(), "open the audio clip's Clip View for Gain");
+    root.frame();
+    auto &panel = root.clipView;
+    using Field = ClipViewPanel::Field;
+    const auto gain = panel.fieldBox(Field::Gain).getCentre().toFloat();
+    panel.mouseDown(pressAt(panel, gain));
+    panel.mouseUp(pressAt(panel, gain));
+    check(panel.fieldEditor().isVisible(), "clicking the audio Gain field opens it for typing");
+    if (panel.fieldEditor().isVisible()) {
+        panel.fieldEditor().setText("-6.5 dB", false);
+        panel.fieldEditor().onReturnKey();
+    }
+    const auto gainIs = [&](double db) { return panel.details() && std::abs(panel.details()->gainDb - db) < 1e-6; };
+    const auto undoIsGain = [&] {
+        const auto step = document->ops().nextUndo();
+        return step && step->label == "Set Clip Gain" && step->opCount == 1;
+    };
+    check(gainIs(-6.5) && undoIsGain(), "typed fractional gain applies in one undo step");
+    const auto to = gain.translated(0.f, -8.f);
+    panel.mouseDown(pressAt(panel, gain));
+    panel.mouseDrag(dragAt(panel, gain, to));
+    panel.mouseUp(dragAt(panel, gain, to));
+    check(gainIs(-4.5) && undoIsGain(), "a drag changes clip Gain by two dB in one undo step");
+    if (gainIs(-4.5)) {
+        check(root.command(AppCommands::Undo), "undo the edit made by dragging Gain");
+        root.frame();
+    }
+    check(gainIs(-6.5), "undo restores the earlier Gain in Clip View");
+    panel.mouseDown(pressAt(panel, gain));
+    panel.mouseUp(pressAt(panel, gain));
+    auto &editor = panel.fieldEditor();
+    check(editor.isVisible() && editor.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+              gainIs(-5.5) && undoIsGain(),
+          "the audio Gain field also steps with the arrow keys");
+    editor.onEscapeKey();
     root.afterEdit = nullptr;
     document->release();
 }
@@ -21357,11 +21553,6 @@ int main(int argc, char **argv) {
                               sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
                               integrated.error().find("split") != std::string::npos,
                           "a selection holding part of a clip stays, and the Status Bar says it waits for split");
-                    point(pos0);
-                    integrated.say({});
-                    check(press(juce::KeyPress::returnKey) && !arrangement.canvas.keyResizing() &&
-                              integrated.error().find("content offset") != std::string::npos,
-                          "Enter at a clip's start says moving its start waits for a content offset");
                     point(end0);
                     const auto undoBefore = integrated.undoTitle(false);
                     check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
@@ -23093,6 +23284,7 @@ int main(int argc, char **argv) {
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
+    trace("trimClipStart", [&] { trimClipStart(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("trackClipboard", [&] { trackClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
@@ -23119,6 +23311,7 @@ int main(int argc, char **argv) {
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });

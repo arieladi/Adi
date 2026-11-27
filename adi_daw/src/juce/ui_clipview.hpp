@@ -564,7 +564,7 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain
     };
     // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
@@ -636,6 +636,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
+    juce::Rectangle<int> warpBox() const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
     bool typeField(Field, const juce::String &);
@@ -644,6 +645,7 @@ class ClipViewPanel final : public juce::Component {
     // The field's Set button.
     bool setFieldHere(Field);
     bool toggleLoop();
+    bool toggleWarp();
     // The field open for typing, and its editor.
     Field editing() const noexcept { return editing_; }
     juce::TextEditor &fieldEditor() noexcept { return editor_; }
@@ -715,6 +717,8 @@ class ClipViewPanel final : public juce::Component {
     void read(const SnapshotReader &);
     friend class NoteEditor;
     bool commit(TrackEdit);
+    bool setGain(double db);
+    double draggedGain() const noexcept;
     std::int64_t fieldTicks(Field) const noexcept;
     std::int64_t adjustedTicks(Field, int part, int steps) const noexcept;
     std::pair<std::int64_t, std::int64_t> adjustedSignature(int part, int steps) const noexcept;
@@ -752,6 +756,7 @@ class ClipViewPanel final : public juce::Component {
     std::uint64_t generation_ = 0, statusStamp_ = 0;
     bool read_ = false;
     std::optional<engine::ClipDetails> details_;
+    juce::String gainText_, draggedGainText_;
     std::string problem_;
     const engine::ClipNode *node_ = nullptr;
     // The edited clip's track's name, from this frame's snapshot: what an unnamed clip's title reads.
