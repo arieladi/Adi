@@ -2,9 +2,10 @@ Session engine seat taken on 27 November 2026.
 
 ## For win
 
-- Reserve the next available schema minor for `scenes`, `clip_slots`, `clip_launch`, and the essential extension `org.adidaw.session`. Main is already at 1.23, and the 1.20 proposed in the plan went to checkpoints. The slot clips must stay out of the Arrangement accessor and its SQL readers.
-- Reserve the former edit names `scene.create`, `scene.delete`, `scene.reorder`, `scene.rename`, `scene.setTempo`, `session.setSlotClip`, `session.clearSlot`, `session.setLaunchMode`, `session.setLaunchQuant`, and `session.setFollowAction`, and the ephemeral names `session.launchClip`, `session.launchScene`, `session.stopTrack`, and `session.stopAll`. Confirm the names and payloads for scene signature/enable, Stop-button and clip-setting edits, scene cancellation and slot record control before adding any additional names.
-- Confirm reservation of `transport.setLaunchQuantization` from TM-SV-01 and reserve `capture.sessionPerformance` from TM-SV-04. No catalogue entries or migrations allocated in this chain so far.
+- Win reserved format 1.26 and the requested operations in e300f1d86. The Session DDL is staged under that number. Activation waits for the actual 1.24 DEV-06 and 1.25 DEV-07 schemas and frozen history. The latest implementation on origin is 1.23.
+- An unmodified 1.23 build has no essential-extension warning path. The branch implements the guard and tests it at reader level 1023. Backport the guard to the supported older release to warn there before distributing 1.26 files with occupied Session slots.
+- Additional names used for Session data and playback are `scene.setSignature`, `scene.setEnabled`, `session.setStopButton`, `session.setLaunchSettings`, `session.cancelSceneLaunch` and `session.backToArrangement`, under the prefixes Win reserved.
+- The 12.4 Windows reading seat measured 120 BPM and 4/4 for a blank song. The Live Object Model returns -1 for disabled Scene values. An installed Live 12.4 reading is still needed for the raw dormant Scene fields and the fresh Audio/MIDI empty Stop-button defaults.
 
 ## Queue
 
