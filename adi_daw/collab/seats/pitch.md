@@ -32,3 +32,9 @@
 - GCC 14.2 Debug with `ADI_WERROR=ON` and the headless Pd tier built successfully. The cloud disk filled during the first link pass. The completed build stripped executable debug sections at link time.
 - CTest passed 282 of 282 suites in 117.48 s. All five `tools/validate_*.py` validators and the SPEC layout check passed. Disabling pitch-cache publication in a scratch build failed the ADIA regression as expected.
 - The clip-owned schema and operation reservations are the outstanding integration dependency. All five seat log branches are present on origin.
+
+## Continued under the reservations
+
+| Item | Change | Proof | State |
+| --- | --- | --- | --- |
+| C1 authored controls and clip history | Reserved `clip.setPitchEdits` captures one source-bound set, including anchored tilt, ranged straightening and separate mute. Copy, split, delete and detach preserve the edits and the proper inverse. Staged 1.27 table, journal replay and bounded CBOR input. | 37 store, 11 clip-lifecycle, 50 control and 33 renderer checks passed. The old lifecycle rejected the pitch table on paste. Exact Undo/Redo and checkpoint recovery passed. Ranged straightening measured 0.96 cents inside the selected region with bit-identical PCM outside. | Pushed `943c08e9`. Activation waits for the actual 1.24–1.26 migrations, which are still absent on main. |
