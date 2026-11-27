@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 01:42 IST — libcxx/seats/pitch-chain `0ef9c557e1736315c12ede28346c1393e5e32ff0`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 298 registered CTest suites passed.
+
+All 22 registered ADI translation units mentioning `long double` passed strict syntax checks with `-mlong-double-64`, including `adi_daw/src/adi/pitch_midi.cpp`. `adi_pitch_midi_tests` passed in the headless run.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 01:30 IST — libcxx/basics/integrate-2 `39afd389608148eb927b8c2158fd32cf318ebed1`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered CTest suites passed.
