@@ -87,6 +87,7 @@ struct DeviceTransport {
     int numerator = 4;
     int denominator = 4;
     bool playing = false;
+    bool recording = false; ///< SC-333: playing while ADI records a take (VST3 kRecording, CLAP IS_RECORDING)
     bool looping = false;
     std::int64_t loopBegin = 0;
     std::int64_t loopEnd = 0;

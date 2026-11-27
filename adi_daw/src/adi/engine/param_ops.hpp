@@ -224,6 +224,15 @@ public:
     /// Call before publishing a named snapshot, copying or closing the Store.
     [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
 
+    struct DevicePresetState {
+        std::map<std::string, double> parameters;
+        std::map<std::string, std::vector<std::byte>> state;
+    };
+    /// Capture one stable live device on the Session owner thread. An empty
+    /// state map is valid for a device with no declared opaque streams. This
+    /// read does not drain gestures, apply state, or write history.
+    [[nodiscard]] std::optional<DevicePresetState> readDevicePresetState(std::int64_t deviceId, std::string& error);
+
     /// Session-bound: copy the first offered group's retained resources.
     /// Taking/dropping this copy cannot release common ownership. Standalone:
     /// move out the legacy blob staging vector for caller installation.

@@ -289,6 +289,73 @@ void lifecycle() {
               "native track-delete undo restores a frozen cache and all original state");
     }
 }
+void flattenFrozenTrack() {
+    Project p;
+    auto &db = p.store->db();
+    db.exec("UPDATE clips SET name='Original Clip' WHERE id=1;"
+            "UPDATE tracks SET monitor_mode=1 WHERE id=1;"
+            "UPDATE mixer_strip SET input_gain_db=6,volume_db=-9,pan=0.25 WHERE track_id=1;"
+            "INSERT INTO lanes(id,track_id,name) VALUES(20,1,'Earlier Take');"
+            "INSERT INTO clips(id,track_id,lane_id,kind,time_base,pos_ns,length_ns) "
+            "VALUES(20,1,20,'audio',1,0,62500000);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(20,1,0,3000)");
+    const auto route = OpJournal(*p.store).commit(op("routing.connect", {{"id", 30}, {"srcKind", "track"},
+        {"src", 1}, {"dstKind", "track"}, {"dst", 9}, {"kind", "main"}}));
+    if (!route.ok)
+        throw std::runtime_error(route.error);
+    check(!freeze::flatten(*p.store, 1, 40).ok, "SC-86: Flatten refuses an unfrozen track");
+    Counts counts;
+    auto prepared = freeze::prepareFreeze(*p.store, capture(p, counts), 0, 100);
+    const auto frozen = freeze::commitFreeze(*p.store, prepared, 0);
+    if (!frozen.ok)
+        throw std::runtime_error(frozen.error);
+    const auto before = digestProject(*p.store).text;
+    const auto cached = freeze::state(db, 1).at("render").at("post_media_id").get<std::int64_t>();
+    std::string error;
+    const auto wet = media::resolveMedia(media::projectFolder(*p.store), media::mediaRow(db, cached), error);
+    if (wet.empty())
+        throw std::runtime_error(error);
+    const auto away = p.root.path() / "unavailable.wav";
+    const auto head = OpJournal(*p.store).headSeq();
+    fs::rename(wet, away);
+    const auto refused = freeze::flatten(*p.store, 1, 40);
+    check(!refused.ok && OpJournal(*p.store).headSeq() == head && digestProject(*p.store).text == before,
+          "SC-86: unavailable frozen cache refuses Flatten atomically");
+    fs::rename(away, wet);
+    const auto flattened = freeze::flatten(*p.store, 1, 40);
+    check(flattened.ok, flattened.error.c_str());
+    if (!flattened.ok)
+        return;
+    check(db.execAndGet("SELECT kind FROM tracks WHERE id=1").getString() == "audio" &&
+              freeze::state(db, 1).at("frozen") == 0 &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt() == 0,
+          "SC-86: the frozen MIDI track becomes audio and its devices are removed");
+    check(db.execAndGet("SELECT (input_gain_db=0 AND volume_db=-9 AND pan=0.25) "
+                       "FROM mixer_strip WHERE track_id=1").getInt() == 1 &&
+              db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=1").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM routing WHERE id=30 AND src_id=1 AND dst_id=9").getInt() == 1,
+          "SC-86: Flatten keeps the mixer and routing while clearing baked input gain and input-only monitoring");
+    check(db.execAndGet("SELECT count(*) FROM clips WHERE track_id=1 AND lane_id IS NULL").getInt() == 1 &&
+              db.execAndGet("SELECT name FROM clips WHERE id=40").getString() == "Original Clip" &&
+              db.execAndGet("SELECT (time_base=1 AND pos_ns=0 AND length_ns=62500000) "
+                            "FROM clips WHERE id=40").getInt() == 1 &&
+              db.execAndGet("SELECT (src_start_frames=0 AND src_len_frames=3000 AND warp_enabled=0) "
+                            "FROM audio_clips WHERE clip_id=40").getInt() == 1 &&
+              db.execAndGet("SELECT media_id FROM audio_clips WHERE clip_id=40").getInt64() == cached &&
+              db.execAndGet("SELECT lane_id FROM clips WHERE id=20").getInt() == 20,
+          "SC-86: the wet cache becomes an absolute, unwarped clip and earlier takes survive");
+    engine::Session session;
+    const auto expected = static_cast<float>(0.25 * std::pow(10.0, 6.0 / 20.0));
+    check(session.load(*p.store, {}, p.spec().session) && session.entryCount() == 0 &&
+              heard(session, expected, expected),
+          "SC-86: the flattened clip plays the cached samples without loading or reapplying the old chain");
+    const auto after = digestProject(*p.store).text;
+    History history(*p.store);
+    check(history.undo().ok && digestProject(*p.store).text == before,
+          "SC-86: one Undo restores the previous frozen instrument, media and track state");
+    check(history.redo().ok && digestProject(*p.store).text == after,
+          "SC-86: one Redo reapplies the flatten without rendering");
+}
 void recovery() {
     Project p;
     Counts counts;
@@ -480,6 +547,7 @@ int main() {
     try {
         mainLaneExtentMatrix();
         lifecycle();
+        flattenFrozenTrack();
         recovery();
         refusals();
         mutedMidiDoesNotForward();

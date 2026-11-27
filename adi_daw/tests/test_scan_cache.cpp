@@ -295,6 +295,34 @@ void refreshStrikes(const fs::path& self) {
     Fixture invalid(self);invalid.config.cacheMode=static_cast<ScanCacheMode>(999);
     check(!Scanner::open(invalid.config,invalid.error) && !fs::exists(invalid.config.registry),"invalid scanner cache mode refuses before registry creation");
 }
+// SC-319: the user's Rescan lifts every Blocked row, so a plug-in that crashed or timed out twice
+// is probed by a fresh child; a Pending row (a scan another owner is running) stays.
+void rescanLiftsBlocks(const fs::path& self) {
+    Fixture f(self);f.config.process.timeout=std::chrono::milliseconds(500);
+    auto scanner=f.scanner();auto registry=f.registry();
+    const auto crash=f.candidate("lift-crash.clap","crash"),hang=f.candidate("lift-hang.clap","hang");
+    for(const auto& path:{crash,hang}){scanner->probe("clap",path);scanner->probe("clap",path);}
+    check(scanner->probe("clap",crash).state==State::Quarantined && scanner->probe("clap",hang).state==State::Quarantined &&
+          launches(crash)==2 && launches(hang)==2,"two crashes and two timeouts block both");
+    const auto pending=registry->beginScan("clap",utf8(f.temp.path()/"another-owner-scanning.clap"),10,f.error);
+    check(static_cast<bool>(pending),"another owner's scan holds a pending row");
+    check(registry->blockScan("clap",utf8(f.temp.path()/"manually-blocked.clap"),"manual",11,f.error),
+          "and the user blocked one by hand");
+    const auto lifted=registry->unblockBlockedScans(f.error);
+    check(lifted && *lifted==2,"the Rescan lifts the two blocked plug-ins");
+    const auto rows=registry->scanBlocks(f.error);
+    check(rows && rows->size()==2 && rows->front().state==ScanBlockState::Pending &&
+          rows->back().state==ScanBlockState::Blocked && rows->back().reason=="manual",
+          "and leaves the pending row and the manual block alone");
+    const auto again=scanner->probe("clap",crash);
+    check(again.state==State::Failed && again.failureStrikes==1 && launches(crash)==3,
+          "the crashing plug-in is tried by a fresh child, its strikes counted from one again");
+    write(native(utf8(hang)+".reply"),"healthy");
+    check(scanner->probe("clap",hang).state==State::Ready && launches(hang)==3,
+          "a plug-in that only timed out (its licence box answered since) now scans");
+    const auto none=registry->unblockBlockedScans(f.error);
+    check(none && *none==0,"nothing blocked: nothing lifted");
+}
 void validationAndRaces(const fs::path& self) {
     Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();scanner->probe("clap",path);
     {
@@ -828,7 +856,7 @@ void parallelProbeGate(const fs::path& self) {
 
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);refreshMetadata(self);refreshSafety(self);refreshStrikes(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);refreshMetadata(self);refreshSafety(self);refreshStrikes(self);rescanLiftsBlocks(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

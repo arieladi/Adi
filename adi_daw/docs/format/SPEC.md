@@ -1193,11 +1193,14 @@ Reserved `session_state` keys for saved performance controls:
 `transport.metronome` is a JSON boolean; `transport.loop` is JSON
 `{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
 `transport.countIn` is a JSON integer in `0,1,2,4` bars (`0` is None).
+`transport.punch` is JSON `{"in": bool, "out": bool}`. Punch-In excludes audio
+before the loop brace. Punch-Out ends a linear recording at the other edge.
+With Loop active, the transport wraps at that edge and begins the next pass.
 `transport.songStart` is a JSON nonnegative int64 tick; absence means the insert
 marker/active selection supplies the default start. Clearing the override removes
 its key. Count-In applies to recording starts only; it never shifts the saved
 song point. Readers reject nonintegral, out-of-range and malformed values.
-Absent keys mean click/loop off, no count-in/song-start override, and an initial
+Absent keys mean click/loop and both punch markers off, no count-in/song-start override, and an initial
 four-bar 4/4 window at zero.
 These are session metadata, not undoable project edits; the ephemeral transport
 ops update them and their audit rows in one transaction. Readers ignore malformed
