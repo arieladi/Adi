@@ -716,32 +716,33 @@ void Graph::computeCompensation() {
 
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
+        const bool singleFeed = s.inputs.size() + s.sidechains.size() == 1;
+        const auto fixedDirectFeed = [&](const Slot& feed) {
+            // The arrival can move, but with one nonnegative fixed feed it
+            // always matches this junction's arrival.
+            return singleFeed && feed.fixedLatency && *feed.fixedLatency >= 0 && feed.arrival >= 0 &&
+                   static_cast<std::int64_t>(feed.arrival) + *feed.fixedLatency == s.arrival;
+        };
         s.inDelays.resize(s.inputs.size());
         if (s.hasBypass) prepareLine(s.dryDelay, s.latency());
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
-            const std::int32_t ready =
-                u.arrival + u.latency();
-            if (!delayCompensation_ || loopEdge(u.node, s.node)) {
-                // No ring at all, not even the headroom: it never delays,
-                // so a retap that tried to move it would be refused.
+            if (!delayCompensation_ || loopEdge(u.node, s.node) || fixedDirectFeed(u)) {
                 s.inDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
-                s.inDelays[k].setDelay(0);
                 continue;
             }
+            const std::int32_t ready = u.arrival + u.latency();
             prepareLine(s.inDelays[k], s.arrival - ready);
         }
         s.sideDelays.resize(s.sidechains.size());
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
-            const std::int32_t ready =
-                u.arrival + u.latency();
-            const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
-            if(delayCompensation_)prepareLine(s.sideDelays[k],d);
-            else {
-                s.sideDelays[k].prepare(channels_,0,precision_==Precision::Float64);
-                s.sideDelays[k].setDelay(0);
+            if (!delayCompensation_ || fixedDirectFeed(u)) {
+                s.sideDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
+                continue;
             }
+            const std::int32_t ready = u.arrival + u.latency();
+            prepareLine(s.sideDelays[k], s.arrival - ready);
         }
     }
 

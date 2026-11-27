@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/engine/mpe_output.hpp"
@@ -335,6 +336,38 @@ void midiMonitoring() {
           played(instrument, EventType::NoteOff, loopStart + 30, 66) &&
           played(instrument, EventType::NoteOff, loopStart + 30, 67),
           "Auto follows the wrapped playhead and closes again where the clip restarts");
+
+    for (const bool selectionArm : {false, true}) {
+        Fixture moved(48000, 64);
+        moved.clip(1, 0, 12012, 24024);
+        moved.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1;"
+                               "UPDATE clips SET pos_ticks=24024 WHERE id=1");
+        if (!selectionArm)
+            moved.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+        moved.load();
+        if (selectionArm && !moved.session.setSelectionArmedTrack(1))
+            throw std::runtime_error("arm the Auto track through the live selection");
+        ProjectView view;
+        view.refresh(*moved.store);
+        OpRequest request;
+        request.opType = "clip.move";
+        request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
+        const auto edit = view.prepareLocalEdit(*moved.store, request);
+        if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
+            throw std::runtime_error("move was not admitted by the scoped Arrangement view");
+        const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
+        check(!scoped, selectionArm ? "moving a clip on a selection-armed Auto track refreshes its monitoring ranges"
+                                   : "moving a clip on an explicitly armed Auto track refreshes its monitoring ranges");
+        if (!scoped) moved.refresh();
+        check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
+              key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
+        for (int block = 0; block < 5; ++block) moved.render();
+        check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
+              played(*moved.instrument, EventType::NoteOff, 135, 61) &&
+              played(*moved.instrument, EventType::NoteOn, 300, 60) &&
+              !played(*moved.instrument, EventType::NoteOn, 311, 62),
+              "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    }
 }
 
 void livePlayQuantize() {
@@ -1703,6 +1736,21 @@ void livePitchBendOwnership() {
         f.render(13);
         check(bendsAt(*f.instrument, liveAt, 3) == std::vector{.75}, "the live wheel sounds immediately");
 
+        if (latency == 0) {
+            ProjectView view;
+            view.refresh(*f.store);
+            OpRequest insert;
+            insert.opType = "note.insert";
+            insert.payload = {{"clip", 1}, {"note", 43}, {"start", 576576}, {"dur", 24024},
+                              {"key", 65}, {"vel", 90}};
+            const auto edit = view.prepareLocalEdit(*f.store, insert);
+            if (!edit || !OpJournal(*f.store).commit(insert).ok || !view.applyLocalEdit(*f.store, *edit))
+                throw std::runtime_error("note insert was not admitted by the scoped clip view");
+            const auto scoped = f.session.refreshLocalEdit(*f.store, view);
+            check(!scoped, "a MIDI note edit keeps the Auto timing view and its pitch chase on the same source generation");
+            if (!scoped)
+                f.refresh();
+        }
         const auto stop = f.clock; // deliberately between the normal 64-sample controller ticks
         f.session.midiInputCapture().stop();
         while (f.clock <= stop + latency)

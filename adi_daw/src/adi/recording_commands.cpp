@@ -2,6 +2,7 @@
 #include "adi/recording_commands.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/audio_memory.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_details.hpp"
@@ -36,11 +37,58 @@
 #include <utility>
 namespace adi::recording {
 namespace fs=std::filesystem;
+namespace {
+using FileStamp = media::FileRevision;
+
+FileStamp fileStamp(const fs::path& path) {
+    std::error_code error;
+    const auto revision = media::readFileRevision(path, error);
+    if (!revision) throw std::runtime_error("cannot inspect recording media: " + error.message());
+    return *revision;
+}
+
+fs::path recordingFolder(const fs::path& projectFolder) {
+    return projectFolder / "Samples" / "Recorded";
+}
+
+void requireRecordingFolder(const fs::path& folder) {
+    if (fs::is_symlink(fs::symlink_status(folder.parent_path())) || fs::is_symlink(fs::symlink_status(folder)))
+        throw std::runtime_error("recording audio directories must not be symlinks");
+}
+}
+
+struct StagedTake::Data {
+    struct Wave {
+        fs::path source, staged;
+        FileStamp sourceProof, stageProof;
+        std::string hash;
+        int bits;
+    };
+    engine::AudioRecordingResult recorded;
+    fs::path folder, publicationDirectory;
+    std::vector<Wave> waves;
+    ~Data() {
+        if (!publicationDirectory.empty()) {
+            std::error_code ignored;
+            fs::remove_all(publicationDirectory, ignored);
+        }
+    }
+};
+
 struct RecordingEdit::Files {
-    struct Asset {fs::path source,staged,target;std::string hash;};
+    struct Asset {
+        fs::path source,staged,target;
+        std::string hash;
+        std::optional<FileStamp> sourceProof{}, stageProof{}, publishedProof{};
+        std::int64_t mediaId = 0;
+        std::optional<Payload> previousMedia{};
+        bool reusedOwned = false;
+    };
     std::vector<Asset> assets;
     engine::AudioRecordingResult source;
     fs::path publicationDirectory;
+    std::shared_ptr<const StagedTake::Data> stagedTake;
+    std::shared_ptr<media::detail::PublishedRollback> publications;
     ~Files(){if(!publicationDirectory.empty()){std::error_code ignored;fs::remove_all(publicationDirectory,ignored);}}
     bool committed=false,keepPrivate=false;
 };
@@ -131,6 +179,62 @@ bool recordingFileMatches(const fs::path &path, const std::string &hash) {
         return false;
     const auto existing = media::blake3File(path);
     return existing && existing.hex == hash;
+}
+std::optional<std::pair<fs::path, FileStamp>> verifiedOwnedRecording(
+    const fs::path &folder, const Payload &previous, std::stop_token stop) {
+    if (previous.at("missing") != 0)
+        return {};
+    const auto project = folder.parent_path().parent_path();
+    const auto owned = fs::weakly_canonical(folder);
+    // Resolve in the same order as media::resolveMedia. Only verify a file
+    // owned by this project, and honor cancellation during the full read.
+    std::vector<fs::path> candidates;
+    if (!previous.at("rel_path").is_null()) {
+        const auto relative = media::pathFromUtf8(previous.at("rel_path").get<std::string>());
+        if (relative.is_absolute()) return {};
+        candidates.push_back(project / relative);
+    }
+    const auto basename = media::pathFromUtf8(previous.at("orig_name").get<std::string>()).filename();
+    if (!basename.empty()) candidates.push_back(project / "audio" / basename);
+    if (!previous.at("abs_path_hint").is_null()) {
+        const auto hint = media::pathFromUtf8(previous.at("abs_path_hint").get<std::string>());
+        if (hint.is_absolute()) candidates.push_back(hint);
+    }
+    for (const auto &path : candidates) {
+        std::error_code error;
+        const bool exists = fs::exists(path, error);
+        if (error) return {};
+        if (!exists)
+            continue;
+        if (fs::weakly_canonical(path.parent_path(), error) != owned || error) return {};
+        const auto proof = media::readFileRevision(path, error);
+        if (!proof) return {};
+        const auto actual = media::blake3File(path, stop);
+        if (actual && actual.hex == previous.at("hash_blake3").get_ref<const std::string &>() &&
+            media::readFileRevision(path, error) == proof)
+            return std::pair{path, *proof};
+        return {};
+    }
+    return {};
+}
+void bindPublishedRecording(std::vector<OpRequest> &requests, std::int64_t mediaId,
+                            const fs::path &target, const fs::path &project, bool reusedOwned) {
+    const auto request = std::find_if(requests.begin(), requests.end(), [&](const OpRequest &item) {
+        return (item.opType == "media.import" || item.opType == "media.relink") && item.payload.at("id") == mediaId;
+    });
+    if (request == requests.end())
+        throw std::runtime_error("recording media binding has no captured request");
+    if (reusedOwned) {
+        requests.erase(request);
+        return;
+    }
+    const auto relative = media::pathUtf8(target.lexically_relative(project));
+    if (request->opType == "media.import") {
+        request->payload["row"]["rel_path"] = relative;
+        request->payload["row"]["orig_name"] = media::pathUtf8(target.filename());
+    } else {
+        request->payload["paths"]["rel_path"] = relative;
+    }
 }
 fs::path reservePublication(const fs::path& parent) {
     static std::atomic<std::uint64_t> serial{0};
@@ -529,6 +633,56 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
     return true;
 }
 }
+StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path& projectFolder,std::stop_token stop) {
+    StagedTake result;
+    try {
+        if (audio::onAudioThread || !recorded.hasAttachableAudio() || recorded.loopSpec() ||
+            recorded.directory().empty() || recorded.tracks.empty() || recorded.sampleRate < 8000 ||
+            recorded.sampleRate > audio::kMaxDecodeRate)
+            throw std::runtime_error("recording is not a completed linear take");
+        auto staged = std::make_shared<StagedTake::Data>();
+        staged->recorded = recorded;
+        staged->folder = recordingFolder(projectFolder);
+        requireRecordingFolder(staged->folder);
+        fs::create_directories(staged->folder);
+        staged->publicationDirectory = reservePublication(staged->folder);
+        staged->waves.reserve(recorded.tracks.size());
+        std::map<std::string,std::size_t> copies;
+        for (std::size_t index = 0; index < recorded.tracks.size(); ++index) {
+            if (stop.stop_requested()) throw std::runtime_error("recording publication cancelled");
+            const auto& track = recorded.tracks[index];
+            const auto source = recorded.directory() / ("take-" + std::to_string(index) + ".wav");
+            if (track.file != source || !track.channels || track.channels > audio::kMaxDecodeChannels)
+                throw std::runtime_error("recording file is not its owned regular take");
+            const auto proof = fileStamp(source);
+            const auto hash = media::blake3File(source, stop);
+            if (!hash) throw std::runtime_error("cannot verify recorded audio");
+            if (const auto duplicate = copies.find(hash.hex); duplicate != copies.end()) {
+                const auto& original = staged->waves[duplicate->second];
+                if (fileStamp(source) != proof || track.channels != recorded.tracks[duplicate->second].channels)
+                    throw std::runtime_error("duplicate recording changed or has inconsistent dimensions");
+                staged->waves.push_back({source, original.staged, proof, original.stageProof, hash.hex, original.bits});
+                continue;
+            }
+            const auto file = staged->publicationDirectory / ("asset-" + std::to_string(index) + ".wav");
+            fs::copy_file(source, file, fs::copy_options::none);
+            const auto stageProof = fileStamp(file);
+            const auto stagedHash = media::blake3File(file, stop);
+            if (!stagedHash || stagedHash.hex != hash.hex || fileStamp(source) != proof || fileStamp(file) != stageProof)
+                throw std::runtime_error("recording changed while staging publication");
+            audio::WavReader wave(file);
+            if (wave.frames() != recorded.frames || wave.sampleRate() != recorded.sampleRate || wave.channels() != track.channels)
+                throw std::runtime_error("recording dimensions changed before attachment");
+            const auto bits = wave.format() == audio::WavFormat::Pcm16 ? 16 : wave.format() == audio::WavFormat::Pcm24 ? 24 : 32;
+            staged->waves.push_back({source, file, proof, stageProof, hash.hex, bits});
+            copies.emplace(hash.hex, index);
+        }
+        result.data_ = std::move(staged);
+        result.ok = true;
+    } catch (const std::exception& exception) { result.error = exception.what(); }
+    return result;
+}
+
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
     try {
@@ -540,7 +694,7 @@ engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemor
     }
 }
 std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& store,const engine::AudioRecordingResult& recorded,
-    std::span<const ClipIds> ids,RecordingEdit& result) {
+    std::span<const ClipIds> ids,RecordingEdit& result,const StagedTake* staged) {
     if(store.readOnly())throw std::runtime_error("project is read-only");
     if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
     result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
@@ -549,15 +703,19 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
     result.options.expectHead.emplace(OpJournal(store).headSeq());
-    const auto project=media::projectFolder(store);
-    const auto samples=project/"Samples";
-    const auto folder=samples/"Recorded";
-    if(fs::is_symlink(fs::symlink_status(samples)) || fs::is_symlink(fs::symlink_status(folder)))
-        throw std::runtime_error("recording audio directories must not be symlinks");
-    fs::create_directories(folder);
+    const auto projectFolder = media::projectFolder(store);
+    const auto folder = recordingFolder(projectFolder);
+    requireRecordingFolder(folder);
+    auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;
+    if (staged) {
+        if (!staged->data_ || staged->data_->folder != folder || staged->data_->waves.size() != ids.size())
+            throw std::runtime_error("staged recording belongs to a different project folder");
+        files->stagedTake = staged->data_;
+    } else {
+        fs::create_directories(folder);
+    }
     const auto ownedFolder=fs::weakly_canonical(folder);
     RecordingFileNames names(folder);
-    auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;
     std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;
     std::vector<PreparedSource> sources;
     sources.reserve(ids.size());
@@ -570,6 +728,60 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
         SQLite::Statement track(store.db(),"SELECT kind,locked,name FROM tracks WHERE id=?");track.bind(1,target.trackId);
         if(!track.executeStep() || (track.getColumn(0).getString()!="audio" && track.getColumn(0).getString()!="midi") || track.getColumn(1).getInt()!=0)
             throw std::runtime_error("recording target is gone, locked or not a regular track");
+        const auto trackName = wanted.trackName.empty() ? track.getColumn(2).getString() : wanted.trackName;
+        if (staged) {
+            // The worker established exact bytes and native WAV dimensions.
+            // Reads here are project metadata only, even for a reused hash.
+            const auto& wave = files->stagedTake->waves[index];
+            if (const auto duplicate = capturedMedia.find(wave.hash); duplicate != capturedMedia.end()) {
+                files->assets.push_back({wave.source, {}, {}, wave.hash, wave.sourceProof});
+                sources.push_back({duplicate->second, std::nullopt});
+                continue;
+            }
+            SQLite::Statement known(store.db(), "SELECT id,embedded OR EXISTS(SELECT 1 FROM media_blobs WHERE media_id=m.id) "
+                                                "FROM media_files m WHERE hash_blake3=?");
+            known.bind(1, wave.hash);
+            const bool reused = known.executeStep();
+            const auto mediaId = reused ? known.getColumn(0).getInt64() : wanted.media;
+            const auto file = names.next(trackName);
+            Payload paths{{"rel_path", media::pathUtf8(file.lexically_relative(projectFolder))}, {"abs_path_hint", nullptr}, {"missing", 0}};
+            OpRequest request;
+            request.label = "Record Audio";
+            std::optional<Payload> previous;
+            if (reused) {
+                if (known.getColumn(1).getInt() != 0) throw std::runtime_error("extract embedded media first");
+                // Undo may restore an original locator into this private take.
+                previous = media::mediaRow(store.db(), mediaId);
+                for (const auto* column : {"rel_path", "abs_path_hint"}) {
+                    if (previous->at(column).is_null()) continue;
+                    const auto old = media::pathFromUtf8(previous->at(column).get<std::string>());
+                    if (fs::weakly_canonical((projectFolder / old).parent_path()) == fs::weakly_canonical(recorded.directory()))
+                        files->keepPrivate = true;
+                }
+                request.opType = "media.relink";
+                request.payload = {{"id", mediaId}, {"hash", wave.hash}, {"paths", std::move(paths)}};
+            } else {
+                const auto frames = static_cast<std::int64_t>(recorded.frames);
+                const auto rate = static_cast<std::int64_t>(recorded.sampleRate);
+                constexpr std::int64_t billion = 1000000000;
+                if (frames / rate > (std::numeric_limits<std::int64_t>::max() - billion) / billion)
+                    throw std::runtime_error("audio duration exceeds the supported timeline");
+                const auto duration = (frames / rate) * billion + (frames % rate) * billion / rate;
+                if (wave.stageProof.size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max()))
+                    throw std::runtime_error("media size exceeds signed 64-bit range");
+                paths.update({{"hash_blake3", wave.hash}, {"orig_name", media::pathUtf8(file.filename())},
+                              {"sample_rate", rate}, {"channels", target.channels}, {"frames", frames},
+                              {"duration_ns", duration}, {"format", "wav"}, {"bit_depth", wave.bits},
+                              {"size_bytes", static_cast<std::int64_t>(wave.stageProof.size)}, {"imported_utc", 0}, {"peaks", nullptr}});
+                request.opType = "media.import";
+                request.payload = {{"id", mediaId}, {"row", std::move(paths)}};
+            }
+            capturedMedia.emplace(wave.hash, mediaId);
+            files->assets.push_back({wave.source, wave.staged, file, wave.hash, wave.sourceProof, wave.stageProof,
+                                     {}, mediaId, std::move(previous)});
+            sources.push_back({mediaId, std::move(request)});
+            continue;
+        }
         {audio::WavReader source(expected);if(source.frames()!=recorded.frames || source.sampleRate()!=recorded.sampleRate || source.channels()!=target.channels)
             throw std::runtime_error("recording dimensions changed before attachment");}
         const auto hash=media::blake3File(expected);if(!hash)throw std::runtime_error("cannot verify recorded audio");
@@ -590,7 +802,7 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
             capturedMedia.emplace(hash.hex,mediaId);
             if(imported.existing) {
                 std::string pathError;
-                const auto oldPath=media::resolveMedia(project,existing,pathError);
+                const auto oldPath=media::resolveMedia(projectFolder,existing,pathError);
                 if(!oldPath.empty()) {
                     const auto oldFolder=fs::weakly_canonical(oldPath.parent_path());
                     if(oldFolder==fs::weakly_canonical(recorded.directory()))files->keepPrivate=true;
@@ -604,17 +816,17 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
                     }
                 }
             }
-            const auto targetFile=names.next(wanted.trackName.empty()?track.getColumn(2).getString():wanted.trackName);
-            const auto relative=media::pathUtf8(targetFile.lexically_relative(project));
+            const auto targetFile=names.next(trackName);
+            const auto relative=media::pathUtf8(targetFile.lexically_relative(projectFolder));
             Payload paths={{"rel_path",relative},{"abs_path_hint",nullptr},{"missing",0}};
             if(request.opType=="media.import") {
                 request.payload["row"].update(paths);
                 request.payload["row"]["orig_name"]=media::pathUtf8(targetFile.filename());
             } else {request.opType="media.relink";request.payload={{"id",mediaId},{"hash",hash.hex},{"paths",paths}};}
             if(files->publicationDirectory.empty())files->publicationDirectory=reservePublication(folder);
-            const auto staged=files->publicationDirectory/("asset-"+std::to_string(index)+".wav");fs::copy_file(expected,staged,fs::copy_options::none);
-            const auto stagedHash=media::blake3File(staged);if(!stagedHash || stagedHash.hex!=hash.hex)throw std::runtime_error("recording changed while staging publication");
-            files->assets.push_back({expected,staged,targetFile,hash.hex});
+            const auto stageFile=files->publicationDirectory/("asset-"+std::to_string(index)+".wav");fs::copy_file(expected,stageFile,fs::copy_options::none);
+            const auto stagedHash=media::blake3File(stageFile);if(!stagedHash || stagedHash.hex!=hash.hex)throw std::runtime_error("recording changed while staging publication");
+            files->assets.push_back({expected,stageFile,targetFile,hash.hex});
             request.label="Record Audio";
             mediaEdit=std::move(request);
         }
@@ -638,7 +850,7 @@ RecordingEdit prepareMidiLinearCommit(Store& store, std::span<const MidiLinearTa
 
 RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioRecordingResult* audioTake,
                                            std::span<const ClipIds> ids, std::span<const MidiLinearTake> midi,
-                                           double sampleRate, std::int64_t placementOffsetSamples) {
+                                           double sampleRate, std::int64_t placementOffsetSamples, const StagedTake* staged) {
     RecordingEdit result;
     try {
         if (store.readOnly())
@@ -694,7 +906,7 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
                 ? punch.out->tick : tickAt(tempo, end, recorded.sampleRate);
             if (endTick <= beginTick)
                 throw std::runtime_error("recording has no representable musical extent");
-            auto sources = prepareSources(store, recorded, ids, result);
+            auto sources = prepareSources(store, recorded, ids, result, staged);
             for (std::size_t index = 0; index < ids.size(); ++index) {
                 const auto& target = recorded.tracks[index];
                 const auto& wanted = ids[index];
@@ -747,6 +959,21 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
         result.error = exception.what();
     }
     return result;
+}
+RecordingEdit prepareStagedCommit(Store& store,const StagedTake& staged,std::span<const ClipIds> ids,
+                                  std::int64_t placementOffsetSamples) {
+    return prepareStagedCommit(store, staged, ids, {}, placementOffsetSamples);
+}
+
+RecordingEdit prepareStagedCommit(Store& store,const StagedTake& staged,std::span<const ClipIds> ids,
+                                  std::span<const MidiLinearTake> midi,std::int64_t placementOffsetSamples) {
+    if (!staged.ok || !staged.data_) {
+        RecordingEdit refused;
+        refused.error = staged.error.empty() ? "recording staging has not completed" : staged.error;
+        return refused;
+    }
+    const auto& recorded = staged.data_->recorded;
+    return RecordingEdit::prepareLinear(store, &recorded, ids, midi, recorded.sampleRate, placementOffsetSamples, &staged);
 }
 namespace {
 // Existing lanes are considered in visible order, once per capture. A lane
@@ -1118,6 +1345,140 @@ notes::PreparedDiff prepareRecordQuantize(Store& store, std::span<const MidiReco
     return batch;
 }
 
+bool publishStagedTake(RecordingEdit& edit,std::stop_token stop) {
+    const auto files = edit.files_;
+    if (!edit.ok || !files || !files->stagedTake || files->publications || files->committed || audio::onAudioThread) {
+        edit.error = "recording media has no unpublished staging";
+        return false;
+    }
+    try {
+        auto rollback = std::make_shared<media::detail::PublishedRollback>();
+        rollback->files.reserve(files->assets.size());
+        files->publications = rollback;
+        requireRecordingFolder(files->stagedTake->folder);
+        const auto projectFolder = files->stagedTake->folder.parent_path().parent_path();
+        for (auto& asset : files->assets) {
+            if (stop.stop_requested()) throw std::runtime_error("recording publication cancelled");
+            if (fileStamp(asset.source) != asset.sourceProof)
+                throw std::runtime_error("recorded file changed after staging");
+            if (asset.target.empty()) continue;
+            if (asset.previousMedia) {
+                if (const auto existing = verifiedOwnedRecording(files->stagedTake->folder, *asset.previousMedia, stop)) {
+                    bindPublishedRecording(edit.requests, asset.mediaId, existing->first, projectFolder, true);
+                    asset.target = existing->first;
+                    asset.publishedProof = existing->second;
+                    asset.reusedOwned = true;
+                    continue;
+                }
+                if (stop.stop_requested()) throw std::runtime_error("recording publication cancelled");
+            }
+            if (fileStamp(asset.staged) != asset.stageProof)
+                throw std::runtime_error("recording publication staging changed");
+            rollback->files.push_back({asset.target, {}});
+            const auto published = media::publishFile(asset.staged, asset.target, edit.publicationHooks,
+                                                      media::PublishPolicy::AtomicOnly);
+            if (published.status == media::PublishStatus::published) {
+                rollback->files.back().identity = published.identity;
+                const auto proof = fileStamp(asset.target);
+                // Renaming the closed stage can legitimately update ctime.
+                if (published.identity != proof.identity || !asset.stageProof ||
+                    proof.identity != asset.stageProof->identity || proof.size != asset.stageProof->size ||
+                    proof.modified != asset.stageProof->modified)
+                    throw std::runtime_error("recording publication changed during rename");
+                asset.publishedProof = proof;
+                continue;
+            }
+            rollback->files.pop_back();
+            if (published.status == media::PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
+                const auto proof = fileStamp(asset.target);
+                const auto existing = media::blake3File(asset.target, stop);
+                if (existing && existing.hex == asset.hash && fileStamp(asset.target) == proof) {
+                    asset.publishedProof = proof;
+                    continue;
+                }
+            }
+            throw std::runtime_error("Cannot publish recorded audio " + media::pathUtf8(asset.target) + ": " +
+                (published.status == media::PublishStatus::exists ? "destination contains different content" : published.error));
+        }
+        return true;
+    } catch (const std::exception& failure) {
+        edit.ok = false;
+        edit.error = failure.what();
+        if (files->publications) {
+            const auto warning = files->publications->rollback();
+            if (!warning.empty()) edit.error += "\n" + warning;
+        }
+        return false;
+    }
+}
+
+StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,RecordingEdit& edit,std::span<const ClipIds> ids,
+                                  std::int64_t placementOffsetSamples) {
+    return refreshStagedCommit(store, staged, edit, ids, {}, placementOffsetSamples);
+}
+
+StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,RecordingEdit& edit,std::span<const ClipIds> ids,
+                                  std::span<const MidiLinearTake> midi,std::int64_t placementOffsetSamples) {
+    const auto published = edit.files_;
+    if (!edit.ok || !published || !published->stagedTake || !published->publications || published->committed)
+        return StagedRefresh::refused;
+    const auto refuse = [&](StagedRefresh status, std::string error) {
+        edit.ok = false;
+        edit.error = std::move(error);
+        const auto warning = published->publications->rollback();
+        if (!warning.empty()) edit.error += "\n" + warning;
+        return status;
+    };
+    try {
+        if (edit.owner_ != &store || edit.client_ != store.clientId() || identity(store) != edit.sourceProject)
+            throw std::runtime_error("recording project changed during publication");
+        if (edit.options.expectHead && *edit.options.expectHead == OpJournal(store).headSeq()) return StagedRefresh::ready;
+        auto current = prepareStagedCommit(store, staged, ids, midi, placementOffsetSamples);
+        if (!current.ok) {
+            edit.audioOutsidePunch = current.audioOutsidePunch;
+            throw std::runtime_error(current.error);
+        }
+        const auto replacement = current.files_;
+        const auto projectFolder = media::projectFolder(store);
+        if (published->assets.size() != replacement->assets.size())
+            return refuse(StagedRefresh::restage, "recording media binding changed during publication");
+        for (std::size_t index = 0; index < published->assets.size(); ++index) {
+            const auto& a = published->assets[index];
+            auto& b = replacement->assets[index];
+            if (a.source != b.source || a.hash != b.hash || a.sourceProof != b.sourceProof)
+                return refuse(StagedRefresh::refused, "recording source changed during publication");
+            if (a.mediaId != b.mediaId || a.previousMedia != b.previousMedia)
+                return refuse(StagedRefresh::restage, "recording media binding changed during publication");
+            // Numbering scans now see the WAV just published. Preserve its
+            // proven name when the rebased edit still binds the same media.
+            if (a.target != b.target || a.reusedOwned)
+                bindPublishedRecording(current.requests, b.mediaId, a.target, projectFolder, a.reusedOwned);
+            b.target = a.target;
+            b.publishedProof = a.publishedProof;
+            b.reusedOwned = a.reusedOwned;
+        }
+        replacement->keepPrivate = replacement->keepPrivate || published->keepPrivate;
+        replacement->publications = published->publications;
+        current.options.beforeCommit = std::move(edit.options.beforeCommit);
+        edit = std::move(current);
+        return StagedRefresh::ready;
+    } catch (const std::exception& failure) {
+        return refuse(StagedRefresh::refused, failure.what());
+    }
+}
+
+std::string cleanupStagedTake(RecordingEdit& edit) {
+    const auto files = edit.files_;
+    if (!files || !files->stagedTake || !files->committed || audio::onAudioThread)
+        return {};
+    const auto folder = media::pathUtf8(files->source.directory().filename());
+    const auto warning = files->keepPrivate ? std::error_code{} : files->source.discard();
+    files->stagedTake.reset();
+    if (warning)
+        return "Private recording files could not be removed (" + warning.message() + ") and remain in " + folder + ".";
+    return {};
+}
+
 CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     CommitResult refused;
     if(!edit.ok){refused.error=edit.error;return refused;}
@@ -1128,11 +1489,28 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     catch(const std::exception& exception){refused.error=exception.what();return refused;}
     const auto files=edit.files_;
     if(!files || files->committed){refused.error="recording edit is absent or already committed";return refused;}
-    auto rollback=std::make_shared<media::detail::PublishedRollback>();
+    if (files->stagedTake && !files->publications) {refused.error="recording media was not published";return refused;}
+    auto rollback=files->publications ? files->publications : std::make_shared<media::detail::PublishedRollback>();
     rollback->files.reserve(files->assets.size());
     auto options=edit.options;const auto previous=options.beforeCommit;const auto hooks=edit.publicationHooks;
     options.beforeCommit=[files,previous,rollback,hooks](SQLite::Database& db,std::int64_t transaction,std::string& error) {
         if(previous && !previous(db,transaction,error))return false;
+        if (files->stagedTake) {
+            try {
+                requireRecordingFolder(files->stagedTake->folder);
+                for (const auto& asset : files->assets) {
+                    if (fileStamp(asset.source) != asset.sourceProof ||
+                        (!asset.target.empty() && fileStamp(asset.target) != asset.publishedProof)) {
+                        error = "recorded file changed after publication";
+                        return false;
+                    }
+                }
+                return true;
+            } catch (const std::exception& failure) {
+                error = failure.what();
+                return false;
+            }
+        }
         for(const auto& asset:files->assets) {
             if(!fs::is_regular_file(fs::symlink_status(asset.source))){error="recorded take is no longer a regular file";return false;}
             const auto hash=media::blake3File(asset.source);if(!hash || hash.hex!=asset.hash){error="recorded file changed after capture";return false;}
@@ -1164,7 +1542,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     if(result.ok) {
         rollback->committed=true;
         files->committed=true;
-        try{if(!files->keepPrivate)files->source.discard();}catch(...){/* committed assets remain authoritative */}
+        try{if(!files->stagedTake && !files->keepPrivate)files->source.discard();}catch(...){/* committed assets remain authoritative */}
     } else if(auto warning=rollback->rollback();!warning.empty()) {
         if(!result.error.empty())result.error+='\n';
         result.error+=warning;

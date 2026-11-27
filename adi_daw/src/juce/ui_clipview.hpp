@@ -22,10 +22,12 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <array>
+#include <map>
 #include <optional>
 #include <random>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -270,7 +272,7 @@ class NoteEditor final : public juce::Component {
     // A note of another shown clip as it is drawn while a drag is held.
     engine::ClipNote shownIn(const engine::ClipNote &, std::int64_t clip) const noexcept;
     // The selected notes, by id: this view's own, kept while the notes exist.
-    const std::vector<std::uint64_t> &selected() const noexcept { return selected_; }
+    const std::vector<std::uint64_t> &selected() const noexcept { return selected_.ids(); }
     bool isSelected(std::uint64_t id) const noexcept;
     void select(std::vector<std::uint64_t> ids);
     // Drops the selected notes the clip no longer holds: called when the clip is read again.
@@ -311,6 +313,27 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
+    // Selection order determines the keyboard anchor and the order handed to edits.
+    // Use the index for membership without rebuilding it in paint or while dragging.
+    class Selection {
+      public:
+        const std::vector<std::uint64_t> &ids() const noexcept { return ids_; }
+        bool contains(std::uint64_t id) const noexcept { return index_.contains(id); }
+        bool empty() const noexcept { return ids_.empty(); }
+        std::size_t size() const noexcept { return ids_.size(); }
+        void set(std::vector<std::uint64_t>);
+        void replaceBand(const std::vector<std::uint64_t> &base, std::vector<std::uint64_t> &hits);
+        void add(std::uint64_t);
+        void erase(std::uint64_t) noexcept;
+        void erase(const std::vector<std::uint64_t> &) noexcept;
+        void clear() noexcept;
+        void prune(const engine::ClipDetails *) noexcept;
+
+      private:
+        std::vector<std::uint64_t> ids_;
+        // The values mark the IDs to keep during prune or a band update.
+        std::unordered_map<std::uint64_t, bool> index_;
+    };
     enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch, LaneSize };
     juce::TextButton preview_{"Preview"};
     std::array<std::uint64_t, 2> soundingKeys_{};
@@ -324,7 +347,7 @@ class NoteEditor final : public juce::Component {
     // now (all in the song's ticks), and the notes it carries.
     StretchPart stretchPart_ = StretchPart::None;
     std::int64_t stretchA_ = 0, stretchB_ = 0, stretchP_ = 0, stretchNow_ = 0;
-    std::vector<std::uint64_t> stretchIds_;
+    Selection stretchNotes_;
     std::vector<std::uint64_t> stretchTargets() const;
     std::int64_t stretchMap(std::int64_t songTick) const noexcept;
     // A drag on the time ruler or the piano: where the pointer last was, and the zoom's count.
@@ -348,17 +371,20 @@ class NoteEditor final : public juce::Component {
     void trimStroke();
     void handleDrag();
     juce::Rectangle<int> selectedVelocityFrame() const noexcept;
+    juce::Rectangle<int> handleBox(LaneHandle, juce::Rectangle<int> frame) const noexcept;
     bool commit(NoteEdit);
     using Build = std::function<NoteEdit(const engine::ClipDetails &, const std::vector<std::uint64_t> &)>;
     NoteEdit across(const Build &) const;
     engine::ClipNote dragged(const engine::ClipNote &) const noexcept;
-    std::vector<std::uint64_t> &otherIds(std::int64_t clip);
+    const Selection *selectionFor(std::int64_t clip) const noexcept;
+    Selection &otherSelection(std::int64_t clip);
     bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
     bool fitPending_ = false;
     mutable std::vector<juce::Rectangle<int>> labels_;
-    std::vector<std::uint64_t> selected_, bandBase_;
-    std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> otherSelected_;
+    Selection selected_;
+    std::vector<std::uint64_t> bandBase_, bandHits_;
+    std::map<std::int64_t, Selection> otherSelected_;
     std::optional<std::int64_t> insert_, head_;
     // The insert marker, or with `extend` the time selection's moving end, put at `at` and kept in view.
     void placeMarker(std::int64_t at, bool extend);

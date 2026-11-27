@@ -442,6 +442,9 @@ struct Model {
     std::vector<std::string> problems;
 };
 
+/// Read only one clip's note stream, with the same diagnostics as readModel.
+void readClipNotes(Model&, const Store&, std::int64_t clipId);
+
 /// Read a whole project. The only function in the adapter that touches SQLite.
 ///
 /// Never throws: SQLiteCpp does, and a caller of the projection did not choose

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <string_view>
 #include <thread>
@@ -940,6 +941,100 @@ void groupDedupAndGuards() {
     {std::ofstream bytes(another.tracks[0].file,std::ios::binary|std::ios::app);bytes<<"changed";}
     check(changed.ok && !recording::commit(*f.store,changed).ok && digestProject(*f.store).text==before && std::filesystem::exists(another.tracks[0].file),"changed take bytes roll back the complete attachment while preserving recovery files");another.discard();
 }
+void stagedPublicationAndRefresh() {
+    Fixture f;
+    auto recorded = f.capture(true);
+    const auto folder = media::projectFolder(*f.store);
+    const auto staged = std::async(std::launch::async, [&] { return recording::stageTake(recorded, folder); }).get();
+    check(staged.ok, "staging worker verifies the closed native WAVs");
+    if (!staged.ok) return;
+    std::size_t stagedCopies = 0;
+    for (const auto& stage : std::filesystem::directory_iterator(folder / "Samples" / "Recorded"))
+        if (stage.is_directory())
+            for (const auto& file : std::filesystem::directory_iterator(stage.path())) stagedCopies += file.is_regular_file();
+    check(stagedCopies == 1, "equal tracks make one verified project-side staging copy");
+    const std::array initial{recording::ClipIds{7,8,"One","Displayed Track"},recording::ClipIds{9,10,"Two"}};
+    const auto before = digestProject(*f.store).text;
+    auto edit = recording::prepareStagedCommit(*f.store, staged, initial);
+    check(edit.ok && !recording::commit(*f.store, edit).ok, "owner requires completed worker publication before SQL");
+    if (!edit.ok) return;
+    const bool published = std::async(std::launch::async, [&] { return recording::publishStagedTake(edit); }).get();
+    check(published && digestProject(*f.store).text == before, "publication worker never changes project rows");
+    if (!published) return;
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id",21},{"name","Renamed during publication"}};
+    const std::array rebased{recording::ClipIds{17,8,"Renamed","Renamed during publication"},recording::ClipIds{19,10,"Two"}};
+    check(OpJournal(*f.store).commit(rename).ok &&
+          recording::refreshStagedCommit(*f.store, staged, edit, rebased) == recording::StagedRefresh::ready,
+          "owner rebases the edit when the head changes and the published media binding is stable");
+    const auto committed = recording::commit(*f.store, edit);
+    auto& db = f.store->db();
+    check(committed.ok && db.execAndGet("SELECT count(*) FROM media_files").getInt() == 1 &&
+          db.execAndGet("SELECT count(*) FROM audio_clips WHERE clip_id IN (17,19) AND media_id=8").getInt() == 2 &&
+          media::mediaRow(db, 8).at("rel_path") == "Samples/Recorded/Displayed Track 0001.wav" &&
+          media::mediaRow(db, 8).at("orig_name") == "Displayed Track 0001.wav",
+          "one atomic project edit lands the current clips and reuses the published media");
+    check(std::filesystem::exists(recorded.tracks.front().file), "staged commit leaves private cleanup to the worker");
+    const auto cleanup = std::async(std::launch::async, [&] { return recording::cleanupStagedTake(edit); }).get();
+    check(cleanup.empty() && !std::filesystem::exists(recorded.tracks.front().file) && History(*f.store).undo().ok &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+          db.execAndGet("SELECT name FROM tracks WHERE id=21").getString() == "Renamed during publication",
+          "one Undo removes this take and preserves the intervening edit");
+
+    if (!committed.ok || !History(*f.store).redo().ok) return;
+    auto duplicate = f.capture();
+    const auto duplicateStage = recording::stageTake(duplicate, folder);
+    const std::array repeated{recording::ClipIds{27,28,"Repeat","Other track name"}};
+    auto reuse = recording::prepareStagedCommit(*f.store, duplicateStage, repeated);
+    check(reuse.ok && recording::publishStagedTake(reuse) &&
+          std::none_of(reuse.requests.begin(), reuse.requests.end(), [](const auto &request) {
+              return request.opType == "media.import" || request.opType == "media.relink";
+          }) && recording::commit(*f.store, reuse).ok && recording::cleanupStagedTake(reuse).empty() &&
+          media::mediaRow(db, 8).at("rel_path") == "Samples/Recorded/Displayed Track 0001.wav" &&
+          !std::filesystem::exists(folder / "Samples" / "Recorded" / "Other track name 0001.wav"),
+          "the publication worker verifies and reuses an identical owned WAV without renaming it");
+}
+
+void stagedPublicationRefusesChangedContent() {
+    for (const bool bindingChanged : {false,true}) {
+        Fixture f;
+        auto recorded = f.capture();
+        const auto folder = media::projectFolder(*f.store);
+        const auto staged = recording::stageTake(recorded, folder);
+        const auto hash = media::blake3File(recorded.tracks.front().file);
+        const std::array ids{recording::ClipIds{7,8,"One"}};
+        auto edit = recording::prepareStagedCommit(*f.store, staged, ids);
+        const auto published = edit.ok && recording::publishStagedTake(edit);
+        check(published && hash, "publish a staging proof before changing the source or binding");
+        if (!published || !hash) continue;
+        if (bindingChanged) {
+            OpRequest rename;
+            rename.opType = "track.rename";
+            rename.payload = {{"id",21},{"name","Renamed during publication"}};
+            const std::array changed{recording::ClipIds{9,10,"One"}};
+            check(OpJournal(*f.store).commit(rename).ok &&
+                  recording::refreshStagedCommit(*f.store, staged, edit, changed) == recording::StagedRefresh::restage &&
+                  std::filesystem::is_regular_file(recorded.tracks.front().file),
+                  "a changed media binding requests restaging and retains the original take");
+        } else {
+            const auto target = folder / "Samples" / "Recorded" / "One 0001.wav";
+            const auto modified = std::filesystem::last_write_time(target);
+            const auto before = digestProject(*f.store).text;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            {
+                std::fstream changed(target, std::ios::in | std::ios::out | std::ios::binary);
+                changed.seekp(-1, std::ios::end);
+                changed.put('\x7f');
+                check(static_cast<bool>(changed), "modify one published byte without changing file size");
+            }
+            std::filesystem::last_write_time(target, modified);
+            check(!recording::commit(*f.store, edit).ok && digestProject(*f.store).text == before &&
+                  std::filesystem::is_regular_file(recorded.tracks.front().file),
+                  "owner rejects in-place changes even when mtime and length are restored");
+        }
+    }
+}
 void loopPublicationRefusesFlattening() {
     for(const auto frames:{32,300}) {
         Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,frames);
@@ -1207,6 +1302,7 @@ int main(int argc,char** argv){try{
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    stagedPublicationAndRefresh();stagedPublicationRefusesChangedContent();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {
