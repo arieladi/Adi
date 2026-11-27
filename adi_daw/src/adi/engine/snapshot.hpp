@@ -97,6 +97,21 @@ struct ClipFadeHandles {
     friend bool operator==(const ClipFadeHandles&,const ClipFadeHandles&)=default;
 };
 
+/// Source-time bars and clock for a MIDI clip's Arrangement lane. Immutable
+/// with its ClipNode, so painting can retain the view without consulting SQL.
+struct MidiClipPreview {
+    struct Bar {
+        std::int64_t start = 0, duration = 0;
+        int key = 0;
+        bool active = true;
+        friend bool operator==(const Bar&,const Bar&) = default;
+    };
+    std::int64_t startMarker = 0, loopStart = 0, loopLength = 0;
+    int low = 127, high = 0;
+    std::vector<Bar> bars;
+    friend bool operator==(const MidiClipPreview&,const MidiClipPreview&) = default;
+};
+
 struct ClipNode {
     std::string name;
     std::int64_t id = 0;
@@ -121,6 +136,7 @@ struct ClipNode {
     std::int64_t timeBase=0;
     std::optional<std::int64_t> posNs,lengthNs;
     std::optional<std::int64_t> laneId{}; // null belongs to the main arrangement row
+    std::shared_ptr<const MidiClipPreview> midiPreview{};
 };
 
 struct TrackNode {
@@ -243,6 +259,12 @@ public:
     /// unchanged. Returns a snapshot sharing structure with it.
     static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous,
                                               const std::set<std::int64_t>& overridden = {}, bool probeMediaFiles = true);
+
+    /// Reproject the notes of one already-present MIDI clip after a targeted
+    /// note edit. Reuses the arrangement clock and the unrelated nodes.
+    /// Returns null when the edited clip cannot be resolved in the view.
+    static std::shared_ptr<const Snapshot> withMidiClipNotes(const Store&,
+        const std::shared_ptr<const Snapshot>& previous, std::int64_t clipId);
 
     /// How many nodes the two snapshots share by pointer. For tests: the sharing
     /// claim above is checkable, so it is checked.

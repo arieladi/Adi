@@ -6,6 +6,7 @@
 #include "adi/store_rows.hpp"
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <span>
 namespace adi::engine {
 // Message-thread registry; its per-track note state is used ONLY by the audio
@@ -29,6 +30,13 @@ public:
               const DeviceChainFn& eventPathFor = {});
     MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
               const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,bool honorMonitoring=false);
+    // A clip edit can retain sources from the same session, format and
+    // monitoring policy. The previous generation supplies that policy. The
+    // caller supplies the complete playback model and all affected tracks,
+    // including the old track if the last clip moves away from it.
+    MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
+              const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,
+              const MidiClips* previous, const std::set<std::int64_t>& changedTracks);
     ~MidiClips();
     std::vector<Node*> sourcesFor(std::int64_t track);
     // Owned by this generation. Includes empty clips and uses the same sample
@@ -42,6 +50,9 @@ public:
     std::uint64_t droppedControllers() const noexcept;
 
   private:
+    MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
+              const DeviceChainFn&,const NoteExpressionsRead&,bool honorMonitoring,
+              const MidiClips* previous,const std::set<std::int64_t>& changedTracks);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
