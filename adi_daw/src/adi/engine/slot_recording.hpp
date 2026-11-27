@@ -35,7 +35,7 @@ struct SlotMidiInput {
 };
 
 enum class SlotRecordingState : std::uint8_t {
-    Idle, Armed, Recording, Complete, Interrupted, InputFailure
+    Idle, Armed, Recording, Complete, Interrupted, InputFailure, Cancelled
 };
 
 struct SlotRecordingResult {
@@ -46,6 +46,7 @@ struct SlotRecordingResult {
     std::optional<AudioRecordingResult> audio;
     std::vector<MidiCapturePacket> midi;
     MidiCaptureState midiState;
+    std::string sourceProject;
 };
 
 /// One quantized recording gesture at a time. Prepare the capture on the
@@ -58,6 +59,8 @@ public:
     // Owner only. Resolve input routing and empty/armed slot eligibility
     // before calling; the resulting take retains these destination keys.
     bool start(AudioRecordingSpec format, std::span<const SlotRecordingTarget>, std::string& error);
+    /// Owner only. Abandon the active or queued capture at the next driver call.
+    void cancel() noexcept;
 
     // Driver only. Call once per callback, including after the final window
     // for audio stop acknowledgement. A missing window waits while armed
@@ -74,15 +77,18 @@ public:
 
 private:
     static_assert(std::atomic<SlotRecordingState>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
     void finish(SlotRecordingState) noexcept;
 
     std::atomic<SlotRecordingState> state_{SlotRecordingState::Idle};
+    std::atomic<bool> cancel_{false};
     AudioInputRecorder audio_;
     MidiInputCapture midi_;
     Transport clock_;
     std::int64_t beginStream_ = 0;
     bool hasAudio_ = false, hasMidi_ = false;
     std::uint32_t sampleRate_ = 0, maxFrames_ = 0;
+    std::string sourceProject_;
     std::vector<SlotRecordingTarget> targets_;
     std::vector<MidiCapturePacket> midiPackets_;
 };

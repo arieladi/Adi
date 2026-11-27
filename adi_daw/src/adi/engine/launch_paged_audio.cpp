@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/engine/launch_paged_audio.hpp"
+#include "adi/audio/io_audit.hpp"
+
+#include <algorithm>
+#include <array>
+#include <stdexcept>
+#include <utility>
+
+namespace adi::engine {
+
+LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
+                                  std::span<const LaunchPagedSource> sources, std::uint32_t sampleRate,
+                                  std::int32_t channels, std::int32_t maxFrames)
+    : pages_(std::move(project), clock_, sampleRate, channels, maxFrames), channels_(channels),
+      blockFrames_(maxFrames), sampleRate_(sampleRate) {
+    if (channels < 1 || channels > 64 || maxFrames < 1 || maxFrames > 4096)
+        throw std::invalid_argument("invalid Session paged playback format");
+    output_.resize(static_cast<std::size_t>(channels) * static_cast<std::size_t>(maxFrames));
+    for (const auto& source : sources) {
+        if (source.clip <= 0 || source.sourceTrack <= 0 || source.firstFrame < 0 ||
+            source.loopBeginFrame < 0 || source.loopEndFrame < source.loopBeginFrame)
+            throw std::invalid_argument("invalid Session paged source");
+        const auto nodes = pages_.sourcesFor(source.sourceTrack);
+        if (nodes.size() == 1) sources_.push_back({source, nodes.front()});
+    }
+    std::ranges::sort(sources_, {}, [](const Entry& entry) { return entry.source.clip; });
+    if (std::ranges::adjacent_find(sources_, {}, [](const Entry& entry) { return entry.source.clip; }) != sources_.end())
+        throw std::invalid_argument("duplicate Session paged source");
+    problems_ = pages_.problems();
+}
+
+bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
+    if (audio::onAudioThread) return false;
+    std::erase_if(sources_, [&](const Entry& entry) {
+        const auto& source = entry.source;
+        Transport first, loop;
+        const bool looping = source.loopEndFrame > source.loopBeginFrame;
+        first.loop(source.loopBeginFrame, source.loopEndFrame, looping);
+        loop.loop(source.loopBeginFrame, source.loopEndFrame, looping);
+        first.locate(source.firstFrame);
+        first.play();
+        loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
+        loop.play();
+        if (pages_.primeTrackAt(source.sourceTrack, first, loop, timeout)) return false;
+        problems_.push_back("Session clips#" + std::to_string(source.clip) + ": page preparation did not fill the start and loop windows");
+        return true;
+    });
+    return !sources_.empty();
+}
+
+bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
+    if (sources_.empty()) return false;
+    const auto* end = sources_.data() + sources_.size();
+    const auto* found = std::lower_bound(sources_.data(), end, clip,
+        [](const Entry& entry, std::int64_t key) { return entry.source.clip < key; });
+    return found != end && found->source.clip == clip;
+}
+
+bool LaunchPagedAudio::read(std::int64_t id, std::int64_t firstFrame, std::int32_t frames, bool allowLoop) noexcept {
+    readFrames_ = 0;
+    if (sources_.empty() || frames <= 0 || frames > blockFrames_) return false;
+    const auto* begin = sources_.data();
+    const auto* end = begin + sources_.size();
+    const auto* found = std::lower_bound(begin, end, id,
+        [](const Entry& entry, std::int64_t key) { return entry.source.clip < key; });
+    if (found == end || found->source.clip != id) return false;
+
+    readFrames_ = frames;
+    const auto prefix = firstFrame < 0 ? static_cast<std::int32_t>(-std::max<std::int64_t>(-frames, firstFrame)) : 0;
+    std::array<float*, 64> out;
+    for (std::int32_t channel = 0; channel < channels_; ++channel) {
+        auto* samples = output_.data() + static_cast<std::size_t>(channel) * static_cast<std::size_t>(blockFrames_);
+        std::fill_n(samples, prefix, 0.0f);
+        out[static_cast<std::size_t>(channel)] = samples + prefix;
+    }
+    if (prefix == frames) return true;
+    clock_.locate(std::max<std::int64_t>(0, firstFrame));
+    clock_.loop(found->source.loopBeginFrame, found->source.loopEndFrame, allowLoop);
+    clock_.play();
+    NodeIo io;
+    io.out = out.data();
+    io.channels = channels_;
+    io.frames = frames - prefix;
+    io.sampleRate = sampleRate_;
+    found->playback->process(io);
+    return true;
+}
+
+std::span<const float> LaunchPagedAudio::channel(std::int32_t index) const noexcept {
+    if (index < 0 || index >= channels_) return {};
+    return {output_.data() + static_cast<std::size_t>(index) * static_cast<std::size_t>(blockFrames_),
+            static_cast<std::size_t>(readFrames_)};
+}
+
+std::uint32_t LaunchPagedAudio::underrunSamples() const noexcept { return pages_.underrunSamples(); }
+const std::vector<std::string>& LaunchPagedAudio::problems() const noexcept { return problems_; }
+
+} // namespace adi::engine

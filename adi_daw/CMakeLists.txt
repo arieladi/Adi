@@ -1849,30 +1849,40 @@ target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
 
 target_sources(adi_core PRIVATE
+    src/adi/recording_slot_commands.cpp
     src/adi/session_ops.cpp
+    src/adi/engine/clip_update_rate.cpp
     src/adi/engine/launch_ops.cpp
     src/adi/engine/launch_store.cpp
     src/adi/engine/launch_quantize.cpp
     src/adi/engine/launcher.cpp
     src/adi/engine/launch_audio.cpp
     src/adi/engine/launch_audio_runtime.cpp
+    src/adi/engine/launch_gain_edits.cpp
+    src/adi/engine/launch_paged_audio.cpp
     src/adi/engine/launch_follow_playback.cpp
     src/adi/engine/launch_capture.cpp
     src/adi/engine/launch_midi.cpp
     src/adi/engine/slot_recording.cpp)
 foreach(_adi_launch_suite IN ITEMS
         launch_ops launch_store launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
-        launch_follow_playback launch_capture launch_midi slot_recording)
+        launch_follow_playback launch_capture launch_gain_runtime launch_midi
+        slot_recording slot_recording_commit clip_update_rate)
     add_executable(adi_${_adi_launch_suite}_tests tests/test_${_adi_launch_suite}.cpp)
     target_link_libraries(adi_${_adi_launch_suite}_tests PRIVATE adi_core adi_warnings)
     add_test(NAME adi_${_adi_launch_suite}_tests COMMAND adi_${_adi_launch_suite}_tests)
 endforeach()
+target_link_libraries(adi_clip_update_rate_tests PRIVATE adi_settings)
+target_link_libraries(adi_launcher_tests PRIVATE Threads::Threads)
 add_executable(adi_session_arrangement_isolation_tests tests/test_session_arrangement_isolation.cpp)
 target_link_libraries(adi_session_arrangement_isolation_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_arrangement_isolation_tests COMMAND adi_session_arrangement_isolation_tests)
 add_executable(adi_session_ops_tests tests/test_session_ops.cpp)
 target_link_libraries(adi_session_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_ops_tests COMMAND adi_session_ops_tests)
+add_executable(adi_session_launch_persisted_tests tests/test_session_launch_persisted.cpp)
+target_link_libraries(adi_session_launch_persisted_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_launch_persisted_tests COMMAND adi_session_launch_persisted_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
     target_link_options(adi_launch_audio_tests PRIVATE

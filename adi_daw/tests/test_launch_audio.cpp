@@ -185,6 +185,47 @@ void verifyFade(const LaunchAudioClip& clip) {
                 "launch-in Fade matches the 48 kHz reference knots across a split");
     }
 }
+
+void verifyOutgoingFade(const LaunchAudioClip& clip) {
+    std::array<float, 200> narrow;
+    std::array<double, 200> wide;
+    narrow.fill(0.125f);
+    wide.fill(0.125);
+    float* out = narrow.data();
+    double* out64 = wide.data();
+    AudioIo io;
+    io.out = &out;
+    io.out64 = &out64;
+    io.numOut = 1;
+    io.frames = static_cast<std::int32_t>(narrow.size());
+    constexpr std::int64_t startFrame = 743;
+    {
+        audio::CallbackScope callback;
+        mixLaunchAudioTail(io, 3, 83, clip, startFrame, 0.5f, 0);
+        mixLaunchAudioTail(io, 86, 114, clip, startFrame + 83, 0.5f, 83);
+    }
+    constexpr std::array gains{1.0, 25.0 / 27, 20.0 / 27, 0.5, 7.0 / 27, 2.0 / 27, 0.0};
+    for (std::size_t i = 0; i < gains.size(); ++i) {
+        const auto position = i * 32;
+        const auto target = 0.125 + 0.5 * gains[i] *
+            clip.sample(startFrame + static_cast<std::int64_t>(position), 0);
+        require(std::abs(wide[3 + position] - target) < 1e-12 &&
+                std::abs(narrow[3 + position] - target) < 1e-7,
+                "the outgoing fade continues source and curve across callback splits");
+    }
+    require(narrow[0] == 0.125f && narrow[199] == 0.125f,
+            "an outgoing fade leaves audio beyond its exact ramp untouched");
+    require(launchFadeFrames(44100) == 176 && launchFadeFrames(48000) == 192 &&
+            launchFadeFrames(96000) == 384 && launchFadeFrames(192000) == 768,
+            "incoming and outgoing fade lengths use the selected sample rate");
+    const auto last = static_cast<std::int64_t>(clip.frames() - 1);
+    {
+        audio::CallbackScope callback;
+        mixLaunchAudioTail(io, 0, 1, clip, last + 1, 0.5f, 0, 96);
+    }
+    require(wide[0] == 0.125 + 0.25 * clip.sample(last, 0),
+            "an early stop continues at the current fade-in level with bounded source access");
+}
 } // namespace
 
 int main() {
@@ -198,6 +239,7 @@ int main() {
         constexpr std::uint64_t budget = 2 * 1024 * 1024;
         const auto first = LaunchAudioClip::read(100, 0, firstWav, rate, budget);
         verifyFade(first);
+        verifyOutgoingFade(first);
         audio::WarpRenderPlan warp;
         warp.source = secondWav;
         warp.workFolder = temporary.path();

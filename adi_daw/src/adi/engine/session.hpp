@@ -90,7 +90,11 @@ class LaunchAudioProject;
 class LaunchAudioRuntime;
 class LaunchAudioDriver;
 struct AudioRecordingSpec;
+struct LaunchBlock;
+struct LaunchClipGainEdit;
 struct LaunchRequest;
+struct LaunchStatusHeader;
+struct LaunchTrackStatus;
 struct LaunchTransition;
 class MidiInputCapture;
 struct RecordingTarget;
@@ -505,6 +509,11 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     /// Single owner to driver. Launches are consumed while transport rolls.
     [[nodiscard]] bool postLaunchGesture(std::span<const LaunchRequest>) noexcept;
+    /// Single owner to driver. A prepared multiplier changes the addressed active audio run.
+    [[nodiscard]] bool postLaunchClipGainEdit(const LaunchClipGainEdit&) noexcept;
+    /// An owner may stamp a launch op with this published project identity.
+    [[nodiscard]] std::uint64_t launchIncarnation() const noexcept;
+    [[nodiscard]] bool readLaunchStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
@@ -540,6 +549,8 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
+    struct LaunchAudit;
+    void observeLaunchAudits(bool readOnly);
     friend struct GestureRuntime;
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
@@ -577,6 +588,7 @@ private:
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
     std::unique_ptr<LaunchAudioDriver> launchAudioDriver_;
+    std::shared_ptr<LaunchAudit> launchAudit_;
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
@@ -622,12 +634,21 @@ private:
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
+        [[nodiscard]] LaunchBlock launchBlock(std::int32_t frames) const noexcept;
     };
     void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
+    std::uint64_t storedLaunchIncarnation_ = 0;
+    std::shared_ptr<const ClipProject> storedLaunchSource_;
+    std::shared_ptr<const LaunchAudioProject> storedLaunchProject_;
+    std::vector<TempoEvent> storedLaunchTempo_;
+    std::vector<std::string> launchProblems_;
+    std::uint32_t storedLaunchRate_ = 0;
+    std::uint16_t storedLaunchChannels_ = 0;
+    std::int32_t storedLaunchBlockFrames_ = 0;
     std::vector<rows::TempoEvent> performedTempo_; // owner-only performance history
     std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor

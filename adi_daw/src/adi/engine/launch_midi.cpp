@@ -103,8 +103,12 @@ const std::size_t* LaunchMidiClip::stableIndex(std::uint64_t id) const noexcept 
 }
 
 LaunchMidiTrack::Voice* LaunchMidiTrack::voice(std::uint64_t id) noexcept {
+    return const_cast<Voice*>(std::as_const(*this).voice(id));
+}
+
+const LaunchMidiTrack::Voice* LaunchMidiTrack::voice(std::uint64_t id) const noexcept {
     if (id != 0) {
-        for (auto& item : active_)
+        for (const auto& item : active_)
             if (item.runtimeId == id)
                 return &item;
     }
@@ -172,8 +176,66 @@ void LaunchMidiTrack::start(const LaunchMidiClip& clip, std::size_t index, float
         ++dropped_;
         return;
     }
-    *empty = {note, id, index};
+    *empty = {note, id, index, clip.id(), revision_};
     emitOn(*empty, velocity, out, offset);
+}
+
+void LaunchMidiTrack::adoptProgram(std::uint64_t program) noexcept {
+    if (adoptedProgram_ == program)
+        return;
+    adoptedProgram_ = program;
+    for (auto& item : active_) {
+        if (!item.runtimeId)
+            continue;
+        if (item.pending && item.retainedOff != program)
+            item.pending = false;
+        if (!item.sounding && !item.releasing && item.retainedOn != program)
+            item.retry = true;
+    }
+}
+
+std::int64_t LaunchMidiTrack::eventClip(const Event& event) const noexcept {
+    const auto* item = voice(event.noteId);
+    return item ? item->clip : 0;
+}
+
+bool LaunchMidiTrack::canRetainPendingEvent(const Event& event, const LaunchMidiClip* clip,
+                                           LaunchMidiRevision revision) const noexcept {
+    const auto* item = voice(event.noteId);
+    if (!item || item->revision.route != revision.route)
+        return false;
+    if (event.type == EventType::NoteOff)
+        return item->pending;
+    if (event.type != EventType::NoteOn && event.type != EventType::NoteExpression)
+        return false;
+    if (item->revision.program == revision.program)
+        return true;
+    if (!clip || clip->id() != item->clip)
+        return false;
+    const auto* index = clip->stableIndex(item->note.id);
+    return index && clip->notes_[*index].sameAuthored(item->note);
+}
+
+void LaunchMidiTrack::pendingEventRetained(const Event& event, std::uint64_t program) noexcept {
+    auto* item = voice(event.noteId);
+    if (!item)
+        return;
+    if (event.type == EventType::NoteOn)
+        item->retainedOn = program;
+    if (event.type == EventType::NoteOff)
+        item->retainedOff = program;
+}
+
+bool LaunchMidiTrack::retainedEventIsValid(const Event& event, std::uint64_t program) const noexcept {
+    const auto* item = voice(event.noteId);
+    return item && (event.type == EventType::NoteOff
+        ? item->pending && item->retainedOff == program
+        : item->revision.program == program);
+}
+
+bool LaunchMidiTrack::holdingNotes() const noexcept {
+    return std::any_of(active_.begin(), active_.end(),
+        [](const Voice& item) { return item.runtimeId && !item.releasing; });
 }
 
 void LaunchMidiTrack::noteOnDelivered(const Event& event) noexcept {
@@ -215,6 +277,7 @@ bool LaunchMidiTrack::render(const LaunchBlock& block, const LaunchSection& sect
         !std::isfinite(section.velocity))
         return false;
 
+    adoptProgram(revision.program);
     const Projection projection{block, section.timelineTick - section.sourceTick};
     const auto first = block.sample + section.offset;
     const auto end = first + section.frames;
@@ -225,12 +288,15 @@ bool LaunchMidiTrack::render(const LaunchBlock& block, const LaunchSection& sect
     for (auto& item : active_) {
         if (item.runtimeId == 0)
             continue;
-        if (adopt && !item.releasing) {
+        const bool retainedPair = item.retainedOn == revision.program && item.retainedOff == revision.program;
+        if (adopt && item.clip == section.clip && (!item.releasing || retainedPair)) {
             const auto* index = clip->stableIndex(item.note.id);
             if (!index || !clip->notes_[*index].sameAuthored(item.note))
                 item.releasing = true;
-            else
+            else {
                 item.index = *index;
+                item.revision.program = revision.program;
+            }
         }
         if ((restart || item.releasing || projection.sample(item.note.end) <= first) &&
             !stop(item, out, firstOffset)) {

@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <span>
+#include <thread>
 
 namespace {
 bool countAllocations = false;
@@ -33,9 +35,10 @@ constexpr auto quarter = adi::textproj::kPPQ;
 constexpr auto bar = 4 * quarter;
 constexpr std::array<std::int64_t,2> tracks{1,2};
 constexpr std::array<std::int64_t,3> scenes{1,2,3};
-int failed = 0;
+int failed = 0, checks = 0;
 
 void check(bool pass, const char* message) {
+    ++checks;
     if (!pass) {
         std::printf("FAIL %s\n", message);
         ++failed;
@@ -103,7 +106,7 @@ void scenesAtSampleBoundaries() {
     const std::array slots{slot(1,1,11), slot(1,2,12), slot(2,1,21)};
     const LaunchView view{tracks, slots, scenes};
     for (const int rate : {44100,48000,96000,192000}) {
-        for (const int blockSize : {32,257,4096,8192}) {
+        for (const int blockSize : {32,64,256,257,2048,4096,8192}) {
             Launcher launcher(2);
             Output output;
             check(post(launcher, request(LaunchRequestKind::ScenePress,0,1)), "first scene gesture admitted");
@@ -308,6 +311,324 @@ void cancelSceneAndStopAll() {
           !out.edges[5].arrangement && !out.edges[6].arrangement,
           "Stop All silences every track on the same bar without handing back Arrangement");
 }
+
+void statusTapAndStoppedAdmission() {
+    constexpr int rate = 48000;
+    auto looping = slot(1,1,11);
+    looping.loopEndTick = quarter;
+    auto oneShot = slot(1,2,12);
+    oneShot.endTick = 2 * quarter;
+    oneShot.fade = true;
+    auto gate = slot(2,1,21,LaunchMode::Gate);
+    auto toggle = slot(2,2,22,LaunchMode::Toggle);
+    const std::array slots{looping,oneShot,gate,toggle};
+    const LaunchView view{tracks,slots,scenes};
+    Launcher launcher(2);
+    std::array<LaunchTrackStatus,2> tapRows{};
+    LaunchStatusHeader header;
+    check(!launcher.readStatus(tapRows,header),"an unrendered launcher has no published tap");
+    const auto press = [](int track, int scene, int clip) { return request(LaunchRequestKind::SlotPress,track,scene,clip); };
+    auto paused = block(1,0,rate);
+    auto stale = press(1,1,11);
+    stale.incarnation = 16;
+    check(post(launcher,stale) && !launcher.admitWhileStopped(paused,view),
+          "stale press does not start a stopped transport");
+    check(launcher.readStatus(tapRows,header) && !header.transportPlaying && !header.backToArrangement &&
+          header.endSample == 1 && tapRows[0].source == LaunchTrackSource::Arrangement,
+          "held position publishes Arrangement with no claim of playback");
+    std::array<LaunchTrackStatus,1> shortOutput{};
+    shortOutput[0].track = 9;
+    check(!launcher.readStatus(shortOutput,header) && header.trackCount == 2 && shortOutput[0].track == 9,
+          "short destination reports required count without writing partial rows");
+    const auto cancelGate = std::array{press(2,1,21),request(LaunchRequestKind::SlotRelease,2,1,21)};
+    check(launcher.post(cancelGate) && !launcher.admitWhileStopped(paused,view),
+          "Gate press and release before an unheard launch do not start transport");
+    const auto twice = std::array{press(2,2,22),press(2,2,22)};
+    check(launcher.post(twice) && !launcher.admitWhileStopped(paused,view),
+          "two Toggle presses cancel one future start before rolling");
+    check(post(launcher,press(1,1,11)) && launcher.admitWhileStopped(paused,view),
+          "a surviving fresh quantized slot launch requests transport start");
+    struct TapTrace {
+        std::array<LaunchTrackStatus,2> rows{};
+        std::size_t count = 0;
+    } trace;
+    const LaunchSink sink{&trace,nullptr,nullptr,nullptr,[](void* p,const LaunchTrackStatus& status) noexcept {
+        auto& trace = *static_cast<TapTrace*>(p);
+        trace.rows[trace.count++ % trace.rows.size()] = status;
+    }};
+    launcher.process(block(1,95999,rate),view,sink);
+    check(launcher.readStatus(tapRows,header) && trace.rows == tapRows && header.transportPlaying &&
+          header.endSample == 96000 && header.endTick == bar && tapRows[0].clip == 0 &&
+          tapRows[0].queued == LaunchQueuedStatus{LaunchQueuedAction::Start,11,1,bar},
+          "a fired slot is visible on both taps while an edge on the exclusive boundary stays queued");
+    launcher.process(block(96000,25000,rate),view,sink);
+    check(launcher.readStatus(tapRows,header) && tapRows[0].clip == 11 && tapRows[0].scene == 1 &&
+          tapRows[0].source == LaunchTrackSource::Session && tapRows[0].run != 0 &&
+          tapRows[0].completedLoops == 1 && tapRows[0].loopLengthTicks == quarter &&
+          tapRows[0].queued.action == LaunchQueuedAction::None && header.backToArrangement,
+          "active loop reports its stable run, progress and completed repetitions");
+    const auto run = tapRows[0].run;
+    check(post(launcher,press(1,2,12)),"queue a different clip while previous loop sounds");
+    launcher.process(block(121000,257,rate),view,sink);
+    check(launcher.readStatus(tapRows,header) && tapRows[0].run == run && tapRows[0].clip == 11 &&
+          tapRows[0].queued == LaunchQueuedStatus{LaunchQueuedAction::Start,12,2,2*bar},
+          "queued slot and currently sounding slot have independent stable identities");
+    launcher.suspendStatus();
+    check(launcher.readStatus(tapRows,header) && !header.transportPlaying && tapRows[0].run == run &&
+          tapRows[0].queued.clip == 12,"suspend publishes paused status while preserving the run and request");
+    auto held = block(121257,0,rate);
+    check(!launcher.admitWhileStopped(held,view),"a queued launch from before Stop does not restart transport");
+    check(post(launcher,request(LaunchRequestKind::StopTrack,1)) && !launcher.admitWhileStopped(held,view),
+          "StopTrack can settle on the held clock without restarting it");
+    check(launcher.readStatus(tapRows,header) && tapRows[0].source == LaunchTrackSource::Silence &&
+          tapRows[0].queued.action == LaunchQueuedAction::None && header.backToArrangement,
+          "a stopped slot retains track takeover until handed back");
+    check(post(launcher,request(LaunchRequestKind::BackToArrangement,1)) && !launcher.admitWhileStopped(held,view),
+          "Back to Arrangement can settle on the held clock");
+    check(launcher.readStatus(tapRows,header) && tapRows[0].source == LaunchTrackSource::Arrangement &&
+          !header.transportPlaying && !header.backToArrangement,"hand-back clears takeover without rolling transport");
+    check(post(launcher,press(1,2,12)),"post a one-shot for remaining-time telemetry");
+    launcher.process(block(121257,4096,rate,LaunchQuantization::None),view,sink);
+    check(launcher.readStatus(tapRows,header) && tapRows[0].remainingSamples == 48000-4096 &&
+          tapRows[0].loopLengthTicks == 0,"one-shot Track Status reports exact remaining samples");
+    check(post(launcher,request(LaunchRequestKind::StopTrack,1)),"post quantized stop for active one-shot");
+    launcher.process(block(125353,32,rate),view,sink);
+    check(launcher.readStatus(tapRows,header) && tapRows[0].clip == 12 &&
+          tapRows[0].queued == LaunchQueuedStatus{LaunchQueuedAction::Stop,0,0,2*bar},
+          "a pending stop is visible while the slot still sounds");
+}
+
+void tapAcrossGenerations() {
+    constexpr int rate = 48000;
+    const std::array slots{slot(1,1,11),slot(2,1,21)};
+    const LaunchView full{tracks,slots,scenes};
+    const LaunchView justFirst{std::span(tracks).first(1),slots,scenes};
+    Launcher launcher(2);
+    std::array<LaunchTrackStatus,2> rows{};
+    LaunchStatusHeader state;
+    check(post(launcher,request(LaunchRequestKind::ScenePress,0,1)),"post two-track scene");
+    launcher.process(block(0,257,rate),full);
+    check(launcher.readStatus(rows,state) && rows[0].sourceTick == rows[1].sourceTick &&
+          rows[0].clip == 11 && rows[1].clip == 21,"scene slots publish the same completed position");
+    const auto firstRun = rows[0].run;
+    launcher.process(block(257,257,rate),justFirst);
+    check(launcher.readStatus(rows,state) && state.trackCount == 1 && rows[0].run == firstRun,
+          "removed graph tracks disappear from tap; surviving run keeps identity");
+    auto replacement = block(514,257,rate);
+    replacement.incarnation = 18;
+    launcher.process(replacement,full);
+    check(launcher.readStatus(rows,state) && state.incarnation == 18 && !state.backToArrangement &&
+          rows[0].run == 0 && rows[1].run == 0,"project replacement exposes no old project run data");
+}
+
+void simultaneousTapReaders() {
+    constexpr int rate = 48000;
+    const std::array firstTracks{std::int64_t{1},std::int64_t{2}};
+    const std::array secondTracks{std::int64_t{3},std::int64_t{4}};
+    const std::array firstSlots{slot(1,1,11),slot(2,1,21)};
+    const std::array secondSlots{slot(3,1,31),slot(4,1,41)};
+    const LaunchView first{firstTracks,firstSlots,scenes};
+    const LaunchView second{secondTracks,secondSlots,scenes};
+    Launcher launcher(2);
+    std::atomic<bool> done{false};
+    std::atomic<bool> coherent{true};
+    std::atomic<int> snapshots{0};
+    std::atomic<int> ready{0};
+    auto read = [&]() {
+        std::array<LaunchTrackStatus,2> status{};
+        LaunchStatusHeader header;
+        auto previous = std::uint64_t{0};
+        ready.fetch_add(1,std::memory_order_release);
+        do {
+            if (!launcher.readStatus(status,header)) continue;
+            const auto odd = header.incarnation % 2 != 0;
+            const auto track = odd ? 1 : 3;
+            if (header.revision < previous || header.trackCount != 2 || !header.transportPlaying ||
+                status[0].track != track || status[1].track != track + 1 ||
+                status[0].clip != track * 10 + 1 || status[1].clip != (track + 1) * 10 + 1 ||
+                status[0].sourceTick != status[1].sourceTick)
+                coherent.store(false,std::memory_order_relaxed);
+            previous = header.revision;
+            snapshots.fetch_add(1,std::memory_order_relaxed);
+        } while (!done.load(std::memory_order_acquire));
+    };
+    std::thread one(read),two(read);
+    while (ready.load(std::memory_order_acquire) != 2) std::this_thread::yield();
+    for (std::int64_t i = 1; i <= 4000; ++i) {
+        auto current = block(i,1,rate,LaunchQuantization::None);
+        current.incarnation = static_cast<std::uint64_t>(i);
+        auto requestScene = request(LaunchRequestKind::ScenePress,0,1);
+        requestScene.incarnation = current.incarnation;
+        if (!post(launcher,requestScene) || !launcher.process(current,i % 2 != 0 ? first : second))
+            coherent.store(false,std::memory_order_relaxed);
+    }
+    done.store(true,std::memory_order_release);
+    one.join();
+    two.join();
+    check(coherent.load() && snapshots.load() >= 2,"parallel tap readers see complete and monotonic published frames");
+}
+
+void meterAndTempoStep() {
+    static constexpr std::array meters{adi::rows::TimeSignature{0,3,4},adi::rows::TimeSignature{3*quarter,5,4}};
+    const std::array slots{slot(1,1,11),slot(1,2,12)};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+    struct SteppedClock {
+        int rate;
+        std::int64_t stepSample;
+        LaunchBlock at(std::int64_t sample, std::int32_t frames) const {
+            return {sample,frames,17,LaunchQuantization::Bar,meters,this,
+                [](const void* p, std::int64_t sample) noexcept {
+                    const auto& clock = *static_cast<const SteppedClock*>(p);
+                    if (sample <= clock.stepSample) return sample * 2 * quarter / clock.rate;
+                    return 3*quarter + (sample-clock.stepSample)*quarter/clock.rate;
+                },
+                [](const void* p, std::int64_t tick) noexcept {
+                    const auto& clock = *static_cast<const SteppedClock*>(p);
+                    if (tick <= 3*quarter)
+                        return (tick*clock.rate + quarter)/(2*quarter);
+                    return clock.stepSample + ((tick-3*quarter)*clock.rate + quarter/2)/quarter;
+                }};
+        }
+    };
+    for (const int rate : {44100,48000,96000,192000}) {
+        const SteppedClock clock{rate,3*rate/2};
+        for (const auto blockSize : {32,257,512,4096,8192}) {
+            Launcher launcher(1);
+            Output out;
+            auto sample = static_cast<std::int64_t>(rate);
+            const auto renderTo = [&](std::int64_t target) {
+                while (sample < target) {
+                    const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(target - sample,blockSize));
+                    launcher.process(clock.at(sample,frames),view,out.sink());
+                    sample += frames;
+                }
+            };
+            check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"queue launch before meter/tempo step");
+            renderTo(clock.stepSample + 17);
+            check(post(launcher,request(LaunchRequestKind::SlotPress,1,2,12)),"queue launch inside following 5/4 bar");
+            renderTo(clock.stepSample + 5 * rate + 17);
+            check(out.edgeCount == 2 && out.edges[0].tick == 3*quarter && out.edges[0].sample == clock.stepSample &&
+                  out.edges[1].tick == 8*quarter && out.edges[1].sample == clock.stepSample + 5*rate,
+                  "both bar launches retain exact sample and tick under a simultaneous tempo and meter change");
+        }
+    }
+}
+
+void pendingAcrossShortArrangementLoops() {
+    constexpr int rate = 48000;
+    const std::array slots{slot(1,1,11)};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+    Launcher launcher(1);
+    Output out;
+    check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"queue a four-beat grid launch inside a one-beat loop");
+    launcher.process(block(18000,18000,rate),view,out.sink());
+    auto wrap = block(12000,24000,rate);
+    wrap.arrangementWrap = true;
+    launcher.process(wrap,view,out.sink());
+    launcher.process(wrap,view,out.sink());
+    check(out.edgeCount == 0,"a loop does not fire the still-pending launch early");
+    launcher.process(wrap,view,out.sink());
+    check(out.edgeCount == 1 && out.edges[0].sample == 24000 && out.edges[0].offset == 12000 &&
+          18000 + 2*24000 + out.edges[0].offset == 96000 - 18000,
+          "short Arrangement loops count down the original grid deadline instead of starving the launch");
+    const auto oldRun = out.edges[0].newRun;
+    check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"queue a new launch before explicit locate");
+    launcher.process(wrap,view,out.sink());
+    launcher.process(block(96000,32,rate),view,out.sink());
+    check(out.edgeCount == 2 && out.edges[1].oldRun == oldRun && out.edges[1].sample == 96000,
+          "an explicit locate resolves the newly reached grid without copying the old run identity");
+}
+
+void longRunAndOutgoingAnchor() {
+    constexpr int rate = 48000;
+    constexpr auto framesPerBlock = 1'000'000'000;
+    constexpr auto wholeRun = std::int64_t{20} * framesPerBlock;
+    auto old = slot(1,1,11);
+    old.startTick = quarter/4;
+    old.endTick = wholeRun * quarter / (rate/2) + quarter;
+    old.fade = true;
+    old.velocityAmount = 1;
+    const std::array slots{old,slot(1,2,12)};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+    Launcher launcher(1);
+    Output out;
+    auto first = request(LaunchRequestKind::SlotPress,1,1,11);
+    first.velocity = 0.25f;
+    check(post(launcher,first),"start a long one-shot");
+    for (std::int64_t sample = 0; sample < wholeRun; sample += framesPerBlock)
+        launcher.process(block(sample,framesPerBlock,rate,LaunchQuantization::None),view,out.sink());
+    std::array<LaunchTrackStatus,1> state{};
+    LaunchStatusHeader header;
+    check(launcher.readStatus(state,header) && header.endSample == wholeRun &&
+          state[0].sourceTick == old.startTick + wholeRun * quarter / (rate/2) &&
+          state[0].remainingSamples == 18000 && out.edgeCount == 1,
+          "over four days of play preserve the monotonic clock, source phase and one-shot remaining time");
+    check(post(launcher,request(LaunchRequestKind::SlotPress,1,2,12)),"replace the long run");
+    launcher.process(block(wholeRun,32,rate,LaunchQuantization::None),view,out.sink());
+    check(out.edgeCount == 2 && out.edges[1].oldClip == 11 && out.edges[1].oldSourceAnchorTick == old.startTick &&
+          out.edges[1].oldFramesSinceSourceAnchor == wholeRun && out.edges[1].oldFramesSinceStart == wholeRun &&
+          out.edges[1].oldVelocity == 0.25f && out.edges[1].oldFade,
+          "outgoing fade receives the exact old source anchor, continuous age, gain and option");
+}
+
+void arrangementBetweenLaunches() {
+    constexpr int rate = 48000;
+    const std::array slots{slot(1,1,11),slot(1,2,12)};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+    Launcher launcher(1);
+    Output out;
+    check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"start a slot before hand-back");
+    launcher.process(block(0,1000,rate),view,out.sink());
+    const std::array gesture{request(LaunchRequestKind::BackToArrangement,1),
+                             request(LaunchRequestKind::SlotPress,1,2,12)};
+    check(launcher.post(gesture),"admit a hand-back and subsequent quantized start together");
+    const auto before = out.sectionCount;
+    launcher.process(block(1000,100000,rate),view,out.sink());
+    check(out.edgeCount == 3 && out.edges[1].arrangement && out.edges[1].sample == 1000 &&
+          out.edges[2].sample == 96000 && out.edges[2].newClip == 12,
+          "back takes effect immediately and the different slot waits until its own grid");
+    const auto& arrangement = out.sections[before % out.sections.size()];
+    const auto& relaunch = out.sections[(before+1) % out.sections.size()];
+    check(out.sectionCount == before+2 && arrangement.arrangement && arrangement.offset == 0 &&
+          arrangement.frames == 95000 && !relaunch.arrangement && relaunch.offset == 95000 && relaunch.clip == 12,
+          "one exact Arrangement section fills the gap before the next Session launch");
+}
+
+void repeatedDeadlinesDontDrift() {
+    constexpr int rate = 44100;
+    constexpr auto step = quarter/8;
+    auto clip = slot(1,1,11,LaunchMode::Repeat);
+    clip.quantization = LaunchQuantization::ThirtySecond;
+    const std::array slots{clip};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+    struct Repetitions {
+        std::int64_t count = 0;
+        bool exact = true;
+        std::uint64_t recent = 0;
+    };
+    const auto clock = block(0,1,rate);
+    const auto horizon = clock.sampleAtTick(clock.clock,1000*step)+1;
+    for (const auto width : {257,4096}) {
+        Launcher launcher(1);
+        Repetitions result;
+        const LaunchSink sink{&result,nullptr,[](void* p,const LaunchTransition& edge) noexcept {
+            auto& result = *static_cast<Repetitions*>(p);
+            const auto tick = result.count * step;
+            const auto sample = (tick * rate + quarter)/(2*quarter);
+            result.exact &= edge.tick == tick && edge.sample == sample && edge.oldRun == result.recent &&
+                edge.newRun != edge.oldRun && edge.sourceTick == 0;
+            result.recent = edge.newRun;
+            ++result.count;
+        }};
+        check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"start thousand-repeat deadline proof");
+        for (std::int64_t begin = 0; begin < horizon; begin += width) {
+            const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(width,horizon-begin));
+            launcher.process(block(begin,frames,rate),view,sink);
+        }
+        check(result.count == 1001 && result.exact,
+              "one thousand fractional-frame Repeat deadlines remain sample- and tick-exact");
+    }
+}
 }
 
 int main() {
@@ -316,6 +637,14 @@ int main() {
     followAndStaleRequests();
     roundedLoopAndWrap();
     cancelSceneAndStopAll();
-    if (!failed) std::puts("Session launcher: zero scene sample error across 16 rate/block combinations and zero callback allocations");
+    statusTapAndStoppedAdmission();
+    tapAcrossGenerations();
+    simultaneousTapReaders();
+    meterAndTempoStep();
+    pendingAcrossShortArrangementLoops();
+    longRunAndOutgoingAnchor();
+    arrangementBetweenLaunches();
+    repeatedDeadlinesDontDrift();
+    if (!failed) std::printf("Session launcher: %d checks, zero scene sample error across 28 rate/block combinations and zero callback allocations\n",checks);
     return failed != 0;
 }

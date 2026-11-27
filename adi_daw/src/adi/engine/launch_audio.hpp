@@ -9,8 +9,9 @@
 #include <vector>
 
 namespace adi::engine {
+class LaunchPagedAudio;
 
-/// Resident PCM in the driver's sample rate. Its zero frame is associated
+/// Prepared audio in the driver's sample rate. Its zero frame is associated
 /// with one local clip tick. The owner prepares media and decides its budget
 /// before giving it to the driver. A Warp plan projects onto a fixed tempo
 /// using the same worker stretcher as Arrangement clips.
@@ -22,12 +23,20 @@ public:
     static LaunchAudioClip stretch(std::int64_t clip, std::int64_t firstTick,
                                    const audio::WarpRenderPlan& plan, std::uint64_t byteBudget,
                                    std::stop_token = {});
+    /// Own interleaved output from the ordinary clip reader's source clock.
+    static LaunchAudioClip fromSamples(std::int64_t clip, std::uint32_t driverRate,
+                                       std::uint16_t channels, std::vector<float>);
+    static LaunchAudioClip fromPages(std::int64_t clip, std::uint32_t driverRate,
+                                    std::uint16_t channels, std::uint64_t frames,
+                                    std::shared_ptr<LaunchPagedAudio>);
 
     [[nodiscard]] std::int64_t clip() const noexcept { return clip_; }
     [[nodiscard]] std::uint32_t rate() const noexcept { return rate_; }
-    [[nodiscard]] std::uint64_t frames() const noexcept { return samples_.size() / channels_; }
+    [[nodiscard]] std::uint64_t frames() const noexcept { return pages_ ? pagedFrames_ : samples_.size() / channels_; }
+    [[nodiscard]] std::uint64_t bytes() const noexcept { return samples_.size() * sizeof(float); }
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
+    [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
 
 private:
     LaunchAudioClip(std::int64_t clip, std::int64_t firstTick, std::uint32_t rate,
@@ -38,6 +47,8 @@ private:
     std::uint32_t rate_;
     std::uint16_t channels_;
     std::vector<float> samples_;
+    std::shared_ptr<LaunchPagedAudio> pages_;
+    std::uint64_t pagedFrames_ = 0;
 };
 
 /// Replace a half-open region of a track's source buffer with an active slot
@@ -47,5 +58,15 @@ private:
 void renderLaunchAudio(const AudioIo&, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip*, std::int64_t firstFrame, float velocity,
                        std::int64_t fadeElapsedFrames = -1) noexcept;
+
+/// Duration of the provisionally measured Session launch-edge fade.
+[[nodiscard]] std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept;
+
+/// Add the outgoing clip's continuation, with the complementary fade law.
+/// Reinforce the endpoint with its last source sample if the media runs out
+/// during the ramp. The incoming clip or Arrangement already owns the buffer.
+void mixLaunchAudioTail(const AudioIo&, std::int32_t offset, std::int32_t frames,
+                        const LaunchAudioClip&, std::int64_t firstFrame, float velocity,
+                        std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop = -1) noexcept;
 
 } // namespace adi::engine

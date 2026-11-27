@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/launch_gestures.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
@@ -12,6 +13,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "session_schema_fixture.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -102,9 +104,10 @@ struct Fixture {
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
     }
-    void clip(int id=1,std::int64_t on=24024,std::int64_t duration=480480,std::int64_t length=5765760){
+    void clip(int id=1,std::int64_t on=24024,std::int64_t duration=480480,std::int64_t length=5765760,
+              std::uint8_t key=60){
         SQLite::Statement q(store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) VALUES(?,1,'midi',0,0,?)");q.bind(1,id);q.bind(2,length);q.exec();
-        NoteRecord note{};note.start_ticks=on;note.dur_ticks=duration;note.note_id=42;note.key=60;note.channel=3;note.vel_on=93;note.vel_off=37;note.probability=10000;note.tuning_cents=31.25f;
+        NoteRecord note{};note.start_ticks=on;note.dur_ticks=duration;note.note_id=42;note.key=key;note.channel=3;note.vel_on=93;note.vel_off=37;note.probability=10000;note.tuning_cents=31.25f;
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
@@ -1500,6 +1503,93 @@ void expressionKnotFollowsNoteClock() {
                     static_cast<long long>(chased),static_cast<long long>(chasedValue));
 }
 
+void storedSessionSlots() {
+    constexpr std::int64_t quarterTicks = 5765760;
+    Fixture f(48000, 64);
+    test::applySessionSchema(f.store->db());
+    f.clip(1, 0, 2 * quarterTicks, 4 * quarterTicks, 60);
+    f.clip(11, 0, 480480, quarterTicks, 64);
+    f.clip(12, 0, 480480, quarterTicks, 67);
+    f.store->db().exec("INSERT INTO scenes(id,ord,name) VALUES(100,0,'One'),(200,1,'Two');"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,100,11),(1,200,12);"
+        "INSERT INTO clip_launch(clip_id,launch_quant) VALUES(11,8),(12,1);");
+    test::seedSessionMarker(f.store->db());
+    f.load();
+    auto noteEvents = [&] {
+        std::vector<Heard> events;
+        for (std::size_t i = 0; i < f.instrument->count; ++i) {
+            const auto& heard = f.instrument->heard[i];
+            if (heard.e.type == EventType::NoteOn || heard.e.type == EventType::NoteOff)
+                events.push_back(heard);
+        }
+        return events;
+    };
+    auto command = [&](LaunchRequestKind kind, std::optional<std::int64_t> scene = {},
+                       std::optional<std::int64_t> clip = {}) {
+        LaunchRequest request;
+        request.kind = kind;
+        request.track = 1;
+        request.scene = scene;
+        request.clip = clip;
+        request.incarnation = f.session.launchIncarnation();
+        return f.session.postLaunchGesture(std::array{request});
+    };
+    check(f.session.launchIncarnation() != 0, "normal Session load installs stored MIDI slots");
+    f.clock = 23888;
+    f.session.transport().locate(f.clock);
+    f.render();
+    auto heard = noteEvents();
+    check(heard.size() == 1 && heard[0].e.dim == 60 && heard[0].clock == 23888,
+          "loaded slot clips stay silent while the Arrangement plays");
+    if (heard.size() != 1)
+        return;
+
+    const auto arrangementVoice = heard[0].e.noteId;
+    check(command(LaunchRequestKind::SlotPress, 100, 11), "launch first MIDI slot");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 3 && heard[1].clock == 24000 && heard[2].clock == 24000 &&
+          heard[1].e.type == EventType::NoteOff && heard[1].e.noteId == arrangementVoice &&
+          heard[2].e.type == EventType::NoteOn && heard[2].e.dim == 64 &&
+          heard[2].e.noteId != arrangementVoice,
+          "48 frames into the callback the Arrangement releases before the first slot onset");
+    if (heard.size() != 3)
+        return;
+    const auto firstSlotVoice = heard[2].e.noteId;
+
+    f.store->db().exec("UPDATE clips SET name='Equivalent MIDI program' WHERE id=11");
+    f.refresh();
+    f.render();
+    check(noteEvents().size() == 3 && f.session.midiClips()->noteActivity(1).held,
+          "a replacement graph retains the first slot's held note");
+
+    check(command(LaunchRequestKind::SlotPress, 200, 12), "launch second MIDI slot");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 5 && heard[3].clock == 24080 && heard[4].clock == 24080 &&
+          heard[3].e.type == EventType::NoteOff && heard[3].e.noteId == firstSlotVoice &&
+          heard[4].e.type == EventType::NoteOn && heard[4].e.dim == 67 &&
+          heard[4].e.noteId != firstSlotVoice,
+          "at sample 24080 the first slot releases before the second slot onset");
+    if (heard.size() != 5)
+        return;
+    const auto secondSlotVoice = heard[4].e.noteId;
+
+    check(command(LaunchRequestKind::BackToArrangement), "return to Arrangement while a slot is held");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 7 && heard[5].clock == 24144 && heard[6].clock == 24144 &&
+          heard[5].e.type == EventType::NoteOff && heard[5].e.noteId == secondSlotVoice &&
+          heard[6].e.type == EventType::NoteOn && heard[6].e.dim == 60 &&
+          heard[6].e.noteId != arrangementVoice,
+          "at sample 24144 the second slot releases and a fresh Arrangement voice is chased");
+    f.session.transport().play(false);
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 8 && heard.back().clock == 24208 && heard.back().e.type == EventType::NoteOff &&
+          f.instrument->balance() == 0, "stopping at sample 24208 clears all source ownership");
+}
+
 } // namespace
 
 int main(int argc,char** argv){
@@ -1522,6 +1612,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }
+    catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "session-slots") storedSessionSlots(); }
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
     catch(const std::exception& e) { check(false,e.what()); }

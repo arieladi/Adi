@@ -2255,7 +2255,8 @@ release?, velocity?}`, `session.launchScene {scene, incarnation, velocity?}`,
 command covers every track. A gesture carries literal IDs and one live
 incarnation. The driver validates the whole gesture against its pinned
 generation. An owner can dispatch directly or deliver the committed audit batch
-as one gesture. The journal retains the commands outside the Undo head.
+as one gesture. A live Session with persisted slots subscribes to its Store's
+committed batches. The journal retains the commands outside the Undo head.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every

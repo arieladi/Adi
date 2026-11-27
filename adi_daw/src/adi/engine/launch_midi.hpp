@@ -74,6 +74,14 @@ public:
                               const LaunchMidiClip*, LaunchMidiRevision,
                               LaunchMidiVoiceIds, EventList&) noexcept;
     [[nodiscard]] bool release(EventList&, std::int32_t offset) noexcept;
+    // Share a published source's PDC handover with the Arrangement source.
+    // Retained releases remain owned until its downstream acknowledgement.
+    void adoptProgram(std::uint64_t program) noexcept;
+    [[nodiscard]] std::int64_t eventClip(const Event&) const noexcept;
+    [[nodiscard]] bool canRetainPendingEvent(const Event&, const LaunchMidiClip*, LaunchMidiRevision) const noexcept;
+    void pendingEventRetained(const Event&, std::uint64_t program) noexcept;
+    [[nodiscard]] bool retainedEventIsValid(const Event&, std::uint64_t program) const noexcept;
+    [[nodiscard]] bool holdingNotes() const noexcept;
     void noteOnDelivered(const Event&) noexcept;
     void noteOnRejected(const Event&) noexcept;
     void noteOffDelivered(const Event&) noexcept;
@@ -86,6 +94,9 @@ private:
         LaunchMidiClip::Note note{};
         std::uint64_t runtimeId = 0;
         std::size_t index = 0;
+        std::int64_t clip = 0;
+        LaunchMidiRevision revision{};
+        std::uint64_t retainedOn = 0, retainedOff = 0;
         bool pending = false, releasing = false, sounding = false, retry = false;
     };
 
@@ -94,10 +105,11 @@ private:
                std::int32_t offset, LaunchMidiVoiceIds) noexcept;
     void emitOn(const Voice&, float velocity, EventList&, std::int32_t offset) noexcept;
     [[nodiscard]] Voice* voice(std::uint64_t runtimeId) noexcept;
+    [[nodiscard]] const Voice* voice(std::uint64_t runtimeId) const noexcept;
 
     std::array<Voice, maximumOwned> active_{};
     std::int64_t track_, clip_ = 0, nextTick_ = 0, nextFrame_ = 0;
-    std::uint64_t run_ = 0, dropped_ = 0;
+    std::uint64_t run_ = 0, dropped_ = 0, adoptedProgram_ = 0;
     LaunchMidiRevision revision_{};
 };
 

@@ -250,6 +250,47 @@ void ambiguousIdentity() {
           "a former duplicate cannot be adopted by an otherwise identical unique note");
 }
 
+void pendingEventsAcrossPublication() {
+    const std::array rows{note(7, 0, 2, 42)};
+    const auto first = LaunchMidiClip::prepare(7, rows);
+    const auto next = LaunchMidiClip::prepare(7, rows);
+    if (!first || !next) {
+        check(false, "delayed event fixture prepared");
+        return;
+    }
+    for (const bool retain : {false, true}) {
+        Driver driver;
+        check(driver.render(section(7, 0, 4, 4, 0), &*first) && driver.output.size() == 2,
+              "short slot note enters the compensation queue with its release");
+        const auto on = driver.output.at(0);
+        const auto off = driver.output.at(1);
+        driver.output.clear();
+        ++driver.revision.program;
+        if (retain) {
+            check(driver.track.canRetainPendingEvent(on, &*next, driver.revision) &&
+                  driver.track.canRetainPendingEvent(off, &*next, driver.revision),
+                  "unchanged queued note-on/off are eligible to transfer together");
+            driver.track.pendingEventRetained(on, driver.revision.program);
+            driver.track.pendingEventRetained(off, driver.revision.program);
+        }
+        driver.block.sample = 4;
+        check(driver.render(section(7, 4, 8, 4, 4, 4), &*next), "adopt callback after publication");
+        if (retain) {
+            check(driver.output.empty() &&
+                  driver.track.retainedEventIsValid(on, driver.revision.program) &&
+                  driver.track.retainedEventIsValid(off, driver.revision.program),
+                  "equivalent program acknowledges the carried pair with no duplicate events");
+            driver.track.noteOnDelivered(on);
+            driver.track.noteOffDelivered(off);
+        } else {
+            check(driver.output.size() == 1 && driver.output.at(0).type == EventType::NoteOff &&
+                  driver.output.at(0).noteId == off.noteId,
+                  "unretained delayed release is retried on the replacement graph");
+            driver.deliver();
+        }
+    }
+}
+
 void driverAllocations() {
     const std::array rows{note(7, 0, 5, 42)};
     const auto clip = LaunchMidiClip::prepare(7, rows);
@@ -282,6 +323,7 @@ int main() {
     roundedFrames();
     validationAndCapacity();
     ambiguousIdentity();
+    pendingEventsAcrossPublication();
     driverAllocations();
     std::printf("launch MIDI: %d checks, %d failures\n", checks, failures);
     return failures != 0;

@@ -4,6 +4,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
 #include "adi/textproj.hpp"
 
 #include <algorithm>
@@ -17,6 +18,10 @@ namespace {
 // RESEARCH-INTAKE ED-10 gives a 192-frame seven-knot curve at 48 kHz.
 // Use its cubic shape for Session launch-in while the Session-edge reading is owed.
 constexpr double launchFadeSeconds = 0.004;
+
+double launchFadeGain(std::int64_t elapsed, std::int64_t length) noexcept {
+    return clipFadeShape(static_cast<double>(elapsed) / static_cast<double>(length), 4);
+}
 }
 
 LaunchAudioClip::LaunchAudioClip(std::int64_t clip, std::int64_t firstTick, std::uint32_t rate,
@@ -68,6 +73,17 @@ LaunchAudioClip LaunchAudioClip::stretch(std::int64_t clip, std::int64_t firstTi
     return read(clip, firstTick, result.prepared->file, plan.outputRate, byteBudget, stop);
 }
 
+LaunchAudioClip LaunchAudioClip::fromPages(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
+                                           std::uint64_t frames, std::shared_ptr<LaunchPagedAudio> pages) {
+    if (clip <= 0 || rate == 0 || channels == 0 || !pages || !pages->hasClip(clip) || frames == 0 ||
+        frames > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        throw std::invalid_argument("invalid paged Session clip audio");
+    LaunchAudioClip result(clip, 0, rate, channels, {});
+    result.pages_ = std::move(pages);
+    result.pagedFrames_ = frames;
+    return result;
+}
+
 std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const noexcept {
     if (!std::isfinite(bpm) || bpm <= 0)
         return -1;
@@ -80,12 +96,16 @@ std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const 
 }
 
 float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const noexcept {
-    if (frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
+    if (pages_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
         return 0;
     const auto source = channels_ == 1 ? 0 : channel;
     if (source >= channels_)
         return 0;
     return samples_.data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
+}
+
+std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
+    return std::llround(launchFadeSeconds * sampleRate);
 }
 
 void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t frames,
@@ -94,26 +114,61 @@ void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t fram
     if (offset < 0 || offset >= io.frames || frames <= 0)
         return;
     const auto count = std::min(frames, io.frames - offset);
-    const auto fadeLength = clip && fadeElapsedFrames >= 0
-        ? std::llround(launchFadeSeconds * clip->rate()) : 0;
+    const auto fadeLength = clip && fadeElapsedFrames >= 0 ? launchFadeFrames(clip->rate()) : 0;
+    auto* pages = clip ? clip->pageReader() : nullptr;
+    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count);
     for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
         auto* narrow = io.out ? io.out[channel] : nullptr;
         auto* wide = io.out64 ? io.out64[channel] : nullptr;
         if (!narrow && !wide)
             continue;
+        const auto paged = pageReady ? pages->channel(channel) : std::span<const float>{};
         for (std::int32_t frame = 0; frame < count; ++frame) {
-            const auto value = clip && firstFrame <= std::numeric_limits<std::int64_t>::max() - frame
+            const auto value = pages ? (paged.empty() ? 0.0f : paged.data()[frame])
+                : clip && firstFrame <= std::numeric_limits<std::int64_t>::max() - frame
                 ? clip->sample(firstFrame + frame, channel) : 0.0f;
             double gain = velocity;
-            if (fadeLength > 0 && fadeElapsedFrames < fadeLength && fadeLength - fadeElapsedFrames > frame) {
-                const auto phase = static_cast<double>(fadeElapsedFrames + frame)
-                    / static_cast<double>(fadeLength);
-                gain *= clipFadeShape(phase, 4);
-            }
+            if (fadeLength > 0 && fadeElapsedFrames < fadeLength && fadeLength - fadeElapsedFrames > frame)
+                gain *= launchFadeGain(fadeElapsedFrames + frame, fadeLength);
             if (narrow)
                 narrow[offset + frame] = value * static_cast<float>(gain);
             if (wide)
                 wide[offset + frame] = static_cast<double>(value) * gain;
+        }
+    }
+}
+
+void mixLaunchAudioTail(const AudioIo& io, std::int32_t offset, std::int32_t frames,
+                        const LaunchAudioClip& clip, std::int64_t firstFrame, float velocity,
+                        std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop) noexcept {
+    const auto fadeLength = launchFadeFrames(clip.rate());
+    if (offset < 0 || offset >= io.frames || frames <= 0 || clip.frames() == 0 ||
+        fadeElapsedFrames < 0 || fadeElapsedFrames >= fadeLength)
+        return;
+    const auto count = std::min<std::int64_t>({frames, io.frames - offset, fadeLength - fadeElapsedFrames});
+    const auto lastSource = static_cast<std::int64_t>(clip.frames() - 1);
+    const auto start = std::min(firstFrame, lastSource);
+    auto stopGain = static_cast<double>(velocity);
+    if (fadeInFramesAtStop >= 0 && fadeInFramesAtStop < fadeLength)
+        stopGain *= launchFadeGain(fadeInFramesAtStop, fadeLength);
+    auto* pages = clip.pageReader();
+    const auto pageFrames = start >= lastSource - (count - 1) ? lastSource - start + 1 : count;
+    const auto pageReady = pages && pages->read(clip.clip(), start, static_cast<std::int32_t>(pageFrames), false);
+    for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
+        auto* narrow = io.out ? io.out[channel] : nullptr;
+        auto* wide = io.out64 ? io.out64[channel] : nullptr;
+        if (!narrow && !wide)
+            continue;
+        const auto paged = pageReady ? pages->channel(channel) : std::span<const float>{};
+        for (std::int64_t frame = 0; frame < count; ++frame) {
+            const auto source = start >= lastSource - frame ? lastSource : start + frame;
+            const auto gain = stopGain * (1.0 - launchFadeGain(fadeElapsedFrames + frame, fadeLength));
+            const auto value = (pages ? (paged.empty() ? 0.0f : paged.data()[std::min(frame, pageFrames - 1)])
+                                        : clip.sample(source, channel)) * gain;
+            if (narrow)
+                narrow[offset + frame] += static_cast<float>(value);
+            if (wide)
+                wide[offset + frame] += value;
         }
     }
 }

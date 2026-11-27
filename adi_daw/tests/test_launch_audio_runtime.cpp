@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -46,7 +47,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     std::shared_ptr<const LaunchAudioProject> sceneAudio;
 
-    explicit Fixture(LaunchQuantization global = LaunchQuantization::Bar) {
+    explicit Fixture(LaunchQuantization global = LaunchQuantization::Bar, bool fade = false) {
         StoreError error{};
         store = Store::createEmpty(folder.path() / "song.adi", error);
         require(static_cast<bool>(store), "create launch render store");
@@ -69,6 +70,8 @@ struct Fixture {
         slots.push_back(slot(trackOne, sceneOne, 101));
         slots.push_back(slot(trackOne, sceneTwo, 103));
         slots.push_back(slot(trackTwo, sceneOne, 102));
+        for (auto& entry : slots)
+            entry.fade = fade;
         sceneAudio = std::make_shared<const LaunchAudioProject>(incarnation, 120,
             std::vector<std::int64_t>{trackOne, trackTwo}, std::move(slots),
             std::vector<std::int64_t>{sceneOne, sceneTwo}, std::move(pcm), global);
@@ -124,7 +127,7 @@ struct Render {
     std::size_t edgeCount = 0;
 
     template <typename Expected>
-    void block(std::int32_t size, Expected expected) {
+    void block(std::int32_t size, Expected expected, double tolerance = 0.0) {
         require(session.clips()->prime(), "prime the ordinary disk clip");
         float* out[]{pcm.data(), pcm.data() + blockFrames};
         double* out64[]{wide.data(), wide.data() + blockFrames};
@@ -151,7 +154,7 @@ struct Render {
             for (std::size_t channel = 0; channel < 2; ++channel) {
                 const auto index = channel * blockFrames + static_cast<std::size_t>(frame);
                 const auto received = width == Precision::Float64 ? wide[index] : pcm[index];
-                if (received != value) {
+                if (std::abs(received - value) > tolerance) {
                     std::printf("frame %lld channel %zu received %.9g wanted %.9g\n",
                         static_cast<long long>(stream + frame), channel, received, value);
                     throw std::runtime_error("Session output differed");
@@ -211,6 +214,61 @@ void unquantized() {
             "Global None permits immediate two-track switch off the bar grid");
 }
 
+void individualTrackHandover() {
+    Fixture fixture(LaunchQuantization::None);
+    Session session;
+    fixture.load(session, Precision::Float32, true);
+    Render render{session, Precision::Float32};
+    session.transport().play();
+    render.block(19, [](auto) { return 0.125; });
+    LaunchRequest launch;
+    launch.kind = LaunchRequestKind::SlotPress;
+    launch.track = trackTwo;
+    launch.scene = sceneOne;
+    launch.clip = 102;
+    launch.incarnation = incarnation;
+    require(session.postLaunchGesture(std::array{launch}), "queue the other track's slot");
+    render.block(31, [](auto) { return 0.25; });
+    require(render.edgeCount == 1 && render.edges[0].transition.track == trackTwo &&
+            render.edges[0].stream == 19, "only the target track gives up Arrangement");
+    launch.kind = LaunchRequestKind::StopTrack;
+    launch.scene.reset();
+    launch.clip.reset();
+    require(session.postLaunchGesture(std::array{launch}), "stop only the launched track");
+    render.block(29, [](auto) { return 0.125; });
+}
+
+double fadeAt(std::int64_t frame) {
+    const auto position = static_cast<double>(std::clamp<std::int64_t>(frame, 0, 192)) / 192.0;
+    return position * position * (3.0 - 2.0 * position);
+}
+
+void fadeThroughHandover() {
+    Fixture fixture(LaunchQuantization::None, true);
+    Session session;
+    fixture.load(session, Precision::Float64, true);
+    Render render{session, Precision::Float64};
+    session.transport().play();
+    require(session.postLaunchGesture(std::array{Fixture::scene(sceneOne)}), "queue a faded scene");
+    render.block(213, [](auto frame) { return 0.375 * fadeAt(frame); }, 1e-8);
+    require(session.postLaunchGesture(std::array{Fixture::scene(sceneTwo)}), "queue faded replacement");
+    const auto swap = render.stream;
+    const auto crossfade = [swap](auto frame) {
+        const auto gain = fadeAt(frame - swap);
+        return 0.375 * (1.0 - gain) - 0.25 * gain;
+    };
+    render.block(73, crossfade, 1e-8);
+    require(session.setDelayCompensation(false), "publish a graph in the outgoing ramp");
+    render.block(157, crossfade, 1e-8);
+    LaunchRequest stop;
+    stop.kind = LaunchRequestKind::StopTrack;
+    stop.track = trackOne;
+    stop.incarnation = incarnation;
+    require(session.postLaunchGesture(std::array{stop}), "stop the faded replacement");
+    const auto end = render.stream;
+    render.block(197, [end](auto frame) { return -0.25 * (1.0 - fadeAt(frame - end)); }, 1e-8);
+}
+
 void rejectsDuplicateSlotClip(const Fixture& fixture) {
     const auto view = fixture.sceneAudio->view();
     std::vector<LaunchSlot> duplicate(view.slots.begin(), view.slots.end());
@@ -236,6 +294,8 @@ int main() {
         live(fixture, Precision::Float64);
         isolated(fixture);
         unquantized();
+        individualTrackHandover();
+        fadeThroughHandover();
         rejectsDuplicateSlotClip(fixture);
         require(allocations == 0 && releases == 0 && audio::callbackFileIo == io,
                 "Session launch callbacks allocate, release and read no files");
