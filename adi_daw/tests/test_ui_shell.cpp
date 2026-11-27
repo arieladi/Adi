@@ -4869,6 +4869,11 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     checkSpan(start, "Undo restores the clip start and sample offset");
 
+    // Keep the stretch destinations inside the canvas, away from drag autoscroll.
+    geo.scale = 60.;
+    geo.left = 0.;
+    check(x(end + 2 * beat) < static_cast<float>(canvas.getWidth() - 24),
+          "the stretch destination is clear of the Arrangement's drag-scroll edge");
     const auto selectMods = juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier |
                             juce::ModifierKeys::altModifier;
     const juce::Point<float> rangeStart{x(start + beat), y}, pastEnd{x(end + beat), y};
