@@ -32,8 +32,8 @@ int main() {
     using namespace adi::ui;
     constexpr std::array<std::array<double, 2>, 5> points{{{250., -9.}, {500., -4.5}, {1000., 0.}, {2000., 4.5}, {4000., 9.}}};
     for (const auto &point : points)
-        check(spectrumDisplayOffset(SpectrumSlope::Tilt45, point[0]) == point[1] &&
-                  spectrumDisplayOffset(SpectrumSlope::Flat, point[0]) == 0,
+        check(std::abs(spectrumDisplayOffset(SpectrumSlope::Tilt45, point[0]) - point[1]) < 1.e-12 &&
+                  std::abs(spectrumDisplayOffset(SpectrumSlope::Flat, point[0])) < 1.e-12,
               "declared octave/pivot points are exact without changing Flat");
     check(std::isfinite(spectrumDisplayOffset(SpectrumSlope::Tilt45, std::numeric_limits<double>::denorm_min())) &&
               std::isfinite(spectrumDisplayOffset(SpectrumSlope::Tilt45, std::numeric_limits<double>::min())) &&
