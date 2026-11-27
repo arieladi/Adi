@@ -12,6 +12,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-440, SC-176 | `basics/test-chain` at `f06b67887` | Loop Selection and the time-selection context menu are already integrated. Arrangement seat. | The actual command and peerless menu model passed for a selected range, including range retention, brace placement and Loop enabled. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-425 | `basics/test-chain` at `d438ea3fd` | Publish usable plug-ins from readable folders and name the unreadable ones. Plug-in and Browser seats. | The same permission-denied VST3 fixture failed before and passed after for incremental and refresh scans on Linux. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-442 | `basics/test-chain` at `d438ea3fd` | Cmd/Ctrl+1 and +2 are already integrated in the Arrangement and key maps. Edit and window seats. | The headless command and grid fixture verified both directions, displayed spacing and persistence. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
+| SC-444, SC-203 | `basics/test-chain` at `afceb2556` | Make the normal fade curve drag follow the pointer and keep Alt as the reversal. Clips and Arrangement seats. | An extracted source probe and the peerless fixture covered direction, the stored fade shape and one Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -58,6 +59,14 @@ A Linux headless fixture puts readable VST3 bundles beside a mode-000 folder. Th
 ### SC-442 · Grid shortcuts
 
 `cd58df145` already registers Cmd/Ctrl+1 for Narrow Grid and Cmd/Ctrl+2 for Widen Grid in Options and all three key maps. The existing shell fixture tests command delivery and settings persistence. In the default adaptive fixture the line spacing is 18.50 px, 9.25 px after Narrow, and 37.00 px after Widen from the default. The lower-right grid label is 46 × 14 px.
+
+### SC-444 and SC-203
+
+Candidate f932abcc0 on f02bd171c fixes the vertical drag sign. The curve handle now follows a regular up or down drag. Option or Alt reverses the bend. The fade shape stored in the project uses the existing engine evaluator and the gesture still saves one undo step.
+
+The headless formula probe took the gesture bodies directly from the baseline and candidate Arrangement sources and ran them through the engine Bézier fade evaluator. At the neutral diamond midpoint, a 30 px up drag used to place the handle 23.6068% of the clip body height below its starting point. It now places it 23.6068% above. Downward is symmetric. Option or Alt keeps the reversed response. The diamond remains 8 × 8 px and its x is the midpoint between fade start and peak. The independent 7 × 7 px start and peak handles and dashed limit from a9c3a597f are already present on the starting branch.
+
+At a normal 30 px upward drag starting at canvas `(20,224.5)`, the measured diamond y moves from 241.733 before to 207.267 after. The Option/Alt result is y241.733.
 
 ## For the director
 
