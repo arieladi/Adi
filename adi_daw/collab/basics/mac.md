@@ -82,6 +82,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/analysers-chain` | `ab3547fd0ffefe837a6a8a1332fed2329461f97b` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Checks include Auto Gain cross-rate DSP, envelope metering, shared analysis, and the spectrum slope. |
 | `origin/basics/clips-chain` | `aaad35490a8e714709300efc42b2e8ca42001f66` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 32/32, acceptance 3/3, and affected and session 5/5. The shell suite exercises the Sample Editor waveform, marker and loop drags, insert point, and ruler zoom. |
 | `origin/land/basics-1127i` | `cb7273acd59a6943d530b46c787b8706e747b65b` | Yes | All 50 production targets built. Passed 53/53, including window and mixer 33/33, acceptance 3/3, and affected and session 17/17. Reran the landing checks on the exact merged documentation revision. All five repository validators also passed. |
+| `origin/basics/clips-chain` | `3983e95868b7de4015e2139786cf6a5f5b9e5530` | Yes | All 50 production targets built. Passed 43/43, including window and mixer 32/32, acceptance 3/3, and affected and session 8/8. Checks cover manual source BPM, Warp without detected onsets, and half and double retiming. |
 
 ## Nine-step window walk
 
