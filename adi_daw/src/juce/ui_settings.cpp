@@ -38,6 +38,8 @@ bool legacyThemeChoice(const settings::Setting &setting, const Value &choice) {
 }
 juce::String choiceLabel(const settings::Setting &setting, const Value &choice) {
     const auto name = text(choice);
+    if (setting.key == "record.bitDepth")
+        return name + (choice == 32 ? "-bit float" : "-bit PCM");
     if (setting.key == "lookfeel.theme" || setting.key == "lookfeel.density") {
         if (name == "mixview") return "Mix View";
         if (name == "midgrey") return "Mid Grey";

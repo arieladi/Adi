@@ -20501,3 +20501,63 @@ kept: the director's, open.
 | `docs/DEFERRED.md` | DF-C8 holds the rows owed |
 | `collab/README.md` | ADR 0259 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0260; DF-C9 |
+
+## ADR-0260 — The Jam: three templates, a Mark command with a riff list, rule-made grooves, and Make Session after the Foundry — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON FIVE CHOICES (J1 TO J5) RAISED BY AN OUTSIDE PROPOSAL; ADDITIONS; BUILT AFTER THE RECORDING BASICS (ADR-0257 d1); ADDS TO PD-14, CT-06, MX-25, MX-29, MI-07 AND ADR-0257 d7**
+
+**What this records.** The director's outside panel proposed a guitar-first way of working: play for
+hours, capture ideas with almost no use of the computer, play along with drums or a reference, and turn
+chosen riffs into project material afterwards. Win read it against the plan and the sanity check. Most of
+it is an assembly of what ADI has decided: tap tempo, the metronome and count-in, two inputs recorded on
+two tracks, the Cue output, the capture memory (CT-06), the Reference track (MX-29), locators, templates
+(PD-14), the surfaces of ADR-0259. Four pieces are new. Win put five choices to him, J1 to J5. His words:
+"all as recommended".
+
+### Decisions
+
+1. **The Jam is three templates, not a screen of its own (J1).** "Play with drums", "Play on a
+   reference" and "Record only" are templates (PD-14): each opens with its tracks armed, its inputs
+   chosen and its routing set, so the setup is remembered by the template and nothing is a new mode.
+2. **Mark, and the riff list (J2), an addition.**
+   - One command, Mark, drops a named mark at the playhead while recording goes on. It is bound like any
+     command: a key, a footswitch or controller, ADI's Stream Deck profile.
+   - After the jam a list shows the marks. Each jumps to its place in the take and plays it; each takes a
+     rating of Keep, Maybe or Skip. Nothing is cut: the take stays whole.
+   - It is built right after the recording basics of the sanity check.
+3. **Rule-made drum grooves with a feel chooser (J3), an addition, small.** Grooves made by fixed rules
+   onto an ordinary, editable MIDI track, with tap tempo and a choice of feel. It comes ahead of the full
+   set of Live's generators (MI-07) and does not replace them.
+4. **Make Session waits for the Foundry (J4)** and is built as its second use (ADR-0257 d7): from the
+   marked riffs it cuts candidate one-shots into the session's folder and makes a starting project. Its
+   arrangement sketches are the Dream's and stay parked with it. An amplifier chain in that project
+   waits until ADI has the devices for one.
+5. **Backing goes to the Cue output where the interface has one (J5).** The templates route the drums
+   and the reference there. Where the interface has no separate output for it, ADI says so in a notice:
+   it does not promise a headphone mix that the hardware cannot give.
+
+**What it stands on.** A jam is hours of recording. These rows of `docs/SANITY-CHECK.md` come first:
+Stop after a long take gives the window back at once (SC-251), a take is never deleted (SC-247, SC-254),
+a long file draws in detail (SC-36), a long file can be dropped without a freeze (SC-377), the input
+choosers choose (MX-25 with SC-23), and a learned controller or footswitch triggers a command (SC-59).
+
+**The order.** The rows above; then Mark and the riff list; then the three templates with a first set of
+grooves; then the capture memory (CT-06), so that a riff played before Record is not lost; then Make
+Session with the Foundry.
+
+**Acceptance, when it is built.** An interface with no separate headphone output shows the notice and
+plays. A write over OSC is logged as `remote` (ADR-0259 d7). A controller unplugged while automation
+records ends the pass and keeps what was written (ADR-0259 d6). A Mark during a take lands at the played
+position and its list entry plays from there. Make Session runs to its end with no agent available.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| PD-14 | three Jam templates; a template carries its inputs and routing (d1) |
+| CT-06, CT-07 | the capture memory is placed after the templates in the Jam's order |
+| MX-25, MX-29 | the templates route backing and the Reference to the Cue output; the notice of d5 |
+| MI-07 | a first rule-made groove generator comes ahead of it (d3) |
+| ADR-0257 d7 | Make Session is the Foundry's second use (d4) |
+| ADR-0259 d1, d8 | Mark is a command a surface can bind (d2) |
+| `docs/DEFERRED.md` | DF-W60 holds the work |
+| `collab/README.md` | ADR 0260 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0261; DF-W61 |
