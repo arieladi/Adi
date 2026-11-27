@@ -144,3 +144,4 @@ Give Live's exact version at the top. When the list is done, fetch this file aga
 - R64. Drop a Set file from the file manager onto Live: opened? Copy a clip, open another Set, paste. (SC-164, SC-190)
 - R65. Drag in a MIDI file of several tracks: what is made, and is its tempo taken? (SC-57)
 - R66. Drop several audio files with Ctrl held: onto the tracks below, or onto new tracks? Does the Browser show file extensions by default? Does Esc cancel a drag?
+- R67. Open a plug-in's window (a third-party VST3), click in it away from any text field, select a track in Live's window first, and press Delete with the plug-in window in front: is anything in Live deleted (the track, the device, a clip)? The same with Backspace. Then Ctrl+Z. (SC-323; the walk of 27 November)
