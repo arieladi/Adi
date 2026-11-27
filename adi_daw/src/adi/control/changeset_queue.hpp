@@ -43,6 +43,8 @@ struct QueuedChangeset {
     Json proposal = Json::object();   ///< what changeset.propose answered
     Review state = Review::AwaitingReview;
     std::int64_t createdMs = 0;
+    /// Mandatory review even when the effective tier is Apply (ADR-0261 d8).
+    bool requiresReview = false;
 };
 
 /// The `adi_tool propose` JSON for a changeset (changeset.hpp's

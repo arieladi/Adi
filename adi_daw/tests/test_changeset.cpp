@@ -16,6 +16,7 @@
 #include "adi/changeset.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -136,6 +137,38 @@ void testGuardrails() {
 
     Fixture f("guard");
     if (!f.store) return;
+    OpJournal journal(*f.store);
+    check(journal.commit(op("marker.create", {{"id", 1}, {"pos", 0}})).ok,
+          "the user can create a marker");
+    check(journal.commit(op("marker.setPrompt", {{"id", 1}, {"text", "Original prompt"}})).ok,
+          "the user can set the marker prompt");
+    const auto markerHead = journal.headSeq();
+    const auto markerBefore = edit::row(f.db(), "marker_details", 1).value();
+    auto markerAfter = markerBefore;
+    markerAfter["prompt"] = "New prompt";
+    const auto splice = op("arranger.splice",
+                           {{"id", 0}, {"changes", Payload::array({
+                               {{"table", "marker_details"}, {"id", 1},
+                                {"before", markerBefore}, {"after", markerAfter}}
+                           })}});
+    for (const auto& edit : {op("marker.setPrompt", {{"id", 1}, {"text", "New prompt"}}),
+                            op("marker.create", {{"id", 2}, {"pos", 0}, {"prompt", "New prompt"}}),
+                            splice}) {
+        auto markerEdit = begin(*f.store, "write a prompt", "m", kT0);
+        markerEdit.ops.push_back(edit);
+        check(preview(*f.store, markerEdit).refusal == Refusal::OpNotAllowed,
+              edit.opType + " cannot write a prompt during an agent preview");
+        const auto applied = apply(*f.store, markerEdit);
+        check(applied.refusal == Refusal::OpNotAllowed && journal.headSeq() == markerHead,
+              edit.opType + " cannot commit a prompt from an agent");
+        if (applied.ok) check(History(*f.store).undo().ok, "restore the fixture before the next case");
+    }
+    check(agentMayEmit("marker.create") && !agentMayEmit("marker.setPrompt"),
+          "marker creation stays available while setting prompts is reserved for the user");
+    check(edit::row(f.db(), "marker_details", 1) == markerBefore,
+          "the user's prompt stays as written");
+
+    const auto baselineOps = count(*f.store, "SELECT COUNT(*) FROM ops");
     Changeset empty = begin(*f.store, "nothing", "m", kT0);
     check(preview(*f.store, empty).refusal == Refusal::Empty, "an empty changeset is refused");
 
@@ -145,7 +178,7 @@ void testGuardrails() {
     const auto pr = preview(*f.store, big, two);
     check(pr.refusal == Refusal::TooManyOps, "three ops over a cap of two: preview refuses: " + pr.error);
     const auto ar = apply(*f.store, big, two);
-    check(ar.refusal == Refusal::TooManyOps && count(*f.store, "SELECT COUNT(*) FROM ops") == 2,
+    check(ar.refusal == Refusal::TooManyOps && count(*f.store, "SELECT COUNT(*) FROM ops") == baselineOps,
           "and so does apply, writing nothing");
 
     Changeset transport = begin(*f.store, "play it", "m", kT0);

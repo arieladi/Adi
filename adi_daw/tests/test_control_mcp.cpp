@@ -1307,10 +1307,56 @@ void testBinary() {
     }
 }
 
+void testMarkerRunWaitsForReview() {
+    section("ADR-0261 d8: marker runs carry a mandatory review requirement");
+    ProjectFile file("marker_run");
+    Bridge bridge(openHeadless(file.path), Tier::Apply);
+    bridge.initialize();
+    const auto head = bridge.head();
+    const Json args = {{"baseHead", head}, {"request", "Lower the bass"},
+                       {"ops", Json::array({{{"op", "mixer.setVolume"},
+                                             {"payload", {{"id", 3}, {"db", -6.0}}}}})}};
+    const Principal who{bridge.session.credential, "ADI agent"};
+    for (const Tier tier : {Tier::Observe, Tier::Propose, Tier::Apply}) {
+        bridge.grants.grant(who.credential, tier);
+        RequestMeta meta;
+        meta.runOrigin = RunOrigin::MarkerPrompt;
+        meta.idempotencyKey = std::string(toString(tier));
+        Outcome outcome;
+        bridge.service.call(who, "changeset.propose", args, meta,
+                            [&](Outcome result) { outcome = std::move(result); });
+        if (tier == Tier::Observe) {
+            check(outcome.error && outcome.error->code == errc::NotGranted && bridge.queue.size() == 0,
+                  "Observe cannot emit an edit, including from a marker");
+            continue;
+        }
+        check(!outcome.error && outcome.result.value("status", "") == "awaiting_review",
+              std::string(toString(tier)) + " queues edits from a marker run");
+        const auto entry = bridge.queue.find(outcome.result.value("id", ""), who.credential);
+        check(entry && entry->requiresReview && entry->state == Review::AwaitingReview,
+              "mandatory review is retained in the queued proposal");
+        meta.runOrigin = RunOrigin::Direct;
+        bridge.service.call(who, "changeset.propose", args, meta,
+                            [&](Outcome result) { outcome = std::move(result); });
+        check(outcome.error && outcome.error->code == errc::InvalidParams,
+              "the same key cannot be replayed with a different run origin");
+    }
+    check(bridge.head() == head, "the marker-triggered edit leaves the project head alone");
+    RpcError error;
+    check(!parseMeta({{"runOrigin", "direct"}}, error), "wire metadata cannot set run origin");
+
+    const auto details = bridge.tool("ops_describe", {{"names", {"marker.setPrompt", "marker.create"}}});
+    const auto& ops = details.at("structuredContent").at("ops");
+    check(!ops.at(0).at("agentMayEmit").get<bool>() && ops.at(1).at("agentMayEmit").get<bool>() &&
+              !ops.at(1).at("inputSchema").at("properties").contains("prompt"),
+          "the advertised schemas reserve prompt authoring for the user");
+}
+
 int runAll() {
     testHandshakes();
     testToolsAndReads();
     testProposeLeavesTheFile();
+    testMarkerRunWaitsForReview();
     testRefusals();
     testEchoesAreClipped();
     testExpectHead();

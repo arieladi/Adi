@@ -349,6 +349,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         digested += !meta.expectHead    ? std::string("-")
                     : *meta.expectHead ? std::to_string(**meta.expectHead)
                                        : std::string("null");
+        if (meta.runOrigin == RunOrigin::MarkerPrompt) digested += "\nmarker";
         paramsDigest = std::hash<std::string>{}(digested);
         if (auto hit = recall(cacheKey)) {
             pending->take();

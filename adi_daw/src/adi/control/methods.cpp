@@ -210,6 +210,9 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
         if (payload == o.end() || !payload->is_object())
             return refusal(errc::InvalidParams, at + ".payload is an object", "invalid",
                            {{"index", index}, {"op", std::string(d->name)}});
+        if (!agent::agentMayEmitPayload(name, *payload))
+            return refusal(errc::InvalidParams, "the agent may not write a marker prompt",
+                           "op not allowed", {{"index", index}});
         normalizeSubmission(*d, *payload);
         const auto issues = validateSubmission(*d, *payload, Bounds::Remote);
         if (!issues.empty()) {
@@ -454,6 +457,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     }
                     Json o = describeOp(*d);
                     o["agentMayEmit"] = agent::agentMayEmit(d->name);
+                    if (d->name == "marker.create") o["inputSchema"]["properties"].erase("prompt");
                     ops.push_back(std::move(o));
                 }
                 if (!unknown.empty())
@@ -533,6 +537,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             // they resolved to (an omitted project is the bound one).
             Json keyed = p;
             keyed["project"] = project->handle();
+            const bool markerRun = call.meta.runOrigin == RunOrigin::MarkerPrompt;
+            if (markerRun) keyed["runOrigin"] = "marker";
             const std::size_t digest = std::hash<std::string>{}(dumpJson(keyed));
 
             // The same key from the same caller answers with what it queued
@@ -644,6 +650,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
             entry.createdMs = ctx.steadyMs();
+            entry.requiresReview = markerRun;
             ctx.queue.add(std::move(entry));
             return Outcome::ok(std::move(proposal));
         };

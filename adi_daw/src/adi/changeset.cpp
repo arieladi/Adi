@@ -53,6 +53,10 @@ Refusal screen(const Changeset& cs, const Limits& limits, std::string& error) {
             error = "'" + q.opType + "' is not an op the agent may emit";
             return Refusal::OpNotAllowed;
         }
+        if (!agentMayEmitPayload(q.opType, q.payload)) {
+            error = "the agent may not write a marker prompt";
+            return Refusal::OpNotAllowed;
+        }
         const auto* d = OpRegistry::instance().find(q.opType);
         const auto issues = validateSubmission(*d, q.payload);
         if (!issues.empty()) {
@@ -313,6 +317,7 @@ bool agentMayEmit(std::string_view opType) {
     // Project edits only: transport is performance and hardware is the user's
     // desk, and neither belongs in a changeset the user reviews as a diff.
     if (d->scope != Scope::Edit || d->ephemeral) return false;
+    if (opType == "marker.setPrompt") return false;  // ADR-0261 d8
     // §6.4: the agent may change a REFERENCE, never a file. `media.unlink`
     // removes a row and leaves the disk alone, `media.relink` repoints one.
     // `media.import` is refused: it records a file a caller has hashed from
@@ -327,6 +332,29 @@ bool agentMayEmit(std::string_view opType) {
     for (const std::string_view internal : {"automation.restoreLane", "automation.restoreData",
                                             "cc.restoreStream", "note.restoreNotes", "track.restoreRecording"})
         if (opType == internal) return false;
+    return true;
+}
+
+bool agentMayEmitPayload(std::string_view opType, const Payload& payload) {
+    if (opType == "marker.create") return !payload.contains("prompt");
+    if (opType != "arranger.splice") return true;
+    const auto changes = payload.find("changes");
+    if (changes == payload.end() || !changes->is_array()) return true;
+    for (const auto& change : *changes) {
+        const auto table = change.find("table");
+        const auto after = change.find("after");
+        if (table == change.end() || *table != "marker_details" ||
+            after == change.end() || !after->is_object())
+            continue;
+        const auto prompt = after->find("prompt");
+        if (prompt == after->end()) continue;  // incomplete row fails op validation
+        const auto before = change.find("before");
+        if (before == change.end() || !before->is_object()) {
+            if (*prompt != "") return false;
+        } else if (!before->contains("prompt") || before->at("prompt") != *prompt) {
+            return false;
+        }
+    }
     return true;
 }
 

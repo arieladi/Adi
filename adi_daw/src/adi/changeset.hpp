@@ -109,8 +109,13 @@ struct ApplyResult {
 
 /// The allowlist. Project edits only (Scope::Edit, not ephemeral), and of
 /// the media ops only those that change a reference, never a file. Never an
-/// internal restore op, which exists to replay a captured inverse.
+/// internal restore op, which exists to replay a captured inverse, or the
+/// operation that sets a marker's prompt (ADR-0261 d8).
 [[nodiscard]] bool agentMayEmit(std::string_view opType);
+
+/// Payload-level restrictions in addition to the op allowlist. Marker prompts
+/// cannot be written through marker creation or a captured Arrangement edit.
+[[nodiscard]] bool agentMayEmitPayload(std::string_view opType, const Payload&);
 
 /// A unified diff of two texts, line by line (Myers), with `context` lines
 /// around each hunk. Empty when the texts are equal.

@@ -76,12 +76,17 @@ private:
     std::unordered_map<std::string, Tier> tiers_;
 };
 
-/// ADR-0232 d2: the `meta` sibling of `params`.
+enum class RunOrigin { Direct, MarkerPrompt };
+
+/// The wire's `meta` (ADR-0232 d2) and trusted metadata from the run host.
 struct RequestMeta {
     /// Outer: check at all. Inner nullopt: the root, nothing done yet.
     std::optional<std::optional<std::int64_t>> expectHead;
     std::optional<std::int64_t> deadlineMs;
     std::optional<std::string> idempotencyKey;
+    /// The host sets this when the user starts a run from a marker. It is
+    /// never set from JSON: a model cannot change the origin of its run.
+    RunOrigin runOrigin = RunOrigin::Direct;
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
