@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/settings/store.hpp"
+#include "adi/audio/decode.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/media/publish_file.hpp"
 
 #include <algorithm>
@@ -28,6 +30,17 @@ constexpr const char* kLogChangesKey = "settings.logChanges";
 /// The table of interface zooms, per window and per display (N4).
 constexpr const char* kWindowZoomKey = "window.zoom";
 constexpr const char* kNewerSchemaReadOnly = "settings from a newer build are read-only";
+
+void applyDawAnalysisLimits(const AppSettings& settings) noexcept {
+    try {
+        const auto limits = audio::limitsFromSettings({
+            {audio::kCacheMaxSizeKey, settings.get(audio::kCacheMaxSizeKey)},
+            {audio::kCacheMinFreeKey, settings.get(audio::kCacheMinFreeKey)}});
+        media::setDefaultAnalysisCacheLimits({limits.maxBytes, limits.minFreeBytes});
+    } catch (...) {
+        // Notification cannot turn a durable settings save into a failure.
+    }
+}
 
 bool newerSchema(const Value& doc) {
     const auto version = doc.find("schema");
@@ -151,7 +164,10 @@ const char* toString(LoadStatus s) {
 
 AppSettings AppSettings::forApp(appdata::App app) {
     const auto dir = appdata::pathsFor(app).config;
-    return AppSettings(app, dir.empty() ? std::filesystem::path{} : dir / "settings.json");
+    AppSettings settings(app, dir.empty() ? std::filesystem::path{} : dir / "settings.json");
+    settings.appliesDawAnalysisLimits_ = app == appdata::App::Daw;
+    if (settings.appliesDawAnalysisLimits_) applyDawAnalysisLimits(settings);
+    return settings;
 }
 
 AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
@@ -305,6 +321,7 @@ bool AppSettings::save(std::string& why, SaveRename rename) {
             if (!why.empty()) why += '\n';
             why += "settings backup: " + backupWarning;
         }
+        if (appliesDawAnalysisLimits_) applyDawAnalysisLimits(*this);
         return true;
     } catch (const std::exception& error) {
         why = error.what();

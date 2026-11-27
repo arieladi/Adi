@@ -2,7 +2,9 @@
 #pragma once
 #include "adi/media/peaks.hpp"
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <optional>
 namespace adi::media {
 // Optional, rebuildable sample analysis only. User Warp/clip settings belong
 // in the persistent library and must never enter this cache or its cleanup.
@@ -47,9 +49,17 @@ struct AnalysisTrimResult {
 // checked before section allocation. No native structs, JSON or recursive parse.
 [[nodiscard]] std::vector<std::byte> encodeAnalysis(const SampleAnalysis&);
 [[nodiscard]] AnalysisCacheResult decodeAnalysis(std::span<const std::byte>);
+
+struct AnalysisCacheLimits {
+    std::uint64_t maximumBytes = 0, minimumFreeBytes = 0;
+    friend bool operator==(const AnalysisCacheLimits&, const AnalysisCacheLimits&) = default;
+};
+
 class AnalysisCache {
 public:
-    explicit AnalysisCache(std::filesystem::path folder):folder_(std::move(folder)){}
+    using FreeSpace = std::function<std::optional<std::uint64_t>(const std::filesystem::path&)>;
+    explicit AnalysisCache(std::filesystem::path folder, FreeSpace available = {})
+        : AnalysisCache(std::move(folder), std::move(available), std::nullopt) {}
     // Serialized off-callback I/O. One <hash>.adia per sample in this folder.
     // Missing/invalid optional data can be rebuilt. Updating one section keeps
     // other supported/unknown sections; inconsistent identity is replaced.
@@ -69,10 +79,29 @@ public:
     // inventory still finishes before any deletion. None are counted reclaimed.
     [[nodiscard]] AnalysisTrimResult trimToBytes(std::uint64_t maximumBytes,std::string& error,
                                                std::stop_token={});
+    // Apply an optional-cache policy on the owner worker's next publication or
+    // successful read. Setting the policy does not open or enumerate the cache.
+    void setAutomaticLimits(AnalysisCacheLimits);
     [[nodiscard]] const std::filesystem::path& folder()const noexcept{return folder_;}
 private:
+    friend AnalysisCache& defaultAnalysisCache();
+    AnalysisCache(std::filesystem::path folder, FreeSpace available, std::optional<AnalysisCacheLimits> appStartLimits)
+        : folder_(std::move(folder)), available_(std::move(available)), followsAppLimits_(appStartLimits.has_value()),
+          appliedLimits_(appStartLimits) {}
     [[nodiscard]] AnalysisCacheResult readChecked(const std::string&,const AnalysisIdentity*,std::stop_token) const;
+    [[nodiscard]] AnalysisTrimResult trimLocked(AnalysisCacheLimits, bool automatic,
+                                                std::string&, std::stop_token) const;
+    [[nodiscard]] std::optional<std::uint64_t> freeSpace() const;
+    void maintainLocked(std::size_t publishedBytes, std::stop_token) const noexcept;
     std::filesystem::path folder_;
+    FreeSpace available_;
+    bool followsAppLimits_ = false;
+    std::optional<AnalysisCacheLimits> automaticLimits_;
+    mutable std::optional<AnalysisCacheLimits> appliedLimits_;
+    mutable std::optional<std::uint64_t> estimatedBytes_;
 };
 [[nodiscard]] AnalysisCache& defaultAnalysisCache();
+// Called with validated application preferences. A later owner-worker access
+// performs maintenance without delaying the settings save.
+void setDefaultAnalysisCacheLimits(AnalysisCacheLimits);
 } // namespace adi::media

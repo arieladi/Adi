@@ -2,6 +2,7 @@
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/appdata.hpp"
 #include <algorithm>
@@ -16,6 +17,8 @@ namespace fs=std::filesystem;
 namespace {
 constexpr std::size_t header=168,maximum=32*1024*1024,sectionHeader=16;
 std::mutex ioMutex; // all instances in this process; no reader remains open
+std::mutex limitsMutex; // settings updates never wait for cache inventory
+AnalysisCacheLimits appLimits{audio::kCacheMaxSizeMbDefault << 20, audio::kCacheMinFreeMbDefault << 20};
 template<class String> bool hashValid(const String& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](auto c){return (c>='0' && c<='9') || (c>='a' && c<='f');});}
 bool identityValid(const AnalysisIdentity& id){return hashValid(id.hash) && id.sampleRate>0 && id.sampleRate<=768000 && id.channels>0 && id.channels<=64 && id.frames<=static_cast<std::uint64_t>(INT64_MAX);}
 bool tagValid(const std::string& tag){return tag.size()==4 && std::all_of(tag.begin(),tag.end(),[](char c){return c>='A' && c<='Z';});}
@@ -101,7 +104,7 @@ AnalysisCacheResult AnalysisCache::readChecked(const std::string& hash,const Ana
         if(result && result.data->identity.hash!=hash)return failure(AnalysisCacheProblem::Invalid,"analysis source hash changed");
         // Cache recency is optional metadata: failure to stamp a readable cache
         // must not turn a usable waveform into a miss (e.g. a read-only volume).
-        if(result){std::error_code ec;fs::last_write_time(file,fs::file_time_type::clock::now(),ec);}
+        if(result){std::error_code ec;fs::last_write_time(file,fs::file_time_type::clock::now(),ec);maintainLocked(0,stop);}
         return result;
     }
     catch(const std::bad_alloc&){return failure(AnalysisCacheProblem::Resource);}
@@ -130,7 +133,8 @@ AnalysisCacheProblem AnalysisCache::update(const AnalysisIdentity& id,const std:
         const auto stage=directory/"analysis";
         {audio::fileIoPoint();std::ofstream out(stage,std::ios::binary);out.exceptions(std::ios::badbit|std::ios::failbit);out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));out.flush();out.close();}
         if(stop.stop_requested())return AnalysisCacheProblem::Cancelled;
-        const auto replaced=replaceCacheFile(stage,target);if(replaced){error=replaced.message();return AnalysisCacheProblem::Io;}error.clear();return AnalysisCacheProblem::None;
+        const auto replaced=replaceCacheFile(stage,target);if(replaced){error=replaced.message();return AnalysisCacheProblem::Io;}
+        maintainLocked(bytes.size(),stop);error.clear();return AnalysisCacheProblem::None;
     }catch(const std::bad_alloc&){return AnalysisCacheProblem::Resource;}
     catch(const std::exception& e){error=e.what();return AnalysisCacheProblem::Io;}
 }
@@ -141,7 +145,7 @@ AnalysisCacheProblem AnalysisCache::remove(const std::string& hash,std::string& 
     try {std::lock_guard lock(ioMutex);const auto target=folder_/(hash+".adia");std::error_code ec;const auto status=fs::symlink_status(target,ec);
         if(ec==std::errc::no_such_file_or_directory || status.type()==fs::file_type::not_found){error.clear();return AnalysisCacheProblem::None;}
         if(ec || !fs::is_regular_file(status)){error="analysis is not a real regular file";return AnalysisCacheProblem::Io;}
-        fs::remove(target);error.clear();return AnalysisCacheProblem::None;
+        fs::remove(target);estimatedBytes_.reset();error.clear();return AnalysisCacheProblem::None;
     }catch(const std::exception& e){error=e.what();return AnalysisCacheProblem::Io;}
 }
 AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::string& error,std::stop_token stop) {
@@ -149,10 +153,76 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
     if(audio::onAudioThread){result.problem=AnalysisCacheProblem::Realtime;return result;}
     if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
     if(folder_.empty() || !folder_.is_absolute()){error="analysis folder must be absolute";result.problem=AnalysisCacheProblem::Io;return result;}
+    std::lock_guard lock(ioMutex);
+    result=trimLocked({maximumBytes,0},false,error,stop);
+    if(result.inventoryComplete)estimatedBytes_=result.bytesAfter;
+    return result;
+}
+
+std::optional<std::uint64_t> AnalysisCache::freeSpace() const {
+    if (available_) return available_(folder_);
+    std::error_code error;
+    audio::fileIoPoint();
+    const auto space = fs::space(folder_, error);
+    if (error || space.available == static_cast<std::uintmax_t>(-1)) return {};
+    return static_cast<std::uint64_t>(space.available);
+}
+
+void AnalysisCache::setAutomaticLimits(AnalysisCacheLimits limits) {
+    if (audio::onAudioThread) return;
+    std::lock_guard lock(limitsMutex);
+    automaticLimits_ = limits;
+}
+
+void setDefaultAnalysisCacheLimits(AnalysisCacheLimits limits) {
+    if (audio::onAudioThread) return;
+    std::lock_guard lock(limitsMutex);
+    appLimits = limits;
+}
+
+void AnalysisCache::maintainLocked(std::size_t publishedBytes, std::stop_token stop) const noexcept {
+    if (stop.stop_requested()) return;
+    try {
+        std::optional<AnalysisCacheLimits> limits;
+        {
+            std::lock_guard lock(limitsMutex);
+            limits = automaticLimits_;
+            if (!limits && followsAppLimits_) limits = appLimits;
+        }
+        if (!limits) return;
+        // Keep warm startup and ordinary reads independent of a full library
+        // inventory. A publication or a changed policy can request a trim.
+        if (!publishedBytes && appliedLimits_ == limits && limits->maximumBytes != 0) return;
+        // Count complete publications conservatively between checks. An
+        // overwritten record may cause an early inventory, which uses exact
+        // on-disk bytes before deciding whether anything needs eviction.
+        if (estimatedBytes_) {
+            *estimatedBytes_ += std::min<std::uint64_t>(publishedBytes,
+                std::numeric_limits<std::uint64_t>::max() - *estimatedBytes_);
+        }
+        const auto available = publishedBytes && limits->minimumFreeBytes ? freeSpace() : std::nullopt;
+        const bool diskLow = available && *available < limits->minimumFreeBytes;
+        if (appliedLimits_ == limits && estimatedBytes_ && *estimatedBytes_ <= limits->maximumBytes && !diskLow)
+            return;
+
+        std::string ignored;
+        const auto result = trimLocked(*limits, true, ignored, stop);
+        if (result.inventoryComplete) {
+            estimatedBytes_ = result.bytesAfter;
+            appliedLimits_ = limits;
+        }
+    } catch (...) {
+        // Maintenance is optional. A complete file or a readable snapshot
+        // stays usable even when cache inventory cannot be performed.
+    }
+}
+
+AnalysisTrimResult AnalysisCache::trimLocked(AnalysisCacheLimits limits, bool automatic,
+                                             std::string& error, std::stop_token stop) const {
+    AnalysisTrimResult result;
     struct Candidate {fs::path path;std::uint64_t bytes;fs::file_time_type stamp;};
     std::string firstError;
     try {
-        std::lock_guard lock(ioMutex);
         if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
         std::error_code ec;const auto root=fs::symlink_status(folder_,ec);
         if(ec==std::errc::no_such_file_or_directory || root.type()==fs::file_type::not_found) {
@@ -200,11 +270,17 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
             result.bytesBefore+=static_cast<std::uint64_t>(size);result.bytesAfter=result.bytesBefore;
         }
         result.inventoryComplete=true;
+        auto target = limits.maximumBytes;
+        // A large automatic trim leaves a small amount of headroom so a
+        // library near the limit does not rescan its whole cache per sample.
+        if (automatic && result.bytesBefore > target && target >= (16u << 20))
+            target -= std::min(target / 20, std::uint64_t{8} << 20);
+        auto available = limits.minimumFreeBytes ? freeSpace() : std::nullopt;
         std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b){
             return a.stamp!=b.stamp?a.stamp<b.stamp:a.path<b.path;
         });
         for(const auto& candidate:candidates) {
-            if(result.bytesAfter<=maximumBytes)break;
+            if(result.bytesAfter<=target && (!available || *available>=limits.minimumFreeBytes))break;
             if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
             // This detects ordinary external changes; it is not a cross-process
             // compare-and-unlink. Ownership and the in-process mutex are needed.
@@ -221,13 +297,24 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
             if(ec){skip(candidate.path,ec.message(),false);continue;}
             if(!removed)throw std::runtime_error(named(candidate.path,"analysis disappeared before eviction"));
             result.bytesAfter-=candidate.bytes;++result.filesRemoved;
+            if (available && *available < limits.minimumFreeBytes) available=freeSpace();
         }
         if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
-        result.budgetMet=!unvalidatedSkipped && result.bytesAfter<=maximumBytes;
+        result.budgetMet=!unvalidatedSkipped && result.bytesAfter<=limits.maximumBytes &&
+            (!limits.minimumFreeBytes || (available && *available>=limits.minimumFreeBytes));
         if(firstError.empty())error.clear();
         return result;
     }catch(const std::bad_alloc&){result.problem=AnalysisCacheProblem::Resource;return result;}
     catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=firstError.empty()?e.what():firstError+"; trim aborted: "+e.what();return result;}
 }
-AnalysisCache& defaultAnalysisCache(){static AnalysisCache cache([]{const auto paths=appdata::pathsFor(appdata::App::Daw);return paths.cache.empty()?fs::path{}:paths.cache/"analysed";}());return cache;}
+AnalysisCache& defaultAnalysisCache() {
+    static AnalysisCache cache([] {
+        const auto paths = appdata::pathsFor(appdata::App::Daw);
+        return paths.cache.empty() ? fs::path{} : paths.cache / "analysed";
+    }(), {}, [] {
+        std::lock_guard lock(limitsMutex);
+        return appLimits;
+    }());
+    return cache;
+}
 } // namespace adi::media

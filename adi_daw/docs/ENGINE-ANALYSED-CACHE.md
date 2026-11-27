@@ -80,15 +80,34 @@ later trim removes the disk copy. A later read may instead report Missing and
 rebuild. Native refusal to delete an open file is reported rather than counted
 as reclaimed bytes. Size/type/stamp rechecks detect ordinary intervening changes,
 but are not a cross-process compare-and-delete; applications sharing the folder
-must coordinate maintenance separately. This endpoint does not wire the global
-`cache.maxSizeMb` / `cache.minFreeSpaceMb` settings, divide a combined decoded and
-analysed budget, schedule automatic cleanup, or guarantee minimum free space.
-Those settings integration and cross-process ownership steps remain open.
+must coordinate maintenance separately.
+
+The application analyses use the existing `cache.maxSizeMb` and
+`cache.minFreeSpaceMb` preferences for automatic maintenance. The app settings
+store publishes validated preferences on startup and after a successful save.
+A successful cache access applies preference changes while the cache is open.
+With the preference already loaded at startup, the first new publication
+establishes the byte inventory, so ordinary warm reads can serve cached rows
+immediately. A zero maximum clears valid records even on a read. Publication
+checks byte growth and free space. The setting change itself performs no disk
+scan. Explicitly constructed caches opt in through `setAutomaticLimits`.
+
+Under a known byte limit, complete publications count conservatively until an
+inventory is needed. Automatic trimming under a budget of at least 16 MiB leaves
+5% headroom, capped at 8 MiB, after an overflow. The validated inventory and
+eviction order are the same as for manual trimming. A low-space trim queries
+available disk space again after each successful deletion. Maintenance is best
+effort because other writers share the disk and some entries may be unavailable.
+The decoded cache has its own admission path. A combined byte budget and
+eviction order across the two stores remain separate work.
 
 `adi_analysis_cache_tests` exercises exact/zero budgets, read promotion and ties,
 ignored/unowned files, cancellation and callback refusal, retained returned data,
-concurrent reads/updates/trim, Windows non-delete-sharing reads, and actual
-persistent library defaults surviving eviction. `adi_analysis_cache_trim_tests`
+concurrent reads/updates/trim, Windows non-delete-sharing reads, actual
+persistent library defaults surviving eviction, and automatic trimming on
+publication, disk pressure and preference changes. `adi_settings_tests`
+exercises startup, committed preference changes and failed saves using a
+temporary application cache. `adi_analysis_cache_trim_tests`
 adds owned Windows read/delete sharing refusals, continuation to healthy siblings,
 unreadable/retained byte accounting, cancellation inside the third file read and
 an actual timestamp change before inventory completes. Symlink checks run when
