@@ -93,6 +93,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         const PluginEntry *plugin = nullptr;
         int depth = 0;
         const preset::Entry *savedPreset = nullptr;
+        juce::String tooltip{};
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads a row (double-click, Enter), or says why it cannot.
@@ -147,6 +148,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void refill();
     int getNumRows() override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
+    juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
     // A folder's heading is never selected: the selection steps past it, the way it was moving.
