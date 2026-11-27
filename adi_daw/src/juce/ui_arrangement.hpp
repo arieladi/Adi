@@ -576,7 +576,7 @@ class ArrangementView final : public juce::Component {
     // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
     bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
     static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
-    enum class SelectionPurpose { Edit, ContextMenu };
+    enum class SelectionPurpose { Edit, InsertMarker, ContextMenu };
     // Selects the clip or point. A context menu keeps an existing selection under the pointer.
     void select(int x, int y, bool snapToGrid = true, SelectionPurpose purpose = SelectionPurpose::Edit);
     // Whether a gesture with these keys snaps to the grid.
