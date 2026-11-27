@@ -1470,6 +1470,9 @@ if(ADI_WITH_JUCE)
             "    bash adi_daw/tools/fetch_external.sh --with-juce")
     endif()
 
+    # WTS-02: send Debug assertions to the window suite's logger. JUCE object
+    # layouts depend on this flag, so all targets in a configuration must agree.
+    add_compile_definitions("$<$<CONFIG:Debug>:JUCE_LOG_ASSERTIONS=1>")
     add_subdirectory("${ADI_JUCE_DIR}" "${CMAKE_BINARY_DIR}/third_party/JUCE" EXCLUDE_FROM_ALL SYSTEM)
 
     target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)

@@ -25,6 +25,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <chrono>
 #include <cmath>
@@ -36,6 +37,7 @@
 #include <optional>
 #include <string_view>
 #include <thread>
+#include <utility>
 #if !defined(_WIN32)
 #include <sys/stat.h>
 #include <unistd.h>
@@ -160,8 +162,9 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs : public device::DeviceInstance {
   public:
-    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
-        : reportedLatency(initialLatency), flow_(flow) {}
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through,
+                          std::string cutoffId = "cutoff")
+        : reportedLatency(initialLatency), controls(std::move(cutoffId)), flow_(flow) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     std::string_view processingIssue() const noexcept override { return issue; }
@@ -182,12 +185,15 @@ class SurfaceKnobs : public device::DeviceInstance {
 
 class SilentStateKnobs final : public SurfaceKnobs {
   public:
-    SilentStateKnobs() : SurfaceKnobs(0) {}
+    explicit SilentStateKnobs(std::string cutoffId = "cutoff")
+        : SurfaceKnobs(0, engine::EventFlow::Through, std::move(cutoffId)) {}
     std::uint64_t stateEpoch() const noexcept override { return epoch_; }
     std::vector<std::string> stateRoles() const override { return {"chunk"}; }
     std::vector<std::uint8_t> saveState(const std::string &role) const override {
         if (role != "chunk" || refuseSave)
             return {};
+        if (auto notify = std::exchange(onSave, {}))
+            notify();
         return {patch};
     }
     bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
@@ -196,10 +202,10 @@ class SilentStateKnobs final : public SurfaceKnobs {
         patch = bytes.front();
         return true;
     }
-    void nativeDragWithoutEnd(double value) {
-        broadcastParam(1, engine::ParamEventKind::Begin, 0);
-        controls.setParam("gain", device::ParamValue::fromNormalized(value));
-        broadcastParam(1, engine::ParamEventKind::Value, value);
+    void nativeDragWithoutEnd(double value, std::int32_t index = 1) {
+        broadcastParam(index, engine::ParamEventKind::Begin, 0);
+        controls.setParam(paramAt(index)->id, device::ParamValue::fromNormalized(value));
+        broadcastParam(index, engine::ParamEventKind::Value, value);
     }
     void signalChangedState() {
         const auto announced = beginStateSignal();
@@ -207,6 +213,7 @@ class SilentStateKnobs final : public SurfaceKnobs {
     }
     std::uint8_t patch = 1;
     bool refuseSave = false;
+    mutable std::function<void()> onSave;
   private:
     std::uint64_t epoch_ = 0;
 };
@@ -1371,6 +1378,95 @@ void dropSampleInstrument(const std::filesystem::path &dir) {
     document->release();
 }
 
+void hotSwapLiveState(const std::filesystem::path &dir) {
+    enum class Kind { Plugin, Preset, Refused, Changed };
+    struct Case { const char *file; Kind kind; };
+    constexpr std::array<Case, 4> cases{{
+        {"swap-plugin.adi", Kind::Plugin}, {"swap-preset.adi", Kind::Preset},
+        {"swap-refused.adi", Kind::Refused}, {"swap-changed.adi", Kind::Changed}}};
+    for (const auto &item : cases) {
+        const auto loader = device::withBuiltinDevices(
+            [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+                return request.ref && (request.ref->uid == "test.hot-swap" || request.ref->uid == "test.replacement")
+                    ? std::make_unique<SilentStateKnobs>() : nullptr;
+            });
+        std::string error;
+        auto doc = ui::ProjectDocument::open(dir / item.file, true, loader, error);
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = "test.hot-swap";
+        plugin.name = "Hot-Swap source";
+        plugin.subtype = "effect";
+        const bool inserted = doc && doc->insertPlugin(plugin, 4) && doc->capturePluginState();
+        check(inserted, "Hot-Swap capture: store a hosted device baseline");
+        if (!inserted)
+            continue;
+        const auto &devices = doc->session().model().devices;
+        const auto source = std::find_if(devices.begin(), devices.end(), [&](const auto &entry) {
+            return entry.name == plugin.name;
+        });
+        if (source == devices.end())
+            continue;
+        const auto id = source->id;
+        auto *knobs = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        const auto published = doc->parameterFeed().current();
+        check(published != nullptr, "Hot-Swap capture: publish the device panel data");
+        if (!published)
+            continue;
+        const auto panel = std::find_if(published->begin(), published->end(),
+                                        [id](const auto &entry) { return entry.id == id; });
+        check(knobs && panel != published->end(), "Hot-Swap capture: identify the selected exact runtime");
+        if (!knobs || panel == published->end())
+            continue;
+        const auto target = *panel;
+        auto replacement = plugin;
+        replacement.uid = "test.replacement";
+        replacement.name = "Replacement";
+        if (item.kind == Kind::Refused) {
+            const auto head = OpJournal(doc->store()).headSeq();
+            knobs->refuseSave = true;
+            check(doc->hotSwapPlugin(target, replacement) == 0 &&
+                      doc->session().instanceFor(id) == knobs && OpJournal(doc->store()).headSeq() == head &&
+                      doc->error().find("Hot-Swap source") != std::string::npos,
+                  "Hot-Swap capture: an unreadable live target refuses replacement");
+            continue;
+        }
+        if (item.kind == Kind::Changed) {
+            bool locked = false;
+            knobs->onSave = [&] {
+                OpRequest request;
+                request.opType = "track.setLocked";
+                request.payload = {{"id", 4}, {"locked", true}};
+                locked = doc->ops().submit(request).ok && doc->synchronise();
+            };
+            check(doc->hotSwapBuiltin(target, "org.adidaw.builtin.utility") == 0 && locked &&
+                      doc->session().instanceFor(id) == knobs &&
+                      doc->error().find("locked track") != std::string::npos,
+                  "Hot-Swap capture: a target locked during capture is revalidated before replacement");
+            continue;
+        }
+        // This opaque state is live only. The device does not issue a change notification.
+        knobs->patch = 9;
+        std::int64_t swapped = 0;
+        if (item.kind == Kind::Preset) {
+            preset::Preset presetValue;
+            presetValue.device = {plugin.format, plugin.uid, {}};
+            presetValue.name = "Hot-Swap test preset";
+            presetValue.state["chunk"] = {std::byte{23}};
+            swapped = doc->hotSwapPreset(target, std::move(presetValue));
+            check(swapped == id && knobs->patch == 23, "Hot-Swap capture: recall an in-place preset");
+        } else {
+            swapped = doc->hotSwapPlugin(target, replacement);
+            check(swapped != 0 && swapped != id, "Hot-Swap capture: replace the device with another plug-in");
+        }
+        const bool undone = swapped && doc->ops().undo().ok && doc->synchronise();
+        doc->tick(1);
+        auto *restored = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        check(undone && restored && restored->patch == 9,
+              "Hot-Swap capture: one Undo restores the latest live opaque state");
+    }
+}
+
 void devicePresetRoundTrip(const std::filesystem::path &dir) {
     constexpr auto oneShot = "org.adidaw.builtin.oneshot";
     constexpr std::int64_t track = 2;
@@ -2152,6 +2248,80 @@ void recordingBitDepth(const std::filesystem::path &dir) {
                   row.getColumn(2).getInt() == example.depth,
               "SC-25: the WAV header, exact samples and media pool use the selected depth");
         tick += textproj::kPPQ;
+    }
+}
+
+void captureDuringAutomation(const std::filesystem::path &dir) {
+    struct Pass { const char *file; bool native, targeted; };
+    constexpr std::array<Pass, 4> passes{{
+        {"strip-all.adi", false, false}, {"strip-target.adi", false, true},
+        {"native-all.adi", true, false}, {"native-target.adi", true, true}}};
+    for (const auto &pass : passes) {
+        const auto loader = [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            return request.ref && request.ref->uid == "test.automation-capture"
+                ? std::make_unique<SilentStateKnobs>("7") : nullptr;
+        };
+        std::string error;
+        auto doc = ui::ProjectDocument::open(dir / pass.file, true, loader, error);
+        check(doc != nullptr, "capture automation: open a project");
+        if (!doc)
+            continue;
+        doc->prepare(48000, 64);
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = "test.automation-capture";
+        plugin.name = "Automation capture";
+        plugin.subtype = "effect";
+        check(doc->insertPlugin(plugin, 4), "capture automation: insert a hosted device");
+        const auto &devices = doc->session().model().devices;
+        const auto target = std::find_if(devices.begin(), devices.end(), [&](const auto &entry) {
+            return entry.name == plugin.name;
+        });
+        if (target == devices.end())
+            continue;
+        const auto id = target->id;
+        auto *knobs = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        doc->setAutomationArmed(true);
+        const bool started = knobs && doc->capturePluginState() && doc->startRecording(0, 0, false);
+        check(started, ("capture automation: start Arrangement Record with a stored device baseline: " +
+                        doc->error()).c_str());
+        if (!started) {
+            doc->release();
+            continue;
+        }
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io{outputs, nullptr, 2, 0, 64};
+        doc->process(io);
+        const auto head = OpJournal(doc->store()).headSeq();
+        const auto params = [&] {
+            return doc->store().db().execAndGet("SELECT count(*) FROM plugin_params").getInt();
+        };
+        const auto beforeParams = params();
+        using Event = engine::ParamEventKind;
+        if (pass.native) {
+            knobs->nativeDragWithoutEnd(.7, 0);
+            if (pass.targeted)
+                doc->pollParameterEdits();
+        } else {
+            check(doc->parameterGesture(id, "7", Event::Begin, .5) &&
+                      doc->parameterGesture(id, "7", Event::Value, .7),
+                  "capture automation: strip touch is still held");
+        }
+        io.streamTimeSamples += io.frames;
+        doc->process(io);
+        const auto snapshot = pass.targeted ? History::SnapshotResult{} : doc->takeSnapshot("During a touch", 1, 0);
+        const bool captured = pass.targeted ? doc->capturePluginState(id) : snapshot.ok;
+        check(captured, (std::string("capture automation: finish an active pass in ") + pass.file +
+                         " " + doc->error()).c_str());
+        const auto step = doc->ops().nextUndo();
+        check(captured && step && step->label == "Record Automation" && params() == beforeParams &&
+                  doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE owner_kind='device'").getInt() == 1,
+              "capture automation: one envelope edit and no stray static parameter edit");
+        check(captured && doc->ops().undo().ok && OpJournal(doc->store()).headSeq() == head,
+              "capture automation: one Undo returns to the state before the touch");
+        doc->stopRecording();
+        doc->release();
     }
 }
 
@@ -4616,7 +4786,12 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
 }
 void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = false) {
     namespace fs = std::filesystem;
-    const auto staging = dir / "Untitled";
+    auto staging = dir / "Untitled";
+#if defined(_WIN32)
+    // SQLite keeps the spelling used to open the file. Windows canonical paths use the on-disk spelling.
+    fs::create_directory(dir / "First Save Path");
+    staging = dir / "first save path" / "Untitled";
+#endif
     fs::create_directory(staging);
     const auto source = staging / "Untitled.adi";
     std::string error;
@@ -4663,6 +4838,17 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = fals
     if (originalAudio.empty())
         return;
 
+    const auto nested = staging / "Nested";
+    fs::create_directory(nested);
+    const auto nestedProject = nested / "Nested.adi";
+    const bool acceptedNested = doc->saveAs(nestedProject, true);
+    check(!acceptedNested && doc->error().find("outside the temporary project folder") != std::string::npos &&
+              fs::exists(source) && fs::is_empty(nested),
+          "first save refuses a destination inside its temporary folder through an alias");
+    if (acceptedNested)
+        return;
+    fs::remove(nested);
+
     const auto occupied = dir / "Occupied.adi";
     fs::create_directory(occupied);
     check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
@@ -4672,7 +4858,11 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = fals
     const auto destination = dir / "Song";
     fs::create_directory(destination);
     const auto named = destination / "Song.adi";
-    const auto relativeAudio = originalAudio.lexically_relative(fs::canonical(staging));
+    const auto relativeAudio = fs::weakly_canonical(originalAudio).lexically_relative(fs::canonical(staging));
+    const bool relativeTake = !relativeAudio.empty() && !relativeAudio.is_absolute() && *relativeAudio.begin() != "..";
+    check(relativeTake, "the replacement fixture writes a separate destination take");
+    if (!relativeTake)
+        return;
     const auto existingAudio = destination / relativeAudio;
     std::optional<media::FileIdentity> replacementIdentity;
     if (replace) {
@@ -4865,6 +5055,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory automationDir("ui_document", "automation-record");
         arrangementAutomation(automationDir.path());
+        test::TempDirectory captureAutomationDir("ui_document", "capture-automation");
+        captureDuringAutomation(captureAutomationDir.path());
         test::TempDirectory recordDir("ui_document", "record");
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());
@@ -5942,6 +6134,10 @@ int main(int argc, char **argv) {
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
     devicePresetRoundTrip(temp.path());
+    {
+        test::TempDirectory hotSwapStateDir("ui_document", "hot-swap-state");
+        hotSwapLiveState(hotSwapStateDir.path());
+    }
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());

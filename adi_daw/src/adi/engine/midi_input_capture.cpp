@@ -44,7 +44,13 @@ std::size_t MidiInputCapture::drain(std::span<MidiCapturePacket> out, RecordingP
     return count;
 }
 bool MidiInputCapture::overdubs(std::int64_t track) const noexcept {
-    return transport_ && overdub_ && std::find(tracks_.begin(), tracks_.end(), track) != tracks_.end();
+    if (!transport_ || !overdub_) return false;
+    // Debug vector iterators can take a lock on the audio thread.
+    const auto* targets = tracks_.data();
+    const auto count = tracks_.size();
+    for (std::size_t index = 0; index < count; ++index)
+        if (targets[index] == track) return true;
+    return false;
 }
 
 void MidiInputCapture::finish(MidiCaptureState state) noexcept {

@@ -64,7 +64,7 @@ struct UntitledMedia {
         fs::path path;
         std::optional<media::FileIdentity> identity;
     };
-    fs::path staged, targetFolder;
+    fs::path staged, canonicalSource, targetFolder;
     bool privateFolder;
     bool replacing;
     std::map<fs::path,Move> sources;
@@ -74,8 +74,9 @@ struct UntitledMedia {
     bool keepPublished=false;
     bool durable=true;
 
-    UntitledMedia(fs::path stageFolder,fs::path target,bool ownsFolder,bool replace)
-        :staged(std::move(stageFolder)),targetFolder(std::move(target)),privateFolder(ownsFolder),replacing(replace){}
+    UntitledMedia(fs::path stageFolder,fs::path source,fs::path target,bool ownsFolder,bool replace)
+        :staged(std::move(stageFolder)),canonicalSource(std::move(source)),targetFolder(std::move(target)),
+         privateFolder(ownsFolder),replacing(replace){}
 
     void makeDirectory(const fs::path& directory) {
         if(directory==targetFolder)return;
@@ -120,8 +121,10 @@ struct UntitledMedia {
         const auto relative=primary.lexically_relative(oldFolder);
         if(!localPath(relative))return false;
         if(!privateFolder && *relative.begin()!="audio" && *relative.begin()!="Samples")return false;
+        // Compare with the physical source folder so a Windows short or differently cased
+        // parent name is not mistaken for a file or directory linked outside the project.
         const auto resolved=fs::weakly_canonical(primary);
-        if(resolved!=primary)return false; // a linked file or directory remains an external reference
+        if(resolved!=(canonicalSource/relative).lexically_normal())return false;
         const auto status=fs::symlink_status(primary);
         if(!fs::is_regular_file(status) && status.type()!=fs::file_type::not_found)
             throw std::runtime_error("project media is not an ordinary file: "+media::pathUtf8(primary));
@@ -400,6 +403,32 @@ ProjectRevision readRevision(SQLite::Database &db) {
 }
 }
 
+bool discardUntouchedProject(const fs::path& path, const media::FileIdentity& expected) {
+    std::error_code error;
+    const auto lease = media::ProjectFileLease::openExclusive(path, error);
+    if (!lease || lease->identity() != expected)
+        return false;
+    try {
+        // A clean Store close folds its owned WAL. Any surviving sidecar may contain someone
+        // else's recovery data, so keep the entire set without even opening SQLite on it.
+        if (projectDestinationReady(lease->path()))
+            return false;
+        const auto revision = media::readFileRevision(lease->path(), error);
+        if (!revision || revision->identity != expected)
+            return false;
+        {
+            // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
+            SQLite::Database db(media::pathUtf8(lease->path()), SQLite::OPEN_READONLY);
+            if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
+                              "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
+                return false;
+        }
+        return lease->removeExclusive(*revision, error, [&] { return projectDestinationReady(lease->path()); });
+    } catch (const SQLite::Exception&) {
+        return false;
+    }
+}
+
 struct StoreFileSave::Data {
     StoreSaveKind kind = StoreSaveKind::copy;
     StoreFileCollision collision = StoreFileCollision::Fail;
@@ -571,15 +600,16 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
     try {
         checkSaveCancellation(stop);
         const auto target = saveDestination(output, sourceLease, collision);
-        Stage stage(target.parent_path());const auto staged=stage.path/"project.adi";
         const bool firstSave = pending && pending->data_->kind == StoreSaveKind::firstSave;
         const bool privateFolder = firstSave && sourceFolder.filename() == pending->data_->sourcePath.stem();
         const auto targetFolder=fs::canonical(target.parent_path());
-        if(privateFolder && localPath(targetFolder.lexically_relative(sourceFolder)))
+        const auto canonicalSource=firstSave?fs::weakly_canonical(sourceFolder):fs::path{};
+        if(privateFolder && localPath(targetFolder.lexically_relative(canonicalSource)))
             return {false,"choose a location outside the temporary project folder",{}};
+        Stage stage(target.parent_path());const auto staged=stage.path/"project.adi";
         std::optional<UntitledMedia> mediaToMove;
-        if(firstSave && sourceFolder!=targetFolder)
-            mediaToMove.emplace(stage.path/"media",targetFolder,privateFolder,
+        if(firstSave && canonicalSource!=targetFolder)
+            mediaToMove.emplace(stage.path/"media",canonicalSource,targetFolder,privateFolder,
                                 collision==StoreFileCollision::ReplaceConfirmed);
         {
             SQLite::Database destination(media::pathUtf8(staged),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);

@@ -73,6 +73,30 @@ void stores(){
     StoreError error{};auto memory=Store::create(":memory:",error);check(memory!=nullptr,"in-memory project creation remains supported");
     auto temporary=Store::create({},error);check(temporary!=nullptr,"temporary SQLite project remains supported");
 }
+void discardKeepsUnownedSidecars() {
+    test::TempDirectory temp{"project_replace", "untitled-sidecars"};
+    for (const auto* suffix : {"-shm", "-wal", "-journal"}) {
+        const auto path = temp.path() / (std::string("Untitled") + suffix + ".adi");
+        auto store = project(path, "Untitled");
+        std::error_code error;
+        const auto identity = media::readFileIdentity(path, error);
+        check(identity && store->close(), "close the untouched project and its owned SQLite sidecars");
+        store.reset();
+        if (!identity)
+            continue;
+        const auto bytes = read(path);
+        auto sidecar = path;
+        sidecar += suffix;
+        write(sidecar, "unowned recovery file");
+        check(!discardUntouchedProject(path, *identity) && read(path) == bytes &&
+                  read(sidecar) == "unowned recovery file",
+              "discard leaves both the project and an unowned SQLite sidecar intact");
+        fs::remove(sidecar);
+        check(discardUntouchedProject(path, *identity) && !fs::exists(path),
+              "discard removes the same untouched project once its folder is clear of sidecars");
+    }
+}
+
 void missingMediaReservations() {
     test::TempDirectory temp{"project_replace","missing-media"};
     const auto source = temp.path() / "Untitled";
@@ -415,7 +439,7 @@ int main([[maybe_unused]] int argc,char** argv){
 #if !defined(_WIN32)
 if(argc==3 && std::string(argv[1])=="--writer")return writerResult(media::pathFromUtf8(argv[2]));
 #endif
-executable=fs::absolute(argv[0]);try{stores();missingMediaReservations();publication();publicationRetries();
+executable=fs::absolute(argv[0]);try{stores();discardKeepsUnownedSidecars();missingMediaReservations();publication();publicationRetries();
 #if !defined(_WIN32)
 processes();
 #endif
