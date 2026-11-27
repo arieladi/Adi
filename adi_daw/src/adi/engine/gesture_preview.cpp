@@ -557,11 +557,11 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
-        timing->sourceReadiness=out->clips->readiness();
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
         timing->tempo = TempoMap::fromRows(playback.tempo);
+        owner->prepareSourceReadiness(*timing, *out->clips);
         auto sample=[&](std::int64_t tick){
             const long double value=static_cast<long double>(timing->tempo.ticksToSeconds(tick))*owner->spec_.sampleRate;
             if(!std::isfinite(value) || value<0 || value>static_cast<long double>(std::numeric_limits<std::int64_t>::max()))

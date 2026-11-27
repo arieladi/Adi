@@ -233,6 +233,10 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
 
     const bool adopting = snap->seq != lastSeq_;
     if (adopting) {
+        if (lastSnap_ != nullptr) {
+            const auto* state = snap->transportState();
+            if (state && !state->readyToAdopt(lastSnap_->transportState())) return lastSnap_;
+        }
         // Accepted MIDI ownership is independent of the optional audio ring
         // history policy. Transfer pending deliveries before the old graph can
         // retire even when ring-history carry has deliberately been disabled.

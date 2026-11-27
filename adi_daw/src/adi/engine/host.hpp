@@ -48,6 +48,9 @@ namespace adi::engine {
 class GraphTransportState {
 public:
     virtual ~GraphTransportState()=default;
+    // Driver only, before carrying history from the still-pinned generation.
+    // A false result leaves that generation playing for this block.
+    [[nodiscard]] virtual bool readyToAdopt(const GraphTransportState*) const noexcept { return true; }
     // Called once per actually adopted generation, before beginBlock. Apply
     // prevalidated raw control bindings only; no allocation/lock/destruction.
     virtual void adopted() const noexcept {}

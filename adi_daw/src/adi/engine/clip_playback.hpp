@@ -86,7 +86,8 @@ public:
     // call immediately before rendering the same transport range.
     // The closure retains its source generation even after this wrapper dies.
     // Construction on the audio callback refuses with an empty function.
-    [[nodiscard]] Readiness readiness() const;
+    enum class ReadinessScope { All, Delayed };
+    [[nodiscard]] Readiness readiness(ReadinessScope = ReadinessScope::All) const;
     // Simulates an unavailable disk worker, without stopping the audio driver.
     void stallForTest(bool stall) noexcept;
     struct RequestSnapshotProbeForTest {

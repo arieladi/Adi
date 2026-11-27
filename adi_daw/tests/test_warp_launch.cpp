@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "replace_operator_new.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/engine/warp_clip_player.hpp"
 #include "adi/store_rows.hpp"
 #include "adi/textproj.hpp"
@@ -109,6 +110,32 @@ void sceneTempoHandover() {
     std::printf("Warp launch handover at %d samples, maximum grid error %d samples, callback allocations %u\n",
                 handover, maxError, callbackAllocations);
 }
+
+void sharedTempoIndex() {
+    const auto rampEnd = 4 * beat;
+    const std::array<rows::TempoEvent, 4> events{{
+        {0, 120, 2, 0.9}, {rampEnd, 140, 1, 0},
+        {6 * beat, 130, 2, -0.8, TempoRampSpan{6 * beat, 12 * beat, 130, 90}},
+        {8 * beat, 180, 0, 0}
+    }};
+    const auto shared = TempoMap::fromRows(events);
+    long double worst = 0;
+    for (const auto sampleRate : {44100, 48000, 96000}) {
+        const WarpArrangementClock indexed(shared, sampleRate);
+        for (int point = 0; point < 995; ++point) {
+            const auto tick = static_cast<double>(beat) * (point - 40) / 100.0;
+            const auto expected = shared.secondsAtPosition(tick) * sampleRate;
+            const auto frame = indexed.frameAtTick(tick);
+            const auto roundTrip = indexed.frameAtTick(indexed.tickAtFrame(frame));
+            worst = std::max({worst, std::abs(frame - expected), static_cast<long double>(std::abs(roundTrip - frame))});
+        }
+    }
+    require(worst < 0.0001L, "indexed Warp clock matches the shared steps, ramps and interrupted curve spans");
+    std::printf("Shared Warp clock maximum placement and inverse error %.9Lf samples at 44.1, 48 and 96 kHz\n", worst);
+}
 } // namespace
 
-int main() { sceneTempoHandover(); }
+int main() {
+    sharedTempoIndex();
+    sceneTempoHandover();
+}

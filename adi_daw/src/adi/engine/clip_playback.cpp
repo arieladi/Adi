@@ -982,7 +982,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto warpSourceOrigin=static_cast<double>(sourceOrigin);
                 if (r3) {
                     clip->r3Warp=std::make_unique<WarpR3Pages>(spec,clip->sourceRate,clip->channels,
-                        map.markers,warpClock,warpSourceOrigin,static_cast<double>(end),loopStart,loopLength);
+                        map.markers,warpClock,warpSourceOrigin,static_cast<double>(end),loopStart,loopLength,clip->end);
                 } else {
                     clip->streamingWarp=std::make_unique<WarpClipPlayer>(warpClock,std::move(spec),
                         std::move(map.markers),clip->sourceRate,clip->channels,warpSourceOrigin,
@@ -1124,23 +1124,31 @@ bool ClipPlayback::waitForWarp(std::stop_token stop) const {
     }
     return false;
 }
-ClipPlayback::Readiness ClipPlayback::readiness() const {
+ClipPlayback::Readiness ClipPlayback::readiness(ReadinessScope scope) const {
     if(audio::onAudioThread)return {};
-    return {[held=impl_](const Transport& snapshot,std::int32_t frames,bool allowFailedSources) noexcept {
+    const bool delayedOnly = scope == ReadinessScope::Delayed;
+    if (delayedOnly && (impl_->synchronousReads || std::none_of(impl_->clips.begin(),impl_->clips.end(),
+        [](const auto& clip) { return clip->playbackDelay > 0 && !clip->monitorInputOnly; }))) return {};
+    return {[held=impl_,delayedOnly](const Transport& snapshot,std::int32_t frames,bool allowFailedSources) noexcept {
         if(frames<1 || frames>held->maxFrames)return false;
         // One producer, the audio driver. This fixed target is shared by the
         // admission check and the source immediately rendered after it.
         const Transport target=snapshot;
         // No checked vector iterators on the callback (MSVC Debug can lock
         // their shared proxy). Source generations have a fixed clip count.
-        const auto releaseAll=[&]()noexcept{for(std::size_t i=0;i<held->clips.size();++i)held->clips[i]->releaseAdmission();};
+        const auto included = [delayedOnly](const Clip& clip) { return !delayedOnly || clip.playbackDelay > 0; };
+        const auto releaseAll=[&]()noexcept{
+            for(std::size_t i=0;i<held->clips.size();++i)
+                if(included(*held->clips[i])) held->clips[i]->releaseAdmission();
+        };
         releaseAll();
         for(std::size_t i=0;i<held->clips.size();++i) {
-            auto& clip=held->clips[i];clip->request(clip->wanted(target,frames));
+            auto& clip=held->clips[i];
+            if(included(*clip))clip->request(clip->wanted(target,frames));
         }
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
-            if(clip->monitorInputOnly)continue;
+            if(clip->monitorInputOnly || !included(*clip))continue;
             if(clip->errors.load(std::memory_order_relaxed)) {
                 if(allowFailedSources)continue;
                 releaseAll();

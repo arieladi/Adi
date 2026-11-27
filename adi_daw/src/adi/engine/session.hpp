@@ -586,6 +586,9 @@ private:
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
+        ClipPlayback::Readiness delayedSourceReadiness;
+        std::uint64_t tempoRevision=0;
+        bool authoredPerformanceTempo=false;
         std::shared_ptr<InputMonitors> inputMonitors;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
@@ -594,12 +597,15 @@ private:
         void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
+        [[nodiscard]] bool projectLoop(Transport&) const noexcept;
+        [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
+    void prepareSourceReadiness(TimingView&, const ClipPlayback&);
     void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;

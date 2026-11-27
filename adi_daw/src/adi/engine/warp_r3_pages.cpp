@@ -77,7 +77,8 @@ float stitchSample(const float* start, double position, std::uint16_t channels, 
 WarpR3Pages::WarpR3Pages(const audio::WarpRenderPlan& plan, std::uint32_t sourceRate,
                          std::uint16_t channels, std::span<const WarpMarker> markers,
                          const WarpArrangementClock& tempo, double sourceOriginTick,
-                         double endTick, double loopStartTick, double loopLengthTicks)
+                         double endTick, double loopStartTick, double loopLengthTicks,
+                         std::optional<std::int64_t> placementEndFrame)
     : tempo_(tempo), markers_(markers.begin(), markers.end()), sourceStart_(plan.sourceStart),
       sourceRate_(sourceRate), channels_(channels), originTick_(sourceOriginTick), loopStartTick_(loopStartTick),
       loopLengthTicks_(loopLengthTicks), steadyFramesPerTick_(tempo.constantFramesPerTick()) {
@@ -113,6 +114,25 @@ WarpR3Pages::WarpR3Pages(const audio::WarpRenderPlan& plan, std::uint32_t source
             if (steadyLoopLength_ <= 0) throw std::invalid_argument("R3 Warp loop is shorter than one output frame");
         }
         endOutputFrame_ = frameLimit;
+    }
+    if (placementEndFrame) {
+        endOutputFrame_ = std::min(endOutputFrame_, *placementEndFrame);
+        // Dynamic R3 can read the next lap ahead of the output cursor. Keep
+        // that future attack out of the synthesis window when the placement
+        // ends. Steady tiles retain their full shared source-clock history.
+        if (steadyFramesPerTick_ == 0) {
+            terminalInputFrame_ = unrolledSourceAt(endOutputFrame_);
+            if (loopLengthTicks_ > 0) {
+                const auto laps = std::round((relativeTickAt(endOutputFrame_) - loopStartTick_) / loopLengthTicks_);
+                const auto edgeTick = originTick_ + loopStartTick_ + laps * loopLengthTicks_;
+                const auto edgeFrame = tempo_.frameAtTick(edgeTick) - originRounding_;
+                // Round a terminal loop edge on the same clock as placement.
+                // The frame-to-tick inverse can otherwise include the first
+                // source sample of a lap that starts at the rounded cutoff.
+                if (laps >= 1 && std::abs(edgeFrame - static_cast<double>(endOutputFrame_)) <= 0.5)
+                    terminalInputFrame_ = loopStartFileFrame_ + laps * loopLengthFileFrames_;
+            }
+        }
     }
 
     voicePlan_.mode = plan.mode;
@@ -199,7 +219,12 @@ const float* WarpR3Pages::sourceFrame(std::int64_t frame, const WarpR3Source& re
 }
 
 bool WarpR3Pages::readFrame(std::int64_t frame, std::span<float> pcm, const WarpR3Source& reader) {
-    const auto position = foldSource(static_cast<double>(frame));
+    const auto unrolled = static_cast<double>(frame);
+    if (terminalInputFrame_ && unrolled >= *terminalInputFrame_) {
+        std::fill(pcm.begin(), pcm.end(), 0.0f);
+        return true;
+    }
+    const auto position = foldSource(unrolled);
     const auto first = static_cast<std::int64_t>(std::floor(position));
     const auto fraction = static_cast<float>(position-static_cast<double>(first));
     const auto* a = sourceFrame(first, reader);
@@ -210,7 +235,8 @@ bool WarpR3Pages::readFrame(std::int64_t frame, std::span<float> pcm, const Warp
     auto second = first+1;
     if (loopLengthFileFrames_ > 0 && static_cast<double>(second) >= loopStartFileFrame_+loopLengthFileFrames_)
         second = static_cast<std::int64_t>(std::floor(loopStartFileFrame_));
-    const auto* b = sourceFrame(second, reader);
+    const bool retainNext = !terminalInputFrame_ || unrolled + (1.0 - fraction) < *terminalInputFrame_;
+    const auto* b = retainNext ? sourceFrame(second, reader) : nullptr;
     for (std::size_t channel = 0; channel < channels_; ++channel)
         pcm[channel] = std::lerp(pcm[channel], b ? b[channel] : 0.0f, fraction);
     return true;

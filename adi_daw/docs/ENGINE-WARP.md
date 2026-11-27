@@ -103,16 +103,21 @@ source window through the bounded PCM page cache. The compiled Warp index uses
 the shared TM-TT-01 step, linear and Bézier tempo integral to map each output
 frame to fractional AWRP ticks. Each loop iteration uses the tempo at its own
 position. Tempo edits and Link changes use the existing Session generation
-handover. Beats onset analysis stays off the callback and is reusable across
-tempo changes. The native players prepare their bandlimited sample-rate
-conversion kernels from the pinned converter off the callback.
+handover. On an authored tempo edit during playback, the driver carries on with
+the previous graph until the new graph has the compensated R3 pages at its
+current position, including around transport loops. Beats onset analysis stays
+off the callback and is reusable across tempo changes. The native players
+prepare bandlimited sample-rate kernels from the pinned converter off the
+callback.
 
 Supported Tones, Complex and Complex Pro clips use a bounded worker-side R3
 voice at steady tempo and through tempo changes. It supplies
 `getPreferredStartPad()` and discards `getStartDelay()` output frames. Variable
-tempo pages share a voice in order, with bounded preroll after a cold seek.
-Steady tempo uses independently primed 8,192-frame tiles on the clip's source
-clock. A 512-frame overlap aligns adjacent waveforms within a 64-frame search
+tempo pages share a voice in order, with bounded preroll after a cold seek and
+zero padding after the placed end. Stereo R3 runs in mid/side to keep the stereo
+relationship through ratio changes. Steady tempo uses independently primed
+8,192-frame tiles on the clip's source clock. A 512-frame overlap aligns
+adjacent waveforms within a 64-frame search
 window. Two tiles and bounded source pages are enough for arbitrary seeks and
 exact repeat, trim and split behavior. The worker reclaims idle scratch.
 

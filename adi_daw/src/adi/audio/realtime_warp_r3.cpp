@@ -26,12 +26,15 @@ double clampRatio(double ratio) noexcept {
     return std::clamp(ratio, RealtimeWarpR3::minRatio, RealtimeWarpR3::maxRatio);
 }
 
-Stretcher::Options options(const WarpRenderPlan& plan) noexcept {
+Stretcher::Options options(const WarpRenderPlan& plan, std::uint16_t channels) noexcept {
     auto flags = Stretcher::OptionProcessRealTime | Stretcher::OptionEngineFiner |
                  Stretcher::OptionThreadingNever | Stretcher::OptionPitchHighQuality;
     if (plan.mode == WarpMode::Tones && plan.grainSeconds <= 0.05)
         flags |= Stretcher::OptionWindowShort;
     if (plan.mode == WarpMode::ComplexPro) flags |= Stretcher::OptionFormantPreserved;
+    // R3 keeps the stereo pair coherent in mid/side, including a silent
+    // center in a polarity-inverted source. Other layouts keep their channels.
+    if (channels == 2) flags |= Stretcher::OptionChannelsTogether;
     return flags;
 }
 
@@ -49,7 +52,8 @@ struct RealtimeWarpR3::Impl {
 
     Impl(const WarpRenderPlan& plan, std::uint32_t sourceRate, std::uint16_t channelCount,
          double ratio, std::int64_t firstSourceFrame)
-        : stretcher(sourceRate, channelCount, options(plan), clampRatio(ratio), clampRatio(pitchScale(plan, sourceRate))),
+        : stretcher(sourceRate, channelCount, options(plan, channelCount),
+                    clampRatio(ratio), clampRatio(pitchScale(plan, sourceRate))),
           channels(channelCount), latency(stretcher.getStartDelay()),
           next(firstSourceFrame), scratch(static_cast<std::size_t>(channelCount) * quantum) {
         if (stretcher.getEngineVersion() != 3) throw std::runtime_error("R3 engine unavailable");
@@ -111,7 +115,7 @@ std::int32_t RealtimeWarpR3::configuredLatencySamples(const WarpRenderPlan& plan
     // R3 derives start delay from its window size and fixed pitch conversion.
     // Those settings are independent of channel count, so graph preparation
     // can measure the delay without reserving a playback voice for every clip.
-    const Stretcher probe(sourceRate, 1, options(plan), clampRatio(initialRatio), clampRatio(pitchScale(plan, sourceRate)));
+    const Stretcher probe(sourceRate, 1, options(plan, 1), clampRatio(initialRatio), clampRatio(pitchScale(plan, sourceRate)));
     if (probe.getEngineVersion() != 3) throw std::runtime_error("R3 engine unavailable");
     return static_cast<std::int32_t>(probe.getStartDelay());
 }

@@ -197,6 +197,65 @@ void testRepeatedRampPages() {
               << " frames over " << projectBeats << " beats, cold seek error " << seekError << " frames\n";
 }
 
+void testDynamicStereoPlacementEnd() {
+    using namespace adi;
+    using namespace adi::engine;
+    constexpr std::int64_t framesPerBeat = sampleRate / 2, ticksPerBeat = textproj::kPPQ;
+    constexpr std::int64_t loopBeats = 8, sourceFrames = loopBeats * framesPerBeat;
+    constexpr std::int64_t page = 8192, changeFrame = 12 * page + 65;
+    const auto changeTick = std::llround(static_cast<double>(changeFrame) * ticksPerBeat / framesPerBeat);
+    const std::array<rows::TempoEvent, 2> events{{{0, 120, 0}, {changeTick, 140, 0}}};
+    const WarpArrangementClock tempo(events, sampleRate);
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {sourceFrames, loopBeats * ticksPerBeat}}};
+    const auto exactEnd = tempo.frameAtTick(2 * loopBeats * ticksPerBeat);
+    const auto end = static_cast<std::int64_t>(std::llround(exactEnd));
+    check(static_cast<double>(end) > exactEnd, "the fixture rounds its terminal loop edge up in the arrangement");
+
+    std::vector<float> input(static_cast<std::size_t>(sourceFrames) * 2);
+    constexpr std::int64_t pulseHalfWidth = 48;
+    for (std::int64_t frame = 0; frame < sourceFrames; ++frame) {
+        const auto offset = frame % framesPerBeat;
+        const auto distance = std::min(offset, framesPerBeat - offset);
+        if (distance >= pulseHalfWidth || frame >= sourceFrames - pulseHalfWidth) continue;
+        const auto pulse = static_cast<float>(0.4 * (1 + std::cos(std::numbers::pi *
+            static_cast<double>(distance) / pulseHalfWidth)));
+        const auto index = static_cast<std::size_t>(frame) * 2;
+        input[index] = pulse;
+        input[index + 1] = -pulse;
+    }
+    const WarpR3Source source{&input, [](void* context, std::uint64_t first, float* target, std::uint32_t count) {
+        const auto& signal = *static_cast<const std::vector<float>*>(context);
+        check((first + count) * 2 <= signal.size(), "dynamic R3 stays inside the stored source window");
+        std::copy_n(signal.data() + first * 2, count * 2, target);
+    }};
+    audio::WarpRenderPlan plan;
+    plan.mode = audio::WarpMode::Complex;
+    plan.outputRate = sampleRate;
+    plan.sourceFrames = sourceFrames;
+    WarpR3Pages pages(plan, sampleRate, 2, markers, tempo, 0, loopBeats * ticksPerBeat,
+                      0, loopBeats * ticksPerBeat, end);
+
+    constexpr std::int64_t terminalWindow = 1024;
+    std::vector<float> output(static_cast<std::size_t>(end + terminalWindow) * 2);
+    for (std::int64_t first = 0; first < end + terminalWindow; first += page) {
+        const auto count = static_cast<std::uint32_t>(std::min(page, end + terminalWindow - first));
+        check(pages.render(first, count, output.data() + static_cast<std::size_t>(first) * 2, source),
+              "dynamic stereo R3 fills pages through the end of the placement");
+    }
+    float sidePeak = 0, centerPeak = 0, terminalPeak = 0;
+    for (std::size_t i = 0; i < output.size(); i += 2) {
+        const auto left = output[i], right = output[i+1];
+        sidePeak = std::max(sidePeak, std::abs(left));
+        centerPeak = std::max(centerPeak, std::abs(left + right));
+        if (i / 2 >= static_cast<std::size_t>(end - terminalWindow))
+            terminalPeak = std::max(terminalPeak, std::abs(left));
+    }
+    check(sidePeak > 0.5f && centerPeak < 1e-6f, "dynamic R3 keeps the stereo polarity of audible attacks");
+    check(terminalPeak < 1e-5f, "R3 lookahead cannot bring an omitted loop attack into the cutoff");
+    std::cout << "Dynamic stereo R3 step: side peak " << sidePeak << ", center peak " << centerPeak
+              << ", terminal peak " << terminalPeak << " FS\n";
+}
+
 void testSteadyPages() {
     using namespace adi;
     using namespace adi::engine;
@@ -315,5 +374,6 @@ void testSteadyPages() {
 int main() {
     testVoice();
     testRepeatedRampPages();
+    testDynamicStereoPlacementEnd();
     testSteadyPages();
 }

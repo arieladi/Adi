@@ -504,21 +504,30 @@ void warpedLoopFollowsPeerTempo(std::string_view mode) {
     check(clean && project.sqlOnCallback == 0 && project.session.clips()->underrunSamples() == 0,
           "peer tempo and Warp loop transitions are clean in the callback");
 
-    const auto peakError = [&](std::size_t channel, int expected) {
+    const auto peak = [&](std::size_t channel, int expected) {
         const auto& audio = pcm[channel];
         constexpr int window = 5000;
         const auto best = std::max_element(audio.begin() + expected - window, audio.begin() + expected + window + 1);
-        return *best > 0.6 ? static_cast<int>(std::abs((best - audio.begin()) - expected)) : window + 1;
+        return std::pair{static_cast<int>(std::abs((best - audio.begin()) - expected)), *best};
     };
     int warpError = 0, dryError = 0;
+    double minWarpPeak = 1, minDryPeak = 1;
     for (const auto source : {6000, 18000, 30000, 42000}) {
         const auto expected = source < change ? source :
             static_cast<int>(std::lround(change + (source - change) * initial / target));
-        warpError = std::max(warpError, peakError(0, expected + latency));
+        const auto [error, level] = peak(0, expected + latency);
+        warpError = std::max(warpError, error);
+        minWarpPeak = std::min(minWarpPeak, level);
     }
-    for (const auto expected : {10000, 22000, 34000}) dryError = std::max(dryError, peakError(1, expected + latency));
-    std::printf("Link %.*s 120→140 BPM at frame %d: Warp loop peak error %d samples, dry peak error %d samples, owner %.2f ms\n",
-                static_cast<int>(mode.size()), mode.data(), change, warpError, dryError, prepareMs);
+    for (const auto expected : {10000, 22000, 34000}) {
+        const auto [error, level] = peak(1, expected + latency);
+        dryError = std::max(dryError, error);
+        minDryPeak = std::min(minDryPeak, level);
+    }
+    std::printf("Link %.*s 120→140 BPM at frame %d: Warp loop peak error %d samples, dry peak error %d samples, "
+                "minimum Warp peak %.3f FS, owner %.2f ms\n",
+                static_cast<int>(mode.size()), mode.data(), change, warpError, dryError, minWarpPeak, prepareMs);
+    check(minWarpPeak >= (r3 ? 0.4 : 0.6) && minDryPeak >= 0.6, "warped and dry landmarks retain audible peaks");
     check(warpError <= (r3 ? 160 : 1), "warped repeats follow the new peer tempo within method tolerance");
     check(dryError == 0, "unwarped PCM retains its physical source clock through a peer tempo change");
     check(project.unchanged(), "a realtime Warp peer tempo change leaves the project and history untouched");

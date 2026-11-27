@@ -300,22 +300,23 @@ void tempoRamp(std::string_view mode, Precision width, std::uint32_t rate, std::
           "streaming warp reads the test loop without underruns or disk errors");
 }
 
-void typedTempo() {
-    Project project("beats");
-    constexpr std::int64_t changeBeat = 4;
-    constexpr auto changeTick = changeBeat * quarter;
-    constexpr auto changeFrame = framesPerBeat * changeBeat;
+void typedTempo(std::string_view mode, std::int64_t changeFrame, std::int64_t tolerance) {
+    Project project(mode);
+    const auto changeTick = static_cast<std::int64_t>(std::llround(static_cast<double>(changeFrame) * quarter / framesPerBeat));
+    const auto changeBeat = static_cast<double>(changeTick) / quarter;
     project.tempo(0, changeTick, 120);
     Session session;
     project.load(session, Precision::Float32, sourceRate);
-    const auto secondsAtBeat = [](double beat) {
+    const auto delay = static_cast<std::size_t>(session.graph().currentGraph()->latencySamples());
+    const auto secondsAtBeat = [changeBeat](double beat) {
         if (beat <= changeBeat) return beat / 2;
         return changeBeat / 2.0 + (beat - changeBeat) * 60.0 / 140.0;
     };
-    const auto frames = static_cast<std::size_t>(std::llround(sourceRate * secondsAtBeat(arrangementBeats))) + sourceRate / 10;
+    const auto frames = static_cast<std::size_t>(std::llround(sourceRate * secondsAtBeat(arrangementBeats))) + sourceRate / 10 + delay;
     std::vector<StereoFrame> heard(frames);
     std::span<StereoFrame> output = heard;
-    render(session, Precision::Float32, output.first(changeFrame), 257);
+    const auto switchAt = static_cast<std::size_t>(changeFrame);
+    render(session, Precision::Float32, output.first(switchAt), 257);
 
     // The same journal batch the tempo field uses when replacing the event in force.
     std::array<OpRequest, 2> edit;
@@ -328,11 +329,16 @@ void typedTempo() {
     }
     check(session.transport().playing() && session.transport().position() == changeFrame,
           "a typed tempo edit preserves the running transport at the edit boundary");
-    render(session, Precision::Float32, output.subspan(changeFrame), 257, false);
-    check(beatLandmarks(heard, sourceRate, secondsAtBeat, "typed Beats") <= 4,
-          "the next callback hears the typed tempo without a pre-render wait or a lost beat");
+    // At the R3 test position, the current output is still reading the
+    // previous PCM page through the live compensation clock.
+    render(session, Precision::Float32, output.subspan(switchAt, 257), 257, false);
+    check(session.clips()->underrunSamples() == 0, "the first callback after a typed tempo has ready source audio");
+    render(session, Precision::Float32, output.subspan(switchAt + 257), 257);
+    const std::string label = "typed " + std::string(mode);
+    check(beatLandmarks(output.subspan(delay), sourceRate, secondsAtBeat, label.c_str()) <= tolerance,
+          "the typed tempo places each following beat without dropping a landmark");
     check(session.clips()->underrunSamples() == 0 && session.clips()->readErrors() == 0,
-          "the first callback after a typed tempo has ready source audio");
+          "typed tempo playback has no missing source pages");
 }
 
 std::vector<StereoFrame> compensatedPlayback(Session& session, std::size_t frames, std::int32_t blockFrames) {
@@ -501,7 +507,8 @@ int main() {
         // Texture moves individual grains on purpose. Its default 65 ms grain
         // and 25% fluctuation allow around 16 ms of displacement before stretch.
         tempoRamp("texture", Precision::Float32, sourceRate, 1024);
-        typedTempo();
+        typedTempo("beats", 4 * framesPerBeat, 4);
+        typedTempo("complex", 12 * 8192 + 64, 160);
         steadyTempo("beats", 120.0);
         steadyTempo("re-pitch", 100.0);
         steadyTempo("texture", 120.0);

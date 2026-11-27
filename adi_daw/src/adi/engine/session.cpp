@@ -1203,7 +1203,7 @@ bool Session::rebuild() {
         error_ = "external tempo preparation became stale";
         return false;
     }
-    timing->sourceReadiness = nextClips->readiness();
+    prepareSourceReadiness(*timing, *nextClips);
     clips_ = std::move(nextClips);
     midi_ = std::move(nextMidi);
     auto suspended = overridden_;
@@ -2556,15 +2556,48 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     return result;
 }
 
-void Session::TimingView::applyLoop() const noexcept {
+bool Session::TimingView::projectLoop(Transport& transport) const noexcept {
     const bool sameLoop = session->loopApplied_ && session->loopOn_ == settings.loopEnabled &&
                           session->loopStartTick_ == settings.loopStartTicks && session->loopEndTick_ == settings.loopEndTicks;
-    if(settings.hasLoop && (!sameLoop || session->loopBegin_!=loopBegin || session->loopEnd_!=loopEnd)) {
-        session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
-        session->loopStartTick_ = settings.loopStartTicks; session->loopEndTick_ = settings.loopEndTicks;
-        if (sameLoop) session->transport_.retimeLoop(loopBegin,loopEnd,settings.loopEnabled);
-        else session->transport_.loop(loopBegin,loopEnd,settings.loopEnabled);
-    }
+    if (!settings.hasLoop || (sameLoop && session->loopBegin_==loopBegin && session->loopEnd_==loopEnd)) return false;
+    if (sameLoop) transport.retimeLoop(loopBegin,loopEnd,settings.loopEnabled);
+    else transport.loop(loopBegin,loopEnd,settings.loopEnabled);
+    return true;
+}
+
+void Session::TimingView::applyLoop() const noexcept {
+    if (!projectLoop(session->transport_)) return;
+    session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
+    session->loopStartTick_ = settings.loopStartTicks; session->loopEndTick_ = settings.loopEndTicks;
+}
+
+void Session::prepareSourceReadiness(TimingView& timing, const ClipPlayback& clips) {
+    timing.sourceReadiness = clips.readiness();
+    const auto* previous = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    // Use the publication's unique owner-assigned generation for each changed
+    // tempo. Equal clocks carry the same revision through superseding edits.
+    timing.tempoRevision = previous && previous->tempo.events == timing.tempo.events
+        ? previous->tempoRevision : timing.gestureGeneration;
+    timing.authoredPerformanceTempo = timing.spec.performanceState && !timing.spec.offline &&
+        !timing.spec.exporting && !primeExternalAt_ && !timing.spec.externalTempoBpm && performedTempo_.empty();
+    if (timing.authoredPerformanceTempo)
+        timing.delayedSourceReadiness = clips.readiness(ClipPlayback::ReadinessScope::Delayed);
+}
+
+bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const noexcept {
+    if (!delayedSourceReadiness || !session->transport_.playing()) return true;
+    const auto* previous = dynamic_cast<const TimingView*>(before);
+    if (!previous || previous->session != session || !previous->authoredPerformanceTempo ||
+        previous->tempoRevision == tempoRevision || previous->spec.sampleRate != spec.sampleRate ||
+        previous->spec.channels != spec.channels || previous->spec.maxFrames != spec.maxFrames ||
+        previous->spec.precision != spec.precision || previous->spec.delayCompensation != spec.delayCompensation)
+        return true;
+
+    // The driver owns this clock. Its elapsed and loop history select the
+    // page that will actually be heard after this generation's source delay.
+    auto requested = session->transport_;
+    (void)projectLoop(requested);
+    return delayedSourceReadiness(requested,spec.maxFrames,true);
 }
 
 const TransportInfo* Session::TimingView::beginBlock()const noexcept {

@@ -30,7 +30,8 @@ public:
     WarpR3Pages(const audio::WarpRenderPlan&, std::uint32_t sourceRate,
                 std::uint16_t channels, std::span<const WarpMarker>,
                 const WarpArrangementClock&, double sourceOriginTick, double endTick,
-                double loopStartTick, double loopLengthTicks);
+                double loopStartTick, double loopLengthTicks,
+                std::optional<std::int64_t> placementEndFrame = std::nullopt);
 
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
 
@@ -76,6 +77,7 @@ private:
     double loopStartFileFrame_ = 0, loopLengthFileFrames_ = 0;
     double originRounding_ = 0;
     std::int64_t firstOutputFrame_ = 0, endOutputFrame_ = 0;
+    std::optional<double> terminalInputFrame_;
     std::optional<std::int64_t> nextOutputFrame_;
     audio::WarpRenderPlan voicePlan_;
     std::int32_t latency_ = 0;
