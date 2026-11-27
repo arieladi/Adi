@@ -689,6 +689,7 @@ private:
         bool authoredPerformanceTempo=false;
         std::shared_ptr<InputMonitors> inputMonitors;
         std::shared_ptr<LaunchAudioRuntime> launchAudio;
+        std::shared_ptr<const ClipProject> launchSource;
         std::shared_ptr<const PreparedSceneLaunch> preparedScene;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;

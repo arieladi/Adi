@@ -114,7 +114,7 @@ public:
     LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>, std::vector<std::int64_t> tracks,
                        std::int32_t maxFrames,
                        std::shared_ptr<const LaunchAudioProject> beforeClock = {},
-                       std::int64_t clockSample = 0);
+                       std::int64_t clockSample = 0, std::uint64_t compatibleGainRevision = 0);
 
     void startIfQueued(LaunchAudioDriver&, LaunchBlock, Transport&) const noexcept;
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
@@ -131,6 +131,7 @@ public:
     // Owner only. The source declares this latency before graph realization.
     [[nodiscard]] std::int32_t latencyForTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::uint64_t incarnation() const noexcept { return project_->incarnation(); }
+    [[nodiscard]] std::uint64_t gainRevision() const noexcept;
     [[nodiscard]] const LaunchSceneClock* sceneClock(std::int64_t id) const noexcept { return project_->sceneClock(id); }
     [[nodiscard]] bool hasScene(std::int64_t scene) const noexcept;
     [[nodiscard]] bool postGainEdit(LaunchAudioDriver&, const LaunchClipGainEdit&) const noexcept;
@@ -165,8 +166,6 @@ private:
                  std::int32_t blockFrames) noexcept;
     void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
              std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
-    [[nodiscard]] std::uint64_t gainRevision() const noexcept;
-
     std::shared_ptr<const LaunchAudioProject> project_;
     std::shared_ptr<const LaunchAudioProject> beforeClock_;
     std::int64_t clockSample_;
@@ -174,6 +173,7 @@ private:
     std::vector<TrackRanges> ranges_;
     std::int32_t maxFrames_;
     bool active_ = false;
+    std::uint64_t compatibleGainRevision_;
 };
 
 } // namespace adi::engine

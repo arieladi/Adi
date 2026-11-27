@@ -147,9 +147,10 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
 LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject> project,
                                        std::vector<std::int64_t> tracks, std::int32_t maxFrames,
                                        std::shared_ptr<const LaunchAudioProject> beforeClock,
-                                       std::int64_t clockSample)
+                                       std::int64_t clockSample, std::uint64_t compatibleGainRevision)
     : project_(std::move(project)), beforeClock_(std::move(beforeClock)), clockSample_(clockSample),
-      tracks_(std::move(tracks)), ranges_(tracks_.size()), maxFrames_(maxFrames) {
+      tracks_(std::move(tracks)), ranges_(tracks_.size()), maxFrames_(maxFrames),
+      compatibleGainRevision_(compatibleGainRevision) {
     if (!project_ || maxFrames <= 0)
         throw std::invalid_argument("invalid Session launch audio runtime format");
     if (beforeClock_ && (beforeClock_->incarnation() != project_->incarnation() || clockSample_ <= 0))
@@ -172,8 +173,8 @@ const std::shared_ptr<const LaunchAudioProject>& LaunchAudioRuntime::mediaAt(std
 }
 
 std::uint64_t LaunchAudioRuntime::gainRevision() const noexcept {
-    // Both projections render the same owner content. Keep an active clip's
-    // gain edit in effect until the scene replaces it, including its tail.
+    if (compatibleGainRevision_ != 0) return compatibleGainRevision_;
+    // The before-clock bank still governs the gain of the outgoing run.
     return beforeClock_ ? beforeClock_->pcmRevision() : project_->pcmRevision();
 }
 

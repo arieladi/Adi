@@ -66,6 +66,16 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
     return project.noteExpressions;
 }
+
+bool sameStoredLaunchSources(const ClipProject& a, const ClipProject& b) {
+    return a.session && b.session && a.folder == b.folder && a.hints == b.hints &&
+        a.rows.slotClips == b.rows.slotClips && a.rows.audioClips == b.rows.audioClips &&
+        a.rows.media == b.rows.media &&
+        std::ranges::equal(a.session->tracks(), b.session->tracks()) &&
+        std::ranges::equal(a.session->scenes(), b.session->scenes()) &&
+        std::ranges::equal(a.session->slots(), b.session->slots()) &&
+        std::ranges::equal(a.session->settingsRows(), b.session->settingsRows());
+}
 namespace {
 constexpr std::size_t slots = 8;
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);

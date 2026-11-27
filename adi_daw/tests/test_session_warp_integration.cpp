@@ -8,6 +8,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/launch_gain_edits.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -294,7 +295,7 @@ LaunchTrackStatus trackState(const Session& session) {
     return tracks[0];
 }
 
-void continuingTempoScene(bool legato, bool paged = false) {
+void continuingTempoScene(bool legato, bool paged = false, bool changeAuthoredGain = false) {
     test::TempDirectory folder{"session_scene_warp", legato ? "legato" : "retained"};
     auto store = sceneProject(folder.path());
     enableTempoScene(*store);
@@ -315,8 +316,25 @@ void continuingTempoScene(bool legato, bool paged = false) {
     playback.through(blockFrames);
     const auto before = trackState(session);
     require(before.clip == 101 && before.run != 0, "the first scene starts the initial native Warp run");
-    scene(*store, session, 20);
+    const LaunchClipGainEdit liveGain{1, 101, session.launchIncarnation(), before.run,
+                                      0.5f, ClipUpdateRate::None};
+    require(session.postLaunchClipGainEdit(liveGain), "post half gain to the initial run");
+    playback.through(rate / 2 + 1);
+    require(std::abs(pcm[rate / 2] + 0.30f) < 0.01f, "half gain is audible before the tempo scene is queued");
+    if (changeAuthoredGain) {
+        std::array<OpRequest,2> operations;
+        operations[0].opType = "clip.setGain";
+        operations[0].payload = {{"id", 101}, {"gain", 20.0 * std::log10(0.5)}};
+        operations[1].opType = "session.launchScene";
+        operations[1].payload = {{"scene", 20}, {"incarnation", session.launchIncarnation()}};
+        require(OpJournal(*store).commit(operations).ok, "commit the authored gain change with the tempo scene");
+    } else {
+        scene(*store, session, 20);
+    }
     playback.through(last);
+    require(std::abs(pcm[rate] + 0.35f) < 0.01f,
+        changeAuthoredGain ? "the changed authored baseline replaces the old live multiplier" :
+        "the continuing run keeps live gain between graph adoption and the scene bar");
     checkTempoScene(*store, session, playback);
     const auto after = trackState(session);
     if (legato) {
@@ -328,12 +346,12 @@ void continuingTempoScene(bool legato, bool paged = false) {
         require(playback.count == 1 && after.clip == 101 && after.run == before.run,
             "a tempo scene with an empty No Stop cell preserves the same running clip and run identity");
     }
-    constexpr std::array<float,4> retainedPeaks{-.6f, -.7f, -.5f, -.6f};
+    constexpr std::array<float,4> retainedPeaks{-.30f, -.35f, -.25f, -.30f};
     constexpr std::array<float,4> legatoPeaks{-.6f, -.7f, -.8f, -.5f};
-    const auto error = checkTempoPulses(pcm, legato ? legatoPeaks : retainedPeaks, 0.08f,
+    const auto error = checkTempoPulses(pcm, legato ? legatoPeaks : retainedPeaks, legato ? 0.08f : 0.04f,
         legato ? "Legato tempo scene" : "Retained tempo scene");
-    require(error <= 2 && pcm[static_cast<std::size_t>(tempoSceneFrame)] < -0.58f,
-        "the inherited phase follows 140 BPM in the boundary callback and after the next loop wrap");
+    require(error <= 2 && pcm[static_cast<std::size_t>(tempoSceneFrame)] < (legato ? -0.58f : -0.28f),
+        "the new tempo follows the inherited phase and the current run's gain at the bar and loop wrap");
 }
 
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
@@ -391,6 +409,7 @@ int main() {
         preparedTempoScene(false);
         preparedTempoScene(true);
         continuingTempoScene(false);
+        continuingTempoScene(false, false, true);
         continuingTempoScene(true);
         continuingTempoScene(true, true);
         residentModeRamp("beats", 12);

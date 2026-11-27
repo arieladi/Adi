@@ -954,6 +954,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             launchProblems_ = std::move(diagnostics);
         }
         project = storedLaunchProject_;
+        timing.launchSource = clipProject_;
     }
     const bool timedScenePending = preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken();
     if (!project || !project->supportsRate(timing.sampleRate) || (!project->stored() &&
@@ -972,7 +973,23 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
              !frozenGroupChildren_.contains(id) && !frozenSources_.contains(id))
             tracks.push_back(id);
     }
-    timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock, clockSample);
+    std::uint64_t gainRevision = 0;
+    const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (prior && prior->launchAudio && prior->launchAudio->incarnation() == project->incarnation()) {
+        const auto& priorProject = prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max());
+        // A retimed generation gets fresh page and tail identities. Carry
+        // the gain baseline for an identical bank, its outgoing clock bank,
+        // or a clock-only reprojection of the same stored audio and settings.
+        // The gain driver clears the multiplier when the launch run changes.
+        if (project == priorProject || beforeClock == priorProject ||
+            (!beforeClock && timing.launchSource && prior->launchSource &&
+             timing.sampleRate == prior->sampleRate && timing.spec.channels == prior->spec.channels &&
+             timing.spec.maxFrames == prior->spec.maxFrames && timing.tempo.events != prior->tempo.events &&
+             sameStoredLaunchSources(*timing.launchSource, *prior->launchSource)))
+            gainRevision = prior->launchAudio->gainRevision();
+    }
+    timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,
+                                                            clockSample, gainRevision);
     if (timedScenePending) {
         if (!timing.launchAudio->hasScene(preparedScene_->scene))
             throw std::runtime_error("a committed Session scene must remain available until launch");
