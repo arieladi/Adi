@@ -14015,6 +14015,22 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
         root.frame();
         check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
               "a tempo change preserves both unwarped source clock readings");
+        const bool changedEnd = panel.typeField(Field::End, "0:01.100");
+        root.frame();
+        check(changedEnd && panel.readings().start == "0:01.000" && panel.readings().end == "0:01.100",
+              "after a tempo change, End can move just past the pinned Start");
+        if (root.undoTitle(false) == "Undo Set Clip End") {
+            check(root.command(AppCommands::Undo), "undo the new End and keep the tempo change");
+            root.frame();
+        }
+        const bool changedStart = panel.typeField(Field::Start, "0:01.200");
+        root.frame();
+        check(changedStart && panel.readings().start == "0:01.200" && panel.readings().end == "0:03.000",
+              "after a tempo change, Start can move to the old marker's now different timestamp");
+        if (root.undoTitle(false) == "Undo Set Clip Start") {
+            check(root.command(AppCommands::Undo), "undo the new Start and keep the tempo change");
+            root.frame();
+        }
         check(root.command(AppCommands::Undo), "undo the tempo change before the Sample Editor gestures");
         root.frame();
     } else {
@@ -14073,6 +14089,33 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     drag(6 * beat, 5 * beat, y - 4);
     check(panel.details() && panel.details()->endMarkerTicks == 5 * beat,
           "drag the waveform's End marker");
+
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+    const auto beforeFollow = edit.time.left;
+    edit.time.left = 50.;
+    engine::Transport followDriver;
+    constexpr auto ordinaryProbe = 4 * beat + beat / 2;
+    followDriver.locate(std::llround(root.reader().tempo()->ticksToSeconds(ordinaryProbe) * mailbox.sampleRate()));
+    followDriver.play(true);
+    mailbox.publish(followDriver);
+    root.frame();
+    const auto at = edit.time.x(edit.sourceTick(ordinaryProbe));
+    check(root.timelineTick() == ordinaryProbe && root.playing() && root.state().follow &&
+              edit.playhead.isVisible() && std::abs(at - edit.playhead.getX()) < 1.,
+          "Follow pages the Sample Editor to the audio clip's playhead");
+    edit.time.left = 50.;
+    edit.mouseWheelMove(pressAt(edit, insertPoint, juce::ModifierKeys::shiftModifier),
+                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+    const auto parked = edit.time.left;
+    root.frame();
+    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
+    followDriver.play(false);
+    mailbox.publish(followDriver);
+    root.frame();
+    edit.time.left = beforeFollow;
+
     clip_edit::WarpOptions warp;
     warp.analysis.sourceBpm = 120;
     warp.analysis.fromFirstBeat = false;
@@ -14200,28 +14243,6 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
             check(root.command(AppCommands::Undo), "restore the clip length before fitting looped ranges");
         root.frame();
     }
-
-    if (!root.state().follow)
-        root.command(AppCommands::Follow);
-    root.arrangement.followPaused = false;
-    edit.time.left = 50.;
-    engine::Transport followDriver;
-    followDriver.locate(3 * 48000);
-    followDriver.play(true);
-    document->mailbox().publish(followDriver);
-    root.frame();
-    const auto at = edit.time.x(edit.sourceTick(root.timelineTick()));
-    check(root.playing() && root.state().follow && edit.playhead.isVisible() && at >= -.001 && at < edit.getWidth(),
-          "Follow pages the Sample Editor to the audio clip's playhead");
-    edit.time.left = 50.;
-    edit.mouseWheelMove(pressAt(edit, point, juce::ModifierKeys::shiftModifier),
-                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
-    const auto parked = edit.time.left;
-    root.frame();
-    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
-    followDriver.play(false);
-    document->mailbox().publish(followDriver);
-    root.frame();
 
     if (const auto *clip = panel.node()) {
         const auto id = clip->id, start = clip->posTicks;
