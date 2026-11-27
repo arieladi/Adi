@@ -74,6 +74,9 @@ struct AutomationLaneProgram {
 
 /// The value of a lane at a session sample. O(log n), noexcept, no allocation.
 [[nodiscard]] double valueAt(const AutomationLaneProgram&, std::int64_t sample) noexcept;
+/// A switch holds between points. Outside clip envelopes with no Arrangement
+/// points, its authored control value supplies the fallback.
+[[nodiscard]] double heldValueAt(const AutomationLaneProgram&, std::int64_t sample, double fallback) noexcept;
 /// First exact change boundary strictly after sample; INT64_MAX if none.
 [[nodiscard]] std::int64_t automationBoundaryAfter(const AutomationLaneProgram&, std::int64_t sample) noexcept;
 

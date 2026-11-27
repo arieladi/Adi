@@ -26,6 +26,7 @@
 namespace adi::ui {
 struct AutomationRange {
     double minimum = 0, maximum = 1;
+    bool flipped = false;
 };
 // A track parameter's travel, as the mixer's controls have it: the fader's -70..+6 dB, the pan's -1..1.
 inline AutomationRange automationRange(const std::string &param) {
@@ -49,6 +50,11 @@ struct AutomationTarget {
     double minimum = -70, maximum = 6;
     bool footIsSilence = true; // the foot written as silence (-150 dB), as the fader's and a send's
     std::string device = "Mixer";
+    bool stepped = false;
+    // Keep the descriptor's native id and default when the device panel does
+    // not publish parameters for the selected lane.
+    std::string nativeParamId{};
+    double defaultValue = 0;
     friend bool operator==(const AutomationTarget &a, const AutomationTarget &b) {
         return a.ownerKind == b.ownerKind && a.ownerId == b.ownerId && a.paramRef == b.paramRef;
     }
@@ -67,6 +73,18 @@ inline AutomationTarget panTarget(std::int64_t track) {
     t.minimum = -1;
     t.maximum = 1;
     t.footIsSilence = false;
+    return t;
+}
+inline AutomationTarget activatorTarget(std::int64_t track) {
+    auto t = volumeTarget(track);
+    t.paramRef = "mute";
+    t.paramName = "Track Activator";
+    t.valueDomain = "enum";
+    t.unit.clear();
+    t.minimum = 0;
+    t.maximum = 1;
+    t.footIsSilence = false;
+    t.stepped = true;
     return t;
 }
 // A send's level, on its routing row: the knob's -70..0 dB, its foot silence.
@@ -99,12 +117,18 @@ inline std::optional<AutomationTarget> deviceTarget(const DevicePanelData &d, co
     t.maximum = 1;
     t.footIsSilence = false;
     t.device = d.name;
+    t.nativeParamId = p.id;
+    const auto value = d.defaultValues().find(p.id);
+    if (value != d.defaultValues().end())
+        t.defaultValue = value->second;
     return t;
 }
 // A target's travel, and a value as written: inside it, the foot as silence where it is one.
-inline AutomationRange automationRange(const AutomationTarget &t) { return {t.minimum, t.maximum}; }
+inline AutomationRange automationRange(const AutomationTarget &t) { return {t.minimum, t.maximum, t.stepped}; }
 inline double writtenAutomationValue(const AutomationTarget &t, double v) {
     v = std::clamp(std::isfinite(v) ? v : t.minimum, t.minimum, t.maximum);
+    if (t.stepped)
+        return v >= 0.5 ? 1.0 : 0.0;
     return t.footIsSilence && v <= t.minimum ? kAutomationSilenceDb : v;
 }
 // Live's lane chooser for a track (manual 25.2): the mixer's Volume, Pan where the track has a mixer,
@@ -118,6 +142,8 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
         return out;
     out.push_back(volumeTarget(track));
     out.push_back(panTarget(track));
+    if (t->kind != "master")
+        out.push_back(activatorTarget(track));
     // Each send by its return's letter, in the returns' order.
     std::vector<const engine::TrackNode *> returns;
     for (const auto &r : snapshot.tracks)
@@ -152,7 +178,8 @@ inline TrackEnvelope envelopeOf(const engine::Snapshot &snapshot, const Automati
     if (out.lane == nullptr)
         for (const auto &lane : snapshot.automationLanes)
             if (lane && lane->ownerKind == target.ownerKind && lane->ownerId == target.ownerId &&
-                lane->paramRef == target.paramRef && lane->valueDomain == target.valueDomain) {
+                automation_override_detail::sameParam(target.ownerKind, lane->paramRef, target.paramRef) &&
+                (target.stepped || lane->valueDomain == target.valueDomain)) {
                 out.lane = lane.get();
                 break;
             }
@@ -182,6 +209,22 @@ struct AutomationIds {
     std::int64_t lane = 0, data = 0;
     std::uint64_t point = 0;
 };
+inline automation::LaneSpec automationLaneSpec(const AutomationTarget &target, double currentValue,
+                                                std::int64_t lane, bool exactValue = false) {
+    automation::LaneSpec spec;
+    spec.id = lane;
+    spec.ownerKind = target.ownerKind;
+    spec.ownerId = target.ownerId;
+    spec.paramRef = target.paramRef;
+    spec.paramName = target.paramName;
+    spec.valueDomain = target.valueDomain;
+    spec.unit = target.unit;
+    spec.defaultValue = exactValue && validExactAutomationValue({}, target, currentValue)
+                            ? currentValue : writtenAutomationValue(target, currentValue);
+    spec.minValue = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
+    spec.maxValue = target.maximum;
+    return spec;
+}
 // Add a breakpoint and, when needed, its lane in one undo step. Pointer
 // values use the target's travel. Exact values use the lane's storage range.
 inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const AutomationTarget &target, std::int64_t tick,
@@ -192,19 +235,7 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const
         return ops;
     std::int64_t lane = 0, data = 0;
     if (env.lane == nullptr) {
-        automation::LaneSpec spec;
-        spec.id = ids.lane;
-        spec.ownerKind = target.ownerKind;
-        spec.ownerId = target.ownerId;
-        spec.paramRef = target.paramRef;
-        spec.paramName = target.paramName;
-        spec.valueDomain = target.valueDomain;
-        spec.unit = target.unit;
-        spec.defaultValue = exactValue && validExactAutomationValue(env, target, currentValue)
-                                ? currentValue : writtenAutomationValue(target, currentValue);
-        spec.minValue = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
-        spec.maxValue = target.maximum;
-        ops.push_back(automation::createLane(spec));
+        ops.push_back(automation::createLane(automationLaneSpec(target, currentValue, ids.lane, exactValue)));
         lane = ids.lane;
     } else
         lane = env.lane->id;
@@ -218,7 +249,7 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const
         Payload::array({Payload{{"id", point},
                                 {"time", std::max<std::int64_t>(0, tick)},
                                 {"value", exactValue ? value : writtenAutomationValue(target, value)},
-                                {"curve", 1}, // linear, as the lane draws it
+                                {"curve", target.stepped ? 0 : 1},
                                 {"tension", 0.0}}})));
     for (auto &op : ops)
         op.label = "Add Automation Point";
@@ -268,19 +299,21 @@ inline std::vector<OpRequest> deleteAutomationPoint(const TrackEnvelope &env, st
 }
 // The value the envelope holds at `tick`: before its first point the first value, after its last the
 // last, linear between (the curve's bend is the engine's; the drawing joins the points straight).
-inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode &data, std::int64_t tick) {
+inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode &data, std::int64_t tick,
+                                           bool held = false) {
     const auto &p = data.points;
     if (p.empty())
         return std::nullopt;
-    if (tick <= p.front().time)
+    const auto right = std::upper_bound(p.begin(), p.end(), tick,
+                                        [](std::int64_t at, const auto &point) { return at < point.time; });
+    if (right == p.begin())
         return p.front().value;
-    for (std::size_t i = 1; i < p.size(); ++i)
-        if (tick <= p[i].time) {
-            const auto span = static_cast<double>(p[i].time - p[i - 1].time);
-            const double t = span > 0 ? static_cast<double>(tick - p[i - 1].time) / span : 1.0;
-            return p[i - 1].value + (p[i].value - p[i - 1].value) * t;
-        }
-    return p.back().value;
+    const auto &left = *(right - 1);
+    if (right == p.end() || held || left.curve == 0)
+        return left.value;
+    const auto span = static_cast<double>(right->time - left.time);
+    const auto position = static_cast<double>(tick - left.time) / span;
+    return left.value + (right->value - left.value) * position;
 }
 // What a mixer control shows of its lane (Live 12 manual 25.4; ADR-0162): whether a lane the engine plays
 // automates it, whether a manual change has overridden that lane, and while it is followed the value its

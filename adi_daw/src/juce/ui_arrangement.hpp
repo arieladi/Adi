@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <vector>
+namespace adi::engine { struct AudioRecordingPreview; }
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -125,10 +126,18 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    std::function<void(const juce::PopupMenu &)> onTempoMenu;
+    RenameEditor tempoEditor;
 
   private:
+    static constexpr int kTempoRowHeight = 12, kTempoLabelWidth = 64;
+    void paintTempos(juce::Graphics &) const;
+    void beginTempoEdit(std::int64_t);
+    std::int64_t tempoPosition(const juce::MouseEvent &) const;
     ArrangementView &view;
     juce::Point<float> last;
+    std::int64_t tempoEditing_ = 0;
+    bool tempoMenuPressed_ = false;
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
@@ -141,7 +150,7 @@ class TrackHeaderList final : public juce::Component,
     void paint(juce::Graphics &) override;
     void resized() override;
     // Rename (Ctrl/Cmd+R, the Edit menu): edit this track's name in its title bar.
-    bool beginRename(std::int64_t track);
+    bool beginRename(std::int64_t track, bool selectTrack = true);
     std::int64_t renaming() const noexcept { return renaming_; }
     RenameEditor editor;
     void mouseDown(const juce::MouseEvent &) override;
@@ -152,8 +161,14 @@ class TrackHeaderList final : public juce::Component,
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &files, int x, int y) override { fileDragMove(files, x, y); }
+    void fileDragMove(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
 
     bool keyPressed(const juce::KeyPress &) override;
@@ -259,10 +274,20 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragMove(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     // A sample dragged from the browser (D1) lands as a file dropped from the desktop does.
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &) override;
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
+    // The names drop goes to the same lane, at the insert marker for a sample.
+    void previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly);
+    void previewDeviceDrop(int y, bool existingTrackOnly);
+    void clearDropPreview();
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
     // One accessible child per clip on screen; on a model or view change only.
     void realiseAccessible();
@@ -320,6 +345,15 @@ class ArrangementCanvas final : public juce::Component,
     void resetAutomationValueInput();
 
   private:
+    struct DropPreview {
+        juce::Rectangle<int> bounds;
+        bool device = false;
+        friend bool operator==(const DropPreview &, const DropPreview &) = default;
+    };
+    void setDropPreview(DropPreview);
+    std::pair<const engine::TrackNode *, juce::Rectangle<int>> dropLane(int y) const;
+    std::int64_t audioDropTick(int x) const;
+    DropPreview dropPreview_;
     bool commitClipRename();
     void endClipRename();
     std::int64_t renamingClip_ = 0;
@@ -367,6 +401,18 @@ class ArrangementCanvas final : public juce::Component,
     juce::String automationValueReadout_;
     juce::GlyphArrangement automationValueGlyphs_;
     juce::Rectangle<float> automationValueReadoutBounds_;
+    bool beginAutomationStroke(const juce::MouseEvent &);
+    void updateAutomationStroke(const juce::MouseEvent &);
+    struct AutomationStroke {
+        AutomationTarget target;
+        std::int64_t track = 0, lastTick = 0, end = 0;
+        std::uint64_t generation = 0;
+        std::map<std::int64_t, double> values;
+        float top = 0, bottom = 0, lastY = 0, valueY = 0;
+        double lastValue = 0;
+        bool stepped = false, cancelled = false;
+    };
+    std::optional<AutomationStroke> automationStroke_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
@@ -413,26 +459,12 @@ class ArrangementCanvas final : public juce::Component,
     // drawn at `pos`.
     void paintWaveform(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                        float bottom) const;
-    // A MIDI clip's notes in its body, as Live draws them (manual 6.1: a clip shows what it holds): a bar for
-    // each note, the keys the clip uses spread over the body's height. Read through
-    // `engine::readClipDetails` on the message thread, once for each clip and document generation.
+    // Draw the snapshot's note bars over the body, spreading the keys used by
+    // the clip over its height (Live 12 manual 6.1).
     void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                     float bottom) const;
     void paintLiveMidiTake(juce::Graphics &, const LiveMidiTake &, const engine::TrackNode &,
                            std::size_t trackNumber, int y, int height) const;
-    struct ClipNotes {
-        struct Bar {
-            std::int64_t start = 0, duration = 0;
-            int key = 0;
-            bool active = true;
-        };
-        std::uint64_t readAt = 0; // the generation it was read at, plus one; 0 before the first read
-        bool midi = false;
-        std::int64_t startMarker = 0, loopStart = 0, loopLength = 0;
-        int low = 127, high = 0;
-        std::vector<Bar> bars;
-    };
-    mutable std::map<std::int64_t, ClipNotes> clipNotes_;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
@@ -472,7 +504,6 @@ class NamesBar final : public juce::Component {
     void resized() override;
     BarButton flip;
     ProjectViewButton show;
-    // Mixer only shows its state: the track controls' mixer has no toggle to switch.
     BarButton inOut, sends, returns, mixer, delay;
     BarButton height, width;
     BarButton automation, lock;
@@ -510,14 +541,18 @@ class ArrangementView final : public juce::Component {
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
-    // The take being recorded (Live 12 manual 21.1): drawn on each recording track's lane from where it
-    // began to the playhead, in the record colour, until the take lands as a clip (walk-B B4). Begun by
-    // Arrangement Record; ended by the frame once recording has stopped.
+    // Arrangement Record opens the preview. The writer's captured extent and peaks replace the
+    // initial bounds, and the preview stays visible while the take is being added to the project.
     struct LiveTake {
         std::int64_t start = 0;
         std::vector<std::int64_t> tracks;
+        std::shared_ptr<const engine::AudioRecordingPreview> preview;
+        std::uint64_t capturedFrames = 0;
+        bool landing = false;
     };
     void beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks);
+    void setRecordingPreview(std::shared_ptr<const engine::AudioRecordingPreview>, std::uint64_t capturedFrames,
+                             bool landing) noexcept;
     const std::optional<LiveTake> &liveTake() const noexcept { return liveTake_; }
     void changed();
     bool command(int);
@@ -541,6 +576,10 @@ class ArrangementView final : public juce::Component {
     // earliest clip's start to the latest one's end across every track that holds clips; one clip
     // alone is selected as that clip. False, saying so, when there is nothing to select.
     bool selectAll();
+    // Explicit positioning reveals the insert marker and locates the transport.
+    void placeInsertMarker(std::int64_t tick, bool fromInsertMarker = false);
+    // Update the selection and viewport for a command that already sends its own transport seek.
+    void showInsertMarkerAt(std::int64_t tick);
     void locate();
     // Live's right-click menu for the track area and the headers.
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
@@ -556,14 +595,14 @@ class ArrangementView final : public juce::Component {
     // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
     // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
     // Color to Grouped Tracks and Clips (manual 18.3).
-    juce::PopupMenu headerMenu();
+    juce::PopupMenu headerMenu(std::int64_t contextTrack = 0);
     // The colour chooser's pick: the colour at `index` of Live's palette on every selected track, one
     // undo step ("Recolour Track").
     bool recolour(std::int64_t index);
     // Live's Assign Track Color to Grouped Tracks and Clips: the selected group's colour, its own or
     // the one its place gives it, on every track it holds, one undo step. ADI's clips take their
     // track's colour.
-    bool assignGroupColour();
+    bool assignGroupColour(std::int64_t group = 0);
     // The colour index a track shows: its own, or the one its place in the arrangement gives it.
     std::int64_t colourIndex(std::int64_t track) const;
     // The lanes' menu's grid (§6.10): the adaptive and fixed widths by name, the one in use

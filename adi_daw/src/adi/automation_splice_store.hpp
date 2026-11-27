@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/automation_splice.hpp"
 #include "adi/ops.hpp"
+#include <string_view>
 
 namespace adi {
 struct OpTransactionInputs;
@@ -41,5 +42,6 @@ struct PreparedEnvelopeSplice {
 [[nodiscard]] PreparedEnvelopeSplice
 prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
-                      std::size_t pointBudget = kSplicePointBudget);
+                      std::size_t pointBudget = kSplicePointBudget,
+                      std::string_view label = "Replace Automation", std::optional<Payload> selection = {});
 } // namespace adi::automation

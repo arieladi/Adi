@@ -39,6 +39,20 @@ std::uint16_t sampleBytes(WavFormat f) {
     switch(f) { case WavFormat::Pcm16:return 2; case WavFormat::Pcm24:return 3; case WavFormat::Float32:return 4; }
     throw std::invalid_argument("WAV format");
 }
+double pcmScale(WavFormat format) noexcept { return format == WavFormat::Pcm16 ? 32768.0 : 8388608.0; }
+std::int32_t quantizePcm(double sample, double scale, double dither) noexcept {
+    if (!std::isfinite(sample))
+        return 0;
+    // Clamp before scaling so even a finite double cannot overflow during scaling.
+    return static_cast<std::int32_t>(std::clamp(std::round(std::clamp(sample, -2.0, 2.0) * scale + dither),
+                                               -scale, scale - 1));
+}
+}
+float wavSampleAtDepth(float value, WavFormat format) noexcept {
+    if (format == WavFormat::Float32)
+        return value;
+    const auto scale = pcmScale(format);
+    return static_cast<float>(quantizePcm(value, scale, 0.0) / scale);
 }
 WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
                      std::uint16_t channels, WavFormat format, const WavMetadata* metadata,
@@ -125,13 +139,7 @@ template<class Sample> void WavWriter::writeSamples(const Sample* input, std::ui
                 bits=std::bit_cast<std::uint32_t>(static_cast<float>(f));
             }
             else {
-                const double scale=bytes_==2?32768.0:8388608.0;
-                const double dither = noise();
-                // Clamp before scaling as well: a finite double can overflow
-                // when multiplied by the integer scale. Saturate after dither.
-                const auto value=std::isfinite(f)?std::clamp(std::round(
-                    std::clamp(static_cast<double>(f),-2.0,2.0)*scale+dither),-scale,scale-1):0;
-                bits=static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
+                bits=static_cast<std::uint32_t>(quantizePcm(f, pcmScale(format_), noise()));
             }
             for(unsigned j=0;j<bytes_;++j) buffer[i*bytes_+j]=static_cast<char>((bits>>(j*8))&255U);
         }

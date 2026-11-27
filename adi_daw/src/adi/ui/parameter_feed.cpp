@@ -10,7 +10,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
+                        d.processingIssue, d.loadIssue,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -56,6 +57,41 @@ bool ParameterFeed::setDemand(const void *consumer, std::vector<std::int64_t> de
     demanded_ = std::move(next);
     return true;
 }
+
+std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation(engine::Session &session,
+                                                                                 std::int64_t track) {
+    auto result = std::make_shared<ParameterPublication>();
+    const auto &model = session.model();
+    for (const auto &chain : model.deviceChains) {
+        if (chain.trackId != track)
+            continue;
+        for (const auto &row : model.devices) {
+            if (row.chainId != chain.id)
+                continue;
+            const auto *entry = session.entryFor(row.id);
+            const auto *instance = session.instanceFor(row.id);
+            if (!entry || entry->retired || entry->parked || entry->resolvedPluginRef != row.pluginRefId || !instance)
+                continue;
+            DevicePanelData data;
+            data.track = track;
+            data.id = row.id;
+            data.name = row.name;
+            data.format = entry->resolvedFormat;
+            const bool available = instance->loaded();
+            const auto count = instance->paramCount();
+            for (std::int32_t index = 0; index < count; ++index) {
+                const auto *descriptor = instance->paramAt(index);
+                if (descriptor && descriptor->automatable) {
+                    data.declared.push_back({descriptor->id, descriptor->name, available && !descriptor->missing, true});
+                    data.defaults.emplace(descriptor->id, descriptor->defaultValue.normalized);
+                }
+            }
+            result->push_back(std::move(data));
+        }
+    }
+    return result;
+}
+
 void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevision) {
     auto next = std::make_shared<ParameterPublication>();
     const auto publication = ++publication_;
@@ -82,14 +118,22 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         data.uid = ref.uid; data.format = ref.format; data.plugin = ref.format != "internal";
                         break;
                     }
+            for (const auto &route : model.deviceRoutes)
+                if (route.deviceId == row.id) {
+                    data.route = route.route;
+                    break;
+                }
             auto *instance = session.instanceFor(row.id);
             const auto *entry = session.entryFor(row.id);
-            data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&
-                             entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            const bool resolved = entry && !entry->retired && !entry->parked &&
+                                  entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            data.available = resolved && instance && instance->loaded();
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
             if (data.available)
                 data.processingIssue = instance->processingIssue();
+            if (data.plugin && resolved && entry->placeholder)
+                data.loadIssue = entry->error;
             auto &identity = identities_[row.id];
             const bool runtimeSame = instance != nullptr && session.resolveDevice(identity.runtime) == instance;
             const bool unpublished = !entry && identity.runtime.claimIdentity().expired();

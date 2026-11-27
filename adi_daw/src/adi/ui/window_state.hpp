@@ -28,6 +28,8 @@ struct DesktopDefaults {
     // handed in by the shell, never a constant in a component (ADR-0200 d5).
     int deviceFloor = 196;
 };
+enum class InfoAnalyserMode { Spectrogram, FilledSpectrum, LineSpectrum, ClassicScope };
+
 struct WindowState {
     explicit WindowState(DesktopDefaults d = {})
         : panels({Panel::Browser, d.browser, 120, false}, {Panel::Mixer, d.mixer, 120, false}, 240),
@@ -55,9 +57,11 @@ struct WindowState {
     int clipPanelsArrangement = 0; // by the view's height, side by side, stacked (manual 8.1.2)
     int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
     bool quantizeStarts = true, quantizeEnds = false;
-    bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
+    bool aiChatOpen = false; // legacy state from before removal of the Browser's AI tab (SC-110)
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
-    double timelineLeft = 0, pixelsPerQuarter = 48;
+    // The Arrangement sheet spans 74 points per four bars. At this zoom the adaptive grid
+    // opens on whole bars. Saved window states bring their own scale.
+    double timelineLeft = 0, pixelsPerQuarter = 74. / 16;
     int laneHeight = 88; // Live 11's default track: five rows of its controls
     std::map<std::int64_t, int> laneHeights;
     struct AutomationChoice {
@@ -84,6 +88,7 @@ struct WindowState {
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
+    InfoAnalyserMode infoAnalyserMode = InfoAnalyserMode::Spectrogram;
     std::string analysisPalette = "adi";
     bool analysisPaletteReverse = false;
     std::string analysisSpectrumSlope = "flat";
@@ -94,11 +99,13 @@ struct WindowState {
     // returns left out of the lanes, the track controls and the Mixer View; shown by default.
     bool hideReturns = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
-    bool follow = false;
+    static constexpr bool kDefaultFollow = false;
+    bool follow = kDefaultFollow;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out
     // (Ctrl/Cmd+Alt+I) and sends (Hide/Show Sends, Ctrl/Cmd+Alt+S): Live 12's Arrangement Track
     // Controls submenu.
     bool overview = true, inOut = true, sends = true;
+    bool trackMixer = true; // Arrangement Track Controls' volume, pan and meters
     // Live 12's Mixer Controls submenu (and the Mixer View Control's options menu): the Mixer View's
     // own In/Out section, hidden until shown, and its own Sends, apart from the track controls'.
     bool mixerInOut = false, mixerSends = true;
@@ -207,9 +214,14 @@ class TransportMailbox {
                 pending = false;
                 record(item.sample);
             } else if (item.command == Command::Stop) {
-                pending = false;
                 if (transport.playing())
                     stoppedAt_ = transport.position();
+                else if (!pending && transport.countInRemaining() == 0) {
+                    // Stop while idle returns to the beginning for Continue as well as Play.
+                    stoppedAt_ = 0;
+                    locate(0);
+                }
+                pending = false;
                 transport.play(false);
             } else if (!transport.playing()) {
                 // A later Locate in this drain moves the pending Play target.
@@ -233,6 +245,15 @@ class TransportMailbox {
         playing_.store(t.playing() || t.countInRemaining() > 0, std::memory_order_relaxed);
         position_.store(t.position(), std::memory_order_relaxed);
     }
+    // Once after rendering, when the cursor has crossed all boundaries of this callback.
+    void publish(const engine::Transport &t, engine::CountInPosition countIn) noexcept {
+        publish(t);
+        // The settings allow four bars, and the format allows 255 beats per bar.
+        const auto packed = (static_cast<std::uint32_t>(-countIn.bar) << 16) |
+                            (static_cast<std::uint32_t>(countIn.beat) << 8) |
+                            static_cast<std::uint32_t>(countIn.sixteenth);
+        countInPosition_.store(packed, std::memory_order_relaxed);
+    }
     // Only the UI producer calls this. The read index acknowledges the
     // applied Locate, including its revision, before a capture can use it.
     [[nodiscard]] std::optional<std::uint64_t> settledLocateRevision() const noexcept {
@@ -255,6 +276,11 @@ class TransportMailbox {
     double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
     bool playing() const noexcept { return playing_.load(std::memory_order_relaxed); }
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
+    [[nodiscard]] engine::CountInPosition countInPosition() const noexcept {
+        const auto packed = countInPosition_.load(std::memory_order_relaxed);
+        return {-static_cast<int>(packed >> 16), static_cast<int>((packed >> 8) & 0xff),
+                static_cast<int>(packed & 0xff)};
+    }
 
   private:
     // Driver-owned. Idle selections can move the displayed position after a real Stop.
@@ -269,6 +295,8 @@ class TransportMailbox {
     std::atomic<bool> playing_{false};
     std::atomic<double> sampleRate_{0};
     std::atomic<std::int64_t> position_{0};
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+    std::atomic<std::uint32_t> countInPosition_{0};
     std::atomic<std::uint64_t> locateRevision_{0};
 };
 } // namespace adi::ui

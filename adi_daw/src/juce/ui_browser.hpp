@@ -1,21 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/builtin_catalog.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
+// A listing and its search data, prepared on the library worker and shared by the app and windows.
+class BrowserLibrarySnapshot {
+  public:
+    explicit BrowserLibrarySnapshot(LibraryListing);
+    const LibraryListing &listing() const noexcept { return listing_; }
+
+  private:
+    friend class BrowserPanel;
+    using SampleIndices = std::vector<std::size_t>;
+    struct PlaceSamples {
+        SampleIndices ordered;
+        std::vector<bool> contains;
+    };
+    void appendSamples(std::string_view query, const std::string *volume,
+                       std::vector<const LibraryFile *> &results) const;
+    LibraryListing listing_;
+    std::vector<std::string> foldedNames_;
+    std::unordered_map<std::uint32_t, SampleIndices> postings_;
+    std::unordered_map<std::string, PlaceSamples> places_;
+};
 // The browser's content list (Live 12 manual 4.1): its rows take up and down, and left goes back to
 // the sidebar (41.22).
 class BrowserList final : public juce::ListBox {
   public:
     std::function<void()> onLeft;
+    std::function<bool()> onEscape;
     bool keyPressed(const juce::KeyPress &k) override {
+        if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
+            return true;
         if (k == juce::KeyPress::leftKey && onLeft) {
             onLeft();
             return true;
@@ -73,26 +103,43 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // What the library index holds, from the app's indexing worker: the Places join the sidebar
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
+    void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
     void setListing(LibraryListing, bool ready = true);
-    // Where the list must stop, in this panel's coordinates: above the AI tab at the panes' foot.
-    void setFootLimit(int y);
-    const LibraryListing &listing() const noexcept { return listing_; }
+    const LibraryListing &listing() const noexcept;
     // Selects a label, as a click on it does.
     void choose(int);
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a folder's heading, a built-in device or a plug-in; how deep in its
-    // folders it sits.
+    // A row of the list: a sample, a folder heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
         juce::String heading;
         const PluginEntry *plugin = nullptr;
         int depth = 0;
+        const preset::Entry *savedPreset = nullptr;
+        juce::String tooltip{};
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
-    // Loads the device on `row` (double-click, Enter), or says why it cannot.
+    // Loads a row (double-click, Enter), or says why it cannot.
     bool load(int row);
+    void setDevicePresets(std::vector<preset::Entry>);
+    std::function<bool(const std::filesystem::path &)> loadDevicePreset;
+    struct HotSwapFilter {
+        std::string subtype, targetName;
+        bool samples = false;
+    };
+    struct HotSwapChoice {
+        enum class Kind { Builtin, Plugin, Preset, Sample };
+        Kind kind;
+        std::string uid;
+        std::optional<PluginEntry> plugin;
+        std::filesystem::path path;
+    };
+    void setHotSwap(std::optional<HotSwapFilter>);
+    bool hotSwapActive() const noexcept { return hotSwap_.has_value(); }
+    std::function<bool(const HotSwapChoice &)> swapChoice;
+    std::function<void()> leaveHotSwap;
     // Asks the app to scan the plug-ins when Plug-Ins is chosen and no scan has begun; unset outside the
     // app. It returns at once: the scan runs on the app's worker (DF-W34).
     std::function<void()> scanPlugins;
@@ -120,10 +167,13 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
   private:
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
+    bool cancelHotSwap();
+    bool loadHotSwap(const Row &);
     // The list's rows for the label chosen and the search typed.
     void refill();
     int getNumRows() override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
+    juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
     // A folder's heading is never selected: the selection steps past it, the way it was moving.
@@ -132,11 +182,13 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
-    LibraryListing listing_;
+    std::optional<HotSwapFilter> hotSwap_;
+    juce::String idleSearch_;
+    std::map<std::string, std::vector<preset::Entry>> devicePresets_;
+    std::shared_ptr<const BrowserLibrarySnapshot> library_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
-    int footLimit_ = 1 << 20;
     // The search's down arrow goes into the list (§41.4.1.6).
     struct SearchKeys final : juce::KeyListener {
         BrowserPanel &panel;

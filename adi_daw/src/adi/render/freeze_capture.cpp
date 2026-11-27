@@ -250,17 +250,36 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                     if (other != root && members.contains(other))
                         throw std::runtime_error("whole-group capture roots cannot overlap");
             }
-        engine::Session session;
-        session.graph().setFadeFrames(0);
+        const auto onHost = [&](std::function<void()> action) {
+            if (control.onHost)
+                control.onHost(std::move(action));
+            else
+                action();
+        };
+        const auto destroy = [&](engine::Session *value) { onHost([value] { delete value; }); };
+        std::unique_ptr<engine::Session, decltype(destroy)> owned(nullptr, destroy);
+        onHost([&] {
+            owned.reset(new engine::Session);
+            owned->graph().setFadeFrames(0);
+        });
+        auto &session = *owned;
         auto offlineSpec = spec.session;
         offlineSpec.offline = true;
         offlineSpec.performanceState = false;
-        if (!session.load(*snapshot, std::move(loader), offlineSpec))
-            throw std::runtime_error(session.error());
+        onHost([&] {
+            if (!session.load(*snapshot, std::move(loader), offlineSpec))
+                throw std::runtime_error(session.error());
+        });
         if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
             std::string why = "freeze requires a fully resolved project";
             for (const auto &problem : session.problems())
                 why += "; " + problem;
+            throw std::runtime_error(why);
+        }
+        if (!session.clips()->waitForWarp(control.stop)) {
+            cancellation(control);
+            std::string why = "freeze Warp preparation failed";
+            for (const auto &problem : session.clips()->decodeProblems()) why += "; " + problem;
             throw std::runtime_error(why);
         }
         auto *graph = session.graph().currentGraph();
@@ -382,13 +401,15 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         const auto started = std::chrono::steady_clock::now();
         auto service = [&] {
             cancellation(control);
-            if (control.serviceHost)
-                control.serviceHost();
-            cancellation(control);
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - started)
                                      .count();
-            session.tick(elapsed);
+            onHost([&] {
+                if (control.serviceHost)
+                    control.serviceHost();
+                cancellation(control);
+                session.tick(elapsed);
+            });
             if (coalescer.stats().reports != reports || session.graph().currentGraph() != graph)
                 throw std::runtime_error(
                     "device latency or topology changed during freeze; retry after it settles");
@@ -398,8 +419,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         };
         for (std::int64_t at = 0; at < lastFrame;) {
             service();
-            if (!session.clips()->prime())
+            if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
+                cancellation(control);
                 throw std::runtime_error("freeze clip read timed out");
+            }
             const auto frames =
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;

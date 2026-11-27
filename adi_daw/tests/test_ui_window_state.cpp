@@ -119,6 +119,20 @@ void laneMarkerTransport() {
     });
     check(transport.position() == 2048 && transport.countInRemaining() == 96000 && mailbox.playing(),
           "SC-02: a lane press queued with Record leaves its count-in in place");
+
+    mailbox.post(Command::Stop);
+    mailbox.drain(transport);
+    check(!mailbox.playing() && transport.position() == 2048,
+          "Stop during count-in cancels the start while keeping its position");
+    mailbox.post(Command::Stop);
+    mailbox.drain(transport);
+    check(mailbox.position() == 0 && transport.position() == 0 && !mailbox.playing(),
+          "SC-75: Stop while already stopped locates the driver at the song start");
+    mailbox.post(Command::LocateMarker, 8192);
+    mailbox.post(Command::Continue);
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 0,
+          "SC-75: a later lane selection does not replace the reset Continue position");
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
@@ -463,6 +477,9 @@ int main() {
         const auto old = views.load("old-stack");
         check(old.zoom == 1.5 && old.mixStackSearch.empty() && !old.mixStackBaseHeight,
               "invalid optional Stack fields keep the rest of the window geometry");
+        check(old.follow == WindowState::kDefaultFollow &&
+                  views.load("other").follow == WindowState::kDefaultFollow,
+              "a fresh window and a saved window without a Follow setting share the default");
         constexpr std::array<std::int64_t, 1> first{7}, second{99};
         check(views.saveStackPins({}, first, error) && views.saveStackPins({}, second, error) &&
                   views.stackPins().ids == std::vector<std::int64_t>{7, 99},
@@ -529,7 +546,10 @@ int main() {
     state.gridFixedQuarters = .125;
     check(views.save("main", state, error), "save view");
     const auto restored = views.load("main");
-    check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
+    auto followOff = restored;
+    followOff.follow = false;
+    check(restored.follow && views.save("follow-off", followOff, error) && !views.load("follow-off").follow,
+          "explicit Follow settings persist independently in each window");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
     check(!restored.sends && views.load("other").sends, "so are the sends (Hide/Show Sends, §42.1)");
@@ -672,8 +692,9 @@ int main() {
     transport.advance(64);
     mailbox.publish(transport);
     check(mailbox.position() == 64, "driver position feedback");
-    for (int i = 0; i < 16; ++i)
-        check(mailbox.post(TransportMailbox::Command::Stop), "bounded queue accepts capacity");
+    check(mailbox.post(TransportMailbox::Command::Stop), "queue a Stop while playing");
+    for (int i = 1; i < 16; ++i)
+        check(mailbox.post(TransportMailbox::Command::Locate, 64), "bounded queue accepts capacity");
     check(!mailbox.post(TransportMailbox::Command::Play), "full queue refuses without overwrite");
     mailbox.drain(transport);
     check(!transport.playing(), "queued stop survives saturation");

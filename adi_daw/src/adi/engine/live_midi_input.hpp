@@ -2,17 +2,21 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/midi_monitoring.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace adi::engine {
 
 class MidiInputCapture;
 class Transport;
+enum class RecordingPunch : std::uint8_t;
+struct RecordingPunchWindow;
 
 /// Typed Track input. The producer and the audio driver share only the
 /// fixed queue; per-device voice ownership stays on the audio driver.
@@ -29,19 +33,21 @@ public:
         std::int64_t track = 0;
         bool flush = false;
         bool retry = false;
+        bool blocked = false;
     };
     struct Route {
         Node* node = nullptr;
         std::shared_ptr<Voices> voices;
-        std::int64_t armedTrack = 0;
+        std::int64_t monitorTrack = 0;
         bool processes = false;
+        std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         mutable NodeId slot = kInvalidNode;
     };
 
     bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
-                const Transport&, MidiInputCapture*) noexcept;
+                const Transport&, MidiInputCapture*, RecordingPunch, const RecordingPunchWindow&) noexcept;
 
 private:
     struct Timed {
@@ -59,7 +65,7 @@ private:
     std::uint64_t voiceSerial_ = 0;
 
     void deliver(const GraphHost::RenderBlock&, const Route&, const Event&) noexcept;
-    static void release(const GraphHost::RenderBlock&, const Route&) noexcept;
+    static void release(const GraphHost::RenderBlock&, const Route&, std::int32_t frame) noexcept;
 };
 
 }  // namespace adi::engine

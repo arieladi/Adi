@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/render/freeze_capture.hpp"
+#include <array>
 namespace adi::freeze {
 struct FreezeFiles;
 class FreezeEdit {
@@ -29,4 +30,10 @@ CommitResult commitFreeze(Store &, FreezeEdit &, std::uint64_t currentGeneration
 CommitResult
 unfreeze(Store &, std::span<const std::int64_t> tracks, bool acknowledgeChanged = false,
          std::function<bool(std::int64_t, const Payload &identities, std::string &)> installed = {});
+// Capture before other edits to the source. Submit both operations before
+// replacing clips and devices, in the same journal batch.
+std::array<OpRequest, 2> audioTrackConversion(Store &, std::int64_t track);
+// Replace an individually frozen track's arrangement and devices with its
+// verified wet cache. The track, mixer and routing keep their identities.
+CommitResult flatten(Store &, std::int64_t track, std::int64_t clip, Actor = Actor::User);
 } // namespace adi::freeze
