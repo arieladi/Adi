@@ -216,6 +216,41 @@ SampleAnalysis applySampleOverrides(SampleAnalysis value, const SampleAnalysisOv
     return value;
 }
 
+SampleAnalysisMetadata portableSampleMetadata(const SampleAnalysis& value) {
+    SampleAnalysisMetadata result;
+    result.contentHash = value.contentHash;
+    if (value.tempoSource != Source::User) {
+        result.tempoBpm = value.tempoBpm;
+        result.tempoSource = value.tempoSource;
+    }
+    if (value.keySource != Source::User) {
+        result.key = value.key;
+        result.keySource = value.keySource;
+        result.keyStrength = value.keyStrength;
+    }
+    return result;
+}
+
+void applySampleMetadata(SampleAnalysis& value, const SampleAnalysisMetadata& metadata) {
+    if (value.contentHash.empty() || value.contentHash != metadata.contentHash) return;
+    if (metadata.tempoBpm && validTempo(*metadata.tempoBpm) && metadata.tempoSource < Source::User &&
+        (!value.tempoBpm || value.tempoSource < metadata.tempoSource)) {
+        value.tempoBpm = metadata.tempoBpm;
+        value.tempoSource = metadata.tempoSource;
+        if (value.classification.kind == Kind::Loop && value.classification.bpm != value.tempoBpm) {
+            value.classification.bpm = value.tempoBpm;
+            value.classification.bars.reset();
+        }
+    }
+    if (metadata.key && metadata.key->tonic < 12 && metadata.keySource < Source::User &&
+        std::isfinite(metadata.keyStrength) && metadata.keyStrength >= 0 && metadata.keyStrength <= 1 &&
+        (!value.key || value.keySource < metadata.keySource)) {
+        value.key = metadata.key;
+        value.keySource = metadata.keySource;
+        value.keyStrength = metadata.keyStrength;
+    }
+}
+
 SampleAnalysisResult SampleAnalysisService::read(const std::string& hash, std::stop_token stop) const {
     if (audio::onAudioThread) return failure(SampleAnalysisProblem::Realtime);
     if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);

@@ -36,6 +36,21 @@ struct SampleAnalysisOverrides {
     std::vector<std::string> tags;
 };
 
+// Rebuildable observations carried by library exchange. The content hash
+// identifies the source independently of path. Authored fields live in ADIL.
+struct SampleAnalysisMetadata {
+    std::string contentHash;
+    std::optional<double> tempoBpm;
+    std::optional<SampleKey> key;
+    audio::SampleKindSource tempoSource = audio::SampleKindSource::Detection;
+    audio::SampleKindSource keySource = audio::SampleKindSource::Detection;
+    float keyStrength = 0;
+    friend bool operator==(const SampleAnalysisMetadata&, const SampleAnalysisMetadata&) = default;
+};
+
+[[nodiscard]] SampleAnalysisMetadata portableSampleMetadata(const SampleAnalysis&);
+void applySampleMetadata(SampleAnalysis&, const SampleAnalysisMetadata&);
+
 [[nodiscard]] SampleAnalysis applySampleOverrides(SampleAnalysis, const SampleAnalysisOverrides&);
 
 enum class SampleAnalysisProblem { None, Realtime, Cancelled, Missing, SourceChanged, Read, CacheWrite };

@@ -65,6 +65,78 @@ std::string normalized(const std::string& s, bool sensitive) {
 bool validHash(const std::string& hash) {
     return hash.size() == 64 && hash.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
+using MetadataSource = audio::SampleKindSource;
+
+bool validBpm(const Json& value) {
+    return value.is_number() && std::isfinite(value.get<double>()) && value.get<double>() > 0 && value.get<double>() <= 1000;
+}
+
+Json writeKey(SampleKey key) {
+    if (key.tonic >= 12) throw std::invalid_argument("invalid sample key");
+    return {{"tonic", key.tonic}, {"minor", key.minor}};
+}
+
+std::optional<SampleKey> readKey(const Json& value) {
+    if (!value.is_object() || value.size() != 2 || !value.contains("tonic") || !value.contains("minor") ||
+        !value.at("tonic").is_number_integer() || !value.at("minor").is_boolean()) return {};
+    const auto tonic = value.at("tonic");
+    if (tonic < 0 || tonic > 11) return {};
+    return SampleKey{tonic.get<std::uint8_t>(), value.at("minor").get<bool>()};
+}
+
+const char* writeSource(MetadataSource value) {
+    switch (value) {
+    case MetadataSource::Detection: return "detected";
+    case MetadataSource::Acid: return "acid";
+    case MetadataSource::FileTag: return "file";
+    case MetadataSource::User: break;
+    }
+    throw std::invalid_argument("an analysis observation needs a read-only source");
+}
+
+MetadataSource readSource(const Json& value) {
+    if (value == "detected") return MetadataSource::Detection;
+    if (value == "acid") return MetadataSource::Acid;
+    if (value == "file") return MetadataSource::FileTag;
+    throw std::invalid_argument("invalid sample analysis source");
+}
+
+Json writeAnalysisMetadata(const SampleAnalysisMetadata& value) {
+    auto result = Json::object();
+    if (value.tempoBpm) {
+        if (!validBpm(*value.tempoBpm)) throw std::invalid_argument("invalid observed BPM");
+        result["tempo"] = {{"bpm", *value.tempoBpm}, {"source", writeSource(value.tempoSource)}};
+    }
+    if (value.key) {
+        if (!std::isfinite(value.keyStrength) || value.keyStrength < 0 || value.keyStrength > 1)
+            throw std::invalid_argument("invalid observed key strength");
+        result["key"] = {{"value", writeKey(*value.key)}, {"source", writeSource(value.keySource)},
+                         {"strength", value.keyStrength}};
+    }
+    return result;
+}
+
+SampleAnalysisMetadata readAnalysisMetadata(const std::string& hash, const Json& value) {
+    if (!value.is_object() || value.empty()) throw std::invalid_argument("invalid sample analysis metadata");
+    SampleAnalysisMetadata result;
+    result.contentHash = hash;
+    for (const auto& [name, field] : value.items()) {
+        if (name == "tempo" && field.is_object() && field.size() == 2 && validBpm(field.at("bpm"))) {
+            result.tempoBpm = field.at("bpm").get<double>();
+            result.tempoSource = readSource(field.at("source"));
+        } else if (name == "key" && field.is_object() && field.size() == 3 && field.at("strength").is_number()) {
+            result.key = readKey(field.at("value"));
+            result.keySource = readSource(field.at("source"));
+            const auto strength = field.at("strength").get<double>();
+            if (!result.key || !std::isfinite(strength) || strength < 0 || strength > 1)
+                throw std::invalid_argument("invalid observed key");
+            result.keyStrength = static_cast<float>(strength);
+        } else {
+            throw std::invalid_argument("invalid sample analysis field");
+        }
+    }
+    return result;
+}
 // The standard permits file_clock to expose either sys or UTC conversion.
 // MSVC supplies to_utc; libstdc++/libc++ supply to_sys. Keep both dependent
 // so an unused clock API need not exist on the other implementation.
@@ -439,6 +511,7 @@ SampleAnalysisOverrides Index::analysisOverrides(const std::string& hash) const 
             result.classification.bpm = bpm->get<double>();
         if (const auto tags = payload.find("tags"); tags != payload.end() && tags->is_array())
             for (const auto& tag : *tags) if (tag.is_string()) result.tags.push_back(tag.get<std::string>());
+        if (const auto key = payload.find("key"); key != payload.end()) result.key = readKey(*key);
         if (const auto settings = payload.find("sample_settings"); settings != payload.end()) {
             const auto saved = decodeSampleSettings(*settings);
             if (saved)
@@ -508,23 +581,39 @@ SampleSettingsProblem Index::clearSampleSettings(const std::string& hash,std::st
     }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
     catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
 }
-std::string Index::exportJson() const {
+std::string Index::exportJson(std::span<const SampleAnalysisMetadata> observations) const {
     if(audio::onAudioThread)return {};
     std::lock_guard lock(impl_->mutex); Json media = Json::object();
     SQLite::Statement q(*impl_->db,"SELECT hash,payload FROM annotations ORDER BY hash");
-    bool sampleDefaults=false;
+    int version = 1;
     while(q.executeStep()) {
-        auto payload=libraryJson(q.getColumn(1).getString());sampleDefaults=sampleDefaults || payload.contains("sample_settings");media[q.getColumn(0).getString()]=std::move(payload);
+        auto payload=libraryJson(q.getColumn(1).getString());
+        if (payload.contains("key")) version = 3;
+        else if (payload.contains("sample_settings")) version = std::max(version, 2);
+        media[q.getColumn(0).getString()]=std::move(payload);
     }
-    auto encoded=Json{{"version",sampleDefaults?2:1},{"media",media}}.dump(2);
+    for (const auto& observation : observations) {
+        if (!validHash(observation.contentHash)) throw std::invalid_argument("invalid analysis content hash");
+        auto metadata = writeAnalysisMetadata(observation);
+        if (metadata.empty()) continue;
+        auto& fields = media[observation.contentHash];
+        if (fields.contains("analysis_metadata")) throw std::invalid_argument("duplicate analysis content hash");
+        fields["analysis_metadata"] = std::move(metadata);
+        version = 3;
+    }
+    auto encoded=Json{{"version",version},{"media",std::move(media)}}.dump(2);
     if(encoded.size()>maxLibraryJsonBytes)throw std::length_error("library JSON export exceeds 256 MiB");
     return encoded;
 }
-bool Index::importJson(const std::string& text,std::string& error) {
+bool Index::importJson(const std::string& text,std::string& error,std::vector<SampleAnalysisMetadata>* observations) {
     if(audio::onAudioThread)return false;
     try {
         const auto document=libraryJson(text);
-        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() || (document.at("version")!=1 && document.at("version")!=2) || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
+        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() ||
+            document.at("version") < 1 || document.at("version") > 3 || !document.at("media").is_object())
+            throw std::runtime_error("invalid library JSON envelope");
+        const auto version = document.at("version").get<int>();
+        std::vector<SampleAnalysisMetadata> received;
         std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
         for (const auto& [hash, incoming] : document.at("media").items()) {
             if (!validHash(hash) || !incoming.is_object()) throw std::runtime_error("metadata must be keyed by BLAKE3 hash");
@@ -534,20 +623,33 @@ bool Index::importJson(const std::string& text,std::string& error) {
                 const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
                 merged=libraryJson(field.getString());
             }
+            bool update = incoming.empty();
             for(const auto& [key,value] : incoming.items()) {
+                if (key == "analysis_metadata") {
+                    if (version != 3) throw std::runtime_error("analysis metadata requires library JSON version 3");
+                    auto observed = readAnalysisMetadata(hash, value);
+                    if (observations) received.push_back(std::move(observed));
+                    continue;
+                }
+                update = true;
                 if (key=="tags") {
                     if(!value.is_array()) throw std::runtime_error("tags must be an array");
                     std::set<std::string> tags=merged.at("tags").get<std::set<std::string>>();
                     for(const auto& tag:value) { if(!tag.is_string()) throw std::runtime_error("tag must be text"); tags.insert(normalized(tag.get<std::string>(),true)); }
                     merged["tags"]=tags;
                 } else if(key=="bpm") {
-                    if(!value.is_null() && (!value.is_number() || !std::isfinite(value.get<double>()) || value.get<double>()<=0 || value.get<double>()>1000)) throw std::runtime_error("invalid BPM");
+                    if(!value.is_null() && !validBpm(value)) throw std::runtime_error("invalid BPM");
                     merged[key]=value;
+                } else if (key=="key") {
+                    if (version != 3) throw std::runtime_error("authored key requires library JSON version 3");
+                    if (value.is_null()) merged.erase(key);
+                    else if (const auto parsed = readKey(value)) merged[key] = writeKey(*parsed);
+                    else throw std::runtime_error("invalid authored key");
                 } else if(key=="rating") {
                     if(!value.is_null() && (!value.is_number_integer() || value.get<std::int64_t>()<0 || value.get<std::int64_t>()>5)) throw std::runtime_error("invalid rating");
                     merged[key]=value;
                 } else if(key=="sample_settings") {
-                    if(document.at("version")!=2)throw std::runtime_error("sample defaults require library JSON version 2");
+                    if(version<2)throw std::runtime_error("sample defaults require library JSON version 2 or later");
                     const auto decoded=decodeSampleSettings(value);if(!decoded)throw std::runtime_error("invalid imported sample defaults: "+decoded.error);
                     if(merged.contains(key)) {
                         const auto oldSettings=decodeSampleSettings(merged.at(key));if(!oldSettings)throw std::runtime_error("existing sample defaults are not editable by this version");
@@ -555,10 +657,13 @@ bool Index::importJson(const std::string& text,std::string& error) {
                     merged[key]=encodeSampleSettings(*decoded.data);
                 } else throw std::runtime_error("unknown metadata field");
             }
+            if (!update) continue;
             SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
             put.bind(1,hash);put.bind(2,serialized);put.exec();
         }
-        tx.commit(); error.clear(); return true;
+        tx.commit();
+        if (observations) observations->swap(received);
+        error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); return false; }
 }
 }

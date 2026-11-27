@@ -6,10 +6,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <stop_token>
 #include <vector>
 namespace adi::library {
 struct SampleAnalysisOverrides;
+struct SampleAnalysisMetadata;
 struct Entry {
     std::string volumeId, relativePath, hash, error;
     std::uintmax_t size = 0;
@@ -67,8 +69,12 @@ public:
     [[nodiscard]] SampleSettingsProblem saveSampleSettings(const std::string& hash,const SampleSettings&,std::string& error);
     [[nodiscard]] SampleSettingsProblem clearSampleSettings(const std::string& hash,std::string& error);
     [[nodiscard]] SampleAnalysisOverrides analysisOverrides(const std::string& hash) const;
-    std::string exportJson() const;
-    bool importJson(const std::string&, std::string& error);
+    // Version 3 can also carry read-only analysis observations. The caller
+    // receives those observations only on success and can re-export them.
+    // Analysis observations never turn into authored annotations.
+    std::string exportJson(std::span<const SampleAnalysisMetadata> = {}) const;
+    bool importJson(const std::string&, std::string& error,
+                    std::vector<SampleAnalysisMetadata>* observations = nullptr);
 private:
     struct Impl;
     explicit Index(std::unique_ptr<Impl>);

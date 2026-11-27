@@ -39,3 +39,22 @@ annotations, relative-folder confinement, normalization/collision checks and the
 application library schema/version remain unchanged. No project op, format minor
 or window implementation is introduced. The window supplies its task's stop token,
 forwards/coalesces progress and handles the returned completion/cancellation.
+
+## Hash-keyed metadata exchange
+
+Library JSON v1 carries tags, user BPM and rating. V2 adds authored sample
+settings. V3 adds an optional authored `key` (a `tonic` from C = 0 through
+B = 11 and a boolean `minor`) and optional `analysis_metadata` per content
+hash. Export selects the earliest version that can express its fields.
+An explicit `key: null` in v3 clears the authored key. A measurement's tempo
+and key use the `file`, `acid`, or `detected` source. An observed key also
+carries its strength. The existing top-level BPM remains the user's value.
+
+The owner passes local `SampleAnalysisMetadata` values to `Index::exportJson`
+along with the durable annotations. `Index::importJson` writes authored data
+in one transaction, then returns any observations to its caller. Use
+`portableSampleMetadata` to serialize measurements and `applySampleMetadata`
+to apply observations to the matching content hash. A user value precedes a
+file value, then ACID, then detection. A local value wins when the sources
+have equal priority. ADIL stores the authored values and `sample_settings`.
+The owner can release observations alongside the rest of its library analysis.
