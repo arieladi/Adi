@@ -3376,7 +3376,7 @@ void longTakeStopResponse(const std::filesystem::path &dir) {
           "long take: one Undo removes all four clips");
     doc->release();
 }
-void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool quantize = false) {
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool quantize = false, bool filtered = false) {
     std::string error;
     constexpr std::int32_t upstreamLatency = 16;
     auto doc = ui::ProjectDocument::open(path, true,
@@ -3405,6 +3405,11 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
                   set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
               "the monitored track has an instrument after a device with latency");
     }
+    constexpr std::string_view inputName = "in:test:keys";
+    const auto midiPort = filtered ? engine::midiInputKey(inputName) : 0;
+    if (filtered)
+        check(set("track.setInput", {{"id", 2}, {"input", engine::midiInputRef({inputName, 2})}}),
+              "route the recording track to the test keyboard on MIDI channel 2");
     check(set("track.setRecordQuantize", {{"id", 2}, {"on", quantize}, {"grid", "1/16"}}) &&
               set("track.setArm", {{"id", 2}, {"armed", true}}) &&
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
@@ -3439,19 +3444,26 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
     const std::int64_t lead = quantize ? 4096 : 0;
     while (io.streamTimeSamples < lead + 64)
         block();
-    check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80) &&
+    if (filtered) {
+        check(doc->session().enqueueMidiInput(lead + 96, {0, engine::EventType::NoteOn, 1, 60, 17, 0, 1.0},
+                                              lead + 64, engine::midiInputKey("in:test:pads")) &&
+                  doc->session().enqueueMidiInput(lead + 104, {0, engine::EventType::NoteOn, 0, 62, 18, 0, 1.0},
+                                                  lead + 72, midiPort),
+              "the callback receives a different endpoint and channel before the matching note");
+    }
+    check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80, midiPort) &&
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, lead + 88) &&
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, lead + 88, midiPort) &&
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88) &&
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88, midiPort) &&
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88),
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88, midiPort),
           "one held note with bend, slide and pressure and separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
               clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128),
+    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128, midiPort),
           "the held note releases");
     block();
     while (quantize && io.streamTimeSamples < 6400)
@@ -4958,6 +4970,8 @@ int main(int argc, char **argv) {
         arrangementRecord(recordDir.path());
         test::TempDirectory midiRecordingDir("ui_document", "record-midi");
         arrangementMidiRecord(midiRecordingDir.path() / "midi.adi", false);
+        adi::test::TempDirectory midiFilterDir("ui_document", "midi-input-filter");
+        arrangementMidiRecord(midiFilterDir.path() / "midi.adi", false, false, true);
         test::TempDirectory mixedRecordingDir("ui_document", "record-mixed");
         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");

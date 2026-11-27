@@ -145,7 +145,8 @@ bool MidiInputCapture::nextSpan() noexcept {
     return append({MidiCapturePacket::Kind::Span, driverEpoch_, pass_, sliceStream_ + spanBegin_,
                    spanTimeline_, 0, static_cast<std::int32_t>(frames), {}});
 }
-void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event) noexcept {
+void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event,
+                              std::uint64_t port) noexcept {
     if (!transport_ || scheduledSample < epochStart_) return;
     if (event.frame < lastEventFrame_ || event.frame >= sliceFrames_) {
         finish(MidiCaptureState::Discontinuity);
@@ -157,7 +158,7 @@ void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSa
     auto captured = event;
     captured.frame -= spanBegin_;
     (void)append({MidiCapturePacket::Kind::Event, driverEpoch_, pass_, sliceStream_ + event.frame,
-                  spanTimeline_ + captured.frame, inputSample, 0, captured});
+                  spanTimeline_ + captured.frame, inputSample, 0, captured, port});
 }
 void MidiInputCapture::endSlice() noexcept {
     if (!transport_) return;

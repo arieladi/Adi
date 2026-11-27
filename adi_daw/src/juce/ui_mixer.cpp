@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "ui_value_entry.hpp"
@@ -1187,11 +1188,37 @@ juce::String MixerStrip::stereoOutputLabel(RoutingChooser chooser) const {
 }
 
 juce::String MixerStrip::midiInputLabel(RoutingChooser chooser) const {
-    return chooser == RoutingChooser::MidiFrom ? "All Ins" : "All Channels";
+    const auto *track = panel_.root.reader().findTrack(track_);
+    const auto choice = engine::midiInputChoice(track && track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    if (chooser == RoutingChooser::MidiChannel)
+        return choice.channel == 0 ? juce::String("All Channels") : juce::String(choice.channel);
+    if (choice.port.empty())
+        return "All Ins";
+    const auto &ports = panel_.root.midiInputPorts;
+    const auto selected = std::ranges::find(ports, choice.port, &MidiPortListing::id);
+    return selected == ports.end() ? juce::String("Unavailable") : juce::String::fromUTF8(selected->name.c_str());
 }
 juce::PopupMenu MixerStrip::midiInputMenu(RoutingChooser chooser) {
     juce::PopupMenu menu;
-    menu.addItem(midiInputLabel(chooser), false, true, [] {});
+    const auto *track = panel_.root.reader().findTrack(track_);
+    const auto choice = engine::midiInputChoice(track && track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto add = [&](const juce::String &name, std::string_view endpoint, int channel) {
+        menu.addItem(name, true, choice.port == endpoint && choice.channel == channel,
+                     [safe, id = track_, port = std::string(endpoint), channel] {
+                         if (safe)
+                             safe->panel_.root.setMidiInput(id, port, channel);
+                     });
+    };
+    if (chooser == RoutingChooser::MidiFrom) {
+        add("All Ins", {}, choice.channel);
+        for (const auto &port : panel_.root.midiInputPorts)
+            add(juce::String::fromUTF8(port.name.c_str()), port.id, choice.channel);
+    } else {
+        add("All Channels", choice.port, 0);
+        for (int channel = 1; channel <= 16; ++channel)
+            add(juce::String(channel), choice.port, channel);
+    }
     return menu;
 }
 

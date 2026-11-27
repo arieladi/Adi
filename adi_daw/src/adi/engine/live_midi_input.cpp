@@ -12,7 +12,8 @@ namespace {
 constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
 }
 
-bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
+bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t inputSample,
+                         std::uint64_t port) noexcept {
     if (sample < 0 || inputSample < 0 || inputSample > sample || !isNoteStream(event.type) || event.channel > 15 || !std::isfinite(event.value))
         return false;
     if (event.type == EventType::Controller && event.paramId > 127) return false;
@@ -25,7 +26,7 @@ bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t i
         reset();
         return false;
     }
-    ring_[next % capacity] = {sample, inputSample, epoch_.load(std::memory_order_acquire), event};
+    ring_[next % capacity] = {sample, inputSample, epoch_.load(std::memory_order_acquire), event, port};
     written_.store(next + 1, std::memory_order_release);
     return true;
 }
@@ -117,8 +118,9 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (generation != generation_)
             route.slot = route.processes ? block.find(*route.node) : kInvalidNode;
         auto& state = *route.voices;
-        if (state.track != route.monitorTrack || epoch != renderedEpoch_) state.flush = true;
+        if (state.track != route.monitorTrack || state.filter != route.filter || epoch != renderedEpoch_) state.flush = true;
         state.track = route.monitorTrack;
+        state.filter = route.filter;
         if (route.slot != kInvalidNode && (state.flush || state.retry)) release(block, route, 0);
     }
     generation_ = generation;
@@ -150,9 +152,10 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (capture || !histories.empty()) {
             auto event = item.event;
             event.frame = eventFrame(item);
-            if (capture) capture->record(item.sample, item.inputSample, event);
+            if (capture) capture->record(item.sample, item.inputSample, event, item.port);
             for (const auto& history : histories)
-                history->memory.push(event, io.streamTimeSamples + event.frame);
+                if (history->filter.matches(item.port, event.channel))
+                    history->memory.push(event, io.streamTimeSamples + event.frame);
         }
     }
     for (const auto& history : histories) history->memory.advance(end);
@@ -190,7 +193,7 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
                 if (item.epoch < epoch) continue;
                 const auto at = eventFrame(item);
                 if (at >= runEnd) break;
-                if (!blocked && !state.flush) {
+                if (!blocked && !state.flush && route.filter.matches(item.port, item.event.channel)) {
                     auto event = item.event;
                     event.frame = at;
                     deliver(block, route, event);

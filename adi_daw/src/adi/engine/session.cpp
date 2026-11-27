@@ -1193,6 +1193,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     struct Target {
         std::int64_t track;
         std::span<const MidiMonitorRange> blockedRanges;
+        MidiInputFilter filter;
     };
     std::map<const Node*, Target> monitored;
     const auto firstMidiEffect = [this](std::int64_t track, Node* output) {
@@ -1203,17 +1204,18 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
         const bool armed = recordArmed(track);
+        const auto filter = midi ? midiInputFilter(track.inputRef) : MidiInputFilter{};
         if (midi && !track.locked && !track.frozen && !frozenGroupChildren_.contains(track.id) &&
             (armed || track.monitorMode == 1) && timing.sampleRate >= 8000 && timing.sampleRate <= 768000) {
             const auto rate = static_cast<std::uint32_t>(std::lround(timing.sampleRate));
             const auto found = midiHistories_.find(track.id);
             std::shared_ptr<LiveMidiInput::History> history;
-            if (found != midiHistories_.end() && found->second->sampleRate == rate) {
+            if (found != midiHistories_.end() && found->second->sampleRate == rate && found->second->filter == filter) {
                 history = found->second;
             } else {
                 if (lastMidiHistoryId_ == std::numeric_limits<std::int64_t>::max())
                     throw std::overflow_error("MIDI history identifiers exhausted");
-                history = std::make_shared<LiveMidiInput::History>(++lastMidiHistoryId_, track.id, rate);
+                history = std::make_shared<LiveMidiInput::History>(++lastMidiHistoryId_, track.id, rate, filter);
             }
             timing.midiHistories.push_back(history);
             histories.emplace(track.id, std::move(history));
@@ -1231,13 +1233,14 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
             route.voices = voices;
             route.processes = true;
             route.monitorTrack = track.id;
+            route.filter = filter;
             route.blockedRanges.assign(blocked.begin(), blocked.end());
             timing.midiInputRoutes.push_back(std::move(route));
             continue;
         }
         for (const auto* node : chainFor(track.id)) {
             if (node->eventFlow() == EventFlow::Consume) {
-                monitored.emplace(node, Target{track.id, blocked});
+                monitored.emplace(node, Target{track.id, blocked, filter});
                 break;
             }
         }
@@ -1263,6 +1266,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         route.processes = node.eventFlow() == EventFlow::Consume;
         if (target != monitored.end()) {
             route.monitorTrack = target->second.track;
+            route.filter = target->second.filter;
             const auto ranges = target->second.blockedRanges;
             if (!ranges.empty())
                 route.blockedRanges.assign(ranges.begin(), ranges.end());
@@ -3198,8 +3202,9 @@ void Session::process(const AudioIo& io) noexcept {
     (void)block.process(io);
 }
 
-bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
-    return midiInput_->push(sample, event, inputSample < 0 ? sample : inputSample);
+bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int64_t inputSample,
+                               std::uint64_t port) noexcept {
+    return midiInput_->push(sample, event, inputSample < 0 ? sample : inputSample, port);
 }
 void Session::resetMidiInput() noexcept {
     midiInput_->reset();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "app_midi_ports.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include <algorithm>
 #include <bitset>
 #include <chrono>
@@ -145,7 +146,7 @@ void MidiPortHost::publish() {
         if (port == ports_.end())
             continue;
         sources.push_back({&input->ring, input->slot, port->switches.track, port->switches.remote, port->switches.mpe,
-                           input->serial});
+                           input->serial, engine::midiInputKey(port->id)});
     }
     if (feed_)
         feed_->publish(sources);

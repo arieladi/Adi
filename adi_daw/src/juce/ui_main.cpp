@@ -89,8 +89,9 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
         if (document_) {
             auto &session = document_->session();
             feed_.pump(io.streamTimeSamples, io.frames, rate_, started,
-                       [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
-                           return session.enqueueMidiInput(sample, event, inputSample);
+                       [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample,
+                                  std::uint64_t port) noexcept {
+                           return session.enqueueMidiInput(sample, event, inputSample, port);
                        }, [&session]() noexcept { session.resetMidiInput(); });
             if (output_) {
                 MidiOutputFeed::Block output(*output_, io.streamTimeSamples, started, rate_);
@@ -448,7 +449,11 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (root_)
                     root_->mark(DirtySet::Content);
                 juce::MessageManager::callAsync([this] {
-                    if (juce::JUCEApplicationBase::getInstance() != this || !settingsWindow_)
+                    if (juce::JUCEApplicationBase::getInstance() != this)
+                        return;
+                    if (root_)
+                        refreshMidiInputPorts(*root_);
+                    if (!settingsWindow_)
                         return;
                     auto &panel = settingsWindow_->panel();
                     if (auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable())) {
@@ -459,6 +464,15 @@ class AdiApplication final : public juce::JUCEApplication,
                 });
             };
         }
+    }
+    void refreshMidiInputPorts(AdiRootComponent &root) const {
+        root.midiInputPorts.clear();
+        if (midiPorts_)
+            for (const auto &port : midiPorts_->ports())
+                if (port.input && port.open && port.switches.track)
+                    root.midiInputPorts.push_back({port.id, port.name});
+        root.mixer.repaint();
+        root.mixerView.repaint();
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
     // background owner. Folder changes cancel any superseded request and queue the new list on the
@@ -1970,6 +1984,7 @@ class AdiApplication final : public juce::JUCEApplication,
                         ports.push_back({port.id, port.name});
             return ports;
         };
+        refreshMidiInputPorts(*root);
         root->configureMidiRouting = [this] {
             if (applicationCommand(AppCommands::Settings))
                 settingsWindow_->panel().showPage("Tempo & MIDI");

@@ -588,6 +588,7 @@ class AdiRootComponent final : public juce::Component,
     std::function<std::span<const std::pair<int, std::string>>()> externalAudioOutputs;
     std::function<void()> configureMidiRouting;
     std::function<std::vector<MidiPortListing>()> midiTrackOutputs;
+    std::vector<MidiPortListing> midiInputPorts;
     std::function<bool(const rows::Model &, std::string &)> validateAudioRouting;
     std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
     std::shared_ptr<ExternalInputMeter> externalInputMeter;
@@ -875,6 +876,7 @@ class AdiRootComponent final : public juce::Component,
     bool setTrackAudioOutput(std::int64_t track, std::int64_t destination);
     bool setTrackMidiOutput(std::int64_t track, std::optional<rows::MidiOutput>);
     bool setAudioInput(std::int64_t id, std::string_view ref);
+    bool setMidiInput(std::int64_t id, std::string_view port, int channel);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
     bool toggleRecord(bool alternate = false);

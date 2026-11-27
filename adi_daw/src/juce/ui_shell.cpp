@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include "adi/engine/plan.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/track_image.hpp"
@@ -4349,6 +4350,18 @@ bool AdiRootComponent::setAudioInput(std::int64_t id, std::string_view ref) {
     if (track->inputRef && *track->inputRef == ref)
         return true;
     return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
+bool AdiRootComponent::setMidiInput(std::int64_t id, std::string_view port, int channel) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || !isMidiTrack(*track) || channel < 0 || channel > 16)
+        return fail("Choose a valid input on a MIDI track.");
+    const auto previous = engine::midiInputChoice(track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    if (previous.port == port && previous.channel == channel)
+        return true;
+    if (!port.empty() && port != previous.port && std::ranges::find(midiInputPorts, port, &MidiPortListing::id) == midiInputPorts.end())
+        return fail("That MIDI input is unavailable. Check the port's Track switch in MIDI Settings.");
+    return submitEdit("track.setInput", {{"id", id}, {"input", engine::midiInputRef({port, channel})}}, "MIDI From");
 }
 void AdiRootComponent::setRecordPending(bool pending) {
     if (recordPending_ == pending)

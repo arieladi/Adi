@@ -16935,11 +16935,22 @@ void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir
     choose(row(root.mixerView, midiId), {12.f, 54.f}, Chooser::MidiChannel, "All Channels", "Configure...");
     choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "No Output", "Configure...");
     check(configureMidi == 3, "SC-261: each MIDI chooser can open MIDI Settings");
+    root.midiInputPorts = {{"in:keys", "Keyboard"}, {"in:pads", "Drum Pads"}};
+    choose(row(root.mixer, midiId), {12.f, 8.f}, Chooser::MidiFrom, "All Ins", "Keyboard");
+    root.frame(); // menu labels and actions use the frame's pinned snapshot
+    choose(row(root.mixerView, midiId), {12.f, 54.f}, Chooser::MidiChannel, "All Channels", "2");
+    const auto *routedMidi = root.current()->findTrack(midiId);
+    check(routedMidi && routedMidi->inputRef == engine::midiInputRef({"in:keys", 2}),
+          "SC-276: both strip orientations write one endpoint and channel");
+    check(root.command(AppCommands::Undo) && root.current()->findTrack(midiId)->inputRef == engine::midiInputRef({"in:keys", 0}),
+          "SC-276: Undo restores every channel on the same port");
+    root.frame();
     root.midiTrackOutputs = [] { return std::vector<MidiPortListing>{{"out:fixture", "Hardware Synth"}}; };
     choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "No Output", "Channel 7");
     const auto midiRoute = rows::MidiOutput{"out:fixture", 7};
-    check(root.current()->findTrack(midiId)->midiOutput == midiRoute,
-          "SC-404: choosing a MIDI output channel updates the project");
+    check(root.current()->findTrack(midiId)->midiOutput == midiRoute &&
+          root.current()->findTrack(midiId)->inputRef == engine::midiInputRef({"in:keys", 0}),
+          "SC-404 and SC-276: hardware output and the chosen input coexist");
     check(root.command(AppCommands::Undo) && !root.current()->findTrack(midiId)->midiOutput &&
           root.command(AppCommands::Redo) && root.current()->findTrack(midiId)->midiOutput == midiRoute,
           "SC-404: the MIDI hardware route is one Undo step");
@@ -21915,8 +21926,11 @@ void midiInputFeedCases() {
         e.size = midiMessageSize(a);
         return e;
     };
+    const auto keyPort = engine::midiInputKey("in:keys");
+    const auto padPort = engine::midiInputKey("in:pads");
     const std::array<MidiInputFeed::Source, 3> sources{
-        MidiInputFeed::Source{&keys, 0, true, false, false, 1}, MidiInputFeed::Source{&pads, 1, true, false, false, 2},
+        MidiInputFeed::Source{&keys, 0, true, false, false, 1, keyPort},
+        MidiInputFeed::Source{&pads, 1, true, false, false, 2, padPort},
         MidiInputFeed::Source{&remoteOnly, 2, false, true, false, 3}};
     feed.publish(sources);
     keys.push(msg(100, 0x90, 60, 127));  // note on, channel 1, key 60, full velocity: before this block's span
@@ -21927,10 +21941,11 @@ void midiInputFeedCases() {
         std::int64_t sample;
         engine::Event event;
         std::int64_t inputSample;
+        std::uint64_t port;
     };
     std::vector<Got> got;
-    const auto take = [&got](std::int64_t sample, const engine::Event &e, std::int64_t inputSample) {
-        got.push_back({sample, e, inputSample});
+    const auto take = [&got](std::int64_t sample, const engine::Event &e, std::int64_t inputSample, std::uint64_t port) {
+        got.push_back({sample, e, inputSample, port});
         return true;
     };
     // A 480-frame block at 48 kHz starting at stream sample 4800; the ports' clock reads 112 ms. What
@@ -21938,6 +21953,8 @@ void midiInputFeedCases() {
     const auto n = feed.pump(4800, 480, 48000, 112, take);
     check(n == 3 && got.size() == 3, "three events from the two Track ports; the Remote-only port reaches no track");
     if (got.size() == 3) {
+        check(got[0].port == keyPort && got[1].port == padPort && got[2].port == keyPort,
+              "notes and controllers carry the stable endpoint independently of their note IDs");
         check(got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 0 && got[0].event.dim == 60 &&
                   std::abs(got[0].event.value - 1.0) < 1e-9 && got[0].event.noteId != 0 &&
                   (got[0].event.noteId >> 40) == 1 && got[0].sample == 4800,
@@ -21970,7 +21987,7 @@ void midiInputFeedCases() {
     // A refused event is counted; a restart forgets held notes, so a note off with no note on is nothing.
     got.clear();
     keys.push(msg(130, 0x90, 67, 90));
-    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &, std::int64_t) { return false; });
+    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &, std::int64_t, std::uint64_t) { return false; });
     check(feed.refused() == 1, "a full session queue refuses the note, and it is counted");
     feed.restart();
     keys.push(msg(140, 0x80, 67, 0));

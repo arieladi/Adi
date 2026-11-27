@@ -2,6 +2,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include "adi/engine/midi_memory.hpp"
 #include "adi/engine/midi_monitoring.hpp"
 
@@ -32,6 +33,7 @@ public:
         std::array<Voice, 128> active{};
         std::array<std::array<bool, 3>, 16> pedals{};
         std::int64_t track = 0;
+        MidiInputFilter filter;
         bool flush = false;
         bool retry = false;
         bool blocked = false;
@@ -41,15 +43,17 @@ public:
         std::shared_ptr<Voices> voices;
         std::int64_t monitorTrack = 0;
         bool processes = false;
+        MidiInputFilter filter;
         std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         mutable NodeId slot = kInvalidNode;
     };
     struct History {
-        History(std::int64_t identity, std::int64_t track, std::uint32_t rate)
-            : memory(identity, track, rate, NoteChannelBase::Zero, 16384), inputId(identity), sampleRate(rate) {}
+        History(std::int64_t identity, std::int64_t track, std::uint32_t rate, MidiInputFilter route)
+            : memory(identity, track, rate, NoteChannelBase::Zero, 16384), inputId(identity), sampleRate(rate), filter(route) {}
         MidiMemory memory;
         const std::int64_t inputId;
         const std::uint32_t sampleRate;
+        const MidiInputFilter filter;
         std::uint64_t inputEpoch = 0; // audio driver only
         std::uint64_t consumed = 0; // owner only, first uncaptured serial
     };
@@ -65,7 +69,7 @@ public:
         mutable NodeId slot = kInvalidNode;
     };
 
-    bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
+    bool push(std::int64_t sample, const Event&, std::int64_t inputSample, std::uint64_t port) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
                 std::span<const std::shared_ptr<History>>,
@@ -84,6 +88,7 @@ private:
         std::int64_t inputSample = 0;
         std::uint64_t epoch = 0;
         Event event;
+        std::uint64_t port = 0;
     };
     static constexpr std::size_t capacity = 1024;
     std::array<Timed, capacity> ring_{};

@@ -85,6 +85,7 @@ struct ProjectDocument::MidiRecording {
             bool monitored = false;
         };
         std::optional<engine::Session::MidiRecordMonitor> monitor;
+        engine::MidiInputFilter filter;
         std::int64_t quantizeGrid = 0;
         std::vector<notes::NoteValues> notes;
         std::map<std::uint64_t, Held> held;
@@ -133,6 +134,8 @@ struct ProjectDocument::MidiRecording {
         const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
+            if (!track.filter.matches(packet.port, event.channel))
+                continue;
             auto &take = preview[i];
             const auto held = track.held.find(event.noteId);
             // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
@@ -3307,8 +3310,11 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             const auto track = armed.midi[i];
             midi->preview[i].track = track;
             auto &timing = midi->tracks[i];
-            if (const auto *node = source.findTrack(track); node && node->recording.recordEnabled)
-                timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            if (const auto *node = source.findTrack(track)) {
+                timing.filter = engine::midiInputFilter(node->inputRef);
+                if (node->recording.recordEnabled)
+                    timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            }
             timing.monitor = session_.midiRecordMonitor(track);
         }
     }

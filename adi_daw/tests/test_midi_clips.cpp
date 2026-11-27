@@ -183,14 +183,29 @@ void hardwareMidiOutput() {
     f.session.transport().locate(0);
     f.render(64, {}, &sink, true);
     check(received.size == before, "export callbacks emit no hardware MIDI");
-    f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+    const auto selectInput = [&](int channel) {
+        SQLite::Statement update(f.store->db(), "UPDATE tracks SET monitor_mode=1,input_ref=? WHERE id=1");
+        update.bind(1, midiInputRef({"in:keyboard", channel}));
+        update.exec();
+    };
+    selectInput(2);
     f.refresh();
     f.session.transport().play(false);
-    check(f.session.enqueueMidiInput(f.clock + 5, Event{0, EventType::NoteOn, 0, 63, 7, 0, 1}),
-          "hardware MIDI fixture accepts a live note");
     const auto liveAt = f.clock + 5;
+    const auto inputKey = midiInputKey("in:keyboard");
+    check(f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 1, 63, 7, 0, 1}, -1, inputKey) &&
+          f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 1, 64, 8, 0, 1}, -1,
+                                     midiInputKey("in:pads")) &&
+          f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 2, 65, 9, 0, 1}, -1, inputKey),
+          "the hardware MIDI fixture accepts three tagged live notes");
     f.render(64, {}, &sink);
-    check(has(liveAt, 0x20963f7fu), "MIDI To forwards monitored live input while stopped");
+    check(has(liveAt, 0x20963f7fu) && !has(liveAt, 0x2096407fu) && !has(liveAt, 0x2096417fu),
+          "MIDI To sends only monitored events from the MIDI From port and channel");
+    selectInput(3);
+    f.refresh();
+    const auto changedAt = f.clock;
+    f.render(64, {}, &sink);
+    check(has(changedAt, 0x20863f00u), "changing MIDI From releases the note held on hardware");
     check(History(*f.store).undo().ok, "MIDI To can undo the hardware route");
     f.refresh();
     const auto resets = received.resets;
