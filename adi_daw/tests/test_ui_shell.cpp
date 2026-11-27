@@ -2350,7 +2350,8 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
     check(bar.overdub.isEnabled() && bar.overdub.onClick && bar.keyboard.isEnabled() && bar.keyboard.onClick,
           "MIDI Arrangement Overdub and the Computer MIDI Keyboard are available");
     check(!bar.capture.isEnabled() && bar.capture.onClick &&
-              bar.capture.getTooltip().contains("recently played MIDI notes"),
+              bar.capture.getTitle() == "Capture MIDI" &&
+              bar.capture.getTooltip() == "Capture MIDI. Turns recently played MIDI into clips.",
           "Capture MIDI has an action and starts disabled until there is input to capture");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
