@@ -25,6 +25,7 @@ struct LibraryPlace {
     std::string volumeId;      // the indexed volume ID, or a listing-only identity for an unindexed Place
     bool userLibrary = false;  // the User Library's, which Live's own Places label shows
     std::string problem{};
+    std::vector<std::filesystem::path> directories{}; // relative paths, including empty folders
 };
 struct LibraryFile {
     std::string name;            // the file's name, as Live's list shows it
@@ -85,13 +86,18 @@ inline bool isAudioFile(const std::filesystem::path &path) {
 }
 // A place without a usable portable marker can still be read on the library worker. Its key only
 // scopes this listing. It is never registered as a volume or used to reuse the index's cached hashes.
-inline std::vector<LibraryFile> readUnindexedPlace(const LibraryPlace &place, std::stop_token stop) {
+inline std::vector<LibraryFile> readUnindexedPlace(LibraryPlace &place, std::stop_token stop) {
     namespace fs = std::filesystem;
     std::vector<LibraryFile> files;
+    std::vector<fs::path> directories;
     for (fs::recursive_directory_iterator it(place.root), end; it != end && !stop.stop_requested(); ++it) {
-        if (fs::is_regular_file(it->symlink_status()) && isAudioFile(it->path()))
+        const auto status = it->symlink_status();
+        if (fs::is_directory(status))
+            directories.push_back(it->path().lexically_relative(place.root));
+        else if (fs::is_regular_file(status) && isAudioFile(it->path()))
             files.push_back({media::pathUtf8(it->path().filename()), it->path(), place.volumeId});
     }
+    place.directories = std::move(directories);
     return files;
 }
 
@@ -123,10 +129,11 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
 
             LibraryPlace place{folder.name, root, "folder:" + media::pathUtf8(root), folder.userLibrary};
             if (identified && !byVolume.contains(volume.id)) {
-                const auto scanned = index.scan(volume, {}, stop);
+                auto scanned = index.scan(volume, {}, stop);
                 if (scanned.cancelled) break;
                 if (scanned.ok) {
                     place.volumeId = volume.id;
+                    place.directories = std::move(scanned.directories);
                     byVolume.emplace(volume.id, out.places.size());
                 } else {
                     place.problem = folder.name + " could not be scanned: " + scanned.error;

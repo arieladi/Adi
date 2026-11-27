@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,10 +23,14 @@ class AdiRootComponent;
 // the sidebar (41.22).
 class BrowserList final : public juce::ListBox {
   public:
+    std::function<bool(int, bool)> onFolderArrow;
     std::function<void()> onLeft;
     std::function<bool()> onEscape;
     bool keyPressed(const juce::KeyPress &k) override {
         if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
+            return true;
+        if ((k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) && onFolderArrow &&
+            onFolderArrow(getSelectedRow(), k == juce::KeyPress::rightKey))
             return true;
         if (k == juce::KeyPress::leftKey && onLeft) {
             onLeft();
@@ -103,7 +108,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a folder heading, a device or a saved preset.
+    // A row of the list: a sample, a library folder, a heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
@@ -112,6 +117,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         int depth = 0;
         const preset::Entry *savedPreset = nullptr;
         juce::String tooltip{};
+        const BrowserLibrarySnapshot::Folder *folder = nullptr;
+        bool folderOpen = false;
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
@@ -169,13 +176,20 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::string labelKey(int) const;
     int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
-    void refill();
+    void refill(int selectRow = -1);
+    void appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder>, std::size_t folder, int depth,
+                         const std::set<std::filesystem::path> &open);
+    bool folderArrow(int row, bool right);
+    bool toggleFolder(int row);
+    bool hitFolderDisclosure(int row, int x) const;
     int getNumRows() override;
+    juce::String getNameForRow(int row) override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
-    void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
-    // A folder's heading is never selected: the selection steps past it, the way it was moving.
+    void listBoxItemClicked(int row, const juce::MouseEvent &) override;
+    void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override;
+    // A static heading is never selected: the selection steps past it, the way it was moving.
     void selectedRowsChanged(int lastRowSelected) override;
     int firstItem() const;
     int lastSelected_ = -1;
@@ -185,6 +199,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    std::map<std::string, std::set<std::filesystem::path>> openFolders_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;

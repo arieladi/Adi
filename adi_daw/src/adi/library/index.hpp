@@ -20,6 +20,8 @@ struct ScanResult {
     std::uint64_t files = 0, unchanged = 0, queued = 0;
     std::string error;
     bool cancelled = false;
+    // Subdirectories of the scanned folder, relative to the volume root, on success.
+    std::vector<std::filesystem::path> directories;
 };
 struct ScanProgress {
     enum class Phase { Discovering, Publishing };

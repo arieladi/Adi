@@ -34,8 +34,16 @@ class LibraryQuery {
 // const snapshot, and pointers returned by the index are valid while the snapshot is retained.
 class BrowserLibrarySnapshot {
   public:
+    struct Folder {
+        std::filesystem::path path; // relative to this Place's root
+        std::string name;
+        std::vector<std::size_t> children;
+        std::vector<std::size_t> samples;
+    };
     explicit BrowserLibrarySnapshot(LibraryListing);
     [[nodiscard]] const LibraryListing &listing() const noexcept { return listing_; }
+    // The Place itself is at index 0. The snapshot owns the folders and entries they index.
+    [[nodiscard]] std::span<const Folder> folders(const std::string &volume) const noexcept;
     // A null volume searches all samples. A named volume includes its descendant files.
     void appendSamples(const LibraryQuery &, const std::string *volume, std::vector<const LibraryFile *> &results) const;
 
@@ -44,6 +52,7 @@ class BrowserLibrarySnapshot {
     struct PlaceSamples {
         SampleIndices ordered;
         std::vector<bool> contains;
+        std::vector<Folder> folders;
     };
     LibraryListing listing_;
     std::vector<std::string> foldedNames_;

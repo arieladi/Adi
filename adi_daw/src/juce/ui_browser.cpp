@@ -7,6 +7,7 @@
 #include <unordered_set>
 namespace adi::ui {
 namespace {
+constexpr int kFolderIndent = 12, kFolderDisclosureWidth = 20;
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
 constexpr auto kLastLabel = "browser.lastLabel";
@@ -149,6 +150,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.setRowHeight(kRowHeight);
     list.setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
     list.setMultipleSelectionEnabled(true);
+    list.onFolderArrow = [this](int row, bool right) { return folderArrow(row, right); };
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
     addAndMakeVisible(list);
@@ -322,7 +324,23 @@ bool BrowserPanel::cancelHotSwap() {
         setHotSwap(std::nullopt);
     return true;
 }
-void BrowserPanel::refill() {
+void BrowserPanel::appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder> folders, std::size_t folder, int depth,
+                                   const std::set<std::filesystem::path> &open) {
+    const auto &parent = folders[folder];
+    for (const auto child : parent.children) {
+        const auto &directory = folders[child];
+        const auto expanded = open.contains(directory.path);
+        rows_.push_back({nullptr, nullptr, {}, nullptr, depth, nullptr, {}, &directory, expanded});
+        if (expanded)
+            appendPlaceRows(folders, child, depth + 1, open);
+    }
+    for (const auto sample : parent.samples) {
+        const auto *file = &listing().samples[sample];
+        shown_.push_back(file);
+        rows_.push_back({file, nullptr, {}, nullptr, depth});
+    }
+}
+void BrowserPanel::refill(int selectRow) {
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
@@ -334,12 +352,13 @@ void BrowserPanel::refill() {
     const LibraryQuery query{search.getText().toStdString()};
     // Keep the typed results separate from how a panel groups them for display.
     const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
+    const bool browsePlace = !samples && query.empty() && !chosen.place.empty();
     LibraryQueryResults hits;
     if (all) {
         hits.samples.swap(shown_);
         queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_}, hits);
         hits.samples.swap(shown_);
-    } else if (library_ && (samples || !chosen.place.empty())) {
+    } else if (library_ && !browsePlace && (samples || !chosen.place.empty())) {
         library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
     }
     std::unordered_set<const preset::Entry *> unusedPresets(hits.presets.begin(), hits.presets.end());
@@ -347,8 +366,14 @@ void BrowserPanel::refill() {
     rows_.reserve(shown_.size());
     if (showPlugins && pluginScan_.phase == PluginScan::Phase::Scanning)
         rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str())});
-    for (const auto *f : shown_)
-        rows_.push_back({f, nullptr, {}});
+    if (browsePlace && library_) {
+        const auto folders = library_->folders(chosen.place);
+        if (!folders.empty())
+            appendPlaceRows(folders, 0, 0, openFolders_[chosen.place]);
+    } else {
+        for (const auto *file : shown_)
+            rows_.push_back({file, nullptr, {}});
+    }
     // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
     const auto visiblePresets = [&](std::string_view format, std::string_view uid,
                                     std::optional<std::int64_t> shellId, bool entireDevice) {
@@ -459,11 +484,28 @@ void BrowserPanel::refill() {
     list.updateContent();
     list.deselectAllRows();
     lastSelected_ = -1;
+    if (selectRow >= 0)
+        list.selectRow(selectRow);
     list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
+juce::String BrowserPanel::getNameForRow(int row) {
+    if (row >= 0 && row < getNumRows()) {
+        const auto &item = rows_[static_cast<std::size_t>(row)];
+        if (item.folder != nullptr)
+            return juce::String::fromUTF8(item.folder->name.c_str()) + (item.folderOpen ? ", expanded" : ", collapsed");
+        if (item.file != nullptr)
+            return juce::String::fromUTF8(item.file->name.c_str());
+    }
+    return juce::ListBoxModel::getNameForRow(row);
+}
 juce::String BrowserPanel::getTooltipForRow(int row) {
-    return row >= 0 && row < getNumRows() ? rows_[static_cast<std::size_t>(row)].tooltip : juce::String{};
+    if (row < 0 || row >= getNumRows())
+        return {};
+    const auto &item = rows_[static_cast<std::size_t>(row)];
+    if (item.file != nullptr)
+        return juce::String::fromUTF8(media::pathUtf8(item.file->path).c_str());
+    return item.tooltip;
 }
 void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
@@ -471,6 +513,21 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     const auto &r = rows_[static_cast<std::size_t>(row)];
     if (selected && r.heading.isEmpty())
         g.fillAll(look::selection);
+    if (r.folder != nullptr) {
+        const int in = kFolderIndent * r.depth;
+        const float x = 8.f + static_cast<float>(in), y = static_cast<float>(height) / 2.f;
+        juce::Path chevron;
+        if (r.folderOpen)
+            chevron.addTriangle(x, y - 2.f, x + 8.f, y - 2.f, x + 4.f, y + 3.f);
+        else
+            chevron.addTriangle(x + 2.f, y - 4.f, x + 2.f, y + 4.f, x + 7.f, y);
+        g.setColour(look::text);
+        g.fillPath(chevron);
+        g.setFont(look::font(look::fontHeading));
+        g.drawText(juce::String::fromUTF8(r.folder->name.c_str()), 24 + in, 0, width - 28 - in, height,
+                   juce::Justification::centredLeft, true);
+        return;
+    }
     if (r.heading.isNotEmpty()) {
         // Group headings and notices cannot be selected or loaded.
         g.setColour(r.tooltip.isEmpty() ? look::textDim : look::error);
@@ -505,7 +562,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         return;
     }
     const bool device = r.device != nullptr;
-    const int indent = 12 * r.depth;
+    const int indent = kFolderIndent * r.depth;
     icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
@@ -662,6 +719,8 @@ bool BrowserPanel::load(int row) {
     const auto &entry = rows_[static_cast<std::size_t>(row)];
     if (hotSwap_)
         return loadHotSwap(entry);
+    if (entry.folder != nullptr)
+        return toggleFolder(row);
     if (const auto *saved = entry.savedPreset) {
         if (!loadDevicePreset) {
             root_.say("Loading a device preset needs the application.");
@@ -709,6 +768,57 @@ bool BrowserPanel::load(int row) {
         return false;
     }
     return root_.insertDevice(std::string(d.uid), track, before);
+}
+bool BrowserPanel::toggleFolder(int row) {
+    const auto &entry = rows_[static_cast<std::size_t>(row)];
+    auto &open = openFolders_[sidebar_[static_cast<std::size_t>(selected_)].place];
+    if (entry.folderOpen)
+        open.erase(entry.folder->path);
+    else
+        open.insert(entry.folder->path);
+    refill(row);
+    return true;
+}
+bool BrowserPanel::folderArrow(int row, bool right) {
+    if (row < 0 || row >= getNumRows())
+        return false;
+    const auto &entry = rows_[static_cast<std::size_t>(row)];
+    if (entry.folder != nullptr && entry.folderOpen != right)
+        return toggleFolder(row);
+    if (right) {
+        if (entry.folder == nullptr)
+            return false;
+        if (row + 1 < getNumRows() && rows_[static_cast<std::size_t>(row + 1)].depth > entry.depth)
+            list.selectRow(row + 1);
+        return true;
+    }
+    if (entry.depth > 0) {
+        for (int parent = row - 1; parent >= 0; --parent) {
+            const auto &candidate = rows_[static_cast<std::size_t>(parent)];
+            if (candidate.depth < entry.depth) {
+                if (candidate.folder == nullptr)
+                    return false;
+                list.selectRow(parent);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+bool BrowserPanel::hitFolderDisclosure(int row, int x) const {
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
+        return false;
+    const auto &entry = rows_[static_cast<std::size_t>(row)];
+    const int indent = kFolderIndent * entry.depth;
+    return entry.folder != nullptr && x >= indent && x < indent + kFolderDisclosureWidth;
+}
+void BrowserPanel::listBoxItemClicked(int row, const juce::MouseEvent &event) {
+    if (event.getNumberOfClicks() == 1 && !event.mods.isPopupMenu() && hitFolderDisclosure(row, event.x))
+        toggleFolder(row);
+}
+void BrowserPanel::listBoxItemDoubleClicked(int row, const juce::MouseEvent &event) {
+    if (!hitFolderDisclosure(row, event.x))
+        load(row);
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round
@@ -956,7 +1066,7 @@ void BrowserPanel::choose(int i) {
                           : (entry.name + " is not listed yet.").toStdString());
         else if (!ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
-        else if (shown_.empty())
+        else if (rows_.empty())
             root_.say(listing().places.empty() || (!entry.samples && entry.place.empty())
                           ? "Choose Add Folder in the Browser to list samples."
                           : (entry.name + " holds no audio files.").toStdString());
