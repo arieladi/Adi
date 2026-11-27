@@ -257,6 +257,26 @@ void importClip() {
     check(h.redo().ok && s.db().execAndGet("SELECT count(*) FROM audio_clips").getInt()==1,
           "Redo restores captured audio without a source file");
 }
+// SC-387: a file of more than two channels is refused in plain words, not cut to its first two quietly.
+void moreThanTwoChannelsRefused() {
+    Fixture f;auto& s=*f.store;
+    for(const std::uint16_t channels:{3,6}){
+        const auto path=f.folder()/("surround-"+std::to_string(channels)+".wav");
+        std::vector<float> frames(static_cast<std::size_t>(channels)*480,0.1f);
+        {audio::WavWriter w(path,48000,channels,audio::WavFormat::Pcm24);w.write(frames.data(),480);}
+        OpRequest captured;
+        const auto prepared=media::prepareImport(s,path,10,123,captured);
+        check(!prepared.ok && captured.opType.empty() &&
+              prepared.error.find(std::to_string(channels)+" channels")!=std::string::npos &&
+              prepared.error.find("mono and stereo")!=std::string::npos &&
+              prepared.error.find(path.filename().string())!=std::string::npos,
+              ("a "+std::to_string(channels)+"-channel file is refused, named, in plain words: "+prepared.error).c_str());
+    }
+    const auto stereo=f.folder()/"stereo.wav";
+    {std::array<float,960> two{};audio::WavWriter w(stereo,48000,2,audio::WavFormat::Pcm16);w.write(two.data(),480);}
+    OpRequest captured;
+    check(media::prepareImport(s,stereo,11,123,captured).ok,"a stereo file still imports");
+}
 void captureDecodeAndDedup() {
     Fixture f;audio::DecodeCache cache(f.temp.path()/"decoded",{1024*1024,0});
     OpRequest captured;
@@ -320,7 +340,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); batchRelink(); importClip(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

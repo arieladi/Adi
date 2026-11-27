@@ -269,6 +269,12 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
         Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
         row["format"]="";
         const auto info=captureAudio(source,row,cache,stop,headerOnly);
+        // SC-387: a file of more than two channels (5.1, a multitrack recording) is refused in plain words, not
+        // imported to play its first two channels without a word.
+        if (info && info->channels > 2)
+            return {false, pathUtf8(source.filename()) + " has " + std::to_string(info->channels) +
+                               " channels: ADI plays mono and stereo files. Split it into mono or stereo files to "
+                               "import it."};
         const auto verified=blake3File(source,stop);
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
         if (!verified || hash.hex!=verified.hex) return {false,"media changed during import capture"};
