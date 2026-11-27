@@ -13,6 +13,12 @@
 #include <stdexcept>
 
 namespace adi::engine {
+bool detail::displayableNote(const NoteRecord& note) noexcept {
+    return note.dur_ticks > 0 && note.start_ticks <= std::numeric_limits<std::int64_t>::max() - note.dur_ticks &&
+           note.key <= 127 && note.vel_on != 0 && note.vel_on <= 127 && note.vel_off <= 127 &&
+           note.channel <= 15 && note.probability <= 10000 && std::isfinite(note.tuning_cents) && note.reserved == 0;
+}
+
 namespace {
 std::optional<std::int64_t> integer(const SQLite::Statement& query, int column) {
     if (query.getColumn(column).isNull()) return {};
@@ -56,9 +62,7 @@ void readNotes(ClipDetails& clip, SQLite::Database& db) {
     clip.notes.reserve(reader.count());
     for (std::uint32_t index = 0; index < reader.count(); ++index) {
         const auto note = reader.at(index);
-        if (!note || note->dur_ticks <= 0 || !add(note->start_ticks, note->dur_ticks) ||
-            note->key > 127 || note->vel_on == 0 || note->vel_on > 127 || note->vel_off > 127 ||
-            note->channel > 15 || note->probability > 10000 || !std::isfinite(note->tuning_cents) || note->reserved != 0) {
+        if (!note || !detail::displayableNote(*note)) {
             clip.notes.clear(); clip.notesProblem = "invalid note " + std::to_string(index); return;
         }
         ambiguous = ambiguous || note->note_id == 0 || !identities.insert(note->note_id).second;
