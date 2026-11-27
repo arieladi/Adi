@@ -20,7 +20,7 @@ namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
-                                     SharedAnalysis::FilledSpectrum;
+                                     SharedAnalysis::FilledSpectrum | SharedAnalysis::PeriodScope;
 constexpr std::size_t maxHistoryColumns = 128;
 constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
 // PFFFT squares its unnormalised float bins. Leave headroom for that sum
@@ -235,6 +235,16 @@ struct SharedAnalysis::Domain {
     std::atomic<bool> neutralMaximum{true};
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
     std::vector<std::shared_ptr<FilledHistory>> filledHistories;
+    struct PeriodHistory {
+        dsp::PeriodScopeCapture capture;
+        std::array<float, dsp::kPeriodScopeSize> window{};
+        std::shared_ptr<const dsp::PeriodScopeReading> publication;
+        std::int64_t afterSequence = 0;
+        std::uint64_t publicationWindow = 0;
+        bool complete = false;
+    };
+    std::unique_ptr<PeriodHistory> period;
+    std::atomic<bool> periodReady{false};
     std::atomic<bool> cumulativeReady{true};
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
     bool meterPrepared = false;
@@ -368,6 +378,7 @@ struct SharedAnalysis::Domain {
         pendingHistory.clear(); retiredForPending = 0;
         historyBlocked.store(false, std::memory_order_release);
         columns.clear();
+        resetPeriod();
         if (epoch) {
             ++sourceEpoch;
             resetAverageForGap();
@@ -412,6 +423,7 @@ struct SharedAnalysis::Domain {
         consumedSequence.store(cursor.next, std::memory_order_release);
         activateAverage(sequence);
         activateMaximum(sequence);
+        activatePeriod(sequence);
         for (const auto &history : cumulativeHistories) {
             history->afterSequence = sequence;
             history->clear();
@@ -433,6 +445,50 @@ struct SharedAnalysis::Domain {
         }
         if ((bits & Spectrogram) && columns.capacity() < maxHistoryColumns) columns.reserve(maxHistoryColumns);
         return true;
+    }
+    bool prepareOutputs(std::uint32_t bits) {
+        auto capture = (bits & PeriodScope) && !period ? std::make_unique<PeriodHistory>() : nullptr;
+        if (!ensureSpectrum(bits)) return false;
+        if (capture) period = std::move(capture);
+        return true;
+    }
+    void resetPeriod() noexcept {
+        if (!period) return;
+        period->capture.reset();
+        period->publication.reset();
+        period->publicationWindow = 0;
+        period->complete = false;
+        periodReady.store(false, std::memory_order_release);
+    }
+    void activatePeriod(std::int64_t sequence) noexcept {
+        if (!period) return;
+        resetPeriod();
+        period->afterSequence = sequence;
+    }
+    void feedPeriod(std::span<const float> leftSamples, std::span<const float> rightSamples, std::int64_t first) noexcept {
+        if (!period || !(outputs.load(std::memory_order_acquire) & PeriodScope)) return;
+        const auto skip = std::max(std::int64_t{0}, period->afterSequence - first);
+        if (skip >= static_cast<std::int64_t>(leftSamples.size())) return;
+        const auto offset = static_cast<std::size_t>(skip);
+        period->capture.feed(leftSamples.subspan(offset), rightSamples.subspan(offset), tap->sampleRate());
+    }
+    void publishPeriod(Result &latest) noexcept {
+        if (!period || !(latest.outputs & PeriodScope)) return;
+        if (!period->complete) {
+            period->publication.reset();
+            latest.periodScope.reset();
+            periodReady.store(false, std::memory_order_release);
+            return;
+        }
+        if (period->publicationWindow != latest.windowSerial || !period->publication) try {
+            period->publication = std::make_shared<const dsp::PeriodScopeReading>(dsp::measurePeriodScope(period->window));
+            period->publicationWindow = latest.windowSerial;
+            periodReady.store(true, std::memory_order_release);
+        } catch (...) {
+            periodReady.store(false, std::memory_order_release);
+            return;
+        }
+        latest.periodScope = period->publication;
     }
     void releaseUnused(std::uint32_t bits) {
         if (!(bits & Average1s)) {
@@ -457,6 +513,10 @@ struct SharedAnalysis::Domain {
         }
         if (!(bits & FilledSpectrum))
             std::vector<std::shared_ptr<FilledHistory>>().swap(filledHistories);
+        if (!(bits & PeriodScope)) {
+            period.reset();
+            periodReady.store(false, std::memory_order_release);
+        }
         if (!spectralOutput(bits)) {
             spectrum.reset(); spectralWindow = 0;
             std::vector<float>().swap(scratch); std::vector<float>().swap(linear); std::vector<float>().swap(second);
@@ -465,6 +525,8 @@ struct SharedAnalysis::Domain {
     }
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
+        if ((bits & PeriodScope) && (!periodReady.load(std::memory_order_acquire) ||
+            static_cast<double>(windowEnd - quiet.begin) < tap->sampleRate() * .04)) return false;
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
                !(bits & (Average1s | FilledSpectrum)) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
     }
@@ -503,7 +565,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 9> outputUsers{}; // State mutex
+    std::array<std::size_t, 10> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -1383,12 +1445,15 @@ struct SharedAnalysis::State {
             const auto n = d.left.size(), hop = static_cast<std::size_t>(d.request.hopSize);
             const auto end = d.tap->written();
             const auto quiet = d.tap->lastParkedSilence();
+            const auto beforeQuiet = d.cursor.next;
             d.skipParkedBeforeCumulative(quiet);
             // Resume at the end of a previously parked range. Its omitted samples
             // are identical to those in the retained window. The regular cursor
             // still detects a seek, playback start, or another stamp at the join.
             if (quiet.end < end && quiet.end > d.cursor.next && d.settledParkedSilence(quiet))
                 d.cursor.next = quiet.end;
+            if (d.period && d.cursor.next > beforeQuiet)
+                d.period->capture.skipSilence(d.cursor.next - beforeQuiet, d.tap->sampleRate());
             while (d.cursor.next < end && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
                 if (quiet.end >= end && d.settledParkedSilence(quiet)) break;
                 const auto need = d.filled < n ? n - d.filled : hop - d.sinceWindow;
@@ -1413,7 +1478,10 @@ struct SharedAnalysis::State {
                     ++d.gaps; d.resetWindow(true, !stopped && !looped); discontinuity = true; latest.reset();
                 }
                 if (!read.frames) break;
-                samples += static_cast<std::size_t>(read.frames);
+                const auto frames = static_cast<std::size_t>(read.frames);
+                samples += frames;
+                d.feedPeriod(std::span<const float>(readLeft).first(frames),
+                             std::span<const float>(readRight).first(frames), read.firstSequence);
                 for (std::int32_t i = 0; i < read.frames; ++i) {
                     d.ringLeft[d.position] = readLeft[static_cast<std::size_t>(i)];
                     d.ringRight[d.position] = readRight[static_cast<std::size_t>(i)];
@@ -1424,6 +1492,7 @@ struct SharedAnalysis::State {
                 if (wasFull) d.sinceWindow += static_cast<std::size_t>(read.frames);
                 if (d.filled != n || (wasFull && d.sinceWindow < hop)) continue;
                 d.sinceWindow = 0; ++windows; ++d.windowSerial; d.hasWindow = true;
+                if (d.period) d.period->complete = d.period->capture.copy(d.period->window);
                 d.firstSequence = d.cursor.next - static_cast<std::int64_t>(n);
                 d.advancing = read.advancing;
                 d.transportRevision = read.transportRevision;
@@ -1453,6 +1522,7 @@ struct SharedAnalysis::State {
                 latest->budgetLimited = latest->pendingFrames > 0 &&
                     (windows == kMaxWindowsPerFrame || samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
                 if (d.active.load(std::memory_order_acquire)) {
+                    d.publishPeriod(*latest);
                     auto averagePublication = d.makeAverageResult(latest);
                     auto maximumPublication = d.makeMaximumResult(latest);
                     d.publishCumulative(latest);
@@ -1800,7 +1870,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         std::lock_guard domainLock(found->second->mutex);
         if (cumulative) found->second->cumulativeHistories.reserve(found->second->cumulativeHistories.size() + 1);
         if (filled) found->second->filledHistories.reserve(found->second->filledHistories.size() + 1);
-        if (!found->second->ensureSpectrum(request.outputs)) return {};
+        if (!found->second->prepareOutputs(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         found->second->addCumulative(cumulative, sequence);
@@ -1811,12 +1881,13 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
         if (newlyRequested & RealtimeMaximum) found->second->activateMaximum(sequence);
+        if (newlyRequested & PeriodScope) found->second->activatePeriod(sequence);
         found->second->updateAvailability();
         ++found->second->consumers; ++state_->consumers;
         return Lease(state_, found->second, request.outputs, std::move(cumulative), std::move(filled));
     }
     auto domain = std::make_shared<Domain>(key);
-    if (!domain->ensureSpectrum(request.outputs)) return {};
+    if (!domain->prepareOutputs(request.outputs)) return {};
     domain->addCumulative(cumulative, 0);
     if (filled) domain->filledHistories.push_back(filled);
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
@@ -1836,6 +1907,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     const auto admission = inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0);
     if (request.outputs & Average1s) domain->activateAverage(admission);
     if (request.outputs & RealtimeMaximum) domain->activateMaximum(admission);
+    if (request.outputs & PeriodScope) domain->activatePeriod(admission);
     if (cumulative) cumulative->afterSequence = admission;
     if (filled) filled->afterSequence = admission;
     state_->domains.emplace(key, domain); ++state_->consumers;

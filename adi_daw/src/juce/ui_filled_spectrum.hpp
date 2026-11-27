@@ -35,16 +35,23 @@ struct Cursor {
     int octave, cents;
 };
 
-inline Cursor cursorAt(double horizontal, double vertical) noexcept {
+struct Note { const char *name; int octave, cents; };
+
+inline Note noteAt(double hz) noexcept {
     constexpr std::array notes{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-    const auto hz = lowHz * std::exp(logWidth() * std::clamp(horizontal, 0., 1.));
     const auto pitch = 69. + 12. * std::log2(hz / 440.);
     const auto midi = static_cast<int>(std::floor(pitch + .5));
     const auto pitchClass = static_cast<std::size_t>((midi % 12 + 12) % 12);
     // Live's numbering assigns C3 to MIDI 60.
     const auto octave = static_cast<int>(std::floor(static_cast<double>(midi) / 12.)) - 2;
     const auto cents = static_cast<int>(std::floor((pitch - midi) * 100. + .5));
+    return {notes[pitchClass], octave, cents};
+}
+
+inline Cursor cursorAt(double horizontal, double vertical) noexcept {
+    const auto hz = lowHz * std::exp(logWidth() * std::clamp(horizontal, 0., 1.));
+    const auto note = noteAt(hz);
     const auto db = std::lerp(static_cast<double>(topDb), static_cast<double>(bottomDb), std::clamp(vertical, 0., 1.));
-    return {hz, db, notes[pitchClass], octave, cents};
+    return {hz, db, note.name, note.octave, note.cents};
 }
 } // namespace adi::ui::filled_spectrum

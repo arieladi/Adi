@@ -58,6 +58,116 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void periodScopeReference() {
+    constexpr double rate = adi::dsp::kPeriodScopeSampleRate;
+    std::array<float, 512> samples{};
+    const auto signal = [&](double frequency, bool harmonics = false) {
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            const auto phase = 2. * std::numbers::pi * frequency * static_cast<double>(i) / rate + .37;
+            samples[i] = static_cast<float>(std::sin(phase) + (harmonics ? .8 * std::sin(2. * phase) +
+                                                              .6 * std::sin(3. * phase) : 0.));
+        }
+        return adi::dsp::measurePeriodScope(samples);
+    };
+    for (const auto frequency : {50., 55., 110., 220., 440., 880., 984., 1000.}) {
+        const auto reading = signal(frequency);
+        check(reading.lag > 0. && near(rate / reading.lag, frequency, frequency * .06),
+              "period detection finds the first correlation maximum, including both limit tones");
+        if (reading.lag > 0. && reading.start > 0.) {
+            const auto previous = static_cast<std::size_t>(reading.start);
+            const auto crossing = std::lerp(reading.samples[previous], reading.samples[previous + 1],
+                static_cast<float>(reading.start - static_cast<double>(previous)));
+            check(std::abs(crossing) < .001f && reading.start + reading.lag < static_cast<double>(samples.size()),
+                  "the retriggered trace begins at a rising zero crossing with a whole captured period");
+        }
+    }
+    const auto rich = signal(80., true);
+    check(rich.lag > 0. && near(rate / rich.lag, 80., 4.8), "strong harmonics do not make the scope lock an octave high");
+    check(signal(35.).lag == 0., "a tone below the 40 ms capture's usable range is rejected");
+    samples.fill(0.f);
+    check(adi::dsp::measurePeriodScope(samples).lag == 0., "silence has no detected period");
+    std::uint32_t seed = 12345;
+    for (auto &sample : samples) {
+        seed = (seed * 1103515245u + 12345u) & 0x7fffffffu;
+        sample = static_cast<float>(static_cast<double>(seed) / 1073741823. - 1.);
+    }
+    check(adi::dsp::measurePeriodScope(samples).lag == 0., "deterministic white noise has no detected period");
+}
+
+void contiguousPeriodScopeDemand() {
+    constexpr int size = 4096;
+    for (const double rate : {44100., 768000.}) {
+        Fixture fixture;
+        fixture.tap = std::make_shared<ScopeTap>(rate, .5);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, size};
+        auto raw = fixture.broker.acquire(request);
+        const auto originalAcquires = fixture.acquireCalls;
+        request.outputs = SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope;
+        auto scoped = fixture.broker.acquire(request);
+        const auto frames = static_cast<std::int32_t>(rate * .055) + size;
+        std::vector<float> left(static_cast<std::size_t>(frames)), right(left.size());
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const double seconds = static_cast<double>(i) / rate;
+            const auto mono = .4f * static_cast<float>(std::sin(2. * std::numbers::pi * 440. * seconds));
+            const auto side = .7f * static_cast<float>(std::sin(2. * std::numbers::pi * 1700. * seconds));
+            left[i] = mono + side;
+            right[i] = mono - side;
+        }
+        fixture.tap->write(left.data(), right.data(), size, 0, true, 1);
+        fixture.broker.pump();
+        if (rate == 768000.)
+            check(scoped.read() && !scoped.read()->periodScope, "a 4096-sample high-rate FFT does not invent a complete 40 ms capture");
+        for (int offset = size; offset < frames;) {
+            const auto block = std::min(893, frames - offset);
+            fixture.tap->write(left.data() + offset, right.data() + offset, block, offset, true, 1);
+            fixture.broker.pump();
+            offset += block;
+        }
+        const auto snapshot = scoped.read();
+        check(snapshot && snapshot == raw.read() && snapshot->periodScope && fixture.acquireCalls == originalAcquires &&
+                  fixture.broker.stats().domains == 1 && fixture.broker.stats().taps == 1 &&
+                  fixture.broker.stats().spectralPlans == 1,
+              "the period scope and the full spectrum share the same worker, reader and physical tap");
+        if (!snapshot || !snapshot->periodScope) continue;
+        const auto &period = *snapshot->periodScope;
+        constexpr auto fixedRate = adi::dsp::kPeriodScopeSampleRate;
+        const auto end = static_cast<double>(snapshot->firstSequence + size - 1);
+        const auto firstCell = std::floor(end * fixedRate / rate + 1.e-8) - 511.;
+        float worst = 0.f;
+        for (std::size_t i = 0; i < period.samples.size(); ++i) {
+            const auto time = (firstCell + static_cast<double>(i)) / fixedRate;
+            const auto sine = .4f * static_cast<float>(std::sin(2. * std::numbers::pi * 440. * time));
+            worst = std::max(worst, std::abs(period.samples[i] - sine));
+        }
+        check(period.lag > 0. && near(fixedRate / period.lag, 440., 26.4) && worst < .002f,
+              "512 cells follow the running audio clock across callback splits and use same-sample stereo mono");
+        if (rate == 768000.) {
+            fixture.tap->write(left.data(), right.data(), size, frames + 256, true, 2);
+            fixture.broker.pump();
+            check(scoped.read() && !scoped.read()->periodScope && scoped.read()->sourceEpoch > snapshot->sourceEpoch,
+                  "a real source discontinuity discards the earlier period window");
+            for (int i = 0; i < 8; ++i) {
+                fixture.tap->write(static_cast<const float *>(nullptr), nullptr, size, 0, false, 3);
+                fixture.broker.pump();
+            }
+            const auto parked = scoped.read();
+            const auto workerPasses = fixture.broker.stats().workerPasses;
+            fixture.tap->write(static_cast<const float *>(nullptr), nullptr, size, 0, false, 3);
+            fixture.broker.pump();
+            check(parked && parked->periodScope && parked->periodScope->lag == 0. && scoped.read() == parked &&
+                      fixture.broker.stats().workerPasses == workerPasses,
+                  "one complete high-rate silence capture settles the parked scope and worker");
+        }
+        scoped.reset();
+        fixture.broker.pump();
+        check(raw.read() && !raw.read()->periodScope && fixture.broker.stats().consumers == 1,
+              "closing the scope drops its capture while a visible Raw spectrum keeps its tap");
+        raw.reset();
+        check(fixture.broker.stats().domains == 0 && fixture.releaseCalls == 1,
+              "the last visible analysis lease releases the source");
+    }
+}
+
 void filledSpectrumCurves() {
     using Curve = SharedAnalysis::FilledCurve;
     constexpr int size = 4096, hop = 1024, rate = 48000, bin = 64;
@@ -3203,7 +3313,7 @@ ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operat
 #undef ADI_TEST_NOINLINE
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); periodScopeReference(); contiguousPeriodScopeDemand(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

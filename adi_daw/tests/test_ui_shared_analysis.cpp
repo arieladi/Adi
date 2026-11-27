@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
 #include "../src/juce/ui_filled_spectrum.hpp"
+#include "../src/juce/ui_third_octave.hpp"
 #include "../src/juce/ui_look.hpp"
 #include "../src/juce/ui_mix_meter.hpp"
 #include "../src/juce/ui_mix_analysers.hpp"
@@ -1417,6 +1418,70 @@ void filledSpectrumProjection() {
     check(!samePixels(withPointer, softwarePicture(view)), "a pointer inside the software plot draws the readout overlay");
 }
 
+void thirdOctaveAndPeriodSurface() {
+    using namespace adi::ui;
+    using namespace third_octave;
+    check(centres.size() == 30 && centres.front() == 25. && centres[12] == 400. && centres.back() == 20000.,
+          "the display follows all thirty ISO centre frequencies from 25 Hz to 20 kHz");
+    constexpr std::array bins{-4.f, -30.f, -12.f, -44.f, -18.f, -22.f, -24.f, -34.f, -7.f, -35.f, -10.f, -13.f, -19.f};
+    check(std::abs(bandLevel(bins, 10., 100.) + 10.f) < .01f, "the band retains its highest calibrated bin");
+    constexpr std::array lowBins{0.f, -40.f, -20.f, -45.f};
+    const auto expected = 20. * std::log10(std::lerp(.01, .1, (31.5 - 25.) / 25.));
+    check(std::abs(bandLevel(lowBins, 25., 31.5) - expected) < .01 &&
+              bandLevel(lowBins, 25., 25.) < -39.f && bandLevel(lowBins, 25., 250.) < -100.f,
+          "narrow bands interpolate linear magnitude, skip DC and respect Nyquist");
+    check(std::abs(holdLevel(-24.f, -50.f, .25) + 30.f) < .01f &&
+              std::abs(holdLevel(-24.f, -50.f, 2.) + 50.f) < .01f,
+          "band hold falls 24 dB per second of source time and stops at the current level");
+
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 640, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setMode(SharedSpectrumView::Mode::ThirdOctaveBands);
+    view.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(view);
+    view.present(fixture.broker, 1);
+    std::array<float, 4096> tone{};
+    for (std::size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(.3 * std::sin(2. * std::numbers::pi * 440. * static_cast<double>(i) / 48000.));
+    fixture.tap->write(tone.data(), tone.data(), static_cast<std::int32_t>(tone.size()), 0, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto shot = view.snapshot();
+    check(root.getPeer() && !root.getPeer()->getNativeHandle() && shot && shot->periodScope &&
+              shot->request.fftSize == 4096 && shot->request.channel == SharedAnalysis::Channel::Mid &&
+              (shot->outputs & (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope)) ==
+                  (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope) &&
+              shot->periodScope->lag > 0. && std::abs(12800. / shot->periodScope->lag - 440.) < 3.,
+          "the fake-peer bands page uses the paired 4096-sample spectrum and a locked A3 scope");
+    const auto pixels = softwarePicture(view);
+    const auto cyan = pixels.getPixelAt(217, 102);
+    check(cyan.getBlue() > 175 && cyan.getGreen() > 200 && cyan.getRed() < 160,
+          "the 400 Hz column is measured and drawn in the left pane");
+    const auto scopePixel = [&pixels](int x, int y) {
+        for (int dy = -4; dy <= 4; ++dy) {
+            const auto colour = pixels.getPixelAt(x, y + dy);
+            if (colour.getGreen() > 115 && colour.getGreen() > colour.getRed() && colour.getRed() > colour.getBlue()) return true;
+        }
+        return false;
+    };
+    check(scopePixel(551, 146) && scopePixel(607, 230), "the right pane draws one rising, then falling period around its centre line");
+    view.clear();
+    check(!view.snapshot() && !samePixels(pixels, softwarePicture(view)), "clearing resets the bands, held markers and scope together");
+    root.setVisible(false);
+    view.frame();
+    check(!view.subscribed() && fixture.broker->stats().consumers == 0, "hidden bands release their passive analysis lease");
+
+    AnalysisPane standalone;
+    standalone.modeBox.setSelectedId(static_cast<int>(SharedSpectrumView::Mode::ThirdOctaveBands) + 1, juce::sendNotificationSync);
+    check(standalone.mode() == SharedSpectrumView::Mode::ThirdOctaveBands && standalone.modeBox.getText() == "Third-Octave Bands" &&
+              !standalone.channelBox.isVisible() && !standalone.slopeBox.isVisible() && !standalone.scaleBox.isVisible(),
+          "the detached selector offers the bands and hides controls for its fixed measurement");
+}
+
 void spectrumDetailScale() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -2056,7 +2121,7 @@ void mixAnalyserPages() {
     pages.setMainMeterSource(meter);
     pages.frame(f.broker, reader, main->id, first->id);
     const auto all = f.broker->stats();
-    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::Compare) + 1 &&
+    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::ThirdOctaveBands) + 1 &&
               pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
           "analysers default to All and Main and offer each non-Main channel once");
     check(all.taps == 3 && all.domains == 4 && all.consumers == 8 && all.spectralPlans == 2,
@@ -2071,6 +2136,7 @@ void mixAnalyserPages() {
          std::pair{Page::Spectrum, SharedSpectrumView::Mode::FilledSpectrum},
          std::pair{Page::Scope, SharedSpectrumView::Mode::ClassicScope},
          std::pair{Page::Phase, SharedSpectrumView::Mode::Phase},
+         std::pair{Page::ThirdOctaveBands, SharedSpectrumView::Mode::ThirdOctaveBands},
          std::pair{Page::Loudness, SharedSpectrumView::Mode::Meters}}) {
         pages.pageBox.setSelectedId(static_cast<int>(page) + 1, juce::sendNotificationSync);
         pages.frame(f.broker, reader, main->id, first->id);
@@ -2541,7 +2607,7 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
           linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

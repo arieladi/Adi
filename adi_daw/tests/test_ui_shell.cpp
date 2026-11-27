@@ -16637,6 +16637,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "legacy Overview opens the Spectrum subpage of Analysers");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
+    panel.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::Compare) + 2, juce::sendNotificationSync);
+    check(panel.analysis.pageBox.getText() == "Bands" && panel.analysis.detail.view.getTitle() == "Third-Octave Bands",
+          "the Analysers picker opens the third-octave bands and their period scope");
     panel.analysis.setPage(MixAnalysers::Page::Phase);
     root.state().mixViewTab = persistence.load("mix").mixViewTab;
     panel.adoptViewState(); root.frame();

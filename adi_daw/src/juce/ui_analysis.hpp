@@ -49,7 +49,7 @@ class SharedSpectrumView final : public juce::Component,
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
         Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope,
-        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum
+        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
@@ -118,6 +118,7 @@ class SharedSpectrumView final : public juce::Component,
     void updateScaledSpectrum() noexcept;
     bool updateFilledDisplay() noexcept;
     void paintFilledSpectrum(juce::Graphics &) const;
+    void paintThirdOctaveBands(juce::Graphics &) const;
     bool spectrumMode() const noexcept {
         return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
                mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;
@@ -169,6 +170,8 @@ class SharedSpectrumView final : public juce::Component,
     double filledDisplaySlot_ = -1.;
     struct PhaseTrail;
     std::unique_ptr<PhaseTrail> phaseTrail_;
+    struct BandDisplay;
+    std::unique_ptr<BandDisplay> bandDisplay_;
 };
 
 // Fixed display coordinates used by the spectrum and the A/B overlay. The

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/dsp/period_scope.hpp"
 #include "adi/dsp/spectrum.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/dsp/triggered_scope.hpp"
@@ -47,7 +48,7 @@ class SharedAnalysis final {
     enum class FilledCurve { RealtimeAverage, RealtimeMaximum, HeldMaximum, Average };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128, FilledSpectrum = 256
+        RealtimeMaximum = 64, CumulativeMaximum = 128, FilledSpectrum = 256, PeriodScope = 512
     };
     struct StereoMeterProfile {
         bool midSide = false;
@@ -105,6 +106,7 @@ class SharedAnalysis final {
         std::int64_t pendingFrames = 0;
         bool advancing = false, discontinuity = false, budgetLimited = false, historyLimited = false;
         std::shared_ptr<const FilledSpectrumResult> filledSpectrum;
+        std::shared_ptr<const dsp::PeriodScopeReading> periodScope;
     };
     enum class AverageStatus { Waiting, Ready, InvalidInput, Unavailable };
     // Optional sidecar keeps the Raw Result layout/allocation path unchanged.

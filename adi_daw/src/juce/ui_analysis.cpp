@@ -2,6 +2,7 @@
 #include "ui_analysis.hpp"
 #include "ui_filled_spectrum.hpp"
 #include "ui_look.hpp"
+#include "ui_third_octave.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include <algorithm>
 #include <cmath>
@@ -250,6 +251,25 @@ struct SharedSpectrumView::PhaseTrail {
     }
 };
 
+struct SharedSpectrumView::BandDisplay {
+    std::array<float, third_octave::centres.size()> levels{}, peaks{};
+    bool ready = false;
+
+    void clear() noexcept { ready = false; }
+
+    void push(const SharedAnalysis::Result &window, double elapsedSeconds) noexcept {
+        if (window.request.fftSize <= 0 || window.binsDbfs.empty()) { clear(); return; }
+        const auto binHz = window.sampleRate / window.request.fftSize;
+        for (std::size_t i = 0; i < levels.size(); ++i) {
+            const auto hz = third_octave::centres[i];
+            const auto tilt = spectrumDisplayOffset(SpectrumSlope::Tilt45, hz);
+            levels[i] = third_octave::bandLevel(window.binsDbfs, binHz, hz) + static_cast<float>(tilt);
+            peaks[i] = ready ? third_octave::holdLevel(peaks[i], levels[i], elapsedSeconds) : levels[i];
+        }
+        ready = true;
+    }
+};
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
@@ -374,6 +394,11 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
                         "The correlation reading is below the trace.");
         return;
     }
+    if (mode == SharedSpectrumView::Mode::ThirdOctaveBands) {
+        view.setTitle("Third-Octave Bands");
+        view.setTooltip("Thirty third-octave bands with held peaks and a scope locked to one cycle when a pitch is detected.");
+        return;
+    }
     view.setTitle("Channel spectrum");
     view.setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
@@ -392,9 +417,12 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
     if (mode == Mode::Phase) phaseTrail_ = std::make_unique<PhaseTrail>();
     else if (mode_ == Mode::Phase) phaseTrail_.reset();
+    if (mode == Mode::ThirdOctaveBands) bandDisplay_ = std::make_unique<BandDisplay>();
+    else if (mode_ == Mode::ThirdOctaveBands) bandDisplay_.reset();
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
         isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
-        mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum) frozen_ = false;
+        mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum ||
+        mode == Mode::ThirdOctaveBands || mode_ == Mode::ThirdOctaveBands) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
@@ -409,7 +437,8 @@ void SharedSpectrumView::setMode(Mode mode) {
     }
     if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
-        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum || mode_ == Mode::Phase || mode == Mode::Phase)
+        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum || mode_ == Mode::Phase || mode == Mode::Phase ||
+        mode_ == Mode::ThirdOctaveBands || mode == Mode::ThirdOctaveBands)
         describeAnalysisView(*this, mode);
     mode_ = mode;
     if (classicPanel_) {
@@ -510,6 +539,7 @@ void SharedSpectrumView::resetPicture() noexcept {
     filledPointer_ = {-1, -1};
     filledDisplaySlot_ = -1.;
     if (phaseTrail_) phaseTrail_->clear();
+    if (bandDisplay_) bandDisplay_->clear();
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
     if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
@@ -658,6 +688,11 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::FilledSpectrum:
                 request.fftSize = 4096;
                 request.outputs = SharedAnalysis::FilledSpectrum;
+                break;
+            case Mode::ThirdOctaveBands:
+                request.fftSize = 4096;
+                request.channel = SharedAnalysis::Channel::Mid;
+                request.outputs = SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope;
                 break;
             case Mode::ClassicScope: break; // Uses the continuous capture lease above.
             }
@@ -825,14 +860,18 @@ void SharedSpectrumView::frame() noexcept {
     const bool pictureChanged = next != shown_ || nextBins != averageBins_ || nextMaximum != maximumShown_ ||
                                 averageStatus != averageStatus_;
     if (pictureChanged) {
-        if (phaseTrail_) {
+        if (phaseTrail_ || bandDisplay_) {
             const bool sameSource = next && shown_ && next->generation == shown_->generation &&
                 next->sourceEpoch == shown_->sourceEpoch;
-            if (!sameSource) phaseTrail_->clear();
+            if (!sameSource) {
+                if (phaseTrail_) phaseTrail_->clear();
+                if (bandDisplay_) bandDisplay_->clear();
+            }
             if (next && (!sameSource || next->windowSerial != shown_->windowSerial)) {
                 const auto elapsed = sameSource && next->firstSequence > shown_->firstSequence && next->sampleRate > 0.
                     ? static_cast<double>(next->firstSequence - shown_->firstSequence) / next->sampleRate : 0.;
-                phaseTrail_->push(*next, elapsed);
+                if (phaseTrail_) phaseTrail_->push(*next, elapsed);
+                if (bandDisplay_) bandDisplay_->push(*next, elapsed);
             }
         }
         shown_ = std::move(next);
@@ -1192,9 +1231,109 @@ void SharedSpectrumView::paintFilledSpectrum(juce::Graphics &g) const {
     }
 }
 
+void SharedSpectrumView::paintThirdOctaveBands(juce::Graphics &g) const {
+    using namespace third_octave;
+    g.fillAll(look::display);
+    const auto body = getLocalBounds().reduced(5);
+    g.setFont(look::font(10.f, true));
+    g.setColour(look::textOnBand);
+    g.drawText(frozen_ ? "Third-Octave Bands / Frozen" : "Third-Octave Bands", body.withHeight(14),
+               juce::Justification::centredLeft);
+    const auto axes = body.withTrimmedTop(16).toFloat();
+    if (axes.getWidth() < 30.f || axes.getHeight() < 34.f) return;
+    g.setColour(juce::Colour(26, 28, 27));
+    g.fillRect(axes);
+    const auto reserve = axes.getWidth() >= 144.f ? std::min(110.f, axes.getWidth() / 3.f) : 0.f;
+    const auto gap = reserve > 0.f ? 8.f : 0.f;
+    const auto barsW = std::min(17.f * static_cast<float>(centres.size()), axes.getWidth() - reserve - gap);
+    const auto columnW = barsW / static_cast<float>(centres.size());
+    const auto segmentWidth = std::max(1.f, columnW - 3.f);
+    const auto barsBottom = axes.getBottom() - 17.f;
+    const auto segments = static_cast<int>((axes.getHeight() - 19.f) / 4.f);
+    const auto segmentFor = [segments](float value) {
+        const auto fraction = std::clamp((value - filled_spectrum::bottomDb) /
+            (filled_spectrum::topDb - filled_spectrum::bottomDb), 0.f, 1.f);
+        return juce::roundToInt(fraction * static_cast<float>(segments));
+    };
+    const bool measured = bandDisplay_ && bandDisplay_->ready;
+    g.setFont(look::font(8.f));
+    for (std::size_t band = 0; band < centres.size(); ++band) {
+        const int lit = measured ? segmentFor(bandDisplay_->levels[band]) : 0;
+        const int held = measured ? segmentFor(bandDisplay_->peaks[band]) - 1 : -1;
+        const auto cellX = axes.getX() + static_cast<float>(band) * columnW;
+        const auto barX = cellX + (columnW - segmentWidth) * .5f;
+        for (int segment = 0; segment < segments; ++segment) {
+            const auto y = barsBottom - static_cast<float>(segment + 1) * 4.f;
+            g.setColour(segment == held ? juce::Colour(233, 230, 62) :
+                segment < lit ? juce::Colour(138, 218, 206) : juce::Colour(37, 69, 50));
+            g.fillRect(barX, y, segmentWidth, 3.f);
+        }
+        if (columnW >= 7.f || band % 6 == 0 || band + 1 == centres.size()) {
+            const auto row = band % 2 ? 8.f : 0.f;
+            const auto labelWidth = std::min(columnW * 2.f, barsW);
+            const auto labelX = std::clamp(cellX + columnW * .5f - labelWidth * .5f,
+                                           axes.getX(), axes.getX() + barsW - labelWidth);
+            g.setColour(juce::Colour(157, 157, 157));
+            g.drawText(labels[band], juce::Rectangle<float>(labelX, axes.getBottom() - 17.f + row, labelWidth, 9.f),
+                       juce::Justification::centred);
+        }
+    }
+    const auto scope = axes.withTrimmedLeft(barsW + gap);
+    if (scope.getWidth() < 30.f) return;
+    const auto midY = scope.getCentreY();
+    const auto verticalScale = scope.getHeight() * .42f;
+    g.setColour(juce::Colour(69, 69, 69));
+    for (const float fraction : {.25f, .5f, .75f})
+        g.drawVerticalLine(juce::roundToInt(scope.getX() + scope.getWidth() * fraction), scope.getY(), scope.getBottom());
+    for (const float amplitude : {-.5f, .5f})
+        g.drawHorizontalLine(juce::roundToInt(midY - amplitude * verticalScale), scope.getX(), scope.getRight());
+    g.setColour(juce::Colour(122, 122, 122));
+    g.drawHorizontalLine(juce::roundToInt(midY), scope.getX(), scope.getRight());
+    if (!shown_ || !shown_->periodScope) return;
+    const auto &period = *shown_->periodScope;
+    const auto lastSample = static_cast<double>(period.samples.size() - 1);
+    const bool locked = period.lag > 0. && period.start >= 0. && period.start + period.lag <= lastSample;
+    const double start = locked ? period.start : 0., length = locked ? period.lag : lastSample;
+    const auto points = std::min(juce::roundToInt(scope.getWidth()) - 1, static_cast<int>(lastSample));
+    juce::Path trace;
+    for (int step = 0; step <= points; ++step) {
+        const auto fraction = static_cast<double>(step) / points;
+        const auto at = std::min(lastSample, start + length * fraction);
+        const auto before = static_cast<std::size_t>(at);
+        const auto after = std::min(before + 1, period.samples.size() - 1);
+        const auto amplitude = std::lerp(period.samples[before], period.samples[after],
+                                         static_cast<float>(at - static_cast<double>(before)));
+        const auto x = scope.getX() + (scope.getWidth() - 1.f) * static_cast<float>(fraction);
+        const auto y = midY - verticalScale * std::clamp(amplitude, -1.f, 1.f);
+        if (step == 0) trace.startNewSubPath(x, y);
+        else trace.lineTo(x, y);
+    }
+    auto fill = trace;
+    fill.lineTo(scope.getRight() - 1.f, midY);
+    fill.lineTo(scope.getX(), midY);
+    fill.closeSubPath();
+    g.setColour(juce::Colour(135, 170, 59).withAlpha(.3f));
+    g.fillPath(fill);
+    g.setColour(juce::Colour(159, 202, 67));
+    g.strokePath(trace, juce::PathStrokeType(1.f));
+    g.setFont(look::font(9.f, true));
+    g.setColour(juce::Colour(237, 237, 237));
+    const auto readout = scope.withTrimmedLeft(4.f).withTrimmedTop(2.f).withHeight(12.f);
+    if (locked) {
+        const auto hz = dsp::kPeriodScopeSampleRate / period.lag;
+        const auto note = filled_spectrum::noteAt(hz);
+        g.drawText(juce::String(hz, 1) + " Hz  " + note.name + juce::String(note.octave) +
+                       (note.cents >= 0 ? " +" : " ") + juce::String(note.cents) + "c",
+                   readout, juce::Justification::centredLeft);
+    } else {
+        g.drawText("No pitch", readout, juce::Justification::centredLeft);
+    }
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     if (mode_ == Mode::FilledSpectrum) { paintFilledSpectrum(g); return; }
+    if (mode_ == Mode::ThirdOctaveBands) { paintThirdOctaveBands(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
     const auto area = getLocalBounds().toFloat().reduced(5.f);
@@ -1360,6 +1499,7 @@ AnalysisPane::AnalysisPane() {
     modeBox.addItem("Cumulative Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeMaximum) + 1);
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     modeBox.addItem("Filled Spectrum", static_cast<int>(SharedSpectrumView::Mode::FilledSpectrum) + 1);
+    modeBox.addItem("Third-Octave Bands", static_cast<int>(SharedSpectrumView::Mode::ThirdOctaveBands) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
@@ -1443,7 +1583,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     slopeBox.setEnabled(spectral);
     scaleBox.setVisible(spectral);
     const bool classic = mode == SharedSpectrumView::Mode::ClassicScope;
-    channelBox.setVisible(!classic);
+    channelBox.setVisible(!classic && mode != SharedSpectrumView::Mode::ThirdOctaveBands);
     freezeButton.setVisible(!classic);
     resized();
 }
