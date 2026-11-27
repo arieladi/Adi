@@ -406,7 +406,7 @@ PreparedEdit prepareQuantizeWarpMarkers(Store& store,std::int64_t clipId,std::in
     return prepareWarpMapEdit(store,clipId,referenceRate,"Quantize Audio",[&](auto& markers,const Payload& source,Payload&,edit::RowEdits&) {
         if(gridTicks<=0 || gridTicks>(std::int64_t{1}<<50))
             throw std::runtime_error("The audio quantize grid is out of range.");
-        if(markers.size()==2 && !fileFrames.empty())promoteTransients(markers,source,fileFrames);
+        if(!fileFrames.empty())promoteTransients(markers,source,fileFrames);
         for(std::size_t i=1;i+1<markers.size();++i) {
             const auto tick=markers[i].tick;
             const auto within=tick%gridTicks;
