@@ -170,6 +170,86 @@ struct SharedSpectrumView::ScaledSpectrum {
     }
 };
 
+struct SharedSpectrumView::PhaseTrail {
+    static constexpr std::size_t pairsPerFrame = 512;
+    static constexpr double initialGain = .25, minimumGain = .02;
+    struct Trace {
+        std::array<juce::Point<float>, pairsPerFrame> points;
+        std::size_t count = 0;
+    };
+    std::array<Trace, 4> history;
+    std::size_t next = 0, count = 0;
+    double gain = initialGain;
+
+    void clear() noexcept {
+        next = count = 0;
+        gain = initialGain;
+    }
+
+    void push(const SharedAnalysis::Result &window, double elapsedSeconds) noexcept {
+        const auto paired = std::min(window.scopeLeft.size(), window.scopeRight.size());
+        if (paired < 2) { clear(); return; }
+        auto &trace = history[next];
+        trace.count = std::min(paired, pairsPerFrame);
+        const auto first = paired - trace.count;
+        float peak = 0.f;
+        for (std::size_t i = 0; i < trace.count; ++i) {
+            const float left = window.scopeLeft[first + i], right = window.scopeRight[first + i];
+            // The channels come from one tap sample. Rotate by 45 degrees for
+            // a vertical mid axis and a horizontal side axis.
+            trace.points[i] = {(right - left) * .5f, -(left + right) * .5f};
+            peak = std::max({peak, std::abs(left), std::abs(right)});
+        }
+        gain = std::max({minimumGain, static_cast<double>(peak), gain * std::exp(-elapsedSeconds / 7.1)});
+        // A certified parked source may publish no more frames after silence.
+        // Retire its display trail without reopening the gain interval.
+        if (peak == 0.f && window.peak == std::array<float, 2>{}) {
+            next = count = 0;
+            return;
+        }
+        next = (next + 1) % history.size();
+        count = std::min(count + 1, history.size());
+    }
+
+    void paint(juce::Graphics &g, juce::Rectangle<float> plot) const {
+        const auto centre = plot.getCentre();
+        const auto radius = std::min(plot.getWidth(), plot.getHeight()) * .5f - 1.f;
+        if (radius < 8.f) return;
+        g.setColour(juce::Colour(51, 66, 61));
+        g.drawVerticalLine(juce::roundToInt(centre.x), centre.y - radius, centre.y + radius);
+        g.drawHorizontalLine(juce::roundToInt(centre.y), centre.x - radius, centre.x + radius);
+        if (radius >= 24.f) {
+            g.setFont(look::font(8.f));
+            g.setColour(look::textDim);
+            const auto label = [&](const char *text, float x, float y) {
+                g.drawText(text, juce::Rectangle<float>(x - 8.f, y - 5.f, 16.f, 10.f), juce::Justification::centred);
+            };
+            label("M", centre.x, centre.y - radius + 6.f);
+            label("L", centre.x - radius * .66f, centre.y - radius + 14.f);
+            label("R", centre.x + radius * .66f, centre.y - radius + 14.f);
+            label("+S", centre.x - radius + 9.f, centre.y - 7.f);
+            label("-S", centre.x + radius - 9.f, centre.y - 7.f);
+        }
+        const auto factor = radius * .92f / static_cast<float>(gain);
+        const auto first = (next + history.size() - count) % history.size();
+        constexpr std::array opacity{.52f, .312f, .1872f, .11232f};
+        for (std::size_t frame = 0; frame < count; ++frame) {
+            const auto &trace = history[(first + frame) % history.size()];
+            const std::size_t step = trace.count >= 8 ? 4 : 1;
+            juce::Path path;
+            for (std::size_t i = 0; i < trace.count; i += step) {
+                const auto &point = trace.points[i];
+                const float x = centre.x + std::clamp(point.x * factor, -radius, radius);
+                const float y = centre.y + std::clamp(point.y * factor, -radius, radius);
+                if (i == 0) path.startNewSubPath(x, y);
+                else path.lineTo(x, y);
+            }
+            g.setColour(juce::Colour(107, 240, 184).withAlpha(opacity[count - 1 - frame]));
+            g.strokePath(path, juce::PathStrokeType(1.f));
+        }
+    }
+};
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
@@ -288,6 +368,12 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
         view.setTooltip("Frequency, note and level under the pointer. The darker fill holds the highest level in this view.");
         return;
     }
+    if (mode == SharedSpectrumView::Mode::Phase) {
+        view.setTitle("Phase");
+        view.setTooltip("The stereo trace draws mono vertically and opposing channels horizontally. "
+                        "The correlation reading is below the trace.");
+        return;
+    }
     view.setTitle("Channel spectrum");
     view.setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
@@ -304,6 +390,8 @@ SharedSpectrumView::SharedSpectrumView(bool compact) : compact_(compact) {
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
+    if (mode == Mode::Phase) phaseTrail_ = std::make_unique<PhaseTrail>();
+    else if (mode_ == Mode::Phase) phaseTrail_.reset();
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
         isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
         mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum) frozen_ = false;
@@ -321,7 +409,7 @@ void SharedSpectrumView::setMode(Mode mode) {
     }
     if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
-        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum)
+        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum || mode_ == Mode::Phase || mode == Mode::Phase)
         describeAnalysisView(*this, mode);
     mode_ = mode;
     if (classicPanel_) {
@@ -421,6 +509,7 @@ void SharedSpectrumView::resetPicture() noexcept {
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     filledPointer_ = {-1, -1};
     filledDisplaySlot_ = -1.;
+    if (phaseTrail_) phaseTrail_->clear();
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
     if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
@@ -736,6 +825,16 @@ void SharedSpectrumView::frame() noexcept {
     const bool pictureChanged = next != shown_ || nextBins != averageBins_ || nextMaximum != maximumShown_ ||
                                 averageStatus != averageStatus_;
     if (pictureChanged) {
+        if (phaseTrail_) {
+            const bool sameSource = next && shown_ && next->generation == shown_->generation &&
+                next->sourceEpoch == shown_->sourceEpoch;
+            if (!sameSource) phaseTrail_->clear();
+            if (next && (!sameSource || next->windowSerial != shown_->windowSerial)) {
+                const auto elapsed = sameSource && next->firstSequence > shown_->firstSequence && next->sampleRate > 0.
+                    ? static_cast<double>(next->firstSequence - shown_->firstSequence) / next->sampleRate : 0.;
+                phaseTrail_->push(*next, elapsed);
+            }
+        }
         shown_ = std::move(next);
         averageBins_ = nextBins;
         maximumShown_ = nextMaximum;
@@ -1174,20 +1273,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
             g.setColour(look::accent);
             g.fillRect(band.withY(heightFor(db(shown_->peak[static_cast<std::size_t>(channel)]), band)).withHeight(2.f));
         }
-    } else if (mode_ == Mode::Phase) {
-        const auto radius = std::min(plot.getWidth(), plot.getHeight()) * .46f;
-        const auto centre = plot.getCentre();
-        g.setColour(look::outline); g.drawEllipse(centre.x - radius, centre.y - radius, radius * 2, radius * 2, 1.f);
-        g.drawVerticalLine(juce::roundToInt(centre.x), centre.y - radius, centre.y + radius);
-        g.drawHorizontalLine(juce::roundToInt(centre.y), centre.x - radius, centre.x + radius);
-        g.setColour(look::value.withAlpha(.55f));
-        const auto size = std::min(shown_->scopeLeft.size(), shown_->scopeRight.size());
-        const auto step = std::max<std::size_t>(1, size / 1024);
-        for (std::size_t i = 0; i < size; i += step) {
-            const float l = shown_->scopeLeft[i], r = shown_->scopeRight[i];
-            g.fillRect(centre.x + std::clamp((l - r) * .5f, -1.f, 1.f) * radius,
-                       centre.y - std::clamp((l + r) * .5f, -1.f, 1.f) * radius, 1.4f, 1.4f);
-        }
+    } else if (mode_ == Mode::Phase && phaseTrail_) {
+        phaseTrail_->paint(g, plot);
     } else if (mode_ == Mode::Spectrogram && raster_ && !raster_->image.isNull()) {
         g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
         if (historyMotion_ == HistoryMotion::Sweep) raster_->paintSweep(g, plot);

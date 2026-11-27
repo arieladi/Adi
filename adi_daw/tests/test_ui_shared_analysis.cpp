@@ -179,6 +179,117 @@ void parentDestruction() {
     check(!view.subscribed() && f.released == 1,
           "ancestor destruction safely releases the child without a later frame");
 }
+void phaseGoniometer() {
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 480, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView phase;
+    phase.setMode(SharedSpectrumView::Mode::Phase);
+    phase.setBounds(0, 0, 320, 240);
+    root.addAndMakeVisible(phase);
+    phase.present(fixture.broker, 1);
+
+    constexpr std::int32_t frameCount = 1024;
+    std::array<float, frameCount> signal{}, left{}, right{};
+    for (std::size_t i = 0; i < signal.size(); ++i)
+        signal[i] = static_cast<float>(std::sin(2. * std::numbers::pi * static_cast<double>(i % 64) / 64.));
+    const auto write = [&](float leftGain, float rightGain, bool advancing = true) {
+        for (std::size_t i = 0; i < signal.size(); ++i) {
+            left[i] = signal[i] * leftGain;
+            right[i] = signal[i] * rightGain;
+        }
+        fixture.tap->write(left.data(), right.data(), frameCount, advancing ? fixture.tap->written() : 0, advancing, 1);
+        fixture.broker->pump();
+        phase.frame();
+    };
+    const auto image = [&] {
+        juce::Image pixels(juce::Image::RGB, phase.getWidth(), phase.getHeight(), true);
+        juce::Graphics graphics(pixels);
+        phase.paint(graphics);
+        return pixels;
+    };
+    const auto greenTrace = [](const juce::Image &pixels, int atX, int atY) {
+        for (int y = atY - 1; y <= atY + 1; ++y)
+            for (int x = atX - 1; x <= atX + 1; ++x) {
+                const auto sample = pixels.getPixelAt(x, y);
+                if (sample.getGreen() >= 48 && sample.getGreen() - sample.getRed() >= 18 &&
+                    sample.getBlue() - sample.getRed() >= 9)
+                    return true;
+            }
+        return false;
+    };
+    constexpr int centreX = 151, centreY = 114;
+
+    write(1.f, 1.f);
+    const auto mono = phase.snapshot();
+    const auto monoImage = image();
+    int centreLinePixels = 0;
+    for (int y = centreY - 50; y <= centreY + 50; ++y)
+        centreLinePixels += greenTrace(monoImage, centreX, y) ? 1 : 0;
+    check(mono && mono->scopeLeft.size() == frameCount && mono->scopeLeft == mono->scopeRight &&
+              fixture.broker->stats().transforms == 0 && centreLinePixels >= 95 &&
+              !greenTrace(monoImage, centreX - 24, centreY - 24) && !greenTrace(monoImage, centreX + 24, centreY),
+          "same-sample mono draws a continuous vertical goniometer trace on the M axis without an FFT");
+
+    write(1.f, 0.f);
+    const auto leftImage = image();
+    check(greenTrace(leftImage, centreX - 24, centreY - 24) &&
+              !greenTrace(leftImage, centreX + 24, centreY - 24) && greenTrace(leftImage, centreX, centreY - 36),
+          "hard-left audio draws the upper-left diagonal while the previous mono frame persists");
+
+    write(1.f, -1.f);
+    const auto antiPhase = image();
+    check(greenTrace(antiPhase, centreX - 48, centreY) && greenTrace(antiPhase, centreX + 48, centreY),
+          "opposed channels draw along the horizontal side axis");
+    write(0.f, .3f);
+    write(0.f, .3f);
+    check(!greenTrace(image(), centreX, centreY - 36), "after four newer frames the old mono frame is retired");
+
+    const auto last = phase.snapshot();
+    const auto frozen = image();
+    phase.freeze(true);
+    write(1.f, 1.f);
+    check(phase.snapshot() == last && !phase.subscribed() && fixture.broker->stats().consumers == 0 &&
+              greenTrace(frozen, centreX - 48, centreY) == greenTrace(image(), centreX - 48, centreY),
+          "freezing retains the goniometer picture and releases live capture");
+    phase.clear();
+    check(!phase.snapshot() && !greenTrace(image(), centreX - 48, centreY), "clearing removes the frozen trace and afterglow");
+
+    phase.freeze(false);
+    write(.08f, .08f);
+    const auto seeded = image();
+    check(greenTrace(seeded, centreX, centreY - 22) && !greenTrace(seeded, centreX, centreY - 42),
+          "a quiet first frame uses the reference quarter-scale AGC seed");
+    constexpr std::int32_t decaySamples = 340800; // 7.1 s at the fixture's 48 kHz
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, decaySamples, fixture.tap->written(), true, 1);
+    constexpr std::int32_t samplesPerPass = 256 * static_cast<std::int32_t>(SharedAnalysis::kMaxWindowsPerFrame);
+    for (int remaining = decaySamples; remaining > 0; remaining -= samplesPerPass) fixture.broker->pump();
+    write(.08f, .08f);
+    const auto released = image();
+    check(greenTrace(released, centreX, centreY - 66) && !greenTrace(released, centreX, centreY - 78),
+          "one 7.1-second time constant expands a quiet trace regardless of how often the owner presents it");
+
+    write(1.f, 0.f, false);
+    write(1.f, -1.f, false);
+    const auto monitoring = image();
+    check(greenTrace(monitoring, centreX - 24, centreY - 24) && greenTrace(monitoring, centreX - 48, centreY),
+          "monitoring during stopped transport retains the recent left and antiphase traces");
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, frameCount, 0, false, 1);
+    fixture.broker->pump();
+    phase.frame();
+    const auto quiet = phase.snapshot();
+    const auto publications = fixture.broker->stats().publications;
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, frameCount, 0, false, 1);
+    fixture.broker->pump();
+    phase.frame();
+    const auto parked = image();
+    check(quiet && !quiet->advancing && quiet->peak == std::array<float, 2>{} && phase.snapshot() == quiet &&
+              fixture.broker->stats().publications == publications &&
+              !greenTrace(parked, centreX - 24, centreY - 24) && !greenTrace(parked, centreX - 48, centreY),
+          "the final parked-silence publication clears recent traces before the broker stops publishing");
+}
 void modesSourcesAndFreeze() {
     Fixture f;
     Root root;
@@ -2426,7 +2537,7 @@ void compareHoldSurvivesInvalidA() {
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
+    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); phaseGoniometer(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
           linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();

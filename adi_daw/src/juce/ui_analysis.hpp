@@ -167,6 +167,8 @@ class SharedSpectrumView final : public juce::Component,
     SharedAnalysis::FilledCurve filledCurve_ = SharedAnalysis::FilledCurve::RealtimeMaximum;
     juce::Point<int> filledPointer_{-1, -1};
     double filledDisplaySlot_ = -1.;
+    struct PhaseTrail;
+    std::unique_ptr<PhaseTrail> phaseTrail_;
 };
 
 // Fixed display coordinates used by the spectrum and the A/B overlay. The
