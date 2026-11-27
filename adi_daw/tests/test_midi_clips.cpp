@@ -427,13 +427,15 @@ void livePlayQuantize() {
         cancel.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
         check(configure(cancel, true), "enable Play-Q before a pending note");
         cancel.load();
-        check(input(cancel, 10, EventType::NoteOn, 1, 67) && input(cancel, 20, EventType::NoteOff, 1, 67),
+        check(input(cancel, 75, EventType::NoteOn, 1, 67) && input(cancel, 85, EventType::NoteOff, 1, 67),
               "send a complete short note while waiting for a grid line");
         cancel.render();
+        cancel.render();
+        check(cancel.instrument->count == 0, "both events remain queued beyond the forgiveness window");
         if (turnOff) {
             check(configure(cancel, false), "turn off Play-Q with an attack and release pending");
             cancel.refresh();
-            check(input(cancel, 75, EventType::NoteOn, 2, 68) && input(cancel, 85, EventType::NoteOff, 2, 68),
+            check(input(cancel, 139, EventType::NoteOn, 2, 68) && input(cancel, 149, EventType::NoteOff, 2, 68),
                   "new input is available after the setting changes");
         } else {
             cancel.session.transport().locate(2000);
@@ -442,8 +444,8 @@ void livePlayQuantize() {
             cancel.render();
         check(cancel.instrument->count == (turnOff ? 2u : 0u) &&
                   cancel.instrument->balance() == 0 &&
-                  (!turnOff || (heard(*cancel.instrument, 75, EventType::NoteOn, 68) != 0 &&
-                                heard(*cancel.instrument, 85, EventType::NoteOff, 68) != 0)),
+                  (!turnOff || (heard(*cancel.instrument, 139, EventType::NoteOn, 68) != 0 &&
+                                heard(*cancel.instrument, 149, EventType::NoteOff, 68) != 0)),
               "disabling Play-Q or seeking clears pending input without replaying a stale note");
     }
 
