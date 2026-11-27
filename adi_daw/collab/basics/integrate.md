@@ -1,4 +1,4 @@
-Landing verification reopened for SC-430 VST3 state capture.
+Ready for win: basics/integrate-1 at 33d91d39ca9c777da3cbc567d3f4f349005ab1ff
 
 # Basics integration
 
@@ -29,7 +29,7 @@ Targeted Clang 14 syntax checks covered the window, recording, export, and affec
 
 The original Export and the published Edit items through SC-175 are included. The Edit report at `8adf9ee78d8612c6a3d353515e52e0ec7c357352` records SC-421 and SC-415 timing misses on unchanged main in the owner’s environment. Both checks passed here with their existing thresholds. SC-176 is still undergoing the owner's verification.
 
-A follow-up SC-430 audit found that JUCE can return a nonempty VST3 wrapper with a previously stored stream missing after the plug-in refuses its state read. The VST3 capture path is being corrected before marking the new head ready.
+The SC-430 VST3 follow-up at `33d91d39ca9c777da3cbc567d3f4f349005ab1ff` treats a JUCE state wrapper as incomplete when a previously captured or loaded stream is missing. The document keeps the stored chunk, marks it stale and names the device. Previously unobserved streams remain optional because JUCE encodes absence and refusal the same way. The native Linux VST3 fixture passed 201 checks, including reopening, retaining the exact chunk, successful retry and component-only, controller-only and stateless plug-ins. Strict Clang 14 syntax passed on the host and fixtures. All targets, all five validators, Win’s landing-check tests, five focused suites, all 18 no-display window suites, all 293 non-performance suites and all three acceptance suites passed at this head. Native Windows and macOS verification remains with Win.
 ## Follow-up fixes
 
 | Queue item | Integration head | Change and verification |
