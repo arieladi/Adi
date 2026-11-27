@@ -28833,6 +28833,12 @@ int main(int argc, char **argv) {
     a.hover(&a.transport.play);
     check(a.infoText().contains("Play") && a.infoText().contains("Space"),
           "the Info View describes the element under the mouse");
+    check(windowTooltipLabel(a.transport.play) == "Play" && windowTooltipLabel(a.status.infoToggle) == "Info View" &&
+              windowTooltipLabel(a.transport.tempo).isEmpty() && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
+          "SC-433: only an explicitly marked icon gets its short name in the tooltip");
+    a.hover(&a.arrangement.canvas);
+    check(a.infoText().contains("insert marker") && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
+          "SC-433: hovering the Arrangement shows its full directions only inside Info View");
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
     {

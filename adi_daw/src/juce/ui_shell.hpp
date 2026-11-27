@@ -1251,6 +1251,7 @@ int menuForKey(juce::MenuBarModel &, const juce::KeyPress &);
 // A native window's tooltips, kept to the App settings: made or removed as tooltips are
 // switched on or off, and given a new delay, so a change in the Settings window reaches an
 // open window at its next frame. `delayMs` is the delay last given.
+juce::String windowTooltipLabel(const juce::Component &);
 void followTooltips(juce::Component &window, const AppCommands &,
                     std::unique_ptr<juce::TooltipWindow> &, int &delayMs);
 // One attachment, key binding and tooltip window per native window, sharing
