@@ -10,6 +10,7 @@ namespace adi::ui {
 inline bool settingAvailable(std::string_view key) noexcept {
     static constexpr std::string_view readers[]{
         "agent.maxOpsPerRequest",
+        "agent.tier",
         "audio.bufferSize",
         "audio.channelConfig",
         "audio.delayCompensation",

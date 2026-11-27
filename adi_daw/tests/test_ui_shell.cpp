@@ -20310,6 +20310,29 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
         commands.reload();
     }
 }
+void agentSettingsAvailability(const std::filesystem::path &dir) {
+    const auto file = dir / "agent-settings.json";
+    settings::AppSettings settings(appdata::App::Daw, file);
+    SettingsPanel panel(settings);
+    panel.showPage("AI");
+    juce::ComboBox *tier = nullptr;
+    juce::Slider *requestCap = nullptr;
+    for (const auto &row : panel.rows()) {
+        if (row->setting.key == "agent.tier")
+            tier = dynamic_cast<juce::ComboBox *>(row->control.get());
+        if (row->setting.key == "agent.maxOpsPerRequest")
+            requestCap = dynamic_cast<juce::Slider *>(row->control.get());
+    }
+    check(tier && tier->isEnabled() && requestCap && requestCap->isEnabled(),
+          "the agent tier and changes-per-request controls are editable on the AI page");
+    if (!tier || !requestCap) return;
+
+    tier->setSelectedItemIndex(0, juce::sendNotificationSync);
+    requestCap->setValue(12, juce::sendNotificationSync);
+    const settings::AppSettings saved(appdata::App::Daw, file);
+    check(saved.get("agent.tier") == "observe" && saved.get("agent.maxOpsPerRequest") == 12,
+          "the AI controls persist the tier and request cap read by adi-mcp");
+}
 void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
     settings::AppSettings settings(appdata::App::Daw, dir / "settings-availability.json");
     SettingsPanel panel(settings);
@@ -25016,6 +25039,7 @@ int main(int argc, char **argv) {
     trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
     trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("agentSettingsAvailability", [&] { agentSettingsAvailability(temp.path()); });
     trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
