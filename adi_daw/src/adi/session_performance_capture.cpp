@@ -273,89 +273,120 @@ const Payload* firstChild(const Payload& image, const char* table) {
     return child == image.at("children").end() || child->empty() ? nullptr : &child->front();
 }
 
+bool isController(const Payload& row) {
+    return row.at("stream_kind") == "cc";
+}
+
 const Payload* firstController(const Payload& image) {
     const auto& streams = image.at("children").at("event_streams");
-    const auto found = std::find_if(streams.begin(), streams.end(),
-        [](const auto& row) { return row.at("stream_kind") == "cc"; });
+    const auto found = std::find_if(streams.begin(), streams.end(), isController);
     return found == streams.end() ? nullptr : &*found;
 }
 
-ControllerProof checkHeldController(Store& store, const Payload& image, const Payload& stream,
-    const Payload& placed, const engine::LaunchCapturedSpan& span, const engine::TempoMap& clock,
-    std::uint32_t rate, const ControllerOwners& frozenOwners, const ControllerOwners& currentOwners) {
-    const ControllerOwner owner{span.clip, detail::signedInteger(stream.at("id"))};
+const Payload& controllerAt(const Payload& image, std::int64_t channel, std::int64_t controller) {
+    const auto& streams = image.at("children").at("event_streams");
+    const auto found = std::find_if(streams.begin(), streams.end(), [&](const auto& row) {
+        return isController(row) && row.at("channel") == channel && row.at("controller") == controller;
+    });
+    if (found == streams.end())
+        throw std::runtime_error("Session controller address changed during the performance");
+    return *found;
+}
+
+std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& image, const Payload& placed,
+    const engine::LaunchCapturedSpan& span, const engine::TempoMap& clock, std::uint32_t rate,
+    const ControllerOwners& frozenOwners, const ControllerOwners& currentOwners) {
     const auto was = frozenOwners.find(span.track), now = currentOwners.find(span.track);
-    if (was == frozenOwners.end() || now == currentOwners.end() || was->second.size() != 1 ||
-        was->second.front() != owner || now->second != was->second)
-        throw std::runtime_error("held Session controller capture needs one unchanged controller owner on an unmonitored track");
+    if (was == frozenOwners.end() || now == currentOwners.end() || now->second != was->second ||
+        !std::all_of(was->second.begin(), was->second.end(), [&](const auto& owner) { return owner.first == span.clip; }))
+        throw std::runtime_error("held Session controller capture needs one unchanged controller clip on an unmonitored track");
     const auto& clip = image.at("row");
     if (clip.at("loop_enabled") != 0 || detail::signedInteger(clip.at("content_offset_ticks")) != span.sourceTick)
         throw std::runtime_error("held Session controller capture needs a non-looping run at its authored start");
 
     auto read = controllers::readLanes(store, span.clip);
-    const auto& bytes = stream.at("data").get_binary();
-    const auto frozen = std::as_bytes(std::span(bytes.data(), bytes.size()));
-    if (!read.ok || read.lanes.size() != 1 || !std::ranges::equal(read.lanes.front().data, frozen))
-        throw std::runtime_error("Session controller bytes changed during the performance");
-    auto& lane = read.lanes.front();
-    if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty() ||
-        *lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69)
-        throw std::runtime_error("Session capture needs one ordinary non-pedal MIDI controller lane");
-    if (stream.at("channel") != *lane.channel || stream.at("controller") != *lane.controller)
-        throw std::runtime_error("Session controller address changed during the performance");
-    std::sort(lane.points.begin(), lane.points.end(), [](const auto& a, const auto& b) { return a.timeTicks < b.timeTicks; });
+    if (!read.ok || read.lanes.empty() || read.lanes.size() != was->second.size())
+        throw std::runtime_error("Session controller streams changed during the performance");
+    const bool multiple = read.lanes.size() > 1;
+    // Arrangement rotates its controller cursor on every probe. At song
+    // start a fresh player chases in address order, as Session does. Later
+    // probes can only be order-independent when one address changes.
+    if (multiple && (span.begin.sample != 0 || span.begin.tick != 0))
+        throw std::runtime_error("multiple held Session controllers need a launch at song start for exact chase order");
+
     const auto length = span.end.tick - span.begin.tick;
     const auto sourceEnd = addTicks(span.sourceTick, length);
-    if (lane.points.front().timeTicks != span.sourceTick || lane.points.back().timeTicks >= sourceEnd ||
-        std::any_of(lane.points.begin(), lane.points.end(), [](const auto& point) {
-            return point.curve != static_cast<std::uint8_t>(Curve::Hold);
-        })) throw std::runtime_error("held Session controller knots must lie inside the performed source interval");
-
-    const auto* copied = firstController(placed);
-    if (!copied) throw std::runtime_error("Arrangement copy lost the held controller lane");
-    ControllerProof proof{owner, {detail::signedInteger(placed.at("row").at("id")),
-        detail::signedInteger(copied->at("id"))}, *lane.channel, *lane.controller, lane.data};
-    // Compile the same prospective Arrangement controller window that the
-    // committed row will play. Compare each performed knot and the final
-    // probe against the shared controller program's actual rounding.
     rows::Model model;
     auto& track = model.tracks.emplace_back();
     track.id = span.track;
     auto& target = model.clips.emplace_back();
-    target.id = proof.placed.first;
+    target.id = detail::signedInteger(placed.at("row").at("id"));
     target.trackId = span.track;
     target.kind = "midi";
     target.posTicks = span.begin.tick;
     target.lengthTicks = length;
     target.contentOffsetTicks = span.sourceTick;
-    lane.clipId = target.id;
-    model.controllers.push_back(std::move(lane));
+
+    std::vector<ControllerProof> proofs;
+    proofs.reserve(read.lanes.size());
+    for (auto& lane : read.lanes) {
+        if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty() ||
+            *lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69)
+            throw std::runtime_error("Session capture needs ordinary non-pedal MIDI controller lanes");
+        const auto& stream = controllerAt(image, *lane.channel, *lane.controller);
+        const auto& bytes = stream.at("data").get_binary();
+        const auto frozen = std::as_bytes(std::span(bytes.data(), bytes.size()));
+        if (detail::signedInteger(stream.at("id")) != lane.id || !std::ranges::equal(lane.data, frozen))
+            throw std::runtime_error("Session controller bytes changed during the performance");
+        std::sort(lane.points.begin(), lane.points.end(), [](const auto& a, const auto& b) { return a.timeTicks < b.timeTicks; });
+        if (lane.points.front().timeTicks != span.sourceTick || lane.points.back().timeTicks >= sourceEnd ||
+            std::any_of(lane.points.begin(), lane.points.end(), [](const auto& point) {
+                return point.curve != static_cast<std::uint8_t>(Curve::Hold);
+            })) throw std::runtime_error("held Session controller knots must lie inside the performed source interval");
+
+        const auto& copy = controllerAt(placed, *lane.channel, *lane.controller);
+        proofs.push_back({{span.clip, lane.id}, {target.id, detail::signedInteger(copy.at("id"))},
+            *lane.channel, *lane.controller, std::move(lane.data)});
+        lane.clipId = target.id;
+        model.controllers.push_back(std::move(lane));
+    }
+
+    // Read the actual Arrangement rounding and hold values from the shared
+    // program prepared for this prospective clip window.
     for (const auto& tempo : clock.events)
         model.tempo.push_back({tempo.posTicks, tempo.bpm, tempo.curve, 0.0});
     const engine::MidiControllerPrograms programs(model, rate);
     const auto program = programs.forTrack(span.track);
-    if (!program || !programs.problems().empty() || program->size() != 1 ||
-        !program->changesOwnerAt(0, span.begin.sample) || !program->changesOwnerAt(0, span.end.sample))
+    if (!program || !programs.problems().empty() || program->size() != proofs.size())
         throw std::runtime_error("held Session controller interval differs on the Arrangement clock");
-    const auto holds = [&](std::int64_t frame, double expected) {
-        double actual = 0;
-        return program->valueAt(0, frame, actual) && actual == expected;
-    };
-    auto previous = span.begin.sample - 1;
-    double value = 0;
-    for (const auto& point : model.controllers.front().points) {
-        const auto tick = addTicks(span.begin.tick, point.timeTicks - span.sourceTick);
-        const auto frame = std::llround(static_cast<long double>(clock.ticksToSeconds(tick)) * rate);
-        if (frame <= previous || frame < span.begin.sample || frame >= span.end.sample ||
-            program->nextBoundary(frame, frame + 1) != frame || !holds(frame, point.value) ||
-            (previous >= span.begin.sample && !holds(frame - 1, value)))
-            throw std::runtime_error("held Session controller knots differ on the Arrangement clock");
-        previous = frame;
-        value = point.value;
+    std::set<std::int64_t> changedSamples;
+    for (std::size_t index = 0; index < proofs.size(); ++index) {
+        const auto& proof = proofs[index];
+        if (program->address(index) != proof.channel * 128 + proof.controller ||
+            !program->changesOwnerAt(index, span.begin.sample) || !program->changesOwnerAt(index, span.end.sample))
+            throw std::runtime_error("held Session controller interval differs on the Arrangement clock");
+        const auto holds = [&](std::int64_t frame, double expected) {
+            double actual = 0;
+            return program->valueAt(index, frame, actual) && actual == expected;
+        };
+        auto previous = span.begin.sample - 1;
+        double value = 0;
+        for (const auto& point : model.controllers[index].points) {
+            const auto tick = addTicks(span.begin.tick, point.timeTicks - span.sourceTick);
+            const auto frame = std::llround(static_cast<long double>(clock.ticksToSeconds(tick)) * rate);
+            if (frame <= previous || frame < span.begin.sample || frame >= span.end.sample ||
+                program->nextBoundary(frame, frame + 1) != frame || !holds(frame, point.value) ||
+                (previous >= span.begin.sample && !holds(frame - 1, value)))
+                throw std::runtime_error("held Session controller knots differ on the Arrangement clock");
+            if (multiple && previous >= span.begin.sample && point.value != value && !changedSamples.insert(frame).second)
+                throw std::runtime_error("multiple held Session controllers change at the same sample");
+            previous = frame;
+            value = point.value;
+        }
+        if (!holds(span.end.sample - 1, value))
+            throw std::runtime_error("held Session controller value differs at the Arrangement exit");
     }
-    if (!holds(span.end.sample - 1, value))
-        throw std::runtime_error("held Session controller value differs at the Arrangement exit");
-    return proof;
+    return proofs;
 }
 
 struct SourceExtent {
@@ -829,7 +860,7 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         std::map<std::int64_t, engine::LaunchCaptureTime> trackEnds;
         std::map<std::filesystem::path, media::FileRevision> mediaProofs;
         std::optional<ControllerOwners> currentOwners;
-        std::map<std::int64_t, ControllerProof> controllerProofs;
+        std::map<std::int64_t, std::vector<ControllerProof>> controllerProofs;
         std::map<std::pair<std::int64_t, std::uint64_t>, std::vector<engine::LaunchCapturedPcmRange>> pcmByRun;
         for (const auto& range : capture.pcmRanges) {
             if (!capture.pcmTraceEnabled || range.track <= 0 || range.clip <= 0 || range.run == 0)
@@ -895,11 +926,11 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                 continue;
             }
             if (pcm != pcmByRun.end()) pcmByRun.erase(pcm);
-            if (const auto* stream = firstController(image->second); stream && row.at("kind") == "midi" && row.at("muted") == 0) {
+            if (row.at("kind") == "midi" && row.at("muted") == 0 && firstController(image->second)) {
                 if (controllerProofs.contains(span.track))
                     throw std::runtime_error("held Session controller capture needs one performed run on its track");
                 if (!currentOwners) currentOwners = readControllerOwners(store.db());
-                controllerProofs.emplace(span.track, checkHeldController(store, image->second, *stream, placed, span,
+                controllerProofs.emplace(span.track, checkHeldControllers(store, image->second, placed, span,
                     clock.clock, rate, frozen.controllerOwners, *currentOwners));
             }
             placement.incoming.push_back(std::move(placed));
@@ -953,13 +984,22 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                 }
                 if (!controls.empty()) {
                     const auto owners = readControllerOwners(db);
-                    for (const auto& [track, proof] : controls) {
+                    for (const auto& [track, proofs] : controls) {
+                        std::vector<ControllerOwner> expected;
+                        expected.reserve(2 * proofs.size());
+                        for (const auto& proof : proofs) {
+                            expected.push_back(proof.source);
+                            expected.push_back(proof.placed);
+                            if (!matchesControllerStream(db, proof.source.second, proof) ||
+                                !matchesControllerStream(db, proof.placed.second, proof)) {
+                                error = "Session controller streams changed after capture preparation";
+                                return false;
+                            }
+                        }
+                        std::sort(expected.begin(), expected.end());
                         const auto current = owners.find(track);
-                        const std::vector<ControllerOwner> expected{proof.source, proof.placed};
-                        if (current == owners.end() || current->second != expected ||
-                            !matchesControllerStream(db, proof.source.second, proof) ||
-                            !matchesControllerStream(db, proof.placed.second, proof)) {
-                            error = "Session controller ownership or bytes changed after capture preparation";
+                        if (current == owners.end() || current->second != expected) {
+                            error = "Session controller ownership changed after capture preparation";
                             return false;
                         }
                     }
