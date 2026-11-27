@@ -76,6 +76,7 @@
 
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 
 #include <concepts>
@@ -149,7 +150,8 @@ public:
     /// One op, one undo step.
     SubmitResult submit(OpRequest request) {
         stamp(request);
-        return run(OpJournal(store_).commit(request));
+        const auto edit = view_.prepareLocalEdit(store_, request);
+        return run(OpJournal(store_).commit(request), edit);
     }
 
     /// Undo the last transaction and rebuild the view (ADR-0201).
@@ -294,7 +296,9 @@ public:
             none.ok = true;
             return none;
         }
+        if (requests.size() == 1) return submit(std::move(requests.front()));
         for (auto& r : requests) stamp(r);
+        if (auto gesture = notes::commitScalarGesture(store_, requests)) return run(std::move(*gesture));
         return run(OpJournal(store_).commit(std::span<const OpRequest>(requests)));
     }
 
@@ -329,7 +333,12 @@ public:
             stamp(*appended);
             prepared.requests.push_back(std::move(*appended));
         }
-        return run(helper(store_, prepared, actor_));
+        std::optional<engine::ProjectView::LocalEdit> edit;
+        if constexpr (requires { prepared.options.beforeCommit; }) {
+            if (prepared.requests.size() == 1 && prepared.requests.front().opType == "arranger.splice" &&
+                !prepared.options.beforeCommit) edit = view_.prepareLocalEdit(store_, prepared.requests.front());
+        }
+        return run(helper(store_, prepared, actor_), std::move(edit));
     }
 
     /// The same for a batch the helper owns but whose requests are in reach
@@ -380,7 +389,7 @@ private:
         if (r.actorDetail.empty()) r.actorDetail = actorDetail_;
     }
 
-    SubmitResult run(CommitResult c) {
+    SubmitResult run(CommitResult c, std::optional<engine::ProjectView::LocalEdit> edit = {}) {
         SubmitResult s;
         s.ok = c.ok;
         s.txnId = c.txnId;
@@ -392,7 +401,9 @@ private:
         // A prepared batch with nothing in it reports success and no seqs, as
         // `submit` of an empty vector does: nothing was written, so nothing
         // refreshes (ADR-0201 refreshes after a COMMITTED op).
-        if (s.ok && !s.seqs.empty()) s.generation = view_.refresh(store_, overrides());
+        if (s.ok && !s.seqs.empty())
+            s.generation = edit && view_.applyLocalEdit(store_, std::move(*edit)) ? view_.generation() :
+                                                                                  view_.refresh(store_, overrides());
         return s;
     }
 
