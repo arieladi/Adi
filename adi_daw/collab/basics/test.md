@@ -15,6 +15,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-444, SC-203 | `basics/test-chain` at `afceb2556` | Make the normal fade curve drag follow the pointer and keep Alt as the reversal. Clips and Arrangement seats. | An extracted source probe and the peerless fixture covered direction, the stored fade shape and one Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-201 | `basics/test-chain` at `afceb2556` | Pitch, cents and the supported Warp controls are already integrated. Clip and engine seats. | The peerless Clip View, Warp actions and real audio playback suites checked the existing controls and renderer. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-435 | `basics/test-chain` at `a07084ccc` | Resize Main and pinned Returns from the top edge with the bottom held. Arrangement and mixer seats. | The headless fixture moved the Main header and Return mixer hit zones and measured their anchored bounds. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-436 | `basics/test-chain` at `51d7e02c3` | Update lane, header and mixer together throughout the drag. Arrangement and mixer seats. | Peerless divider pixels and actual strip bounds changed before release, including when pinned growth recycles the mixer slots. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -93,6 +94,14 @@ Coordinates are Compact logical pixels. The 1440×900 fixture has a 525 px lane 
 | Drag Return top up 16 px | 461, 64 | 405, 56 |
 
 Main’s bottom boundary is y525 throughout. The Return’s bottom boundary is y461 throughout its own drag. At the starting layout the five-pixel Main hit zone moves from y520–524 to y485–489, and the Return’s from y480–484 to y445–449. The horizontal hit range covers the header and the mixer background. The fixture starts Main’s drag on its header at local `(60, 487)` and starts the Return’s on its mixer component at `(20, 2)`.
+
+### SC-436 · Keep lane, name and mixer geometry aligned during a drag
+
+The base redraws Arrangement graphics during a drag and reflows the actual mixer components on release. Commit `1753503dc` refreshes the three surfaces as one drag operation. The mixer keeps the component with the active pointer bound to its track while rows come into or leave view.
+
+In the 1440×900 group fixture, the dragged row begins at lane-local y80. The following row moves from y120 to y140 as the dragged row grows from 40 px to 60 px. The two-pixel painted separator moves from y118–119 to y138–139 in both the name header and the lane. The following mixer row moves from root y235 to y255 during the drag. Its column is x1211 and width 194. The test samples the separator pixels and the mixer bounds before issuing mouse-up.
+
+The secondary 1200×720 fixture has a 345 px lane body and three pinned 48 px rows. An upward 72 px Return drag moves its top from lane-local y201 to y129, increases its height to 120 px, and leaves Main at y297. A regular mixer strip leaves view as the pinned foot grows. The test checks the active mixer component keeps the Return ID and follows the new geometry before mouse-up.
 
 ## For the director
 
