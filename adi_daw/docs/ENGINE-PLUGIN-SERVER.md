@@ -24,9 +24,9 @@ supported platform and build. [Upstream revision][upstream] · [Release tag][rel
    Supported local configurations can use Unix-domain sockets for the same
    exchange. [Defaults][defaults] · [Client handshake][client-handshake] ·
    [Server handshake][server-handshake] · [Worker allocation][worker-listener]
-2. The client opens the worker's sockets in order: command requests and their
-   synchronous replies, server-originated events, audio, and screen. For a
-   stock remote session, a headless client can establish the screen socket and
+2. The client opens the worker's request/reply, server event, audio and screen
+   sockets in that order. In a stock remote session, a headless client can
+   establish the screen socket and
    leave it idle. The worker sends its plug-in catalogue on the request socket
    once the connections are set up. [Client worker setup][client-worker] ·
    [Worker accept order][worker-accept]
@@ -174,10 +174,43 @@ transport, scheduling or processing delay, or a longer block. The server is
 request-driven and PTP does not remove ADI's pipeline block. Use a shared clock
 when RTT and endpoint turnaround leave directional uncertainty larger than
 the slack available to diagnose deadline misses. Repeat with synchronized
-stamps and report clock offset uncertainty alongside directional jitter. A
-future free-running audio peer has a separate clock requirement: measure
-sample phase drift over a representative run and compare it with that mode's
-synchronization tolerance. [ADR-0107 d5][decisions] · [Server processing][audio-worker]
+stamps and report clock offset uncertainty alongside directional jitter. For
+a future free-running audio peer, measure sample phase drift over a
+representative run and compare it with that mode's synchronization tolerance.
+[ADR-0107 d5][decisions] · [Server processing][audio-worker]
+
+### UDP loopback measurement
+
+The probe ran between separate Python 3.13.5 processes over IPv4 loopback on
+Linux 6.18.57. Each run sent 1,000 echoes with 1 ms between exchanges, 512
+payload bytes (557 bytes including the probe header), a 100 ms receive
+timeout and a 1,333.333 µs RTT budget. Each run received all 1,000 replies
+and included all of them in the results.
+The probe uses nearest-rank percentiles and reports jitter as the absolute
+change between consecutive successful samples. [Probe source][probe]
+
+| Clock mode | RTT p50 / p95 / p99 / max (µs) | RTT jitter p95 (µs) | Budget misses |
+| --- | ---: | ---: | ---: |
+| Unsynchronized | 37.787 / 62.525 / 104.579 / 1,529.083 | 33.411 | 1 |
+| Shared system clock | 36.045 / 98.930 / 911.995 / 6,124.483 | 73.811 | 9 |
+| Shared kernel TAI clock | 32.830 / 60.122 / 145.982 / 6,640.306 | 46.150 | 6 |
+
+The unsynchronized run's symmetric one-way estimate had a median of 17.4865 µs
+and p95 jitter of 16.3845 µs. The shared system clock measured outbound and
+inbound medians of 20.702 and 11.988 µs, with p95 jitter of 36.795 and
+34.782 µs. The same-host TAI clock measured medians of 19.440 and 11.097 µs,
+with p95 jitter of 23.215 and 23.825 µs. Both shared-clock runs accepted all
+directional samples. The runs demonstrate application-level UDP timing over
+one kernel. A two-host PTP and physical-link measurement remains open.
+
+Run these commands from the DAW directory in separate terminals. For the other
+rows, pass `unsynchronized` or `tai` to both processes.
+
+```sh
+/usr/bin/python3 tools/plugin_server_latency.py serve --bind 127.0.0.1 --port 9027 --clock shared-system
+/usr/bin/python3 tools/plugin_server_latency.py run 127.0.0.1 9027 --count 1000 --payload-bytes 512 \
+  --deadline-us 1333.333 --clock shared-system
+```
 
 ## For the director
 
