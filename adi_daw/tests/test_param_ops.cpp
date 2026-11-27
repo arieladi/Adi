@@ -545,6 +545,9 @@ public:
         if (auto edit = std::exchange(afterSave, {})) edit();
         return b;
     }
+    [[nodiscard]] std::string_view stateCaptureIssue() const noexcept override {
+        return refuseSave && staleWhenRefused ? "remote Sampler state is stale" : std::string_view{};
+    }
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override {
         if (stateless || role != "chunk" || b.size() != 1 + 2 * sizeof(double)) return false;
         ++loads;
@@ -580,6 +583,7 @@ public:
 
     bool stateless = false;
     bool refuseSave = false;
+    bool staleWhenRefused = false;
     mutable std::function<void()> afterSave;
     int sets = 0;
     int loads = 0;
@@ -1117,6 +1121,18 @@ void testSnapshotAll() {
     const auto latest = ops.snapshotAll(1900);
     check(latest.ok() && latest.stateOps == 1 && count() == 9 && rowHash(100) == hashOfState(*a),
           "the later silent edit is saved at the next explicit request");
+
+    const auto lastRemoteState = rowHash(100);
+    a->changePatchSilently(30);
+    a->staleWhenRefused = true;
+    a->refuseSave = true;
+    b->changePatchSilently(31);
+    const auto stale = ops.snapshotAll(2000);
+    check(stale.ok() && stale.stateOps == 1 && count() == 10 && rowHash(100) == lastRemoteState &&
+          rowHash(101) == hashOfState(*b) && stale.staleDevices.size() == 1 &&
+          stale.staleDevices[0].deviceId == 100 && stale.staleDevices[0].name == "Sampler A" &&
+          stale.staleDevices[0].issue == "remote Sampler state is stale",
+          "a named remote capture failure keeps its old blob while another device saves");
 }
 
 }  // namespace

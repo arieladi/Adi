@@ -45,6 +45,22 @@ int main(int argc, char** argv) {
     if (!check(prepared, error.c_str()) || !check(latency == 7, "initial plugin latency was not 7"))
         return 1;
 
+    if (mode == "state" || mode == "bad-state") {
+        const auto deadline = std::chrono::steady_clock::now() + 1s;
+        std::vector<std::uint8_t> state;
+        const bool fetched = processor->fetchState(state, deadline, error);
+        if (mode == "bad-state")
+            return check(!fetched && state.empty() && error.find("invalid stock plug-in state") != std::string::npos,
+                         "invalid stock state size was accepted") ? 0 : 1;
+        if (!check(processor->supportsState() && fetched && state == std::vector<std::uint8_t>{0, 42, 255, 7},
+                   "stock state was not decoded to exact raw bytes")) return 1;
+        const std::vector<std::uint8_t> update{4, 128, 11, 222, 3};
+        const auto next = std::chrono::steady_clock::now() + 1s;
+        if (!check(processor->restoreState(update, next, error) && processor->fetchState(state, next, error) &&
+                   state == update, "restored stock state did not round-trip")) return 1;
+        std::puts("stock v13 loopback fixture: restored and captured five exact state bytes");
+    }
+
     std::array<float, 128> input{}, output{};
     for (std::size_t i = 0; i < input.size(); ++i)
         input[i] = static_cast<float>(static_cast<int>(i) - 64) / 128.0f;

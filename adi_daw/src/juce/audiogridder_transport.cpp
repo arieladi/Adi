@@ -1,21 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <cerrno>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
+#include "juce/net_plugin_socket.hpp"
 #include "juce/audiogridder_transport.hpp"
 
 #include <nlohmann/json.hpp>
@@ -24,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -43,183 +28,7 @@ using ReadOnlyBytes = std::span<const std::byte>;
 using Clock = std::chrono::steady_clock;
 using Deadline = Clock::time_point;
 using Json = nlohmann::json;
-
-#ifdef _WIN32
-using SocketHandle = SOCKET;
-using SocketLength = int;
-constexpr auto invalidSocket = INVALID_SOCKET;
-
-class SocketRuntime {
-public:
-    SocketRuntime() {
-        WSADATA data{};
-        ready = WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }
-    ~SocketRuntime() { if (ready) WSACleanup(); }
-    bool ready = false;
-};
-
-int socketError() noexcept { return WSAGetLastError(); }
-bool interrupted(int error) noexcept { return error == WSAEINTR; }
-bool wouldBlock(int error) noexcept { return error == WSAEWOULDBLOCK; }
-bool connecting(int error) noexcept { return wouldBlock(error) || error == WSAEINPROGRESS; }
-void closeSocket(SocketHandle handle) noexcept { closesocket(handle); }
-SocketHandle createSocket() noexcept {
-    return WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
-}
-bool setNonblocking(SocketHandle handle) noexcept {
-    unsigned long state = 1;
-    return ioctlsocket(handle, FIONBIO, &state) == 0;
-}
-using SocketPollFd = WSAPOLLFD;
-int socketPoll(SocketPollFd& fd, int timeout) { return WSAPoll(&fd, 1, timeout); }
-int sendBytes(SocketHandle handle, ReadOnlyBytes bytes) {
-    return send(handle, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0);
-}
-int receiveBytes(SocketHandle handle, Bytes bytes) {
-    return recv(handle, reinterpret_cast<char*>(bytes.data()), static_cast<int>(bytes.size()), 0);
-}
-#else
-using SocketHandle = int;
-using SocketLength = socklen_t;
-constexpr auto invalidSocket = -1;
-int socketError() noexcept { return errno; }
-bool interrupted(int error) noexcept { return error == EINTR; }
-bool wouldBlock(int error) noexcept { return error == EAGAIN || error == EWOULDBLOCK; }
-bool connecting(int error) noexcept { return error == EINPROGRESS || interrupted(error); }
-void closeSocket(SocketHandle handle) noexcept { close(handle); }
-SocketHandle createSocket() noexcept {
-#ifdef SOCK_CLOEXEC
-    return socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
-#else
-    const auto handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (handle != invalidSocket && fcntl(handle, F_SETFD, FD_CLOEXEC) != 0) {
-        closeSocket(handle);
-        return invalidSocket;
-    }
-    return handle;
-#endif
-}
-bool setNonblocking(SocketHandle handle) noexcept {
-    const int flags = fcntl(handle, F_GETFL);
-    return flags >= 0 && fcntl(handle, F_SETFL, flags | O_NONBLOCK) == 0;
-}
-using SocketPollFd = pollfd;
-int socketPoll(SocketPollFd& fd, int timeout) { return poll(&fd, 1, timeout); }
-ssize_t sendBytes(SocketHandle handle, ReadOnlyBytes bytes) {
-#ifdef MSG_NOSIGNAL
-    constexpr int flags = MSG_NOSIGNAL;
-#else
-    constexpr int flags = 0;
-#endif
-    return send(handle, bytes.data(), bytes.size(), flags);
-}
-ssize_t receiveBytes(SocketHandle handle, Bytes bytes) {
-    return recv(handle, bytes.data(), bytes.size(), 0);
-}
-#endif
-
-class Socket final {
-public:
-    Socket() = default;
-    Socket(const Socket&) = delete;
-    Socket& operator=(const Socket&) = delete;
-    ~Socket() { reset(); }
-
-    void reset() noexcept {
-        if (handle_ != invalidSocket) closeSocket(std::exchange(handle_, invalidSocket));
-    }
-
-    [[nodiscard]] bool open(in_addr address, std::uint16_t port, Deadline deadline, std::string& error) {
-#ifdef _WIN32
-        static const SocketRuntime runtime;
-        if (!runtime.ready) {
-            error = "could not initialize TCP";
-            return false;
-        }
-#endif
-        reset();
-        handle_ = createSocket();
-        const int enabled = 1;
-        if (handle_ == invalidSocket || !setNonblocking(handle_) ||
-            setsockopt(handle_, IPPROTO_TCP, TCP_NODELAY,
-                       reinterpret_cast<const char*>(&enabled), sizeof(enabled)) != 0
-#ifdef SO_NOSIGPIPE
-            || setsockopt(handle_, SOL_SOCKET, SO_NOSIGPIPE,
-                          reinterpret_cast<const char*>(&enabled), sizeof(enabled)) != 0
-#endif
-        ) {
-            error = "could not open TCP socket";
-            return false;
-        }
-        sockaddr_in destination{};
-        destination.sin_family = AF_INET;
-        destination.sin_port = htons(port);
-        destination.sin_addr = address;
-        if (connect(handle_, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination)) == 0)
-            return true;
-        if (!connecting(socketError())) {
-            error = "TCP connection failed";
-            return false;
-        }
-        if (!wait(POLLOUT, deadline, error)) return false;
-        int failure = 0;
-        SocketLength length = sizeof(failure);
-        if (getsockopt(handle_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&failure), &length) == 0 && failure == 0)
-            return true;
-        error = "TCP connection failed";
-        return false;
-    }
-
-    [[nodiscard]] bool write(ReadOnlyBytes bytes, Deadline deadline, std::string& error) const {
-        return transfer(bytes, POLLOUT, sendBytes, deadline, error);
-    }
-
-    [[nodiscard]] bool read(Bytes bytes, Deadline deadline, std::string& error) const {
-        return transfer(bytes, POLLIN, receiveBytes, deadline, error);
-    }
-
-private:
-    [[nodiscard]] bool wait(short events, Deadline deadline, std::string& error) const {
-        for (;;) {
-            const auto remaining = deadline - Clock::now();
-            if (remaining <= Clock::duration::zero()) {
-                error = "TCP operation timed out";
-                return false;
-            }
-            SocketPollFd descriptor{handle_, events, 0};
-            const auto millis = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
-            const int result = socketPoll(descriptor, static_cast<int>(millis));
-            if (result > 0 && !(descriptor.revents & POLLNVAL)) return true;
-            if (result == 0 || (result < 0 && interrupted(socketError()))) continue;
-            error = "TCP socket wait failed";
-            return false;
-        }
-    }
-
-    template<class Span, class Transfer>
-    [[nodiscard]] bool transfer(Span bytes, short events, Transfer action,
-                                Deadline deadline, std::string& error) const {
-        while (!bytes.empty()) {
-            if (!wait(events, deadline, error)) return false;
-            const auto moved = action(handle_, bytes);
-            if (moved > 0) {
-                bytes = bytes.subspan(static_cast<std::size_t>(moved));
-            } else if (moved == 0) {
-                error = "TCP peer closed the connection";
-                return false;
-            } else {
-                const auto failure = socketError();
-                if (interrupted(failure) || wouldBlock(failure)) continue;
-                error = "TCP data transfer failed";
-                return false;
-            }
-        }
-        return true;
-    }
-
-    SocketHandle handle_ = invalidSocket;
-};
+using Socket = net::plugin_socket::PluginSocket;
 
 // Stock v13 writes C++ object representations directly. These offsets describe
 // the little-endian, 64-bit release ABI. Explicit bytes keep compiler padding
@@ -232,6 +41,8 @@ constexpr std::size_t audioRequestHeaderSize = 40;
 constexpr std::size_t audioResponseHeaderSize = 16;
 constexpr std::size_t positionInfoSize = 104;
 constexpr std::size_t maxControlPayload = 4 * 1024 * 1024;
+// Leave room for the inner length and the state string's decimal prefix.
+constexpr std::size_t maxStateBytes = 3 * ((maxControlPayload - 20) / 4);
 constexpr std::size_t maxMidiEvents = 4096;
 constexpr std::int32_t maxFrames = 8192;
 
@@ -255,9 +66,72 @@ enum class Command : std::int32_t {
     PluginList = 10,
     AddPlugin = 20,
     AddPluginResult = 21,
+    GetPluginSettings = 70,
+    SetPluginSettings = 71,
+    PluginSettings = 72,
     Parameters = 100,
     Presets = 110,
 };
+
+bool writePluginIndex(const Socket& socket, Command command, Deadline deadline, std::string& error) {
+    std::array<std::byte, 12> bytes{};
+    put(bytes, 0, static_cast<std::int32_t>(command));
+    put(bytes, 4, std::int32_t{4});
+    // Each admission opens one plug-in, at index 0.
+    return socket.write(bytes, deadline, error);
+}
+
+// Stock's single-instance state string is decimal byte count, a dot, and
+// least-significant-first six-bit digits. The saved ADI chunk is raw VST3
+// state so the same bytes can be recalled on a locally hosted instance.
+constexpr std::string_view stateAlphabet = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+";
+
+std::string encodeState(std::span<const std::uint8_t> bytes) {
+    std::string encoded = std::to_string(bytes.size()) + '.';
+    encoded.reserve(encoded.size() + (bytes.size() * 8 + 5) / 6);
+    unsigned pending = 0;
+    unsigned bits = 0;
+    for (const auto byte : bytes) {
+        pending |= static_cast<unsigned>(byte) << bits;
+        bits += 8;
+        while (bits >= 6) {
+            encoded += stateAlphabet[pending & 63u];
+            pending >>= 6u;
+            bits -= 6;
+        }
+    }
+    if (bits != 0) encoded += stateAlphabet[pending];
+    return encoded;
+}
+
+bool decodeState(std::string_view encoded, std::vector<std::uint8_t>& output) {
+    const auto separator = encoded.find('.');
+    if (separator == std::string_view::npos || separator == 0) return false;
+    const auto* sizeEnd = encoded.data() + separator;
+    std::size_t count = 0;
+    const auto size = std::from_chars(encoded.data(), sizeEnd, count);
+    if (size.ec != std::errc{} || size.ptr != sizeEnd || count > maxStateBytes) return false;
+    const auto digits = encoded.substr(separator + 1);
+    if (digits.size() != (count * 8 + 5) / 6) return false;
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(count);
+    unsigned pending = 0;
+    unsigned bits = 0;
+    for (const auto digit : digits) {
+        const auto value = stateAlphabet.find(digit);
+        if (value == std::string_view::npos) return false;
+        pending |= static_cast<unsigned>(value) << bits;
+        bits += 6;
+        if (bits >= 8) {
+            bytes.push_back(static_cast<std::uint8_t>(pending & 255u));
+            pending >>= 8u;
+            bits -= 8;
+        }
+    }
+    if (bytes.size() != count || pending != 0) return false;
+    output = std::move(bytes);
+    return true;
+}
 
 bool writeControl(const Socket& socket, Command command, std::string_view payload,
                   Deadline deadline, std::string& error) {
@@ -404,6 +278,7 @@ public:
             return fail(error);
         }
         ready_ = true;
+        stateStreamUsable_ = true;
         pluginLatency = latency_;
         return true;
     }
@@ -455,8 +330,46 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool supportsState() const noexcept override { return true; }
+
+    bool fetchState(std::vector<std::uint8_t>& output, StateDeadline deadline, std::string& error) override {
+        if (!ready_ || !stateStreamUsable_) {
+            error = "the stock server state stream is unavailable";
+            return false;
+        }
+        std::vector<std::byte> payload;
+        if (!writePluginIndex(commands_, Command::GetPluginSettings, deadline, error) ||
+            !readControl(commands_, Command::PluginSettings, payload, deadline, error)) {
+            stateStreamUsable_ = false; // A partial reply cannot frame the next control operation.
+            return false;
+        }
+        if (payload.empty() || !decodeState({reinterpret_cast<const char*>(payload.data()), payload.size()}, output)) {
+            error = "invalid stock plug-in state encoding";
+            return false;
+        }
+        return true;
+    }
+
+    bool restoreState(std::span<const std::uint8_t> bytes, StateDeadline deadline, std::string& error) override {
+        if (!ready_ || !stateStreamUsable_ || bytes.empty() || bytes.size() > maxStateBytes) {
+            error = "the stock server cannot restore this plug-in state";
+            return false;
+        }
+        if (!writePluginIndex(commands_, Command::SetPluginSettings, deadline, error) ||
+            !writeControl(commands_, Command::PluginSettings, encodeState(bytes), deadline, error)) {
+            stateStreamUsable_ = false;
+            return false;
+        }
+        // Stock SET has no receipt. A GET on the same command stream waits
+        // until the server dispatches SET before audio starts on its other
+        // socket. The plug-in can reserialize valid bytes differently.
+        std::vector<std::uint8_t> settled;
+        return fetchState(settled, deadline, error);
+    }
+
     void release() noexcept override {
         ready_ = false;
+        stateStreamUsable_ = false;
         commands_.reset();
         notifications_.reset();
         audio_.reset();
@@ -562,6 +475,7 @@ private:
     double sampleRate_ = 0;
     std::int32_t channels_ = 0, frames_ = 0, latency_ = 0;
     bool ready_ = false;
+    bool stateStreamUsable_ = false;
 };
 
 } // namespace

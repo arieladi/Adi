@@ -35,6 +35,9 @@ struct Trace {
     std::atomic<bool> frozen{false};
     std::atomic<bool> entered{false};
     std::atomic<int> prepared{0};
+    std::atomic<bool> stateConnected{true};
+    bool stateSupported = false;
+    std::vector<std::uint8_t> state{99, 3, 42};
     int exchanges = 0;
     int releases = 0;
     int failAt = -1;
@@ -74,6 +77,25 @@ public:
             trace_.transport[packet] = input.transport;
         }
         std::transform(input.audio.begin(), input.audio.end(), output.begin(), [](float x) { return x * 0.5f; });
+        return true;
+    }
+
+    [[nodiscard]] bool supportsState() const noexcept override { return trace_.stateSupported; }
+
+    bool fetchState(std::vector<std::uint8_t>& bytes, StateDeadline, std::string& error) override {
+        confirmThread();
+        trace_.frozen.wait(true, std::memory_order_acquire);
+        if (!trace_.stateConnected.load(std::memory_order_acquire)) {
+            error = "fixture state socket disconnected";
+            return false;
+        }
+        bytes = trace_.state;
+        return true;
+    }
+
+    bool restoreState(std::span<const std::uint8_t> bytes, StateDeadline, std::string&) override {
+        confirmThread();
+        trace_.state.assign(bytes.begin(), bytes.end());
         return true;
     }
 
@@ -291,6 +313,45 @@ void unsupportedState() {
           "a later successful connection does not clear the named state restore failure");
 }
 
+void connectedState() {
+    Trace trace;
+    trace.stateSupported = true;
+    device::RemoteDevice remote(kIdentity, 2, std::make_unique<HalfGain>(trace));
+    const std::vector<std::uint8_t> persisted{0, 6, 42, 255};
+    const std::vector<std::uint8_t> edited{2, 22, 222};
+    check(remote.stateRoles() == std::vector<std::string>{"chunk"} && remote.loadState("chunk", persisted),
+          "a state-enabled device queues its persisted raw state before preparation");
+    remote.prepare(48000.0, 8);
+    check(remote.saveState("chunk") == persisted && remote.stateCaptureIssue().empty(),
+          "the worker restored the exact previously persisted bytes");
+    check(remote.loadState("chunk", edited) && remote.saveState("chunk") == edited,
+          "updated raw state completes a round trip on the worker");
+    trace.stateConnected.store(false, std::memory_order_release);
+    check(remote.saveState("chunk").empty() && remote.stateCaptureIssue().find("Fixture Gain") != std::string_view::npos &&
+          remote.stateCaptureIssue().find("stale") != std::string_view::npos && remote.processingIssue().empty(),
+          "a disconnected state stream names the stale capture and publishes no replacement bytes");
+    trace.stateConnected.store(true, std::memory_order_release);
+    check(remote.saveState("chunk") == edited && remote.stateCaptureIssue().empty() && trace.workerOnly.load(),
+          "a later successful worker reply clears the stale state diagnostic");
+
+    trace.frozen.store(true, std::memory_order_release);
+    std::jthread watchdog([&trace](std::stop_token stop) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(1ms);
+        trace.frozen.store(false, std::memory_order_release);
+        trace.frozen.notify_one();
+    });
+    const auto start = std::chrono::steady_clock::now();
+    check(remote.saveState("chunk").empty() && trace.frozen.load(std::memory_order_acquire) &&
+          remote.stateCaptureIssue().find("500 ms") != std::string_view::npos,
+          "save continues with stale state before a withheld worker reply arrives");
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start);
+    watchdog.request_stop();
+    watchdog.join();
+    std::printf("Withheld state capture returned in %.3f ms\n", elapsed.count());
+}
+
 void graphIsolation() {
     struct Tone final : engine::Node {
         explicit Tone(float value) : value_(value) {}
@@ -346,6 +407,7 @@ int main() {
     bypassFlushesPackets();
     offlineFailure();
     unsupportedState();
+    connectedState();
     graphIsolation();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

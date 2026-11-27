@@ -1180,7 +1180,7 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                         matches=matches && (std::fabs(attached.inst->getParam(parameter).normalized-value)<=tolerance_ ||
                             (attached.inst->hasPendingParamChanges() && intended));
                     }
-                    if(task->state)for(const auto& [role,bytes]:task->input.roles)
+                    if(task->state && !task->captureForSave)for(const auto& [role,bytes]:task->input.roles)
                         matches=matches && hashOf(attached.inst->saveState(role))==bytesHash(bytes);
                     if(!matches && !newer && !task->captureForSave)return false;
                     // An explicit save records the sampled image. Its own
@@ -1737,8 +1737,14 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
                 marks.reserved != marks.consumed || inputPending())
                 return refuse({gesture::Error::Busy, "device input is pending before state capture"}, id);
             ParameterImage image;
-            if (!readImage(attached, image))
+            if (!readImage(attached, image)) {
+                const auto issue = instance->stateCaptureIssue();
+                if (!issue.empty()) {
+                    result.staleDevices.push_back({id, entry.name, std::string(issue)});
+                    continue;
+                }
                 return refuse({gesture::Error::CaptureFailed, "device returned an incomplete state image"}, id);
+            }
             const auto after = attached.stateFence->watermarks();
             if (instance->stateEpoch() != epoch || after.reserved != marks.reserved ||
                 after.fault || after.closed || inputPending())

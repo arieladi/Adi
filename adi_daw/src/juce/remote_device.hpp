@@ -3,6 +3,7 @@
 
 #include "juce/device_model.hpp"
 
+#include <chrono>
 #include <optional>
 #include <span>
 
@@ -29,6 +30,12 @@ public:
     virtual bool prepare(double sampleRate, std::int32_t channels, std::int32_t frames,
                          bool offline, std::int32_t& pluginLatency, std::string& error) = 0;
     virtual bool exchange(const RemoteBlock& input, std::span<float> output, std::string& error) = 0;
+    /// Capability is immutable and may be queried by the owner. State calls
+    /// run on the worker and honor the supplied absolute deadline.
+    using StateDeadline = std::chrono::steady_clock::time_point;
+    [[nodiscard]] virtual bool supportsState() const noexcept { return false; }
+    virtual bool fetchState(std::vector<std::uint8_t>&, StateDeadline, std::string&) { return false; }
+    virtual bool restoreState(std::span<const std::uint8_t>, StateDeadline, std::string&) { return false; }
     virtual void release() noexcept {}
 };
 
@@ -59,8 +66,9 @@ public:
     [[nodiscard]] bool needsBypassTransition(std::int32_t configuredLatency) noexcept override;
     void processBypassTransition(const engine::NodeIo&) noexcept override;
 
-    /// No state roles are offered for capture until the backend supports them.
-    /// The saved blob therefore remains in the project when restore is refused.
+    [[nodiscard]] std::vector<std::string> stateRoles() const override;
+    [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override;
+    [[nodiscard]] std::string_view stateCaptureIssue() const noexcept override { return captureIssue_; }
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& bytes) override;
 
     /// A late response does not get played during another packet's slot.
@@ -78,6 +86,8 @@ private:
     std::string issuePrefix_;
     std::string ownerIssue_;
     std::string stateIssue_;
+    mutable std::string captureIssue_;
+    mutable std::vector<std::uint8_t> confirmedState_;
     bool requestedOffline_ = false;
     std::atomic<bool> loaded_{false};
     std::atomic<std::int32_t> latency_{0};

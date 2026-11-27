@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "juce/remote_device.hpp"
 
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/offline_render_scope.hpp"
 
 #include <algorithm>
@@ -8,7 +9,9 @@
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <future>
 #include <limits>
+#include <mutex>
 
 namespace adi::device {
 namespace {
@@ -17,6 +20,16 @@ static_assert(std::atomic<std::size_t>::is_always_lock_free);
 static_assert(std::atomic<std::int32_t>::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
+
+constexpr auto kStateTimeout = std::chrono::milliseconds(500);
+
+struct StateRequest {
+    RemoteProcessor::StateDeadline deadline = std::chrono::steady_clock::now() + kStateTimeout;
+    std::vector<std::uint8_t> bytes;
+    std::string error;
+    std::promise<bool> completion;
+    bool restoring = false;
+};
 
 // Like ParamEditCapture, one producer and one consumer each own an index.
 // Reservations let both sides use preallocated audio and event storage in
@@ -125,6 +138,57 @@ struct RemoteDevice::Pipeline {
         started.wait(false, std::memory_order_acquire);
     }
 
+    bool requestState(bool restoring, std::vector<std::uint8_t>& bytes, std::string& error) {
+        if (workerFailed.load(std::memory_order_acquire)) {
+            error = "the remote processing connection is closed";
+            return false;
+        }
+        const auto request = std::make_shared<StateRequest>();
+        request->restoring = restoring;
+        if (restoring) request->bytes = bytes;
+        auto completion = request->completion.get_future();
+        {
+            const std::lock_guard lock(stateOwner);
+            // A prior owner wait may have expired before the worker could
+            // pick it up. Replace it with the only current request.
+            pendingState = request;
+            stateWaiting.store(true, std::memory_order_release);
+        }
+        if (completion.wait_until(request->deadline) != std::future_status::ready) {
+            error = "the server did not answer the state request within 500 ms";
+            return false;
+        }
+        if (!completion.get()) {
+            error = std::move(request->error);
+            return false;
+        }
+        if (!restoring) bytes = std::move(request->bytes);
+        return true;
+    }
+
+    void processState(RemoteProcessor& processor) {
+        if (!stateWaiting.load(std::memory_order_acquire)) return;
+        std::shared_ptr<StateRequest> request;
+        {
+            const std::lock_guard lock(stateOwner);
+            request = std::move(pendingState);
+            stateWaiting.store(false, std::memory_order_release);
+        }
+        bool succeeded = false;
+        try {
+            if (std::chrono::steady_clock::now() >= request->deadline) {
+                request->error = "the state request expired before I/O started";
+            } else if (request->restoring) {
+                succeeded = processor.restoreState(request->bytes, request->deadline, request->error);
+            } else {
+                succeeded = processor.fetchState(request->bytes, request->deadline, request->error);
+            }
+        } catch (const std::exception& error) {
+            request->error = error.what();
+        }
+        request->completion.set_value(succeeded);
+    }
+
     void run(RemoteProcessor& processor, const std::stop_token& stop) noexcept {
         std::uint64_t inFlight = 0;
         try {
@@ -138,6 +202,7 @@ struct RemoteDevice::Pipeline {
             started.notify_one();
 
             while (!workerFailed.load(std::memory_order_relaxed) && !stop.stop_requested()) {
+                processState(processor);
                 const auto* request = requests.front();
                 if (request == nullptr) {
                     // The realtime producer performs only an atomic publish.
@@ -285,6 +350,9 @@ struct RemoteDevice::Pipeline {
     std::atomic<bool> workerFailed{false};
     std::atomic<std::uint64_t> completed{0};
     std::atomic<LocalIssue> localIssue{LocalIssue::None};
+    std::atomic<bool> stateWaiting{false};
+    std::mutex stateOwner;
+    std::shared_ptr<StateRequest> pendingState;
     std::string workerIssue;
     const std::string shapeIssue, eventIssue, queueIssue, prefix;
     std::uint64_t sequence = 1;
@@ -307,15 +375,45 @@ std::string_view RemoteDevice::processingIssue() const noexcept {
     return issue.empty() ? std::string_view(stateIssue_) : issue;
 }
 
+std::vector<std::string> RemoteDevice::stateRoles() const {
+    return processor_ && processor_->supportsState() ? std::vector<std::string>{"chunk"} : std::vector<std::string>{};
+}
+
+std::vector<std::uint8_t> RemoteDevice::saveState(const std::string& role) const {
+    if (audio::onAudioThread || role != "chunk" || !processor_ || !processor_->supportsState()) return {};
+    std::vector<std::uint8_t> bytes;
+    std::string error;
+    if (!pipeline_ || !loaded() || !pipeline_->requestState(false, bytes, error) || bytes.empty()) {
+        captureIssue_ = issuePrefix_ + "saved state is stale";
+        if (!error.empty()) captureIssue_ += " (" + error + ")";
+        return {};
+    }
+    captureIssue_.clear();
+    confirmedState_ = bytes;
+    return bytes;
+}
+
 bool RemoteDevice::loadState(const std::string& role, const std::vector<std::uint8_t>& bytes) {
-    if (!bytes.empty() && stateIssue_.empty())
+    if (audio::onAudioThread || bytes.empty()) return false;
+    if (role != "chunk" || !processor_ || !processor_->supportsState()) {
         stateIssue_ = issuePrefix_ + "the remote connection cannot restore saved '" + role + "' state";
-    return false;
+        return false;
+    }
+    auto staged = bytes;
+    std::string error;
+    if (pipeline_ && loaded() && !pipeline_->requestState(true, staged, error)) {
+        stateIssue_ = issuePrefix_ + "the remote connection could not restore saved state";
+        if (!error.empty()) stateIssue_ += " (" + error + ")";
+        return false;
+    }
+    confirmedState_ = std::move(staged);
+    stateIssue_.clear();
+    return true;
 }
 
 void RemoteDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     if (pipeline_ && loaded() && pipeline_->sampleRate == sampleRate && pipeline_->frames == maxFrames &&
-        pipeline_->offline == requestedOffline_) return;
+        pipeline_->offline == requestedOffline_ && !pipeline_->workerFailed.load(std::memory_order_acquire)) return;
 
     const ReactivationGate::Hold hold(activation_);
     pipeline_.reset();
@@ -330,6 +428,15 @@ void RemoteDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         auto next = std::make_unique<Pipeline>(sampleRate, channels_, maxFrames, requestedOffline_, issuePrefix_);
         next->start(*processor_);
         if (!next->workerFailed.load(std::memory_order_acquire)) {
+            if (!confirmedState_.empty()) {
+                std::string error;
+                if (!next->requestState(true, confirmedState_, error)) {
+                    stateIssue_ = issuePrefix_ + "the remote connection could not reapply saved state";
+                    if (!error.empty()) stateIssue_ += " (" + error + ")";
+                } else {
+                    stateIssue_.clear();
+                }
+            }
             const auto latency = maxFrames + next->pluginLatency;
             latency_.store(latency, std::memory_order_relaxed);
             if (latency != previousLatency) latencyEpoch_.fetch_add(1, std::memory_order_relaxed);

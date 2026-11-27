@@ -173,8 +173,16 @@ WAV export, freeze and the diagnostic player's isolated renderer wait for
 bounded worker exchanges. A failed exchange names the plug-in and stops the
 render before publishing output. A saved state that the backend cannot
 restore also stops offline rendering, leaving the stored bytes available.
-Stock v13 can take initial state in its server encoding from an authorized
-loader. Project state capture and recall still need the backend round trip.
+
+State capture and recall run on the same worker with a 500 ms owner deadline.
+The stock transport bounds and decodes the server's text encoding, sends
+state sets in request order and reads back after a set. The stock command
+carries no positive set acknowledgement. The official server's ADI Test
+Plain fixture returned a changed 193-byte state exactly and played after
+recall at peak 0.0712499991. The engine's save receipt names stale devices
+whose capture failed, preserves their last stored blobs and continues
+capturing the other devices. The window's save and quit policy uses this
+receipt as part of SC-430.
 
 The stock prototype covers explicit IPv4 endpoints, mono or stereo float32
 PCM, ordinary MIDI input and transport. The server-fork extension still

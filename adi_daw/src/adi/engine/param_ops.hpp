@@ -210,10 +210,16 @@ public:
                          std::vector<OpRequest>& out);
 
     struct SnapshotAllResult {
+        struct StaleDevice {
+            std::int64_t deviceId = 0;
+            std::string name;
+            std::string issue;
+        };
         gesture::Status status;
         std::optional<std::int64_t> failedDevice;
         std::size_t journalOps = 0;
         std::size_t stateOps = 0;
+        std::vector<StaleDevice> staleDevices;
         [[nodiscard]] bool ok() const noexcept { return status.ok(); }
     };
 
@@ -221,6 +227,8 @@ public:
     /// then durably save live device state without relying on stateEpoch.
     /// Successful zero journalOps means unchanged. Failure reports the
     /// refused device when available and counts any prior durable writes.
+    /// An unavailable remote capture leaves its stored bytes and reports a
+    /// stale device while the other captures continue (ADR-0261 d23).
     /// Call before publishing a named snapshot, copying or closing the Store.
     [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
 

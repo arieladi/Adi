@@ -27,6 +27,13 @@ def send_control(sock, kind, payload):
     sock.sendall(struct.pack("<iii", kind, 4 + len(payload), len(payload)) + payload)
 
 
+def encode_stock_state(payload):
+    alphabet = b".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+    value = int.from_bytes(payload, "little")
+    digits = bytes(alphabet[(value >> bit) & 63] for bit in range(0, 8 * len(payload), 6))
+    return str(len(payload)).encode() + b"." + digits
+
+
 def gain(samples):
     return b"".join(struct.pack("<f", value * 0.5) for (value,) in struct.iter_unpack("<f", samples))
 
@@ -116,7 +123,26 @@ class Fixture:
                 send_control(commands, 21, json.dumps(result).encode())
                 send_control(commands, 110, b"")
                 send_control(commands, 100, b"\x90")
+                if self.mode in ("state", "bad-state"):
+                    self.state(commands)
+                if self.mode == "bad-state":
+                    return
                 self.stream(audio)
+
+    def state(self, commands):
+        assert struct.unpack("<iii", read(commands, 12)) == (70, 4, 0)
+        if self.mode == "bad-state":
+            send_control(commands, 72, b"99999999999999999999.AAA")
+            return
+        send_control(commands, 72, encode_stock_state(bytes([0, 42, 255, 7])))
+        assert struct.unpack("<iii", read(commands, 12)) == (71, 4, 0)
+        kind, size, size2 = struct.unpack("<iii", read(commands, 12))
+        assert kind == 72 and size == size2 + 4 and 0 < size2 < 128
+        updated = encode_stock_state(bytes([4, 128, 11, 222, 3]))
+        assert read(commands, size2) == updated
+        for _ in range(2):  # Ordered readback after SET, then a fresh capture.
+            assert struct.unpack("<iii", read(commands, 12)) == (70, 4, 0)
+            send_control(commands, 72, updated)
 
     def stream(self, audio):
         while True:
@@ -168,10 +194,11 @@ class Fixture:
 
 
 def main():
-    for mode in ("pcm", "version", "control", "unknown", "shape", "latency", "nonfinite", "timeout", "disconnect"):
+    for mode in ("pcm", "version", "control", "unknown", "shape", "latency", "nonfinite", "timeout", "disconnect",
+                 "state", "bad-state"):
         with Fixture(mode=mode, fail_after=0 if mode == "disconnect" else None) as server:
             subprocess.run([sys.argv[1], str(server.port), mode], check=True, timeout=8)
-        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect") else 1
+        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state") else 1
         assert server.blocks == expected_blocks, (mode, server.blocks)
 
 
