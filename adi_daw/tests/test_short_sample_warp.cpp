@@ -91,6 +91,15 @@ void throughProducers() {
     check(history.undo().ok && warpAndLoop() == 3 && history.redo().ok && warpAndLoop() == 0,
           "undo and redo restore the captured Warp and loop states together");
 
+    const auto storedMap = store->db().execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=1").getString();
+    auto reenable = button;
+    reenable.shortSamplePolicy = library::sampleWarpPolicyFromSettings(
+        {{"record.shortSampleMode", "unwarpedOneShot"}}, &analysis);
+    const auto fromStoredMap = clip_edit::prepareSetWarp(*store, 1, reenable, rate);
+    check(!storedMap.empty() && clip_edit::commitPrepared(*store, fromStoredMap).ok && warpAndLoop() == 2 &&
+          store->db().execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=1").getString() == storedMap,
+          "re-enabling an existing Warp map preserves its bytes and the current loop state");
+
     ui::ProjectDocument::MaterialJob job;
     job.project = store->path();
     job.source = wave;

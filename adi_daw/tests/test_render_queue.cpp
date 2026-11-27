@@ -3,6 +3,7 @@
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
@@ -359,13 +360,58 @@ void cancellationAndFailures() {
     check(failed.state==JobState::Failed && failed.error=="fixture failure" && !fs::exists(j.directory/"callback-failure.wav") && f.noStage(),
           "callback failure produces no partial published output");
     f.effect();
-    j.nameTemplate="missing";
-    check(renderMasterWav(j,{}).state==JobState::Failed,"missing plugin fails rather than exporting a placeholder");
     for (const double gain : {std::numeric_limits<double>::infinity(),1e100}) {
         j.nameTemplate="nonfinite"; j.session.precision=Precision::Float64;
         const auto bad=renderMasterWav(j,[gain](const DeviceRequest&,std::string&) {auto d=std::make_unique<Delay>(); d->gain=gain; return d;});
         check(bad.state==JobState::Failed && !fs::exists(j.directory/"nonfinite.wav") && f.noStage(),"nonfinite and finite-double overflow cannot reach Float32 files");
     }
+}
+void missingSources() {
+    Fixture f;
+    f.parallel();
+    f.store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'lost','lost.wav','wav');"
+        "UPDATE audio_clips SET media_id=2 WHERE clip_id=2;");
+    const auto missingFile=renderWav(f.job("missing-file"),{});
+    check(matches(read(missingFile,866),137) && missingFile.mediaVerification &&
+          missingFile.mediaVerification->identities.size()==1 &&
+          missingFile.mediaVerification->publicationVerified,
+          "missing clip media renders silence while the remaining source is verified");
+
+    f.effect();
+    f.store->db().exec("INSERT INTO plugin_params(device_id,param_id,name,normalized_value) VALUES(1,'7','Mix',0.5);"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) "
+        "VALUES(1,'device',1,'7',1,'normalized');");
+    const auto missingPlugin=renderWav(f.job("missing-file-and-plugin"),{});
+    check(matches(read(missingPlugin,866),137) && f.noStage(),
+          "an unavailable audio effect with automation is bypassed as it is during playback");
+
+    auto stem=f.job("missing-file-stem"); stem.source.trackId=2;
+    const auto samples=read(renderWav(stem,{}),866);
+    check(!samples.empty() && std::all_of(samples.begin(),samples.end(),[](float value){return value==0;}),
+          "a stem whose only clip lost its file contains silence");
+
+    const auto oldMedia = f.dir.path() / "original-location" / "lost.wav";
+    {
+        const auto absent = fs::path("..") / (media::pathUtf8(f.dir.path().filename()) + "-moved") / "lost.wav";
+        SQLite::Statement update(f.store->db(), "UPDATE media_files SET rel_path=?,abs_path_hint=? WHERE id=2");
+        update.bind(1, media::pathUtf8(absent));
+        update.bind(2, media::pathUtf8(oldMedia));
+        update.exec();
+    }
+    check(matches(read(renderWav(f.job("moved-and-missing"),{}),866),137),
+          "a missing moved sample is silent after both saved locations are checked");
+    fs::create_directory(oldMedia.parent_path());
+    std::ofstream(oldMedia) << "Different sample";
+    const auto changed = renderWav(f.job("moved-but-changed"),{});
+    check(changed.state == JobState::Failed && changed.error.find("hash mismatch") != std::string::npos,
+          "an existing moved sample with different content remains an export error");
+    fs::remove(oldMedia);
+
+    f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=1;");
+    const auto unsupported=renderWav(f.job("unsupported"),{});
+    check(unsupported.state==JobState::Failed && unsupported.error.find("reverse unsupported")!=std::string::npos &&
+          !fs::exists(unsupported.output) && f.noStage(),
+          "other unresolved playback problems still stop export");
 }
 void queueEdits() {
     Fixture f;
@@ -710,6 +756,42 @@ void pcmExports() {
     check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unsupported dither has no silent fallback");
 }
 
+void aiffExports() {
+    Fixture f;
+    audio::DecodeCache cache(f.dir.path() / "aiff-readback", {1ull << 24, 0});
+    auto job = f.job("aiff-comparison");
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24, audio::WavFormat::Float32}) {
+        job.encoding = {format, audio::WavDither::Triangular, 42};
+        job.normalization.mode = format == audio::WavFormat::Pcm24 ? NormalizeMode::Peak : NormalizeMode::Off;
+        job.normalization.truePeakCeilingDb = -1;
+        job.nameTemplate = "pcm-" + std::to_string(static_cast<int>(format));
+        const auto expected = read(renderWav(job, {}), 866, 48000, format);
+        auto aiff = job;
+        aiff.container = PcmContainer::Aiff;
+        aiff.exactPcmFilename = job.nameTemplate + ".AIFF";
+        const auto result = renderWav(aiff, {});
+        check(result.state == JobState::Completed && result.output.filename() == *aiff.exactPcmFilename &&
+                  result.framesWritten == 866 && audio::sniff(result.output) == audio::SourceFormat::Aiff && f.noStage(),
+              result.error.empty() ? "AIFF publishes the exact chosen filename and range" : result.error.c_str());
+        if (result.state != JobState::Completed)
+            continue;
+        const auto decoded = cache.playable(result.output);
+        audio::WavReader reader(decoded);
+        std::vector<float> actual(expected.size());
+        check(!expected.empty() && reader.frames() == 866 && reader.channels() == 2 && reader.sampleRate() == 48000 &&
+                  reader.read(actual.data(), 866) == 866 && actual == expected,
+              "AIFF/AIFF-C decodes to the same stereo samples as WAV, including dither and normalization");
+        cache.release(decoded);
+    }
+
+    job.container = PcmContainer::Aiff;
+    job.endSample = std::numeric_limits<std::uint32_t>::max();
+    const auto tooLarge = renderWav(job, {});
+    check(tooLarge.state == JobState::Failed && tooLarge.error.find("AIFF file would exceed") != std::string::npos &&
+              tooLarge.output.empty() && f.noStage(),
+          "AIFF ranges beyond its container limit fail before writing anything");
+}
+
 void hostOwnerLifecycle() {
     Fixture f;
     f.effect();
@@ -784,7 +866,50 @@ void hostOwnerLifecycle() {
         }
     }
 }
+void exportWorkProgress() {
+    Fixture f;
+    auto job=f.job("normalized-progress");
+    job.normalization.mode=NormalizeMode::Peak;
+    std::uint64_t written=0;
+    std::vector<double> fractions, afterCapture;
+    bool prerollAdvanced=false, finishedAfterPublish=false, frameCountsUnchanged=true;
+    Control control;
+    control.progress=[&](JobId,std::uint64_t done,std::uint64_t total) {
+        frameCountsUnchanged=frameCountsUnchanged && total==866;
+        written=done;
+    };
+    control.wavProgress=[&](JobId,double fraction) {
+        fractions.push_back(fraction);
+        prerollAdvanced=prerollAdvanced || (written==0 && fraction>0);
+        if(written==866 && fraction<1) afterCapture.push_back(fraction);
+        if(fraction==1) finishedAfterPublish=fs::exists(job.directory/"normalized-progress.wav");
+    };
+    const auto result=renderWav(job,{},control);
+    check(result.state==JobState::Completed && !fractions.empty() && fractions.front()==0 &&
+          fractions.back()==1 && std::is_sorted(fractions.begin(),fractions.end()) &&
+          std::count(fractions.begin(),fractions.end(),1.0)==1 && finishedAfterPublish,
+          "WAV work progress advances monotonically from zero to publication");
+    check(prerollAdvanced,"WAV work advances before the selected audio");
+    check(afterCapture.size()>1 && afterCapture.front()<afterCapture.back(),
+          "WAV work continues advancing after capture during normalization");
+    check(written==866 && frameCountsUnchanged,"existing render progress still measures output frames");
+
+    std::stop_source stop;
+    job.nameTemplate="cancel-normalizing";
+    double beforeNormalization=0, last=0;
+    control.stop=stop.get_token();
+    control.wavProgress=[&](JobId,double fraction) {
+        last=fraction;
+        if(written==866 && beforeNormalization==0) beforeNormalization=fraction;
+        else if(beforeNormalization>0 && fraction>beforeNormalization) stop.request_stop();
+    };
+    const auto cancelled=renderWav(job,{},control);
+    check(cancelled.state==JobState::Cancelled && beforeNormalization>0 && last<1 &&
+          !fs::exists(job.directory/"cancel-normalizing.wav") && f.noStage(),
+          "cancellation during normalization stays below 100 percent and removes the stage");
+}
 void normalizedRenders() {
+    exportWorkProgress();
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;f.effect();auto job=f.job(precision==Precision::Float64?"normalized-wide":"normalized-float");
         job.beginSample=200;job.endSample=220;job.session.precision=precision;job.normalization.mode=NormalizeMode::Peak;
@@ -1655,7 +1780,7 @@ void mediaIdentities() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--export-speed-only") largeSongExportSpeed();
-        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     }
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);

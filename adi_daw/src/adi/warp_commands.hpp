@@ -14,8 +14,8 @@ struct WarpOptions {
     std::optional<audio::ShortSampleWarpInput> shortSample = {};
     std::optional<library::SampleWarpPolicy> shortSamplePolicy = {};
 };
-/// Owner/worker connection, off the callback. Auto-Warp a clean, full-source
-/// audio clip (ADR-0203 d7). Edited offsets, loops and aliases refuse explicitly.
+/// Owner/worker connection, off the callback. Toggle Warp while preserving the
+/// audible source interval of a placed clip. Loops and aliases refuse explicitly.
 /// Commit with commitPrepared on the same document generation. Both directions
 /// capture actual source clocks and duration; replay never analyzes a file.
 [[nodiscard]] PreparedEdit prepareSetWarp(Store&,std::int64_t clipId,const WarpOptions&,double referenceRate);
