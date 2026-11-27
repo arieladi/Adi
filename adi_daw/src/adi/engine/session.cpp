@@ -1334,7 +1334,11 @@ void Session::refreshProblems() {
 }
 
 std::vector<std::string> Session::exportBlockingProblems() {
-    return collectProblems(false);
+    auto problems = collectProblems(false);
+    // A range of leading silence can finish without rendering a graph block.
+    if (auto remote = offlineRemoteIssue(); !remote.empty())
+        problems.push_back(std::move(remote));
+    return problems;
 }
 
 std::vector<std::string> Session::collectProblems(bool includeUnavailable) {

@@ -169,6 +169,34 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
             !fs::exists(project.dir.path() / "unauthorized.wav") && localLoads == 2,
             "unavailable offline server did not fail by name before publishing");
 
+    // A positive track delay makes the whole selected range leading silence.
+    // The export can complete this path without rendering a graph block.
+    project.store->db().exec("INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,64);"
+                             "UPDATE devices SET remote_host_id=NULL WHERE id=1;");
+    auto leading = project.job("silent-local.wav");
+    leading.beginSample = 0;
+    leading.endSample = 32;
+    leading.source.trackId = 1;
+    const auto localPlaceholder = render::renderWav(leading, {});
+    require(localPlaceholder.state == render::JobState::Completed, localPlaceholder.error);
+    {
+        audio::WavReader wave(localPlaceholder.output);
+        std::array<float, 64> pcm{};
+        require(wave.frames() == 32 && wave.read(pcm.data(), 32) == 32 &&
+                std::ranges::all_of(pcm, [](float sample) { return sample == 0.0f; }),
+                "a missing local effect must still export the requested leading silence");
+    }
+    project.store->db().exec("UPDATE devices SET remote_host_id=7 WHERE id=1;");
+    leading.exactWavFilename = "silent-remote.wav";
+    const auto remotePlaceholder = render::renderWav(leading, noGrant);
+    require(remotePlaceholder.state == render::JobState::Failed && remotePlaceholder.framesWritten == 0 &&
+            !remotePlaceholder.snapshot && remotePlaceholder.error.find(fixtureName) != std::string::npos &&
+            remotePlaceholder.error.find("server #7") != std::string::npos &&
+            !fs::exists(project.dir.path() / "silent-remote.wav") && localLoads == 2,
+            "unavailable authored server reached leading-silence output: " +
+            std::to_string(remotePlaceholder.framesWritten) + " frames; " + remotePlaceholder.error);
+    project.store->db().exec("DELETE FROM mixer_strip WHERE track_id=1;");
+
     {
         const std::vector<std::uint8_t> bytes{7, 25, 193};
         const auto hash = media::blake3Bytes(std::as_bytes(std::span(bytes))).hex;

@@ -466,8 +466,9 @@ public:
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept {
         return problems_;
     }
-    /// Problems that still invalidate a render when missing clips play
-    /// silently and unavailable plug-ins are bypassed as in live playback.
+    /// Problems that invalidate export before staging. Missing clips play
+    /// silently and unavailable local plug-ins are bypassed. An enabled
+    /// server device must be ready even for a range made of leading silence.
     [[nodiscard]] std::vector<std::string> exportBlockingProblems();
 
     /// ADR-0174: the group summing this graph plays. Message thread.
