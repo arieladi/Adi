@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026 — seats/server-chain `548025a7`
+
+The headless build failed while compiling `adi_daw/src/juce/audiogridder_transport.cpp`. The parsers at `315:16`, `316` and `687` instantiate nlohmann input adapters for `std::byte`. Pinned nlohmann derives those traits from libc++'s undefined `std::char_traits<std::byte>` at `adi_daw/third_party/json/include/nlohmann/detail/meta/type_traits.hpp:191:22`. The subsequent missing `int_type` errors have the same cause.
+
+The smallest fix supplies a zero-copy `std::span<const unsigned char>` to the two MessagePack passes and the JSON parser. Both Clang 20/libc++ and GCC/libstdc++ accepted the fixed translation unit under strict syntax checks. The full fixed-branch suites are queued. One fix commit `5cce0417` is on [libcxx/seats/server-chain](https://github.com/arieladi/Adi/tree/libcxx/seats/server-chain).
+
 ### 27 November 2026, 23:31 IST — seats/pitch-chain `34e21e163684e556f25f5b9496d78afcb3b1285a`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 298 registered CTest suites passed.
