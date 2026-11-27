@@ -46,7 +46,7 @@ MR § is the Master Reference's section.
 | Collections, Categories (Pd Devices in Max for Live's place), Places (Packs, User Library, Current Project, Add Folder…) | 3.1 | Partial: all listed, but the sidebar does not scroll, so on a short window Places is cut off below Templates. Missing: a scrolling sidebar |
 | Search; Ctrl/Cmd+F from anywhere | 3.1 | Built |
 | The lists under each label; double-click or drag to load | 3.1 | Partial (D4, N15): Samples and the Places (D1); Audio Effects in Live's seven folders and ADI's own (Chord Comb, Color Cab) under Pd Devices, from the catalogue. Double-click or Enter loads onto the selected track in front of the device chosen in the strip; a drag drops into the chain or onto a lane's track; one undo step with the reference and the chain. An entry this build cannot load is dimmed and says why (every one with Pd off; Hybrid Reverb always). Missing: Instruments, MIDI Effects, Sounds and Drums (the devices lane), Plug-Ins (the scanner, #438 to #440), presets (no format) |
-| The AI chat as a collapsed tab at the browser's foot | 3.1 | Built (the tab); the chat is the agent's (Later) |
+| The AI chat as a collapsed tab at the browser's foot | 3.1 | Removed (#808, ADR-0257 d12). ADR-0261: an AI label in the Categories list, shown when the agent can answer (Later) |
 | The floating palette, Ctrl+P / Cmd+P: V/serum, S/snare, P/ presets, arrows, Space auditions, Enter loads; sentences become tasks | 1.1, 3.1 (ADR-0104) | Missing. Commands by name are the window's alone; plug-ins, samples and presets wait for N15; sentences for the agent |
 | AudioGridder servers' plug-ins beside the local ones, with a server icon | 3.1, 9.5 | Later (engine, P1) |
 | Semantic sample search | 3.1 | Later (P1, a service) |
