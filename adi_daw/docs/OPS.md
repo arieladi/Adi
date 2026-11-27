@@ -536,6 +536,15 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setEndMarker` | e | S | cap | P1 |
 | `clip.setTimeSignature` | e | S | cap | P1 |
 | `clip.setScale` | e | S | cap | P1 |
+| `clip.setPitchEdits` | e | S | cap | P1 |
+
+`clip.setPitchEdits` replaces one clip's complete set of authored pitch edits
+in the reserved schema 1.27 table. The operation captures the previous set
+for Undo. The request identifies the source hash, rate, frame count, analysis
+version and configuration. Each edit includes its original source-note
+bounds and its destination and controls. An empty set clears the clip's
+edits. Journal replay uses explicit values. Worker evaluation of an edit
+set requires matching source analysis.
 
 `clip.setLane {id,lane?}` preserves the clip identity and all child rows. A
 positive lane must exist, be a take lane and belong to the clip's track; omission

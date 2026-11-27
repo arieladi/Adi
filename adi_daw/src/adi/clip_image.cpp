@@ -9,9 +9,10 @@
 
 namespace adi::clip_edit {
 namespace {
-constexpr std::array<ChildTable,8> children={{
+constexpr std::array<ChildTable,9> children={{
     {"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
-    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"}
+    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},
+    {"clip_pitch_edits","clip_id"}
 }};
 }
 std::span<const ChildTable> childTables(){return children;}
@@ -63,8 +64,10 @@ Payload captureImage(OpContext& context,std::int64_t id) {
     if(!root)throw std::runtime_error("no such clip");
     Payload result={{"id",id},{"row",*root},{"children",Payload::object()},{"alias_links",Payload::array()}};
     for(const auto& child:children) {
+        const bool present=tablePresent(context.db,child.table);
+        if(!present && std::string_view(child.table)=="clip_pitch_edits")continue;
         auto& records=result["children"][child.table];records=Payload::array();
-        if(!tablePresent(context.db,child.table))continue;
+        if(!present)continue;
         SQLite::Statement st(context.db,"SELECT "+std::string(child.key)+" FROM "+child.table+" WHERE clip_id=? ORDER BY "+child.key);
         st.bind(1,id);
         while(st.executeStep())records.push_back(*detail::captureRow(context.db,child.table,child.key,st.getColumn(0).getInt64()));

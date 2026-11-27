@@ -19,6 +19,7 @@ constexpr double kMaximumFormantCents = 1200;
 constexpr double kMinimumGainDb = -70;
 constexpr double kMaximumGainDb = 18;
 constexpr std::uint64_t kMaximumTransitionMilliseconds = 200;
+constexpr double kStraightenTaperFraction = 0.1;
 
 PitchNoteEdit defaultEdit(const PitchAnalysis& analysis, std::size_t index) noexcept {
     const auto& note = analysis.notes[index];
@@ -29,26 +30,14 @@ bool inRange(double value, double minimum, double maximum) noexcept {
     return value >= minimum && value <= maximum;
 }
 
-bool validValues(const PitchAnalysis& analysis, const PitchNoteEdit& edit) noexcept {
-    const auto maximumTransitionFrames =
-        static_cast<std::uint64_t>(analysis.sampleRate) * kMaximumTransitionMilliseconds / 1000;
-    return edit.startFrame < edit.endFrame && edit.endFrame <= analysis.sourceFrames &&
-           inRange(edit.pitchShiftCents, -kMaximumShiftCents, kMaximumShiftCents) &&
-           inRange(edit.straighten, 0, 1) && inRange(edit.tiltCents, -kMaximumTiltCents, kMaximumTiltCents) &&
-           inRange(edit.formantShiftCents, -kMaximumFormantCents, kMaximumFormantCents) &&
-           (inRange(edit.gainDb, kMinimumGainDb, kMaximumGainDb) ||
-            edit.gainDb == -std::numeric_limits<double>::infinity()) &&
-           inRange(edit.drift, 0, 1) && edit.transitionFrames <= maximumTransitionFrames;
-}
-
 PitchEditError validateState(const PitchAnalysis& analysis, const PitchEditState& state) {
     std::size_t nextIndex = 0;
     bool retimed = false;
     for (const auto& edit : state.notes) {
         if (edit.noteIndex < nextIndex || edit.noteIndex >= analysis.notes.size()) return PitchEditError::InvalidState;
-        if (!validValues(analysis, edit)) return PitchEditError::InvalidValue;
-        nextIndex = edit.noteIndex + 1;
         const auto& note = analysis.notes[edit.noteIndex];
+        if (!validPitchNoteEdit(note, edit, analysis.sourceFrames, analysis.sampleRate)) return PitchEditError::InvalidValue;
+        nextIndex = edit.noteIndex + 1;
         retimed = retimed || edit.startFrame != note.startFrame || edit.endFrame != note.endFrame;
     }
     if (!retimed) return PitchEditError::None;
@@ -73,6 +62,7 @@ PitchEditError validateState(const PitchAnalysis& analysis, const PitchEditState
 }
 
 PitchEditError updateEdit(const PitchAnalysis& analysis, PitchNoteEdit& edit, const PitchEditCommand& command) {
+    const auto& note = analysis.notes[edit.noteIndex];
     return std::visit([&](const auto& change) {
         using Change = std::decay_t<decltype(change)>;
         if constexpr (std::is_same_v<Change, PitchSetShift>) {
@@ -94,14 +84,21 @@ PitchEditError updateEdit(const PitchAnalysis& analysis, PitchNoteEdit& edit, co
         } else if constexpr (std::is_same_v<Change, PitchSetTransition>) {
             edit.transitionFrames = change.frames;
         } else if constexpr (std::is_same_v<Change, PitchQuantize>) {
-            const auto nominalPitch = analysis.notes[edit.noteIndex].pitchCents;
+            const auto nominalPitch = note.pitchCents;
             const auto nearest = change.scale.nearest(nominalPitch + edit.pitchShiftCents, change.tonicCents, true);
             if (!nearest) return PitchEditError::InvalidScale;
             edit.pitchShiftCents = nearest->cents - nominalPitch;
         } else if constexpr (std::is_same_v<Change, PitchReset>) {
             edit = defaultEdit(analysis, edit.noteIndex);
+        } else if constexpr (std::is_same_v<Change, PitchSetTiltGeometry>) {
+            edit.tiltGeometry = change.geometry;
+        } else if constexpr (std::is_same_v<Change, PitchSetStraightenRange>) {
+            edit.straightenRange = change.range;
+            if (edit.straightenRange == PitchStraightenRange{note.startFrame, note.endFrame})
+                edit.straightenRange.reset();
         }
-        return validValues(analysis, edit) ? PitchEditError::None : PitchEditError::InvalidValue;
+        return validPitchNoteEdit(note, edit, analysis.sourceFrames, analysis.sampleRate) ?
+            PitchEditError::None : PitchEditError::InvalidValue;
     }, command.change);
 }
 
@@ -116,7 +113,54 @@ double interpolatedPitch(const PitchNote& note, double sourceFrame) noexcept {
     return std::lerp(left->cents, right->cents, fraction);
 }
 
+double smoothStep(double position) noexcept {
+    return position * position * (3 - 2 * position);
+}
+
+double straightenWeight(const PitchNote& note, const PitchNoteEdit& edit, double elapsed, double length) noexcept {
+    if (edit.straighten == 0 || !edit.straightenRange) return edit.straighten;
+    const auto start = static_cast<double>(edit.straightenRange->startFrame - note.startFrame);
+    const auto end = static_cast<double>(edit.straightenRange->endFrame - note.startFrame);
+    if (elapsed < start || elapsed >= end) return 0;
+    const double taper = static_cast<double>(edit.straightenRange->endFrame - edit.straightenRange->startFrame) *
+                         kStraightenTaperFraction;
+    double edgeWeight = 1;
+    if (start != 0) edgeWeight = std::min(edgeWeight, (elapsed - start) / taper);
+    if (end != length) edgeWeight = std::min(edgeWeight, (end - elapsed) / taper);
+    return edit.straighten * smoothStep(edgeWeight);
+}
+
+double tiltCorrection(const PitchNoteEdit& edit, double position) noexcept {
+    const auto& shape = edit.tiltGeometry;
+    const double distance = position - shape.anchor;
+    double correction = edit.tiltCents * distance;
+    if (distance < 0) correction -= shape.startCents * (distance / shape.anchor);
+    if (distance > 0) correction += shape.endCents * (distance / (1 - shape.anchor));
+    return correction;
+}
+
 } // namespace
+
+bool validPitchNoteEdit(const PitchNote& note, const PitchNoteEdit& edit, std::uint64_t sourceFrames,
+                        std::uint32_t sampleRate) noexcept {
+    const auto maximumTransitionFrames = static_cast<std::uint64_t>(sampleRate) * kMaximumTransitionMilliseconds / 1000;
+    const auto& tilt = edit.tiltGeometry;
+    const auto& range = edit.straightenRange;
+    return sampleRate != 0 && note.startFrame < note.endFrame && note.endFrame <= sourceFrames &&
+           edit.startFrame < edit.endFrame && edit.endFrame <= sourceFrames &&
+           inRange(edit.pitchShiftCents, -kMaximumShiftCents, kMaximumShiftCents) &&
+           inRange(edit.straighten, 0, 1) && inRange(edit.tiltCents, -kMaximumTiltCents, kMaximumTiltCents) &&
+           inRange(tilt.anchor, 0, 1) && (tilt.anchor > 0 || tilt.startCents == 0) &&
+           (tilt.anchor < 1 || tilt.endCents == 0) &&
+           inRange(tilt.startCents, -kMaximumTiltCents, kMaximumTiltCents) &&
+           inRange(tilt.endCents, -kMaximumTiltCents, kMaximumTiltCents) &&
+           (!range || (note.startFrame <= range->startFrame && range->startFrame < range->endFrame &&
+                       range->endFrame <= note.endFrame)) &&
+           inRange(edit.formantShiftCents, -kMaximumFormantCents, kMaximumFormantCents) &&
+           (inRange(edit.gainDb, kMinimumGainDb, kMaximumGainDb) ||
+            edit.gainDb == -std::numeric_limits<double>::infinity()) &&
+           inRange(edit.drift, 0, 1) && edit.transitionFrames <= maximumTransitionFrames;
+}
 
 PitchEditError applyPitchEdits(const PitchAnalysis& analysis, PitchEditState& state,
                                std::span<const PitchEditCommand> commands) {
@@ -160,7 +204,7 @@ double pitchCorrectionCents(const PitchNote& note, const PitchNoteEdit& edit, do
                             const PitchNoteEdit* preceding) noexcept {
     const auto length = static_cast<double>(note.endFrame - note.startFrame);
     const auto elapsed = std::clamp(sourceFrame - static_cast<double>(note.startFrame), 0.0, length - 1);
-    const auto tiltPosition = length == 1 ? 0.0 : elapsed / (length - 1) - 0.5;
+    const auto tiltPosition = length == 1 ? edit.tiltGeometry.anchor : elapsed / (length - 1);
     double shift = edit.pitchShiftCents;
     if (shift != 0 && preceding && preceding->endFrame == edit.startFrame) {
         const auto destinationLength = edit.endFrame - edit.startFrame;
@@ -168,19 +212,19 @@ double pitchCorrectionCents(const PitchNote& note, const PitchNoteEdit& edit, do
         if (transition > 0) {
             const auto destinationElapsed = elapsed / length * static_cast<double>(destinationLength);
             const auto position = std::min(1.0, destinationElapsed / static_cast<double>(transition));
-            const auto smooth = position * position * (3 - 2 * position);
-            shift = std::lerp(preceding->pitchShiftCents, shift, smooth);
+            shift = std::lerp(preceding->pitchShiftCents, shift, smoothStep(position));
         }
     }
 
     double contourCorrection = 0;
-    if (edit.straighten != 0 || edit.drift != 1) {
+    const auto straighten = straightenWeight(note, edit, elapsed, length);
+    if (straighten != 0 || edit.drift != 1) {
         const auto variation = interpolatedPitch(note, sourceFrame) - note.pitchCents;
         const auto drift = edit.preserveExpression ? note.driftCents * (elapsed / length - 0.5) : variation;
         const auto deviationAfterDrift = variation - (1 - edit.drift) * drift;
-        contourCorrection = (1 - edit.straighten) * deviationAfterDrift - variation;
+        contourCorrection = (1 - straighten) * deviationAfterDrift - variation;
     }
-    return shift + edit.tiltCents * tiltPosition + contourCorrection;
+    return shift + tiltCorrection(edit, tiltPosition) + contourCorrection;
 }
 
 } // namespace adi::audio

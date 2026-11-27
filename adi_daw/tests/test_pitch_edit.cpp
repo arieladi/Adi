@@ -102,6 +102,41 @@ void driftAndTransition() {
           "transition has no effect on a note with zero transpose");
 }
 
+void anchoredTiltAndRangedStraighten() {
+    const auto source = fixture();
+    const auto& note = source.notes.front();
+    PitchEditState state;
+    const PitchEditCommand twoSides[] = {{0, PitchSetTiltGeometry{{0.25, 60, -30}}}};
+    check(applyPitchEdits(source, state, twoSides) == PitchEditError::None, "two independent tilt handles are stored");
+    auto edit = resolvePitchNoteEdit(source, state, 0);
+    constexpr double anchorFrame = 149.75;
+    check(near(pitchCorrectionCents(note, edit, 100), 60) && near(pitchCorrectionCents(note, edit, anchorFrame), 0) &&
+          near(pitchCorrectionCents(note, edit, 299), -30), "tilt handles apply their signed cents at their ends and preserve the anchor");
+    const PitchEditCommand rotate[] = {{0, PitchSetTiltGeometry{{0.25, 0, 0}}}, {0, PitchSetTilt{80}}};
+    check(applyPitchEdits(source, state, rotate) == PitchEditError::None, "rotation uses the chosen anchor");
+    edit = resolvePitchNoteEdit(source, state, 0);
+    check(near(pitchCorrectionCents(note, edit, 100), -20) && near(pitchCorrectionCents(note, edit, anchorFrame), 0) &&
+          near(pitchCorrectionCents(note, edit, 299), 60), "rotate changes both sides around the selected pivot");
+
+    const PitchEditCommand correctRange[] = {
+        {0, PitchReset{}}, {0, PitchSetStraighten{1}}, {0, PitchSetStraightenRange{PitchStraightenRange{160, 240}}}
+    };
+    check(applyPitchEdits(source, state, correctRange) == PitchEditError::None, "straightening captures a source range");
+    edit = resolvePitchNoteEdit(source, state, 0);
+    check(near(pitchCorrectionCents(note, edit, 159), 0) && near(pitchCorrectionCents(note, edit, 160), 0) &&
+          near(pitchCorrectionCents(note, edit, 164), -2.8) && near(pitchCorrectionCents(note, edit, 200), -20) &&
+          near(pitchCorrectionCents(note, edit, 240), 0), "ranged correction preserves outside pitch, blends the edges and flattens the interior");
+
+    const PitchEditCommand move[] = {{0, PitchSetTiming{700, 1000}}};
+    check(applyPitchEdits(source, state, move) == PitchEditError::None &&
+          resolvePitchNoteEdit(source, state, 0).straightenRange == edit.straightenRange,
+          "warping destination timing preserves the authored source range");
+    const PitchEditCommand fullRange[] = {{0, PitchSetStraightenRange{PitchStraightenRange{100, 300}}}};
+    check(applyPitchEdits(source, state, fullRange) == PitchEditError::None &&
+          !resolvePitchNoteEdit(source, state, 0).straightenRange.has_value(), "a full source range uses the existing whole-note identity");
+    std::printf("Anchored end offsets +60/-30 cents, rotation -20/+60 cents, selected-range interior correction -20 cents\n");
+}
+
 void scaleAndTiming() {
     const auto source = fixture();
     PitchEditState state;
@@ -154,7 +189,12 @@ void rejectsMalformedInput() {
     const PitchEditCommand invalid[] = {
         {0, PitchSetShift{nan}}, {0, PitchSetStraighten{-1}}, {0, PitchSetTilt{nan}},
         {0, PitchSetFormant{1201}}, {0, PitchSetGain{19}}, {0, PitchSetDrift{1.1, true}},
-        {0, PitchSetTransition{9601}}, {0, PitchSetTiming{500, 500}}, {0, PitchSetTiming{900, 1001}}
+        {0, PitchSetTransition{9601}}, {0, PitchSetTiming{500, 500}}, {0, PitchSetTiming{900, 1001}},
+        {0, PitchSetTiltGeometry{{nan, 0, 0}}}, {0, PitchSetTiltGeometry{{0, 10, 0}}},
+        {0, PitchSetTiltGeometry{{1, 0, 10}}}, {0, PitchSetTiltGeometry{{0.5, 0, 2401}}},
+        {0, PitchSetStraightenRange{PitchStraightenRange{120, 120}}},
+        {0, PitchSetStraightenRange{PitchStraightenRange{99, 120}}},
+        {0, PitchSetStraightenRange{PitchStraightenRange{120, 301}}}
     };
     for (const auto& command : invalid) {
         check(applyPitchEdits(source, state, std::span{&command, 1}) == PitchEditError::InvalidValue &&
@@ -194,6 +234,7 @@ void rejectsMalformedInput() {
 int main() {
     contourAndLevel();
     driftAndTransition();
+    anchoredTiltAndRangedStraighten();
     scaleAndTiming();
     rejectsMalformedInput();
     std::printf("%d checks, %d failures\n", checks, failures);

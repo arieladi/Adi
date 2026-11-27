@@ -6,11 +6,27 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
 
 namespace adi::audio {
+
+struct PitchTiltGeometry {
+    double anchor = 0.5; // normalized source position, from first to last sample
+    double startCents = 0;
+    double endCents = 0;
+
+    bool operator==(const PitchTiltGeometry&) const = default;
+};
+
+struct PitchStraightenRange {
+    std::uint64_t startFrame;
+    std::uint64_t endFrame; // exclusive on the source frame clock
+
+    bool operator==(const PitchStraightenRange&) const = default;
+};
 
 // Edits address notes in one immutable source analysis. Destination bounds live
 // on that source's frame clock and end on the first frame outside the note.
@@ -26,6 +42,8 @@ struct PitchNoteEdit {
     double drift = 1;
     bool preserveExpression = false;
     std::uint64_t transitionFrames = 0;
+    PitchTiltGeometry tiltGeometry{};
+    std::optional<PitchStraightenRange> straightenRange{}; // absent means the entire note
 
     bool operator==(const PitchNoteEdit&) const = default;
 };
@@ -45,12 +63,14 @@ struct PitchSetDrift { double amount; bool preserveExpression; };
 struct PitchSetTransition { std::uint64_t frames; };
 struct PitchQuantize { engine::ScaleContext scale; double tonicCents; };
 struct PitchReset {};
+struct PitchSetTiltGeometry { PitchTiltGeometry geometry; };
+struct PitchSetStraightenRange { std::optional<PitchStraightenRange> range; };
 
 struct PitchEditCommand {
     std::size_t noteIndex;
     std::variant<PitchSetShift, PitchSetTiming, PitchSetStraighten, PitchSetTilt,
                  PitchSetFormant, PitchSetGain, PitchSetDrift, PitchSetTransition,
-                 PitchQuantize, PitchReset> change;
+                 PitchQuantize, PitchReset, PitchSetTiltGeometry, PitchSetStraightenRange> change;
 };
 
 enum class PitchEditError {
@@ -64,15 +84,22 @@ enum class PitchEditError {
     const PitchAnalysis&, PitchEditState&, std::span<const PitchEditCommand>);
 [[nodiscard]] PitchEditError validatePitchEdits(const PitchAnalysis&, const PitchEditState&);
 
+// Validates one authored row from known source geometry. The source note's
+// curve and summaries are not needed when validating a persisted edit.
+[[nodiscard]] bool validPitchNoteEdit(const PitchNote&, const PitchNoteEdit&, std::uint64_t sourceFrames,
+                                    std::uint32_t sampleRate) noexcept;
+
 // The state and note index must be valid. Unedited notes resolve to the source
 // time ranges and neutral controls. This query does not allocate.
 [[nodiscard]] PitchNoteEdit resolvePitchNoteEdit(
     const PitchAnalysis&, const PitchEditState&, std::size_t noteIndex) noexcept;
 
 // Evaluates correction at a finite source frame for a validated note and edit.
-// Straighten blends toward nominal pitch. Tilt adds a linear first-to-last
-// cents change about the midpoint. Drift retains this fraction of the source
-// pitch variation, or of the fitted linear trend with preserveExpression.
+// Straighten blends toward nominal pitch within the selected source range,
+// tapering at the range's interior edges. Tilt adds a first-to-last change
+// around the anchor, plus independent linear offsets on either side that
+// reach zero at the anchor. Drift retains this fraction of the source pitch
+// variation, or of the fitted linear trend with preserveExpression.
 // For adjacent destination spans, an incoming transition blends the previous
 // transpose offset into the current one over at most half the destination note.
 [[nodiscard]] double pitchCorrectionCents(

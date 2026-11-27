@@ -177,7 +177,7 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }
-const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains"};
+const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains","clip_pitch_edits"};
 void validDuplicate(const Payload& payload) {
     const auto id=detail::signedInteger(payload.at("id"));std::size_t roots=0;
     for(const auto& change:payload.at("changes")) {

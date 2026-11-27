@@ -181,6 +181,34 @@ void editCurve() {
         std::printf("pitch tilt over 300 ms: %.2f cents (requested 75)\n", slope);
         check(std::abs(slope - 75) < 10, "tilt introduces the authored pitch slope");
     }
+
+    edit.tiltCents = 0;
+    constexpr auto rangeStart = rate / 8;
+    constexpr auto rangeEnd = rate * 4 / 10;
+    edit.straightenRange = PitchStraightenRange{rangeStart, rangeEnd};
+    const auto ranged = renderPitchEdits(samples, analysis, PitchEditState{{edit}});
+    check(static_cast<bool>(ranged), "ranged straightening renders");
+    if (ranged) {
+        const std::span pcm(*ranged.samples);
+        const double center = cents(220, measureHz(pcm.subspan(rate / 5, rate / 10)));
+        std::printf("range-only straighten: %.2f cents error in selected area\n", center);
+        check(std::abs(center) < 10 && std::equal(samples.begin(), samples.begin() + rangeStart, pcm.begin()) &&
+              std::equal(samples.begin() + rangeEnd, samples.end(), pcm.begin() + rangeEnd),
+              "ranged straighten changes pitch within the range and preserves all other samples");
+    }
+
+    edit.straightenRange.reset();
+    edit.tiltGeometry = {0.5, 100, 0};
+    const auto sided = renderPitchEdits(samples, analysis, PitchEditState{{edit}});
+    check(static_cast<bool>(sided), "one-sided tilt renders");
+    if (sided) {
+        const std::span pcm(*sided.samples);
+        const double left = cents(220, measureHz(pcm.subspan(rate / 5, rate / 10)));
+        const double right = cents(220, measureHz(pcm.subspan(rate / 2, rate / 10)));
+        std::printf("one-sided tilt: %.2f cents on left, %.2f cents on right\n", left, right);
+        check(std::abs(left - 37.5) < 10 && std::abs(right) < 10,
+              "side tilt applies the selected anchor slope independently of the opposite side");
+    }
 }
 
 void transitionAndLimits() {

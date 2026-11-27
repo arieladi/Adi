@@ -189,9 +189,11 @@ void renderNote(std::span<const float> source, std::span<float> destination, std
     }
 
     const bool timeStretch = source.size() != destination.size();
-    const bool changingPitch = edit.straighten != 0 || edit.drift != 1 || edit.tiltCents != 0 ||
+    const bool changingOtherPitch = edit.drift != 1 || edit.tiltCents != 0 ||
+        edit.tiltGeometry.startCents != 0 || edit.tiltGeometry.endCents != 0 ||
         (preceding != nullptr && edit.transitionFrames != 0 && edit.pitchShiftCents != 0 &&
          preceding->pitchShiftCents != edit.pitchShiftCents);
+    const bool changingPitch = edit.straighten != 0 || changingOtherPitch;
     const bool needsDsp = changingPitch || timeStretch || edit.pitchShiftCents != 0 || edit.formantShiftCents != 0;
     if (needsDsp && rate > maxStretcherRate) throw PitchRenderError::Unsupported;
     if (!needsDsp && gain == 1 && !changesTime(note, edit)) return;
@@ -205,7 +207,17 @@ void renderNote(std::span<const float> source, std::span<float> destination, std
         const double formant = std::exp2(edit.formantShiftCents / 1200);
         processed = stretch(source, destination.size(), rate, pitch, formant, stop);
     }
-    overlay(destination, processed.empty() ? source : std::span<const float>(processed), rate, gain, stop);
+    std::span<const float> signal = processed.empty() ? source : std::span<const float>(processed);
+    if (edit.straightenRange && edit.straighten != 0 && !changingOtherPitch && edit.pitchShiftCents == 0 &&
+        edit.formantShiftCents == 0 && gain == 1 && !changesTime(note, edit)) {
+        // Even a unity-ratio vocoder introduces processing outside the
+        // requested span. Keep original samples where there is no edit.
+        const auto first = static_cast<std::size_t>(edit.straightenRange->startFrame - note.startFrame);
+        const auto count = static_cast<std::size_t>(edit.straightenRange->endFrame - edit.straightenRange->startFrame);
+        destination = destination.subspan(first, count);
+        signal = signal.subspan(first, count);
+    }
+    overlay(destination, signal, rate, gain, stop);
 }
 
 } // namespace

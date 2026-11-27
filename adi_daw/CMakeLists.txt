@@ -1853,7 +1853,8 @@ add_test(NAME adi_analysis_cache_trim_tests COMMAND adi_analysis_cache_trim_test
 
 target_sources(adi_core PRIVATE
     src/adi/audio/pitch_analysis.cpp src/adi/audio/pitch_edit.cpp
-    src/adi/audio/pitch_render.cpp src/adi/media/clip_pitch.cpp)
+    src/adi/audio/pitch_render.cpp src/adi/media/clip_pitch.cpp
+    src/adi/pitch_edit_store.cpp)
 add_executable(adi_pitch_analysis_tests tests/test_pitch_analysis.cpp)
 target_link_libraries(adi_pitch_analysis_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pitch_analysis_tests COMMAND adi_pitch_analysis_tests)
@@ -1866,6 +1867,16 @@ add_test(NAME adi_pitch_edit_tests COMMAND adi_pitch_edit_tests)
 add_executable(adi_pitch_render_tests tests/test_pitch_render.cpp)
 target_link_libraries(adi_pitch_render_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pitch_render_tests COMMAND adi_pitch_render_tests)
+
+set(ADI_PITCH_STAGED_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/pending/clip-pitch-edits-1.27.sql")
+add_executable(adi_pitch_edit_store_tests tests/test_pitch_edit_store.cpp)
+target_link_libraries(adi_pitch_edit_store_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_edit_store_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_edit_store_tests COMMAND adi_pitch_edit_store_tests)
+add_executable(adi_pitch_clip_image_tests tests/test_pitch_clip_image.cpp)
+target_link_libraries(adi_pitch_clip_image_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_clip_image_tests PRIVATE ADI_PITCH_STAGED_SCHEMA="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_clip_image_tests COMMAND adi_pitch_clip_image_tests)
 
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
