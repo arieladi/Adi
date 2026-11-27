@@ -11,8 +11,11 @@ Session engine seat taken on 27 November 2026.
 
 - Win reserved format 1.26 and the requested operations in e300f1d86. The Session DDL is staged under that number. Activation waits for the actual 1.24 DEV-06 and 1.25 DEV-07 schemas and frozen history. The latest implementation on origin is 1.23.
 - An unmodified 1.23 build has no essential-extension warning path. The branch implements the guard and tests it at reader level 1023. Backport the guard to the supported older release to warn there before distributing 1.26 files with occupied Session slots.
+- The new reservations confirm 1.26–1.28 stay staged until both lower migrations are on main.
 - Additional names used for Session data and playback are `scene.setSignature`, `scene.setEnabled`, `session.setStopButton`, `session.setLaunchSettings`, `session.cancelSceneLaunch`, `session.backToArrangement` and `session.setFollowActionsEnabled`, under the prefixes Win reserved.
 - The 12.4 Windows reading seat measured 120 BPM and 4/4 for a blank song. The Live Object Model returns -1 for disabled Scene values. An installed Live 12.4 reading is still needed for the raw dormant Scene fields and the fresh Audio/MIDI empty Stop-button defaults.
+
+- The stretcher companion already proves tempo-changing resident Warp, retained No Stop playback and Legato. It is based on an earlier Session head. At integration, keep the streamed Warp position on each split playback range and apply raw PCM capture only to prepared PCM. [Stretcher companion](https://github.com/arieladi/Adi/tree/seats/stretcher-session-integration)
 
 ## Queue
 
@@ -35,6 +38,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-04 fractional PCM loops | Added an optional bounded driver source-range tape and exact linear Arrangement placements for verified raw resident WAV loops at source rate (`82a6813e3`). | Four strict suites passed. The native graph heard alternating wrap lengths at frames 126, 150 and 175. Replay at a different callback width, commit, Undo, Redo and reopen matched all 1,000 samples. A missing range, invalid source bound, tape overflow or a timeline wrap refuses the capture. The trace path allocates and reads no files on the callback. | Pushed. Source-range capture for live region changes is the next item. |
 | TM-SV-04 live audio region replay | PCM source ranges now record run-local region revisions, even for an authored one-shot (`c0faf3052`). Coalescing retains the edit provenance. | Four strict suites passed. A loop enabled on the live graph at frame 200 replayed all 1,000 frames exactly at a changed callback width, after Undo, Redo and reopen. A transition-only capture and an incomplete PCM tape still refuse the take. | Pushed. Transient gain is the next item. |
 | TM-SV-04 live audio gain replay | The PCM tape splits the performed source stream at an audible gain change. A native-rate raw Float32 capture can encode gains that round-trip exactly through the Arrangement clip’s dB field when the frozen source gain is unity (`49b0c208a`). | Twelve strict suites passed. A .5 multiplier at frame 200 produced exactly two contiguous source ranges and replayed all 1,000 frames at a different callback width, through Undo, Redo and reopen. The no-tape, infinite multiplier and Float64 cases still refuse the take. | Pushed. The full regression is running against this engine head. |
+| Landed basics and platform fixes | Merged `origin/main` at `ed3da057c`, the updated Wincheck branch and the libc++ cast fixes (`60e02cbac`). Resolved recording and metronome overlap with the Session launch and slot capture paths. | Latest Wincheck reports both Windows builds and all 301 headless suites passed on its checked `9a2c9099b`. Clang’s 53-bit `long double` check passed with the two casts. All five Linux repository validators pass on this merged head. | Pushed. The full Linux rebuild follows the newly landed basics. |
 
 ## Readings owed
 
