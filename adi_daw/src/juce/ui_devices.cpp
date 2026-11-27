@@ -4,6 +4,7 @@
 #include "ui_browser.hpp"
 #include "ui_value_entry.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/media/media_ops.hpp"
 #include "juce/pd_declarations.hpp"
@@ -2843,10 +2844,20 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
         }
     }
     const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
+    const auto *track = root.reader().findTrack(selectedTrack);
+    const char *instruction = "Drop Audio Effects Here";
+    if (track == nullptr)
+        instruction = "Select a Track to Add Devices";
+    else if (track->kind == "master")
+        instruction = "Drop Audio Effects on Main";
+    else if (track->kind == "vca")
+        instruction = "VCA Tracks Do Not Take Devices";
+    else if (!hasAudioMixer(*track, presented.get()))
+        instruction = panels.empty() ? "Drop a MIDI Effect, Instrument or Sample Here"
+                                     : "Drop a MIDI Effect or Instrument Here";
     g.setColour(look::text);
     g.setFont(look::font(11.5f));
-    g.drawText(acceptsSample() ? "Drop an Instrument or Sample Here" : "Drop Audio Effects Here",
-               from, 0, std::max(0, getWidth() - from), getHeight(),
+    g.drawText(instruction, from, 0, std::max(0, getWidth() - from), getHeight(),
                juce::Justification::centred);
     // The chosen end: where a paste goes, marked as Live marks an insert point.
     if (endChosen()) {

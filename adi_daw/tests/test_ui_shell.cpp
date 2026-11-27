@@ -5616,6 +5616,49 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void deviceDropInstructions(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-drop-instructions.adi", true, {}, error);
+    check(document != nullptr, "SC-292: the project has audio, MIDI and Main tracks");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "device-drop-instructions");
+    root.setSize(1440, 900);
+    auto paints = [&](std::int64_t track, const char *instruction) {
+        root.arrangement.geometry.selection.track = track;
+        root.frame();
+        auto &strip = root.devices;
+        if (!strip.panels.empty() || strip.getLocalBounds().isEmpty())
+            return false;
+        const auto drawBounds = strip.getLocalBounds().withTrimmedLeft(10);
+        juce::Image actual(juce::Image::ARGB, strip.getWidth(), strip.getHeight(), true, juce::SoftwareImageType{});
+        juce::Image expected = actual.createCopy();
+        {
+            juce::Graphics g(actual);
+            strip.paint(g);
+        }
+        {
+            juce::Graphics g(expected);
+            g.fillAll(look::panel);
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f));
+            g.drawText(instruction, drawBounds, juce::Justification::centred);
+        }
+        for (int y = drawBounds.getCentreY() - 12; y < drawBounds.getCentreY() + 12; ++y)
+            for (int x = drawBounds.getX(); x < drawBounds.getRight(); ++x)
+                if (actual.getPixelAt(x, y) != expected.getPixelAt(x, y))
+                    return false;
+        return true;
+    };
+    check(paints(2, "Drop a MIDI Effect, Instrument or Sample Here"),
+          "an empty MIDI chain names its MIDI effects, instruments and sample drop");
+    check(paints(1, "Drop Audio Effects on Main"),
+          "the empty Main chain identifies its audio effects and destination");
+    check(paints(4, "Drop Audio Effects Here"), "an empty audio track still points to audio effects");
+    check(paints(0, "Select a Track to Add Devices"),
+          "the empty Device View asks for a destination when there is no selected track");
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -21795,6 +21838,7 @@ int main(int argc, char **argv) {
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
