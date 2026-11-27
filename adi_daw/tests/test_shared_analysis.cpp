@@ -58,6 +58,89 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void filledSpectrumCurves() {
+    using Curve = SharedAnalysis::FilledCurve;
+    constexpr int size = 4096, hop = 1024, rate = 48000, bin = 64;
+    constexpr std::size_t passes = 9;
+    const auto index = [](Curve curve) { return static_cast<std::size_t>(curve); };
+    std::array<float, 3 * size> samples{};
+    for (int i = 0; i < size; ++i)
+        samples[static_cast<std::size_t>(size + i)] = .8f *
+            static_cast<float>(std::sin(2 * std::numbers::pi * bin * i / size));
+
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, size};
+    auto raw = f.broker.acquire(request);
+    const auto sourceAcquisitions = f.acquireCalls;
+    request.outputs = SharedAnalysis::FilledSpectrum;
+    auto filled = f.broker.acquire(request);
+    auto sibling = f.broker.acquire(request);
+    f.tap->write(samples.data(), samples.data(), static_cast<int>(samples.size()), 0, true, 1);
+    f.broker.pump();
+    const auto result = filled.read();
+    const auto retained = sibling.read();
+    check(result && result->filledSpectrum && retained && retained->filledSpectrum &&
+              result->hopSize == hop && result->sampleRate == rate && result->filledSpectrum->processedWindows == passes &&
+              f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1 && f.broker.stats().taps == 1 &&
+              f.acquireCalls == sourceAcquisitions,
+          "Filled Spectrum processes all nine hops in a single pass on the shared raw FFT and tap");
+    if (!result || !result->filledSpectrum || !retained || !retained->filledSpectrum) return;
+
+    adi::dsp::Spectrum transform(size, adi::dsp::Window::Hann);
+    std::array<float, size / 2 + 1> magnitudes{};
+    const double interval = static_cast<double>(hop) / rate / .194;
+    const double powerStep = 1. - std::pow(.0001, interval);
+    const double peakStep = 1. - std::pow(.1, interval);
+    double realtimePower = 0., realtimePeak = 0., held = 0., totalPower = 0.;
+    for (std::size_t frame = 0; frame < passes; ++frame) {
+        transform.analyse(std::span<const float>(samples).subspan(frame * hop, size), magnitudes);
+        const double x = magnitudes[bin];
+        realtimePower += (x * x - realtimePower) * powerStep;
+        realtimePeak = std::max(x, realtimePeak + (x - realtimePeak) * peakStep);
+        held = std::max(held, x);
+        totalPower += x * x;
+    }
+    const auto &traces = result->filledSpectrum->magnitudes;
+    check(near(traces[index(Curve::RealtimeAverage)][bin], std::sqrt(realtimePower)) &&
+              near(traces[index(Curve::RealtimeMaximum)][bin], realtimePeak) &&
+              near(traces[index(Curve::HeldMaximum)][bin], held) &&
+              near(traces[index(Curve::Average)][bin], std::sqrt(totalPower / passes)) && held > .79 &&
+              raw.read() && raw.read()->binsDbfs[bin] < -60.f,
+          "both 194 ms realtime curves and both cumulative curves retain an intermediate peak before the latest frame");
+
+    const auto before = f.broker.stats();
+    f.broker.pump();
+    check(filled.read() == result && f.broker.stats().analysisWindows == before.analysisWindows,
+          "reading or pumping without new audio advances no Filled Spectrum curve");
+    check(filled.restartFilledSpectrum() && !filled.read() && sibling.read() == retained,
+          "Filled Spectrum Clear resets just the requesting view");
+    f.tap->write(samples.data(), samples.data(), size, static_cast<int>(samples.size()), true, 1);
+    f.broker.pump();
+    const auto fresh = filled.read(), continuing = sibling.read();
+    check(fresh && fresh->filledSpectrum && fresh->filledSpectrum->processedWindows == 1 &&
+              fresh->filledSpectrum->magnitudes[index(Curve::HeldMaximum)][bin] < .001f &&
+              continuing && continuing->filledSpectrum &&
+              near(continuing->filledSpectrum->magnitudes[index(Curve::HeldMaximum)][bin], held) &&
+              near(traces[index(Curve::HeldMaximum)][bin], held),
+          "the next wholly fresh window starts a new local interval while the sibling and old snapshot retain their peak");
+
+    const auto retainsPeak = [&] {
+        const auto next = sibling.read();
+        return next && next->filledSpectrum && near(next->filledSpectrum->magnitudes[index(Curve::HeldMaximum)][bin], held);
+    };
+    f.tap->write(samples.data(), samples.data(), size, 0, true, 1);
+    f.broker.pump();
+    check(retainsPeak(), "a loop discontinuity keeps the peak from the same play interval");
+    f.tap->write(samples.data(), samples.data(), size, size, false, 2);
+    f.broker.pump();
+    check(retainsPeak(), "stopping keeps the peak from the play interval");
+    f.tap->write(samples.data(), samples.data(), size, size, true, 3);
+    f.broker.pump();
+    const auto played = sibling.read();
+    check(played && played->filledSpectrum && played->filledSpectrum->processedWindows == 1 &&
+              played->filledSpectrum->magnitudes[index(Curve::HeldMaximum)][bin] < .001f,
+          "starting playback opens a new held interval");
+}
 void realtimeMaximumSpectrum() {
     constexpr int window = 480;
     constexpr int rate = 48000;
@@ -3067,7 +3150,7 @@ ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operat
 #undef ADI_TEST_NOINLINE
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

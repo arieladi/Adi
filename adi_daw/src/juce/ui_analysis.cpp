@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_analysis.hpp"
+#include "ui_filled_spectrum.hpp"
 #include "ui_look.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include <algorithm>
@@ -260,6 +261,12 @@ namespace {
 bool isMaximumSpectrum(SharedSpectrumView::Mode mode) noexcept {
     return mode == SharedSpectrumView::Mode::SpectrumMaximum || mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum;
 }
+juce::Rectangle<int> filledSpectrumPlot(juce::Rectangle<int> bounds) {
+    auto plot = bounds.reduced(5).withTrimmedTop(16);
+    if (plot.getWidth() >= 120) plot = plot.withTrimmedRight(30);
+    if (plot.getHeight() >= 44) plot = plot.withTrimmedBottom(14);
+    return plot;
+}
 void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mode) {
     if (mode == SharedSpectrumView::Mode::ClassicScope) {
         view.setTitle("Classic Scope");
@@ -274,6 +281,11 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
     if (mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum) {
         view.setTitle("Cumulative Maximum");
         view.setTooltip("Each spectrum bin holds its highest level in this view since the analysis interval began or was cleared.");
+        return;
+    }
+    if (mode == SharedSpectrumView::Mode::FilledSpectrum) {
+        view.setTitle("Filled Spectrum");
+        view.setTooltip("Frequency, note and level under the pointer. The darker fill holds the highest level in this view.");
         return;
     }
     view.setTitle("Channel spectrum");
@@ -293,7 +305,8 @@ SharedSpectrumView::SharedSpectrumView(bool compact) : compact_(compact) {
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
-        isMaximumSpectrum(mode) || isMaximumSpectrum(mode_)) frozen_ = false;
+        isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
+        mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
@@ -307,7 +320,8 @@ void SharedSpectrumView::setMode(Mode mode) {
         addChildComponent(*classicPanel_);
     }
     if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
-        isMaximumSpectrum(mode_) || isMaximumSpectrum(mode))
+        isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
+        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum)
         describeAnalysisView(*this, mode);
     mode_ = mode;
     if (classicPanel_) {
@@ -355,6 +369,12 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     if (spectrumScale_ != SpectrumScale::Wide) updateScaledSpectrum();
     repaint();
 }
+void SharedSpectrumView::setFilledSpectrumCurve(SharedAnalysis::FilledCurve curve) {
+    if (curve == filledCurve_ || curve < SharedAnalysis::FilledCurve::RealtimeAverage ||
+        curve > SharedAnalysis::FilledCurve::Average) return;
+    filledCurve_ = curve;
+    if (mode_ == Mode::FilledSpectrum) repaint();
+}
 void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     if (spectrumScale_ == scale) return;
     spectrumScale_ = scale;
@@ -399,6 +419,8 @@ void SharedSpectrumView::resetPicture() noexcept {
     maximumShown_.reset();
     scaledSpectrum_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
+    filledPointer_ = {-1, -1};
+    filledDisplaySlot_ = -1.;
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
     if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
@@ -469,6 +491,8 @@ void SharedSpectrumView::clear() {
     }
     if (mode_ == Mode::SpectrumCumulativeMaximum) {
         lease_.restartCumulativeMaximum();
+    } else if (mode_ == Mode::FilledSpectrum) {
+        lease_.restartFilledSpectrum();
     } else {
         armFreshBoundary();
     }
@@ -542,6 +566,10 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
             case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
             case Mode::SpectrumCumulativeMaximum: request.outputs = SharedAnalysis::CumulativeMaximum; break;
+            case Mode::FilledSpectrum:
+                request.fftSize = 4096;
+                request.outputs = SharedAnalysis::FilledSpectrum;
+                break;
             case Mode::ClassicScope: break; // Uses the continuous capture lease above.
             }
             try {
@@ -655,6 +683,7 @@ void SharedSpectrumView::frame() noexcept {
         classicFrame();
         return;
     }
+    const bool updateFilled = mode_ != Mode::FilledSpectrum || updateFilledDisplay();
     if (raster_ && raster_->theme != look::themeId()) {
         raster_->setPalette(paletteIndex_, paletteReversed_);
         try { raster_->recolor(); } catch (...) { raster_.reset(); }
@@ -687,7 +716,7 @@ void SharedSpectrumView::frame() noexcept {
     }
     // The cumulative lease owns its admission fence. A held picture can
     // remain unchanged across later hops after the fence has been satisfied.
-    if (next && mode_ == Mode::SpectrumCumulativeMaximum)
+    if (next && (mode_ == Mode::SpectrumCumulativeMaximum || mode_ == Mode::FilledSpectrum))
         freshRequired_ = false;
     if (next && freshRequired_) {
         const auto size = static_cast<std::int64_t>(next->request.fftSize);
@@ -697,6 +726,7 @@ void SharedSpectrumView::frame() noexcept {
         else freshRequired_ = false;
     }
     if (next && next->sourceEpoch == clearedEpoch_ && next->windowSerial <= clearedRevision_) next.reset();
+    if (next && shown_ && next->sourceEpoch == shown_->sourceEpoch && !updateFilled) return;
     // A recreated domain may restart these counters. A discarded publication
     // cannot leave a raster that later aliases the new domain's first result.
     if (!next) raster_.reset();
@@ -718,6 +748,21 @@ void SharedSpectrumView::frame() noexcept {
     try { updateRaster(); } catch (...) { raster_.reset(); }
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
     if (spectrumScale_ != SpectrumScale::Wide && pictureChanged) updateScaledSpectrum();
+}
+bool SharedSpectrumView::updateFilledDisplay() noexcept {
+    const auto slot = std::floor(juce::Time::getMillisecondCounterHiRes() * (filled_spectrum::framesPerSecond / 1000.));
+    if (slot == filledDisplaySlot_) return false;
+    filledDisplaySlot_ = slot;
+    juce::Point<int> pointer{-1, -1};
+    if (const auto *peer = getPeer(); isShowing() && peer && peer->getNativeHandle()) {
+        const auto position = getMouseXYRelative();
+        if (filledSpectrumPlot(getLocalBounds()).contains(position)) pointer = position;
+    }
+    if (pointer != filledPointer_) {
+        filledPointer_ = pointer;
+        repaint();
+    }
+    return true;
 }
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
@@ -931,8 +976,126 @@ juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<floa
     return plot;
 }
 
+void SharedSpectrumView::paintFilledSpectrum(juce::Graphics &g) const {
+    using namespace filled_spectrum;
+    g.fillAll(look::display);
+    const auto bounds = getLocalBounds();
+    const auto title = bounds.reduced(5).withHeight(14);
+    g.setFont(look::font(10.f, true));
+    g.setColour(look::textOnBand);
+    g.drawText(frozen_ ? "Filled Spectrum / Frozen" : "Filled Spectrum", title, juce::Justification::centredLeft);
+    const auto axes = filledSpectrumPlot(bounds);
+    if (axes.getWidth() < 2 || axes.getHeight() < 2) return;
+    const auto plot = axes.toFloat();
+    const auto xAt = [&](double hz) {
+        return plot.getX() + (plot.getWidth() - 1.f) * static_cast<float>(std::log(hz / lowHz) / logWidth());
+    };
+    const auto yAt = [&](float levelDb) {
+        return plot.getY() + (plot.getHeight() - 1.f) * std::clamp((topDb - levelDb) / (topDb - bottomDb), 0.f, 1.f);
+    };
+    const auto gradient = [&](juce::Colour top, juce::Colour bottom) {
+        return juce::ColourGradient(top, 0.f, plot.getY(), bottom, 0.f, plot.getBottom(), false);
+    };
+    g.setGradientFill(gradient(juce::Colour(38, 38, 38), juce::Colour(18, 18, 18)));
+    g.fillRect(plot);
+    g.setFont(look::font(9.f));
+    const auto labelColour = look::textOnBand;
+    const bool rightRuler = bounds.getWidth() >= 130;
+    const bool bottomRuler = bounds.getHeight() >= 70;
+    const bool denseScale = axes.getHeight() >= 136;
+    for (const int tick : {-13, -18, -24, -30, -36, -42, -48, -54, -60, -66, -72, -78, -80}) {
+        const bool endpoint = tick == -13 || tick == -80;
+        if (!denseScale && !endpoint && tick % 12 != 0) continue;
+        const auto y = juce::roundToInt(yAt(static_cast<float>(tick)));
+        g.setColour(juce::Colour(74, 74, 74));
+        g.drawHorizontalLine(y, plot.getX(), plot.getRight());
+        if (rightRuler && (endpoint || (y - axes.getY() >= 10 && axes.getBottom() - y >= 10))) {
+            g.setColour(labelColour);
+            g.drawText(juce::String(tick), axes.withX(axes.getRight()).withWidth(28).withY(y - 5).withHeight(10),
+                       juce::Justification::centredRight);
+        }
+    }
+    struct FrequencyTick { double hz; const char *label; };
+    constexpr std::array frequencies{FrequencyTick{10., "10"}, FrequencyTick{20., nullptr}, FrequencyTick{50., nullptr},
+        FrequencyTick{100., "100"}, FrequencyTick{200., nullptr}, FrequencyTick{500., nullptr}, FrequencyTick{1000., "1k"},
+        FrequencyTick{2000., nullptr}, FrequencyTick{5000., nullptr}, FrequencyTick{10000., "10k"}, FrequencyTick{20000., "20k"}};
+    for (const auto &tick : frequencies) {
+        const auto x = juce::roundToInt(xAt(tick.hz));
+        g.setColour(tick.label ? juce::Colour(74, 74, 74) : juce::Colour(56, 56, 56));
+        g.drawVerticalLine(x, plot.getY(), plot.getBottom());
+        if (bottomRuler && tick.label && (tick.hz != 10000. || axes.getRight() - x >= 31)) {
+            const auto tickWidth = std::min(30, axes.getWidth());
+            const auto labelX = std::clamp(x - tickWidth / 2, axes.getX(), axes.getRight() - tickWidth);
+            g.setColour(labelColour);
+            g.drawText(tick.label, juce::Rectangle<int>{labelX, axes.getBottom(), tickWidth, 14},
+                       juce::Justification::centred);
+        }
+    }
+    if (shown_ && shown_->filledSpectrum && shown_->request.fftSize > 0) {
+        juce::Graphics::ScopedSaveState clip(g);
+        if (!g.reduceClipRegion(axes)) return;
+        const auto binHz = shown_->sampleRate / shown_->request.fftSize;
+        const auto &spectra = shown_->filledSpectrum->magnitudes;
+        const auto frequencyStep = std::exp(logWidth() / static_cast<double>(axes.getWidth()));
+        const auto drawTrace = [&](SharedAnalysis::FilledCurve curve, juce::Colour edge, bool held) {
+            const auto &bins = spectra[static_cast<std::size_t>(curve)];
+            if (bins.empty()) return;
+            juce::Path trace;
+            auto low = lowHz;
+            float lastY = plot.getBottom();
+            for (int column = 0; column < axes.getWidth(); ++column) {
+                const auto upper = std::min(highHz, low * frequencyStep);
+                const auto magnitude = columnMagnitude(bins, binHz, low, upper);
+                const auto offset = spectrumDisplayOffset(SpectrumSlope::Tilt45, std::sqrt(low * upper));
+                const auto levelDb = dsp::toDbfs(magnitude) + static_cast<float>(offset);
+                lastY = yAt(levelDb);
+                const auto x = plot.getX() + static_cast<float>(column) + .5f;
+                if (column == 0) trace.startNewSubPath(plot.getX(), lastY);
+                trace.lineTo(x, lastY);
+                low = upper;
+            }
+            trace.lineTo(plot.getRight(), lastY);
+            auto fill = trace;
+            fill.lineTo(plot.getRight(), plot.getBottom());
+            fill.lineTo(plot.getX(), plot.getBottom());
+            fill.closeSubPath();
+            if (held) g.setColour(juce::Colour(60, 74, 29));
+            else g.setGradientFill(gradient(juce::Colour(135, 170, 59), juce::Colour(89, 111, 40)));
+            g.fillPath(fill);
+            g.setColour(edge);
+            g.strokePath(trace, juce::PathStrokeType(held ? 1.f : 1.4f));
+        };
+        drawTrace(SharedAnalysis::FilledCurve::HeldMaximum, juce::Colour(95, 119, 41), true);
+        drawTrace(filledCurve_, juce::Colour(159, 202, 67), false);
+    } else if (!compact_) {
+        g.setColour(juce::Colour(178, 178, 178));
+        const char *message = status_ == Status::Unavailable ? "Analysis source unavailable"
+                            : status_ == Status::Waiting ? "Waiting for audio" : "Analysis inactive";
+        g.drawFittedText(message, axes.reduced(6), juce::Justification::centred, 2);
+    }
+    if (axes.contains(filledPointer_) && axes.getHeight() >= 15) {
+        const auto hover = cursorAt(static_cast<double>(filledPointer_.x - axes.getX()) / (axes.getWidth() - 1),
+                                    static_cast<double>(filledPointer_.y - axes.getY()) / (axes.getHeight() - 1));
+        g.setColour(juce::Colour(216, 216, 216).withAlpha(.35f));
+        g.drawVerticalLine(filledPointer_.x, plot.getY(), plot.getBottom());
+        g.drawHorizontalLine(filledPointer_.y, plot.getX(), plot.getRight());
+        const auto tooltipWidth = std::min(172, axes.getWidth());
+        const auto tooltipX = std::clamp(filledPointer_.x + 5, axes.getX(), axes.getRight() - tooltipWidth);
+        const auto tooltipY = std::min(filledPointer_.y + 7, axes.getBottom() - 15);
+        const juce::Rectangle<int> tooltip{tooltipX, tooltipY, tooltipWidth, 15};
+        g.setColour(juce::Colour(27, 27, 27).withAlpha(.9f));
+        g.fillRect(tooltip);
+        g.setColour(juce::Colour(237, 237, 237));
+        const auto hz = hover.hz < 1000. ? juce::String(hover.hz, 1) + " Hz" : juce::String(hover.hz / 1000., 2) + " kHz";
+        g.drawText(hz + "  " + hover.note + juce::String(hover.octave) + (hover.cents >= 0 ? " +" : " ") +
+                       juce::String(hover.cents) + "c  " + juce::String(hover.levelDb, 1) + " dB",
+                   tooltip.reduced(3, 0), juce::Justification::centredLeft);
+    }
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
+    if (mode_ == Mode::FilledSpectrum) { paintFilledSpectrum(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
     const auto area = getLocalBounds().toFloat().reduced(5.f);
@@ -1109,6 +1272,7 @@ AnalysisPane::AnalysisPane() {
     modeBox.addItem("Realtime Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumMaximum) + 1);
     modeBox.addItem("Cumulative Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeMaximum) + 1);
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
+    modeBox.addItem("Filled Spectrum", static_cast<int>(SharedSpectrumView::Mode::FilledSpectrum) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
@@ -1177,10 +1341,11 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
     const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage ||
                           isMaximumSpectrum(mode);
-    resetButton.setTooltip(mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum
+    const bool filled = mode == SharedSpectrumView::Mode::FilledSpectrum;
+    resetButton.setTooltip(mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum || filled
         ? "Clear this view and restart its held maximum."
         : "Clear this view's display interval; other analyzer views and audio are unchanged.");
-    channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
+    channelBox.setEnabled(spectral || filled || mode == SharedSpectrumView::Mode::Spectrogram);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);

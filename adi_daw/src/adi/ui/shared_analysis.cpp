@@ -19,7 +19,8 @@ namespace adi::ui {
 namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
-                                     SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum;
+                                     SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
+                                     SharedAnalysis::FilledSpectrum;
 constexpr std::size_t maxHistoryColumns = 128;
 constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
 // PFFFT squares its unnormalised float bins. Leave headroom for that sum
@@ -50,7 +51,7 @@ bool usable(const std::shared_ptr<const engine::ScopeTap> &tap, std::int32_t n) 
 bool spectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram |
                        SharedAnalysis::Average1s | SharedAnalysis::RealtimeMaximum |
-                       SharedAnalysis::CumulativeMaximum)) != 0;
+                       SharedAnalysis::CumulativeMaximum | SharedAnalysis::FilledSpectrum)) != 0;
 }
 bool rawSpectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram)) != 0;
@@ -149,6 +150,61 @@ struct SharedAnalysis::CumulativeHistory {
         publication.store({});
     }
 };
+struct SharedAnalysis::FilledHistory {
+    struct Bin {
+        double realtimePower = 0., meanPower = 0.;
+        float realtimePeak = 0.f, heldPeak = 0.f;
+    };
+    std::vector<Bin> bins;
+    PublicationSlot<Result> publication;
+    std::uint64_t windows = 0, lastWindow = 0;
+    std::int64_t afterSequence = 0;
+
+    explicit FilledHistory(std::int32_t fftSize) : bins(static_cast<std::size_t>(fftSize / 2 + 1)) {}
+    void clear() noexcept {
+        std::fill(bins.begin(), bins.end(), Bin{});
+        windows = lastWindow = 0;
+        publication.store({});
+    }
+    void process(std::span<const float> input, double powerStep, double peakStep, std::uint64_t serial) noexcept {
+        const auto meanWeight = 1. / static_cast<double>(++windows);
+        for (std::size_t i = 0; i < bins.size(); ++i) {
+            auto &bin = bins[i];
+            const auto magnitude = input[i];
+            const auto power = static_cast<double>(magnitude) * magnitude;
+            bin.realtimePower += (power - bin.realtimePower) * powerStep;
+            bin.meanPower += (power - bin.meanPower) * meanWeight;
+            const auto released = bin.realtimePeak + (magnitude - bin.realtimePeak) * peakStep;
+            bin.realtimePeak = std::max(magnitude, static_cast<float>(released));
+            bin.heldPeak = std::max(bin.heldPeak, magnitude);
+        }
+        lastWindow = serial;
+    }
+    void publish(const Result &window) noexcept {
+        if (!lastWindow || lastWindow != window.windowSerial) return;
+        if (const auto previous = publication.load(); previous && previous->windowSerial == lastWindow &&
+            previous->outputs == window.outputs) return;
+        try {
+            auto curves = std::make_shared<FilledSpectrumResult>();
+            curves->processedWindows = windows;
+            for (auto &trace : curves->magnitudes) trace.resize(bins.size());
+            auto &realAverage = curves->magnitudes[static_cast<std::size_t>(FilledCurve::RealtimeAverage)];
+            auto &realPeak = curves->magnitudes[static_cast<std::size_t>(FilledCurve::RealtimeMaximum)];
+            auto &held = curves->magnitudes[static_cast<std::size_t>(FilledCurve::HeldMaximum)];
+            auto &average = curves->magnitudes[static_cast<std::size_t>(FilledCurve::Average)];
+            for (std::size_t i = 0; i < bins.size(); ++i) {
+                const auto &bin = bins[i];
+                realAverage[i] = static_cast<float>(std::sqrt(bin.realtimePower));
+                realPeak[i] = bin.realtimePeak;
+                held[i] = bin.heldPeak;
+                average[i] = static_cast<float>(std::sqrt(bin.meanPower));
+            }
+            auto picture = std::make_shared<Result>(window);
+            picture->filledSpectrum = std::move(curves);
+            publication.store(std::move(picture));
+        } catch (...) { /* Keep the previous complete picture after allocation failure. */ }
+    }
+};
 struct SharedAnalysis::Domain {
     explicit Domain(Request r) : request(r),
         ringLeft(static_cast<std::size_t>(r.fftSize)), ringRight(ringLeft.size()),
@@ -176,6 +232,7 @@ struct SharedAnalysis::Domain {
     std::unique_ptr<MaximumHistory> maximum;
     std::atomic<bool> neutralMaximum{true};
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
+    std::vector<std::shared_ptr<FilledHistory>> filledHistories;
     std::atomic<bool> cumulativeReady{true};
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
     bool meterPrepared = false;
@@ -302,7 +359,7 @@ struct SharedAnalysis::Domain {
             return item->lastWindow != 0;
         }), std::memory_order_release);
     }
-    void resetWindow(bool epoch) {
+    void resetWindow(bool epoch, bool resetFilled = true) {
         position = filled = sinceWindow = 0;
         completedWindowEnd.store(-1, std::memory_order_release);
         hasWindow = false; spectralWindow = historyWindow = 0;
@@ -317,6 +374,10 @@ struct SharedAnalysis::Domain {
             resetMaximum();
             for (const auto &history : cumulativeHistories) history->clear();
             cumulativeReady.store(cumulativeHistories.empty(), std::memory_order_release);
+            for (const auto &history : filledHistories) {
+                if (resetFilled) history->clear();
+                else history->publication.store({});
+            }
         }
         publishResult({});
     }
@@ -347,6 +408,10 @@ struct SharedAnalysis::Domain {
         activateAverage(sequence);
         activateMaximum(sequence);
         for (const auto &history : cumulativeHistories) {
+            history->afterSequence = sequence;
+            history->clear();
+        }
+        for (const auto &history : filledHistories) {
             history->afterSequence = sequence;
             history->clear();
         }
@@ -385,6 +450,8 @@ struct SharedAnalysis::Domain {
             std::vector<std::shared_ptr<CumulativeHistory>>().swap(cumulativeHistories);
             cumulativeReady.store(true, std::memory_order_release);
         }
+        if (!(bits & FilledSpectrum))
+            std::vector<std::shared_ptr<FilledHistory>>().swap(filledHistories);
         if (!spectralOutput(bits)) {
             spectrum.reset(); spectralWindow = 0;
             std::vector<float>().swap(scratch); std::vector<float>().swap(linear); std::vector<float>().swap(second);
@@ -394,7 +461,7 @@ struct SharedAnalysis::Domain {
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
-               !(bits & Average1s) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
+               !(bits & (Average1s | FilledSpectrum)) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
     }
     bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
@@ -431,7 +498,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 8> outputUsers{}; // State mutex
+    std::array<std::size_t, 9> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -519,7 +586,9 @@ struct SharedAnalysis::Domain {
             std::ranges::any_of(cumulativeHistories, [this](const auto &history) {
                 return firstSequence >= history->afterSequence;
             });
-        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible || cumulativeHop;
+        const bool filledHop = (bits & FilledSpectrum) && newWindow &&
+            std::ranges::any_of(filledHistories, [this](const auto &history) { return firstSequence >= history->afterSequence; });
+        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible || cumulativeHop || filledHop;
         if (needsSpectrum && !spectrum) return {};
         auto latest = std::make_shared<Result>();
         latest->request = request; latest->outputs = bits; latest->request.outputs = bits;
@@ -628,6 +697,15 @@ struct SharedAnalysis::Domain {
                 // Once every observer has an eligible window, further certified
                 // parked silence cannot change any held bin.
                 cumulativeReady.store(ready, std::memory_order_release);
+            }
+            if (filledHop) {
+                constexpr double averagingSeconds = .194;
+                const double interval = request.hopSize / (latest->sampleRate * averagingSeconds);
+                const double powerStep = -std::expm1(std::log(.0001) * interval);
+                const double peakStep = -std::expm1(std::log(.1) * interval);
+                for (const auto &history : filledHistories)
+                    if (firstSequence >= history->afterSequence)
+                        history->process(linear, powerStep, peakStep, windowSerial);
             }
             if (rawSpectralOutput(bits)) {
                 latest->binsDbfs.resize(linear.size());
@@ -1170,7 +1248,8 @@ struct SharedAnalysis::State {
         if (detach && release) { try { release(key); } catch (...) {} }
     }
     void drop(const std::shared_ptr<Domain> &domain, std::uint32_t outputs,
-              const std::shared_ptr<CumulativeHistory> &cumulative) noexcept {
+              const std::shared_ptr<CumulativeHistory> &cumulative,
+              const std::shared_ptr<FilledHistory> &filled) noexcept {
         ownerOnly();
         bool detach = false;
         const auto key = domain->request.source();
@@ -1182,6 +1261,7 @@ struct SharedAnalysis::State {
             if (domain->consumers) {
                 std::lock_guard domainLock(domain->mutex);
                 domain->dropCumulative(cumulative);
+                if (filled) std::erase(domain->filledHistories, filled);
                 domain->releaseUnused(domain->outputs.load(std::memory_order_acquire));
                 return;
             }
@@ -1309,6 +1389,8 @@ struct SharedAnalysis::State {
                 const auto need = d.filled < n ? n - d.filled : hop - d.sinceWindow;
                 const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size(),
                                                static_cast<std::size_t>(end - d.cursor.next)});
+                const auto lastTransportRevision = d.cursor.expectedRevision;
+                const bool previouslyAdvancing = d.cursor.expectedAdvancing;
                 ++reads;
                 auto read = d.tap->read(d.cursor, std::span<float>(readLeft.data(), length),
                                        std::span<float>(readRight.data(), length));
@@ -1319,7 +1401,11 @@ struct SharedAnalysis::State {
                     d.resetWindow(true); discontinuity = true; latest.reset(); continue;
                 }
                 if (read.status == engine::ScopeTap::ReadStatus::Discontinuity) {
-                    ++d.gaps; d.resetWindow(true); discontinuity = true; latest.reset();
+                    const bool stopped = previouslyAdvancing && !read.advancing &&
+                        read.transportRevision == lastTransportRevision + 1;
+                    const bool looped = previouslyAdvancing && read.advancing &&
+                        read.transportRevision == lastTransportRevision;
+                    ++d.gaps; d.resetWindow(true, !stopped && !looped); discontinuity = true; latest.reset();
                 }
                 if (!read.frames) break;
                 samples += static_cast<std::size_t>(read.frames);
@@ -1365,6 +1451,8 @@ struct SharedAnalysis::State {
                     auto averagePublication = d.makeAverageResult(latest);
                     auto maximumPublication = d.makeMaximumResult(latest);
                     d.publishCumulative(latest);
+                    if (latest->outputs & FilledSpectrum)
+                        for (const auto &history : d.filledHistories) history->publish(*latest);
                     d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication));
                     publications.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -1429,30 +1517,32 @@ struct SharedAnalysis::Scheduler {
     }
 };
 SharedAnalysis::Lease::Lease(std::weak_ptr<State> state, std::shared_ptr<Domain> domain, std::uint32_t outputs,
-                             std::shared_ptr<CumulativeHistory> cumulative)
-    : state_(std::move(state)), domain_(std::move(domain)), cumulative_(std::move(cumulative)), outputs_(outputs) {}
+                             std::shared_ptr<CumulativeHistory> cumulative, std::shared_ptr<FilledHistory> filled)
+    : state_(std::move(state)), domain_(std::move(domain)), cumulative_(std::move(cumulative)),
+      filled_(std::move(filled)), outputs_(outputs) {}
 SharedAnalysis::Lease::~Lease() { reset(); }
 SharedAnalysis::Lease::Lease(Lease &&other) noexcept
     : state_(std::move(other.state_)), domain_(std::move(other.domain_)), cumulative_(std::move(other.cumulative_)),
-      outputs_(std::exchange(other.outputs_, 0)) {}
+      filled_(std::move(other.filled_)), outputs_(std::exchange(other.outputs_, 0)) {}
 SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept {
     if (this != &other) {
         reset();
         state_ = std::move(other.state_);
         domain_ = std::move(other.domain_);
         cumulative_ = std::move(other.cumulative_);
+        filled_ = std::move(other.filled_);
         outputs_ = std::exchange(other.outputs_, 0);
     }
     return *this;
 }
 void SharedAnalysis::Lease::reset() noexcept {
-    if (domain_) if (auto state = state_.lock()) state->drop(domain_, outputs_, cumulative_);
-    cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
+    if (domain_) if (auto state = state_.lock()) state->drop(domain_, outputs_, cumulative_, filled_);
+    filled_.reset(); cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
 }
 SharedAnalysis::Lease::operator bool() const noexcept { return domain_ && !state_.expired() && domain_->active.load(std::memory_order_acquire); }
 bool SharedAnalysis::Lease::available() const noexcept { return static_cast<bool>(*this) && domain_->available.load(std::memory_order_acquire); }
 std::shared_ptr<const SharedAnalysis::Result> SharedAnalysis::Lease::read() const noexcept {
-    auto result = available() ? domain_->readResult() : nullptr;
+    auto result = available() ? (filled_ ? filled_->publication.load() : domain_->readResult()) : nullptr;
     return result && (result->outputs & outputs_) == outputs_ ? result : nullptr;
 }
 std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::readAverage() const noexcept {
@@ -1482,6 +1572,16 @@ bool SharedAnalysis::Lease::restartCumulativeMaximum() noexcept {
 }
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
+}
+bool SharedAnalysis::Lease::restartFilledSpectrum() noexcept {
+    const auto state = state_.lock();
+    if (!state || !filled_ || !available()) return false;
+    state->ownerOnly();
+    std::lock_guard lock(domain_->mutex);
+    if (!domain_->tap) return false;
+    filled_->afterSequence = domain_->tap->written();
+    filled_->clear();
+    return true;
 }
 bool SharedAnalysis::Lease::restartStereoMeter() noexcept {
     const auto state = state_.lock();
@@ -1690,23 +1790,30 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     if (found == state_->domains.end() && state_->jobCount() >= kMaxDomains) return {};
     auto cumulative = (request.outputs & CumulativeMaximum) ?
         std::make_shared<CumulativeHistory>(key.fftSize) : nullptr;
+    auto filled = (request.outputs & FilledSpectrum) ? std::make_shared<FilledHistory>(key.fftSize) : nullptr;
     if (found != state_->domains.end()) {
         std::lock_guard domainLock(found->second->mutex);
         if (cumulative) found->second->cumulativeHistories.reserve(found->second->cumulativeHistories.size() + 1);
+        if (filled) found->second->filledHistories.reserve(found->second->filledHistories.size() + 1);
         if (!found->second->ensureSpectrum(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         found->second->addCumulative(cumulative, sequence);
+        if (filled) {
+            filled->afterSequence = sequence;
+            found->second->filledHistories.push_back(filled);
+        }
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
         if (newlyRequested & RealtimeMaximum) found->second->activateMaximum(sequence);
         found->second->updateAvailability();
         ++found->second->consumers; ++state_->consumers;
-        return Lease(state_, found->second, request.outputs, std::move(cumulative));
+        return Lease(state_, found->second, request.outputs, std::move(cumulative), std::move(filled));
     }
     auto domain = std::make_shared<Domain>(key);
     if (!domain->ensureSpectrum(request.outputs)) return {};
     domain->addCumulative(cumulative, 0);
+    if (filled) domain->filledHistories.push_back(filled);
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
     auto &t = tap->second;
     const auto previousTap = t.value;
@@ -1725,8 +1832,9 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     if (request.outputs & Average1s) domain->activateAverage(admission);
     if (request.outputs & RealtimeMaximum) domain->activateMaximum(admission);
     if (cumulative) cumulative->afterSequence = admission;
+    if (filled) filled->afterSequence = admission;
     state_->domains.emplace(key, domain); ++state_->consumers;
-    return Lease(state_, std::move(domain), request.outputs, std::move(cumulative));
+    return Lease(state_, std::move(domain), request.outputs, std::move(cumulative), std::move(filled));
 }
 SharedAnalysis::Lease SharedAnalysis::acquireStereoMeter(std::int64_t track, StereoMeterProfile profile) {
     Request request{track, engine::ScopePoint::PostFader, 32};

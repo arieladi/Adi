@@ -17751,6 +17751,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                       "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
                 actual.state().zoom = oldZoom;
                 mix.analysis.detail.view.freeze(false); mix.analysis.setMode(SharedSpectrumView::Mode::Spectrum);
+                mix.analysis.detail.setMode(SharedSpectrumView::Mode::Spectrum);
                 mix.analysis.detail.slopeBox.setSelectedId(2, juce::sendNotificationSync);
                 mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
                 broker->pump(); mix.frame(actual.reader()); mix.analysis.detail.view.freeze(true);
@@ -17828,6 +17829,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                               mix.analysis.page() == MixAnalysers::Page::Spectrum && actual.state().mixViewTab == 0 &&
                               actual.state().mixAnalyzerDock && !dock.isShowing() && broker->stats().consumers == visibleConsumers,
                           "Overview folds into Spectrum once and only the visible consumers retain demand");
+                    mix.analysis.detail.setMode(SharedSpectrumView::Mode::Spectrum);
                     auto detached = std::make_unique<AnalysisPane>();
                     auto &spectrum = mix.analysis.detail.view;
                     detached->setSpectrumSlope(spectrum.spectrumSlope());
@@ -19589,8 +19591,8 @@ int main(int argc, char **argv) {
         };
 
         pick(1, "Spectrogram");
-        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Extended,
-              "the filled spectrum uses the existing filled display");
+        check(infoView.getTitle() == "Filled Spectrum",
+              "the Info choice activates the filled spectrum with its own worker profile");
         pick(2, "Filled Spectrum");
         check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Device,
               "the line spectrum uses the existing line display");
@@ -19607,6 +19609,11 @@ int main(int argc, char **argv) {
         }
         pick(0, "Classic Scope");
         a.mixViewPanel.analysis.setMode(Mode::Spectrum);
+        const auto &analysis = a.mixViewPanel.analysis;
+        check(analysis.detail.view.getTitle() == "Filled Spectrum" &&
+                  analysis.spectrumTraceBox.getNumItems() == 4 &&
+                  analysis.spectrumTraceBox.getText() == "Realtime Maximum",
+              "the Mix Spectrum opens Filled Spectrum with four curves and Realtime Maximum selected");
         a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
         a.mouseUp(dragAt(a, centre, centre));
         check(!a.state().mixView, "dragging across the Info box does not open Analysers");
