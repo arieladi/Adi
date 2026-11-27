@@ -3,7 +3,6 @@ Codex took the stretcher seat on 27 November 2026.
 ## Still unbuilt
 
 - M3-LAUNCH L2 through the actual Session slot graph. Connect the slot loader and scheduler to the streaming source and verify a running scene tempo change.
-- R3 admission must use the tempo heard by the clip. An unrelated 300 BPM event can currently send an in-range clip to the prepared path.
 - A cold seek into a variable-tempo R3 clip can meet a cached page produced with different phase history. Make the boundary continuous and test it with an audible fixture.
 
 The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC report contains no stretcher entry or fix branch. Live 12.4 reference measurements are tracked under Readings owed.
@@ -16,6 +15,7 @@ The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC repor
 | TM-WT-04 compatibility gate | Shared playback retains the first saved tempo before its first event, and loop recording takes the same canonical clock. The two-point Warp split fixture compares timeline samples after graph compensation. | The document suite passed 687 checks including SC-27. The clip playback suite passed 615 checks, including exact splits, Undo and Redo in both precisions. Recording command and recorder suites passed 452 checks. | `1052fcd26` passed all 283 CTest suites in 190.19 s and all five validators. |
 | TM-WT-04 adjacent onsets and page reads | Beats keeps the first attack when two onsets round to the same output sample. Beats skips unused interpolation neighbors and Texture skips grains with zero Hann gain. | The collapsed attack now reads 0.75 FS and its continuation 0.25 FS. The Beats and Texture tests read only contributing PCM. Strict GCC, checked iterators, ASan and UBSan passed. | `4aa1413b9` on the stretcher chain. |
 | TM-WT-04 driver clock portability | Traverse immutable tempo and meter data without checked vector iterators in timing, count-in, device transport and the metronome. Make conversions explicit where MSVC uses 53-bit `long double`. | A checked-iterator probe measured 2,025 mutex calls before and zero afterward with the same clock checksum. The transport, Session and R3 compensation checks passed under strict GCC. Native MSVC validation is pending. | `50f971c6f` on the stretcher chain. |
+| TM-WT-04 local R3 ratio admission | Check the tempo range from the source origin through the audible placement, including loop laps and excluding tempo changes at the end boundary. | A 300 BPM step at beat 16 or 80 previously cleared graph latency to zero. The new path reports 2,048 frames and plays the expected landmark at 0.815 FS. A 300 BPM step inside the clip still takes the prepared fallback. | `2a0d9f70f` on the stretcher chain. |
 
 The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, page publication, physical delay and clip diagnostics. `CMakeLists.txt` registers the engines and tests. `docs/ENGINE-WARP.md` records the playback contract. The Warp work requires no format, operation or register reservation.
 
