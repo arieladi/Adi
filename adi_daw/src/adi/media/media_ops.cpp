@@ -256,16 +256,48 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
                           audio::DecodeCache* cache) {return prepareImport(store,path,id,time,request,cache,{});}
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
                           audio::DecodeCache* cache,std::stop_token stop) {return prepareImport(store,path,id,time,request,cache,stop,false);}
+namespace {
+// SC-390: why a file cannot be imported, in plain words and by its name, never the engine's words after its
+// full path (a decoder's error number, "unsupported audio dimensions", "cannot hash" for a folder).
+std::string plainly(const std::string& name, audio::DecodeProblem problem) {
+    const auto quoted = "\u201c" + name + "\u201d";
+    switch (problem) {
+    case audio::DecodeProblem::Unreadable:
+        return quoted + " could not be read: it is a folder, it is gone, or another program holds it.";
+    case audio::DecodeProblem::UnknownFormat:
+        return quoted + " is not an audio file ADI reads (WAV, AIFF, FLAC, MP3, Ogg Vorbis, AAC or M4A).";
+    case audio::DecodeProblem::Corrupt:
+        return quoted + " is damaged or cut short: its audio does not decode.";
+    case audio::DecodeProblem::Unsupported:
+        return quoted + " has a sample rate or channel count ADI cannot play.";
+    case audio::DecodeProblem::NoSpace:
+        return quoted + " is too large for the decoding cache: free disk space, or raise the cache's limit in Settings.";
+    case audio::DecodeProblem::CacheWrite:
+        return quoted + " could not be prepared: the decoding cache's folder cannot be written.";
+    case audio::DecodeProblem::CodecUnavailable:
+        return quoted + " needs a codec this computer cannot use.";
+    case audio::DecodeProblem::NoAudio:
+        return quoted + " holds no audio.";
+    case audio::DecodeProblem::Cancelled:
+        return "Cancelled.";
+    case audio::DecodeProblem::AudioThread:
+        break;
+    }
+    return quoted + " could not be imported.";
+}
+} // namespace
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
                           audio::DecodeCache* cache,std::stop_token stop,bool headerOnly) {
     if(audio::onAudioThread)return {};
     request = {};
+    const auto name = pathUtf8(path.filename());
     try {
         if (store.readOnly()) return {false, "project is read-only"};
         const auto source = path.is_absolute() ? path : projectFolder(store) / path;
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
         const auto hash = blake3File(source,stop);
-        if (!hash) return {false, "cannot hash " + pathUtf8(source)};
+        if (!hash)
+            return {false, stop.stop_requested() ? std::string("Cancelled.") : plainly(name, audio::DecodeProblem::Unreadable)};
         Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
         row["format"]="";
         const auto info=captureAudio(source,row,cache,stop,headerOnly);
@@ -277,7 +309,7 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
                                "import it."};
         const auto verified=blake3File(source,stop);
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
-        if (!verified || hash.hex!=verified.hex) return {false,"media changed during import capture"};
+        if (!verified || hash.hex!=verified.hex) return {false,"\u201c" + name + "\u201d changed while it was read: drop it again."};
         SQLite::Statement existing(store.db(), "SELECT id FROM media_files WHERE hash_blake3=?"); existing.bind(1, hash.hex);
         if (existing.executeStep()) {
             const auto found = existing.getColumn(0).getInt64(); std::string error;
@@ -296,7 +328,18 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
         row["size_bytes"] = static_cast<std::int64_t>(size); row["imported_utc"] = time;
         request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}};
         return {true, {}, id, false, info};
-    } catch (const std::exception& e) { return {false, e.what()}; }
+    } catch (const audio::DecodeError& e) {
+        return {false, plainly(name, e.problem())};
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        if (what == "unsupported audio dimensions")
+            return {false, plainly(name, audio::DecodeProblem::Unsupported)};
+        if (what == "media import cancelled")
+            return {false, "Cancelled."};
+        if (what == "media changed during import capture")
+            return {false, "\u201c" + name + "\u201d changed while it was read: drop it again."};
+        return {false, what};
+    }
 }
 MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
     OpRequest request;

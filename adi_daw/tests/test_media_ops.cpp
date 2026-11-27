@@ -308,6 +308,32 @@ void longPathImports() {
           ("a sample at a "+std::to_string(path.native().size())+"-character path imports: "+prepared.error).c_str());
     fs::remove_all(f.folder()/std::string(40,'d'),ec);
 }
+// SC-390: a file ADI cannot read says why in plain words, by its name, never the engine's words after its
+// full path.
+void plainWordsForUnreadable() {
+    Fixture f;auto& s=*f.store;
+    const auto plain=[&](const fs::path& path,const char* words,const char* what){
+        OpRequest captured;
+        const auto prepared=media::prepareImport(s,path,13,123,captured);
+        const auto folder=f.folder().string();
+        check(!prepared.ok && prepared.error.find(words)!=std::string::npos &&
+              prepared.error.find(path.filename().string())!=std::string::npos &&
+              prepared.error.find(folder)==std::string::npos,
+              (std::string(what)+": "+prepared.error).c_str());
+    };
+    const auto folder=f.folder()/"Drums";
+    fs::create_directories(folder);
+    plain(folder,"could not be read","a folder is said plainly, not \"cannot hash\" and its path");
+    const auto broken=f.folder()/"broken.wav";
+    {
+        const char header[]="RIFF\x10\x00\x00\x00WAVEfmt garbage that never ends well";
+        std::ofstream out(broken,std::ios::binary);
+        out.write(header,static_cast<std::streamsize>(sizeof header-1));
+    }
+    plain(broken,"damaged or cut short","a damaged WAV is said plainly");
+    const auto missing=f.folder()/"gone.wav";
+    plain(missing,"could not be read","a file that is gone is said plainly");
+}
 void captureDecodeAndDedup() {
     Fixture f;audio::DecodeCache cache(f.temp.path()/"decoded",{1024*1024,0});
     OpRequest captured;
@@ -371,7 +397,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); longPathImports(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); longPathImports(); plainWordsForUnreadable(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }
