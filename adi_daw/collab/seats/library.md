@@ -51,3 +51,9 @@ Six GuitarSet 4/4 guitar accompaniments from the CC BY 4.0 release, with their o
 | Tempo Acc1 and Acc2, ±4% | 0/6 | 4/6 | 5/6 |
 
 Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesced within 10 ms. Candidate onset F and independent beat_this results are still owed. Essentia supplied beats and tempo. The corpus has six clips from three styles and one instrument. Gate results need broader instrumentation, meters, and held-out arrangements. The experiment and its reproducible setup are in the cloud workspace at `/workspace/scratch/adi-warp-feasibility/setup.sh`. [GuitarSet](https://zenodo.org/records/3371780) · [Mixxx](https://github.com/mixxxdj/mixxx/tree/902cfc2543d7ef65bda1678e6f3c3e98be4aa39d)
+
+## Continued acceptance on 27 November
+
+| Item | Change and proof | State |
+|---|---|---|
+| TM-MD-04, JSON round trip | Chain `7d15f9b59`. Library JSON carries authored key plus observed key strength and BPM provenance. The authored settings and two kinds of observations round-tripped between databases, source precedence was checked, and malformed imports rolled back both results. GCC warnings-as-errors linked fixture passed 65 checks. | Exchange slice pushed. |
