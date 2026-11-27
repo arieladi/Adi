@@ -4631,6 +4631,45 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
+
+    auto &geo = root.arrangement.geometry;
+    geo.hidden.clear();
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    geo.grid.snap = true;
+    const juce::Point<float> body(static_cast<float>(geo.x(bar / 2)) + 1.f,
+                                 static_cast<float>(laneTop(root, 2) + 20));
+    canvas.mouseDown(pressAt(canvas, body));
+    canvas.mouseUp(pressAt(canvas, body));
+    check(sel.track == 2 && sel.marked && sel.insert == bar / 2 && sel.start == sel.end && sel.clip == 0,
+          "SC-175: a plain clip body click places only the insert marker");
+    const auto clipsBeforeDelete = clipsOf(2);
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(clipsOf(2) == clipsBeforeDelete, "SC-175: Delete after a body click does not remove the clip");
+    const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
+        const auto y = static_cast<float>(laneTop(root, track) + 20);
+        const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
+        const juce::Point<float> release(static_cast<float>(geo.x(to)) + (to > from ? -1.f : 1.f), y);
+        canvas.mouseDown(pressAt(canvas, press));
+        canvas.mouseDrag(dragAt(canvas, press, release));
+        canvas.mouseUp(dragAt(canvas, press, release));
+        check(sel.track == track && sel.start == from && sel.end == to && sel.insert == from &&
+                  sel.clip == 0 && sel.pickedClips.empty(),
+              "SC-175: a clip body drag keeps its press point as the anchor and selects only time");
+    };
+    dragInsideClip(2, bar / 2, bar);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "SC-175: Delete the dragged range");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{
+                            {0, bar / 2}, {bar, bar}, {3 * bar, bar / 2}},
+          "SC-175: Delete keeps both fragments and the later clip");
+
+    dragInsideClip(3, bar, bar / 2);
+    check(canvas.keyPressed(split), "SC-175: Ctrl/Cmd+E after dragging backwards inside a clip");
+    root.frame();
+    check(clipsOf(3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}},
+          "SC-175: Ctrl/Cmd+E splits at both ends of a backwards drag");
     commands.detach(root);
     document->release();
 }
@@ -5317,6 +5356,87 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     // With nothing chosen, Copy says what to choose.
     marker(2, 0);
     check(!root.command(AppCommands::Copy) && !root.error().empty(), "Copy with no clip or time selection says what to select");
+
+    // SC-179: two explicitly picked clips with both a time gap and an unpicked track between them.
+    std::vector<OpRequest> multi;
+    const auto add = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        request.label = "Set up clip selection";
+        multi.push_back(std::move(request));
+    };
+    const auto pasteAt = 5 * bar;
+    const auto gapAt = pasteAt + 3 * bar / 2;
+    add("track.create", {{"id", 20}, {"kind", "instrument"}, {"name", "Lower MIDI"}, {"index", 2}});
+    add("clip.create", {{"id", 61}, {"track", 20}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar / 2}});
+    add("clip.create", {{"id", 62}, {"track", 2}, {"kind", "midi"}, {"pos", bar}, {"length", bar / 2}});
+    add("clip.create", {{"id", 63}, {"track", 2}, {"kind", "midi"}, {"pos", gapAt}, {"length", bar / 4}});
+    add("clip.create", {{"id", 64}, {"track", 3}, {"kind", "midi"}, {"pos", pasteAt + bar / 2}, {"length", bar / 4}});
+    check(document->ops().submit(std::move(multi)).ok && document->synchronise(), "SC-179 fixture creates the sparse selection");
+    root.frame();
+    const Clips upper{{0, bar}, {bar, bar / 2}, {gapAt, bar / 4}};
+    const Clips between{{0, bar / 2}, {pasteAt + bar / 2, bar / 4}};
+    const Clips lower{{2 * bar, bar / 2}};
+    auto &arrangement = root.arrangement;
+    auto &canvas = arrangement.canvas;
+    const auto pickBoth = [&] {
+        const auto clickTitle = [&](std::int64_t track, std::int64_t at, juce::ModifierKeys mods) {
+            const juce::Point<float> p{static_cast<float>(arrangement.geometry.x(at)) + 5.f,
+                                        static_cast<float>(laneTop(root, track) + 5)};
+            canvas.mouseDown(pressAt(canvas, p, mods));
+            canvas.mouseUp(pressAt(canvas, p));
+        };
+        clickTitle(20, 2 * bar, {});
+        clickTitle(2, 0, juce::ModifierKeys::commandModifier);
+        check(sel.clip == 61 && sel.pickedClips == std::vector<std::int64_t>{50},
+              "SC-179 fixture picks two clips, starting with the later one");
+    };
+    const auto fixtureStep = document->ops().nextUndo();
+    const auto undoOne = [&](const char *caption) {
+        const auto step = document->ops().nextUndo();
+        check(fixtureStep && step && step->txnId != fixtureStep->txnId && root.command(AppCommands::Undo), caption);
+        root.frame();
+        const auto after = document->ops().nextUndo();
+        check(fixtureStep && after && after->txnId == fixtureStep->txnId &&
+                  clipsOf(2) == upper && clipsOf(3) == between && clipsOf(20) == lower,
+              "SC-179: one Undo restores the full arrangement");
+    };
+
+    pickBoth();
+    check(root.keyPressed(copyKey), "SC-179: Copy two clips");
+    marker(2, pasteAt);
+    check(root.keyPressed(pasteKey), "SC-179: paste the two clips at the new marker");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {pasteAt, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {pasteAt + 2 * bar, bar / 2}},
+          "SC-179: Paste preserves clip offsets and leaves the unpicked material in the gaps");
+    undoOne("SC-179: undo Paste");
+
+    pickBoth();
+    check(root.keyPressed(cutKey), "SC-179: Cut the picked clips");
+    root.frame();
+    check(clipsOf(2) == Clips{{bar, bar / 2}, {gapAt, bar / 4}} && clipsOf(3) == between && clipsOf(20).empty(),
+          "SC-179: Cut removes exactly the two picked clips");
+    undoOne("SC-179: undo Cut");
+
+    pickBoth();
+    check(root.keyPressed(duplicateKey), "SC-179: Duplicate the picked clips");
+    root.frame();
+    const auto offset = 5 * bar / 2;
+    check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {offset, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {offset + 2 * bar, bar / 2}},
+          "SC-179: Duplicate places both clips at their original offsets after the selection");
+    const auto selectedCopy = [&](std::int64_t track, std::int64_t at) {
+        const auto *row = root.reader().findTrack(track);
+        return row != nullptr && std::any_of(row->clips.begin(), row->clips.end(), [&](const auto &clip) {
+            return clip->posTicks == at && arrangement.geometry.clipSelected(clip->id);
+        });
+    };
+    check(arrangement.geometry.selectedClips().size() == 2 &&
+              selectedCopy(2, offset) && selectedCopy(20, offset + 2 * bar),
+          "SC-179: both duplicates are selected");
+    undoOne("SC-179: undo Duplicate");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();
@@ -5687,6 +5807,75 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     // Nothing selected: the …Time commands say what to do.
     select(bar, bar);
     check(!root.command(AppCommands::DeleteTime) && !root.error().empty(), "Delete Time with no time selected says so");
+
+    // SC-176: the two menus offer the commands that can act on their selections.
+    commands.clipClipboard().held = std::monostate{};
+    auto &arrangement = root.arrangement;
+    auto &canvas = arrangement.canvas;
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(arrangement.geometry.x(tick)); };
+    const auto item = [](const juce::PopupMenu &menu, const juce::String &caption) -> const juce::PopupMenu::Item * {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == caption)
+                return &it.getItem();
+        return nullptr;
+    };
+    const auto enabled = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        const auto *entry = item(menu, caption);
+        return entry != nullptr && entry->isEnabled;
+    };
+    const auto invoke = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        if (const auto *entry = item(menu, caption); entry != nullptr && entry->isEnabled && entry->action) {
+            entry->action();
+            return true;
+        }
+        return false;
+    };
+    const auto y = static_cast<float>(laneTop(root, 2));
+    const juce::Point<float> clipTitle{x(2 * bar) + 5.f, y + 5.f};
+    canvas.mouseDown(pressAt(canvas, clipTitle));
+    canvas.mouseUp(pressAt(canvas, clipTitle));
+    check(sel.clip == 50, "SC-176 fixture selects the MIDI clip by its title");
+    const auto clipMenu = arrangement.contextMenuItems(false);
+    check(enabled(clipMenu, "Delete") && enabled(clipMenu, "Deactivate") && enabled(clipMenu, "Loop Selection"),
+          "SC-176: a MIDI clip's menu offers Delete, Deactivate and Loop Selection");
+    const auto *colour = item(clipMenu, "Clip Colour");
+    check(colour != nullptr && colour->customComponent != nullptr, "SC-176: the clip menu offers individual colour");
+    if (colour != nullptr && colour->customComponent != nullptr) {
+        auto *palette = colour->customComponent.get();
+        palette->mouseUp(pressAt(*palette, {4.f + 3.f * 17.f + 2.f, 8.f}));
+        root.frame();
+        check(root.reader().findTrack(2)->clips.front()->color == 3,
+              "SC-176: choosing a swatch changes the clip's colour");
+    }
+    juce::StringArray inapplicable;
+    for (juce::PopupMenu::MenuItemIterator it(clipMenu); it.next();)
+        for (const auto *word : {"Crop", "Consolidate", "Fade"})
+            if (it.getItem().text.containsIgnoreCase(word))
+                inapplicable.add(it.getItem().text);
+    check(inapplicable.isEmpty(), "SC-176: a MIDI clip's menu omits Crop, Consolidate and audio fades");
+    check(invoke(clipMenu, "Deactivate"), "SC-176: choose Deactivate from the clip's menu");
+    root.frame();
+    const auto &midi = root.reader().findTrack(2)->clips;
+    check(midi.size() == 1 && midi.front()->id == 50 && midi.front()->muted &&
+              !root.reader().findTrack(3)->clips.front()->muted,
+          "SC-176: Deactivate acts on the selected clip");
+
+    const juce::Point<float> from{x(2 * bar) + 1.f, y + 20.f}, to{x(3 * bar) - 1.f, y + 20.f};
+    canvas.mouseDown(pressAt(canvas, from));
+    canvas.mouseDrag(dragAt(canvas, from, to));
+    canvas.mouseUp(dragAt(canvas, from, to));
+    check(sel.clip == 0 && sel.start == 2 * bar && sel.end == 3 * bar, "SC-176 fixture selects time over the MIDI clip");
+    const auto timeMenu = arrangement.contextMenuItems(false);
+    for (const auto *caption : {"Cut", "Copy", "Delete", "Duplicate", "Cut Time", "Copy Time", "Delete Time",
+                                "Duplicate Time", "Insert Silence"})
+        check(enabled(timeMenu, caption), ("SC-176: the time selection's menu offers " + juce::String(caption)).toRawUTF8());
+    check(item(timeMenu, "Paste Time") == nullptr, "SC-176: Paste Time is absent with an empty clipboard");
+    check(root.command(AppCommands::CopyTime) && enabled(arrangement.contextMenuItems(false), "Paste Time"),
+          "SC-176: a time copy makes Paste Time available");
+    check(invoke(timeMenu, "Delete"), "SC-176: choose Delete from the time selection's menu");
+    root.frame();
+    check(clipsOf(2).empty() && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar,
+          "SC-176: Delete removes selected material without deleting time");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();
@@ -9952,7 +10141,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto pick = juce::ModifierKeys::commandModifier;
         auto clickClip = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
-            const juce::Point<float> at(x(bar) + 10, lane(track));
+            const juce::Point<float> at(x(bar) + 10, static_cast<float>(laneTop(root, track) + 5));
             canvas.mouseDown(pressAt(canvas, at, mods));
             canvas.mouseUp(pressAt(canvas, at, mods));
         };
@@ -10190,6 +10379,136 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     click(title(2));
     check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
           "a plain click on 2 selects it alone");
+
+    // SC-174: opening a menu on selected material keeps the target of its commands.
+    int laneMenus = 0, headerMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
+        if (header)
+            ++headerMenus;
+        else
+            ++laneMenus;
+    };
+    const auto popup = [](juce::Component &component, juce::Point<float> at) {
+        component.mouseDown(pressAt(component, at, juce::ModifierKeys::rightButtonModifier));
+        component.mouseUp(pressAt(component, at));
+    };
+    const juce::Point<float> rangeFrom{x(0) + 1, lane(1)}, rangeTo{x(2 * bar) - 1, lane(3)};
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto timeSelection = geo.selection;
+    check(timeSelection.clip == 0 && timeSelection.toTrack == 3 && timeSelection.start < timeSelection.end,
+          "SC-174 fixture selects time across three tracks");
+    popup(canvas, {x(bar) + 6, lane(2)});
+    check(geo.selection == timeSelection, "SC-174: a clip under a selected range keeps the time selection");
+
+    const auto clipTitle = [&](std::int64_t id) {
+        return juce::Point<float>{x(bar) + 6, static_cast<float>(laneTop(root, id) + 5)};
+    };
+    canvas.mouseDown(pressAt(canvas, clipTitle(1)));
+    canvas.mouseUp(pressAt(canvas, clipTitle(1)));
+    const juce::Point<float> splitPoint{x(bar + bar / 2) + 1, lane(1)};
+    auto singleClipSelection = geo.selection;
+    singleClipSelection.insert = geo.tick(juce::roundToInt(splitPoint.x));
+    check(singleClipSelection.insert != geo.selection.insert, "SC-174 fixture opens at a new point in the clip");
+    const bool wasSnapping = std::exchange(geo.grid.snap, false);
+    popup(canvas, splitPoint);
+    geo.grid.snap = wasSnapping;
+    check(geo.selection == singleClipSelection, "SC-174: a single clip keeps its selection and Split uses the popup point");
+
+    canvas.mouseDown(pressAt(canvas, clipTitle(3), cmd));
+    canvas.mouseUp(pressAt(canvas, clipTitle(3)));
+    const auto clipSelection = geo.selection;
+    check(clipSelection.clip == 11 && clipSelection.pickedClips == std::vector<std::int64_t>{13},
+          "SC-174 fixture picks two clips");
+    popup(canvas, clipTitle(3));
+    check(geo.selection == clipSelection, "SC-174: a right-click keeps both picked clips");
+
+    click(title(1));
+    click(title(3), cmd);
+    const auto trackSelection = geo.selection;
+    popup(headers, title(3));
+    check(geo.selection == trackSelection && geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 3},
+          "SC-174: a right-click on a selected header keeps both picked tracks");
+
+    engine::Transport driver;
+    mailbox.setSampleRate(48000.);
+    mailbox.drain(driver);
+    driver.locate(1357);
+    driver.play();
+    mailbox.publish(driver);
+    root.frame();
+    const auto position = driver.position();
+    const auto revision = driver.revision();
+    const juce::Point<float> outside{x(2 * bar) + 6, lane(4)};
+    popup(canvas, outside);
+    mailbox.drain(driver);
+    const auto insert = geo.snap(geo.tick(static_cast<int>(outside.x)), false);
+    check(geo.selection.track == 4 && geo.selection.clip == 14 && geo.selection.insert == insert,
+          "SC-174: a right-click outside the selection chooses the clicked clip and sets the insert marker");
+    check(driver.playing() && driver.position() == position && driver.revision() == revision,
+          "SC-174: opening the menu outside the selection does not seek during playback");
+    check(laneMenus == 4 && headerMenus == 1, "SC-174: each right-click requests the matching menu");
+
+    const auto pickClip = [&](std::int64_t track) {
+        canvas.mouseDown(pressAt(canvas, clipTitle(track)));
+        canvas.mouseUp(pressAt(canvas, clipTitle(track)));
+        return geo.selection.insert;
+    };
+    const auto trackOnly = [&](std::int64_t track, std::int64_t insert) {
+        const auto &sel = geo.selection;
+        return sel.track == track && sel.toTrack == 0 && sel.picked.empty() && sel.clip == 0 &&
+               sel.pickedClips.empty() && sel.marked && sel.insert == insert && sel.start == insert &&
+               sel.end == insert;
+    };
+    const auto sameTrackInsert = pickClip(1);
+    check(geo.selection.clip == 11, "SC-177 fixture selects the clip on track 1");
+    click(title(1));
+    check(trackOnly(1, sameTrackInsert), "SC-177: clicking the same track's title clears the clip and time selection");
+    canvas.keyPressed(juce::KeyPress('0'));
+    root.frame();
+    check(!clipOf(1)->muted, "SC-177: 0 on the selected track leaves the clip active");
+
+    const auto otherTrackInsert = pickClip(3);
+    check(geo.selection.clip == 13, "SC-177 fixture selects the clip on track 3");
+    click(title(4));
+    check(trackOnly(4, otherTrackInsert), "SC-177: clicking another track's title selects only that track");
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    const auto &fourth = root.reader().findTrack(4)->clips;
+    check(fourth.size() == 1 && fourth.front()->id == 14 && fourth.front()->posTicks == bar &&
+              fourth.front()->lengthTicks == 2 * bar,
+          "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
+
+    const auto popupInsert = pickClip(3);
+    int retargetedHeaderMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
+        if (header)
+            ++retargetedHeaderMenus;
+    };
+    headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
+    headers.mouseUp(pressAt(headers, title(4)));
+    root.arrangement.onContextMenu = nullptr;
+    check(retargetedHeaderMenus == 1 && trackOnly(4, popupInsert),
+          "SC-177: a popup on another title clears the earlier clip's time range");
+
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto rangeInsert = geo.selection.insert;
+    check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start < geo.selection.end,
+          "SC-177 fixture selects a time range across tracks");
+    headers.mouseDown(pressAt(headers, title(2)));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 2, 3},
+          "SC-177: pressing a selected track title keeps multiple tracks for dragging");
+    headers.mouseUp(pressAt(headers, title(2)));
+    check(trackOnly(2, rangeInsert), "SC-177: releasing without dragging selects just the clicked track");
+    canvas.keyPressed(juce::KeyPress('x', cmd, 0));
+    root.frame();
+    const auto &second = root.reader().findTrack(2)->clips;
+    check(second.size() == 1 && second.front()->id == 12 && second.front()->posTicks == bar &&
+              second.front()->lengthTicks == bar,
+          "SC-177: Cut after releasing a track title leaves the clip intact");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -14187,14 +14506,26 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
     root.exportAudio = [&](const ExportChoices &c) { asked = c; };
-    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
-    // at the project's rate.
-    const auto &transport = root.reader().transport();
+    // R36: leave the loop off and place the insert marker beyond a song longer than its brace.
+    const auto songLength = 11 * textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 20}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", songLength}};
+    check(document->ops().submit(std::move(clip)).ok && document->synchronise(), "SC-394 fixture creates an eleven-bar song");
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.insert = selection.start = selection.end = 19 * textproj::kWhole;
+    selection.marked = true;
+    const auto transport = root.reader().transport();
     check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
-              asked->startTicks == transport.loopStartTicks &&
-              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->startTicks == 0 && asked->lengthTicks == songLength &&
               asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
-          "the loop brace with the loop off, Main, at the project's rate");
+          "SC-394: with no range and looping off, export defaults to the whole song");
+    check(root.toggleLoop() && root.command(AppCommands::ExportAudio) &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks,
+          "SC-394: with looping on, export still defaults to the brace");
+    check(root.toggleLoop(), "SC-394 fixture turns looping off again");
     auto &sel = root.arrangement.geometry.selection;
     sel.start = 3840;
     sel.end = 3840 * 5;
@@ -20063,15 +20394,18 @@ int main(int argc, char **argv) {
             const auto origin =
                 peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
+            const auto title =
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 5})
+                    .toFloat();
             juce::int64 when = 100000;
             auto mouse = [&](juce::Point<float> point, int mods) {
                 peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
                                        juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
             };
             arrangement.geometry.selection.clip = 0;
-            mouse(origin, 0);
-            mouse(origin, juce::ModifierKeys::leftButtonModifier);
-            mouse(origin, 0);
+            mouse(title, 0);
+            mouse(title, juce::ModifierKeys::leftButtonModifier);
+            mouse(title, 0);
             check(arrangement.geometry.selection.clip == 1 && arrangement.geometry.selection.marked,
                   "peer dispatch hit-tests, selects the painted clip and places the marker");
             mouse(origin, juce::ModifierKeys::leftButtonModifier);

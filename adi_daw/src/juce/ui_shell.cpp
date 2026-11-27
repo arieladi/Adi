@@ -26,6 +26,7 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -2392,14 +2393,15 @@ ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
                     return {t.get(), c.get()};
     return {};
 }
-bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
+bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || isMidiTrack(t); }
+std::string_view clipTrackKind(const engine::TrackNode &t) { return isMidiTrack(t) ? "midi" : std::string_view(t.kind); }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
 std::string imageKind(const Payload &image) {
     if (image.contains("row") && image["row"].contains("kind") && image["row"]["kind"].is_string())
         return image["row"]["kind"].get<std::string>();
     return {};
 }
-std::string kindWord(const std::string &kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
+std::string kindWord(std::string_view kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
 } // namespace
 bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
     // The device chain's when a device has the keyboard focus (Live's focus is where the command
@@ -2491,7 +2493,7 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (trackClipboardContext())
         if (const auto *track = current->findTrack(sel.track); track != nullptr && track->kind != "master")
             return true;
-    if (chosenClip(*current, sel).clip != nullptr)
+    if (!sel.pickedClips.empty() || chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
         return false;
@@ -2627,7 +2629,8 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                                               return t == nullptr || !arrangement.geometry.shown(id) || !holdsClips(*t);
                                           }),
                            selection.tracks.end());
-    if (command != ClipCommand::Paste && chosen.clip == nullptr && (!range || selection.tracks.empty()))
+    if (command != ClipCommand::Paste && sel.pickedClips.empty() && chosen.clip == nullptr &&
+        (!range || selection.tracks.empty()))
         return fail("Select a device, a clip, or a time selection on tracks with clips, first.");
     // A clip chosen after an edit: the new one, at its span in the refreshed snapshot.
     const auto chooseClip = [&](std::int64_t id) {
@@ -2661,6 +2664,67 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         dirty_.mark(DirtySet::Status);
         arrangement.changed();
     };
+    if (command != ClipCommand::Paste && !sel.pickedClips.empty()) {
+        const auto ids = arrangement.geometry.selectedClips();
+        std::vector<std::int64_t> lanes;
+        std::vector<ClipPlace> places;
+        std::size_t firstLane = 0, lastLane = 0;
+        auto begin = std::numeric_limits<std::int64_t>::max();
+        std::int64_t end = 0;
+        for (const auto row : arrangement.geometry.rows(reader())) {
+            const auto *track = row.track;
+            if (!arrangement.geometry.shown(track->id) || !holdsClips(*track))
+                continue;
+            const auto lane = lanes.size();
+            lanes.push_back(track->id);
+            for (const auto &clip : track->clips) {
+                if (!clip || !arrangement.geometry.clipSelected(clip->id))
+                    continue;
+                if (places.empty())
+                    firstLane = lane;
+                lastLane = lane;
+                begin = std::min(begin, clip->posTicks);
+                end = std::max(end, clip->posTicks + clip->lengthTicks);
+                places.push_back({clip->id, track->id, clip->posTicks});
+            }
+        }
+        if (places.size() != ids.size() || end <= begin)
+            return fail("The selected clips are no longer in the Arrangement.");
+
+        if (command == ClipCommand::Duplicate) {
+            const auto span = end - begin;
+            if (end > std::numeric_limits<std::int64_t>::max() - span)
+                return fail("The duplicates would extend past the end of the timeline.");
+            for (auto &place : places)
+                place.position += span;
+            const auto copies = copyClips(places, "Duplicate Clips");
+            if (copies.empty())
+                return false;
+            chooseClip(copies.front());
+            sel.pickedClips.assign(std::next(copies.begin()), copies.end());
+        } else {
+            clip_edit::RangeSelection group{{}, {0, begin}, {0, end}};
+            for (auto lane = firstLane; lane <= lastLane; ++lane)
+                group.tracks.push_back(lanes[lane]);
+            if (command == ClipCommand::Cut) {
+                auto cut = clip_edit::prepareCutClips(store, group, ids, rate);
+                if (!cut.copy.ok)
+                    return fail(cut.copy.error);
+                if (!commitEdit(std::move(cut.edit)))
+                    return false;
+                board.held = std::move(cut.copy);
+                timeSelection(group.tracks.front(), group.tracks.front(), begin, begin);
+            } else {
+                auto copy = clip_edit::copySelectedClips(store, group, ids, rate);
+                if (!copy.ok)
+                    return fail(copy.error);
+                board.held = std::move(copy);
+            }
+            commands_.manager.commandStatusChanged();
+        }
+        succeeded();
+        return true;
+    }
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
@@ -2717,9 +2781,9 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             return fail("Select an audio or MIDI track to paste on.");
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
             // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
-            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
+            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != clipTrackKind(*track))
                 return fail("The copied clip goes on " + kindWord(kind) + " track: " + shownName(arrangement.geometry, reader(), track->id) + " is " +
-                            kindWord(track->kind) + " track.");
+                            kindWord(clipTrackKind(*track)) + " track.");
             // A new identity, never the copied clip's own: after a Cut of the newest clip, the
             // project's next free id is the one the copy still carries.
             auto id = audio_drop_detail::newClipId(*current);
@@ -2759,17 +2823,23 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             // Each source track's material onto a track of its kind: the source's kind from the
             // project, else from its copied clips.
             for (std::size_t i = 0; i < wanted; ++i) {
+                if (!rangeCopy.clearsRange &&
+                    std::none_of(rangeCopy.images.begin(), rangeCopy.images.end(), [i, wanted](const auto &image) {
+                        return image.value("trackIndex", wanted) == i;
+                    }))
+                    continue;
                 const auto source = rangeCopy.selection.tracks[i];
                 std::string kind;
                 if (const auto *t = reader().findTrack(source))
-                    kind = t->kind;
+                    kind = clipTrackKind(*t);
                 for (const auto &image : rangeCopy.images)
                     if (kind.empty() && image.contains("row") && image["row"].value("track_id", std::int64_t{0}) == source)
                         kind = imageKind(image);
                 const auto *target = reader().findTrack(targets[i]);
-                if (!kind.empty() && target != nullptr && target->kind != kind)
+                if (!kind.empty() && target != nullptr && clipTrackKind(*target) != kind)
                     return fail("The copy's track " + std::to_string(i + 1) + " goes on " + kindWord(kind) +
-                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " + kindWord(target->kind) + " track.");
+                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " +
+                                kindWord(clipTrackKind(*target)) + " track.");
             }
             if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
                 return false;
@@ -3786,8 +3856,7 @@ bool AdiRootComponent::toggleRecord() {
     return true;
 }
 ExportChoices AdiRootComponent::exportDefaults() const {
-    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
-    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    // R36: without a time selection or an active loop, export covers the Arrangement.
     ExportChoices c;
     const auto &sel = arrangement.geometry.selection;
     const auto current = view_.current();
@@ -3795,8 +3864,8 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         // A selection made right to left is the same range.
         c.startTicks = std::min(sel.start, sel.end);
         c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
-    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
-        // The loop brace, whether the loop is switched on or not, as Live's.
+    } else if (current && current->transport.loopEnabled &&
+               current->transport.loopEndTicks > current->transport.loopStartTicks) {
         c.startTicks = current->transport.loopStartTicks;
         c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
     } else {
