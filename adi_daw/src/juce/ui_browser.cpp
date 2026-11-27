@@ -6,6 +6,10 @@
 #include <algorithm>
 namespace adi::ui {
 namespace {
+constexpr std::size_t kMaxGramBytes = 3;
+std::uint32_t addGramByte(std::uint32_t key, char byte) {
+    return (key << 8U) | static_cast<std::uint32_t>(static_cast<unsigned char>(byte));
+}
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder };
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
@@ -103,6 +107,82 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     }
 }
 } // namespace
+BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing_(std::move(listing)) {
+    foldedNames_.reserve(listing_.samples.size());
+    for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
+        const auto &sample = listing_.samples[i];
+        const auto &name = foldedNames_.emplace_back(juce::String::fromUTF8(sample.name.c_str()).toLowerCase().toStdString());
+        for (std::size_t start = 0; start < name.size(); ++start) {
+            // A leading 1 distinguishes grams of different widths, even for non-ASCII names.
+            std::uint32_t key = 1;
+            const auto length = std::min(kMaxGramBytes, name.size() - start);
+            for (std::size_t offset = 0; offset < length; ++offset) {
+                key = addGramByte(key, name[start + offset]);
+                auto &posting = postings_[key];
+                if (posting.empty() || posting.back() != i)
+                    posting.push_back(i);
+            }
+        }
+    }
+    // A sample deduplicated by the library index may belong to several overlapping Places.
+    // Keep their path-based membership here, so changing the query never compares paths.
+    for (const auto &place : listing_.places) {
+        if (place.volumeId.empty())
+            continue;
+        auto &scope = places_[place.volumeId];
+        scope.ordered.clear();
+        scope.contains.assign(listing_.samples.size(), false);
+        if (place.root.empty())
+            continue;
+        for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
+            const auto relative = listing_.samples[i].path.lexically_relative(place.root);
+            if (!relative.empty() && *relative.begin() != "..") {
+                scope.ordered.push_back(i);
+                scope.contains[i] = true;
+            }
+        }
+    }
+}
+void BrowserLibrarySnapshot::appendSamples(std::string_view query, const std::string *volume,
+                                           std::vector<const LibraryFile *> &results) const {
+    const PlaceSamples *scope = nullptr;
+    if (volume != nullptr) {
+        const auto found = places_.find(*volume);
+        if (found == places_.end())
+            return;
+        scope = &found->second;
+    }
+
+    const SampleIndices *shortest = nullptr;
+    const auto gramSize = std::min(kMaxGramBytes, query.size());
+    if (gramSize != 0) {
+        for (std::size_t start = 0; start <= query.size() - gramSize; ++start) {
+            std::uint32_t key = 1;
+            for (const char byte : query.substr(start, gramSize))
+                key = addGramByte(key, byte);
+            const auto found = postings_.find(key);
+            if (found == postings_.end())
+                return;
+            if (shortest == nullptr || found->second.size() < shortest->size())
+                shortest = &found->second;
+        }
+    }
+    // Every posting follows library order. The rarest gram (or a smaller Place) limits
+    // how many names need the full substring check. A one-gram query already matches exactly.
+    if (scope != nullptr && (shortest == nullptr || scope->ordered.size() < shortest->size())) {
+        for (const auto i : scope->ordered)
+            if (query.empty() || foldedNames_[i].find(query) != std::string::npos)
+                results.push_back(&listing_.samples[i]);
+    } else if (shortest != nullptr) {
+        const bool exact = gramSize == query.size();
+        for (const auto i : *shortest)
+            if ((scope == nullptr || scope->contains[i]) && (exact || foldedNames_[i].find(query) != std::string::npos))
+                results.push_back(&listing_.samples[i]);
+    } else {
+        for (const auto &sample : listing_.samples)
+            results.push_back(&sample);
+    }
+}
 BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
@@ -204,9 +284,16 @@ juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
     return juce::StringArray::fromLines(text.fromFirstOccurrenceOf("adi-sample:", false, false));
 }
 void BrowserPanel::setListing(LibraryListing listing, bool ready) {
+    setLibrarySnapshot(std::make_shared<const BrowserLibrarySnapshot>(std::move(listing)), ready);
+}
+const LibraryListing &BrowserPanel::listing() const noexcept {
+    static const LibraryListing empty;
+    return library_ ? library_->listing() : empty;
+}
+void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
     // The label chosen stays chosen across a new listing, found again by its name and place.
     const auto keep = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : Entry{};
-    listing_ = std::move(listing);
+    library_ = std::move(library);
     ready_ = ready;
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
@@ -216,7 +303,7 @@ void BrowserPanel::setListing(LibraryListing listing, bool ready) {
     for (auto &e : sidebar_)
         if (e.name == "User Library" && !e.heading)
             e.place.clear();
-    for (const auto &place : listing_.places) {
+    for (const auto &place : listing().places) {
         if (place.userLibrary) {
             for (auto &e : sidebar_)
                 if (e.name == "User Library" && !e.heading)
@@ -241,7 +328,8 @@ void BrowserPanel::setListing(LibraryListing listing, bool ready) {
 }
 void BrowserPanel::revealSample(std::filesystem::path path) {
     cancelHotSwap();
-    const bool indexed = std::any_of(listing_.samples.begin(), listing_.samples.end(),
+    const auto &samples = listing().samples;
+    const bool indexed = std::any_of(samples.begin(), samples.end(),
                                      [&path](const auto &file) { return file.path == path; });
     const auto entry = std::find_if(sidebar_.begin(), sidebar_.end(), [indexed](const auto &label) {
         return indexed ? label.samples : label.name == "Current Project";
@@ -299,27 +387,17 @@ void BrowserPanel::refill() {
     const bool swappingDevices = hotSwap_ && !hotSwap_->samples;
     using Role = ::adi::detail::DeviceRole;
     const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
+    const auto text = search.getText();
     // Samples, or a Place the listing holds, by its volume; the search alone looks through Samples.
     const bool samples = hotSwap_ ? hotSwap_->samples
-                                  : chosen.samples || (selected_ < 0 && search.getText().isNotEmpty());
-    std::filesystem::path root;
-    for (const auto &p : listing_.places)
-        if (!chosen.place.empty() && p.volumeId == chosen.place)
-            root = p.root;
-    const auto query = search.getText().trim().toLowerCase();
-    // A Place lists every sample under its folder, a folder inside it included.
-    const auto under = [&root](const std::filesystem::path &path) {
-        const auto rel = path.lexically_relative(root);
-        return !rel.empty() && *rel.begin() != "..";
-    };
-    if (samples || !root.empty())
-        for (const auto &f : listing_.samples)
-            if ((samples || under(f.path)) &&
-                (query.isEmpty() || juce::String::fromUTF8(f.name.c_str()).toLowerCase().contains(query)))
-                shown_.push_back(&f);
+                                  : chosen.samples || (selected_ < 0 && text.isNotEmpty());
+    const auto query = text.trim().toLowerCase();
+    if (library_ && (samples || !chosen.place.empty()))
+        library_->appendSamples(query.toRawUTF8(), samples ? nullptr : &chosen.place, shown_);
     if (revealedSample_ && chosen.name == "Current Project")
         shown_.push_back(&*revealedSample_);
     rows_.clear();
+    rows_.reserve(shown_.size());
     for (const auto *f : shown_)
         rows_.push_back({f, nullptr, {}});
     if (swappingDevices && pluginScan_.phase == PluginScan::Phase::Scanning)
@@ -811,7 +889,7 @@ void BrowserPanel::choose(int i) {
         else if (!ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
         else if (shown_.empty())
-            root_.say(listing_.places.empty() || (!entry.samples && entry.place.empty())
+            root_.say(listing().places.empty() || (!entry.samples && entry.place.empty())
                           ? "Set the User Library or add a folder in the Settings' Library page to list samples."
                           : (entry.name + " holds no audio files.").toStdString());
     }
