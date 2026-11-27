@@ -261,7 +261,7 @@ struct ProjectDocument::SaveJob {
     bool keptTake = false;
     bool switched = false;
     bool readersSwitched = false;
-    std::string adoptionWarning;
+    std::string adoptionWarning, stateWarning;
     std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::stop_source stop;
     StoreFileSave file;
@@ -594,6 +594,14 @@ void ProjectDocument::OpenJob::advance() {
         fail(error.what());
     }
 }
+namespace {
+void appendWarning(std::string &message, const std::string &addition) {
+    if (addition.empty()) return;
+    if (!message.empty()) message += ' ';
+    message += addition;
+}
+} // namespace
+
 History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
                                                       std::int64_t nowUtc, int utcOffsetMinutes) {
     if (store_->readOnly()) {
@@ -651,10 +659,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave, 
     }
     const bool readersSwitched = followSaveAs(result, wasRecording && landed_ && landed_->ok);
     waveformSource_->waitForReader(oldPath);
-    if (const auto retirementWarning = file.closeReplacedProject(); !retirementWarning.empty()) {
-        if (!warning_.empty()) warning_ += ' ';
-        warning_ += retirementWarning;
-    }
+    appendWarning(warning_, file.closeReplacedProject());
+    appendWarning(warning_, pluginStateWarning_);
     if (readersSwitched && firstSave)
         store_->finishUntitledSave();
     return true;
@@ -716,6 +722,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
         return false;
     }
     warning_ = result.warning;
+    appendWarning(warning_, pluginStateWarning_);
     error_.clear();
     return true;
 }
@@ -758,6 +765,7 @@ void ProjectDocument::advanceSave() {
         job.phase = Phase::failed;
     };
     const auto finish = [&] {
+        appendWarning(warning_, job.stateWarning);
         error_.clear();
         job.phase = Phase::succeeded;
     };
@@ -794,6 +802,7 @@ void ProjectDocument::advanceSave() {
                 fail(error_);
                 return;
             }
+            job.stateWarning = pluginStateWarning_;
             const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
                             : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
             const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
@@ -891,6 +900,7 @@ bool ProjectDocument::collectAllAndSave() {
             warning_ += ' ';
         warning_ += "Collected, but the session did not re-read the project: " + error_;
     }
+    appendWarning(warning_, pluginStateWarning_);
     error_.clear();
     return true;
 }
@@ -901,12 +911,14 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
         return false;
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
+    out.stateWarning = pluginStateWarning_;
     error_.clear();
     return true;
 }
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        const auto result = media::collectExport(job.project, job.zip, control);
+        auto result = media::collectExport(job.project, job.zip, control);
+        appendWarning(result.warning, job.stateWarning);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
@@ -1093,6 +1105,13 @@ void ProjectDocument::pollParameterEdits() {
     feed_.publish(session_, realisedGeneration_);
 }
 bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
+    return capturePluginStateImpl(deviceId, !deviceId);
+}
+bool ProjectDocument::requirePluginState() {
+    return capturePluginStateImpl({}, false);
+}
+bool ProjectDocument::capturePluginStateImpl(std::optional<std::int64_t> deviceId, bool bestEffort) {
+    pluginStateWarning_.clear();
     if (store_->readOnly())
         return true;
     if (!synchronise())
@@ -1111,8 +1130,10 @@ bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
         return false;
     const auto now = captureNowMs();
     const auto finish = engine::ParamOps::SnapshotGestures::FinishOpen;
+    using Policy = engine::ParamOps::SnapshotPolicy;
+    const auto policy = bestEffort ? Policy::UseStoredOnCaptureFailure : Policy::RequireAll;
     const auto captured = deviceId ? parameterOps_.snapshotDeviceState(*deviceId, now, finish)
-                                   : parameterOps_.snapshotAll(now, finish);
+                                   : parameterOps_.snapshotAll(now, finish, policy);
     // Several independently committed devices may precede a refusal. Publish those writes too.
     if (captured.journalOps != 0) {
         view_.refresh(*store_, session_.overriddenLanes());
@@ -1127,6 +1148,9 @@ bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
             });
         });
     }
+    if (bestEffort && (captured.ok() || !captured.staleDevices.empty()) &&
+        !markStalePluginStates(captured.staleDevices, captured.ok()))
+        return false;
     if (!captured.ok()) {
         const auto *entry = captured.failedDevice ? session_.entryFor(*captured.failedDevice) : nullptr;
         error_ = "Could not save plug-in state";
@@ -1138,6 +1162,54 @@ bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
     refreshReportedLatenciesForSave();
     error_.clear();
     return true;
+}
+bool ProjectDocument::markStalePluginStates(std::span<const std::int64_t> stale, bool complete) {
+    try {
+        auto &db = store_->db();
+        std::string previousText;
+        {
+            SQLite::Statement read(db, "SELECT value FROM main.session_state WHERE key='devices.stale_state'");
+            if (read.executeStep()) previousText = read.getColumn(0).getString();
+        }
+        const auto previous = Payload::parse(previousText, nullptr, false);
+        auto report = Payload::object();
+        std::string names;
+        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+            const auto &entry = session_.entryAt(i);
+            if (entry.retired) continue;
+            const auto key = std::to_string(entry.deviceId);
+            const bool failed = std::find(stale.begin(), stale.end(), entry.deviceId) != stale.end();
+            const Payload identity{{"name", entry.name}, {"format", entry.resolvedFormat}, {"uid", entry.resolvedUid}};
+            const auto saved = previous.find(key);
+            const bool hadStaleState = saved != previous.end() && saved->contains("format") && saved->contains("uid") &&
+                                       saved->at("format") == entry.resolvedFormat && saved->at("uid") == entry.resolvedUid;
+            // Parked and missing devices supplied no fresh state. Keep a prior
+            // flag for the same device until a subsequent live capture succeeds.
+            if (!failed && !(hadStaleState && (!complete || entry.parked || entry.placeholder))) continue;
+            report[key] = identity;
+            if (!names.empty()) names += ", ";
+            names += entry.name.empty() ? "Device " + key : entry.name;
+        }
+        if (!names.empty())
+            pluginStateWarning_ = "Could not capture plug-in state for " + names + ". Using the last saved state (stale).";
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
+        if (report.empty()) {
+            if (previousText.empty()) return true;
+            db.exec("DELETE FROM main.session_state WHERE key='devices.stale_state'");
+        } else {
+            const auto reportText = report.dump();
+            if (reportText == previousText) return true;
+            SQLite::Statement write(db, "INSERT INTO main.session_state(key,value) VALUES('devices.stale_state',?) "
+                                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+            write.bind(1, reportText);
+            write.exec();
+        }
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
+        return true;
+    } catch (const std::exception &error) {
+        error_ = std::string("Could not mark stored plug-in state stale. ") + error.what();
+        return false;
+    }
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
     const bool synced = synchronise();
@@ -1320,7 +1392,7 @@ bool ProjectDocument::startTrackRender(TrackRenderKind kind, std::int64_t track)
             throw std::runtime_error("The project is read-only.");
         if (recording_ || landing_)
             throw std::runtime_error("Stop recording before rendering a track.");
-        if (!capturePluginState())
+        if (!requirePluginState())
             return false;
         const auto snapshot = view_.committed();
         const auto *node = snapshot ? snapshot->findTrack(track) : nullptr;

@@ -16,6 +16,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
+#include "adi/ui/plugin_state_quit.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "juce/device_bridge.hpp"
@@ -48,6 +49,15 @@
 #include <future>
 namespace adi::ui {
 namespace {
+std::string withWarning(std::string message, const std::string &warning) {
+    if (!warning.empty()) {
+        if (!message.empty())
+            message += ' ';
+        message += warning;
+    }
+    return message;
+}
+
 // The document's process with the keyboard in front of it (N60's window half): in the device callback
 // the feed drains the MIDI ports' rings into the session's live input, stamped in this block's stream
 // samples, and then the document renders the block. A device (re)start re-anchors the feed and resets
@@ -619,7 +629,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (juce::JUCEApplicationBase::getInstance() == this)
                     chooser_.reset();
             });
-            if (file == juce::File{} || !document_)
+            if (file == juce::File{} || !document_ || quitAfterExport_ || pluginStateQuit_.pending())
                 return;
             // Append the selected extension when needed. A file the chooser did not ask about is never replaced.
             const auto chosenFile = file;
@@ -658,16 +668,19 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!current || !current->tempo)
                 return;
             exportPreferences_.rememberFolder(*settings_, output.parent_path());
-            startRender(exportJobs(c, document_->store().path(), output, *current->tempo));
+            startRender(exportJobs(c, document_->store().path(), output, *current->tempo), document_->pluginStateWarning());
         });
     }
-    void startRender(std::vector<render::Job> jobs) {
+    void startRender(std::vector<render::Job> jobs, std::string stateWarning) {
         renderStop_ = std::stop_source{};
         auto alive = renderAlive_;
         if (exportPage_)
             exportPage_->showProgress(0);
-        if (root_)
+        if (root_) {
             root_->status.setExportProgress(0);
+            if (!stateWarning.empty())
+                root_->say(stateWarning);
+        }
         auto host = std::make_shared<render::HostDispatch>();
         renderHost_ = host;
         auto completed = std::make_shared<std::promise<void>>();
@@ -694,7 +707,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     root_->status.setExportProgress(static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100));
             });
         };
-        render_ = std::thread([this, alive, completed, jobs = std::move(jobs),
+        render_ = std::thread([this, alive, completed, jobs = std::move(jobs), stateWarning = std::move(stateWarning),
                                made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
             std::string message;
             try {
@@ -722,6 +735,7 @@ class AdiApplication final : public juce::JUCEApplication,
             } catch (const std::exception &e) {
                 message = "The export failed: " + std::string(e.what());
             }
+            message = withWarning(std::move(message), stateWarning);
             completed->set_value();
             juce::MessageManager::callAsync([this, alive, message = std::move(message)] {
                 if (!alive->load())
@@ -875,11 +889,13 @@ class AdiApplication final : public juce::JUCEApplication,
     // SC-330 and SC-415: open against the current catalogue and yield between device loads.
     // Discovery may finish during those turns and wake newly available placeholders after install.
     void openProject(const juce::File &file, bool create) {
+        if (pluginStateQuit_.pending())
+            return;
         confirmExportInterruption(create ? "Creating a new project" : "Opening another project",
                                   [this, file, create] { beginProjectOpen(file, create); });
     }
     void beginProjectOpen(const juce::File &file, bool create) {
-        if (quitAfterExport_)
+        if (quitAfterExport_ || pluginStateQuit_.pending())
             return;
         if (projectSave_) {
             if (root_)
@@ -1072,6 +1088,8 @@ class AdiApplication final : public juce::JUCEApplication,
             import_.join();
         exportInterruption_.answer(false);
         exportInterruptionPrompt_.close();
+        pluginStateQuit_.answer(false);
+        pluginStateQuitPrompt_.close();
         stopRender();
         stopLibrary();
         stopPluginCatalogue();
@@ -1100,6 +1118,8 @@ class AdiApplication final : public juce::JUCEApplication,
     // Every edit is already in the file (ADR-0203 d13). Keep the window
     // responsive while an archive finishes before quitting.
     void systemRequestedQuit() override {
+        if (quitAfterExport_ || pluginStateQuit_.pending())
+            return;
         confirmExportInterruption("Quitting ADI", [this] { finishQuit(); });
     }
     void finishQuit() {
@@ -1108,11 +1128,30 @@ class AdiApplication final : public juce::JUCEApplication,
             showExportQuitProgress();
             return;
         }
-        if (document_ && !document_->capturePluginState()) {
+        const auto warning = pluginStateQuit_.request([this]() -> std::optional<std::string> {
+            if (!document_)
+                return std::string{};
+            if (document_->capturePluginState())
+                return document_->pluginStateWarning();
             report(document_->error());
+            return std::nullopt;
+        }, [this] { quit(); });
+        if (!warning)
             return;
-        }
-        quit();
+        const auto options = juce::MessageBoxOptions()
+                                 .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                 .withTitle("Quit ADI?")
+                                 .withMessage(juce::String::fromUTF8(warning->c_str()))
+                                 .withButton(juce::MessageBoxButtonOptions("Stay", 0)
+                                                 .withRole(juce::MessageBoxButtonRole::cancel)
+                                                 .withPreferredAction())
+                                 .withButton(juce::MessageBoxButtonOptions("Quit with Stored State", 1)
+                                                 .withRole(juce::MessageBoxButtonRole::destroy))
+                                 .withAssociatedComponent(window_.get());
+        pluginStateQuitPrompt_ = juce::AlertWindow::showScopedAsync(options, [this](int answer) {
+            if (juce::JUCEApplicationBase::getInstance() == this && pluginStateQuit_.answer(answer == 1))
+                quit();
+        });
     }
     void anotherInstanceStarted(const juce::String &commandLine) override {
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
@@ -1225,7 +1264,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create, std::unique_ptr<ProjectDocument> next, ProjectPluginLoad plugins) {
         const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
-        if (document_ && !document_->capturePluginState()) {
+        if (document_ && !document_->requirePluginState()) {
             report(document_->error());
             if (create) {
                 const auto path = next->store().path();
@@ -1744,7 +1783,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // Undo and Redo commit the knob edits still held first (DF-W29).
         root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
         root->beforeDeleteTrack = [this](std::string &reason) {
-            if (document_->capturePluginState())
+            if (document_->requirePluginState())
                 return true;
             reason = document_->error();
             return false;
@@ -1970,7 +2009,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (chosen == 1 && document_) {
                     const auto taken = document_->takeSnapshot(name, micros, offset);
                     if (root_)
-                        root_->say(taken.ok ? "Snapshot taken: " + taken.name : taken.error);
+                        root_->say(taken.ok
+                            ? withWarning("Snapshot taken: " + taken.name, document_->pluginStateWarning())
+                            : taken.error);
                 }
             }),
             true);
@@ -2300,11 +2341,13 @@ class AdiApplication final : public juce::JUCEApplication,
         if (showOutcome && root_) {
             auto message = document_->warning();
             if (phase == SavePhase::failed)
-                message = document_->error() + (message.empty() ? "" : " " + message);
-            else if (message.empty() && phase == SavePhase::cancelled)
-                message = "Project save cancelled.";
-            else if (message.empty() && save.kind == SaveKind::copy)
-                message = ("Saved a copy as " + save.file.getFileName()).toStdString();
+                message = withWarning(document_->error(), message);
+            else if (phase == SavePhase::cancelled)
+                message = withWarning("Project save cancelled.", message);
+            else if (saved && save.kind == SaveKind::copy)
+                message = withWarning(("Saved a copy as " + save.file.getFileName() + ".").toStdString(), message);
+            else if (saved && !message.empty())
+                message = withWarning("Project saved.", message);
             root_->say(save.takeWarning + message);
         }
         document_->clearSave();
@@ -2327,7 +2370,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
     // runs, then how it ended. One at a time.
     void collectAndExport(const juce::File &file, media::ArchiveControl control = {}) {
-        if (!document_ || !root_ || quitAfterExport_)
+        if (!document_ || !root_ || quitAfterExport_ || pluginStateQuit_.pending())
             return;
         if (export_.joinable()) {
             root_->say("Collect and Export is already running.");
@@ -2351,7 +2394,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         exportResult_ = std::move(result);
-        root_->say("Collecting and exporting to " + exportName_ + "...");
+        root_->say(withWarning("Collecting and exporting to " + exportName_ + "...", document_->pluginStateWarning()));
     }
     void showExportQuitProgress() {
         constexpr auto message = "Finishing Collect and Export before quitting…";
@@ -2365,13 +2408,13 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         const auto result = exportResult_.get();
         export_.join(); // the result becomes ready at thread exit
+        if (root_)
+            root_->say(withWarning(result.ok ? "Exported " + exportName_ : "Collect and Export failed: " + result.error,
+                                   result.warning));
         if (quitAfterExport_) {
             quitAfterExport_ = false;
             finishQuit();
-            return;
         }
-        if (root_)
-            root_->say(result.ok ? "Exported " + exportName_ : "Collect and Export failed: " + result.error);
     }
     void advanceQuitExportProbe() {
         const auto probe = quitExportProbe_;
@@ -2608,8 +2651,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
                 return false;
             }
-            root_->say(document_->warning().empty() ? "Collected every file the project uses into its audio folder."
-                                                    : document_->warning());
+            root_->say(withWarning("Collected every file the project uses into its audio folder.",
+                                              document_->warning()));
             return true;
         }
         // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
@@ -2768,7 +2811,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (catalogue_)
             catalogue_->poll();
         wakeDiscoveredPlugins();
-        if (!quitAfterExport_)
+        if (!quitAfterExport_ && !pluginStateQuit_.pending())
             advanceProjectOpen();
         if (!document_) {
             pollCollectAndExport();
@@ -2936,6 +2979,8 @@ class AdiApplication final : public juce::JUCEApplication,
     ExportPreferences exportPreferences_;
     ExportInterruption exportInterruption_;
     juce::ScopedMessageBox exportInterruptionPrompt_;
+    PluginStateQuit pluginStateQuit_;
+    juce::ScopedMessageBox pluginStateQuitPrompt_;
     std::thread render_;
     std::stop_source renderStop_;
     std::shared_ptr<render::HostDispatch> renderHost_;

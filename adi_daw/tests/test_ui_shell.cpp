@@ -21,6 +21,7 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/export_interruption.hpp"
+#include "adi/ui/plugin_state_quit.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/export_preferences.hpp"
@@ -16550,6 +16551,35 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         interruption.answer(true);
         interruption.answer(true);
         check(proceeded == 2, "cancelling the export proceeds exactly once");
+
+        PluginStateQuit stateQuit;
+        int captures = 0, exits = 0;
+        const auto quitApplication = [&] { ++exits; };
+        const auto stale = [&]() -> std::optional<std::string> {
+            ++captures;
+            return "The stored state is stale for Slow Plug-In.";
+        };
+        const auto warning = stateQuit.request(stale, quitApplication);
+        check(warning && warning->find("Slow Plug-In") != std::string::npos && stateQuit.pending() && exits == 0,
+              "SC-430: Quit waits for a decision and names the plug-in whose stored state will be kept");
+        check(!stateQuit.request(stale, quitApplication) && captures == 1,
+              "SC-430: repeated Quit requests leave the same warning open without recapturing");
+        check(!stateQuit.answer(false) && !stateQuit.pending(), "SC-430: Stay leaves the project open");
+        check(stateQuit.request(stale, quitApplication).has_value() && captures == 2,
+              "SC-430: a new Quit attempt can warn again after Stay");
+        if (stateQuit.answer(true))
+            quitApplication();
+        check(!stateQuit.answer(true) && !stateQuit.request(stale, quitApplication) && captures == 2 && exits == 1,
+              "SC-430: confirming Quit exits once without retrying the failed capture");
+
+        PluginStateQuit cleanQuit;
+        const auto captured = [&]() -> std::optional<std::string> {
+            check(!cleanQuit.request(stale, quitApplication) && captures == 2,
+                  "SC-430: a nested Quit cannot enter plug-in capture again");
+            return std::string{};
+        };
+        check(!cleanQuit.request(captured, quitApplication) && exits == 2,
+              "SC-430: a complete capture quits immediately");
 
         root.status.setExportProgress(37);
         root.say("A different status message.");

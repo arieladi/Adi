@@ -218,20 +218,24 @@ public:
     struct SnapshotAllResult {
         gesture::Status status;
         std::optional<std::int64_t> failedDevice;
+        std::vector<std::int64_t> staleDevices;
         std::size_t journalOps = 0;
         std::size_t stateOps = 0;
         [[nodiscard]] bool ok() const noexcept { return status.ok(); }
     };
     enum class SnapshotGestures { Completed, FinishOpen };
+    enum class SnapshotPolicy { RequireAll, UseStoredOnCaptureFailure };
 
     /// Owner thread, after attachSession. Resolve completed captured gestures,
     /// then durably save live device state without relying on stateEpoch.
     /// Successful zero journalOps means unchanged. Failure reports the
     /// refused device when available and counts any prior durable writes.
-    /// Explicit save actions may finish open edits at their last accepted value.
+    /// Explicit save actions may finish open edits at their last accepted value
+    /// and leave failed plug-in reads in staleDevices while saving other devices.
     /// Call before publishing a named snapshot, copying or closing the Store.
     [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs,
-                                                SnapshotGestures = SnapshotGestures::Completed);
+                                                SnapshotGestures = SnapshotGestures::Completed,
+                                                SnapshotPolicy = SnapshotPolicy::RequireAll);
     /// As for snapshotAll, but read fresh state from the selected device only.
     [[nodiscard]] SnapshotAllResult snapshotDeviceState(std::int64_t deviceId, std::int64_t nowMs,
                                                         SnapshotGestures);
