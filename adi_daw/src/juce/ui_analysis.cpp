@@ -279,7 +279,7 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
                "Freeze/Reset affect this view only, never the shared Main measurement.");
 }
 }
-SharedSpectrumView::SharedSpectrumView() {
+SharedSpectrumView::SharedSpectrumView(bool compact) : compact_(compact) {
     (void)analysisPaletteColour(palettes::defaultIndex, 0); // no lazy LUT initialization in paint
     describeAnalysisView(*this, mode_);
     setInterceptsMouseClicks(false, false);
@@ -307,7 +307,7 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
-        setInterceptsMouseClicks(false, mode_ == Mode::ClassicScope);
+        setInterceptsMouseClicks(false, mode_ == Mode::ClassicScope && !compact_);
     }
     updateDemand();
     repaint();
@@ -933,6 +933,21 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
+    if (compact_) {
+        const auto heading = mode_ == Mode::Spectrogram ? "Spectrogram" : "Spectrum";
+        g.drawText(heading, area.withHeight(14.f), juce::Justification::centredLeft);
+        const auto plot = area.withTrimmedTop(16.f);
+        if (mode_ == Mode::Spectrogram) {
+            if (raster_ && !raster_->image.isNull()) {
+                g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
+                g.drawImage(raster_->image, plot);
+            }
+        } else if (spectrumMode()) {
+            const auto grid = paintSpectrumGrid(g, plot, spectrumScale_);
+            if (shown_ && scaledSpectrum_) scaledSpectrum_->paint(g, grid);
+        }
+        return;
+    }
     const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
                         "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum", "Cumulative Maximum"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};

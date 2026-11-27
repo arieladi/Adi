@@ -74,6 +74,71 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label,
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
 }
+class InputMenuReading {
+  public:
+    explicit InputMenuReading(std::shared_ptr<ExternalInputMeter> meter) : meter_(std::move(meter)) {
+        meter_->beginReading();
+    }
+    ~InputMenuReading() { meter_->endReading(); }
+    InputMenuReading(const InputMenuReading &) = delete;
+    InputMenuReading &operator=(const InputMenuReading &) = delete;
+
+  private:
+    std::shared_ptr<ExternalInputMeter> meter_;
+};
+
+class InputMenuRow final : public juce::PopupMenu::CustomComponent, private juce::Timer {
+  public:
+    InputMenuRow(const ExternalAudioInput &input, std::shared_ptr<ExternalInputMeter> meter, bool selected)
+        : CustomComponent(true), name_(juce::String::fromUTF8(input.label.c_str())),
+          channels_(input.channels), meter_(std::move(meter)), selected_(selected) {
+        if (meter_)
+            startTimerHz(20);
+    }
+    void getIdealSize(int &width, int &height) override {
+        width = 224;
+        height = 22;
+    }
+    void paint(juce::Graphics &g) override {
+        if (isItemHighlighted())
+            g.fillAll(look::field.brighter(0.15f));
+        auto bounds = getLocalBounds().toFloat().reduced(6.f, 4.f);
+        const auto mark = bounds.removeFromLeft(14.f);
+        if (selected_) {
+            g.setColour(look::accent);
+            g.fillEllipse(juce::Rectangle<float>(5.f, 5.f).withCentre(mark.getCentre()));
+        }
+        if (meter_ && !channels_.empty()) {
+            const auto meters = bounds.removeFromRight(54.f).reduced(3.f, 1.f);
+            const auto band = meters.getHeight() / static_cast<float>(channels_.size());
+            for (std::size_t index = 0; index < channels_.size(); ++index) {
+                const auto lane = meters.withY(meters.getY() + static_cast<float>(index) * band)
+                                          .withHeight(band - 1.f);
+                const auto peak = meter_->peak(channels_[index]);
+                const auto db = 20. * std::log10(static_cast<double>(std::max(1.e-6f, peak)));
+                const auto fill = static_cast<float>(std::clamp(1. - meterDepth(db), 0., 1.));
+                g.setColour(look::display);
+                g.fillRect(lane);
+                g.setColour(peak >= 1.f ? look::record : look::meterLevel);
+                g.fillRect(lane.withWidth(lane.getWidth() * fill));
+            }
+        }
+        g.setColour(look::text);
+        g.setFont(look::font(look::fontBody));
+        g.drawText(name_, bounds, juce::Justification::centredLeft);
+    }
+
+  private:
+    void timerCallback() override {
+        if (isShowing())
+            repaint();
+    }
+    juce::String name_;
+    std::vector<std::uint32_t> channels_;
+    std::shared_ptr<ExternalInputMeter> meter_;
+    bool selected_;
+};
+
 // Live's monitoring switch: In, Auto and Off, one of three (language.png part D) across the span its
 // three boxes took (16, 23 and 19 wide, `gap` apart), the track's choice lit (MX-09).
 const juce::StringArray &monitorLabels() {
@@ -356,7 +421,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     cueVolume.setValue(0, juce::dontSendNotification);
     cueVolume.setTitle("Cue Volume");
-    cueVolume.setTooltip("How loud the cued tracks play to Cue Out.");
+    cueVolume.setTooltip("The level of cued tracks and the metronome at Cue Out.");
     cueVolume.setScrollWheelEnabled(false);
     cueVolume.onDragStart = [this] { cueDragging_ = true; };
     cueVolume.onDragEnd = [this] {
@@ -925,10 +990,7 @@ void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) co
         g.fillEllipse(x, y, d, d);
 }
 void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
-    // The In/Out column as Live draws an audio track's: where it records from, the
-    // monitoring switch, where it plays to. The snapshot does not carry a track's
-    // routing yet (window log, N11): the column shows ADI's fixed routing, every
-    // track to the Main track.
+    // The track's input and monitoring go above its output.
     const int rows = std::max(1, (getHeight() - 1) / 17);
     auto chooser = [&](int row, const char *label, bool enabled) {
         if (row < rows)
@@ -942,11 +1004,72 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     }
     // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
     chooser(0, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(1, midi_ ? "All Channels" : "1/2", midi_);
+    chooser(1, midi_ ? "All Channels" : audioInputLabel(),
+            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
     if (rows > 2)
         drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
+}
+const char *MixerStrip::audioInputLabel() const {
+    if (!panel_.root.externalAudioInputs)
+        return "1/2";
+    const auto *track = panel_.root.reader().findTrack(track_);
+    if (track)
+        if (const auto *input = resolveExternalAudioInput(panel_.root.audioInputs(), track->inputRef))
+            return input->label.c_str();
+    return track && track->inputRef ? "Unavailable" : "No Input";
+}
+bool MixerStrip::onAudioInput(juce::Point<int> at) const noexcept {
+    if (kind_ != "audio" || !panel_.root.externalAudioInputs)
+        return false;
+    if (panel_.vertical()) {
+        const auto width = getWidth() - 10;
+        return io_ > 0 && (juce::Rectangle<int>(4, kMixerTop + 15, width, 13).contains(at) ||
+                           juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at));
+    }
+    return showsInOut() && (juce::Rectangle<int>(5, 3, 70, 13).contains(at) ||
+                            ((getHeight() - 1) / 17 > 1 && juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
+}
+juce::PopupMenu MixerStrip::audioInputMenu() {
+    juce::PopupMenu menu;
+    const auto *track = panel_.root.reader().findTrack(track_);
+    if (!track || track->kind != "audio")
+        return menu;
+    const auto choices = panel_.root.audioInputs();
+    const auto *selected = resolveExternalAudioInput(choices, track->inputRef);
+    const auto safe = SafePointer<MixerStrip>(this);
+    for (const auto &input : choices) {
+        const bool inputSelected = &input == selected;
+        juce::PopupMenu::Item item(juce::String::fromUTF8(input.label.c_str()));
+        item.setID(-1).setTicked(inputSelected).setAction([safe, id = track_, ref = input.ref] {
+            if (safe)
+                safe->panel_.root.setExternalAudioInput(id, ref);
+        });
+        if (panel_.root.externalInputMeter)
+            item.setCustomComponent(new InputMenuRow(input, panel_.root.externalInputMeter, inputSelected));
+        menu.addItem(std::move(item));
+    }
+    if (choices.empty())
+        menu.addItem("No enabled inputs", false, false, [] {});
+    menu.addSeparator();
+    menu.addItem("Configure...", static_cast<bool>(panel_.root.configureExternalInputs), false, [safe] {
+        if (safe && safe->panel_.root.configureExternalInputs)
+            safe->panel_.root.configureExternalInputs();
+    });
+    return menu;
+}
+void MixerStrip::showAudioInputMenu() {
+    auto menu = audioInputMenu();
+    if (onAudioInputMenu) {
+        onAudioInputMenu(std::move(menu));
+        return;
+    }
+    std::shared_ptr<InputMenuReading> reading;
+    if (panel_.root.externalInputMeter)
+        reading = std::make_shared<InputMenuReading>(panel_.root.externalInputMeter);
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition(),
+                       [reading = std::move(reading)](int) mutable { reading.reset(); });
 }
 std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
     // The same places as `onMonitorInOrAuto` below, every one of the three cells.
@@ -1039,7 +1162,8 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
     chooser(15, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(31, midi_ ? "All Channels" : "1/2", midi_);
+    chooser(31, midi_ ? "All Channels" : audioInputLabel(),
+            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
     label(46, "Monitor");
     drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");
@@ -1224,6 +1348,10 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
     if (e.eventComponent == this && onCueOut(e.getPosition())) {
         cueOutMenu();
+        return;
+    }
+    if (e.eventComponent == this && onAudioInput(e.getPosition())) {
+        showAudioInputMenu();
         return;
     }
     // A click on a Mixer View strip's title bar selects its track, as a click on its header does
