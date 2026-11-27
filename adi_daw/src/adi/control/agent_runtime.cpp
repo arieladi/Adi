@@ -2,6 +2,7 @@
 #include "adi/control/agent_runtime.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/control/agent_log.hpp"
 #include "adi/control/consent_scope.hpp"
 #include "adi/control/session_discovery.hpp"
 #include "adi/media/blake3.hpp"
@@ -98,8 +99,9 @@ std::string field(const Json& event, const char* key) {
 
 }  // namespace
 
-AgentRuntime::AgentRuntime(ConsentLedger& ledger, JobBook& jobs, std::function<void(ConsentRequest)> ask)
-    : ledger_(ledger), jobs_(jobs), ask_(std::move(ask)) {}
+AgentRuntime::AgentRuntime(ConsentLedger& ledger, JobBook& jobs, std::function<void(ConsentRequest)> ask,
+                           AgentLog* log)
+    : ledger_(ledger), jobs_(jobs), ask_(std::move(ask)), log_(log) {}
 
 AgentCheck AgentRuntime::check(const AgentLaunch& launch, std::string projectUuid) {
     if (audio::onAudioThread) return {};
@@ -161,9 +163,17 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
     if (!tool || request.empty() || request.size() > 64 * 1024 || projectHandle.empty()) return result;
     const auto queued = jobs_.enqueue(std::move(owner), {"agent", projectUuid,
         JobRevisionPolicy::CheckAtStartOnly, JobOwnership::Agent});
+    const auto historyId = queued ? queued->id : (log_ ? makeSessionToken() : std::string{});
+    const auto source = origin == RunOrigin::MarkerPrompt ? "marker" : "agent";
+    if (log_) (void)log_->append(projectUuid, {AgentLogKind::Request, historyId, request, {}, "user", source});
+    const auto finish = [&] {
+        if (log_) (void)log_->append(projectUuid,
+            {AgentLogKind::Answer, historyId, result.answer, result.reason, "agent", source});
+        return std::move(result);
+    };
     if (!queued) {
         result.reason = "agent_stopped_or_busy";
-        return result;
+        return finish();
     }
     result.job = queued->id;
     {
@@ -184,13 +194,13 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
             entry->second.launch.command.arguments != launch.command.arguments ||
             entry->second.launch.provider != launch.provider) {
             (void)jobs_.fail(result.job, "check the helper at this launch before asking");
-            return result;
+            return finish();
         }
     }
     const auto stop = jobs_.start(result.job);
     if (!stop) {
         result.reason = "cancelled";
-        return result;
+        return finish();
     }
     auto question = disclosure(projectUuid, launch.provider, request);
     const auto consent = ledger_.authorize(question, wallSeconds());
@@ -198,7 +208,7 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
         if (consent == ConsentDecision::ConsentRequired && ask_) ask_(std::move(question));
         result.reason = "consent_required";
         (void)jobs_.fail(result.job, "the provider needs consent");
-        return result;
+        return finish();
     }
     const auto destination = std::make_shared<const ConsentDestination>(destinationOf(launch.provider));
     RequestMeta meta;
@@ -295,7 +305,7 @@ AgentRunResult AgentRuntime::run(const AgentLaunch& launch, std::string owner, s
         if (found != checked_.end() && found->second.launch.provider == launch.provider)
             found->second.result = {AgentReadiness::Unavailable, "the configured helper stopped answering"};
     }
-    return result;
+    return finish();
 }
 
 }  // namespace adi::control

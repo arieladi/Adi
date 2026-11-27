@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include "adi/control/agent_log.hpp"
 #include "adi/control/methods.hpp"
 #include "adi/control/session_discovery.hpp"
 
@@ -63,6 +64,9 @@ public:
     [[nodiscard]] AgentCheck agentReadiness(std::string_view project) const;
     [[nodiscard]] AgentRunResult runAgent(const AgentLaunch&, std::string_view project,
                                          std::string request, RunOrigin = RunOrigin::Direct);
+    /// Local history seam. The project argument is a handle for an open project.
+    [[nodiscard]] std::optional<std::vector<AgentLogEntry>> agentHistory(
+        std::string_view project, std::int64_t afterSequence = 0, std::size_t maximum = 256) const;
 
 private:
     class Impl;

@@ -194,6 +194,21 @@ void testAppControl() {
     const auto stopped = app.stopAgent("test surface");
     require(app.agentStopped() && stopped.rejectedProposals == 1 && app.proposals().empty(),
             "Stop Agent rejects the proposal that was awaiting review");
+    const auto log = app.agentHistory(uuid);
+    require(log && log->size() == 5, "the project log has one entry for each proposal, outcome and Stop press");
+    const auto& first = log->at(0).event;
+    const auto& accepted = log->at(1).event;
+    const auto& rejected = log->at(3).event;
+    const auto& press = log->at(4).event;
+    require(first.kind == AgentLogKind::Proposal && first.id == proposal.at("id").get_ref<const std::string&>() &&
+            first.state == "awaiting_review" && accepted.kind == AgentLogKind::ProposalOutcome &&
+            accepted.id == first.id && accepted.state == "applied" && accepted.actor == "user",
+            "a proposal and its explicit Apply are recorded in order");
+    require(rejected.kind == AgentLogKind::ProposalOutcome && rejected.id == oldId &&
+            rejected.state == "rejected" && press.kind == AgentLogKind::StopPress &&
+            press.actor == "user" && press.source == "test surface" &&
+            Json::parse(press.text).at("rejectedProposals") == Json::array({oldId}),
+            "the Stop press records its surface and the proposal it rejected");
     app.rearmAgent();
     require(!app.agentStopped() && !app.review(oldId, true).ok,
             "re-arming cannot make the rejected proposal reviewable");

@@ -856,6 +856,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.idempotencyKey = call.meta.idempotencyKey.value_or(std::string{});
             entry.paramsDigest = digest;
             entry.project = project->handle();
+            entry.projectUuid = project->projectUuid();
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
             entry.createdMs = ctx.steadyMs();

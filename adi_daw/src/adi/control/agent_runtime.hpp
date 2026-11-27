@@ -13,6 +13,8 @@
 
 namespace adi::control {
 
+class AgentLog;
+
 enum class AgentProviderKind { Local, Lan, Cloud, Faux };
 struct AgentProvider {
     AgentProviderKind kind = AgentProviderKind::Local;
@@ -50,7 +52,7 @@ using AgentTool = std::function<Outcome(std::string_view method, const Json& arg
 /// workers. The injected tool dispatcher is responsible for the document hop.
 class AgentRuntime {
 public:
-    AgentRuntime(ConsentLedger&, JobBook&, std::function<void(ConsentRequest)> ask = {});
+    AgentRuntime(ConsentLedger&, JobBook&, std::function<void(ConsentRequest)> ask = {}, AgentLog* = nullptr);
 
     [[nodiscard]] AgentCheck check(const AgentLaunch&, std::string projectUuid);
     [[nodiscard]] AgentCheck readiness(std::string_view projectUuid) const;
@@ -68,6 +70,7 @@ private:
     ConsentLedger& ledger_;
     JobBook& jobs_;
     std::function<void(ConsentRequest)> ask_;
+    AgentLog* log_;
     mutable std::mutex mutex_;
     std::condition_variable laneReady_;
     std::unordered_map<std::string, Checked> checked_;

@@ -185,6 +185,20 @@ bool canReplace(const fs::path& target, const PrivateSecurity& security) {
     return existing ? security.verifies(existing.handle, false) : missing(GetLastError());
 }
 
+PrivateFileStatus fileStatus(const fs::path& file) {
+    PrivateSecurity security;
+    if (!security.init()) return PrivateFileStatus::Unavailable;
+    const NativeFile directory(openDirectory(file.parent_path()));
+    if (!directory)
+        return missing(GetLastError()) ? PrivateFileStatus::Missing : PrivateFileStatus::Unavailable;
+    if (!security.verifies(directory.handle, true)) return PrivateFileStatus::Unavailable;
+    const NativeFile existing(CreateFileW(file.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+                                         readShare, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!existing)
+        return missing(GetLastError()) ? PrivateFileStatus::Missing : PrivateFileStatus::Unavailable;
+    return security.verifies(existing.handle, false) ? PrivateFileStatus::Private : PrivateFileStatus::Unavailable;
+}
+
 std::optional<std::string> readFile(const fs::path& file, std::size_t maximum) {
     PrivateSecurity security;
     if (!security.init()) return std::nullopt;
@@ -300,6 +314,17 @@ bool canReplace(int directory, const fs::path& name) {
     struct stat status{};
     if (::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
     return verifies(status, false);
+}
+
+PrivateFileStatus fileStatus(const fs::path& file) {
+    const NativeFile directory(openDirectory(file.parent_path()));
+    if (!directory)
+        return errno == ENOENT ? PrivateFileStatus::Missing : PrivateFileStatus::Unavailable;
+    if (!verifies(directory.handle, true)) return PrivateFileStatus::Unavailable;
+    struct stat status{};
+    if (::fstatat(directory.handle, file.filename().c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0)
+        return errno == ENOENT ? PrivateFileStatus::Missing : PrivateFileStatus::Unavailable;
+    return verifies(status, false) ? PrivateFileStatus::Private : PrivateFileStatus::Unavailable;
 }
 
 std::optional<std::string> readFile(const fs::path& file, std::size_t maximum) {
@@ -438,6 +463,15 @@ bool withConsentFileLock(const fs::path& file, const std::function<void()>& acti
     } catch (...) {
         return false;
     }
+}
+
+PrivateFileStatus privateFileStatus(const fs::path& file) {
+    if (audio::onAudioThread) return PrivateFileStatus::Unavailable;
+    try {
+        if (usablePath(file)) return fileStatus(file);
+    } catch (...) {
+    }
+    return PrivateFileStatus::Unavailable;
 }
 
 PrivateFileLockAttempt lockPrivateFile(const fs::path& file, bool create) {

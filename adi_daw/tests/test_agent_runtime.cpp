@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/agent_runtime.hpp"
+#include "adi/control/agent_log.hpp"
 #include "temp_directory.hpp"
 
 #include <chrono>
@@ -131,12 +132,14 @@ struct Fixture {
     adi::test::TempDirectory temp;
     ConsentLedger ledger;
     JobBook jobs;
+    AgentLog log;
     std::vector<ConsentRequest> questions;
     AgentRuntime runtime;
 
     explicit Fixture(const char* name)
         : temp("agent_runtime", name), ledger(temp.path() / "control" / "consent.json"),
-          runtime(ledger, jobs, [this](ConsentRequest request) { questions.push_back(std::move(request)); }) {}
+          log(temp.path() / "agent-log"),
+          runtime(ledger, jobs, [this](ConsentRequest request) { questions.push_back(std::move(request)); }, &log) {}
 };
 
 bool ready(Fixture& fixture, const AgentLaunch& launch) {
@@ -254,6 +257,11 @@ void testTrustedDispatch(const fs::path& executable) {
           "the reply, usage, and tool idempotency key cross the real process boundary");
     const auto job = fixture.jobs.get(kOwner, result.job);
     check(job && job->state == JobState::Completed, "the run settles its observable job");
+    const auto log = fixture.log.read(kProject);
+    check(log && log->size() == 2 && log->at(0).event.kind == AgentLogKind::Request &&
+              log->at(1).event.kind == AgentLogKind::Answer && log->at(0).event.id == result.job &&
+              log->at(1).event.id == result.job && log->at(1).event.text == result.answer,
+          "a marker request and its answer are recorded in order with the same run id");
 }
 
 void testBounds(const fs::path& executable) {

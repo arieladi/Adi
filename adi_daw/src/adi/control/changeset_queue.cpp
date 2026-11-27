@@ -46,7 +46,8 @@ std::string randomChangesetId() {
     return out;
 }
 
-ChangesetQueue::ChangesetQueue(std::function<std::string()> newId) : newId_(std::move(newId)) {}
+ChangesetQueue::ChangesetQueue(std::function<std::string()> newId, Observer observer)
+    : newId_(std::move(newId)), observer_(std::move(observer)) {}
 
 std::string ChangesetQueue::nextId() { return newId_(); }
 
@@ -69,12 +70,22 @@ std::optional<QueuedChangeset> ChangesetQueue::find(std::string_view id, const s
 void ChangesetQueue::add(QueuedChangeset entry) {
     std::lock_guard lock(mutex_);
     entries_.push_back(std::move(entry));
+    if (observer_) {
+        const auto& added = entries_.back();
+        observer_(added, true, "agent", "changeset");
+        if (added.state == Review::Applied) observer_(added, false, "agent", "automatic apply");
+    }
     // Bounded: drop the oldest settled entries first, then the oldest of all.
     while (entries_.size() > kCapacity) {
         auto settled = std::find_if(entries_.begin(), entries_.end(), [](const QueuedChangeset& e) {
             return e.state != Review::AwaitingReview;
         });
-        entries_.erase(settled != entries_.end() ? settled : entries_.begin());
+        if (settled == entries_.end()) {
+            settled = entries_.begin();
+            settled->state = Review::Expired;
+            if (observer_) observer_(*settled, false, "system", "queue capacity");
+        }
+        entries_.erase(settled);
     }
 }
 
@@ -86,23 +97,28 @@ std::vector<QueuedChangeset> ChangesetQueue::forReview() const {
     return result;
 }
 
-std::size_t ChangesetQueue::rejectPending() {
+std::vector<RejectedChangeset> ChangesetQueue::rejectPending(std::string_view surface) {
     std::lock_guard lock(mutex_);
-    std::size_t rejected = 0;
+    std::vector<RejectedChangeset> rejected;
     for (auto& entry : entries_) {
         if (entry.state == Review::AwaitingReview) {
             entry.state = Review::Rejected;
-            ++rejected;
+            rejected.push_back({entry.id, entry.projectUuid});
+            if (observer_) observer_(entry, false, "user", surface);
         }
     }
     return rejected;
 }
 
-bool ChangesetQueue::setState(std::string_view id, const std::string& credential, Review state) {
+bool ChangesetQueue::setState(std::string_view id, const std::string& credential, Review state,
+                              std::string_view actor, std::string_view source) {
     std::lock_guard lock(mutex_);
     for (auto& e : entries_) {
         if (e.id == id && e.credential == credential) {
-            e.state = state;
+            if (e.state != state) {
+                e.state = state;
+                if (observer_) observer_(e, false, actor, source);
+            }
             return true;
         }
     }
@@ -111,9 +127,12 @@ bool ChangesetQueue::setState(std::string_view id, const std::string& credential
 
 void ChangesetQueue::expire(std::int64_t nowMs) {
     std::lock_guard lock(mutex_);
-    for (auto& e : entries_)
-        if (e.state == Review::AwaitingReview && nowMs - e.createdMs > kReviewWindowMs)
+    for (auto& e : entries_) {
+        if (e.state == Review::AwaitingReview && nowMs - e.createdMs > kReviewWindowMs) {
             e.state = Review::Expired;
+            if (observer_) observer_(e, false, "system", "review window");
+        }
+    }
 }
 
 std::size_t ChangesetQueue::size() const {

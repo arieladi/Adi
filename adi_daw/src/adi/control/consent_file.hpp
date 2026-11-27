@@ -27,6 +27,12 @@ inline constexpr std::size_t kConsentFileMaxBytes = 256 * 1024;
 /// Acquiring a busy or unsafe lock fails closed and does not call the action.
 [[nodiscard]] bool withConsentFileLock(const std::filesystem::path&, const std::function<void()>&);
 
+enum class PrivateFileStatus { Missing, Private, Unavailable };
+
+/// Check that an ordinary file is owner-only within its private directory.
+/// Does not read the file or create its parents.
+[[nodiscard]] PrivateFileStatus privateFileStatus(const std::filesystem::path&);
+
 struct PrivateFileLock;
 struct PrivateFileLockAttempt {
     std::shared_ptr<PrivateFileLock> lock;

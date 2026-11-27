@@ -63,8 +63,16 @@ public:
           service([owner = std::move(owner), alive = std::weak_ptr<int>(lifetime)](Task task) {
               owner([alive, task = std::move(task)] { if (alive.lock()) task(); });
           }, grants),
+          queue(randomChangesetId, [this](const QueuedChangeset& entry, bool initial,
+                                          std::string_view actor, std::string_view source) {
+              const auto state = initial ? Review::AwaitingReview : entry.state;
+              const auto text = initial ? dumpJson(changesetJson(entry.changeset)) : std::string{};
+              (void)history.append(entry.projectUuid,
+                  {initial ? AgentLogKind::Proposal : AgentLogKind::ProposalOutcome, entry.id, text,
+                   std::string(toString(state)), std::string(actor), std::string(source)});
+          }),
           context{projects, queue, options.limits, nowMicros, {}, "adi", kVersion, "control"},
-          agent(ledger, jobs, [this](ConsentRequest question) { ask(std::move(question)); }),
+          agent(ledger, jobs, [this](ConsentRequest question) { ask(std::move(question)); }, &history),
           mcp(service, projects, {"adi", "ADI", kVersion}) {
         if (!agentCredential.empty()) grants.grant(agentCredential, Tier::Apply);
         context.appTier = [this] { return currentTier.load(); };
@@ -264,6 +272,7 @@ public:
     GrantTable grants;
     Service service;
     ProjectSet projects;
+    AgentLog history;
     ChangesetQueue queue;
     JobBook jobs;
     AgentWriteGate agentWrites;
@@ -324,8 +333,17 @@ AgentStopReport AppControl::stopAgent(std::string surface) {
     AgentStopReport report;
     report.atUtcMicros = nowMicros();
     report.surface = std::move(surface);
-    report.rejectedProposals = impl_->queue.rejectPending();
     report.cancelledJobs = impl_->jobs.stopAgentJobs();
+    const auto rejected = impl_->queue.rejectPending(report.surface);
+    report.rejectedProposals = rejected.size();
+    std::unordered_map<std::string, std::vector<std::string>> byProject;
+    if (impl_->live) byProject.try_emplace(impl_->live->projectUuid());
+    for (const auto& item : rejected) byProject[item.projectUuid].push_back(item.id);
+    for (const auto& [uuid, proposals] : byProject) {
+        const auto details = dumpJson({{"rejectedProposals", proposals}, {"jobsSignalled", report.cancelledJobs}});
+        (void)impl_->history.append(uuid, {AgentLogKind::StopPress, {}, details, {},
+                                           std::string(toString(report.actor)), report.surface});
+    }
     return report;
 }
 
@@ -361,6 +379,13 @@ AgentRunResult AppControl::runAgent(const AgentLaunch& launch, std::string_view 
     });
 }
 
+std::optional<std::vector<AgentLogEntry>> AppControl::agentHistory(
+    std::string_view project, std::int64_t afterSequence, std::size_t maximum) const {
+    const auto active = impl_->projects.find(project);
+    if (!active) return std::nullopt;
+    return impl_->history.read(active->projectUuid(), afterSequence, maximum);
+}
+
 agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
     if (approve && agentStopped()) return {false, agent::Refusal::Invalid, "agent writes are stopped"};
     auto entries = proposals();
@@ -369,13 +394,19 @@ agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
     });
     if (entry == entries.end()) return {false, agent::Refusal::Invalid, "the proposal is no longer awaiting review"};
     if (!approve) {
-        const bool changed = impl_->queue.setState(id, entry->credential, Review::Rejected);
+        const bool changed = impl_->queue.setState(id, entry->credential, Review::Rejected, "user", "review");
         return {changed, changed ? agent::Refusal::None : agent::Refusal::Invalid, {}};
     }
     auto project = impl_->projects.find(entry->project);
     if (!project) return {false, agent::Refusal::ReadOnly, "the project is no longer open"};
     auto result = project->applyChangeset(entry->changeset, impl_->options.limits);
-    if (result.ok) impl_->queue.setState(id, entry->credential, Review::Applied);
+    if (result.ok) {
+        impl_->queue.setState(id, entry->credential, Review::Applied, "user", "review");
+    } else {
+        const auto state = result.refusal == agent::Refusal::Stale ? "stale" : "apply_refused";
+        (void)impl_->history.append(entry->projectUuid,
+            {AgentLogKind::ProposalOutcome, entry->id, {}, state, "user", "review"});
+    }
     return result;
 }
 
