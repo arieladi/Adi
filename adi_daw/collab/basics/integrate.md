@@ -34,6 +34,7 @@ The original Export tip is included. The Edit report at `fd5eb152e8fd495fb7fa401
 Browser ownership moved to the session on `basics/browser-chain`. The published SC-121 and SC-120/122 results are recorded above. The in-progress SC-124 draft was archived locally at reassignment. The integration will use the original Browser chain.
 
 Agent Settings at `906a2dd8d5646111076724f6bc58c95b3accc8f6` keeps `agent.tier` and `agent.maxOpsPerRequest` editable. The Settings and MCP suites and all 18 no-display window suites passed. A subprocess probe confirmed Observe removes write proposals and a saved cap of one rejects a two-op request.
+SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snapshot and Export keep stored bytes for an unreadable device, record that its state is stale, and name it. Healthy devices still capture, and a successful retry clears the marker. Quit offers Stay or Quit with Stored State once per request and keeps the existing export checks. Built the app with warnings as errors, passed 12 affected headless suites and all 18 no-display window suites, and passed the five validators and Win’s landing-check tests.
 
 ## For the director
 
