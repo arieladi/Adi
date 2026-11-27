@@ -13974,8 +13974,8 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
     std::string why;
     check(settings.set("files.sampleEditor", media::pathUtf8(editor), {}, why), "configure an external editor path with spaces");
     std::vector<bool> copied;
-    root.launchSampleEditor = [&](const auto &application, const auto &source, bool copy) {
-        if (application != editor || source != std::filesystem::weakly_canonical(wav))
+    root.launchSampleEditor = [&](const auto &application, std::int64_t mediaId, bool copy) {
+        if (application != editor || mediaId != imported.mediaId)
             return false;
         copied.push_back(copy);
         return true;

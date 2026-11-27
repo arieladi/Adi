@@ -1384,12 +1384,25 @@ class AdiApplication final : public juce::JUCEApplication,
         root->browser.swapChoice = [this](const BrowserPanel::HotSwapChoice &choice) { return swapBrowserChoice(choice); };
         root->browser.leaveHotSwap = [this] { leaveHotSwap(); };
         root->launchSampleEditor = [asker = juce::Component::SafePointer<AdiRootComponent>(root_)](
-                                       const std::filesystem::path &editor, const std::filesystem::path &source, bool copy) {
+                                       const std::filesystem::path &editor, std::int64_t mediaId, bool copy) {
             if (asker == nullptr)
                 return false;
-            const auto project = fileFromPath(asker->editStore().path());
-            return juce::Thread::launch([asker, project, editor = fileFromPath(editor), source = fileFromPath(source), copy] {
-                auto message = launchExternalSampleEditor(editor, source, project, copy);
+            auto &store = asker->editStore();
+            const auto project = fileFromPath(store.path());
+            const auto folder = media::projectFolder(store);
+            Payload identity;
+            try {
+                identity = media::mediaRow(store.db(), mediaId);
+            } catch (const std::exception &e) {
+                asker->say(std::string("The sample could not be opened: ") + e.what());
+                return true;
+            }
+            return juce::Thread::launch([asker, project, folder, editor = fileFromPath(editor),
+                                         identity = std::move(identity), copy] {
+                std::string error;
+                const auto source = media::resolveMedia(folder, identity, error);
+                auto message = source.empty() ? "The sample could not be opened: " + error
+                                               : launchExternalSampleEditor(editor, fileFromPath(source), project, copy);
                 if (!message.empty())
                     juce::MessageManager::callAsync([asker, message = std::move(message)] {
                         if (asker != nullptr)
