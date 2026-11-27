@@ -20561,3 +20561,237 @@ position and its list entry plays from there. Make Session runs to its end with 
 | `docs/DEFERRED.md` | DF-W60 holds the work |
 | `collab/README.md` | ADR 0260 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0261; DF-W61 |
+
+## ADR-0261 — The Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, and the whole of the plug-in server carried — `DECIDED` (2026-11-27) — **DIRECTOR'S WORDS OF 27 NOVEMBER, RECORDED AFTER A CHECK OF FIVE AUDITS; WIN'S READINGS ARE MARKED, AND HE CONFIRMED THEM THE SAME DAY ("yes on the rest"); HIS FOUR ANSWERS ARE IN; AMENDS ADR-0257 d12, ADR-0203 d6, ADR-0104 d3, ADR-0115 d3 AND ADR-0053; WHAT IS NEW ON SCREEN IS BUILT AFTER ITS SHEET**
+
+**What this records.** On 27 November the director said where the agent is met in the window, what the
+floating search is for, that the Browser filters by what a sound measures, and that its preview row is
+hidden until it is needed. He then asked for "a deep sanity check on all AI and Browser (including things
+taken from [a sample service] and all new audio preview requests) see that we don't forget anything or mixing request
+together in a problematic ways", and added: "and dont forget all the integration of the audiogridder".
+Win ran five audits: the Browser as a surface, the agent's place in the window, finding and previewing
+sounds, his words against the record, and the plug-in server. They returned 148 findings, about 80 once
+merged. This entry records his words, settles what was within win's authority (each such line is marked
+*win's reading*; he confirmed them the same day with "yes on the rest"), and records his answers to the four
+choices win put to him.
+
+**What the check found, in short.** Where the agent lives was written four ways and his own way was
+written nowhere. The Browser's basics had no builder. The floating search that is built is a command
+runner that finds no sample, preset, installed plug-in or agent. Three matchers would answer the same
+words differently. One preview player had three owners and no builder. The agent's hidden parts had
+moved up and the pane the user talks in had not. A prompt stored in a marker could run at the agent's
+tier on one click. The plug-in server was carried by one row, parked on questions nobody was given.
+
+### Decisions
+
+**The agent's place**
+
+1. **AI is a label in the Browser.** It sits at the foot of the Categories list. Choosing it makes the
+   Browser's content pane the conversation with the agent and its results, and the search bar the place
+   to ask. Under every other label the bar searches. His words: "maybe we can add AI where i marked with
+   green , clicking it turning the browser into AI mode"; his reason: "the browser is where the AI
+   interaction should happen". This replaces win's reading in ADR-0257 d12, a first row that sends the
+   text. Of his words of 26 November there stands: no tab, one bar, no second box for prompts in the
+   Browser.
+2. **The label is shown when ADI can answer, and not before.** *Win's reading of "connected":* ADI's own
+   agent (AGT-06) is set up, the user has consented, and it answered a check at this launch; its helper
+   still starts at the first question. Once shown in a session the label stays; if the agent drops,
+   asking is off and says why. A program connected from outside (ADR-0233) does not show the label: it
+   cannot be asked from the bar. The label also shows, with asking off, while a proposal from any source
+   waits for review, since the review lives there.
+3. **One rule for every way in** (*win's reading*). With no agent, nothing whose only job is the agent
+   is shown: not the label, not the floating search's Ask, not a button that needs a model. Settings
+   keeps its AI page, because an agent is set up there. This narrows WIN-10 ("the row is inert and says
+   so") and ADR-0064 d5 for the agent's ways in. ADR-0104 d4 keeps its rule for actions that need a
+   project.
+4. **Nothing is sent by a slip.**
+   - Only Enter sends, and only while the bar asks.
+   - Each mode keeps its own text: choosing AI never sends what was typed for a search.
+   - Ctrl+F always lands in search, under All, as Live's.
+   - The label remembered between launches (SC-121) is never AI.
+   - Hot-Swap puts the bar back to search.
+   - The bar says which it is doing.
+   - No search calls a model or a service. A search by meaning, if it comes, is an ask.
+5. **The floating search is the quick way, the Browser the deep one.** His words: "the floating search
+   is an AI version of the browser for easy pick of a sample real fast or easy call of an agent real
+   fast, the browser pane is there for when we want to look for things deeper and not sure what we need,
+   if we sure of what we need that's why the floating browser for..".
+   - One library, one index and one agent stand behind both. A deep tool (the filter panel, the map, the
+     folders, the conversation) may live only in the Browser. Whatever can be found in one can be found
+     in the other: a sample, a device, a plug-in on this computer or on a server, a preset, and the
+     agent.
+   - WIN-06's "command palette" is this floating search, and its commands are one of its lists.
+   - *Win's readings.* Picking is local search by name, tag and measured property, and never a model. A
+     line to the agent closes the floating search at once: the answer and any proposed change appear in
+     the Browser's AI mode, and a mark in the Status Bar says that something waits. There is one
+     conversation per project, the same from both places; a line sent while a request runs waits its
+     turn and says so. A change asked from the floating search waits for Apply like any other
+     (ADR-0145 d9), unless the user has raised the agent to Apply.
+   - **It looks and works as the Mac's own search (his answer to Q1, with a picture of it):** one bar, and
+     round buttons beside it, one for each kind of thing. It opens on samples. The mouse or the arrow keys
+     move to devices, plug-ins and presets, to the agent, and to commands. His words: "the defult will be
+     samples, then we can move with mouse or with arrows for devices&plug-ins&presets, or AI agent &
+     commands". So a line goes to the agent only while the agent's button is chosen, and the prefixes of
+     ADR-0104 d3 (V/, S/, P/) are not needed. This answers the plan's open question Q-G. How many buttons
+     there are and what each holds is drawn on the sheet (d19).
+6. **What must exist before the label, in order.** The registry's schema and the control core (built);
+   the changeset as a service (built); the project's identity written by the Store (AGT-02); the tier's
+   scope and the always-confirm rules (AGT-09); the consent ledger and its question (AGT-03); the
+   session token, the listener and the app host (CTL-05, CTL-04, CTL-09); jobs with cancel (AGT-04);
+   Stop Agent (ADR-0259 d1); the helper (AGT-06); the user's side (AGT-05, rewritten); the injection
+   fixtures (AGT-08); and a catalogue the agent can read. ADR-0257 d8 moved up the helper, consent and
+   jobs. **The user's side moves up with them:** AGT-05 and WIN-10 beside AGT-06, with CTL-08, AGT-09
+   and Stop Agent named as their ground. The label is shown at the end of this chain and not at the
+   helper's connection: until then a proposal would sit in a queue the window cannot show.
+7. **What the AI mode shows** (lines for the rewritten AGT-05; its picture comes first, d19).
+   - The conversation, kept per project in ADI's data folder and never in the `.adi`.
+   - The proposals that wait, each with its state, Apply and Reject. A proposal is applied whole or not
+     at all; applying a part stays open (ADR-0148).
+   - A notice when the song has moved on since a proposal was made: how many edits came after, "Ask
+     again", and that undoing back makes it current. Never the same ops on a moved head (ADR-0148 d4).
+   - The consent question; the tier, the model and where it runs, at the head of the pane; the jobs
+     that run, with progress and cancel; the stopped state after Stop Agent and the way to re-arm.
+   - The agent's log, one per project, in time order: requests, answers, proposals and what became of
+     them, view changes (ADR-0257 d6), Stop presses.
+   - Samples the agent found are ordinary Browser rows: previewed, dragged and loaded as any other.
+   - The catalogue the agent reads (devices, plug-ins, presets; samples with DF-C7) is the one the
+     Browser and the floating search read.
+8. **A marker's prompt always waits for review (amends ADR-0115 d3).** A run started from a marker's
+   prompt queues for review at every tier, and `marker.setPrompt` joins the ops the agent may not emit.
+   As written, a prompt planted in a received project, or written by the agent itself, would commit on
+   one click at the Apply tier, against ADR-0131 d5.
+9. **"No need a separate place for prompts" is read narrowly** (*win's reading*). The tab went. A
+   marker's prompt, the Export page's sentence and Settings' Find stay; each sends through the same
+   agent, and its exchange shows in the same conversation. The window says "AI" for the place and
+   "agent" for who acts (Stop Agent, the agent's tier).
+
+**Finding sounds**
+
+10. **The Browser filters by what a sound measures.** His words: "we also said we will take some
+    qualities from [a sample service] and some other visual audio (like all short transient filter or other filters
+    etc..)". One filter panel, Live's Filter View. Six groups in it are measured, with no model: one-shot
+    or loop, length, key, tempo, brightness, hit density. Beside them are a file's own tags (TM-MD-04)
+    and the user's tags (SC-140). This is the row that Live's Auto Tags was twice put off to; Auto Tags
+    may feed it later. It is built with find similar (TM-MD-07), on the same descriptors.
+11. **One answer for "loop or one-shot".** One classifier, its answer kept with the file's analysis
+    under TM-MD-04's order of trust, read by the filter, by Warp (ADR-0214 d2, TM-WT-05) and by the
+    preview's looping.
+12. **One search.** One query service over the one index, outside the Browser's panel, called by the
+    Browser and by the floating search. One rule for samples on both: every word matched on its own, as
+    Live. The floating search may order by its own score; it finds the same set. The index of SC-421 is
+    its base. A sample's row shows its length, tempo and key where the index knows them.
+
+**Hearing them**
+
+13. **The preview row waits until it is needed.** His words: "i don't want to see that until i need
+    that". *Win's reading:* the selected row decides, not the label; today that is an audio file. The
+    row appears with the first such selection and stays while that list is shown, so the list does not
+    change height as the selection moves. It is never shown before a player exists. Preview on and off
+    is also a command, so it can be set while the row is hidden (SC-429).
+14. **One preview player** (amends DF-E82 and N76). One player, built once, a service of the engine and
+    the shell with three callers: the Browser's row, the floating search and the map. Its switches are
+    kept with the program and not with a song (ADR-0104 d2). Its level is Cue Volume, as Live's; with no
+    song open it plays on outputs 1 and 2 at a level kept with the program. The first player (SC-123)
+    plays the plain file, and no Sync or Raw button is drawn before TM-MD-06. The keys are Live's on
+    both surfaces; Space never auditions in a text field (amends ADR-0104 d3).
+15. **When the Cue output is not there, ADI says so.** A song whose Cue Out names a pair this interface
+    lacks gives no metronome and no preview today and says nothing. ADR-0260 d5's notice is for every
+    user (SC-431).
+16. **"Lands as heard" (ADR-0254 d17): how far it reaches** (*win's reading*). With Sync on it covers
+    whatever is picked from ADI's own lists, by a drag, by Enter or from the floating search, heard
+    first or not. A file from outside ADI arrives clean. Enter loads at once with the answers given
+    last and shows no Import question (narrows ADR-0203 d11 for Enter); a drop asks as today.
+    **Sync starts on, as Live's preview (his answer to Q2).** So from the day TM-MD-06 is built, a sample
+    previewed and picked lands in time and in key unless he switched Sync off, and "import with no warp"
+    (ADR-0203 d12) holds for files that come from outside ADI. Until that row is built the preview plays
+    the plain file and every pick arrives clean (his answer to Q3: in time and in key wait for the
+    real-time stretcher, TM-WT-04; no early version).
+
+**The column**
+
+17. **The Info box is part of the Browser's column** (amends ADR-0203 d6, "The Info View stays as
+    Live's"). His words of 27 November: "the info box should be tied to the browser which should extend
+    all the way down and be part of it". It moves, hides and resizes with the Browser (SC-424, on main).
+    *Win's reading:* with the Browser hidden, the Info key and its menu item bring the column back, so
+    that neither is a dead control.
+18. **The labels.** *Win's reading of SC-127:* a label is hidden while its feature is not built, and
+    shown, empty or not, once it is. AI is the last entry of Categories. A remembered label that is not
+    shown falls back to All. ADI's own starter sounds list under Drums and Samples; Sounds holds
+    presets, as in Live (corrects ADR-0258 d10). Captures appears with its first source (DF-C8).
+19. **The look.** The Browser's sheet is not agreed (ADR-0244), was never shown to him (ADR-0255 d10),
+    and his words have overtaken it. The Browser queue's basics are built in today's look. A new sheet
+    goes to him before any of these is built: the AI label and its mode, the filter panel, the preview
+    row shown and hidden with its switches, a server's mark, and one picture of the floating search. On
+    it he chooses how wide the conversation is, where a proposed change is reviewed, and how the agent
+    is reached in the Mix View, which has no Browser (ADR-0243 d4).
+
+**The plug-in server**
+
+20. **The whole integration is carried.** His words: "dont forget all the integration of the
+    audiogridder". Nothing built this week shuts it out. One row carries it today (DEV-27), parked on
+    22 November on questions nobody was given. Three rows are owed:
+    - a spike before M7: read the stock protocol and server and write down what it guarantees, choose
+      vendored or written against the wire format, and build the probe of ADR-0107 d5;
+    - the window's half: a server's plug-ins in the Browser with a mark, the servers list in Settings,
+      the device's mark and its dropped-block counter, Remap, sending a device to a server. On screen
+      the word is "server";
+    - the server's fork: VST3 and CLAP only, where it lives, who builds it, its place in the installer.
+
+    *Win's reading:* M7 closes when a plug-in on a second machine plays as a device and is listed in the
+    Browser, and DEV-27 is no longer the first row allowed to slip.
+21. **A server's consent lives in the ledger (amends ADR-0053).** The grant is kept on this computer,
+    per project and per server (AGT-03, a capability for plug-in hosting). The file keeps only which
+    server each device asks for. A copy sent to someone, a received project and a paste between projects
+    never carry a grant. `sync.audioGridderDiscovery` defaults to off (ADR-0232 d1).
+22. **A plug-in's identity never carries a path** (win's answer to DEV-25's question; DF-E25 c). A VST3
+    is its class ID with its format; a CLAP is its id. A plug-in on a server is then the same device as
+    the local one for presets (SC-85), routes and profiles (ADR-0254 d13), and ADR-0053 d6 holds. The
+    preset files' key follows now, while few exist.
+23. **A plug-in that cannot answer never holds ADI** (ADR-0053's rule, for every plug-in). A save, an
+    export or a quit that cannot get a device's state keeps the stored state, marks it stale and names
+    the device. Save and Export go on; Quit asks once, go on or stay (SC-430).
+
+**The day's small rulings**
+
+24. **Delete in a plug-in's own window stays as Live's** (his answer of 27 November to the Windows 10
+    walker's question; the reading R67 confirms what Live does).
+25. **A plug-in's window reopens on a screen that exists** (SC-428).
+26. **Who builds.** The Browser queue has one owner, on one chain branch started from
+    `basics/integrate-1`; the integrator merges it. SC-429 is built there with SC-123, not on the look
+    chain. `window/command-palette` stays out of the stacks until Q1 is answered and is then reworked as
+    the floating search. A log branch with no row after a day does not hold a queue.
+
+**His answers, 27 November.** "Q1 = should look like in mac the default search - the defult will be samples,
+then we can move with mouse or with arrows for devices&plug-ins&presets, or AI agent & commands" (d5).
+"Q2 = B": the preview's Sync starts on, as Live's (d16). "q3 = A": hearing a loop in time waits for the
+real-time stretcher (d16). "Q4 = A": the agent's hidden half (d6) starts now, on a seat of its own, and
+lands after the basics. "yes on the rest": win's readings stand.
+
+**What is not settled here.** From the sheet (d19) he chooses the conversation's width, where a proposed
+change is reviewed, the agent's way in from the Mix View, and the floating search's buttons. Left to their
+rows, each with a recommendation: how far one consent for a session reaches (ADR-0257 d9); where a
+session's output is listed; a remote plug-in's own window; one row or two for a plug-in that is on this
+computer and on a server; Stop Agent's key.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0257 d12 | win's "first row" reading is replaced by the AI label and its mode (d1) |
+| ADR-0257 d8 | AGT-05 and WIN-10 move up with AGT-06; CTL-08, AGT-09 and Stop Agent are their ground (d6) |
+| ADR-0203 d6 | the chat tab is gone; the Info box is part of the Browser's column (d1, d17) |
+| ADR-0203 d11 | Enter loads with the answers given last and asks nothing (d16) |
+| ADR-0104 d3 | the floating search has a button for each kind of thing, as the Mac's search, and opens on samples; the prefixes go; no "Space auditions" (d5, d14) |
+| ADR-0115 d3 | a marker's prompt queues for review at every tier; the agent may not write one (d8) |
+| ADR-0053 | a server's grant lives in the ledger; a failed state capture never holds a save or a quit (d21, d23) |
+| ADR-0064 d5; WIN-10 | with no agent its ways in are not shown (d3) |
+| ADR-0258 d10 | starter sounds list under Drums and Samples (d18) |
+| ADR-0254 d12, d16, d17 | stand; one filter panel, one player, the reach of "lands as heard", and Sync on from the start (d10, d14, d16) |
+| ADR-0203 d12 | "import with no warp" holds for files from outside ADI once TM-MD-06 is built (d16) |
+| PLAN Q-G | answered (d5) |
+| DEV-25; DF-E25 c | a VST3's identity is its class ID (d22) |
+| PLAN AGT-05, WIN-06, WIN-10, Q-G | the stale lines corrected now; the new rows are owed under DF-R3 |
+| `docs/SANITY-CHECK.md` | SC-428 to SC-432 registered; lines in SC-110, SC-123, SC-127, SC-128 and SC-424 |
+| `docs/DEFERRED.md` | DF-W61 (the sheet), DF-R3 (the rows), DF-C9 (the agent's chain), DF-E92 (the server's spike); DF-E82 lent |
+| `collab/README.md` | ADR 0261 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0262; DF-W62, DF-R4, DF-C10, DF-E93; SC-433 |
