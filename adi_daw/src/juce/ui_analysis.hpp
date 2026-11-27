@@ -49,7 +49,7 @@ class SharedSpectrumView final : public juce::Component,
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
         Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope,
-        SpectrumMaximum, SpectrumCumulativeMaximum
+        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands, ColourWaveform
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
@@ -62,6 +62,8 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed() const noexcept { return paletteReversed_; }
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
+    void setFilledSpectrumCurve(SharedAnalysis::FilledCurve);
+    SharedAnalysis::FilledCurve filledSpectrumCurve() const noexcept { return filledCurve_; }
     enum class SpectrumScale { Wide, Detail, Extended, Device };
     void setSpectrumScale(SpectrumScale);
     SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
@@ -114,6 +116,10 @@ class SharedSpectrumView final : public juce::Component,
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
+    bool updateFilledDisplay() noexcept;
+    void paintFilledSpectrum(juce::Graphics &) const;
+    void paintThirdOctaveBands(juce::Graphics &) const;
+    void paintColourWaveform(juce::Graphics &) const;
     bool spectrumMode() const noexcept {
         return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
                mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;
@@ -160,6 +166,13 @@ class SharedSpectrumView final : public juce::Component,
     struct ScaledSpectrum;
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
+    SharedAnalysis::FilledCurve filledCurve_ = SharedAnalysis::FilledCurve::RealtimeMaximum;
+    juce::Point<int> filledPointer_{-1, -1};
+    double filledDisplaySlot_ = -1.;
+    struct PhaseTrail;
+    std::unique_ptr<PhaseTrail> phaseTrail_;
+    struct BandDisplay;
+    std::unique_ptr<BandDisplay> bandDisplay_;
 };
 
 // Fixed display coordinates used by the spectrum and the A/B overlay. The
