@@ -139,7 +139,6 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
             if (in.paramId == kCtrlPitchBend) {
                 const auto exact = controllers::pitchBendWordExact(in.value);
                 out.noteId = 0;
-                out.fromControllerEvent = true;
                 out.word = static_cast<std::uint16_t>(std::lround(exact));
                 out.value = exact / 16383.0;
                 out.paramId = caps.bendParam[in.channel];
@@ -281,7 +280,8 @@ int MpeRouter::allocate() noexcept {
 }
 
 void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::int32_t frame,
-                        std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent) noexcept {
+                        std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent,
+                        double bendRange) noexcept {
     MpeOut o;
     o.kind = MpeOut::Kind::Control;
     o.channel = chan;
@@ -295,8 +295,7 @@ void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::in
         // `v` is semitones. The parameter gets the UNROUNDED word over 16383
         // -- the scale JUCE's own host uses, which its client decodes back to
         // the same word -- and the wire gets the rounded one.
-        constexpr double channelRange = MpeZone{}.masterBendSemitones;
-        const double x = semitonesToBendExact(v, fromControllerEvent ? channelRange : kMpeOutBendSemitones);
+        const double x = semitonesToBendExact(v, bendRange);
         o.word = static_cast<std::uint16_t>(std::lround(x));
         o.value = x / 16383.0;
         o.paramId = caps_.bendParam[c];
@@ -459,15 +458,31 @@ void MpeRouter::noteOff(const Event& e, MpeOutList& out) noexcept {
 
 void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     const auto d = static_cast<ExpressionDim>(e.dim);
-    // A channel wheel has no note to address. Preserve it as a MIDI channel message on every route.
-    if (e.noteId == 0 && d == ExpressionDim::Pitch && e.channel < 16 && std::isfinite(e.value)) {
-        control(e.channel, kCtrlPitchBend, e.value, e.frame, 0, out, true);
-        return;
-    }
     const auto di = static_cast<std::size_t>(e.dim);
     auto drop = [&]() noexcept {
         if (di < dropped_.size()) ++dropped_[di]; else ++droppedOther_;
     };
+
+    // SC-312: an expression for the whole channel (note 0: the pitch wheel, channel pressure, CC74 as
+    // ADI's MIDI input makes them) is the channel's own message on EVERY route, as Live sends it: a VST3
+    // takes it through its MIDI map, a CLAP as MIDI. Keep the physical pitch channel for its wheel
+    // and center reset. Channel pressure and timbre reach channel 0, where ADR-0054 puts the notes.
+    if (e.noteId == 0) {
+        switch (d) {
+            case ExpressionDim::Pitch:
+                if (e.channel < 16 && std::isfinite(e.value))
+                    control(e.channel, kCtrlPitchBend, e.value, e.frame, 0, out, false, kChannelBendSemitones);
+                else
+                    drop();
+                return;
+            case ExpressionDim::Pressure:
+                control(0, kCtrlAfterTouch, e.value, e.frame, 0, out); return;
+            case ExpressionDim::Timbre:
+                control(0, kCtrlTimbre, e.value, e.frame, 0, out); return;
+            default:
+                drop(); return;
+        }
+    }
 
     if (route_ == ExpressionRoute::NoteExpression) {
         // Anchored by note id, so no channel or key is needed and the note

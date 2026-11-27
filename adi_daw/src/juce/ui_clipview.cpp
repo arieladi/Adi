@@ -35,16 +35,16 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
     g.reduceClipRegion(area);
     const auto from = time.tick(0.), to = time.tick(static_cast<double>(area.getWidth()));
     const auto &first = meterAt(from, meters);
-    constexpr double minLabelSpacing = 56.;
     const double gridQuarters = time.gridQuarters();
     const bool subdivisions = showSubdivisions && gridQuarters < 1. && gridQuarters * time.scale >= 4.;
     const double beatPx = 4. / std::max<double>(1, first.denominator) * time.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < minLabelSpacing)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < minLabelSpacing)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = area.getBottom();
     g.setFont(look::font(look::fontLabel, true));
@@ -76,8 +76,8 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
             return;
         constexpr auto sixteenth = textproj::kWhole / 16;
         const double sixteenthPixels = time.scale / 4.;
-        const auto labelStep = sixteenthPixels >= minLabelSpacing ? sixteenth :
-                               2 * sixteenthPixels >= minLabelSpacing ? 2 * sixteenth : beatTicks;
+        const auto labelStep = sixteenthPixels >= labelSpacing ? sixteenth :
+                               2 * sixteenthPixels >= labelSpacing ? 2 * sixteenth : beatTicks;
         const auto last = std::min({to, tick + m.barTicks() - 1, until - 1});
         time.forEachGridLine(std::max(from, tick), last, [&](std::int64_t line) {
             const auto offset = (line - tick) % beatTicks;
@@ -91,6 +91,14 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
                 g.fillRect(area.getX() + static_cast<int>(time.x(line)), foot - 5, 1, 3);
             }
         });
+    });
+    time.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        if (at) {
+            label(tick, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        } else {
+            g.setColour(look::rulerLabel);
+            g.fillRect(area.getX() + static_cast<int>(time.x(tick)), foot - 5, 1, 3);
+        }
     });
 }
 // The editing grid's lines and the bar lines over them, across `area`.
@@ -144,7 +152,6 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
 
 // ---------------------------------------------------------------------------------------------
 NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
-    time.adaptiveGridFloor = ArrangementGeometry::kFinestGrid;
     setTitle("MIDI Note Editor");
     setOpaque(true);
     setWantsKeyboardFocus(true);
@@ -274,8 +281,10 @@ void NoteEditor::shapeStroke() {
 }
 void NoteEditor::setTrimMode(bool on) {
     trimMode_ = on;
-    if (on)
-        drawMode_ = false;
+    if (on && drawMode_) {
+        setDrawMode(false);
+        return;
+    }
     updateCursor();
     panel.repaint();
 }
@@ -380,6 +389,9 @@ void NoteEditor::setDrawMode(bool on) {
         trimMode_ = false;
     updateCursor();
     panel.repaint();
+    panel.root.transport.draw.setToggleState(on, juce::dontSendNotification);
+    panel.root.arrangement.canvas.repaint();
+    panel.root.commands().manager.commandStatusChanged();
 }
 std::vector<std::int64_t> NoteEditor::drawnSteps() const {
     std::vector<std::int64_t> out;
@@ -502,6 +514,7 @@ void NoteEditor::zoomToNotes() {
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
     panel.repaint(panel.gridBox());
     keys.show(range->low, range->high, area.getHeight());
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::zoomBack() {
@@ -2543,10 +2556,8 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
         panel.setFocus(!panel.focus());
         return true;
     }
-    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B')) {
-        setDrawMode(!drawMode_);
-        return true;
-    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B'))
+        return panel.root.commands().key(k, panel.root);
     if (!mods.isAnyModifierKeyDown() && (code == 'f' || code == 'F')) {
         setFold(!folded_);
         return true;
@@ -3074,8 +3085,10 @@ void SampleEditor::resized() {
     }
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
-    if (timeWheel(time, e, w, 0))
+    if (timeWheel(time, e, w, 0)) {
+        panel.repaint(panel.headerArea());
         repaint();
+    }
 }
 void SampleEditor::paint(juce::Graphics &g) {
     g.fillAll(look::laneAlt);
@@ -4773,7 +4786,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (drawBox().contains(at)) {
-        notes.setDrawMode(!notes.drawMode());
+        root.command(AppCommands::DrawMode);
         return;
     }
     if (trimBox().contains(at)) {

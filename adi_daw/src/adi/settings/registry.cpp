@@ -197,6 +197,7 @@ void liveSections(std::vector<Setting>& r) {
         {"plugins.editorsAlwaysOnTop", "Plug-In Windows"},
         {"plugins.windowScale", "Plug-In Windows"},
         // Record, Warp & Launch
+        {"record.bitDepth", "Record"},
         {"record.writeBext", "Record"},
         {"record.writeIxml", "Record"},
         {"record.exclusiveArm", "Record"},
@@ -412,8 +413,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("files.renderFolder", Type::Path, ff, "Default render folder",
                      "Where exports are written.", ""));
     r.push_back(make("files.recordFolder", Type::Path, ff, "Default record folder",
-                     "Where a new project records audio. Empty: the project's own folder, as "
-                     "Live (ADR-0203).",
+                     "Folder for in-progress audio and takes kept for recovery. Leave it empty to record "
+                     "in the song folder. Finished takes go into the song's Samples/Recorded folder.",
                      ""));
     r.push_back(choice("files.copyImportedMedia", ff, "Copy imported media into the project",
                        "Always, ask, or never, in Live's Collect Files wording. Default: never, "
@@ -486,6 +487,10 @@ void catalogueSettings(std::vector<Setting>& r) {
                        false));
 
     // --- Record, Warp & Launch (catalogue II §9) ----------------------------------------------------
+    r.push_back(choice("record.bitDepth", "Record, Warp & Launch", "WAV / RF64 bit depth",
+                       "New recordings use WAV and promote automatically to RF64 at 4 GiB. Choose 16-bit PCM, "
+                       "24-bit PCM or 32-bit float. A change applies to the next take.",
+                       {16, 24, 32}, 32));
     r.push_back(make("record.writeBext", Type::Bool, "Record, Warp & Launch", "Broadcast Wave (bext)",
                      "Write timecode, description and originator into recordings (ADR-0132 d2).", false));
     r.push_back(make("record.writeIxml", Type::Bool, "Record, Warp & Launch", "iXML", "Write an iXML chunk into recordings.", false));

@@ -4,6 +4,7 @@
 #include "adi/engine/realize.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/store_rows.hpp"
+#include <cstdint>
 #include <memory>
 #include <span>
 namespace adi::engine {
@@ -15,6 +16,10 @@ namespace adi::engine {
 // not release/retrigger them. Missing/ambiguous identities use release/chase.
 struct MidiClipState;
 struct NoteExpressionsRead;
+struct MidiNoteActivity {
+    std::uint32_t onsets = 0;
+    bool held = false;
+};
 std::shared_ptr<MidiClipState> makeMidiClipState();
 class MidiClips {
 public:
@@ -31,6 +36,9 @@ public:
     [[nodiscard]] std::span<const MidiMonitorRange> monitorRanges(std::int64_t track) const noexcept;
     // Driver-only request, one bit per channel at the start of the current slice.
     [[nodiscard]] std::shared_ptr<std::uint16_t> pitchChaseFor(std::int64_t track) const noexcept;
+    // Owner-thread read of the source's last rendered note activity. The onset counter
+    // lets a meter show a note that began and ended between two frames.
+    [[nodiscard]] MidiNoteActivity noteActivity(std::int64_t track) const noexcept;
     const std::vector<std::string>& problems() const noexcept;
     std::uint32_t droppedNotes() const noexcept;
     std::uint64_t droppedControllers() const noexcept;

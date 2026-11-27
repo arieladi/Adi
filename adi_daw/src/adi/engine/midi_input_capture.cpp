@@ -31,11 +31,15 @@ bool MidiInputCapture::start(std::vector<std::int64_t> targets, double sampleRat
 void MidiInputCapture::stop() noexcept {
     stopEpoch_.store(epoch(), std::memory_order_release);
 }
-std::size_t MidiInputCapture::drain(std::span<MidiCapturePacket> out) noexcept {
+std::size_t MidiInputCapture::drain(std::span<MidiCapturePacket> out, RecordingPunchWindow* punchWindow) noexcept {
     const auto first = read_.load(std::memory_order_relaxed);
     const auto count = std::min(out.size(), written_.load(std::memory_order_acquire) - first);
     for (std::size_t i = 0; i < count; ++i)
         out[i] = ring_[(first + i) % capacity];
+    // The packet acquire above also publishes these bounds. The owner cannot
+    // start another epoch until it has drained this one.
+    if (count && punchWindow)
+        *punchWindow = punchWindow_;
     read_.store(first + count, std::memory_order_release);
     return count;
 }
@@ -57,7 +61,8 @@ void MidiInputCapture::deviceStopped() noexcept {
 }
 
 void MidiInputCapture::beginSlice(const AudioIo& io, const Transport& transport,
-                                  std::uint64_t inputEpoch) noexcept {
+                                  std::uint64_t inputEpoch, RecordingPunch punch,
+                                  const RecordingPunchWindow& punchWindow) noexcept {
     const auto current = epoch();
     if (driverEpoch_ != current) {
         driverEpoch_ = current;
@@ -69,11 +74,16 @@ void MidiInputCapture::beginSlice(const AudioIo& io, const Transport& transport,
         finish(MidiCaptureState::InputReset);
         return;
     }
-    if (stopEpoch_.load(std::memory_order_acquire) == driverEpoch_ || (!transport.playing() && started_)) {
+    if (started_ && punchWindow != punchWindow_) {
+        finish(MidiCaptureState::Discontinuity);
+        return;
+    }
+    if (stopEpoch_.load(std::memory_order_acquire) == driverEpoch_ ||
+        (started_ && (!transport.playing() || punch == RecordingPunch::After))) {
         finish(MidiCaptureState::Complete);
         return;
     }
-    if (!transport.playing()) return; // wait through stopped callbacks and count-in
+    if (!transport.playing() || punch != RecordingPunch::Within) return;
     if (io.streamTimeSamples < 0 ||
         io.streamTimeSamples > std::numeric_limits<std::int64_t>::max() - io.frames) {
         finish(MidiCaptureState::Discontinuity);
@@ -89,6 +99,7 @@ void MidiInputCapture::beginSlice(const AudioIo& io, const Transport& transport,
         looping_ = transport.looping();
         loopBegin_ = transport.loopBegin();
         loopEnd_ = transport.loopEnd();
+        punchWindow_ = punchWindow;
         state_.store(MidiCaptureState::Recording, std::memory_order_release);
     }
     if (io.streamTimeSamples != expectedStream_ || transport.revision() != revision_ ||

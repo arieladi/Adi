@@ -7,7 +7,11 @@
 #include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 namespace adi::recording {
-struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
+struct ClipIds {
+    std::int64_t clip=0,media=0;
+    std::string name;
+    std::string trackName{}; // optional displayed track name for the filename
+};
 struct MidiExpressionLane {
     std::uint64_t noteId=0;
     ExpressionDim dimension=ExpressionDim::Pitch;
@@ -34,7 +38,11 @@ struct MidiLinearLanding {
 /// no existing take lane is eligible; clip IDs are always new. All supplied
 /// identities must be unoccupied even when a fallback is ultimately unused.
 struct LoopPassIds {std::int64_t lane=0,clip=0;std::string name;};
-struct LoopTrackIds {std::int64_t media=0;std::vector<LoopPassIds> passes;};
+struct LoopTrackIds {
+    std::int64_t media=0;
+    std::vector<LoopPassIds> passes;
+    std::string trackName{}; // optional displayed track name for the filename
+};
 struct MidiLoopPlacement {
     std::int64_t track=0,start=0,length=0;
     std::int64_t mainClip=0,mainStream=0;
@@ -49,6 +57,7 @@ struct MidiTakePass {
 };
 struct RecordingEdit {
     bool ok=false;
+    bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;

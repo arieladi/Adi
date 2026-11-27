@@ -2,9 +2,11 @@
 #include "temp_directory.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/recording_commands.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -21,6 +23,7 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <string_view>
 #include <thread>
 namespace {
 using namespace adi;using namespace adi::engine;
@@ -126,7 +129,7 @@ void midiLinearTakes() {
           "linear take rejects expression with no captured note without writing project rows");
     auto prepared = recording::prepareMidiLinearCommit(store, takes, 48000);
     check(prepared.ok && digestProject(store).text == before &&
-              !std::filesystem::exists(media::projectFolder(store) / "audio"),
+              !std::filesystem::exists(media::projectFolder(store) / "Samples" / "Recorded"),
           "MIDI-only preparation changes no rows and creates no audio files");
     const auto committed = recording::commit(store, prepared);
     check(committed.ok && committed.seqs.size() == 1, "both armed MIDI takes land in one placement");
@@ -258,7 +261,7 @@ void midiControllerOnlyTake() {
     const std::array points{controllers::Point{1, 120, .5}};
     const std::array<recording::MidiControllerLane, 1> wheel{{{15, controllers::kPitchBend, points}}};
     const std::array<recording::MidiLinearTake, 1> fresh{{{23, 7, 1000, 1000, "Wheel", {}, {}, false, wheel}}};
-    const auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
+    auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
     check(seed.ok && recording::commit(store, seed).ok, "record a new pitch-only Arrangement take");
     if (!seed.ok)
         return;
@@ -267,7 +270,7 @@ void midiControllerOnlyTake() {
     const std::array moved{controllers::Point{1, 120, .125}};
     const std::array<recording::MidiControllerLane, 1> movedWheel{{{15, controllers::kPitchBend, moved}}};
     const std::array<recording::MidiLinearTake, 1> take{{{23, 8, 1000, 800, "Move", {}, {}, true, movedWheel}}};
-    const auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
+    auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
     check(overdub.ok && recording::commit(store, overdub).ok, "overdub a pitch-only take into its existing source");
     const auto landed = controllers::readLanes(store, 7);
     check(original.ok && original.lanes.size() == 1 && landed.ok && landed.lanes.size() == 1 &&
@@ -287,13 +290,13 @@ void mixedLinearTake() {
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Keys');"
             "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES(8,23,'midi','Earlier MIDI',0,1000)");
     auto firstAudio = fixture.capture(false, Precision::Float32, false, 300, {}, 512);
-    const std::array<recording::ClipIds, 1> firstIds{{{7, 8, "Earlier Audio"}}};
+    const std::array<recording::ClipIds, 1> firstIds{{{7, 8, "Earlier Audio", "Input Guitar"}}};
     auto first = recording::prepareCommit(store, firstAudio, firstIds);
     if (!first.ok || !recording::commit(store, first).ok)
         throw std::runtime_error("could not seed the earlier audio take");
     const auto before = digestProject(store).text;
     auto audio = fixture.capture(false, Precision::Float32, false, 100, {}, 600);
-    const std::array<recording::ClipIds, 1> audioIds{{{9, 10, "New Audio"}}};
+    const std::array<recording::ClipIds, 1> audioIds{{{9, 10, "New Audio", "Input Guitar"}}};
     const std::array<notes::NoteValues, 1> notes{{{.start=10, .duration=25, .id=17, .key=64, .velocity=80}}};
     const std::array<recording::MidiLinearTake, 1> midi{{{23, 10, 400, 200, "New MIDI", notes, {}}}};
     auto invalid = midi;
@@ -308,9 +311,12 @@ void mixedLinearTake() {
     const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
     check(count("SELECT count(*) FROM clips WHERE track_id=21") == 3 &&
               count("SELECT count(*) FROM clips WHERE track_id=23") == 3 &&
-              count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio'") == 1 &&
+              count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio' AND name='New Audio'") == 1 &&
               count("SELECT count(*) FROM clips WHERE id=10 AND kind='midi'") == 1,
           "one mixed splice splits both covered clips and reserves both incoming IDs before allocating the fragments");
+    check(media::mediaRow(db, 8).at("rel_path") == "Samples/Recorded/Input Guitar 0001.wav" &&
+              media::mediaRow(db, 10).at("rel_path") == "Samples/Recorded/Input Guitar 0002.wav",
+          "audio-only and mixed takes use the same track-based file sequence and keep their clip labels");
     History history(store);
     check(history.nextUndo() && history.nextUndo()->label == "Record" && history.undo().ok &&
               digestProject(store).text == before,
@@ -398,7 +404,7 @@ void midiLoopTakes() {
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const auto unrelated=audioFolder/".adi-media-unrelated";fs::create_directories(unrelated);
     const auto sentinel=unrelated/"keep.txt";{std::ofstream out(sentinel);out<<"unowned staging";}
     const auto sentinelHash=media::blake3File(sentinel),takeHash=media::blake3File(recorded.tracks[0].file);
@@ -456,7 +462,7 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
     check(committed.ok && committed.seqs.size()==2,"cross-volume capture commits through project-side AtomicOnly publication as one group (media, placement)");
     if(committed.ok) {
         const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
-        check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
+        check(owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
             "cross-volume commit preserves exact captured bytes in project audio and discards its private take");
         const auto heard=f.play(Precision::Float32);bool exact=true;
         for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
@@ -489,7 +495,7 @@ void forcedCrossDevicePublication() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
     const auto take=recorded.tracks[0].file;const auto takeHash=media::blake3File(take);
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const std::array<recording::ClipIds,1> ids={{{7,8,"Other device"}}};
     fs::path published,staged;
     {
@@ -533,6 +539,9 @@ void heardPlacementAndHistory() {
         const auto committed=recording::commit(*f.store,prepared);if(!committed.ok)std::printf("commit: %s\n",committed.error.c_str());
         check(committed.ok && committed.seqs.size()==2,"recorded media and the take's placement commit as one native undo group");
         auto& db=f.store->db();const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(db.execAndGet("SELECT rel_path FROM media_files").getString());
+        check(owned.filename()=="One 0001.wav" &&
+              db.execAndGet("SELECT orig_name FROM media_files").getString()=="One 0001.wav",
+              "the recorded WAV and media name use the track name rather than the clip label");
         check(std::filesystem::exists(owned) && !std::filesystem::exists(recorded.directory()),"successful recording publication retains owned audio and removes only private take staging");
         const auto heard=f.play(precision);bool exact=true;
         for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
@@ -545,6 +554,124 @@ void heardPlacementAndHistory() {
         check(f.store && digestProject(*f.store).text==after && f.play(precision)==heard,"reopened recording history and owned media restore the same project and heard PCM");
     }
 }
+void numberedRecordingFiles() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto folder=media::projectFolder(*f.store)/"Samples"/"Recorded";
+    const auto land=[&](int frames,std::int64_t clip,std::int64_t mediaId,const std::string& trackName) {
+        auto capture=f.capture(false,Precision::Float32,false,frames);
+        const auto hash=media::blake3File(capture.tracks.front().file);
+        const std::array<recording::ClipIds,1> ids={{{clip,mediaId,"Clip title",trackName}}};
+        auto edit=recording::prepareCommit(*f.store,capture,ids);
+        const auto committed=edit.ok?recording::commit(*f.store,edit):CommitResult{};
+        check(committed.ok,"a track-named recording publishes through the normal commit path");
+        if(!committed.ok)return fs::path{};
+        const auto row=media::mediaRow(f.store->db(),mediaId);
+        const auto path=media::projectFolder(*f.store)/media::pathFromUtf8(row.at("rel_path").get<std::string>());
+        check(path.parent_path()==folder && row.at("orig_name")==media::pathUtf8(path.filename()) &&
+              hash && media::blake3File(path).hex==hash.hex,
+              "the media row has the published WAV's name, relative path and exact content");
+        return path;
+    };
+    const auto first=land(300,7,8,"Guitar");
+    const auto second=land(256,17,18,"Guitar");
+    check(first.filename()=="Guitar 0001.wav" && second.filename()=="Guitar 0002.wav",
+          "the displayed track name overrides the stored name and takes count upward");
+    const auto occupant=folder/"gUiTaR 0003.WAV";
+    {std::ofstream file(occupant);file<<"unrelated file";}
+    const auto occupantHash=media::blake3File(occupant);
+    const auto next=land(128,27,28,"Guitar");
+    check(next.filename()=="Guitar 0004.wav" && occupantHash &&
+          media::blake3File(occupant).hex==occupantHash.hex,
+          "numbering skips a case-insensitive occupied name without modifying its file");
+
+    const auto portable=land(192,37,38,"AUX .desk/Left");
+    check(portable.filename()=="_AUX .desk_Left 0001.wav",
+          "track names cannot make a device filename or escape Samples/Recorded");
+    std::string longTrack="x";
+    for(int i=0;i<110;++i)longTrack+="\xc3\xa9";
+    const auto longPath=land(224,47,48,longTrack);
+    const auto longName=media::pathUtf8(longPath.filename());
+    constexpr std::string_view suffix=" 0001.wav";
+    check(longName.size()<=200 && longName.ends_with(suffix) && longName.size()>suffix.size()+1 &&
+          (longName.size()-suffix.size())%2==1 && longTrack.starts_with(longName.substr(0,longName.size()-suffix.size())),
+          "a long Unicode track name keeps complete characters and room for the WAV suffix");
+
+    if(first.empty())return;
+    auto duplicate=f.capture();
+    const std::array<recording::ClipIds,1> duplicateIds={{{57,58,"Another clip","Another Track"}}};
+    auto reuse=recording::prepareCommit(*f.store,duplicate,duplicateIds);
+    check(reuse.ok && recording::commit(*f.store,reuse).ok &&
+          media::mediaRow(f.store->db(),8).at("rel_path")=="Samples/Recorded/Guitar 0001.wav" &&
+          !fs::exists(folder/"Another Track 0001.wav"),
+          "identical recorded content keeps the existing owned WAV and its first name");
+}
+
+void recordedTakeFollowsTempo() {
+    Fixture f;
+    constexpr std::int64_t changeTick = 48048;
+    constexpr std::int64_t firstTick = 24024;
+    constexpr std::int64_t lastTick = 60060;
+    f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(48048,60)");
+    auto recorded = f.capture(false, Precision::Float32, false, 200, {}, 131);
+    const auto sourceHash = media::blake3File(recorded.tracks.front().file);
+    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Follow tempo"}}};
+    auto prepared = recording::prepareCommit(*f.store, recorded, ids, 31);
+    if (!recording::commit(*f.store, prepared).ok)
+        throw std::runtime_error("could not publish the tempo-following recording");
+    const auto original = SnapshotBuilder::fromStore(*f.store);
+    const auto& clip = *original->findTrack(21)->clips.front();
+    check(clip.posTicks == firstTick && clip.lengthTicks == lastTick - firstTick && clip.audio &&
+              clip.audio->warpEnabled && clip.audio->warpMarkers && clip.audio->sourceStartFrames == 0 &&
+              clip.audio->sourceLengthFrames == 200,
+          "SC-248: a compensated recording starts at its original musical position with Warp on");
+    if (!clip.audio || !clip.audio->warpMarkers)
+        return;
+    const auto map = audio::readWarpMap(*clip.audio->warpMarkers, 200);
+    check(map && map.markers == std::vector<WarpMarker>{{0, 0}, {100, changeTick - firstTick},
+                                                        {200, lastTick - firstTick}},
+          "SC-248: the take's warp map retains the tempo change inside its captured source");
+    const auto landed = f.play(Precision::Float32);
+    bool unchanged = true;
+    for (std::size_t frame = 0; frame < landed.size(); ++frame)
+        unchanged = unchanged && landed[frame] == (frame >= 100 && frame < 300 ? Fixture::sample(frame - 100) : 0.f);
+    check(unchanged, "SC-248: at the capture tempo the entire WAV plays at its compensated sample positions");
+
+    struct TempoCase { int first, second; std::size_t begin, middle, end; };
+    for (const auto example : {TempoCase{240, 120, 50, 100, 150}, TempoCase{60, 30, 200, 400, 600}}) {
+        SQLite::Statement set(f.store->db(), "UPDATE tempo_map SET bpm=? WHERE pos_ticks=?");
+        set.bind(1, example.first);
+        set.bind(2, 0);
+        set.exec();
+        set.reset();
+        set.bind(1, example.second);
+        set.bind(2, changeTick);
+        set.exec();
+        const auto current = SnapshotBuilder::fromStore(*f.store);
+        const auto& take = *current->findTrack(21)->clips.front();
+        const auto sampleAt = [&](std::int64_t tick) {
+            return static_cast<std::size_t>(std::llround(current->tempo->ticksToSeconds(tick) * 48000));
+        };
+        const auto heard = f.play(Precision::Float32);
+        const bool silentOutside = std::all_of(heard.begin(), heard.begin() + static_cast<std::ptrdiff_t>(example.begin),
+                                               [](double value) { return value == 0; }) &&
+            std::all_of(heard.begin() + static_cast<std::ptrdiff_t>(example.end), heard.end(),
+                        [](double value) { return value == 0; });
+        const bool audibleTail = std::any_of(heard.begin() + static_cast<std::ptrdiff_t>(example.end - 8),
+                                             heard.begin() + static_cast<std::ptrdiff_t>(example.end),
+                                             [](double value) { return value != 0; });
+        check(sampleAt(take.posTicks) == example.begin && sampleAt(changeTick) == example.middle &&
+                  sampleAt(take.posTicks + take.lengthTicks) == example.end &&
+                  heard[example.begin] != 0 && audibleTail && silentOutside,
+              "SC-248: the take keeps its musical extent and audible tail at faster and slower tempos");
+    }
+    std::string why;
+    const auto file = media::resolveMedia(media::projectFolder(*f.store), media::mediaRow(f.store->db(), 8), why);
+    const auto publishedHash = media::blake3File(file);
+    check(sourceHash && publishedHash && sourceHash.hex == publishedHash.hex,
+          "SC-248: changing tempo leaves the shared recording file byte-identical");
+}
+
 // walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
 // take's one Undo step; nothing is left under it to play.
 void linearTakeReplacesWhatItCovers() {
@@ -582,6 +709,87 @@ void linearTakeReplacesWhatItCovers() {
     check(History(*f.store).undo().ok && digestProject(*f.store).text==before,
           "one Undo restores the covered clip whole");
 }
+void latencyCompensationKeepsPunchProtection() {
+    constexpr std::int64_t punchIn=512,punchOut=640,oldStart=416,oldEnd=704,streamStart=480;
+    struct Placement {std::int64_t correction, start, end, source;};
+    for(const auto placement : {Placement{32,512,608,32},Placement{-32,544,640,0}}) {
+        Fixture f;
+        auto old=f.capture(false,Precision::Float32,false,static_cast<int>(oldEnd-oldStart),{},oldStart);
+        const std::array<recording::ClipIds,1> oldIds{{{7,8,"Before punch"}}};
+        auto first=recording::prepareCommit(*f.store,old,oldIds);
+        if(!recording::commit(*f.store,first).ok)
+            throw std::runtime_error("cannot land the surrounding clip");
+
+        const auto tempo=SnapshotBuilder::fromStore(*f.store)->tempo;
+        const auto inTick=tempo->secondsToTicks(static_cast<double>(punchIn)/48000);
+        const auto outTick=tempo->secondsToTicks(static_cast<double>(punchOut)/48000);
+        OpRequest brace;
+        brace.opType="transport.setLoop";
+        brace.payload={{"on",false},{"start",inTick},{"end",outTick}};
+        OpRequest punch;
+        punch.opType="transport.setPunch";
+        punch.payload={{"in",true},{"out",true}};
+        if(!OpJournal(*f.store).commit(brace).ok || !OpJournal(*f.store).commit(punch).ok)
+            throw std::runtime_error("cannot set the punch brace");
+        const auto before=digestProject(*f.store).text;
+        auto take=f.capture(false,Precision::Float32,false,192,{},streamStart);
+        const RecordingPunchWindow bounds{RecordingPunchWindow::Boundary{punchIn,inTick},
+                                          RecordingPunchWindow::Boundary{punchOut,outTick}};
+        check(take.startSample==punchIn && take.frames==static_cast<std::uint64_t>(punchOut-punchIn) && take.punchWindow()==bounds,
+              "the take remembers both authored punch edges from its render clock");
+        const auto raw=media::blake3File(take.tracks.front().file);
+        const std::array<recording::ClipIds,1> ids{{{17,18,"Punched take"}}};
+        auto outside=recording::prepareCommit(*f.store,take,ids,256);
+        check(!outside.ok && std::filesystem::is_regular_file(take.tracks.front().file) &&
+                  digestProject(*f.store).text==before,
+              "a correction outside the brace retains the raw WAV and leaves the project untouched");
+        auto prepared=recording::prepareCommit(*f.store,take,ids,placement.correction);
+        const auto committed=recording::commit(*f.store,prepared);
+        if(!committed.ok)
+            throw std::runtime_error("cannot land the punched take: "+committed.error);
+        auto &db=f.store->db();
+        SQLite::Statement clip(db,"SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames, "
+                                  "a.warp_enabled,a.warp_mode,a.warp_markers "
+                                  "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=17");
+        const auto startTick=tempo->secondsToTicks(static_cast<double>(placement.start)/48000);
+        const auto endTick=tempo->secondsToTicks(static_cast<double>(placement.end)/48000);
+        const auto length=placement.end-placement.start;
+        const bool hasClip=clip.executeStep();
+        check(hasClip && clip.getColumn(0).getInt64()==startTick && clip.getColumn(1).getInt64()==endTick-startTick &&
+                  clip.getColumn(2).getInt64()==placement.source && clip.getColumn(3).getInt64()==length,
+              "the clip uses the compensated intersection and its exact source interval");
+        bool hasClippedWarp=false;
+        if (hasClip && clip.getColumn(4).getInt()==1 && clip.getColumn(5).getString()=="beats" && !clip.getColumn(6).isNull()) {
+            const auto blob=clip.getColumn(6);
+            const auto map=audio::readWarpMap({static_cast<const std::byte*>(blob.getBlob()),
+                                               static_cast<std::size_t>(blob.getBytes())},
+                                              static_cast<std::uint64_t>(length));
+            hasClippedWarp=map && map.markers==std::vector<WarpMarker>{{0,0},{length,endTick-startTick}};
+        }
+        check(hasClippedWarp,"Beats Warp anchors are relative to the clipped source window");
+        clip.reset();
+        std::string why;
+        const auto saved=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(db,18),why);
+        const auto published=media::blake3File(saved);
+        check(raw && published && raw.hex==published.hex &&
+                  db.execAndGet("SELECT frames FROM media_files WHERE id=18").getInt64()==punchOut-punchIn,
+              "the published WAV keeps the entire captured interval byte for byte");
+
+        const auto heard=f.play(Precision::Float32);
+        bool exact=true;
+        for(std::size_t frame=0;frame<heard.size();++frame) {
+            const auto at=static_cast<std::int64_t>(frame);
+            const auto expected=at>=placement.start && at<placement.end
+                ? Fixture::sample(static_cast<std::size_t>(punchIn-streamStart+placement.source+at-placement.start))
+                : at>=oldStart && at<oldEnd ? Fixture::sample(static_cast<std::size_t>(at-oldStart)) : 0.0f;
+            exact=exact && heard[frame]==expected;
+        }
+        check(exact,"both correction signs preserve the audible surrounding clip and shifted samples");
+        check(History(*f.store).undo().ok && digestProject(*f.store).text==before &&
+                  History(*f.store).redo().ok && std::filesystem::is_regular_file(saved),
+              "Undo and Redo replay the captured clip edit without replacing its WAV");
+    }
+}
 void existingMediaAndHistoryPaths() {
     for(const bool sourceAlreadyInPool:{false,true}) {
         Fixture f;auto recorded=f.capture();const auto external=f.temporary.path()/"external.wav";
@@ -591,7 +799,7 @@ void existingMediaAndHistoryPaths() {
         const auto before=digestProject(*f.store).text;const std::array<recording::ClipIds,1> ids={{{7,18,"Reuse"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
         check(prepared.ok && recording::commit(*f.store,prepared).ok && f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==1,"recording reuses existing media identity while ensuring an owned playable asset");
         std::string error;const auto owned=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(f.store->db(),8),error);
-        check(!owned.empty() && owned.parent_path().filename()=="audio" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
+        check(!owned.empty() && owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
         check(History(*f.store).undo().ok && digestProject(*f.store).text==before && std::filesystem::exists(priorPath),"undo restores exact prior media paths with their original files still available");
         recorded.discard();
     }
@@ -676,9 +884,16 @@ void rollbackNeverDeletesLaterWriter() {
 
 void lateSqlAndOwnedReuse() {
     Fixture f;auto recorded=f.capture();const std::array<recording::ClipIds,1> ids={{{7,8,"One"}}};auto& db=f.store->db();
+    const auto publicationTarget=[&](const recording::RecordingEdit& prepared) {
+        for(const auto& request:prepared.requests)
+            if(request.opType=="media.import")
+                return media::projectFolder(*f.store)/
+                       media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+        throw std::runtime_error("recording fixture has no captured publication path");
+    };
     db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
-    const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);auto published=std::filesystem::path{};
-    for(const auto& request:prepared.requests)if(request.opType=="media.import")published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+    const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    auto published=publicationTarget(prepared);
     const auto failed=recording::commit(*f.store,prepared);
     const bool retained=std::filesystem::exists(published);
 #if defined(_WIN32)
@@ -690,15 +905,26 @@ void lateSqlAndOwnedReuse() {
 #endif
     check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && cleanupAccepted && std::filesystem::exists(recorded.tracks[0].file),"late SQL failure rolls back rows, safely cleans or reports retained owned publication, and preserves the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
-    prepared=recording::prepareCommit(*f.store,recorded,ids);const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
+    prepared=recording::prepareCommit(*f.store,recorded,ids);published=publicationTarget(prepared);
+    const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
     const auto originalHash=media::blake3File(published);check(History(*f.store).undo().ok && std::filesystem::exists(published),"undo keeps the owned recording available to a later recording branch");
     auto repeated=f.capture();db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
     const auto reusedBefore=digestProject(*f.store).text;auto reuse=recording::prepareCommit(*f.store,repeated,ids);
-    check(reuse.ok && !recording::commit(*f.store,reuse).ok && digestProject(*f.store).text==reusedBefore && media::blake3File(published).hex==originalHash.hex && std::filesystem::exists(repeated.tracks[0].file),"failed SQL after identical owned-file reuse never deletes the old asset or the new private take");
+    const auto reusedPath=publicationTarget(reuse);
+    std::filesystem::copy_file(repeated.tracks[0].file,reusedPath);
+    check(reuse.ok && !recording::commit(*f.store,reuse).ok && digestProject(*f.store).text==reusedBefore &&
+          media::blake3File(reusedPath).hex==originalHash.hex && media::blake3File(published).hex==originalHash.hex &&
+          std::filesystem::exists(repeated.tracks[0].file),
+          "failed SQL after reusing an identical late arrival keeps both old WAVs and the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
-    {std::ofstream foreign(published,std::ios::binary|std::ios::trunc);foreign<<"different content";}
-    const auto foreignHash=media::blake3File(published);auto collision=recording::prepareCommit(*f.store,repeated,ids);
-    check(collision.ok && !recording::commit(*f.store,collision).ok && media::blake3File(published).hex==foreignHash.hex && std::filesystem::exists(repeated.tracks[0].file),"recording publication never overwrites a different existing file");repeated.discard();
+    auto collision=recording::prepareCommit(*f.store,repeated,ids);
+    const auto occupied=publicationTarget(collision);
+    {std::ofstream foreign(occupied,std::ios::binary);foreign<<"different content";}
+    const auto foreignHash=media::blake3File(occupied);
+    check(collision.ok && !recording::commit(*f.store,collision).ok && media::blake3File(occupied).hex==foreignHash.hex &&
+          std::filesystem::exists(repeated.tracks[0].file),
+          "recording publication never overwrites a different file that arrives after preparation");
+    repeated.discard();
 }
 void groupDedupAndGuards() {
     Fixture f;auto recorded=f.capture(true);const std::array<recording::ClipIds,2> ids={{{7,8,"One"},{9,10,"Two"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
@@ -772,14 +998,16 @@ void loopPassesAndHistory(const std::filesystem::path& workFolder={}) {
         auto& db=fixture.store->db();
         check(db.execAndGet("SELECT count(*) FROM media_files").getInt()==1 && db.execAndGet("SELECT count(*) FROM clips WHERE lane_id IS NOT NULL").getInt()==4,
             "four takes share exactly one media row");
-        SQLite::Statement windows(db,"SELECT c.name,a.src_start_frames,a.src_len_frames FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.lane_id IS NOT NULL ORDER BY c.id");
+        SQLite::Statement windows(db,"SELECT c.name,a.src_start_frames,a.src_len_frames FROM clips c "
+            "JOIN audio_clips a ON a.clip_id=c.id WHERE c.lane_id IS NOT NULL "
+            "AND a.warp_enabled=1 AND a.warp_mode='beats' ORDER BY c.id");
         bool exactWindows=true;std::size_t pass=0;
         while(windows.executeStep()) {
             const auto expectedName=pass==0?std::string("Audio"):"Audio "+std::to_string(pass+1);
             exactWindows=exactWindows && pass<4 && windows.getColumn(0).getString()==expectedName &&
                 windows.getColumn(1).getInt64()==static_cast<std::int64_t>(pass*128) && windows.getColumn(2).getInt64()==(pass==3?64:128);++pass;
         }
-        check(exactWindows && pass==4 && db.execAndGet("SELECT count(*) FROM lanes WHERE name='Lane'").getInt()==4,"take names, source offsets, partial final extent and new Lane defaults are literal");
+        check(exactWindows && pass==4 && db.execAndGet("SELECT count(*) FROM lanes WHERE name='Lane'").getInt()==4,"loop takes follow tempo and retain their names, exact source windows and default lane names");
         SQLite::Statement laneOrder(db,"SELECT id FROM lanes ORDER BY ord,id");
         bool chronological=true;pass=0;
         while(laneOrder.executeStep()) {
@@ -973,10 +1201,12 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
+    recordedTakeFollowsTempo();
+    latencyCompensationKeepsPunchProtection();
     midiLinearTakes();midiOverdub();midiControllerOnlyTake();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

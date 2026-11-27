@@ -3969,6 +3969,20 @@ void testAReleaseWaitsForTheCallInFlight() {
 
 }  // namespace
 
+// SC-333: the transport a CLAP plug-in is handed says it records while ADI records a take.
+void testTheTransportSaysRecording() {
+    std::printf("[SC-333 -- a CLAP plug-in knows ADI is recording]\n");
+    adi::engine::DeviceTransport clock;
+    clock.playing = true;
+    const auto playing = adi::device::clapTransportEvent(clock, 48000.0);
+    check((playing.flags & CLAP_TRANSPORT_IS_PLAYING) != 0 && (playing.flags & CLAP_TRANSPORT_IS_RECORDING) == 0,
+          "playing, not recording: no recording flag");
+    clock.recording = true;
+    const auto recording = adi::device::clapTransportEvent(clock, 48000.0);
+    check((recording.flags & CLAP_TRANSPORT_IS_PLAYING) != 0 && (recording.flags & CLAP_TRANSPORT_IS_RECORDING) != 0,
+          "recording: the plug-in's transport says so");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_tests -- the CLAP host, no JUCE and no plugin\n\n");
@@ -4006,6 +4020,7 @@ int main() {
     testDialectResolution();
     testDialectEncodings();
     testTheListIsSortedByTime();
+    testTheTransportSaysRecording();
     testDialectsThroughTheDevice();
     testFullClapDialectSwitch();
     testPendingClapDialectRelease();

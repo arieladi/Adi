@@ -44,7 +44,7 @@ class SharedSpectrumView final : public juce::Component,
                                  public juce::SettableTooltipClient,
                                  private juce::ComponentListener {
   public:
-    SharedSpectrumView();
+    explicit SharedSpectrumView(bool compact = false);
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
@@ -140,6 +140,7 @@ class SharedSpectrumView final : public juce::Component,
     Status status_ = Status::Detached;
     bool suspended_ = false;
     bool frozen_ = false;
+    const bool compact_;
     Mode mode_ = Mode::Spectrum;
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;

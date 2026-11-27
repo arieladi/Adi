@@ -422,7 +422,8 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
 
 std::int64_t newTrackMonitorMode(const Payload& p) {
     const auto& kind=p.at("kind").get_ref<const std::string&>();
-    return kind=="audio" || kind=="midi" || kind=="instrument"?2:0;
+    if (kind == "audio") return kNewAudioTrackMonitorMode;
+    return kind == "midi" || kind == "instrument" ? 2 : 0;
 }
 std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
     if (!context.replay) return newTrackMonitorMode(p);
@@ -431,9 +432,11 @@ std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p)
     std::string error;
     const auto inverse=decodeFromLog(replay.inverse,error);
     if (!inverse) throw std::runtime_error("cannot decode recorded track creation: "+error);
-    if (!inverse->contains("monitorMode")) return 0; // creation from before N67
-    if (detail::signedInteger(inverse->at("id"))!=detail::signedInteger(p.at("id")) ||
-        inverse->at("monitorMode")!=2 || newTrackMonitorMode(p)!=2)
+    if (!inverse->contains("monitorMode")) return 0; // Off, including before N67
+    // N67 recorded Auto for audio, MIDI and instrument tracks. Use the recorded mode on redo.
+    const auto& kind = p.at("kind").get_ref<const std::string&>();
+    if (detail::signedInteger(inverse->at("id")) != detail::signedInteger(p.at("id")) ||
+        inverse->at("monitorMode") != 2 || (kind != "audio" && kind != "midi" && kind != "instrument"))
         throw std::runtime_error("invalid recorded monitor mode for new track");
     return 2;
 }
@@ -1089,6 +1092,12 @@ bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
     set.exec();
     return true;
 }
+bool transportPunch(OpContext &c, const Payload &p, std::string &) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.punch',?)");
+    set.bind(1, p.dump());
+    set.exec();
+    return true;
+}
 bool transportSongStart(OpContext &c, const Payload &p, std::string &error) {
     if (!p.at("on").get<bool>()) {
         c.store.db().exec("DELETE FROM session_state WHERE key='transport.songStart'");
@@ -1273,6 +1282,7 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
@@ -2388,6 +2398,8 @@ const OpDescriptor kHandWritten[] = {
      kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setCountIn", "Set the recording count-in", Scope::Transport, EngineImpact::Snapshot,
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
+    {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
      kFTransportSongStart, false, true, transportSongStart, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,

@@ -5,6 +5,9 @@
 #include <string>
 #include <string_view>
 namespace adi {
+// SC-249: a new audio track requires an explicit choice to monitor its input.
+inline constexpr std::int64_t kNewAudioTrackMonitorMode = 0; // Off
+
 struct TrackRecordingOptions {
     bool recordEnabled=true,playEnabled=false,keepMonitoringLatency=true;
     std::string recordGrid="1/16",playGrid="1/16";

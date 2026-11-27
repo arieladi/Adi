@@ -3,6 +3,7 @@
 
 #include "adi/engine/events.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/engine/transport.hpp"
 
 #include <array>
 #include <atomic>
@@ -14,7 +15,6 @@
 namespace adi::engine {
 
 class Session;
-class Transport;
 class LiveMidiInput;
 
 enum class MidiCaptureState : std::uint8_t {
@@ -44,14 +44,16 @@ public:
     [[nodiscard]] std::span<const std::int64_t> tracks() const noexcept { return tracks_; }
     [[nodiscard]] double sampleRate() const noexcept { return sampleRate_; }
     void stop() noexcept;  ///< owner request, applied at the next slice boundary
-    std::size_t drain(std::span<MidiCapturePacket>) noexcept; ///< one owner reader
+    // The sole owner reader may copy the frozen bounds when packets are returned.
+    std::size_t drain(std::span<MidiCapturePacket>, RecordingPunchWindow* = nullptr) noexcept;
 
 private:
     friend class Session;
     friend class LiveMidiInput;
     bool start(std::vector<std::int64_t> targets, double sampleRate, bool overdub);
     void deviceStopped() noexcept; ///< owner, with the driver already quiescent
-    void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch) noexcept;
+    void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch, RecordingPunch,
+                    const RecordingPunchWindow&) noexcept;
     void record(std::int64_t scheduledSample, std::int64_t inputSample, const Event&) noexcept;
     void endSlice() noexcept;
     [[nodiscard]] bool overdubs(std::int64_t track) const noexcept; // driver, within a slice
@@ -76,6 +78,7 @@ private:
     std::int64_t epochStart_ = 0, expectedStream_ = 0, expectedTimeline_ = 0;
     bool looping_ = false;
     std::int64_t loopBegin_ = 0, loopEnd_ = 0;
+    RecordingPunchWindow punchWindow_; // one driver write before the first published packet in each epoch
 
     // Driver scratch for the open slice. Queue publication advances only
     // after all spans and events fit, so overflow never exposes half a slice.

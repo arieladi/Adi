@@ -108,6 +108,11 @@ inline constexpr std::uint32_t kNoParam = 0xFFFFFFFFu;
 /// RPN 0 -- a transposition, not a subtle error.
 inline constexpr double kMpeOutBendSemitones = 48.0;
 
+/// SC-312: the range a CHANNEL's pitch wheel is encoded against: MIDI's default pitch-bend sensitivity,
+/// 2 semitones, the master range ADI's MIDI input decodes the wheel with (`MpeZone::masterBendSemitones`)
+/// and MPE's own default for the master channel. A full throw of the wheel goes back out as the full word.
+inline constexpr double kChannelBendSemitones = 2.0;
+
 /// MPE's neutral timbre, CC74 = 64. What a member channel is reset to before a
 /// note that brings no timbre of its own, and what JUCE's `MPEInstrument`
 /// assumes for a new note.
@@ -357,7 +362,8 @@ private:
     void expression(const Event& e, MpeOutList& out) noexcept;
     void sendMcm(std::int32_t frame, MpeOutList& out) noexcept;
     void control(std::uint8_t chan, std::uint16_t ctrl, double unit, std::int32_t frame,
-                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false) noexcept;
+                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false,
+                 double bendRange = kMpeOutBendSemitones) noexcept;
     int allocate() noexcept;
     Note* find(std::uint64_t id) noexcept;
     [[nodiscard]] const Note* find(std::uint64_t id) const noexcept;
