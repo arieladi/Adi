@@ -3401,7 +3401,7 @@ juce::Rectangle<int> ClipViewPanel::panelsEdge() const noexcept {
 void ClipViewPanel::mouseMove(const juce::MouseEvent &e) {
     const auto at = e.getPosition();
     setMouseCursor(panelsEdge().contains(at) ? juce::MouseCursor::LeftRightResizeCursor
-                   : sampleNameBox().contains(at) ? juce::MouseCursor::PointingHandCursor
+                   : others_.empty() && sampleNameBox().contains(at) ? juce::MouseCursor::PointingHandCursor
                                                   : juce::MouseCursor::NormalCursor);
 }
 void ClipViewPanel::foldPanels(bool fold) {
@@ -3822,17 +3822,30 @@ void ClipViewPanel::read(const SnapshotReader &reader) {
         meter_.denominator = song.denominator;
     }
     clipMeters_.assign(1, meter_);
-    // The other selected MIDI clips (manual 10.8): up to eight clips in all; only beside a MIDI clip.
-    if (midi())
-        for (const auto id : shown_) {
-            if (id == clip_ || others_.size() + 1 >= kMaxClips)
-                continue;
-            auto other = engine::readClipDetails(root.editStore(), id);
-            if (other.clip && other.clip->kind == "midi" && other.clip->notesProblem.empty())
-                others_.push_back(ClipLayer{std::move(*other.clip), look::trackColour(0)});
-        }
+    // Audio clips share the common controls. The Note Editor layers up to eight MIDI clips.
+    for (const auto id : shown_) {
+        if (midi() && others_.size() + 1 >= kMaxClips)
+            break;
+        if (id == clip_)
+            continue;
+        auto other = engine::readClipDetails(root.editStore(), id, midi());
+        if (!other.clip || other.clip->kind != details_->kind || !other.clip->notesProblem.empty())
+            continue;
+        ClipLayer layer{std::move(*other.clip), look::trackColour(0)};
+        if (audio())
+            if (const auto *track = reader.findTrack(layer.details.trackId))
+                for (const auto &clip : track->clips)
+                    if (clip->id == id && clip->audio) {
+                        layer.warped = clip->audio->warpEnabled;
+                        layer.media = clip->audio->mediaInfo;
+                        break;
+                    }
+        others_.push_back(std::move(layer));
+    }
 }
 bool ClipViewPanel::activate(std::int64_t clip) {
+    if (!midi())
+        return false;
     const bool shown = std::any_of(others_.begin(), others_.end(), [clip](const ClipLayer &l) { return l.details.id == clip; });
     if (!shown)
         return false;
@@ -3945,12 +3958,14 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
                 dragged_ = false;
             }
             notes.select({});
-            notes.showClip();
+            if (midi())
+                notes.showClip();
             sample.showClip();
         }
         repaint();
     }
-    notes.frame();
+    if (midi())
+        notes.frame();
     // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
     if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
         statusStamp_ = stamp;
@@ -4042,22 +4057,33 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     bool sameScale = true;
     for (const auto &layer : others_) {
         out.loopMixed = out.loopMixed || layer.details.loopEnabled != d.loopEnabled;
+        out.activatorMixed = out.activatorMixed || layer.details.muted != d.muted;
         sameScale = sameScale && layer.details.scale.root == d.scale.root && layer.details.scale.id == d.scale.id &&
                     layer.details.scale.local == d.scale.local;
     }
-    // The title: the clip's name; with several clips shown, how many (manual 10.8).
-    // A clip with no name reads its track's (manual 10.8).
-    out.title = !others_.empty() ? juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips"
+    const auto count = juce::String(static_cast<juce::int64>(others_.size() + 1));
+    // The title gives the number of clips in a group (manual 8.1.1.2).
+    out.title = !others_.empty() ? count + (audio() ? " Audio Clips" : " MIDI Clips")
                 : !d.name.empty() ? juce::String(d.name)
                                   : juce::String(juce::CharPointer_UTF8(trackName_.data()), juce::CharPointer_UTF8(trackName_.data() + trackName_.size()));
-    if (node_ && node_->audio && node_->audio->mediaInfo) {
-        const auto &media = *node_->audio->mediaInfo;
-        out.sampleName = juce::String(media.originalName);
-        const auto measure = [](std::optional<std::int64_t> value, const char *unit) {
-            return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String("—")) + unit;
-        };
-        out.sampleProperties = measure(media.sampleRate, " Hz") + "   " + measure(media.bitDepth, " bit") + "   " +
-                               measure(media.channels, " ch");
+    if (audio()) {
+        const auto *media = node_ && node_->audio && node_->audio->mediaInfo ? &*node_->audio->mediaInfo : nullptr;
+        if (!others_.empty())
+            out.sampleName = count + " Samples";
+        else if (media)
+            out.sampleName = juce::String(media->originalName);
+        if (media || !others_.empty()) {
+            const auto measure = [&](std::optional<std::int64_t> engine::AudioMediaIdentity::*member, const char *unit) {
+                const auto value = media ? media->*member : std::nullopt;
+                for (const auto &layer : others_)
+                    if ((layer.media ? (*layer.media).*member : std::nullopt) != value)
+                        return juce::String("*");
+                return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String("—")) + unit;
+            };
+            out.sampleProperties = measure(&engine::AudioMediaIdentity::sampleRate, " Hz") + "   " +
+                                   measure(&engine::AudioMediaIdentity::bitDepth, " bit") + "   " +
+                                   measure(&engine::AudioMediaIdentity::channels, " ch");
+        }
     }
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
@@ -4646,7 +4672,8 @@ juce::Rectangle<int> ClipViewPanel::sampleMetadataArea() const noexcept {
     return header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84);
 }
 juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
-    if (!node_ || !node_->audio || !node_->audio->mediaInfo || node_->audio->mediaInfo->originalName.empty())
+    if (!audio() || (others_.empty() &&
+                     (!node_ || !node_->audio || !node_->audio->mediaInfo || node_->audio->mediaInfo->originalName.empty())))
         return {};
     const auto area = sampleMetadataArea();
     if (problem_.empty() && area.getWidth() >= 220)
@@ -4718,7 +4745,8 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
     }
 }
 bool ClipViewPanel::loopAvailable() const noexcept {
-    return midi() || (node_ && node_->audio && node_->audio->warpEnabled);
+    return midi() || (node_ && node_->audio && node_->audio->warpEnabled &&
+                      std::all_of(others_.begin(), others_.end(), [](const ClipLayer &layer) { return layer.warped; }));
 }
 bool ClipViewPanel::fieldEnabled(Field field) const noexcept {
     if (field == Field::Pitch || field == Field::Detune)
@@ -4897,6 +4925,8 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             root.say("Type a time signature as 3/4.");
             return false;
         }
+        if (audio())
+            return commit(setClipSignature(*details_, signature->first, signature->second));
         return commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature->first, signature->second); });
     }
     if (field == Field::Length) {
@@ -4949,7 +4979,7 @@ bool ClipViewPanel::commitForAll(const std::function<TrackEdit(const engine::Cli
         for (const auto &layer : others_) {
             auto part = build(layer.details);
             if (!part.refusal.empty())
-                continue;
+                return commit(std::move(part));
             for (auto &o : part.ops) {
                 // The step is named for the edit, whichever clip's op comes first.
                 all.ops.push_back(std::move(o));
@@ -5071,10 +5101,18 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (!details_ || e.mods.isPopupMenu())
         return;
     const auto at = e.getPosition();
-    // The Clip Activator (manual 8.1.1): one click, one undo step.
+    // If any selected clip is active, the activator switches the group off (manual 8.1.1.1).
     if (activatorArea().expanded(2).contains(at)) {
-        root.submitEdit("clip.setMute", {{"id", clip_}, {"muted", !details_->muted}},
-                        details_->muted ? "Activate Clip" : "Deactivate Clip");
+        const bool mute = !details_->muted || std::any_of(others_.begin(), others_.end(), [](const ClipLayer &layer) {
+            return !layer.details.muted;
+        });
+        commitForAll([mute](const engine::ClipDetails &clip) {
+            TrackEdit edit;
+            if (clip.muted != mute)
+                edit.ops.push_back(track_edits_detail::op("clip.setMute", {{"id", clip.id}, {"muted", mute}},
+                                                        mute ? "Deactivate Clip" : "Activate Clip"));
+            return edit;
+        });
         return;
     }
     if (const auto thumb = scrollThumb(); !thumb.isEmpty() && columnArea().contains(at) && at.x >= thumb.getX() - 2 && at.x < thumb.getRight()) {
@@ -5096,7 +5134,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         edgeFrom_ = at.x;
         return;
     }
-    if (sampleNameBox().contains(at)) {
+    if (others_.empty() && sampleNameBox().contains(at)) {
         std::string error;
         auto path = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
         if (path.empty()) {
@@ -5376,9 +5414,12 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
         setPitch(field, steps, true);
     else if (field == Field::Stretch)
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
-    else if (field == Field::Signature)
-        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
-    else
+    else if (field == Field::Signature) {
+        if (audio())
+            commit(setClipSignature(*details_, signature.first, signature.second));
+        else
+            commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
+    } else
         setField(field, ticks);
 }
 std::vector<juce::Rectangle<int>> ClipViewPanel::textAreas() const {
@@ -5418,20 +5459,25 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         return;
     }
     const auto &d = *details_;
-    // The title bar in the clip's colour: Live's round activator, lit while the clip plays, and
-    // the clip's name.
-    g.setColour(d.muted ? look::mutedClip : colour_);
+    const auto r = readings();
+    const bool audioGroup = audio() && !others_.empty();
+    g.setColour(audioGroup ? look::field : d.muted ? look::mutedClip : colour_);
     g.fillRect(title);
-    // Its round shape stays; its colours are the shared button's (language.png part B), lit or at rest.
     const auto dot = activatorArea().toFloat();
-    g.setColour(d.muted ? look::buttonRest : look::accent);
+    const bool unlit = d.muted || r.activatorMixed;
+    g.setColour(unlit ? look::buttonRest : look::accent);
     g.fillEllipse(dot);
-    if (d.muted) {
+    if (unlit) {
         g.setColour(look::buttonEdge);
         g.drawEllipse(dot.reduced(look::hairline / 2), look::hairline);
     }
+    if (r.activatorMixed) {
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(activatorArea().withWidth(activatorArea().getWidth() / 2));
+        g.setColour(look::accent);
+        g.fillEllipse(dot);
+    }
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
-    const auto r = readings();
     if (!others_.empty()) {
         // Several clips shown: a striped title (manual 10.8).
         juce::Graphics::ScopedSaveState state(g);
@@ -5442,7 +5488,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
                        static_cast<float>(title.getY()), 2.f);
     }
     if (!panelsFolded_)
-        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::ink, look::fontField, true);
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft,
+             audioGroup ? look::text : look::ink, look::fontField, true);
     // A scrolled column is cut at the title, which stays over it.
     const bool scrolled = columnScroll() > 0;
     if (scrolled) {

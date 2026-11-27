@@ -31,10 +31,12 @@ namespace adi::ui {
 class AdiRootComponent;
 class ClipViewPanel;
 
-// Another of the selected MIDI clips, shown with the one being edited (manual 10.8).
+// Another selected clip of the same kind as the clip being edited (manual 8.13, 10.8).
 struct ClipLayer {
     engine::ClipDetails details;
     juce::Colour colour;
+    bool warped = false;
+    std::optional<engine::AudioMediaIdentity> media = {};
 };
 
 // Live's MIDI Note Editor (manual 10.1): the time ruler along the top, the note ruler with its
@@ -703,8 +705,8 @@ class ClipViewPanel final : public juce::Component {
         juce::String start, end, position, length, signature, scale, grid, transpose, range, title;
         juce::String sampleName, sampleProperties;
         bool loop = false;
-        // With several clips shown (manual 10.8): some loop and some do not.
         bool loopMixed = false;
+        bool activatorMixed = false;
     };
     Readings readings() const;
     // Reads the clip again now: after an edit of this view's, before the next frame.
