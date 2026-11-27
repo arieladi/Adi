@@ -12723,6 +12723,58 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
             check(sample.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete is consumed by the selected Warp marker");
             root.frame();
             check(markers() == before, "deleting the interior marker restores a straight map");
+
+            constexpr auto beat = textproj::kPPQ;
+            sample.mouseDoubleClick(eventAt(beat));
+            root.frame();
+            sample.mouseDoubleClick(eventAt(3 * beat));
+            root.frame();
+            const auto pinned = markers();
+            check(pinned.size() == 4, "two interior markers set up the Warp From Here suffix edit");
+            if (pinned.size() == 4) {
+                sample.mouseDown(eventAt(pinned[2].tick));
+                sample.mouseDrag(eventAt(3 * beat + beat / 2));
+                sample.mouseUp(eventAt(3 * beat + beat / 2));
+                root.frame();
+                const auto oldMap = markers();
+                sample.time.grid.snap = true;
+                sample.onWarpContextMenu = [](juce::Point<int>) {};
+                sample.mouseDown(pressAt(sample, {static_cast<float>(sample.time.x(2 * beat)),
+                                                  static_cast<float>(sample.waveArea().getCentreY())},
+                                         juce::ModifierKeys::rightButtonModifier));
+                sample.onWarpContextMenu = {};
+                int useSetTempo = 0;
+                bool infer = false, startAt = false, straight = false;
+                const auto menu = sample.warpContextMenu();
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                    const auto &entry = it.getItem();
+                    infer |= entry.text == "Warp From Here";
+                    startAt |= entry.text.startsWith("Warp From Here (Start At ");
+                    straight |= entry.text == "Warp From Here (Straight)";
+                    if (entry.text.startsWith("Warp ") && entry.text.endsWith(" BPM From Here") && entry.isEnabled)
+                        useSetTempo = entry.itemID;
+                }
+                check(infer && startAt && straight && useSetTempo != 0,
+                      "the source menu offers all four Warp From Here commands");
+                const bool warpedFromHere = useSetTempo != 0 && sample.chooseWarpContextItem(useSetTempo);
+                root.frame();
+                const auto newMap = markers();
+                check(warpedFromHere && oldMap.size() == 4 && newMap.size() == 4 &&
+                          newMap[0] == oldMap[0] && newMap[1] == oldMap[1] &&
+                          newMap[2].tick == 2 * beat && newMap[2].sourceFrame != oldMap[2].sourceFrame &&
+                          newMap.back().sourceFrame == oldMap.back().sourceFrame && newMap.back().tick != oldMap.back().tick,
+                      "Warp From Here keeps the left map, inserts the snapped anchor and replaces the right suffix");
+                if (warpedFromHere) {
+                    check(root.command(AppCommands::Undo), "Warp From Here is one undo step");
+                    root.frame();
+                    check(markers() == oldMap && root.command(AppCommands::Redo),
+                          "Undo restores the previous Warp map exactly");
+                    root.frame();
+                    check(markers() == newMap, "Redo restores the captured replacement suffix");
+                    check(root.command(AppCommands::Undo), "restore the old Warp map for the remaining checks");
+                    root.frame();
+                }
+            }
         }
         click(button);
         check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
