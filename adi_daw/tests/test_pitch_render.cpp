@@ -3,6 +3,7 @@
 #include "adi/audio/pitch_render.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -246,6 +247,123 @@ void transitionAndLimits() {
           "high-rate passthrough succeeds and unsupported DSP refuses explicitly");
 }
 
+struct StereoLevel { double mid, side; };
+
+StereoLevel stereoLevel(std::span<const float> interleaved, double frequency) {
+    const auto frames = interleaved.size() / 2;
+    double midCos = 0, midSin = 0, sideCos = 0, sideSin = 0;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        const double left = interleaved[2 * frame];
+        const double right = interleaved[2 * frame + 1];
+        const double angle = tau * frequency * static_cast<double>(frame) / rate;
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        midCos += (left + right) * cosine;
+        midSin += (left + right) * sine;
+        sideCos += (left - right) * cosine;
+        sideSin += (left - right) * sine;
+    }
+    return {std::hypot(midCos, midSin) / static_cast<double>(frames),
+            std::hypot(sideCos, sideSin) / static_cast<double>(frames)};
+}
+
+void stereoPitchPrecision() {
+    constexpr auto frames = rate / 2;
+    std::vector<float> pcm(2 * frames);
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        const double phase = tau * 220 * static_cast<double>(frame) / rate;
+        const double center = 0.2 * std::sin(phase);
+        const double side = 0.12 * std::cos(phase);
+        pcm[2 * frame] = static_cast<float>(center + side);
+        pcm[2 * frame + 1] = static_cast<float>(center - side);
+    }
+    const PitchAnalysis analysis{rate, frames, {steadyNote(0, frames, 5700)}};
+    auto edit = resolvePitchNoteEdit(analysis, {}, 0);
+    edit.pitchShiftCents = 100;
+    const auto result = renderPitchEdits(pcm, 2, analysis, PitchEditState{{edit}});
+    check(result && result.samples->size() == pcm.size(), "steady quadrature stereo renders a shared pitch shift");
+    if (!result || result.samples->size() != pcm.size()) return;
+    std::vector<float> mid(rate / 5);
+    for (std::size_t frame = 0; frame < mid.size(); ++frame) {
+        const auto first = 2 * (rate / 8 + frame);
+        mid[frame] = ((*result.samples)[first] + (*result.samples)[first + 1]) * 0.5f;
+    }
+    const double shifted = cents(220, measureHz(mid));
+    std::printf("steady stereo center transpose: %.2f cents (requested 100)\n", shifted);
+    check(std::abs(shifted - 100) < 5 && rms(mid) > 0.06, "steady stereo center stays within five cents of the target");
+}
+
+void coherentStereo() {
+    constexpr auto noteEnd = rate * 7 / 10;
+    constexpr double centerHz = 221, sideHz = 673;
+    std::vector<float> pcm(2 * rate);
+    for (std::size_t frame = 0; frame < noteEnd; ++frame) {
+        const double time = static_cast<double>(frame) / rate;
+        const double center = 0.2 * std::sin(tau * centerHz * time);
+        // Strong side-only transients drive different phase decisions if
+        // the two channels are analyzed by independent mono processors.
+        const double envelope = 0.12 + 0.35 * std::pow(std::max(0.0, std::cos(tau * 7 * time)), 8);
+        const double side = envelope * std::sin(tau * sideHz * time);
+        pcm[2 * frame] = static_cast<float>(center + side);
+        pcm[2 * frame + 1] = static_cast<float>(center - side);
+    }
+    pcm[pcm.size() - 2] = 0.17f;
+    pcm.back() = -0.11f;
+    const PitchAnalysis analysis{rate, rate, {steadyNote(0, noteEnd, 5700)}};
+    const PitchEditState neutral;
+    const auto untouched = renderPitchEdits(pcm, 2, analysis, neutral);
+    check(untouched && *untouched.samples == pcm, "neutral stereo retains every interleaved sample");
+
+    struct Case { const char* name; double shift, tilt; std::uint64_t end; };
+    const std::array cases = {Case{"static transpose", 100, 0, noteEnd},
+                              Case{"transpose and stretch", 300, 0, rate},
+                              Case{"varying tilt", 300, 200, noteEnd}};
+    auto edit = resolvePitchNoteEdit(analysis, neutral, 0);
+    for (const auto& test : cases) {
+        edit.pitchShiftCents = test.shift;
+        edit.tiltCents = test.tilt;
+        edit.endFrame = test.end;
+        const auto result = renderPitchEdits(pcm, 2, analysis, PitchEditState{{edit}});
+        check(result && result.samples->size() == pcm.size(), "stereo DSP retains interleaved frame count");
+        if (!result || result.samples->size() != pcm.size()) continue;
+        const std::span rendered(*result.samples);
+        const auto body = rendered.subspan(rate / 4, rate);
+        const double ratio = std::exp2(test.shift / 1200);
+        const auto center = stereoLevel(body, centerHz * ratio);
+        const auto side = stereoLevel(body, sideHz * ratio);
+        const double centerLeak = 20 * std::log10(center.side / center.mid);
+        const double sideLeak = 20 * std::log10(side.mid / side.side);
+        std::printf("stereo %s: center-to-side %.2f dB, side-to-center %.2f dB\n", test.name, centerLeak, sideLeak);
+        check(center.mid > 0.02 && side.side > 0.008 && centerLeak < -36 && sideLeak < -36,
+              "center and side stay audible and separated during stereo correction");
+        const auto end = static_cast<std::size_t>(test.end) * 2;
+        check(std::equal(pcm.begin() + static_cast<std::ptrdiff_t>(end), pcm.end(), rendered.subspan(end).begin()),
+              "stereo correction preserves samples past its destination");
+        if (test.end > noteEnd) {
+            check(rms(rendered.subspan(2 * (noteEnd + rate / 20), rate / 5)) > 0.05,
+                  "stereo stretch renders sound past the original note boundary");
+        }
+        if (test.tilt != 0) {
+            const auto midFrequency = [&](std::size_t start) {
+                std::vector<float> mid(rate / 10);
+                for (std::size_t frame = 0; frame < mid.size(); ++frame)
+                    mid[frame] = (rendered[2 * (start + frame)] + rendered[2 * (start + frame) + 1]) * 0.5f;
+                return measureHz(mid);
+            };
+            const double tilt = cents(midFrequency(rate / 5), midFrequency(rate / 2));
+            const double expected = test.tilt * static_cast<double>(rate * 3 / 10) / noteEnd;
+            std::printf("stereo mid slope: %.2f cents over 300 ms (requested %.2f)\n", tilt, expected);
+            // Phase locking around large side transients can perturb the
+            // center's local frequency. Require a measurable intended sweep.
+            check(std::abs(tilt - expected) < 25, "stereo center follows the varying pitch correction");
+        }
+    }
+    const auto oddSamples = renderPitchEdits(std::span(pcm).first(pcm.size() - 1), 2, analysis, neutral);
+    const auto unsupportedChannels = renderPitchEdits(pcm, 3, analysis, neutral);
+    check(oddSamples.error == PitchRenderError::InvalidSource && unsupportedChannels.error == PitchRenderError::InvalidSource,
+          "partial stereo frames and unsupported channel counts refuse");
+}
+
 void formantAndErrors() {
     std::vector<float> samples(rate / 2);
     constexpr double frequency = 200;
@@ -301,6 +419,8 @@ int main() {
     moveAndStretch();
     editCurve();
     transitionAndLimits();
+    stereoPitchPrecision();
+    coherentStereo();
     formantAndErrors();
     std::printf("%d pitch-render checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

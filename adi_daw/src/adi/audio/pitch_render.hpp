@@ -3,6 +3,7 @@
 
 #include "adi/audio/pitch_edit.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <stop_token>
@@ -27,5 +28,10 @@ struct PitchRenderResult {
 /// pitch and time ratios must stay within [1/16, 16].
 [[nodiscard]] PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnalysis&,
                                                 const PitchEditState&, std::stop_token = {});
+
+/// Stereo uses one synchronized DSP instance for the left/right pair.
+/// Input and output are interleaved, with one or two channels per frame.
+[[nodiscard]] PitchRenderResult renderPitchEdits(std::span<const float> interleaved, std::uint16_t channels,
+                                                const PitchAnalysis&, const PitchEditState&, std::stop_token = {});
 
 } // namespace adi::audio

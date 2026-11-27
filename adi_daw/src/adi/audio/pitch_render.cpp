@@ -6,11 +6,13 @@
 #include <rubberband/RubberBandStretcher.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace adi::audio {
@@ -44,46 +46,72 @@ bool copyFinite(std::span<const float> source, std::span<float> destination, std
     return allFinite;
 }
 
-std::span<const float> noteSamples(std::span<const float> source, const PitchNote& note) {
-    return source.subspan(static_cast<std::size_t>(note.startFrame), static_cast<std::size_t>(note.endFrame - note.startFrame));
+template<std::size_t Channels>
+using Planes = std::array<std::span<const float>, Channels>;
+
+template<std::size_t Channels>
+using Buffers = std::array<std::vector<float>, Channels>;
+
+template<std::size_t Channels>
+Buffers<Channels> buffers(std::size_t frames) {
+    Buffers<Channels> result;
+    for (auto& channel : result) channel.resize(frames);
+    return result;
 }
 
-std::vector<float> stretch(std::span<const float> source, std::size_t frames, std::uint32_t rate,
-                           double pitchRatio, double formantRatio, std::stop_token stop) {
+template<std::size_t Channels>
+Planes<Channels> view(const Buffers<Channels>& source) {
+    Planes<Channels> planes;
+    for (std::size_t channel = 0; channel < Channels; ++channel) planes[channel] = source[channel];
+    return planes;
+}
+
+template<typename SamplePlanes>
+auto planePointers(SamplePlanes& planes, std::size_t frame) {
+    std::array<decltype(planes[0].data()), std::tuple_size_v<SamplePlanes>> pointers;
+    for (std::size_t channel = 0; channel < planes.size(); ++channel) pointers[channel] = planes[channel].data() + frame;
+    return pointers;
+}
+
+template<std::size_t Channels>
+Buffers<Channels> stretch(const Planes<Channels>& source, std::size_t frames, std::uint32_t rate,
+                          double pitchRatio, double formantRatio, std::stop_token stop) {
     using Stretcher = RubberBand::RubberBandStretcher;
-    const double ratio = static_cast<double>(frames) / static_cast<double>(source.size());
+    const auto inputFrames = source.front().size();
+    const double ratio = static_cast<double>(frames) / static_cast<double>(inputFrames);
     checkRatio(ratio, maxStretchRatio);
     checkRatio(pitchRatio, maxPitchRatio);
-    constexpr auto options = Stretcher::OptionProcessOffline | Stretcher::OptionEngineFiner |
+    constexpr auto channelMode = Channels == 2 ? Stretcher::OptionChannelsTogether : Stretcher::OptionChannelsApart;
+    constexpr auto options = Stretcher::OptionProcessOffline | Stretcher::OptionEngineFiner | channelMode |
         Stretcher::OptionThreadingNever | Stretcher::OptionFormantPreserved;
-    Stretcher stretcher(rate, 1, options, ratio, pitchRatio);
+    Stretcher stretcher(rate, Channels, options, ratio, pitchRatio);
     if (stretcher.getEngineVersion() != 3) throw PitchRenderError::Process;
     stretcher.setDebugLevel(0);
-    stretcher.setExpectedInputDuration(source.size());
+    stretcher.setExpectedInputDuration(inputFrames);
     stretcher.setMaxProcessSize(processFrames);
     if (formantRatio != 1) stretcher.setFormantScale(formantRatio / pitchRatio);
 
-    for (std::size_t frame = 0; frame < source.size();) {
+    for (std::size_t frame = 0; frame < inputFrames;) {
         checkCancelled(stop);
-        const std::size_t count = std::min(processFrames, source.size() - frame);
-        const float* input = source.data() + frame;
+        const std::size_t count = std::min(processFrames, inputFrames - frame);
+        const auto input = planePointers(source, frame);
         frame += count;
-        stretcher.study(&input, count, frame == source.size());
+        stretcher.study(input.data(), count, frame == inputFrames);
     }
-    std::vector<float> output(frames);
+    auto output = buffers<Channels>(frames);
     std::size_t written = 0;
-    for (std::size_t frame = 0; frame < source.size();) {
+    for (std::size_t frame = 0; frame < inputFrames;) {
         checkCancelled(stop);
-        const std::size_t count = std::min(processFrames, source.size() - frame);
-        const float* input = source.data() + frame;
+        const std::size_t count = std::min(processFrames, inputFrames - frame);
+        const auto input = planePointers(source, frame);
         frame += count;
-        stretcher.process(&input, count, frame == source.size());
+        stretcher.process(input.data(), count, frame == inputFrames);
         for (int available = stretcher.available(); available > 0; available = stretcher.available()) {
             checkCancelled(stop);
             const auto requested = static_cast<std::size_t>(available);
             if (requested > frames - written) throw PitchRenderError::Process;
-            float* destination = output.data() + written;
-            if (stretcher.retrieve(&destination, requested) != requested) throw PitchRenderError::Process;
+            const auto destination = planePointers(output, written);
+            if (stretcher.retrieve(destination.data(), requested) != requested) throw PitchRenderError::Process;
             written += requested;
         }
     }
@@ -91,14 +119,17 @@ std::vector<float> stretch(std::span<const float> source, std::size_t frames, st
     return output;
 }
 
-std::vector<float> shiftCurve(std::span<const float> source, std::uint32_t rate, const PitchNote& note,
-                              const PitchNoteEdit& edit, const PitchNoteEdit* preceding, std::stop_token stop) {
+template<std::size_t Channels>
+Buffers<Channels> shiftCurve(const Planes<Channels>& source, std::uint32_t rate, const PitchNote& note,
+                             const PitchNoteEdit& edit, const PitchNoteEdit* preceding, std::stop_token stop) {
     using Stretcher = RubberBand::RubberBandStretcher;
-    constexpr auto options = Stretcher::OptionProcessRealTime | Stretcher::OptionEngineFiner |
+    constexpr auto channelMode = Channels == 2 ? Stretcher::OptionChannelsTogether : Stretcher::OptionChannelsApart;
+    constexpr auto options = Stretcher::OptionProcessRealTime | Stretcher::OptionEngineFiner | channelMode |
         Stretcher::OptionThreadingNever | Stretcher::OptionPitchHighConsistency |
         Stretcher::OptionFormantPreserved;
+    const auto frames = source.front().size();
     const auto pitchAt = [&](std::size_t frame) {
-        const auto sourceFrame = note.startFrame + std::min(frame, source.size() - 1);
+        const auto sourceFrame = note.startFrame + std::min(frame, frames - 1);
         const double cents = pitchCorrectionCents(note, edit, static_cast<double>(sourceFrame), preceding);
         const double ratio = std::exp2(cents / 1200);
         checkRatio(ratio, maxPitchRatio);
@@ -106,7 +137,7 @@ std::vector<float> shiftCurve(std::span<const float> source, std::uint32_t rate,
     };
     const double formant = std::exp2(edit.formantShiftCents / 1200);
     const double startingPitch = pitchAt(0);
-    Stretcher stretcher(rate, 1, options, 1, startingPitch);
+    Stretcher stretcher(rate, Channels, options, 1, startingPitch);
     if (stretcher.getEngineVersion() != 3) throw PitchRenderError::Process;
     stretcher.setDebugLevel(0);
     // High Consistency keeps the resampler after the phase vocoder on both
@@ -116,44 +147,46 @@ std::vector<float> shiftCurve(std::span<const float> source, std::uint32_t rate,
     stretcher.setMaxProcessSize(controlFrames);
     const std::size_t pad = stretcher.getPreferredStartPad();
     const std::size_t delay = stretcher.getStartDelay();
-    std::vector<float> output(source.size());
-    std::vector<float> silence(controlFrames);
+    auto output = buffers<Channels>(frames);
+    auto scratch = buffers<Channels>(controlFrames);
+    const std::vector<float> silence(controlFrames);
+    std::array<const float*, Channels> silencePlanes;
+    silencePlanes.fill(silence.data());
     std::size_t written = 0;
     std::size_t discard = delay;
-    const auto target = pad + source.size() + delay + processFrames;
-    for (std::size_t frame = 0; frame < target && written < source.size();) {
+    const auto target = pad + frames + delay + processFrames;
+    for (std::size_t frame = 0; frame < target && written < frames;) {
         checkCancelled(stop);
         std::size_t count = std::min(controlFrames, target - frame);
-        const float* input = silence.data();
+        auto input = silencePlanes;
         if (frame < pad) count = std::min(count, pad - frame);
-        else if (frame - pad < source.size()) {
-            count = std::min(count, source.size() - (frame - pad));
-            input = source.data() + (frame - pad);
+        else if (frame - pad < frames) {
+            count = std::min(count, frames - (frame - pad));
+            input = planePointers(source, frame - pad);
         }
         const double pitch = pitchAt(written);
         stretcher.setPitchScale(pitch);
         if (formant != 1) stretcher.setFormantScale(formant / pitch);
         frame += count;
-        stretcher.process(&input, count, frame == target);
-        for (int available = stretcher.available(); available > 0 && written < source.size(); available = stretcher.available()) {
+        stretcher.process(input.data(), count, frame == target);
+        for (int available = stretcher.available(); available > 0 && written < frames; available = stretcher.available()) {
             auto ready = static_cast<std::size_t>(available);
             if (discard > 0) {
                 const auto skipped = std::min({discard, ready, controlFrames});
-                float* destination = silence.data();
-                if (stretcher.retrieve(&destination, skipped) != skipped) throw PitchRenderError::Process;
-                std::fill_n(destination, skipped, 0.0f);
+                const auto destination = planePointers(scratch, 0);
+                if (stretcher.retrieve(destination.data(), skipped) != skipped) throw PitchRenderError::Process;
                 discard -= skipped;
                 ready -= skipped;
             }
             if (discard == 0 && ready > 0) {
-                const auto requested = std::min(ready, source.size() - written);
-                float* destination = output.data() + written;
-                if (stretcher.retrieve(&destination, requested) != requested) throw PitchRenderError::Process;
+                const auto requested = std::min(ready, frames - written);
+                const auto destination = planePointers(output, written);
+                if (stretcher.retrieve(destination.data(), requested) != requested) throw PitchRenderError::Process;
                 written += requested;
             }
         }
     }
-    if (written != source.size()) throw PitchRenderError::Process;
+    if (written != frames) throw PitchRenderError::Process;
     return output;
 }
 
@@ -167,24 +200,46 @@ double fadeWeight(std::size_t frame, std::size_t count, std::uint32_t rate) {
     return width == 0 || edge >= width ? 1 : static_cast<double>(edge) / static_cast<double>(width);
 }
 
-void overlay(std::span<float> destination, std::span<const float> note, std::uint32_t rate, double gain,
-             std::stop_token stop) {
+template<std::size_t Channels>
+void overlay(std::span<float> destination, const std::array<const float*, Channels>& note, std::size_t stride,
+             std::uint32_t rate, double gain, std::stop_token stop) {
     constexpr double sampleLimit = std::numeric_limits<float>::max();
-    for (std::size_t frame = 0; frame < destination.size(); ++frame) {
+    const auto frames = destination.size() / Channels;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
         if (frame % processFrames == 0) checkCancelled(stop);
-        const double weight = fadeWeight(frame, destination.size(), rate);
-        const double signal = note.empty() ? 0 : static_cast<double>(note[frame]);
-        if (!std::isfinite(signal)) throw PitchRenderError::Process;
-        const double mixed = destination[frame] * (1 - weight) + signal * gain * weight;
-        destination[frame] = static_cast<float>(std::clamp(mixed, -sampleLimit, sampleLimit));
+        const double weight = fadeWeight(frame, frames, rate);
+        for (std::size_t channel = 0; channel < Channels; ++channel) {
+            const double signal = note[channel] ? note[channel][frame * stride] : 0;
+            if (!std::isfinite(signal)) throw PitchRenderError::Process;
+            auto& sample = destination[frame * Channels + channel];
+            const double mixed = sample * (1 - weight) + signal * gain * weight;
+            sample = static_cast<float>(std::clamp(mixed, -sampleLimit, sampleLimit));
+        }
     }
 }
 
+template<std::size_t Channels>
+Planes<Channels> preparePlanes(std::span<const float> source, Buffers<Channels>& planar, std::stop_token stop) {
+    if constexpr (Channels == 1) {
+        return {source};
+    } else {
+        const auto frames = source.size() / Channels;
+        planar = buffers<Channels>(frames);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            if (frame % processFrames == 0) checkCancelled(stop);
+            for (std::size_t channel = 0; channel < Channels; ++channel)
+                planar[channel][frame] = source[frame * Channels + channel];
+        }
+        return view(planar);
+    }
+}
+
+template<std::size_t Channels>
 void renderNote(std::span<const float> source, std::span<float> destination, std::uint32_t rate, const PitchNote& note,
                 const PitchNoteEdit& edit, const PitchNoteEdit* preceding, std::stop_token stop) {
     const double gain = std::pow(10, edit.gainDb / 20);
     if (gain == 0) {
-        overlay(destination, {}, rate, 0, stop);
+        overlay<Channels>(destination, {}, Channels, rate, 0, stop);
         return;
     }
 
@@ -198,49 +253,60 @@ void renderNote(std::span<const float> source, std::span<float> destination, std
     if (needsDsp && rate > maxStretcherRate) throw PitchRenderError::Unsupported;
     if (!needsDsp && gain == 1 && !changesTime(note, edit)) return;
 
-    std::vector<float> processed;
-    if (changingPitch) {
-        processed = shiftCurve(source, rate, note, edit, preceding, stop);
-        if (timeStretch) processed = stretch(processed, destination.size(), rate, 1, 1, stop);
-    } else if (needsDsp) {
-        const double pitch = std::exp2(edit.pitchShiftCents / 1200);
-        const double formant = std::exp2(edit.formantShiftCents / 1200);
-        processed = stretch(source, destination.size(), rate, pitch, formant, stop);
+    std::array<const float*, Channels> signal;
+    auto stride = Channels;
+    Buffers<Channels> processed;
+    if (needsDsp) {
+        Buffers<Channels> planar;
+        const auto input = preparePlanes(source, planar, stop);
+        const auto frames = destination.size() / Channels;
+        if (changingPitch) {
+            processed = shiftCurve(input, rate, note, edit, preceding, stop);
+            if (timeStretch) processed = stretch(view(processed), frames, rate, 1, 1, stop);
+        } else {
+            const double pitch = std::exp2(edit.pitchShiftCents / 1200);
+            const double formant = std::exp2(edit.formantShiftCents / 1200);
+            processed = stretch(input, frames, rate, pitch, formant, stop);
+        }
+        const auto output = view(processed);
+        signal = planePointers(output, 0);
+        stride = 1;
+    } else {
+        for (std::size_t channel = 0; channel < Channels; ++channel) signal[channel] = source.data() + channel;
     }
-    std::span<const float> signal = processed.empty() ? source : std::span<const float>(processed);
     if (edit.straightenRange && edit.straighten != 0 && !changingOtherPitch && edit.pitchShiftCents == 0 &&
         edit.formantShiftCents == 0 && gain == 1 && !changesTime(note, edit)) {
         // Even a unity-ratio vocoder introduces processing outside the
         // requested span. Keep original samples where there is no edit.
         const auto first = static_cast<std::size_t>(edit.straightenRange->startFrame - note.startFrame);
         const auto count = static_cast<std::size_t>(edit.straightenRange->endFrame - edit.straightenRange->startFrame);
-        destination = destination.subspan(first, count);
-        signal = signal.subspan(first, count);
+        destination = destination.subspan(first * Channels, count * Channels);
+        for (auto& channel : signal) channel += first * stride;
     }
-    overlay(destination, signal, rate, gain, stop);
+    overlay(destination, signal, stride, rate, gain, stop);
 }
 
-} // namespace
-
-PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnalysis& analysis,
-                                 const PitchEditState& edits, std::stop_token stop) {
+template<std::size_t Channels>
+PitchRenderResult render(std::span<const float> sourcePcm, const PitchAnalysis& analysis, const PitchEditState& edits,
+                         std::stop_token stop) {
     if (onAudioThread) return {PitchRenderError::Realtime, nullptr};
     if (stop.stop_requested()) return {PitchRenderError::Cancelled, nullptr};
-    if (mono.size() != analysis.sourceFrames || mono.size() > maxSourceFrames)
+    const auto inputFrames = sourcePcm.size() / Channels;
+    if (sourcePcm.size() % Channels != 0 || inputFrames != analysis.sourceFrames || inputFrames > maxSourceFrames)
         return {PitchRenderError::InvalidSource, nullptr};
     try {
         const auto validation = validatePitchEdits(analysis, edits);
         if (validation == PitchEditError::InvalidAnalysis) return {PitchRenderError::InvalidSource, nullptr};
         if (validation != PitchEditError::None) return {PitchRenderError::InvalidEdits, nullptr};
-        auto output = std::make_unique<std::vector<float>>(mono.size());
-        const bool finite = copyFinite(mono, *output, stop);
+        auto output = std::make_unique<std::vector<float>>(sourcePcm.size());
+        const bool finite = copyFinite(sourcePcm, *output, stop);
 
         for (const auto& edit : edits.notes) {
             const auto& note = analysis.notes[edit.noteIndex];
             if (changesTime(note, edit)) {
-                auto span = std::span(*output).subspan(static_cast<std::size_t>(note.startFrame),
-                    static_cast<std::size_t>(note.endFrame - note.startFrame));
-                overlay(span, {}, analysis.sampleRate, 0, stop);
+                auto span = std::span(*output).subspan(static_cast<std::size_t>(note.startFrame) * Channels,
+                    static_cast<std::size_t>(note.endFrame - note.startFrame) * Channels);
+                overlay<Channels>(span, {}, Channels, analysis.sampleRate, 0, stop);
             }
         }
 
@@ -264,7 +330,8 @@ PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnaly
             const auto preceding = std::lower_bound(timeline.begin(), timeline.end(), edit.startFrame,
                 [](const auto& candidate, std::uint64_t frame) { return candidate.endFrame < frame; });
             const auto* previous = preceding != timeline.end() && preceding->endFrame == edit.startFrame ? &*preceding : nullptr;
-            const auto input = noteSamples(mono, note);
+            const auto input = sourcePcm.subspan(static_cast<std::size_t>(note.startFrame) * Channels,
+                static_cast<std::size_t>(note.endFrame - note.startFrame) * Channels);
             std::vector<float> cleaned;
             std::span<const float> source = input;
             if (!finite) {
@@ -272,9 +339,9 @@ PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnaly
                 copyFinite(input, cleaned, stop);
                 source = cleaned;
             }
-            auto destination = std::span(*output).subspan(static_cast<std::size_t>(edit.startFrame),
-                static_cast<std::size_t>(edit.endFrame - edit.startFrame));
-            renderNote(source, destination, analysis.sampleRate, note, edit, previous, stop);
+            auto destination = std::span(*output).subspan(static_cast<std::size_t>(edit.startFrame) * Channels,
+                static_cast<std::size_t>(edit.endFrame - edit.startFrame) * Channels);
+            renderNote<Channels>(source, destination, analysis.sampleRate, note, edit, previous, stop);
         }
         checkCancelled(stop);
         return {PitchRenderError::None, std::move(output)};
@@ -287,6 +354,22 @@ PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnaly
     } catch (const std::exception&) {
         return {PitchRenderError::Process, nullptr};
     }
+}
+
+} // namespace
+
+PitchRenderResult renderPitchEdits(std::span<const float> mono, const PitchAnalysis& analysis,
+                                  const PitchEditState& edits, std::stop_token stop) {
+    return render<1>(mono, analysis, edits, stop);
+}
+
+PitchRenderResult renderPitchEdits(std::span<const float> interleaved, std::uint16_t channels, const PitchAnalysis& analysis,
+                                  const PitchEditState& edits, std::stop_token stop) {
+    if (onAudioThread) return {PitchRenderError::Realtime, nullptr};
+    if (stop.stop_requested()) return {PitchRenderError::Cancelled, nullptr};
+    if (channels == 1) return render<1>(interleaved, analysis, edits, stop);
+    if (channels == 2) return render<2>(interleaved, analysis, edits, stop);
+    return {PitchRenderError::InvalidSource, nullptr};
 }
 
 } // namespace adi::audio

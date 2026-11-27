@@ -173,9 +173,10 @@ void downmix(std::span<const float> source, std::span<float> mono, std::uint16_t
     }
 }
 
-std::unique_ptr<const std::vector<float>> renderChannel(std::span<const float> pcm, const audio::PitchAnalysis& analysis,
-                                                        const audio::PitchEditState& edits, std::stop_token stop) {
-    auto rendered = audio::renderPitchEdits(pcm, analysis, edits, stop);
+std::unique_ptr<const std::vector<float>> renderChannels(std::span<const float> pcm, std::uint16_t channels,
+                                                         const audio::PitchAnalysis& analysis,
+                                                         const audio::PitchEditState& edits, std::stop_token stop) {
+    auto rendered = audio::renderPitchEdits(pcm, channels, analysis, edits, stop);
     switch (rendered.error) {
     case audio::PitchRenderError::None: if (rendered) return std::move(rendered.samples); break;
     case audio::PitchRenderError::Cancelled: throw Failure{ClipPitchRenderProblem::Cancelled, nullptr};
@@ -379,20 +380,20 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
                                      reader, plan.warp, stop);
             if (!original) return original;
         }
-        std::unique_ptr<const std::vector<float>> renderedMono;
+        std::unique_ptr<const std::vector<float>> rendered;
         std::span<const float> window;
-        if (channels == 1) {
-            renderedMono = renderChannel(pcm, effective, *edits.state, stop);
-            window = std::span(*renderedMono).subspan(first, count);
+        if (channels <= 2) {
+            std::vector<float>().swap(mono);
+            rendered = renderChannels(pcm, channels, effective, *edits.state, stop);
+            window = std::span(*rendered).subspan(first * channels, count * channels);
         } else {
-            // Every original channel shares the same note clock and controls.
-            // Render individually and write the edited window back interleaved.
+            // Wider files retain the common note clock and independent channel rendering.
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 for (std::size_t frame = 0; frame < mono.size(); ++frame) {
                     if (frame % blockFrames == 0) checkCancelled(stop);
                     mono[frame] = pcm[frame * channels + channel];
                 }
-                const auto changed = renderChannel(mono, effective, *edits.state, stop);
+                const auto changed = renderChannels(mono, 1, effective, *edits.state, stop);
                 for (std::size_t frame = first; frame < first + count; ++frame) {
                     if (frame % blockFrames == 0) checkCancelled(stop);
                     pcm[frame * channels + channel] = (*changed)[frame];
@@ -409,7 +410,7 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
 
         std::vector<float>().swap(pcm);
         std::vector<float>().swap(mono);
-        renderedMono.reset();
+        rendered.reset();
         auto dry = readComparisonSide(*original.prepared, comparisonRate, comparisonFrames, stop);
         auto edited = readComparisonSide(*corrected.prepared, comparisonRate, comparisonFrames, stop);
         checkCancelled(stop);
