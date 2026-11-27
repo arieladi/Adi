@@ -12,21 +12,34 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 namespace adi {
 namespace {
-std::string checkedDevice(Store& store,std::int64_t device,std::int32_t slot) {
-    if(store.readOnly())throw std::runtime_error("project is read-only");
-    if(audio::onAudioThread)throw std::runtime_error("sample assignment belongs off the audio thread");
+constexpr std::string_view sampleInstrumentUid = "org.adidaw.builtin.oneshot";
+constexpr std::int32_t sampleInstrumentSlot = 1;
+std::string sampleDeviceUid(Store& store,std::int64_t device) {
     SQLite::Statement selected(store.db(),"SELECT p.format,p.uid FROM devices d JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE d.id=?");selected.bind(1,device);
     if(!selected.executeStep() || selected.getColumn(0).getString()!="internal")throw std::runtime_error("sample assignment needs a supported built-in device");
-    const auto uid=selected.getColumn(1).getString();const auto* info=findBuiltin(uid);
+    return selected.getColumn(1).getString();
+}
+void checkSlot(std::string_view uid, std::int32_t slot) {
+    const auto* info = findBuiltin(uid);
     if(!info||!info->available)throw std::runtime_error("sample device backend is unavailable");
     const auto declarations=device::parsePdDeclarations(builtinDeclarations(uid));
     if(std::none_of(declarations.samples.begin(),declarations.samples.end(),[&](const auto& value){return value.id==slot;}))
         throw std::runtime_error("device did not declare this sample slot");
-    (void)device::inspectBuiltinSample(device::emptyBuiltinSample(uid,slot));return uid;
+    (void)device::inspectBuiltinSample(device::emptyBuiltinSample(uid,slot));
+}
+void requireEditableInstrumentTrack(SQLite::Database& db, std::int64_t track) {
+    SQLite::Statement row(db,
+        "WITH RECURSIVE enclosing(id,parent_id,frozen,locked) AS ("
+        " SELECT id,parent_id,frozen,locked FROM tracks WHERE id=?"
+        " UNION SELECT t.id,t.parent_id,t.frozen,t.locked FROM tracks t JOIN enclosing e ON t.id=e.parent_id)"
+        " SELECT 1 FROM enclosing WHERE frozen<>0 OR locked<>0 LIMIT 1");
+    row.bind(1, track);
+    if (row.executeStep()) throw std::runtime_error("A sample cannot replace an instrument on a frozen or locked track.");
 }
 void addState(PreparedSampleAssignment& prepared,const Payload& state) {
     auto bytes=Payload::to_cbor(state);const auto hash=media::blake3Bytes(std::as_bytes(std::span(bytes)));
@@ -38,13 +51,15 @@ void addState(PreparedSampleAssignment& prepared,const Payload& state) {
     prepared.requests.push_back(std::move(request));
 }
 PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t slot,const std::filesystem::path* file,
-    double rate,std::int64_t utc,audio::DecodeCache* cache) {
+    double rate,std::int64_t utc,audio::DecodeCache* cache,std::string_view stagedUid={}) {
     PreparedSampleAssignment result;result.deviceId=deviceId;
     try {
         if(audio::onAudioThread)throw std::runtime_error("sample assignment belongs off the audio thread");
+        if(store.readOnly())throw std::runtime_error("project is read-only");
         auto& db=store.db();std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
-        const auto uid=checkedDevice(store,deviceId,slot);result.sourceFile=media::pathUtf8(store.path());
+        const auto uid=stagedUid.empty()?sampleDeviceUid(store,deviceId):std::string(stagedUid);
+        checkSlot(uid,slot);result.sourceFile=media::pathUtf8(store.path());
         result.options.expectHead.emplace(OpJournal(store).headSeq());
         Payload state=device::emptyBuiltinSample(uid,slot);
         if(file) {
@@ -65,10 +80,13 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
             else expected=media::mediaRow(db,result.mediaId).at("hash_blake3").get<std::string>();
             if(state.at("mediaHash")!=expected)throw std::runtime_error("sample media changed during preparation");
         }
-        SQLite::Statement existing(db,"SELECT 1 FROM plugin_state WHERE device_id=? AND stream_role=?");existing.bind(1,deviceId);existing.bind(2,"sample:"+std::to_string(slot));
-        // The opener is necessary for the existing live ParamOps inverse: it
-        // loads the empty slot before the final inverse removes the absent row.
-        if(!existing.executeStep())addState(result,device::emptyBuiltinSample(uid,slot));
+        if (stagedUid.empty()) {
+            SQLite::Statement existing(db,"SELECT 1 FROM plugin_state WHERE device_id=? AND stream_role=?");
+            existing.bind(1,deviceId);existing.bind(2,"sample:"+std::to_string(slot));
+            // The opener lets Undo empty an existing live slot before the
+            // final inverse removes its row. Undo removes a staged device.
+            if(!existing.executeStep())addState(result,device::emptyBuiltinSample(uid,slot));
+        }
         addState(result,state);
         for(auto& request:result.requests) {
             request.label=file?"Assign device sample":"Clear device sample";
@@ -82,6 +100,30 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
 PreparedSampleAssignment prepareSampleAssignment(Store& store,std::int64_t device,std::int32_t slot,
     const std::filesystem::path& path,double rate,std::int64_t utc,audio::DecodeCache* cache){return prepare(store,device,slot,&path,rate,utc,cache);}
 PreparedSampleAssignment prepareSampleClear(Store& store,std::int64_t device,std::int32_t slot){return prepare(store,device,slot,nullptr,48000,0,nullptr);}
+PreparedSampleAssignment prepareSampleInstrument(Store& store, std::int64_t track,
+    const std::filesystem::path& file, double rate, std::int64_t utc,
+    audio::DecodeCache* cache, std::int64_t retainedDeviceId) {
+    try {
+        if (audio::onAudioThread) throw std::runtime_error("sample assignment belongs off the audio thread");
+        auto& db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        requireEditableInstrumentTrack(db, track);
+        auto insertion = prepareBuiltinInsert(store, sampleInstrumentUid, track, {}, retainedDeviceId);
+        if (!insertion.ok) throw std::runtime_error(insertion.error);
+        auto prepared = prepare(store, insertion.deviceId, sampleInstrumentSlot, &file, rate, utc, cache, sampleInstrumentUid);
+        if (!prepared.ok) return prepared;
+        prepared.requests.insert(prepared.requests.begin(), std::make_move_iterator(insertion.requests.begin()),
+                                  std::make_move_iterator(insertion.requests.end()));
+        for (auto& request : prepared.requests) request.label = "Load Sample Instrument";
+        return prepared;
+    } catch (const std::exception& error) {
+        PreparedSampleAssignment refused;
+        refused.error = error.what();
+        return refused;
+    }
+}
 CommitResult commitSampleAssignment(Store& store,const PreparedSampleAssignment& prepared,Actor actor) {
     CommitResult result;
     if(audio::onAudioThread){result.error="sample assignment belongs off the audio thread";return result;}

@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/sample_slots.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
@@ -15,9 +16,12 @@
 #include "adi/material_commands.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/external_input_meter.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -26,6 +30,7 @@
 #include <atomic>
 #include <functional>
 #include <optional>
+#include <span>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -81,6 +86,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
+    // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
+    // Returns how many woke (the view then re-reads the session).
+    std::size_t wakeMissingPlugins();
     void tick(std::int64_t milliseconds);
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
     // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
@@ -100,6 +108,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState &sessionState() noexcept { return sessionState_; }
     TransportMailbox &mailbox() noexcept { return mailbox_; }
     engine::Session &session() noexcept { return session_; }
+    std::int64_t retainedDeviceId() const noexcept;
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
@@ -152,20 +161,23 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
     RecordStates recordStates() const;
-    // Arrangement Record (MX-09; Live 12 manual 21.1): every armed audio track records from the audio
-    // device's inputs 1/2 (1 on a device with one input; the window's In/Out column shows "1/2", and
-    // `tracks.input_ref` has no grammar yet, MX-25). The recorder is prepared here, on the message
-    // thread, before the driver is told; stopped, the driver starts at the song start or the insert
-    // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
-    // playhead on, as Live's punch in. False with `error()` saying why: nothing armed, only MIDI armed
-    // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
+    // Arrangement Record (MX-09; Live 12 manual 21.1): armed audio tracks record their selected input.
+    // Armed MIDI tracks record the Track MIDI input.
+    // The message thread prepares the recorder before notifying the driver. From stopped, the driver
+    // starts at the song start or the insert marker after the saved Count-In. While playing, it records
+    // from the playhead. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
-    // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
-    // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
-    // recording takes them, and the session hears them as each track's Arm and monitoring say (In
-    // always; Auto while armed and no clip plays; Off never). Set by the application when the device
-    // opens or changes; 0 disconnects monitoring.
+    // The driver's round-trip latency is captured in samples at the recording's rate.
+    // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                        std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},
+                        audio::WavFormat format = audio::WavFormat::Float32);
+    // The application replaces these routes when the device or its channel config changes.
+    // An empty list means the device has no enabled inputs. The view lasts until the next set.
+    void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
+    std::span<const ExternalAudioInput> externalAudioInputs() const noexcept;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter() const noexcept { return externalInputMeter_; }
+    // Hosts without a route list can still provide a contiguous input count for monitoring.
     void setInputChannels(std::int32_t inputs);
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
@@ -178,6 +190,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
     bool landingTake() const noexcept { return landing_; }
+    std::span<const LiveMidiTake> liveMidiTakes() const noexcept;
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
     // the reason in `error()`. Empty until a take lands.
     struct TakeLanded {
@@ -203,6 +216,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
+    // One track render at a time. The window thread owns plug-in life cycles
+    // and the final edit, while the worker reads and renders its own snapshot.
+    void configureFreezeTail(double seconds) noexcept;
+    void configureTrackRenderDispatch(std::function<void(std::function<void()>)> post);
+    bool freezeTrack(std::int64_t track);
+    bool unfreezeTrack(std::int64_t track);
+    bool flattenTrack(std::int64_t track);
+    bool bounceTrackToNewTrack(std::int64_t track);
+    bool bounceTrackInPlace(std::int64_t track);
+    bool trackRenderRunning() const noexcept { return trackRender_ != nullptr; }
+    std::optional<std::string> takeTrackRenderStatus();
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
     // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
@@ -213,32 +237,61 @@ class ProjectDocument final : public engine::BlockProcessor {
     // `error()`.
     bool copyDevice(std::int64_t id, DeviceCopy &out);
     bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    bool copyDevices(std::span<const DevicePanelData>, std::vector<DeviceCopy> &out, bool cut = false);
+    bool removeDevices(std::span<const DevicePanelData>);
+    bool pasteDevices(std::span<const DeviceCopy>, std::int64_t track, std::optional<std::int64_t> before);
     // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
     // the app moves a held copy over to the new file, the same project under a new name.
     std::string deviceCopyIdentity() const;
     // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
     // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // A drop below the tracks passes track 0 and creates and selects the appropriate track.
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
-    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
+                       const RecordingDefaults *defaults = nullptr);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
     // DF-W52): an instrument goes onto a MIDI track only (it takes notes and no audio, so it would
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
-    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
+    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
+                    const RecordingDefaults *defaults = nullptr);
+    bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
+                          const std::string &name, std::filesystem::path &saved);
+    std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
+                                  const std::optional<rows::PluginRef> &installed = {});
+    struct HotSwapTargetInfo {
+        preset::Identity device;
+        std::string subtype;
+    };
+    std::optional<HotSwapTargetInfo> hotSwapTarget(const DevicePanelData &);
+    std::int64_t hotSwapBuiltin(const DevicePanelData &, const std::string &uid);
+    std::int64_t hotSwapPlugin(const DevicePanelData &, const rows::PluginRef &);
+    std::int64_t hotSwapPreset(const DevicePanelData &, preset::Preset,
+                               const std::optional<rows::PluginRef> &installed = {});
+    bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
+                       std::int64_t nowUtc);
+    // SC-325 (ADR-0134 d7): the expression route remembered for a plug-in (format, uid), the default of a
+    // new instance `loadPlugin` makes; the project then keeps it on the device row. Unset: Auto.
+    std::function<std::optional<engine::RouteChoice>(const std::string &, const std::string &)> pluginRouteDefault;
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
     bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
+    bool moveDevice(const DevicePanelData &expected, std::int64_t track,
+                    std::optional<std::int64_t> before);
+    bool moveDevices(std::span<const DevicePanelData>, std::int64_t track, std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
     // engine's refusals (a device this build cannot run, an undeclared slot, a file that is not
     // audio) come back in `error()`. Preparation decodes on the calling thread.
+    // Drop a sample on a MIDI track: OneShot and its filled sample slot are one Undo step.
+    bool loadSampleInstrument(std::int64_t track, const std::filesystem::path &file, std::int64_t nowUtc);
     bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
     bool clearSample(std::int64_t device, std::int32_t slot);
     // The parameter glue's counters (for the tests: a sample's state reached the live device).
@@ -274,8 +327,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
-    std::int64_t retainedDeviceId() const noexcept;
+    enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
+    struct TrackRenderWork;
+    bool startTrackRender(TrackRenderKind, std::int64_t track);
+    void pollTrackRender();
+    void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
+    bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
@@ -298,6 +358,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     void refreshLimiterReductionSources();
     // The session's monitoring inputs for the tracks as they stand, given when they changed.
     void syncMonitorInputs();
+    std::span<const std::uint32_t> channelsForInput(const std::optional<std::string> &ref,
+                                                   std::int32_t legacyCount) const noexcept;
+    std::optional<std::vector<ExternalAudioInput>> externalAudioInputs_;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter_ = std::make_shared<ExternalInputMeter>();
     std::int32_t inputChannels_ = 0;
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
@@ -309,6 +373,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     ViewStateStore views_;
     SessionState sessionState_;
     engine::Session session_;
+    engine::DeviceLoader renderLoader_;
+    std::unique_ptr<TrackRenderWork> trackRender_;
+    std::optional<std::string> trackRenderStatus_;
+    std::function<void(std::function<void()>)> postTrackRenderHost_;
+    double freezeTailSeconds_ = 4.0;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
     struct SurfaceGesture {
         std::uint64_t instance = 0;
@@ -320,10 +389,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
-    void landTake(engine::AudioRecordingResult &);
+    void pollRecording(bool deviceStopped);
+    void landTake();
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    struct MidiRecording;
+    std::unique_ptr<MidiRecording> midiRecording_;
+    std::optional<engine::AudioRecordingResult> audioTake_;
+    bool recordingAudio_ = false;
+    bool cancelTake_ = false;
+    // Both recorders must be installed before either observes the next rolling callback.
+    std::atomic<bool> captureReady_{false};
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.

@@ -60,6 +60,8 @@ bool runPluginEditorJuceTests() {
     auto editor=component->editor();
     check(raw->getActiveEditor()==editor->component(),"JUCE active editor is registered");
     check(component->getWidth()==640 && component->getHeight()==360,"floating content starts at plugin's own size");
+    check(component->nativeParent().isOpaque(),
+          "a native editor's parent window is opaque, never a see-through layered window (SC-322)");
     check(editor->component()->getParentComponent()==component.get(),"same editor component is placed in floating content");
     check(device->createEditor(EditorMode::Hosted,error)==editor && counts.created==1,"second open shares current editor lease");
     editor->component()->setSize(700,400);
