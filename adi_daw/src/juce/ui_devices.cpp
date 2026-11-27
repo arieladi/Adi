@@ -2458,11 +2458,11 @@ void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
 
     juce::PopupMenu menu;
     juce::PopupMenu::Item item("Paste");
-    item.isEnabled = track >= 0 && paste && holdsCopy && holdsCopy();
+    item.isEnabled = track > 0 && paste && holdsCopy && holdsCopy();
     item.shortcutKeyDescription =
         juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
     item.action = [safe, track, epoch] {
-        if (safe && track >= 0 && safe->selectedTrack == track && safe->addMenuEpoch_ == epoch &&
+        if (safe && track > 0 && safe->selectedTrack == track && safe->addMenuEpoch_ == epoch &&
             safe->root.arrangement.geometry.selection.track == track)
             safe->pasteAt(track, std::nullopt);
     };
