@@ -1017,6 +1017,7 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    bool restoreHistory(const std::function<History::Result()> &);
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);

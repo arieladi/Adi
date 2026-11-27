@@ -12416,6 +12416,55 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
     root.afterEdit = nullptr;
     document->release();
 }
+void restoreReopenedProject(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "history-reopen.adi";
+    std::string error;
+    const auto rename = [](ProjectDocument &doc, std::int64_t track, const char *name) {
+        OpRequest request;
+        request.opType = "track.rename";
+        request.payload = {{"id", track}, {"name", name}};
+        request.label = name;
+        return doc.ops().submit(std::move(request));
+    };
+    auto document = ProjectDocument::open(path, true, {}, error);
+    check(document != nullptr, "SC-155: create a project with prior-session edits");
+    if (!document)
+        return;
+    const auto older = rename(*document, 2, "Saved Keys");
+    check(older.ok && rename(*document, 3, "Saved Pads").ok, "SC-155: save two history steps before closing");
+    if (!older.ok)
+        return;
+    const auto saved = OpJournal(document->store()).headSeq();
+    document.reset();
+    document = ProjectDocument::open(path, false, {}, error);
+    check(document != nullptr, "SC-155: reopen the project");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "history-reopen");
+    root.afterEdit = [&] { document->synchronise(); };
+    auto &panel = root.undoHistory;
+    panel.setSize(320, 420);
+    panel.refresh();
+    check(panel.rows().size() == 3 && panel.rows().back().current && panel.rows().back().time.isNotEmpty() &&
+              panel.rows().front().time.isNotEmpty() && panel.rows().front().detail == "Project opened here",
+          "SC-155: the opening row is current, and history rows show their times and opening boundary");
+    check(rename(*document, 4, "New Drums").ok, "SC-155: make an edit after opening");
+    panel.refresh();
+    check(panel.restoreRow(static_cast<int>(panel.rows().size()) - 1),
+          "SC-155: select the bottom row after editing");
+    check(OpJournal(document->store()).headSeq() == saved && panel.rows().back().current &&
+              document->store().db().execAndGet("SELECT name FROM tracks WHERE id=3").getString() == "Saved Pads" &&
+              document->store().db().execAndGet("SELECT name FROM tracks WHERE id=4").getString() != "New Drums",
+          "SC-155: the open row undoes work from this visit only");
+    check(root.restoreStep(older.txnId) && rename(*document, 3, "Side Branch Pads").ok,
+          "SC-155: a prior-session step is still navigable and can start another branch");
+    panel.refresh();
+    check(panel.restoreRow(static_cast<int>(panel.rows().size()) - 1) &&
+              OpJournal(document->store()).headSeq() == saved &&
+              document->store().db().execAndGet("SELECT name FROM tracks WHERE id=3").getString() == "Saved Pads",
+          "SC-155: the opening row returns to the original branch's saved state");
+}
 void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
@@ -25478,6 +25527,7 @@ int main(int argc, char **argv) {
     trace("agentSettingsAvailability", [&] { agentSettingsAvailability(temp.path()); });
     trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("restoreReopenedProject", [&] { restoreReopenedProject(commands, temp.path()); });
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });

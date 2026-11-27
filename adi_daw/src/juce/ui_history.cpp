@@ -3,6 +3,11 @@
 #include "ui_look.hpp"
 #include <map>
 namespace adi::ui {
+namespace {
+juce::String historyTime(std::int64_t utcMicros) {
+    return utcMicros != 0 ? juce::Time(utcMicros / 1000).formatted("%Y-%m-%d %H:%M") : juce::String{};
+}
+} // namespace
 UndoHistoryPanel::UndoHistoryPanel() {
     setTitle("Undo History");
     list.setTitle("Undo History steps");
@@ -31,16 +36,20 @@ void UndoHistoryPanel::refresh() {
     for (const auto &b : timeline.branches)
         branchNames[b.id] = b.name;
     int current = -1;
+    const bool atOpening = timeline.headSeq == openingHead;
     for (const auto &s : timeline.steps) {
         Row row;
         row.txnId = s.step.txnId;
         row.label = s.step.label.empty() ? "Change" : s.step.label;
+        row.time = historyTime(s.createdUtc);
         row.applied = s.applied;
         row.otherBranch = !s.onCurrentLine;
-        row.current = timeline.headSeq && *timeline.headSeq == s.step.lastSeq;
+        row.current = !atOpening && timeline.headSeq == s.step.lastSeq;
         if (row.otherBranch && !s.branchIds.empty())
             row.detail = "on " + (branchNames[s.branchIds.front()].empty() ? std::string("another branch")
                                                                           : branchNames[s.branchIds.front()]);
+        if (openingHead == s.step.lastSeq)
+            row.detail += (row.detail.empty() ? "" : ", ") + std::string("Project opened here");
         for (const auto id : s.snapshotIds)
             for (const auto &snap : timeline.snapshots)
                 if (snap.id == id)
@@ -49,15 +58,16 @@ void UndoHistoryPanel::refresh() {
             current = static_cast<int>(rows_.size());
         rows_.push_back(std::move(row));
     }
-    // The project as created or opened, last: current when nothing on the line is applied.
+    // The opening event has its own row even when earlier edits remain visible.
     {
         Row root;
         root.label = rootLabel;
+        root.time = historyTime(openedUtc);
         root.applied = true;
         root.root = true;
-        root.current = !timeline.headSeq.has_value() || current < 0;
+        root.current = atOpening;
         for (const auto &snap : timeline.snapshots)
-            if (!snap.opSeq)
+            if (snap.opSeq == openingHead)
                 root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
         if (root.current)
             current = static_cast<int>(rows_.size());
@@ -92,21 +102,24 @@ void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width,
     // An undone step, or one on another branch, greyed, as Live greys the steps after the current one.
     g.setColour(row.applied ? look::text : look::textDim.withAlpha(0.7f));
     g.setFont(look::font(look::fontBody, row.current));
-    const int detailWidth = row.detail.empty() ? 0 : std::min(width / 2, 160);
-    g.drawText(juce::String::fromUTF8(row.label.c_str()), 6, 0, width - 12 - detailWidth, height,
+    const int timeWidth = row.time.isEmpty() ? 0 : std::min(width / 3, 120);
+    const int detailWidth = row.detail.empty() ? 0 : std::min((width - timeWidth) / 2, 160);
+    g.drawText(juce::String::fromUTF8(row.label.c_str()), 6, 0, std::max(0, width - 12 - timeWidth - detailWidth), height,
                juce::Justification::centredLeft, true);
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontCaption));
     if (detailWidth > 0) {
-        g.setColour(look::textDim);
-        g.setFont(look::font(look::fontCaption));
-        g.drawText(juce::String::fromUTF8(row.detail.c_str()), width - detailWidth - 6, 0, detailWidth, height,
+        g.drawText(juce::String::fromUTF8(row.detail.c_str()), width - timeWidth - detailWidth - 6, 0, detailWidth, height,
                    juce::Justification::centredRight, true);
     }
+    if (timeWidth > 6)
+        g.drawText(row.time, width - timeWidth, 0, timeWidth - 6, height, juce::Justification::centredRight, true);
 }
 bool UndoHistoryPanel::restoreRow(int index) {
-    if (index < 0 || index >= static_cast<int>(rows_.size()) || !restore)
+    if (index < 0 || index >= static_cast<int>(rows_.size()))
         return false;
     const auto &row = rows_[static_cast<std::size_t>(index)];
-    const bool done = restore(row.root ? 0 : row.txnId);
+    const bool done = row.root && restoreOpening ? restoreOpening() : restore && restore(row.txnId);
     refresh();
     return done;
 }

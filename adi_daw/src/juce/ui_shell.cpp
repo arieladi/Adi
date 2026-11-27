@@ -1507,8 +1507,15 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     // Live's look for everything this window holds (ui_look.hpp).
     setLookAndFeel(&look::liveLook());
     undoHistory.setLookAndFeel(&look::liveLook());
+    undoHistory.openingHead = OpJournal(submitter_.store()).headSeq();
+    undoHistory.openedUtc = juce::Time::currentTimeMillis() * 1000;
     undoHistory.read = [this] { return submitter_.timeline(); };
     undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
+    undoHistory.restoreOpening = [this] {
+        return restoreHistory([this] {
+            return submitter_.restoreOpening(undoHistory.openingHead, juce::Time::currentTimeMillis() * 1000);
+        });
+    };
     setOpaque(true);
     setWantsKeyboardFocus(true);
     // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
@@ -4664,11 +4671,14 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    return restoreHistory([this, txnId] { return submitter_.restore(txnId); });
+}
+bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &restore) {
     if (recordingHoldsHistory())
         return fail(kRecordingHistoryMessage);
     if (settleEdits && !settleEdits())
         return false;
-    const auto result = submitter_.restore(txnId);
+    const auto result = restore();
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
     arrangement.followPaused = true; // as an undo pauses it
