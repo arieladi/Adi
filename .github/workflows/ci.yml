@@ -312,6 +312,17 @@ jobs:
       - name: Fetch build dependencies, at their pinned commits
         run: bash adi_daw/tools/fetch_external.sh --build-only
 
+      - uses: actions/setup-node@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
+        with:
+          node-version: '24.22.3'
+      - name: Build and test the agent helper
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
+        working-directory: adi_daw/agent
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
       # CC/CXX and the macOS architecture list arrive through the environment
       # rather than interpolated into the command line: 'arm64;x86_64' contains a
       # semicolon, which a shell would read as a command separator. And a matrix
@@ -323,6 +334,7 @@ jobs:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
           OSX_ARCHS: ${{ matrix.osx_archs }}
+          AGENT_HELPER_TESTS: ${{ (matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc') && 'ON' || 'OFF' }}
         run: |
           set -euo pipefail
           [ -n "${CC:-}" ]  || unset CC
@@ -332,9 +344,10 @@ jobs:
           # until 26 November, so a merge could break the session and stay green.
           if [ -n "${OSX_ARCHS:-}" ]; then
             cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug -DADI_ACCEPTANCE=ON \
-                  -DCMAKE_OSX_ARCHITECTURES="$OSX_ARCHS"
+                  -DCMAKE_OSX_ARCHITECTURES="$OSX_ARCHS" -DADI_AGENT_HELPER_TESTS="$AGENT_HELPER_TESTS"
           else
-            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug -DADI_ACCEPTANCE=ON
+            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug -DADI_ACCEPTANCE=ON \
+                  -DADI_AGENT_HELPER_TESTS="$AGENT_HELPER_TESTS"
           fi
 
       # --config is required by the multi-config Visual Studio generator on

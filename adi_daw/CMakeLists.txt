@@ -919,6 +919,22 @@ add_executable(adi_agent_runtime_tests tests/test_agent_runtime.cpp)
 target_link_libraries(adi_agent_runtime_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_agent_runtime_tests COMMAND adi_agent_runtime_tests)
 
+option(ADI_AGENT_HELPER_TESTS "Run the agent tests that need the built Node helper" OFF)
+if(ADI_AGENT_HELPER_TESTS)
+    find_program(ADI_AGENT_NODE NAMES node REQUIRED)
+    set(ADI_AGENT_HELPER "${CMAKE_CURRENT_SOURCE_DIR}/agent/dist/main.js")
+    if(NOT EXISTS "${ADI_AGENT_HELPER}")
+        message(FATAL_ERROR "Build the agent helper first with 'npm ci' and 'npm run build' in adi_daw/agent")
+    endif()
+    add_test(NAME adi_agent_runtime_node_tests COMMAND adi_agent_runtime_tests
+        --node-helper "${ADI_AGENT_NODE}" "${ADI_AGENT_HELPER}")
+    add_executable(adi_agent_injection_tests tests/test_agent_injection.cpp)
+    target_link_libraries(adi_agent_injection_tests PRIVATE adi_control adi_warnings)
+    add_dependencies(adi_agent_injection_tests adi_tool)
+    add_test(NAME adi_agent_injection_tests COMMAND adi_agent_injection_tests
+        "${ADI_AGENT_NODE}" "${ADI_AGENT_HELPER}" $<TARGET_FILE:adi_tool>)
+endif()
+
 add_executable(adi_agent_log_tests tests/test_agent_log.cpp)
 target_link_libraries(adi_agent_log_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_agent_log_tests COMMAND adi_agent_log_tests)

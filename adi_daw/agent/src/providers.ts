@@ -9,6 +9,7 @@ import { streamSimple as streamCompatible } from "@earendil-works/pi-ai/api/open
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { injectionResponses } from "./injection_fixtures.js";
 
 export interface ProviderConfig {
   kind: "local" | "lan" | "cloud" | "faux";
@@ -55,7 +56,11 @@ function fauxResponses(model: string) {
     case "faux:parallel": return [
       fauxAssistantMessage([fauxToolCall("project_read", {}), fauxToolCall("changeset_propose", proposal)]),
     ];
-    default: throw new Error("unconfigured faux model");
+    default: {
+      const injection = injectionResponses(model);
+      if (injection) return injection;
+      throw new Error("unconfigured faux model");
+    }
   }
 }
 
