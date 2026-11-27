@@ -5,7 +5,9 @@ Codex took the stretcher seat on 27 November 2026.
 - A continuing R3 Session run under an arbitrary tempo change, or a Legato target outside the primed worker window, still needs driver admission keyed to the exact launch and loop anchors.
 - A tempo scene that mixes a continuing native Warp run with a fixed media track still needs per-bank clock projection.
 
-The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC report contains no stretcher entry or fix branch. Live 12.4 reference measurements are tracked under Readings owed.
+The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC report contains no stretcher entry or fix branch. The manual MSVC run of `f9c8e981c` completed the headless build and passed the JUCE job. The headless tests are running. [GitHub CI](https://github.com/arieladi/Adi/actions/runs/46055965930)
+
+Live 12.4 reference measurements are tracked under Readings owed.
 
 | Item | Change | Proof | State |
 | --- | --- | --- | --- |
@@ -38,6 +40,10 @@ The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, pa
 - The authored-tempo handover adds a driver admission predicate to `src/adi/engine/host.*`, wires the delayed-source readiness check in `src/adi/engine/session.*` and `src/adi/engine/gesture_preview.cpp`, and uses the same page admission code in `src/adi/engine/clip_playback.*`.
 - SC-27's compatibility fix also changes `src/adi/recording_commands.cpp` to use the shared playback tempo map for landing captured loops. Ordinary recording keeps its established default lead-in rule.
 - `seats/stretcher-session-integration` stacks the reserved Session engine, its Windows checker fixes and the stretcher chain. The persisted slot graph now drives `WarpClipPlayer::launchAt` using the real scheduler's launch tick and source Legato phase. The standalone chain can land ahead of the Session schema. [Companion chain](https://github.com/arieladi/Adi/tree/seats/stretcher-session-integration)
+
+## For the director
+
+A. A longer or continuing R3 slot needs the chosen run's exact launch and loop anchors and its first output pages before a tempo boundary can be admitted. A launch replacement can change that anchor while the owner prepares the bank. If the first pages miss the chosen boundary, my recommendation is to keep the current scene and clock and return a readiness result. A later launch request can choose a new boundary.
 
 ## Readings owed
 
