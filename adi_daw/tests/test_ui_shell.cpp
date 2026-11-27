@@ -13097,11 +13097,21 @@ void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, 
         const auto before = plays();
         check(scrub ? root.playFrom(7680) : root.command(AppCommands::ContinuePlay),
               "refused pending Record still starts the requested playback");
+        check(mailbox.desiredPlaying() && plays() == before + 1 && OpJournal(document->store()).headSeq() == head,
+              "a refused capture queues one Play without an undo step");
+        check(root.error() == "Arm a track to record into it.",
+              "the capture refusal is reported while playback is pending");
         block();
-        check(mailbox.playing() && !document->recording() && !document->landingTake() && !record.getToggleState() &&
-                  root.error() == "Arm a track to record into it." && plays() == before + 1 &&
-                  OpJournal(document->store()).headSeq() == head,
-              "playback, its sole journal event and the visible Record refusal agree");
+        check(!document->recording() && !document->landingTake() && !record.getToggleState(),
+              "a refused capture clears the Record button without creating a take");
+        // Scrub can land inside the WAV just recorded. The mailbox waits for its media page.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (mailbox.desiredPlaying() && !mailbox.playing() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            block();
+        }
+        check(mailbox.playing(), scrub ? "refused scrub capture plays once the sample is ready"
+                                       : "refused Continue capture resumes playback");
         check(root.command(AppCommands::Stop), "stop ordinary playback after refusing capture");
         block();
     }
