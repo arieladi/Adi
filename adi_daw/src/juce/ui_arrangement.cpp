@@ -3615,13 +3615,13 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     const auto x = static_cast<int>(geo.x(geo.selection.insert));
                     g.setColour(look::handleChosen);
                     g.fillRect(x, top, 1, bottom - top);
-                    const auto y = static_cast<float>(top);
+                    const auto flagTop = static_cast<float>(top);
                     constexpr float flagHalfWidth = 3.5f;
                     constexpr int flagHeight = 5;
                     const float centre = static_cast<float>(x) + .5f;
                     juce::Path flag;
-                    flag.addTriangle(centre - flagHalfWidth, y, centre + flagHalfWidth, y,
-                                     centre, y + static_cast<float>(std::min(flagHeight, bottom - top)));
+                    flag.addTriangle(centre - flagHalfWidth, flagTop, centre + flagHalfWidth, flagTop,
+                                     centre, flagTop + static_cast<float>(std::min(flagHeight, bottom - top)));
                     g.fillPath(flag);
                 }
             }
