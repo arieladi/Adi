@@ -19,6 +19,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-434 | `basics/test-chain` at `6684a5b50` | Offer all 70 track colour slots using the ADR-0211 fallback palette. Arrangement seat. | The display-free fixture painted and hit-tested all 70 slots, refused spacer clicks, and checked saved colour and Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-437 | `basics/test-chain` at `948ca190e` | New projects open with Main and four source tracks, with no factory Returns. Project and Store seats. | The bootstrap failed before and passed after. Explicit-return, render-intent and stem rollback fixtures and the acceptance project verified both defaults and authored routing. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-443 | `basics/test-chain` at `5a3379305` | Show a magnifier on the Arrangement zoom strips. Arrangement seat. | The peerless fixture checks the installed cursor on the ruler and Overview and keeps the scrub cue. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-438 | `basics/test-chain` at `70270208f` | Cover empty groups and Main-only projects through the document and engine. Safety, control and project seats. | Headless fixtures verified save and reopen, routing cleanup, agent reads, freeze behavior and three exact silent stereo exports. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -127,6 +128,12 @@ The baseline routes vertical dragging to zoom on the beat-time ruler and Overvie
 The default 1440×900 Compact fixture has the beat-time ruler at `(328, 55; 788×29)` and the Overview at `(328, 39; 784×16)`, before and after. The scrub band remains at `(328, 84; 788×24)` with its pointing-hand cursor. The peerless test checks the two zoom surfaces share a custom cursor, while the scrub band, lane canvas and tempo editor retain their individual cues.
 
 The peerless before-and-after replay verified the shared JUCE cursor is distinct from Normal and Pointing Hand. It measured the same vertical drag zoom from 4.625000 to 5.648988 in both runs, with DISPLAY unset.
+
+### SC-438 · Empty groups and Main-only projects
+
+The new regression authors a child clip and an explicit route, deletes the child and other ordinary tracks, and saves and reopens the empty group. It checks cleanup of the clip and route, the group’s implicit route to Main, level-2 agent projection, export and freeze. The ordinary Freeze action gives the expected refusal for a group, and the whole-group engine operation can freeze and unfreeze the empty group safely.
+
+The test then deletes the group, saves and reopens the Main-only song, and checks its graph, agent read and clean Main Freeze refusal. Each of the three read-back WAVs contains 129 stereo frames of digital silence at 48 kHz. The production behavior passed without changes.
 
 ## For the director
 
