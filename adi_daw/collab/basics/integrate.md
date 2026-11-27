@@ -1,4 +1,4 @@
-Landing paused for the 18 Gemini review findings.
+Ready for win: basics/integrate-1 at bd82fa25357c49852a8fe91f11c4ce36347fbed3
 
 # Basics integration
 
@@ -16,6 +16,33 @@ Integration starts from `origin/land/basics-1127i` at `ed0f2aa18795792818fd35817
 | `land/basics-1127i` `956d36454316d2e48635b891a3c679f62f077fd0` | `e0447f13b2f03ce7d1495c171fb3b9087d9c67a7` | Clean merge. Includes `2c59ae005`, which publishes each Warp result once through a release/acquire readiness flag, plus current main and ADR-0261. | All five validators, four affected Warp, clip playback and render suites, and all 18 no-display window suites passed. The old error was reproduced with Clang 19 and libc++ 19 on Linux. The repaired Warp unit passed warnings-as-errors syntax under that toolchain. |
 | `basics/sc-177-track-header-selection` `e359aa9bdfad19538caef57f98334156a0194cce` | `379b5d8b210745bfbc93bc725b993d0fe46b697a` | Resolved two Arrangement conflicts. Kept SC-174 and SC-177 selection context without seeking, and the earlier automation range clipboard and breakpoint values. Updated three peerless tests for the incoming popup-menu seam and added coverage for both automation menus. | Linux Debug JUCE/Pd warnings-as-errors build including the app. All three affected edit/clip suites and all 18 no-display window suites passed. |
 | `basics/sc-175-clip-body-range` `e121a07581f370fc47eeb757778a9ccc3e6ba13d` | `01f5c52847624b4975b5f7e6745e96cf194159d9` | Combined the press-based clip-body anchor and title-only movement with the existing automation range tracking and context selection. Kept both of the Edit owner's exact reference images. | Built every configured target including app and player. All five validators, Win's landing check, 293 non-performance suites, 18 no-display window suites and three acceptance suites passed. Both changed C++ units passed strict Clang 14 syntax and neither timing threshold changed. |
+
+## Gemini pre-landing review
+
+Fixed all 18 findings in the order of the pinned review. [Gemini review](https://github.com/arieladi/Adi/blob/fa5f7a856/adi_daw/collab/gemini.md#L9-L32)
+
+| Item | Change | Fix commit | Verification |
+|---|---|---|---|
+| 1 | JUCE assertion ABI in optimized builds | `55db06b9c5228cdf8622c241c21c3ee2844753a4` | The mismatched shell and test translation units measured 8 and 16 bytes for `juce::Random`. An optimized ASan probe using JUCE’s real constructor reproduced the one-byte write and passed after both sides used the eight-byte layout. Debug retains the assertion logging probe. |
+| 2 | AIFF stream count and direct includes | `72f34086c864880f88eb6d8ab24eaa1dcf362798` | Strict GCC 14 `-m32` reproduced the signed stream-size diagnostic and compiled AIFF after the fix. The existing ELF32 blob suite passed 54 checks under QEMU. |
+| 3 | First Save path aliases on Windows | `44c8121a4cf0fb822974f001f5e9f4bb479c6851` | Canonical parent comparisons protect relocation and the temporary-folder refusal. Added a Windows path-alias case and a nested destination rejection test. The Linux document suite passed 872 checks. A Linux parent-symlink probe confirmed existing behavior because SQLite normalizes that alias. The exact path mismatch still needs native Windows execution. |
+| 4 | Selection-armed MIDI clip move | `8e24bc3a0544f546b58c9a7f47261f49813030ad` | Two checks failed on the exact baseline. The fixed MIDI clip suite passed 613 checks with both explicit and selection-only arming. |
+| 5 | Freeze Tail and recording folder settings | `1e7d244dfefd6a334b9e23c770315203b7658ccd` | The baseline disabled both keys. The new probe passed after enabling both, and the window suite checks editing and Restore Defaults. |
+| 6 | Capture after active automation passes | `b84000ea25a1cc9ade20eb290babfecb9d81c385` | The exact baseline reproduced the state-capture and journal failures. The no-display document regression checks closing UI and native automation through state capture. |
+| 7 | Duplicate Delete Automation Range | `6c7aabfca09f56b15302c539dca9be227dd00709` | The exact baseline menu offered two entries. The peerless fixture verifies one. |
+| 8 | Arrangement track-header context selection | `a96823dd8dc26097220a72d680be16662fb0d2b0` | The baseline retained the time range for a track-header popup. The peerless fixture verifies track actions with the insert mark retained. |
+| 9 | Mixer title clears the automation target | `6f4a521b944a3c2b46094c9e62d54b860723bb52` | Both title gestures reproduced the same-track stale target on the exact baseline. The fixed peerless fixture passed with zero unexpected JUCE assertions. |
+| 10 | Capture plug-in state before track clipboard actions | `1fe4e6bc9754c1b75103bf2846854ce253fa1d4a` | Six checks failed on the exact baseline. The fixed peerless fixture passed 11 checks for Copy, Cut, Duplicate, refusal and Paste. |
+| 11 | Capture plug-in state before Hot-Swap | `a52cf70b82595266333e423bf2098c0ab9600669` | The baseline reproduced stale Undo state and bypassed capture refusal and target revalidation. The no-display document regression checks all three cases. The full window run exposed extra OneShot history on native preset recall, so capture is scoped to hosted plug-ins. The original SC-285 rejection and single-Undo assertions were retained. |
+| 12 | Metronome during automation-only recording | `05b8db8e25ccd6513a945d109074108ce7a664b1` | The baseline had one missing-click failure. The fixed Cue suite passed 257 checks, including stopped, recording and rolling states. |
+| 13 | Overdub membership on the audio callback | `5a0923a731f02a05b72e0ecdf0c2cd840df978b8` | An instrumented GCC debug-iterator build observed 61 mutex calls on the baseline and zero on the fix, with unchanged membership. Native MSVC execution remains pending. |
+| 14 | MIDI history revision for silent and newly armed inputs | `37b7e7a01cd594538077c932ceb2901e9b30507c` | Two exact baseline failures covered silent advancement and newly armed history. All 36 focused checks passed after publication covers the whole update. |
+| 15 | Live Arrangement and Stack density changes | `be9a2f22d311c95788ac56183b7b7ada60fff606` | The baseline left both existing views at the previous density. The fixed peerless fixture passed 13 checks and retained user preferences. |
+| 16 | Return and Main Effects export coverage | `bf156b5f617138320b4ae7246203104fed7c4fea` | Restored the refusal and re-enable checks for individual, All and Selected tracks. A deliberately removed refusal produced three failures in the focused probe. The existing behavior passed. |
+| 17 | Identity-pinned Untitled project cleanup | `06df9ae478888b957f1674226048abf9b142295b` | Four baseline failures reproduced on Linux with an unowned SQLite sidecar. The fixed replacement suite passed all 66 checks. Clean Store close owns journal cleanup, and the discard guard keeps any surviving recovery set together. Native Windows deletion remains pending. |
+| 18 | Floating-point entry on older Apple deployment targets | `bd82fa25357c49852a8fe91f11c4ce36347fbed3` | Clang 14 with libc++ 14 reproduced the missing overloads. The build feature probe selects the fallback when float charconv or deployment availability requires it. The scoped UI sites retain their existing numeric grammar. Existing float-charconv users elsewhere retain their toolchain requirements. |
+
+The final Linux Debug build used GCC 14, JUCE, Pd and warnings as errors. All configured targets built, including app and player. All five validators, Win’s landing-check tests, the non-performance suites, all 18 display-free window suites and all three acceptance suites passed on the reviewed head.
 
 ## Landing verification
 
