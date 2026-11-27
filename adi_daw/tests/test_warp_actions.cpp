@@ -108,6 +108,54 @@ void replaceWarpedSource() {
           db.execAndGet("SELECT count(*) FROM media_files WHERE id=19").getInt()==0,
           "one undo restores the sample and removes the newly imported media row");
 }
+void replaceUnwarpedSourcePastStart() {
+    for(const bool pinned:{false,true}) {
+        Fixture fixture(false);
+        auto& store=*fixture.store;
+        auto& db=store.db();
+        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),("+std::to_string(q)+",60);"
+                "UPDATE clips SET time_base=1,pos_ns=500000000,length_ns=500000000,pos_ticks=NULL,length_ticks=NULL,"
+                "content_offset_ticks="+std::to_string(pinned?q/4:3*q/8)+" WHERE id=7;"
+                "UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=7;");
+        SQLite::Statement clock(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(7,?)"
+                                   " ON CONFLICT(clip_id) DO UPDATE SET content_offset_ns=excluded.content_offset_ns");
+        if(pinned)clock.bind(1,375000000);
+        else clock.bind(1);
+        clock.exec();
+        OpContext context{store,db};
+        const auto before=clip_edit::captureImage(context,7);
+        const auto head=OpJournal(store).headSeq();
+        const auto replacement=[&](const char* name,std::uint32_t frames) {
+            const auto file=fixture.temporary.path()/name;
+            const std::vector<float> samples(frames,.25f);
+            {audio::WavWriter writer(file,48000,1,audio::WavFormat::Float32);writer.write(samples.data(),frames);writer.close();}
+            OpRequest imported;
+            const auto captured=media::prepareImport(store,file,19,1,imported);
+            if(!captured.ok || !captured.audio)throw std::runtime_error("could not stage the replacement WAV");
+            return clip_edit::prepareSetSource(store,7,captured.mediaId,captured.audio->frames,captured.audio->sampleRate,
+                                               std::move(imported));
+        };
+        // At +12 semitones the replacement plays in half its native time.
+        const auto tooShort=replacement("too-short.wav",pinned?36000U:32000U);
+        const auto refused=clip_edit::commitPrepared(store,tooShort);
+        check(!tooShort.ok && tooShort.requests.empty() && !refused.ok && tooShort.error.find("Start")!=std::string::npos,
+              pinned?"a pitched replacement ending exactly at the pinned Start is refused"
+                    :"a pitched replacement ending before the legacy Start at the clip's tempo is refused");
+        check(OpJournal(store).headSeq()==head && db.execAndGet("SELECT count(*) FROM media_files WHERE id=19").getInt()==0 &&
+              clip_edit::captureImage(context,7)==before,
+              "refusing the replacement leaves no new media row, history entry or changed clip");
+        if(refused.ok)continue;
+
+        const auto shortTail=replacement("short-tail.wav",42000U);
+        if(!apply(fixture,shortTail,"accept a replacement that plays some audio after Start"))continue;
+        const auto after=clip_edit::captureImage(context,7);
+        const auto& source=after.at("children").at("audio_clips").front();
+        check(source.at("media_id")==19 && source.at("src_len_frames")==42000 && source.at("transpose_semis")==12 &&
+              after.at("row")==before.at("row") &&
+              after.at("children").at("clip_playback_details")==before.at("children").at("clip_playback_details"),
+              "the shorter audible replacement keeps Start and Pitch and leaves the Arrangement extent intact");
+    }
+}
 std::vector<float> render(Fixture& f) {
     Session session;SessionSpec spec{2,48000,1024};session.graph().setFadeFrames(0);
     if(!session.load(*f.store,{},spec) || !session.problems().empty())throw std::runtime_error("load Warp action audio");
@@ -432,6 +480,7 @@ int main() {
         actionAndHistory();
         replaceClipSource();
         replaceWarpedSource();
+        replaceUnwarpedSourcePastStart();
         editedSourceWindow();
         explicitSourceTempo();
         correctWarpedSourceTempo();
