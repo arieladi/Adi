@@ -103,6 +103,51 @@ bool halfSampleSlice() {
     return passed;
 }
 
+bool collapsedBeatsSlices() {
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{480, 480}};
+    WarpRenderPlan plan;
+    plan.sourceFrames = 480;
+    plan.transients = {100, 101};
+    plan.transientLoop = TransientLoop::Off;
+    const StreamingWarp player(plan, markers, outputRate, 1);
+    const Clock clock{4};
+    Input input{std::vector<float>(plan.sourceFrames, 0.25f), player.sourceRange(25, 26, clock.callbacks()), false};
+    input.pcm[100] = 0.75f;
+    std::array<float, 1> attack{}, body{};
+    const auto attackOk = player.renderFrame(25, {&input, Input::read}, clock.callbacks(), attack);
+    const auto bodyOk = player.renderFrame(26, {&input, Input::read}, clock.callbacks(), body);
+    std::printf("Beats shared boundary: attack %.2f, body %.2f\n", attack[0], body[0]);
+    return attackOk && bodyOk && attack[0] == 0.75f && body[0] == 0.25f && !input.readOutsideRange;
+}
+
+bool unusedPcm() {
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{480, 480}};
+    WarpRenderPlan plan;
+    plan.sourceFrames = 480;
+    plan.grainSeconds = 0.001;
+    plan.fluctuation = 0;
+    constexpr std::int64_t frame = 96;
+    const StreamingWarp beats(plan, markers, outputRate, 1);
+    plan.mode = WarpMode::Texture;
+    const StreamingWarp texture(plan, markers, outputRate, 1);
+    Input input{std::vector<float>(plan.sourceFrames, 0.25f), {frame, frame + 1}, false};
+    std::array<float, 1> output{};
+    const Clock unity{1};
+    const auto beatsOk = beats.renderFrame(frame, {&input, Input::read}, unity.callbacks(), output);
+    const bool unnecessaryBeatsRead = input.readOutsideRange;
+    const bool beatsPassed = beatsOk && output[0] == 0.25f && !unnecessaryBeatsRead;
+
+    // The grain centred at output frame 120 starts at this output frame.
+    // With a 2x clock its first read is source frame 216, with zero Hann gain.
+    input.requested = {0, 216};
+    input.readOutsideRange = false;
+    const Clock doubleSpeed{2};
+    const auto textureOk = texture.renderFrame(frame, {&input, Input::read}, doubleSpeed.callbacks(), output);
+    std::printf("Unneeded sample reads: Beats %s, Texture %s\n", unnecessaryBeatsRead ? "yes" : "no",
+                input.readOutsideRange ? "yes" : "no");
+    return beatsPassed && textureOk && output[0] == 0.25f && !input.readOutsideRange;
+}
+
 bool rePitchRatios() {
     const std::array markers{WarpMarker{0, 0}, WarpMarker{1200, 1200}};
     WarpRenderPlan plan;
@@ -149,6 +194,8 @@ int main() {
         passed &= mixedRate(mode, 32000, 8000, 0);
     }
     passed &= halfSampleSlice();
+    passed &= collapsedBeatsSlices();
+    passed &= unusedPcm();
     passed &= rePitchRatios();
     passed &= rePitchReadAhead();
     return passed ? 0 : 1;

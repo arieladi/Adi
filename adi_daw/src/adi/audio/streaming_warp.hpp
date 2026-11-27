@@ -72,14 +72,14 @@ private:
     };
     struct SliceLocation {
         std::size_t index;
+        std::size_t next;
         double outputFrame;
     };
 
     [[nodiscard]] SliceLocation sliceAtFrame(double frame, WarpStreamClock) const noexcept;
     [[nodiscard]] double sliceStartFrame(std::size_t slice, WarpStreamClock) const noexcept;
     [[nodiscard]] double beatsReadAt(double local, double span) const noexcept;
-    [[nodiscard]] std::pair<double, double> beatsRange(double first, double last, std::size_t slice,
-                                                      WarpStreamClock) const noexcept;
+    [[nodiscard]] std::pair<double, double> beatsRange(double first, double last, SliceLocation) const noexcept;
     [[nodiscard]] double maxFramesPerTick(double firstTick, double lastTick) const noexcept;
     void sampleFrame(WarpStreamInput, double position, std::span<float>) const noexcept;
     void sincFrame(WarpStreamInput, double position, double cutoff, std::span<float>) const noexcept;
