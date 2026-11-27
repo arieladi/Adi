@@ -402,6 +402,10 @@ class SampleEditor final : public juce::Component {
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
     bool command(int id);
+    bool canQuantize() const noexcept;
+    juce::PopupMenu warpContextMenu();
+    bool chooseWarpContextItem(int);
+    std::function<void(juce::Point<int>)> onWarpContextMenu;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
@@ -435,6 +439,7 @@ class SampleEditor final : public juce::Component {
     juce::Rectangle<int> warpMarkerArea() const noexcept;
     const WarpMarker *warpMarkerAt(int x) const noexcept;
     bool deleteWarpMarker();
+    std::shared_ptr<const std::vector<std::uint64_t>> transients();
     juce::Rectangle<int> scrubArea() const noexcept;
     bool playFromSource(std::int64_t tick);
     std::int64_t sourceSecondsToTicks(double seconds) const noexcept;

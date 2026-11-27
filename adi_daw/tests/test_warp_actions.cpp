@@ -237,6 +237,30 @@ void changePlacedWarpMode() {
     check(history.undo().ok && digestProject(*f.store).text==project && history.redo().ok &&
           clip_edit::captureImage(context,11)==expected,"Undo and Redo restore the two algorithms without reanalysis");
 }
+void turnTransientsIntoMarkers() {
+    Fixture f(false);
+    auto options=f.options();
+    options.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,options,48000),"warp the source before promoting transients"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto map=[&] {
+        const auto image=clip_edit::captureImage(context,7);
+        const auto& bytes=image.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+        return audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100).markers;
+    };
+    const auto before=map();
+    const std::array<std::uint64_t,7> onsets{0,11025,11025,22050,44099,44100,99999};
+    const auto promotion=clip_edit::prepareWarpMarkersAtTransients(*f.store,7,onsets,48000);
+    check(promotion.ok && promotion.requests.size()==1,"one captured edit promotes all interior transients");
+    if(!apply(f,promotion,"promote cached file transients without reading PCM"))return;
+    const auto after=map();
+    check(after.size()==5 && after.front()==before.front() && after.back()==before.back() &&
+          after[1]==WarpMarker{11025,q/2} && after[2]==WarpMarker{22050,q} && after[3].sourceFrame==44099,
+          "transients become positions on the existing clock, with endpoints and duplicate frames deduplicated");
+    History history(*f.store);
+    check(history.undo().ok && map()==before && history.redo().ok && map()==after,
+          "promoting transients restores captured Warp map bytes on Undo and Redo");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -266,4 +290,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

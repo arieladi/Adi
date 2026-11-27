@@ -3,6 +3,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/warp.hpp"
+#include <span>
 namespace adi::clip_edit {
 struct WarpOptions {
     bool enabled=true;
@@ -22,4 +23,8 @@ enum class WarpMarkerChange { Add, Move, Remove };
 /// Edit an interior anchor by its source frame; the endpoint anchors stay fixed.
 [[nodiscard]] PreparedEdit prepareWarpMarkerEdit(Store&,std::int64_t clipId,WarpMarkerChange,
     WarpMarker,double referenceRate);
+[[nodiscard]] PreparedEdit prepareQuantizeWarpMarkers(Store&,std::int64_t clipId,std::int64_t gridTicks,
+    double referenceRate);
+[[nodiscard]] PreparedEdit prepareWarpMarkersAtTransients(Store&,std::int64_t clipId,
+    std::span<const std::uint64_t> fileFrames,double referenceRate);
 }

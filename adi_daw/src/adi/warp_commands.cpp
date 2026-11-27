@@ -289,8 +289,10 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
     } catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
-PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
-                                  WarpMarker marker,double referenceRate) {
+namespace {
+template<class Transform>
+PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenceRate,const char* label,
+                                Transform transform) {
     PreparedEdit result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -311,23 +313,12 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
         if(integer(source,"warp_enabled")==0 || !source.at("warp_markers").is_binary())
             throw std::runtime_error("Enable Warp before editing its markers.");
         const auto frames=integer(source,"src_len_frames");
-        if(marker.sourceFrame<=0 || marker.sourceFrame>=frames)
-            throw std::runtime_error("The Warp map's first and last anchors are fixed.");
         const auto& data=source.at("warp_markers").get_binary();
         auto map=audio::readWarpMap(
             std::span<const std::byte>(reinterpret_cast<const std::byte*>(data.data()),data.size()),
             static_cast<std::uint64_t>(frames));
         if(!map || map.futureLayout)throw std::runtime_error("Warp map is unreadable or in a newer format");
-        const auto it=std::ranges::lower_bound(map.markers,marker.sourceFrame,{},&WarpMarker::sourceFrame);
-        const bool exists=it!=map.markers.end() && it->sourceFrame==marker.sourceFrame;
-        if(change==WarpMarkerChange::Add) {
-            if(exists)throw std::runtime_error("There is already a Warp marker on this source frame.");
-            map.markers.insert(it,marker);
-        } else {
-            if(!exists)throw std::runtime_error("The Warp marker no longer exists.");
-            if(change==WarpMarkerChange::Move)it->tick=marker.tick;
-            else map.markers.erase(it);
-        }
+        transform(map.markers,source);
         source["warp_markers"]=capturedWarpMap(map.markers,static_cast<std::uint64_t>(frames));
         engine::TempoMap tempo;
         SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
@@ -347,12 +338,76 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
             op.opType="arranger.splice";
             op.payload={{"id",clipId},{"changes",std::move(changes)}};
             op.targetKind="clip";op.targetId=clipId;
-            op.label=change==WarpMarkerChange::Add?"Add Warp Marker":
-                change==WarpMarkerChange::Move?"Move Warp Marker":"Delete Warp Marker";
+            op.label=label;
             result.requests.push_back(std::move(op));
         }
         result.ok=true;
     } catch(const std::exception& error) {result.error=error.what();}
     return result;
+}
+}
+PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
+                                  WarpMarker marker,double referenceRate) {
+    const auto* label=change==WarpMarkerChange::Add?"Add Warp Marker":
+        change==WarpMarkerChange::Move?"Move Warp Marker":"Delete Warp Marker";
+    return prepareWarpMapEdit(store,clipId,referenceRate,label,[&](auto& markers,const Payload&) {
+        if(marker.sourceFrame<=0 || marker.sourceFrame>=markers.back().sourceFrame)
+            throw std::runtime_error("The Warp map's first and last anchors are fixed.");
+        const auto it=std::ranges::lower_bound(markers,marker.sourceFrame,{},&WarpMarker::sourceFrame);
+        const bool exists=it!=markers.end() && it->sourceFrame==marker.sourceFrame;
+        if(change==WarpMarkerChange::Add) {
+            if(exists)throw std::runtime_error("There is already a Warp marker on this source frame.");
+            markers.insert(it,marker);
+        } else {
+            if(!exists)throw std::runtime_error("The Warp marker no longer exists.");
+            if(change==WarpMarkerChange::Move)it->tick=marker.tick;
+            else markers.erase(it);
+        }
+    });
+}
+PreparedEdit prepareQuantizeWarpMarkers(Store& store,std::int64_t clipId,std::int64_t gridTicks,double referenceRate) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Quantize Audio",[&](auto& markers,const Payload&) {
+        if(gridTicks<=0 || gridTicks>(std::int64_t{1}<<50))
+            throw std::runtime_error("The audio quantize grid is out of range.");
+        for(std::size_t i=1;i+1<markers.size();++i) {
+            const auto tick=markers[i].tick;
+            const auto within=tick%gridTicks;
+            const auto snapped=tick-within+(within>=(gridTicks+1)/2?gridTicks:0);
+            // Keep clips valid when close markers would otherwise land on the same grid point.
+            markers[i].tick=std::clamp(snapped,markers[i-1].tick+1,markers[i+1].tick-1);
+        }
+    });
+}
+PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std::span<const std::uint64_t> fileFrames,
+                                           double referenceRate) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Add Warp Markers at Transients",
+        [&](auto& markers,const Payload& source) {
+            const auto first=static_cast<std::uint64_t>(integer(source,"src_start_frames"));
+            const auto length=static_cast<std::uint64_t>(markers.back().sourceFrame);
+            const bool reverse=integer(source,"reverse")!=0;
+            std::vector<std::int64_t> interior;
+            for(const auto frame:fileFrames) {
+                if(frame<first || frame-first>=length)continue;
+                const auto local=frame-first;
+                interior.push_back(static_cast<std::int64_t>(reverse?length-1-local:local));
+            }
+            std::ranges::sort(interior);
+            std::vector<WarpMarker> expanded;
+            expanded.reserve(markers.size()+interior.size());
+            auto onset=interior.begin();
+            expanded.push_back(markers.front());
+            for(std::size_t i=1;i<markers.size();++i) {
+                const auto& right=markers[i];
+                const auto segment=std::span<const WarpMarker>(markers).subspan(i-1,2);
+                while(onset!=interior.end() && *onset<right.sourceFrame) {
+                    const auto frame=*onset++;
+                    if(frame<=expanded.back().sourceFrame)continue;
+                    const auto tick=mapPosition(segment,frame,&WarpMarker::sourceFrame,&WarpMarker::tick);
+                    if(tick>expanded.back().tick && tick<right.tick)expanded.push_back({frame,tick});
+                }
+                expanded.push_back(right);
+            }
+            markers=std::move(expanded);
+        });
 }
 }

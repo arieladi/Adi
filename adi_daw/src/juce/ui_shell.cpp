@@ -1019,7 +1019,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case Quantize:
         info.addDefaultKeypress('u', cmd);
-        info.setActive(false);
+        info.setActive(active_ && active_->state().clipView && active_->clipView.audio() &&
+                       active_->clipView.sample.hasKeyboardFocus(true) && active_->clipView.sample.canQuantize());
         break;
     case QuantizeSettings:
         info.addDefaultKeypress('u', cmd | shift);

@@ -3218,7 +3218,25 @@ std::int64_t SampleEditor::tickAt(int x, const juce::ModifierKeys &mods) const n
 }
 void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
-    if (!clip || !e.mods.isLeftButtonDown() || e.mods.isPopupMenu())
+    if (!clip)
+        return;
+    if (e.mods.isPopupMenu()) {
+        if (!warpMarkerArea().contains(e.getPosition()) && !waveArea().contains(e.getPosition()))
+            return;
+        focusIfShowing(*this);
+        if (onWarpContextMenu) {
+            onWarpContextMenu(e.getPosition());
+        } else {
+            juce::Component::SafePointer<SampleEditor> safe(this);
+            warpContextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                [safe, clipId = clip->id](int item) {
+                    if (safe && safe->panel.clip() == clipId)
+                        safe->chooseWarpContextItem(item);
+                });
+        }
+        return;
+    }
+    if (!e.mods.isLeftButtonDown())
         return;
     focusIfShowing(*this);
     gestureClip_ = clip->id;
@@ -3354,6 +3372,11 @@ bool SampleEditor::command(int id) {
     case AppCommands::ZoomBack:
         time.back();
         break;
+    case AppCommands::Quantize:
+        if (!canQuantize())
+            return false;
+        return panel.root.commitEdit(clip_edit::prepareQuantizeWarpMarkers(panel.root.editStore(), clip->id,
+            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate()));
     case AppCommands::InsertSilence:
         return true;
     default:
@@ -3362,6 +3385,30 @@ bool SampleEditor::command(int id) {
     panel.root.arrangement.followPaused = true;
     repaint();
     return true;
+}
+bool SampleEditor::canQuantize() const noexcept { return markers_.size() > 2; }
+std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
+    const auto *node = panel.node();
+    auto *waveforms = panel.root.arrangement.waveforms;
+    return waveforms && node && node->audio && node->audio->warpEnabled ? waveforms->transients(*node->audio) : nullptr;
+}
+juce::PopupMenu SampleEditor::warpContextMenu() {
+    juce::PopupMenu menu;
+    menu.addItem(1, "Quantize Audio", canQuantize());
+    const auto onsets = transients();
+    menu.addItem(2, "Add Warp Markers at Transients", onsets && !onsets->empty());
+    return menu;
+}
+bool SampleEditor::chooseWarpContextItem(int item) {
+    if (item == 1)
+        return command(AppCommands::Quantize);
+    if (item == 2) {
+        const auto onsets = transients();
+        if (onsets && !onsets->empty())
+            return panel.root.commitEdit(clip_edit::prepareWarpMarkersAtTransients(panel.root.editStore(), panel.clip(),
+                *onsets, panel.root.editRate()));
+    }
+    return false;
 }
 bool SampleEditor::keyPressed(const juce::KeyPress &key) {
     const auto code = key.getKeyCode();
@@ -3376,6 +3423,8 @@ bool SampleEditor::keyPressed(const juce::KeyPress &key) {
         return command(AppCommands::ZoomBack);
     if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0))
         return command(AppCommands::InsertSilence);
+    if (key == juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0))
+        return command(AppCommands::Quantize);
     return false;
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {

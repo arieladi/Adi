@@ -12695,6 +12695,19 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
                   "dragging a Warp marker changes only its tick");
             sample.time.grid.fixed = true;
             sample.time.grid.fixedQuarters = .25;
+            bool askedForMenu = false;
+            sample.onWarpContextMenu = [&](juce::Point<int> at) { askedForMenu = sample.waveArea().contains(at); };
+            sample.mouseDown(pressAt(sample, sample.waveArea().getCentre().toFloat(), juce::ModifierKeys::rightButtonModifier));
+            const auto warpMenu = sample.warpContextMenu();
+            bool offersQuantize = false, offersTransients = false;
+            for (juce::PopupMenu::MenuItemIterator it(warpMenu); it.next();) {
+                const auto &entry = it.getItem();
+                offersQuantize |= entry.text == "Quantize Audio" && entry.isEnabled;
+                offersTransients |= entry.text == "Add Warp Markers at Transients";
+            }
+            check(askedForMenu && offersQuantize && offersTransients,
+                  "the Sample Editor opens its Warp menu with both audio timing commands");
+            sample.onWarpContextMenu = {};
             const bool quantized = sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
             root.frame();
             const auto snapped = markers();
