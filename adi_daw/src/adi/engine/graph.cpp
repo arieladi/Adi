@@ -1082,6 +1082,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         if (!s.explicitEventSource && s.node != nullptr)
             s.eventSource = {s.node->eventSource(), s.node->eventSourceLifetime()};
         s.hasBypass = s.node != nullptr && s.node->hasBypass();
+        s.bypassStateBlock = 0;
         s.bypassTransitionBlock = 0;
         s.serviceBypassTransition = false;
         if (s.hasBypass)
@@ -1603,7 +1604,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             if (u.node == nullptr || u.events.empty()) continue;
-            if (u.node->eventFlow() != EventFlow::Through) continue;   // Consume or Stop
+            if (u.eventFlowForBlock != EventFlow::Through) continue;   // Consume or Stop
 
             // THE SAME DELAY AS THE AUDIO BESIDE IT. The node's own latency,
             // because its output audio emerges that much later than its input;
@@ -1699,7 +1700,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                     const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
-    const bool bypass = s.hasBypass && s.node->bypassed();
+    const bool bypass = s.bypassForBlock;
     ScopeTap* const inputTap = s.node->inputTap();
     ScopeTap* const outputTap = s.node->outputTap();
     const bool advancing = transport != nullptr && transport->playing;
@@ -1743,7 +1744,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     // once, and came back for a moment when the off woke it. Held notes keep
     // it running and keep re-arming its tail, so the tail is counted from the
     // last release -- where a release tail actually starts.
-    if (hasEvents) s.node->heldNotes().take(s.events, s.node->eventFlow() == EventFlow::Consume);
+    if (hasEvents) s.node->heldNotes().take(s.events, s.eventFlowForBlock == EventFlow::Consume);
     const bool holding = s.node->heldNotes().any();
 
     // An infinite tail is a SEPARATE FLAG, not a sentinel in the counter.
@@ -1757,7 +1758,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     // during a reactivation it answers kInfiniteTail without asking its
     // plug-in (ADR-0089 d4). Asked twice, a finite answer then an infinite
     // one made `tail + reach` below INT64_MAX plus something: an overflow.
-    const std::int64_t declaredTail = s.node->tailSamples();
+    const std::int64_t declaredTail = s.hasBypass ? s.node->tailSamplesAfterBypass(bypass)
+                                                  : s.node->tailSamples();
     const std::int64_t tail = s.hasBypass
         ? (std::max)(declaredTail, static_cast<std::int64_t>(s.dryDelay.reach()))
         : declaredTail;
@@ -1838,7 +1840,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         // Cleared once per silence and the flag does the rest; `process`
         // below clears the flag because the node has written.
         if (!s.zeroed) {
-            s.node->didSuspend();
+            if (s.hasBypass) s.node->didSuspendAfterBypass(bypass);
+            else s.node->didSuspend();
             const auto cap = static_cast<std::size_t>(maxFrames_);
             for (std::size_t c = 0; c < ch; ++c) {
                 // At 64 the double buffer is what consumers read; a float
@@ -2166,14 +2169,20 @@ void Graph::process(const AudioIo& io) noexcept {
     // for forwarded ones.
     for (auto& s : slots_) {
         if (s.node == nullptr) continue;
-        s.node->sourceEvents(s.events, frames);
-        // ADR-0165: automation addressed to this node, beside what it sources.
-        if (EventSource* source = s.eventSource.source) {
-            const auto index = static_cast<std::size_t>(&s - slots_.data());
-            const auto arrival = delayCompensation_ && s.node->wantsDeviceTransport()
-                ? pdcActiveArrival_[index] : 0;
-            source->emitAtInput(s.events, frames, arrival);
+        EventSource* source = s.eventSource.source;
+        const auto index = static_cast<std::size_t>(&s - slots_.data());
+        const auto arrival = delayCompensation_ ? pdcActiveArrival_[index] : 0;
+        if (s.bypassStateBlock != renderBlock_) {
+            s.bypassStateBlock = renderBlock_;
+            s.bypassForBlock = s.hasBypass && s.node->bypassed();
+            if (s.hasBypass && source)
+                s.bypassForBlock = source->selectBypassForBlock(s.bypassForBlock, arrival);
+            s.eventFlowForBlock = s.hasBypass ? s.node->eventFlowAfterBypass(s.bypassForBlock)
+                                             : s.node->eventFlow();
         }
+        s.node->sourceEvents(s.events, frames);
+        if (source)
+            source->emitAtInput(s.events, frames, s.node->wantsDeviceTransport() ? arrival : 0);
         if(!s.events.empty())std::fill_n(s.eventOrigins.data(),s.events.size(),nullptr);
     }
     forwardEvents(frames);
@@ -2208,7 +2217,7 @@ void Graph::process(const AudioIo& io) noexcept {
     for (std::size_t i = 0; i < slots_.size(); ++i) {
         const auto& delivered = slots_[i];
         if (!delivered.node || (static_cast<NodeId>(i) != output_ &&
-            delivered.node->eventFlow() != EventFlow::Consume)) continue;
+            delivered.eventFlowForBlock != EventFlow::Consume)) continue;
         for (const auto &e : delivered.events) {
             if (e.type == EventType::Controller)
                 acknowledgeController(e, true);

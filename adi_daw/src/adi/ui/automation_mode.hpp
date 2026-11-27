@@ -103,6 +103,23 @@ inline AutomationTarget sendTarget(std::int64_t routing, const std::string &name
     t.maximum = 0;
     return t;
 }
+inline AutomationTarget deviceActivatorTarget(const DevicePanelData &d) {
+    AutomationTarget t;
+    t.ownerKind = "device";
+    t.ownerId = d.id;
+    t.paramRef = kDeviceActivatorParamRef;
+    t.paramName = "Device Activator";
+    t.valueDomain = "enum";
+    t.unit.clear();
+    t.minimum = 0;
+    t.maximum = 1;
+    t.footIsSilence = false;
+    t.device = d.name;
+    t.stepped = true;
+    t.stepCount = 2;
+    t.defaultValue = d.enabled ? 1.0 : 0.0;
+    return t;
+}
 // A device's parameter, normalized 0..1, named as the engine binds it; none for one the engine would not
 // play (a CLAP id that is not its hex, an id that is not a number, a parameter declared not automatable).
 inline std::optional<AutomationTarget> deviceTarget(const DevicePanelData &d, const panel::Declared &p) {
@@ -174,11 +191,15 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
                 break;
             }
     if (devices != nullptr)
-        for (const auto &d : *devices)
-            if (d.track == track)
-                for (const auto &p : d.declarations())
-                    if (auto target = deviceTarget(d, p))
-                        out.push_back(std::move(*target));
+        for (const auto &d : *devices) {
+            if (d.track != track)
+                continue;
+            if (d.activatorAvailable)
+                out.push_back(deviceActivatorTarget(d));
+            for (const auto &p : d.declarations())
+                if (auto target = deviceTarget(d, p))
+                    out.push_back(std::move(*target));
+        }
     return out;
 }
 // The envelope Automation Mode shows on a track: its lane for `param` and the arrangement's data of it

@@ -37,7 +37,10 @@ struct DevicePanelData {
     std::int32_t latency = 0;
     std::int32_t sidechainChannels = 0;
     std::string name;
-    bool enabled = true;
+    bool enabled = true; // saved manual switch
+    bool activatorAvailable = false;
+    std::optional<bool> playingEnabled{}; // observed host Activator, when an envelope plays
+    [[nodiscard]] bool enabledNow() const noexcept { return playingEnabled.value_or(enabled); }
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).
     // A MIDI track holding one has an audio mixer, as Live's.
     bool instrument = false;

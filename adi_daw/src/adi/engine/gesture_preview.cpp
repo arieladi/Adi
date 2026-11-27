@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/gesture_preview.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/gesture_capture_detail.hpp"
@@ -309,6 +310,15 @@ std::set<std::int64_t> manualOverrides(const rows::Model& before,const rows::Mod
         const auto* old=findValue(before.routing,route,[](const auto& row){return row.id;});
         const auto* next=findValue(after.routing,route,[](const auto& row){return row.id;});
         if(old && next && old->gainDb!=next->gainDb)excluded.insert(id);
+    }
+    for (const auto& lane : before.automationLanes) {
+        if (!lane.enabled || lane.ownerKind != "device" || lane.paramRef != kDeviceActivatorParamRef ||
+            lane.valueDomain != "enum" || excluded.contains(lane.id) || writing.contains(lane.id))
+            continue;
+        const auto* old = findValue(before.devices, lane.ownerId, [](const auto& row) { return row.id; });
+        const auto* next = findValue(after.devices, lane.ownerId, [](const auto& row) { return row.id; });
+        if (old && next && old->pluginRefId == next->pluginRefId && old->enabled != next->enabled)
+            excluded.insert(lane.id);
     }
     return excluded;
 }

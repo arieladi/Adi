@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/device_param_ref.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
@@ -1117,40 +1118,51 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     }
 }
 
+const device::DeviceInstance* Session::resolvedAutomationDevice(
+    std::int64_t id, const rows::Model& model, bool requireAudioEffect) const noexcept {
+    const auto* entry = entryFor(id);
+    if (!entry || entry->retired || entry->parked || entry->placeholder)
+        return nullptr;
+
+    // A preview can propose different rows with the same numeric device ID.
+    const auto row = std::find_if(model.devices.begin(), model.devices.end(),
+        [id](const auto& candidate) { return candidate.id == id; });
+    if (row == model.devices.end() || !row->pluginRefId || row->pluginRefId != entry->resolvedPluginRef)
+        return nullptr;
+    const auto reference = std::find_if(model.pluginRefs.begin(), model.pluginRefs.end(),
+        [&](const auto& candidate) { return candidate.id == *row->pluginRefId; });
+    if (reference == model.pluginRefs.end() || reference->format != entry->resolvedFormat ||
+        reference->uid != entry->resolvedUid)
+        return nullptr;
+
+    const auto& instance = devices_.deviceAt(entry->hostIndex);
+    if (!instance.loaded())
+        return nullptr;
+    // Switching a note processor off also needs a protocol to release notes
+    // it holds or generated. Until that exists, only audio effects can play
+    // an Activator lane.
+    if (requireAudioEffect && (reference->subtype != "effect" || instance.eventFlow() != EventFlow::Through))
+        return nullptr;
+    return &instance;
+}
+
 std::shared_ptr<DeviceAutomationBinding> Session::bindResolvedDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& suspended,
     const rows::Model& model) {
     return bindDeviceAutomation(std::move(program), suspended, transport_, spec_.sampleRate,
         [&](std::int64_t id, std::uint32_t parameter) -> DeviceParameterSteps {
-            const auto* entry = entryFor(id);
-            if (!entry || entry->retired || entry->parked || entry->placeholder)
-                return {};
-
-            // Structural preview supplies its proposed rows. A numeric ID
-            // alone does not prove its device is still the resolved instance.
-            const auto row = std::find_if(model.devices.begin(), model.devices.end(),
-                [id](const auto& candidate) { return candidate.id == id; });
-            if (row == model.devices.end() || !row->pluginRefId || row->pluginRefId != entry->resolvedPluginRef)
-                return {};
-            const auto reference = std::find_if(model.pluginRefs.begin(), model.pluginRefs.end(),
-                [&](const auto& candidate) { return candidate.id == *row->pluginRefId; });
-            if (reference == model.pluginRefs.end() || reference->format != entry->resolvedFormat ||
-                reference->uid != entry->resolvedUid)
-                return {};
-
-            const auto& instance = devices_.deviceAt(entry->hostIndex);
-            if (!instance.loaded())
-                return {};
-            const auto native = reference->format == "clap" ? device::ClapDevice::paramIdToText(parameter)
-                                                             : std::to_string(parameter);
-            const auto* descriptor = instance.findParam(native);
+            const auto* instance = resolvedAutomationDevice(id, model);
+            if (!instance) return {};
+            const auto native = entryFor(id)->resolvedFormat == "clap" ? device::ClapDevice::paramIdToText(parameter)
+                                                                     : std::to_string(parameter);
+            const auto* descriptor = instance->findParam(native);
             if (!descriptor || descriptor->missing || !descriptor->automatable)
                 return {};
             if (descriptor->shape == device::ParamShape::Switch)
                 return {true, 2};
             const bool stepped = descriptor->shape == device::ParamShape::Menu || descriptor->stepCount > 1;
             return {stepped, descriptor->stepCount};
-        });
+        }, [&](std::int64_t id) { return resolvedAutomationDevice(id, model, true) != nullptr; });
 }
 
 bool Session::rebuild() {
@@ -1812,11 +1824,13 @@ std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::M
     std::map<std::pair<std::int64_t, std::string>, double> v;
     std::set<std::int64_t> clapRefs, clapDevices;
     for (const auto& reference : m.pluginRefs) if (reference.format == "clap") clapRefs.insert(reference.id);
-    for (const auto& item : m.devices)
+    for (const auto& item : m.devices) {
         if (item.pluginRefId && clapRefs.contains(*item.pluginRefId)) clapDevices.insert(item.id);
+        v[{item.id, std::string(kDeviceActivatorParamRef)}] = item.enabled ? 1.0 : 0.0;
+    }
     for (const rows::PluginParam& p : m.pluginParams) {
         const auto ref = automationParamRef(clapDevices.contains(p.deviceId) ? "clap" : "",p.paramId);
-        if (ref) v[{p.deviceId,*ref}] = p.normalized;
+        if (ref && *ref != kDeviceActivatorParamRef) v[{p.deviceId,*ref}] = p.normalized;
     }
     return v;
 }
@@ -1984,7 +1998,9 @@ bool Session::refresh(const Store& store) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
             if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
-            if (knownNonAutomatable(instanceFor(key.first),key.second,true)) continue;
+            if (key.second == kDeviceActivatorParamRef) {
+                if (!deviceActivatorAvailable(key.first)) continue;
+            } else if (knownNonAutomatable(instanceFor(key.first),key.second,true)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
@@ -2365,12 +2381,31 @@ bool Session::reenableAutomation(std::int64_t laneId) {
     return rebuild();
 }
 
+bool Session::deviceActivatorAvailable(std::int64_t deviceId) const noexcept {
+    return resolvedAutomationDevice(deviceId, model_, true) != nullptr;
+}
+
+std::optional<bool> Session::deviceActivatorPlaying(std::int64_t deviceId) const noexcept {
+    if (!deviceAutomation_) return std::nullopt;
+    const auto source = deviceAutomation_->byDevice.find(deviceId);
+    return source == deviceAutomation_->byDevice.end() ? std::nullopt : source->second->playingEnabled();
+}
+
+bool Session::overrideDeviceActivator(std::int64_t deviceId) {
+    if (!deviceAutomation_ || !deviceActivatorAvailable(deviceId)) return true;
+    const auto lane = deviceAutomation_->laneFor.find({deviceId, std::string(kDeviceActivatorParamRef)});
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second) ||
+        writingAutomation_.contains(lane->second)) return true;
+    overridden_.insert(lane->second);
+    return rebuild();
+}
+
 bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
     if (!deviceAutomation_) return true;
     const auto* instance = instanceFor(deviceId);
     if (knownNonAutomatable(instance,paramId,false)) return true;
     const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
-    if (!ref) return true;
+    if (!ref || *ref == kDeviceActivatorParamRef) return true;
     const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
     if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second) ||
         writingAutomation_.contains(lane->second)) return true;

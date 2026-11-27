@@ -72,12 +72,32 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
     }
 }
 
+bool DeviceAutomation::selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept {
+    if (!activator_) return manualBypass;
+    const double fallback = manualBypass ? 0.0 : 1.0;
+    const bool next = heldValueAt(*activator_, transport_.inputSample(0, arrival), fallback) < 0.5;
+    // Values offered while off would be discarded with the DSP call. Chase
+    // the native parameter lanes from the first active input sample instead.
+    if (bypassForBlock_ && !next)
+        for (auto& lane : lanes_)
+            lane.sent = false;
+    bypassForBlock_ = next;
+    static_assert(std::atomic<int>::is_always_lock_free);
+    playingEnabled_.store(next ? 0 : 1, std::memory_order_relaxed);
+    return next;
+}
+
+std::optional<bool> DeviceAutomation::playingEnabled() const noexcept {
+    const int value = playingEnabled_.load(std::memory_order_relaxed);
+    return value < 0 ? std::nullopt : std::optional<bool>{value != 0};
+}
+
 void DeviceAutomation::emit(EventList& out, std::int32_t frames) noexcept {
     emitAtInput(out, frames, 0);
 }
 
 void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept {
-    if (lanes_.empty() || frames <= 0) return;
+    if (bypassForBlock_ || lanes_.empty() || frames <= 0) return;
     if (!transport_.playing()) {
         // Parked: one position, the same every block, so a lane sends once and
         // then again only when the playhead is moved (the chase on locate).
@@ -99,7 +119,8 @@ void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int
 std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<const AutomationProgram> program,
                                                               const std::set<std::int64_t>& overridden,
                                                               const Transport& transport, double sampleRate,
-                                                              const DeviceAutomationSteps& steps) {
+                                                              const DeviceAutomationSteps& steps,
+                                                              const DeviceActivatorAvailable& activatorAvailable) {
     auto out = std::make_shared<DeviceAutomationBinding>();
     out->program = std::move(program);
     if (!out->program) return out;
@@ -107,19 +128,25 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
     for (const AutomationLaneProgram& lane : out->program->lanes()) {
         if (lane.ownerKind != "device") continue;
         const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
-        if (lane.valueDomain != "normalized") {
+        const bool activator = lane.paramRef == kDeviceActivatorParamRef;
+        if (activator && lane.valueDomain != "enum") {
+            out->problems.push_back(who + ": Device Activator requires an enum lane; not played");
+            continue;
+        }
+        if (!activator && lane.valueDomain != "normalized") {
             out->problems.push_back(who + ": a device lane must be normalized (ADR-0124's wire unit); a '" +
                                     lane.valueDomain + "' value needs the plug-in's own mapping; not played");
             continue;
         }
         std::uint32_t paramId = 0;
-        if (!parseDeviceParamRef(lane.paramRef, paramId)) {
+        if (!activator && !parseDeviceParamRef(lane.paramRef, paramId)) {
             out->problems.push_back(who + ": param_ref '" + lane.paramRef +
                                     "' is not a plug-in parameter id; not played");
             continue;
         }
         if (!lane.enabled) continue;
-        const std::string canonical = std::to_string(paramId);
+        const std::string canonical = activator ? std::string(kDeviceActivatorParamRef)
+                                                : std::to_string(paramId);
         const auto key = std::make_pair(lane.ownerId, canonical);
         if (out->laneFor.count(key)) {
             out->problems.push_back(who + ": a second lane for devices#" + std::to_string(lane.ownerId) +
@@ -128,9 +155,14 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
         }
         out->laneFor[key] = lane.laneId;
         if (overridden.count(lane.laneId)) continue;   // ADR-0162: known, not bound
+        if (activator && (!activatorAvailable || !activatorAvailable(lane.ownerId))) {
+            out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
+            continue;
+        }
         auto& device = out->byDevice[lane.ownerId];
         if (!device) device = std::make_unique<DeviceAutomation>(transport, interval);
-        device->add(lane, paramId, steps ? steps(lane.ownerId, paramId) : DeviceParameterSteps{});
+        if (activator) device->addActivator(lane);
+        else device->add(lane, paramId, steps ? steps(lane.ownerId, paramId) : DeviceParameterSteps{});
     }
     return out;
 }

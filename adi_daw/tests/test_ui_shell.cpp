@@ -16260,6 +16260,127 @@ void steppedDeviceAutomation(AppCommands &commands, const std::filesystem::path 
     check(add("8", .59, 2. / 3., true), "typed chooser values write the nearest of four normalized states with Hold");
 }
 
+void automationDeviceActivator(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    constexpr std::int64_t track = 1, device = 3;
+    const auto project = dir / "automation-device-activator.adi";
+    const auto loader = test::knobsLoader("7", "vst3");
+    {
+        auto doc = ProjectDocument::open(project, true, loader, error);
+        check(doc != nullptr, "a project for Device Activator automation");
+        if (!doc)
+            return;
+        doc->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(3,'vst3','") +
+                               test::kKnobsUid + "','UI knobs','effect')");
+        OpRequest chain, insert;
+        chain.opType = "chain.create";
+        chain.payload = {{"id", 3}, {"track", track}, {"ord", 0}, {"name", "Devices"}};
+        insert.opType = "device.insert";
+        insert.payload = {{"id", device}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+        const bool inserted = doc->ops().submit({std::move(chain), std::move(insert)}).ok && doc->synchronise();
+        check(inserted, "a loaded VST3 audio effect exposes its host switch");
+        if (!inserted)
+            return;
+
+        AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                              doc->sessionState(), "automation-device-activator");
+        root.afterEdit = [&] { doc->synchronise(); };
+        root.devices.publication = [&] { return doc->parameterFeed().current(); };
+        root.devices.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
+        root.reenableLane = [&](std::int64_t lane) { return doc->reenableAutomation(lane); };
+        int catalogReads = 0;
+        root.automationParameters = [&](std::int64_t id) { ++catalogReads; return doc->automationParameters(id); };
+        const auto choices = root.automationChoices(track);
+        const auto choice = std::find_if(choices.begin(), choices.end(), [](const auto &t) {
+            return t.ownerId == device && t.paramRef == kDeviceActivatorParamRef;
+        });
+        const auto findDevice = [id = device](const auto &publication) -> const DevicePanelData * {
+            if (!publication) return nullptr;
+            const auto found = std::find_if(publication->begin(), publication->end(),
+                [id](const auto &data) { return data.id == id; });
+            return found == publication->end() ? nullptr : &*found;
+        };
+        doc->tick(1);
+        const auto initialPublication = doc->parameterFeed().current();
+        const auto *data = findDevice(initialPublication);
+        check(choice != choices.end() && choice->paramName == "Device Activator" && choice->stepped &&
+              choice->valueDomain == "enum" && data && data->parameters().empty(),
+              "the stepped Device Activator is in the chooser without subscribing to plug-in values");
+        if (choice == choices.end() || !data)
+            return;
+
+        std::shared_ptr<const ParameterPublication> playedPublication;
+        DevicePanelView panel(root.devices, *data);
+        const auto initialMenu = panel.commands();
+        const auto item = [](const juce::PopupMenu &menu, const juce::String &name) -> const juce::PopupMenu::Item * {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == name)
+                    return &it.getItem();
+            return nullptr;
+        };
+        const auto *show = item(initialMenu, "Show Automation");
+        const auto reads = catalogReads;
+        if (show && show->action)
+            show->action();
+        check(root.automationMode() && root.automationTarget(track) == *choice && catalogReads == reads,
+              "the device menu shows this concrete envelope without fetching parameter descriptors");
+        if (root.automationTarget(track) != *choice)
+            return;
+        check(root.addAutomationPoint(track, 0, 0.0) && root.addAutomationLane(track, *choice),
+              "Device Activator can author Off and be promoted to an additional lane");
+
+        doc->prepare(48000, 64);
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 64;
+        doc->process(io);
+        check(doc->session().deviceActivatorPlaying(device) == false,
+              "the parked audio callback follows the authored Off point");
+        // The first tick can publish a replacement graph after learning the device latency.
+        doc->tick(2);
+        doc->process(io);
+        doc->tick(3);
+        playedPublication = doc->parameterFeed().current();
+        data = findDevice(playedPublication);
+        check(data && data->enabled && data->playingEnabled == false,
+              "the publication carries Off playback beside the saved On switch");
+        if (!data)
+            return;
+        panel.present(*data);
+        check(!panel.enabled.getToggleState(), "the device panel shows played Off");
+        panel.enabled.setToggleState(true, juce::dontSendNotification);
+        panel.enabled.onClick();
+        const auto overridden = envelopeOf(*root.current(), *choice);
+        check(overridden.lane && overridden.lane->overridden,
+              "clicking played Off overrides automation even though On was already saved");
+
+        const auto overrideMenu = panel.commands();
+        const auto *reenable = item(overrideMenu, "Re-Enable Automation");
+        check(reenable && reenable->isEnabled && reenable->action, "the device menu can re-enable its Activator envelope");
+        if (reenable && reenable->isEnabled && reenable->action)
+            reenable->action();
+        check(!doc->session().automationOverridden(), "the device menu returns the Activator to automation");
+    }
+    {
+        auto doc = ProjectDocument::open(project, false, loader, error);
+        check(doc != nullptr, "reopen the chosen Device Activator lane");
+        if (!doc)
+            return;
+        AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                              doc->sessionState(), "automation-device-activator");
+        root.devices.publication = [&] { return doc->parameterFeed().current(); };
+        doc->tick(1);
+        root.setAutomationMode(true);
+        const auto &lanes = root.additionalAutomationLanes(track);
+        check(root.automationTarget(track).paramRef == kDeviceActivatorParamRef &&
+              lanes.size() == 1 && lanes.front().target.paramRef == kDeviceActivatorParamRef &&
+              lanes.front().target.stepped,
+              "the saved choice and added Device Activator lane reopen without a parameter catalog");
+    }
+}
 void automationAdditionalLanes(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-additional-lanes.adi", true, {}, error);
@@ -24498,6 +24619,7 @@ int main(int argc, char **argv) {
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("steppedDeviceAutomation", [&] { steppedDeviceAutomation(commands, temp.path()); });
+    trace("automationDeviceActivator", [&] { automationDeviceActivator(commands, temp.path()); });
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
     trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
     trace("automationBreakpointModifiers", [&] { automationBreakpointModifiers(commands, temp.path()); });

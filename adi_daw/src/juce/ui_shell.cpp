@@ -3899,6 +3899,12 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
             for (const auto &device : *published) {
                 if (device.id != chosen.ownerId || device.track != track)
                     continue;
+                if (chosen.paramRef == kDeviceActivatorParamRef) {
+                    auto target = deviceActivatorTarget(device);
+                    if (device.activatorAvailable || envelopeOf(*current, target).lane)
+                        return target;
+                    break;
+                }
                 const auto cached = automationTargets_.find(track);
                 if (device.metadata || !device.declarations().empty()) {
                     for (const auto &parameter : device.declarations()) {
@@ -4033,6 +4039,8 @@ std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
         if (dev == devices->end())
             return std::nullopt;
         track = dev->track;
+        if (lane.paramRef == kDeviceActivatorParamRef)
+            return std::pair{track, deviceActivatorTarget(*dev)};
         const auto findParameter = [&](const DevicePanelData &description) -> std::optional<AutomationTarget> {
             for (const auto &parameter : description.declarations())
                 if (auto candidate = deviceTarget(description, parameter); candidate &&
@@ -4304,6 +4312,11 @@ std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::devic
     for (const auto &entry : *published) {
         if (entry.id != device || !current->findTrack(entry.track))
             continue;
+        if (parameter == kDeviceActivatorParamRef) {
+            if (entry.activatorAvailable)
+                return std::pair{entry.track, deviceActivatorTarget(entry)};
+            break;
+        }
         if (entry.metadata || !entry.declarations().empty() || !automationParameters)
             return find(entry);
         if (const auto declarations = automationParameters(entry.track))
@@ -4344,6 +4357,8 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
     if (const auto published = devices.publication ? devices.publication() : nullptr)
         for (const auto &d : *published)
             if (d.id == target.ownerId) {
+                if (target.paramRef == kDeviceActivatorParamRef)
+                    return d.enabled ? 1.0 : 0.0;
                 for (const auto &r : d.parameters())
                     if (r.id == target.nativeParamId)
                         return r.playing;

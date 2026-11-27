@@ -15,7 +15,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
+                        d.name, d.enabled, d.activatorAvailable, d.playingEnabled,
+                        d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
                         d.processingIssue, d.loadIssue,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
@@ -81,6 +82,8 @@ std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation
             data.track = track;
             data.id = row.id;
             data.name = row.name;
+            data.enabled = row.enabled;
+            data.activatorAvailable = session.deviceActivatorAvailable(row.id);
             data.format = entry->resolvedFormat;
             const bool available = instance->loaded();
             const auto count = instance->paramCount();
@@ -133,6 +136,9 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
             const bool resolved = entry && !entry->retired && !entry->parked &&
                                   entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
             data.available = resolved && instance && instance->loaded();
+            data.activatorAvailable = session.deviceActivatorAvailable(row.id);
+            if (data.activatorAvailable)
+                data.playingEnabled = session.deviceActivatorPlaying(row.id);
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
             if (data.available)

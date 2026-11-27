@@ -1352,8 +1352,9 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
-    if(op=="device.remove" || op=="device.setEnabled") {
-        const auto id=r.payload.value("id",std::int64_t{});
+    const bool activator = op == "device.setEnabled";
+    const auto id = activator || op == "device.remove" ? r.payload.value("id", std::int64_t{}) : 0;
+    if (id != 0) {
         const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
             [id](const auto& device){return device.id==id;});
         const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
@@ -1363,8 +1364,15 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
+    // The requested played value can equal the saved switch. In that case the
+    // durable operation succeeds but refresh sees no manual baseline change.
+    const bool followed = !activator || session_.overrideDeviceActivator(id);
+    if (activator)
+        followOverrides();
     feed_.publish(session_, realisedGeneration_);
-    return true;
+    if (!followed)
+        error_ = session_.error();
+    return followed;
 }
 bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     auto copy = readDeviceCopy(*store_, id);

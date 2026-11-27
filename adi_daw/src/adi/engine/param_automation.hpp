@@ -35,6 +35,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -52,6 +53,7 @@ struct DeviceParameterSteps {
     std::int32_t count = 0;
 };
 using DeviceAutomationSteps = std::function<DeviceParameterSteps(std::int64_t device, std::uint32_t parameter)>;
+using DeviceActivatorAvailable = std::function<bool(std::int64_t device)>;
 
 /// One device's lanes, emitted as ParamValue events addressed to its node.
 class DeviceAutomation final : public EventSource {
@@ -61,6 +63,10 @@ public:
 
     /// Message thread, before the graph that plays it is published.
     void add(const AutomationLaneProgram& lane, std::uint32_t paramId, DeviceParameterSteps steps = {});
+    void addActivator(const AutomationLaneProgram& lane) noexcept { activator_ = &lane; }
+    bool selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept override;
+    /// Audio observation for this binding. Empty until a graph renders it.
+    [[nodiscard]] std::optional<bool> playingEnabled() const noexcept;
 
     void emit(EventList& out, std::int32_t frames) noexcept override;
     void emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept override;
@@ -84,6 +90,9 @@ private:
     const Transport& transport_;
     std::int32_t interval_;
     std::vector<Lane> lanes_;
+    const AutomationLaneProgram* activator_ = nullptr;
+    bool bypassForBlock_ = false;
+    std::atomic<int> playingEnabled_{-1};
     std::atomic<std::uint64_t> dropped_{0};
 };
 
@@ -105,6 +114,7 @@ struct DeviceAutomationBinding {
 /// Its result is copied into the binding and it is never used by audio.
 [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden,
-    const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {});
+    const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {},
+    const DeviceActivatorAvailable& activatorAvailable = {});
 
 }  // namespace adi::engine
