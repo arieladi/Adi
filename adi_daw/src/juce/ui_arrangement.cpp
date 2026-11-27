@@ -17,6 +17,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include <limits>
+#include <map>
 #include <span>
 namespace adi::ui {
 namespace {
@@ -1730,7 +1731,6 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.
     {
-        root.demandAutomationDevices(true); // the parameters of a device the Device View does not show
         const auto shown = root.automationTarget(track);
         juce::PopupMenu show;
         std::map<std::string, juce::PopupMenu> byDevice;
@@ -1745,9 +1745,6 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
         for (const auto &key : order)
             show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),
                             byDevice[key]);
-        // The choices are read: with Automation Mode off, this window keeps no demand on the feed.
-        if (!root.automationMode())
-            root.demandAutomationDevices(false);
         menu.addSeparator();
         menu.addSubMenu("Show Automation", show, show.getNumItems() > 0);
     }
@@ -2675,6 +2672,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     const auto rows = geo.rows(view.reader());
     const auto midiTakes = view.root.liveMidiTakes ? view.root.liveMidiTakes() : std::span<const LiveMidiTake>{};
     const auto foot = geo.footStart(rows);
+    const int footY = foot < rows.size() ? geo.footTop(view.reader()) : getHeight();
+    const auto paintBounds = g.getClipBounds();
     int y = -geo.scrollY;
     auto lanes = [&](int top, int height, bool selected) {
         paintLanes(g, geo, getWidth(), top, height, selected);
@@ -2696,7 +2695,6 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto row = rows[i];
         // The returns and Main at the foot, over the tracks scrolled under it.
         if (i == foot) {
-            const int footY = geo.footTop(view.reader());
             dropArea(y, footY);
             y = footY;
             g.setColour(look::band);
@@ -2708,6 +2706,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const int h = geo.heightFor(t->id);
         if (h == 0)
             continue; // left out by the project view, or folded away: no room
+        const int visibleBottom = i < foot ? std::min(footY, paintBounds.getBottom()) : paintBounds.getBottom();
+        if (y >= visibleBottom || y + h <= paintBounds.getY()) {
+            y += h;
+            continue;
+        }
         // Every track the selection covers is lit, as Live lights a selection across tracks.
         const bool selected = geo.inSelection(view.reader(), t->id);
         lanes(y, h - 2, selected);
@@ -2896,7 +2899,6 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         dropArea(y, getHeight());
     // The insert marker, a thin blue line in the selected track.
     if (geo.selection.start == geo.selection.end && geo.selection.marked) {
-        const int footY = geo.footTop(view.reader());
         int top = -geo.scrollY;
         for (const auto row : rows) {
             if (row.position == foot)
@@ -3109,7 +3111,10 @@ bool ArrangementCanvas::beginAutomationStroke(const juce::MouseEvent &e) {
             selection.pickedClips.clear();
             view.changed();
         }
-        auto &stroke = automationStroke_.emplace();
+        // Assigned, not emplace(): Clang 14 refuses a nested struct with default member initializers
+        // there (CWG 1397), inside the class that declares it.
+        automationStroke_ = AutomationStroke{};
+        auto &stroke = *automationStroke_;
         stroke.track = body.track->id;
         stroke.generation = view.root.committedGeneration();
         stroke.target = std::move(target);
@@ -3555,34 +3560,9 @@ void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake 
 }
 void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                    float right, float top, float bottom) const {
-    if (bottom - top < 4.f || right <= left)
+    if (bottom - top < 4.f || right <= left || !clip.midiPreview || clip.midiPreview->bars.empty())
         return;
-    // Read once for each generation of the document: any edit moves it, and the next paint reads again.
-    const auto generation = view.root.generation();
-    if (clipNotes_.size() > 4096)
-        clipNotes_.clear();
-    auto &held = clipNotes_[clip.id];
-    if (held.readAt != generation + 1) {
-        held = {};
-        held.readAt = generation + 1;
-        if (auto read = engine::readClipDetails(view.root.editStore(), clip.id); read.clip && read.clip->kind == "midi") {
-            const auto &d = *read.clip;
-            held.midi = true;
-            held.startMarker = d.startMarkerTicks;
-            if (d.loopEnabled && d.loopLengthTicks && *d.loopLengthTicks > 0) {
-                held.loopStart = d.loopStartTicks;
-                held.loopLength = *d.loopLengthTicks;
-            }
-            held.bars.reserve(d.notes.size());
-            for (const auto &n : d.notes) {
-                held.bars.push_back({n.startTicks, n.durationTicks, static_cast<int>(n.key), n.active});
-                held.low = std::min(held.low, static_cast<int>(n.key));
-                held.high = std::max(held.high, static_cast<int>(n.key));
-            }
-        }
-    }
-    if (!held.midi || held.bars.empty())
-        return;
+    const auto &held = *clip.midiPreview;
     const auto &geo = view.geometry;
     // The keys in use over the body's height, never fewer than an octave so one note is not a slab.
     const int keys = std::max(12, held.high - held.low + 1);
@@ -3591,7 +3571,7 @@ void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &cl
     const float pitch = inner / static_cast<float>(keys);
     const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
     const std::int64_t clipEnd = pos + clip.lengthTicks;
-    auto bar = [&](std::int64_t source, const ClipNotes::Bar &n) {
+    auto bar = [&](std::int64_t source, const engine::MidiClipPreview::Bar &n) {
         const auto start = pos + (source - held.startMarker);
         const auto end = std::min(start + n.duration, clipEnd);
         if (end <= pos || start >= clipEnd)
