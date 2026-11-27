@@ -93,9 +93,11 @@ struct AudioRecordingSpec;
 struct LaunchBlock;
 struct LaunchClipGainEdit;
 struct LaunchRequest;
+struct LaunchSceneTransition;
 struct LaunchStatusHeader;
 struct LaunchTrackStatus;
 struct LaunchTransition;
+struct PreparedSceneLaunch;
 class MidiInputCapture;
 struct RecordingTarget;
 
@@ -361,6 +363,11 @@ public:
             launchObserverContext_ = context;
             launchObserver_ = observe;
         }
+        void observeSceneLaunches(void* context,
+            void (*observe)(void*, const LaunchSceneTransition&, std::int64_t) noexcept) noexcept {
+            sceneObserverContext_ = context;
+            sceneObserver_ = observe;
+        }
         bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
@@ -371,6 +378,8 @@ public:
         GraphHost::RenderBlock graph_;
         void* launchObserverContext_ = nullptr;
         void (*launchObserver_)(void*, const LaunchTransition&, std::int64_t) noexcept = nullptr;
+        void* sceneObserverContext_ = nullptr;
+        void (*sceneObserver_)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
 
@@ -384,6 +393,10 @@ public:
     /// future. Up to 4096 boundaries are retained in memory, never in the file.
     bool setExternalTempoAt(const Store&, std::optional<double> bpm, std::int64_t tick,
                             const std::function<bool()>& publishGuard = {});
+    /// Owner-only committed launch at a future Global grid boundary. Stages
+    /// the scene and its private meter/tempo on one prepared graph. The
+    /// committed boundary cannot be canceled by an ordinary launch gesture.
+    bool prepareSceneLaunch(const Store&, std::int64_t scene, std::int64_t boundaryTick, float velocity = 1.0f);
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     /// Configure device-owned workers as part of the same graph preparation as the device format.
@@ -567,6 +580,7 @@ private:
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
+    [[nodiscard]] const std::vector<rows::TimeSignature>& playbackSignatures(const rows::Model&) const noexcept;
     // Every node a track's events reach, which is MIDI's controller route identity.
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
@@ -622,6 +636,7 @@ private:
         ClipPlayback::Readiness sourceReadiness;
         std::shared_ptr<InputMonitors> inputMonitors;
         std::shared_ptr<LaunchAudioRuntime> launchAudio;
+        std::shared_ptr<const PreparedSceneLaunch> preparedScene;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
         SessionSpec spec;
@@ -650,6 +665,9 @@ private:
     std::uint16_t storedLaunchChannels_ = 0;
     std::int32_t storedLaunchBlockFrames_ = 0;
     std::vector<rows::TempoEvent> performedTempo_; // owner-only performance history
+    std::vector<rows::TimeSignature> performedSignatures_;
+    std::shared_ptr<const PreparedSceneLaunch> preparedScene_;
+    std::uint64_t preparedSceneToken_ = 0;
     std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;

@@ -227,6 +227,189 @@ void followAndStaleRequests() {
           "disabling follow while queued leaves only the natural clip stop");
 }
 
+struct SceneOutput : Output {
+    std::array<LaunchSceneTransition,16> events{};
+    std::size_t sceneCount = 0;
+    bool clipActions = true;
+
+    LaunchSink sink() noexcept {
+        auto result = Output::sink();
+        result.context = static_cast<Output*>(this);
+        result.scenePerformed = [](void* context, const LaunchSceneTransition& edge) noexcept {
+            auto& out = *static_cast<SceneOutput*>(static_cast<Output*>(context));
+            if (out.sceneCount == out.events.size()) { out.overflow = true; return; }
+            out.events[out.sceneCount++] = edge;
+        };
+        result.followOnSceneLaunch = [](void*, const LaunchSceneTransition& edge) noexcept
+            -> std::optional<LaunchFollowRequest> {
+            if (edge.scene != 1) return std::nullopt;
+            return LaunchFollowRequest{request(LaunchRequestKind::ScenePress,0,2),edge.tick + quarter};
+        };
+        result.followOnLaunch = [](void* context, const LaunchTransition& edge) noexcept
+            -> std::optional<LaunchFollowRequest> {
+            const auto& out = *static_cast<const SceneOutput*>(static_cast<Output*>(context));
+            if (!out.clipActions) return std::nullopt;
+            if (edge.newClip == 11) return LaunchFollowRequest{
+                request(LaunchRequestKind::SlotPress,1,3,13),edge.tick + quarter};
+            if (edge.newClip == 21) return LaunchFollowRequest{
+                request(LaunchRequestKind::SlotPress,2,3,23),edge.tick + quarter / 2};
+            if (edge.newClip == 31) return LaunchFollowRequest{
+                request(LaunchRequestKind::SlotPress,3,3,33),edge.tick + quarter};
+            return std::nullopt;
+        };
+        return result;
+    }
+
+    [[nodiscard]] bool has(std::int64_t track, std::int64_t clip, std::int64_t sample) const noexcept {
+        const auto delivered = std::span(edges).first(edgeCount);
+        return std::ranges::any_of(delivered,[&](const auto& edge) {
+            return edge.track == track && edge.newClip == clip && edge.sample == sample;
+        });
+    }
+};
+
+void sceneFollowPrecedence() {
+    constexpr int rate = 48000;
+    constexpr std::array<std::int64_t,3> sceneTracks{1,2,3};
+    constexpr std::array<std::int64_t,4> sceneIds{1,2,3,4};
+    auto manual = slot(1,4,14);
+    manual.quantization = LaunchQuantization::Quarter;
+    auto noStop = slot(3,2,0);
+    noStop.hasStop = false;
+    const std::array slots{slot(1,1,11),slot(1,2,12),slot(1,3,13),manual,
+        slot(2,1,21),slot(2,3,23),slot(3,1,31),noStop,slot(3,3,33)};
+    const LaunchView view{sceneTracks,slots,sceneIds};
+    const auto first = request(LaunchRequestKind::ScenePress,0,1);
+    Launcher withinOneBlock(3);
+    SceneOutput single;
+    check(post(withinOneBlock,first),"post Scene Follow source");
+    const auto before = allocations;
+    countAllocations = true;
+    const auto rendered = withinOneBlock.process(block(0,24001,rate),view,single.sink());
+    countAllocations = false;
+    check(rendered && allocations == before && single.sceneCount == 2 && single.events[0].scene == 1 &&
+          single.events[0].sample == 0 && single.events[0].ordinal == 1 && !single.events[0].fromFollow &&
+          single.events[1].scene == 2 && single.events[1].sample == 24000 && single.events[1].tick == quarter &&
+          single.events[1].offset == 24000 && single.events[1].ordinal == 2 && single.events[1].fromFollow,
+          "scene action is one performed boundary inside the same large callback without allocations");
+    check(single.has(2,23,12000) && single.has(1,12,24000) && single.has(2,0,24000) &&
+          single.has(3,33,24000) && !single.has(1,13,24000),
+          "earlier clip follow runs and scene follow wins its due ties, honouring Stop buttons");
+
+    Launcher withUser(3);
+    SceneOutput competing;
+    check(post(withUser,first) && withUser.process(block(0,1,rate),view,competing.sink()) &&
+          post(withUser,request(LaunchRequestKind::SlotPress,1,4,14)) &&
+          withUser.process(block(1,24001,rate),view,competing.sink()),"run a coincident manually quantized launch");
+    check(competing.has(1,14,24000) && !competing.has(1,12,24000) && !competing.has(1,13,24000) &&
+          competing.has(2,0,24000) && competing.events[1].scene == 2,
+          "manual launch wins that track once while the scene performs on every other affected track");
+
+    Launcher withDisable(3);
+    SceneOutput disabled;
+    auto off = block(1,24000,rate);
+    off.followActionsEnabled = false;
+    check(post(withDisable,first) && withDisable.process(block(0,1,rate),view,disabled.sink()) &&
+          withDisable.process(off,view,disabled.sink()) &&
+          withDisable.process(block(24001,1,rate),view,disabled.sink()) &&
+          disabled.sceneCount == 1 && disabled.edgeCount == 3,
+          "global disable clears existing scene and clip timers; re-enable does not revive expired actions");
+    check(post(withDisable,first) && withDisable.process(block(24002,24001,rate,LaunchQuantization::None),
+          view,disabled.sink()) && disabled.sceneCount == 3 && disabled.events[2].scene == 2 &&
+          disabled.events[2].sample == 48002,"fresh launched scenes can follow again after re-enable");
+
+    Launcher prepared(3);
+    SceneOutput timing;
+    auto exact = block(1,24001,rate);
+    exact.preparedScene = PreparedSceneLaunch{3,quarter,1.0f,1};
+    check(post(prepared,first) && prepared.process(block(0,1,rate),view,timing.sink()) &&
+          prepared.process(exact,view,timing.sink()) && timing.sceneCount == 2 && timing.events[1].scene == 3 &&
+          timing.events[1].sample == 24000 && !timing.events[1].fromFollow && timing.has(1,13,24000),
+          "an admitted clock-bearing scene performs at its exact tick and overrides a coincident scene follow");
+    exact.sample = 24002;
+    exact.frames = 1;
+    check(prepared.process(exact,view,timing.sink()) && timing.sceneCount == 2,
+          "the same pinned clock-bearing scene token is delivered once");
+    Launcher held(3);
+    SceneOutput protectedScene;
+    auto armed = block(0,1,rate);
+    armed.preparedScene = PreparedSceneLaunch{3,quarter,1.0f,12};
+    const std::array conflicting{request(LaunchRequestKind::CancelScene,0,3),
+        request(LaunchRequestKind::ScenePress,0,4),request(LaunchRequestKind::StopAll,0),
+        request(LaunchRequestKind::BackToArrangement,0)};
+    check(held.process(armed,view,protectedScene.sink()) && held.post(conflicting) &&
+          held.process(block(1,24000,rate),view,protectedScene.sink()) &&
+          protectedScene.sceneCount == 1 && protectedScene.events[0].preparedToken == 12 &&
+          protectedScene.has(1,13,24000),"the driver keeps the timed scene and its followers paired to its published clock");
+
+    Launcher empty(0);
+    SceneOutput emptyOutput;
+    auto emptySink = emptyOutput.sink();
+    emptySink.followOnSceneLaunch = [](void*, const LaunchSceneTransition& edge) noexcept
+        -> std::optional<LaunchFollowRequest> {
+        return LaunchFollowRequest{request(LaunchRequestKind::ScenePress,0,edge.scene == 1 ? 2 : 1),edge.tick + 1};
+    };
+    check(post(empty,first) && empty.process(block(0,6,rate),{{},{},sceneIds},emptySink) &&
+          emptyOutput.sceneCount == 6 && emptyOutput.edgeCount == 0 &&
+          emptyOutput.events[5].sample == 5 && emptyOutput.events[5].ordinal == 6,
+          "an empty scene still performs and rounded chained scenes settle at most once per sample");
+}
+
+void followQuantizationAndStableTargets() {
+    constexpr int rate = 48000;
+    const auto onlyTrack = std::span(tracks).first(1);
+    const auto first = request(LaunchRequestKind::ScenePress,0,1);
+    constexpr std::array rates{
+        std::optional<LaunchQuantization>{}, std::optional{LaunchQuantization::None},
+        std::optional{LaunchQuantization::Eighth}};
+    for (const auto quantization : rates) {
+        std::array slots{slot(1,1,11),slot(1,3,13)};
+        slots[1].quantization = quantization;
+        const LaunchView view{onlyTrack,slots,scenes};
+        Launcher launcher(1);
+        SceneOutput out;
+        auto sink = out.sink();
+        sink.followOnSceneLaunch = nullptr;
+        sink.followOnLaunch = [](void*, const LaunchTransition& edge) noexcept
+            -> std::optional<LaunchFollowRequest> {
+            if (edge.newClip != 11) return std::nullopt;
+            return LaunchFollowRequest{request(LaunchRequestKind::SlotPress,1,3,13),quarter / 3};
+        };
+        const auto expected = quantization == LaunchQuantization::Eighth ? 12000 : 8000;
+        check(post(launcher,first) && launcher.process(block(0,12001,rate),view,sink) &&
+              out.has(1,13,expected), "clip follow bypasses None/Global but honours explicit eighth quantization");
+    }
+
+    constexpr std::array<std::int64_t,4> sceneIds{1,2,3,4};
+    const std::array original{slot(1,1,11),slot(1,2,12)};
+    const LaunchView before{onlyTrack,original,sceneIds};
+    const std::array moved{slot(1,1,11),slot(1,2,99),slot(1,4,12)};
+    Launcher move(1);
+    SceneOutput changed;
+    changed.clipActions = false;
+    check(post(move,first) && move.process(block(0,1,rate),before,changed.sink()) &&
+          move.process(block(1,24000,rate),{onlyTrack,moved,sceneIds},changed.sink()) &&
+          changed.sceneCount == 2 && changed.events[1].scene == 2 && changed.edgeCount == 1,
+          "a moved scene follower never plays a replacement occupant or finds the old clip elsewhere");
+
+    Launcher erased(1);
+    SceneOutput gone;
+    gone.clipActions = false;
+    constexpr std::array<std::int64_t,3> remainingScenes{1,3,4};
+    check(post(erased,first) && erased.process(block(0,1,rate),before,gone.sink()) &&
+          erased.process(block(1,24000,rate),{onlyTrack,std::span(original).first(1),remainingScenes},gone.sink()) &&
+          gone.sceneCount == 1 && gone.edgeCount == 1,"deleting a queued scene cancels its master and all followers");
+
+    Launcher canceled(1);
+    SceneOutput cancel;
+    const std::array withClip{slot(1,1,11),slot(1,2,12),slot(1,3,13)};
+    const LaunchView clipView{onlyTrack,withClip,sceneIds};
+    check(post(canceled,first) && canceled.process(block(0,1,rate),clipView,cancel.sink()) &&
+          post(canceled,request(LaunchRequestKind::CancelScene,0,2)) &&
+          canceled.process(block(1,24000,rate),clipView,cancel.sink()) && cancel.sceneCount == 1 &&
+          cancel.has(1,13,24000),"canceling a pending scene preserves the due independent clip follow");
+}
+
 void roundedLoopAndWrap() {
     constexpr int rate = 44100;
     std::array slots{slot(1,1,11),slot(1,2,12)};
@@ -629,12 +812,104 @@ void repeatedDeadlinesDontDrift() {
               "one thousand fractional-frame Repeat deadlines remain sample- and tick-exact");
     }
 }
+
+void captureRetargetWaitsForTheRenderedView() {
+    constexpr int rate = 48000;
+    constexpr std::array oldScenes{std::int64_t{1}};
+    constexpr std::array newScenes{std::int64_t{1},std::int64_t{4}};
+    auto first = slot(1,1,11);
+    first.startTick = quarter/4;
+    first.loopStartTick = quarter/2;
+    first.loopEndTick = quarter;
+    first.fade = true;
+    first.velocityAmount = 0.5f;
+    const auto second = slot(2,1,21);
+    const std::array original{first,second};
+    auto firstCopy = first;
+    auto secondCopy = second;
+    firstCopy.scene = secondCopy.scene = 4;
+    firstCopy.clip = 14;
+    secondCopy.clip = 24;
+    const std::array captured{first,firstCopy,second,secondCopy};
+    const LaunchView oldView{tracks,original,oldScenes};
+    const LaunchView newView{tracks,captured,newScenes};
+    const auto copyRequest = [](int track, int clip, int oldClip, std::uint64_t run) {
+        auto transfer = request(LaunchRequestKind::RetargetRunning,track,4,clip);
+        transfer.expectedClip = oldClip;
+        transfer.expectedRun = run;
+        return transfer;
+    };
+    const auto initial = request(LaunchRequestKind::ScenePress,0,1);
+
+    Launcher launcher(2);
+    Output output;
+    check(post(launcher,initial),"launch original scene before capture retarget");
+    launcher.process(block(0,137,rate,LaunchQuantization::None),oldView,output.sink());
+    const std::array transfer{copyRequest(1,14,11,output.edges[0].newRun),
+                              copyRequest(2,24,21,output.edges[1].newRun)};
+    check(launcher.post(transfer),"post one exact two-track scene transfer");
+    const auto priorAllocations = allocations;
+    countAllocations = true;
+    launcher.process(block(137,257,rate,LaunchQuantization::None),oldView,output.sink());
+    const auto oldFirst = output.sections[(output.sectionCount-2) % output.sections.size()];
+    const auto oldSecond = output.sections[(output.sectionCount-1) % output.sections.size()];
+    launcher.process(block(394,512,rate,LaunchQuantization::None),newView,output.sink());
+    countAllocations = false;
+    const auto copiedFirst = output.sections[(output.sectionCount-2) % output.sections.size()];
+    const auto copiedSecond = output.sections[(output.sectionCount-1) % output.sections.size()];
+    check(oldFirst.clip == 11 && oldSecond.clip == 21 && oldFirst.framesSinceStart == 137,
+          "an in-flight pass of the old prepared view plays the original clips without interruption");
+    check(copiedFirst.clip == 14 && copiedSecond.clip == 24 && copiedFirst.run == oldFirst.run &&
+          copiedSecond.run == oldSecond.run && copiedFirst.sourceTick == oldFirst.endSourceTick &&
+          copiedSecond.sourceTick == oldSecond.endSourceTick && copiedFirst.framesSinceStart == 394 &&
+          copiedFirst.framesSinceSourceAnchor == 394 && copiedFirst.sourceAnchorTick == first.startTick,
+          "first new view binds both copied IDs to the exact existing clock and ownership");
+    check(output.edgeCount == 2 && allocations == priorAllocations,
+          "the transfer emits no run edges or fade and allocates zero callback storage");
+    std::array<LaunchTrackStatus,2> status{};
+    LaunchStatusHeader header;
+    check(launcher.readStatus(status,header) && status[0].scene == 4 && status[1].scene == 4 &&
+          status[0].run == transfer[0].expectedRun && status[1].run == transfer[1].expectedRun,
+          "published status names the copied scene for both stable runs");
+
+    Launcher stale(2);
+    Output staleOutput;
+    check(post(stale,initial),"launch stale scene capture fixture");
+    stale.process(block(0,137,rate,LaunchQuantization::None),oldView,staleOutput.sink());
+    check(stale.post(transfer),"stage a transfer while old scene is pinned");
+    stale.process(block(137,257,rate,LaunchQuantization::None),oldView,staleOutput.sink());
+    check(post(stale,request(LaunchRequestKind::SlotPress,1,1,11)),"replace one old run before new view arrives");
+    stale.process(block(394,512,rate,LaunchQuantization::None),oldView,staleOutput.sink());
+    stale.process(block(906,512,rate,LaunchQuantization::None),newView,staleOutput.sink());
+    check(stale.readStatus(status,header) && staleOutput.edgeCount == 3 && status[0].clip == 11 &&
+          status[0].run != transfer[0].expectedRun && status[1].clip == 21,
+          "a fresh run of the same old clip defeats the whole now-stale transfer batch");
+
+    Launcher mismatched(2);
+    Output wrong;
+    check(post(mismatched,initial),"launch wrong-copy validation fixture");
+    mismatched.process(block(0,137,rate,LaunchQuantization::None),oldView,wrong.sink());
+    auto wrongCopies = captured;
+    wrongCopies[3].startTick += quarter;
+    const LaunchView wrongView{tracks,wrongCopies,newScenes};
+    check(mismatched.post(transfer),"try a transfer to a mismatched source window");
+    mismatched.process(block(137,257,rate,LaunchQuantization::None),wrongView,wrong.sink());
+    check(mismatched.readStatus(status,header) && wrong.edgeCount == 2 && status[0].clip == 11 && status[1].clip == 21,
+          "one invalid destination window prevents every transfer without a playback edge");
+    const std::array repeatedTrack{transfer.front(),transfer.front()};
+    check(mismatched.post(repeatedTrack),"try transferring one track twice");
+    mismatched.process(block(394,512,rate,LaunchQuantization::None),newView,wrong.sink());
+    check(mismatched.readStatus(status,header) && status[0].clip == 11 && status[1].clip == 21,
+          "duplicates cannot partially retarget a scene");
+}
 }
 
 int main() {
     scenesAtSampleBoundaries();
     modesAndHandover();
     followAndStaleRequests();
+    sceneFollowPrecedence();
+    followQuantizationAndStableTargets();
     roundedLoopAndWrap();
     cancelSceneAndStopAll();
     statusTapAndStoppedAdmission();
@@ -645,6 +920,7 @@ int main() {
     longRunAndOutgoingAnchor();
     arrangementBetweenLaunches();
     repeatedDeadlinesDontDrift();
+    captureRetargetWaitsForTheRenderedView();
     if (!failed) std::printf("Session launcher: %d checks, zero scene sample error across 28 rate/block combinations and zero callback allocations\n",checks);
     return failed != 0;
 }

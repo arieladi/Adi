@@ -26,6 +26,13 @@ struct LaunchView {
     std::span<const std::int64_t> scenes; // ascending positive IDs
 };
 
+struct PreparedSceneLaunch {
+    std::int64_t scene = 0, tick = 0;
+    float velocity = 1.0f;
+    // The producer keeps a stable increasing token across repeated reads.
+    std::uint64_t token = 0;
+};
+
 /// One contiguous range on the rendered generation's transport clock. Split
 /// at a transport wrap. The clock maps non-negative samples and ticks, with
 /// the same projection that placed the Arrangement clips.
@@ -42,6 +49,7 @@ struct LaunchBlock {
     std::uint64_t followPass = 0;
     // Set only for a natural Arrangement wrap, never for an explicit locate.
     bool arrangementWrap = false;
+    std::optional<PreparedSceneLaunch> preparedScene{};
 };
 
 struct LaunchSection {
@@ -74,6 +82,14 @@ struct LaunchTransition {
 struct LaunchFollowRequest {
     LaunchRequest request;
     std::int64_t tick = 0;
+};
+
+struct LaunchSceneTransition {
+    std::int64_t scene = 0, sample = 0, tick = 0;
+    std::int32_t offset = 0;
+    std::uint64_t ordinal = 0;
+    bool fromFollow = false;
+    std::uint64_t preparedToken = 0;
 };
 
 enum class LaunchTrackSource : std::uint8_t { Arrangement, Session, Silence };
@@ -111,6 +127,8 @@ struct LaunchSink {
     // another launch replaces it. Its tick must follow the launch tick.
     std::optional<LaunchFollowRequest> (*followOnLaunch)(void*, const LaunchTransition&) noexcept = nullptr;
     void (*trackStatus)(void*, const LaunchTrackStatus&) noexcept = nullptr;
+    void (*scenePerformed)(void*, const LaunchSceneTransition&) noexcept = nullptr;
+    std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
@@ -139,6 +157,7 @@ public:
 
 private:
     enum class Action : std::uint8_t { Start, Stop, Arrangement };
+    enum class RetargetResult : std::uint8_t { Rejected, PendingView, Applied };
     struct Pending {
         Action action;
         std::int64_t tick, scene = 0, clip = 0;
@@ -162,19 +181,33 @@ private:
     struct Track {
         std::int64_t id = 0;
         Run run;
-        std::optional<Pending> user, back, gateStop, follow, repeat;
+        std::optional<Pending> user, back, gateStop, follow, repeat, sceneFollow, dueScene;
         std::uint64_t followOrdinal = 0;
+    };
+    struct ScenePending {
+        std::int64_t scene, tick, earliestSample = 0;
+        LaunchQuantization grid = LaunchQuantization::None;
+        std::uint64_t admission = 0;
+        std::uint64_t preparedToken = 0;
     };
 
     [[nodiscard]] Track* findTrack(std::int64_t) noexcept;
     void adopt(const LaunchBlock&, const LaunchView&, LaunchSink) noexcept;
     [[nodiscard]] bool valid(const LaunchRequest&, const LaunchBlock&, const LaunchView&) noexcept;
+    [[nodiscard]] RetargetResult retarget(std::span<const LaunchRequest>, const LaunchBlock&,
+                                          const LaunchView&) noexcept;
     void drain(const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
     void applyUser(const LaunchRequest&, const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
+    void armUserScene(ScenePending, float velocity, const LaunchBlock&, const LaunchView&,
+                      std::int64_t now) noexcept;
     void applyFollow(const LaunchFollowRequest&, const LaunchBlock&, const LaunchView&,
-                     std::int64_t) noexcept;
-    void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t) noexcept;
-    void transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
+                     std::int64_t, std::int64_t earliestSample = 0) noexcept;
+    void cancelSceneFollow() noexcept;
+    void settleScene(const ScenePending&, bool fromFollow, bool rolling, const LaunchBlock&,
+                     const LaunchView&, LaunchSink, std::int32_t offset) noexcept;
+    void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t,
+                std::int32_t begin, std::int32_t end) noexcept;
+    bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;
@@ -193,11 +226,18 @@ private:
 
     LaunchGestureQueue gestures_;
     std::array<LaunchRequest, LaunchGestureQueue::capacity> batch_{};
+    // The owner may enqueue the captured scene while the driver is finishing
+    // an older pinned graph. Keep one literal transfer until that scene exists.
+    std::array<LaunchRequest, LaunchGestureQueue::capacity> deferredRetarget_{};
+    std::size_t deferredRetargetSize_ = 0;
     std::vector<Track> tracks_, scratch_;
     Track* activeTracks_ = nullptr;
     Track* spareTracks_ = nullptr;
     std::size_t trackCount_ = 0;
     std::uint64_t incarnation_ = 0, runSerial_ = 0, followPass_ = 0, admission_ = 0;
+    std::optional<ScenePending> userScene_, followScene_;
+    std::uint64_t sceneOrdinal_ = 0;
+    std::uint64_t lastPreparedScene_ = 0;
     std::int64_t nextSample_ = -1, nextTick_ = 0;
     std::array<StatusBuffer,statusBufferCount> statusBuffers_;
     std::atomic<std::uint32_t> publishedStatus_{statusBufferCount};

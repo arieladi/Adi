@@ -1851,6 +1851,8 @@ add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
 target_sources(adi_core PRIVATE
     src/adi/recording_slot_commands.cpp
     src/adi/session_ops.cpp
+    src/adi/session_performance_capture.cpp
+    src/adi/engine/capture_scene.cpp
     src/adi/engine/clip_update_rate.cpp
     src/adi/engine/launch_ops.cpp
     src/adi/engine/launch_store.cpp
@@ -1883,6 +1885,18 @@ add_test(NAME adi_session_ops_tests COMMAND adi_session_ops_tests)
 add_executable(adi_session_launch_persisted_tests tests/test_session_launch_persisted.cpp)
 target_link_libraries(adi_session_launch_persisted_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_launch_persisted_tests COMMAND adi_session_launch_persisted_tests)
+add_executable(adi_session_performance_graph_tests tests/test_session_performance_graph.cpp)
+target_link_libraries(adi_session_performance_graph_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_graph_tests COMMAND adi_session_performance_graph_tests)
+add_executable(adi_capture_scene_tests tests/test_capture_scene.cpp)
+target_link_libraries(adi_capture_scene_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_capture_scene_tests COMMAND adi_capture_scene_tests)
+add_executable(adi_session_performance_capture_tests tests/test_session_performance_capture.cpp)
+target_link_libraries(adi_session_performance_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_capture_tests COMMAND adi_session_performance_capture_tests)
+add_executable(adi_session_scene_clock_tests tests/test_session_scene_clock.cpp)
+target_link_libraries(adi_session_scene_clock_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
     target_link_options(adi_launch_audio_tests PRIVATE

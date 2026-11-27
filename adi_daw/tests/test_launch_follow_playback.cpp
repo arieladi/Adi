@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <utility>
 
 namespace {
 using namespace adi::engine;
@@ -260,6 +261,59 @@ void preparedPlayer() {
     check(split.error == LaunchCaptureError::None && split.spans == expected,
           "32-frame callbacks keep the same linked follow boundaries and ordered capture");
 }
+
+void queuedSceneSurvivesReorder() {
+    std::array<launch::Scene, 3> order{};
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i].id = (static_cast<std::int64_t>(i) + 1) * 10;
+        order[i].order = static_cast<std::int64_t>(i);
+    }
+    order[0].follow.enabled = true;
+    order[0].follow.durationTicks = 9;
+    order[0].follow.first.action = FollowAction::Next;
+    const auto initial = launch::LaunchData::prepare({}, {}, order, {}, {});
+    std::swap(order[1].order, order[2].order);
+    const auto reordered = launch::LaunchData::prepare({}, {}, order, {}, {});
+    check(initial && reordered, "follow preparation accepts the same literal scenes in two orders");
+    if (!initial || !reordered)
+        return;
+    const LaunchFollowPlayer firstPlayer(*initial), reorderedPlayer(*reordered);
+    struct Context {
+        const LaunchFollowPlayer* player = nullptr;
+        std::array<LaunchSceneTransition, 4> edges{};
+        std::size_t count = 0;
+    } context{&firstPlayer};
+    constexpr std::array<std::int64_t, 3> ids{10, 20, 30};
+    const LaunchView view{{}, {}, ids};
+    LaunchSink sink{};
+    sink.context = &context;
+    sink.scenePerformed = [](void* user, const LaunchSceneTransition& edge) noexcept {
+        auto& state = *static_cast<Context*>(user);
+        if (state.count < state.edges.size()) state.edges[state.count++] = edge;
+    };
+    sink.followOnSceneLaunch = [](void* user, const LaunchSceneTransition& edge) noexcept {
+        const auto& state = *static_cast<const Context*>(user);
+        return state.player->followOnSceneLaunch(edge.scene, edge.tick, edge.ordinal, 7, true, 8);
+    };
+    LaunchBlock block{};
+    block.incarnation = 7;
+    block.global = adi::LaunchQuantization::None;
+    block.tickAtSample = block.sampleAtTick = [](const void*, std::int64_t value) noexcept { return value; };
+    Launcher launcher(0);
+    const LaunchRequest start{LaunchRequestKind::ScenePress, {}, 10, {}, 7};
+    block.frames = 1;
+    check(launcher.post({&start, 1}) && launcher.process(block, view, sink), "arm scene Next on the original order");
+    context.player = &reorderedPlayer;
+    block.sample = 1;
+    block.frames = 20;
+    check(launcher.process(block, view, sink) && context.count == 2 &&
+          context.edges[1].scene == 20 && context.edges[1].sample == 9,
+          "queued scene Next uses its literal identity after switching to a reordered graph");
+    block.sample = 21;
+    check(launcher.post({&start, 1}) && launcher.process(block, view, sink) &&
+          context.count == 4 && context.edges[3].scene == 30 && context.edges[3].sample == 30,
+          "a newly performed scene uses the reordered Next target");
+}
 } // namespace
 
 int main() {
@@ -267,6 +321,7 @@ int main() {
     targets();
     chance();
     preparedPlayer();
+    queuedSceneSurvivesReorder();
     std::printf("%d follow playback checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

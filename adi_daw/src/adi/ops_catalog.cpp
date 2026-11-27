@@ -18,6 +18,7 @@
 #include "adi/device_key_routes.hpp"
 #include "adi/engine/launch_ops.hpp"
 #include "adi/session_ops.hpp"
+#include "adi/session_performance_capture.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
@@ -1133,6 +1134,13 @@ bool transportLaunchQuantization(OpContext& c, const Payload& p, std::string& er
     SQLite::Statement set(c.db,
         "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.launchQuantization',?)");
     set.bind(1, code.dump());
+    set.exec();
+    return true;
+}
+bool sessionFollowActions(OpContext& c, const Payload& p, std::string&) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) "
+                                "VALUES('session.followActionsEnabled',?)");
+    set.bind(1, p.at("on").dump());
     set.exec();
     return true;
 }
@@ -2423,6 +2431,8 @@ const OpDescriptor kHandWritten[] = {
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
     {"transport.setLaunchQuantization", "Set Global Quantization", Scope::Transport, EngineImpact::Snapshot,
      kFTransportQuantization, false, true, transportLaunchQuantization, nullptr, ""},
+    {"session.setFollowActionsEnabled", "Enable Session Follow Actions", Scope::Session, EngineImpact::Snapshot,
+     kFTransportFlag, false, true, sessionFollowActions, nullptr, ""},
     {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
      kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
@@ -2461,6 +2471,8 @@ std::span<const OpDescriptor> builtinOps() {
         v.insert(v.end(), launch.begin(), launch.end());
         const auto session = sessionEditOps();
         v.insert(v.end(), session.begin(), session.end());
+        const auto performance = sessionPerformanceOps();
+        v.insert(v.end(), performance.begin(), performance.end());
         const auto automation = automation::descriptors();
         v.insert(v.end(), automation.begin(), automation.end());
         const auto lanes = automation::laneDescriptors();

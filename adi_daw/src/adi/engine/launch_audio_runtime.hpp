@@ -13,6 +13,12 @@ struct NodeIo;
 class Transport;
 class LaunchFollowPlayer;
 
+struct LaunchSceneClock {
+    std::int64_t scene = 0;
+    std::optional<double> bpm;
+    std::optional<rows::TimeSignature> signature;
+};
+
 /// An immutable resident audio project prepared at one session tempo. Track,
 /// scene and slot ordering follow LaunchView. Each occupied slot has its PCM.
 class LaunchAudioProject {
@@ -22,7 +28,7 @@ public:
                        std::vector<LaunchAudioClip> clips, LaunchQuantization global = LaunchQuantization::Bar,
                        std::shared_ptr<const LaunchFollowPlayer> follow = {},
                        std::uint64_t followSeed = 0, std::vector<std::int64_t> midiTracks = {},
-                       bool stored = false);
+                       bool stored = false, std::vector<LaunchSceneClock> sceneClocks = {});
     LaunchAudioProject(const LaunchAudioProject&) = delete;
     LaunchAudioProject& operator=(const LaunchAudioProject&) = delete;
 
@@ -37,6 +43,7 @@ public:
     [[nodiscard]] std::uint64_t followSeed() const noexcept { return followSeed_; }
     [[nodiscard]] bool isMidiTrack(std::int64_t track) const noexcept;
     [[nodiscard]] bool stored() const noexcept { return stored_; }
+    [[nodiscard]] const LaunchSceneClock* sceneClock(std::int64_t) const noexcept;
 
 private:
     std::uint64_t incarnation_, pcmRevision_;
@@ -49,6 +56,7 @@ private:
     std::uint64_t followSeed_;
     std::vector<std::int64_t> midiTracks_;
     bool stored_;
+    std::vector<LaunchSceneClock> sceneClocks_;
 };
 
 struct LaunchRenderSlice {
@@ -72,6 +80,9 @@ public:
         tailCount_ = 0;
         nextTimelineSample_ = -1;
     }
+    [[nodiscard]] std::uint64_t performedSceneToken() const noexcept {
+        return performedScene_.load(std::memory_order_acquire);
+    }
 
 private:
     friend class LaunchAudioRuntime;
@@ -88,6 +99,8 @@ private:
     bool wasPlaying_ = false;
     std::int64_t nextTimelineSample_ = -1, loopBegin_ = -1, loopEnd_ = -1;
     std::uint64_t transportRevision_ = 0;
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    std::atomic<std::uint64_t> performedScene_{0};
 };
 
 /// Scratch belonging to one published graph. The driver fills the current
@@ -103,10 +116,14 @@ public:
     }
     void begin(LaunchAudioDriver&, LaunchBlock, const Transport&, std::int64_t streamSample,
                void* observerContext,
-               void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept) noexcept;
+               void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
+               void* sceneObserverContext = nullptr,
+               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr) noexcept;
     void finish() noexcept { active_ = false; }
     void overlay(std::int64_t track, const NodeIo&) const noexcept;
     [[nodiscard]] std::uint64_t incarnation() const noexcept { return project_->incarnation(); }
+    [[nodiscard]] const LaunchSceneClock* sceneClock(std::int64_t id) const noexcept { return project_->sceneClock(id); }
+    [[nodiscard]] bool hasScene(std::int64_t scene) const noexcept;
     [[nodiscard]] bool postGainEdit(LaunchAudioDriver&, const LaunchClipGainEdit&) const noexcept;
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;

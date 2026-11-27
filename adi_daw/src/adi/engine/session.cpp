@@ -929,9 +929,12 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         }
         project = storedLaunchProject_;
     }
+    const bool timedScenePending = preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken();
     if (!project || !project->supportsRate(timing.sampleRate) || (!project->stored() &&
-        std::ranges::any_of(timing.tempo.events, [&](const TempoEvent& event) { return event.bpm != project->bpm(); })))
+        std::ranges::any_of(timing.tempo.events, [&](const TempoEvent& event) { return event.bpm != project->bpm(); }))) {
+        if (timedScenePending) throw std::runtime_error("a committed Session scene needs its prepared project");
         return;
+    }
     std::vector<std::int64_t> tracks;
     for (const auto id : project->view().tracks) {
         const auto track = std::find_if(model.tracks.begin(), model.tracks.end(),
@@ -944,6 +947,11 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             tracks.push_back(id);
     }
     timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames);
+    if (timedScenePending) {
+        if (!timing.launchAudio->hasScene(preparedScene_->scene))
+            throw std::runtime_error("a committed Session scene must remain available until launch");
+        timing.preparedScene = preparedScene_;
+    }
     for (const auto id : tracks) {
         const bool createAudioSource = !project->isMidiTrack(id) ||
             std::ranges::any_of(project->view().slots, [&](const LaunchSlot& slot) {
@@ -1197,7 +1205,7 @@ bool Session::rebuild() {
     timing->setBraceSamples(loopSample(transportSettings_.loopStartTicks), loopSample(transportSettings_.loopEndTicks));
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
-    timing->signatures = model_.signatures;
+    timing->signatures = playbackSignatures(model_);
     timing->prepareDeviceClockChanges();
     std::shared_ptr<ClipPlayback> nextClips;
     std::shared_ptr<MidiClips> nextMidi;
@@ -1373,6 +1381,10 @@ std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) c
             throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
     }
     return result;
+}
+
+const std::vector<rows::TimeSignature>& Session::playbackSignatures(const rows::Model& model) const noexcept {
+    return performedSignatures_.empty() ? model.signatures : performedSignatures_;
 }
 bool Session::readPlayback(const Store &store) {
     try {
@@ -2160,6 +2172,77 @@ bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, 
     return ok;
 }
 
+bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::int64_t tick, float velocity) {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    const auto* clock = timing && timing->launchAudio ? timing->launchAudio->sceneClock(scene) : nullptr;
+    if (!loaded_ || !launchAudioDriver_ || !clock || !appliedSource_.sameConnection(adi::appliedSource(store)) ||
+        tick < 0 || !std::isfinite(velocity) || velocity < 0.0f || velocity > 1.0f ||
+        gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "a committed launch needs a loaded scene clock, project, boundary and normalized velocity";
+        return false;
+    }
+    if (preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken()) {
+        error_ = "wait for the committed Session scene boundary";
+        return false;
+    }
+    const auto grid = timing->settings.launchQuantization.value_or(timing->launchAudio->globalQuantization());
+    const auto sample = timing->sampleForTick(tick);
+    DriverClock origin;
+    if (launch_quantize::nextGridTick(tick, grid, timing->signatures) != tick ||
+        sample == std::numeric_limits<std::int64_t>::max() || !readDriverClock(origin) ||
+        origin.sample > sample || (timing->settings.hasLoop && timing->settings.loopEnabled)) {
+        error_ = "the Session scene boundary must be reachable on the current Global grid without an Arrangement loop";
+        return false;
+    }
+    const auto bpm = clock->bpm;
+    auto signature = clock->signature;
+    if (bpm && tick > 0 && std::ranges::any_of(timing->tempo.events, [tick, bpm](const TempoEvent& e) {
+            return e.posTicks < tick && e.bpm != *bpm;
+        }) &&
+        std::ranges::any_of(model_.slotClips, [](const rows::Clip& clip) { return clip.kind == "audio" && !clip.muted; })) {
+        error_ = "launch a tempo-changing scene with audio slots at the start of the fixed prepared clock";
+        return false;
+    }
+    // The candidate already carries this exact scene action. Publication is
+    // the only admission point: a full audit queue cannot orphan the clock.
+    const auto maxFrames = timing->spec.maxFrames;
+    const std::function<bool()> guard = [&] {
+        DriverClock latest;
+        return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
+            (!latest.playing || sample - latest.sample >= maxFrames);
+    };
+    const auto previousScene = preparedScene_;
+    auto previousSignatures = performedSignatures_;
+    auto staged = std::make_shared<const PreparedSceneLaunch>(PreparedSceneLaunch{scene,tick,velocity,++preparedSceneToken_});
+    if (signature) {
+        auto meters = timing->signatures;
+        std::erase_if(meters, [&](const rows::TimeSignature& event) { return event.posTicks >= tick; });
+        signature->posTicks = tick;
+        meters.push_back(*signature);
+        performedSignatures_ = std::move(meters);
+    }
+    preparedScene_ = std::move(staged);
+    bool admitted = false;
+    if (bpm)
+        admitted = setExternalTempoAt(store, bpm, tick, guard);
+    else {
+        primeExternalAt_ = tick;
+        primeExternalFollowDriver_ = true;
+        externalPublishGuard_ = &guard;
+        try { admitted = refresh(store); }
+        catch (const std::exception& failure) { error_ = failure.what(); }
+        catch (...) { error_ = "Session scene meter preparation failed"; }
+        externalPublishGuard_ = nullptr;
+        primeExternalAt_.reset();
+    }
+    if (!admitted) {
+        performedSignatures_ = std::move(previousSignatures);
+        preparedScene_ = previousScene;
+    }
+    return admitted;
+}
+
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
 
 bool Session::setAudioMonitorInputs(std::span<const RecordingTarget> targets) {
@@ -2575,6 +2658,8 @@ LaunchBlock Session::TimingView::launchBlock(std::int32_t frames) const noexcept
     block.frames = frames;
     block.global = settings.launchQuantization.value_or(launchAudio->globalQuantization());
     block.meters = signatures;
+    block.followActionsEnabled = settings.followActionsEnabled;
+    if (preparedScene) block.preparedScene = *preparedScene;
     block.clock = this;
     block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {
         const auto& timing = *static_cast<const TimingView*>(state);
@@ -2980,7 +3065,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     }
     if (launchAudio && launchDriver) {
         launchAudio->begin(*launchDriver, timing->launchBlock(io.frames), transport, io.streamTimeSamples,
-                           launchObserverContext_, launchObserver_);
+                           launchObserverContext_, launchObserver_, sceneObserverContext_, sceneObserver_);
     } else if (launchDriver) {
         launchDriver->suspend();
     }
@@ -3030,7 +3115,11 @@ void Session::process(const AudioIo& io) noexcept {
 bool Session::postLaunchGesture(std::span<const LaunchRequest> requests) noexcept {
     if (audio::onAudioThread) return false;
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
-    return launchAudioDriver_ && timing && timing->launchAudio && launchAudioDriver_->post(requests);
+    if (!launchAudioDriver_ || !timing || !timing->launchAudio) return false;
+    for (const auto& request : requests)
+        if (request.kind == LaunchRequestKind::ScenePress && request.scene && timing->launchAudio->sceneClock(*request.scene))
+            return false;
+    return launchAudioDriver_->post(requests);
 }
 
 bool Session::postLaunchClipGainEdit(const LaunchClipGainEdit& edit) noexcept {

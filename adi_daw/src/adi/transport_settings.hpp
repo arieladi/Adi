@@ -13,6 +13,7 @@ struct TransportSettings {
     std::optional<std::int64_t> songStartTicks; // absent: insert marker/time selection
     bool punchIn=false,punchOut=false;         // the loop brace's start and end, independent of Loop
     std::optional<LaunchQuantization> launchQuantization = std::nullopt;
+    bool followActionsEnabled = true;
     friend bool operator==(const TransportSettings&,const TransportSettings&)=default;
 };
 TransportSettings readTransportSettings(const Store&);

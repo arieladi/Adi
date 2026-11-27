@@ -282,19 +282,30 @@ bool LaunchMidiTrack::render(const LaunchBlock& block, const LaunchSection& sect
     const auto first = block.sample + section.offset;
     const auto end = first + section.frames;
     const auto velocity = std::clamp(section.velocity, 0.0f, 1.0f);
-    const bool restart = section.clip != clip_ || section.run != run_ || section.sourceTick != nextTick_ ||
-        section.framesSinceStart != nextFrame_ || revision.route != revision_.route;
-    const bool adopt = !restart && revision.program != revision_.program;
+    const bool consecutive = section.run == run_ && section.sourceTick == nextTick_ &&
+        section.framesSinceStart == nextFrame_ && revision.route == revision_.route;
+    // An authorized Capture and Insert Scene changes the literal clip ID of
+    // a continuing run. A launch, loop seam or route replacement still owns
+    // its original note-off and starts a fresh note when needed.
+    const bool retarget = consecutive && clip_ != 0 && section.clip != clip_ && section.run != 0;
+    const bool restart = !consecutive || (section.clip != clip_ && !retarget);
+    const bool adopt = !restart && (retarget || revision.program != revision_.program);
     for (auto& item : active_) {
         if (item.runtimeId == 0)
             continue;
         const bool retainedPair = item.retainedOn == revision.program && item.retainedOff == revision.program;
-        if (adopt && item.clip == section.clip && (!item.releasing || retainedPair)) {
-            const auto* index = clip->stableIndex(item.note.id);
+        if (adopt && item.clip == clip_ && (!item.releasing || retainedPair)) {
+            auto* index = clip->stableIndex(item.note.id);
+            // A literal clone preserves duplicate and legacy note order as
+            // well as its stable IDs. Retain at a matching index only for this
+            // continuing run; arbitrary graph edits still need unique IDs.
+            if (!index && retarget && item.note.id == 0 && item.index < clip->notes_.size())
+                index = &item.index;
             if (!index || !clip->notes_[*index].sameAuthored(item.note))
                 item.releasing = true;
             else {
                 item.index = *index;
+                item.clip = section.clip;
                 item.revision.program = revision.program;
             }
         }

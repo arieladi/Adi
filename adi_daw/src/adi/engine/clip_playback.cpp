@@ -985,7 +985,18 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         if (midi || std::ranges::any_of(original.rows.clips, onTrack) ||
             std::ranges::any_of(original.rows.slotClips, onTrack)) midiTracks.push_back(id);
     }
-    for (const auto& scene : data.scenes()) scenes.push_back(scene.id);
+    std::vector<LaunchSceneClock> sceneClocks;
+    for (const auto& scene : data.scenes()) {
+        scenes.push_back(scene.id);
+        if (scene.tempoEnabled || scene.signatureEnabled) {
+            LaunchSceneClock change;
+            change.scene = scene.id;
+            if (scene.tempoEnabled) change.bpm = scene.tempoBpm;
+            if (scene.signatureEnabled)
+                change.signature = rows::TimeSignature{0, scene.signatureNumerator, scene.signatureDenominator};
+            sceneClocks.push_back(change);
+        }
+    }
     std::ranges::sort(scenes);
 
     constexpr std::uint64_t pcmBudget = std::uint64_t{256} << 20; // entire resident Session projection
@@ -1077,7 +1088,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     }
     return std::make_shared<const LaunchAudioProject>(incarnation, bpm, std::move(tracks), std::move(slots),
         std::move(scenes), std::move(pcm), LaunchQuantization::Bar,
-        std::make_shared<const LaunchFollowPlayer>(data), incarnation, std::move(midiTracks), true);
+        std::make_shared<const LaunchFollowPlayer>(data), incarnation, std::move(midiTracks), true, std::move(sceneClocks));
 }
 
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {

@@ -291,6 +291,85 @@ void pendingEventsAcrossPublication() {
     }
 }
 
+void captureRetargetKeepsVoices() {
+    const std::array original{note(7,0,24,42),note(7,0,24,0,67)};
+    auto duplicate = original;
+    for (auto& row : duplicate) row.clipId = 8;
+    const auto first = LaunchMidiClip::prepare(7,original);
+    const auto captured = LaunchMidiClip::prepare(8,duplicate);
+    auto different = duplicate;
+    different[0].key = 72;
+    const auto edited = LaunchMidiClip::prepare(8,different);
+    check(first && captured && edited,"prepared the captured copy and a distinct edit");
+    if (!first || !captured || !edited) return;
+
+    Driver driver;
+    check(driver.render(section(7,0,4,4,0),&*first) && driver.output.size() == 2,
+          "original captured clip holds two runtime voices");
+    const auto stable = driver.output.at(1), legacy = driver.output.at(0);
+    driver.deliver();
+    ++driver.revision.program;
+    driver.block.sample = 4;
+    countAllocations = true;
+    const auto adopted = driver.render(section(8,4,8,4,4,4),&*captured);
+    countAllocations = false;
+    check(adopted && driver.output.empty() && driver.serial == 102,
+          "retargeting a continuing run emits no MIDI and allocates no new voice IDs");
+    check(driver.track.eventClip(stable) == 8 && driver.track.eventClip(legacy) == 8,
+          "both stable and ordering-verified legacy voices now name the copied clip");
+    driver.block.sample = 8;
+    check(driver.render(section(8,8,26,18,8,8),&*captured) && driver.output.size() == 2,
+          "retargeted voices reach their original releases");
+    bool exact = true;
+    for (auto i = 0; i < driver.output.size(); ++i) {
+        const auto& event = driver.output.at(i);
+        exact &= event.type == EventType::NoteOff && event.frame == 16 &&
+            (event.noteId == stable.noteId || event.noteId == legacy.noteId);
+    }
+    check(exact && driver.output.at(0).noteId != driver.output.at(1).noteId,
+          "both releases are sample-exact with the original runtime IDs");
+    driver.deliver();
+
+    Driver mismatch;
+    check(mismatch.render(section(7,0,4,4,0),&*first),"start mismatch fixture");
+    const auto oldId = mismatch.output.at(1).noteId;
+    mismatch.deliver();
+    ++mismatch.revision.program;
+    mismatch.block.sample = 4;
+    check(mismatch.render(section(8,4,8,4,4,4),&*edited) && mismatch.output.size() == 2 &&
+          mismatch.output.at(0).type == EventType::NoteOff && mismatch.output.at(0).noteId == oldId &&
+          mismatch.output.at(1).type == EventType::NoteOn && mismatch.output.at(1).dim == 72 &&
+          mismatch.output.at(1).noteId != oldId,
+          "a changed authored note never inherits the retired voice from an active retarget");
+}
+
+void captureRetargetKeepsDelayedPair() {
+    const std::array original{note(7,0,2,42)};
+    const std::array copied{note(8,0,2,42)};
+    const auto first = LaunchMidiClip::prepare(7,original);
+    const auto captured = LaunchMidiClip::prepare(8,copied);
+    check(first && captured,"prepared a copied short-note program");
+    if (!first || !captured) return;
+    Driver driver;
+    check(driver.render(section(7,0,4,4,0),&*first) && driver.output.size() == 2,
+          "pre-capture graph owns an undelivered note and its release");
+    const auto on = driver.output.at(0), off = driver.output.at(1);
+    driver.output.clear();
+    ++driver.revision.program;
+    check(driver.track.canRetainPendingEvent(on,&*first,driver.revision) &&
+          driver.track.canRetainPendingEvent(off,&*first,driver.revision),
+          "a fresh graph can adopt the delayed events before the captured scene is rendered");
+    driver.track.pendingEventRetained(on,driver.revision.program);
+    driver.track.pendingEventRetained(off,driver.revision.program);
+    driver.block.sample = 4;
+    check(driver.render(section(8,4,8,4,4,4),&*captured) && driver.output.empty() &&
+          driver.track.retainedEventIsValid(on,driver.revision.program) &&
+          driver.track.retainedEventIsValid(off,driver.revision.program) && driver.track.eventClip(on) == 8,
+          "retargeting carries the unplayed pair exactly once with its compensated IDs");
+    driver.track.noteOnDelivered(on);
+    driver.track.noteOffDelivered(off);
+}
+
 void driverAllocations() {
     const std::array rows{note(7, 0, 5, 42)};
     const auto clip = LaunchMidiClip::prepare(7, rows);
@@ -324,6 +403,8 @@ int main() {
     validationAndCapacity();
     ambiguousIdentity();
     pendingEventsAcrossPublication();
+    captureRetargetKeepsVoices();
+    captureRetargetKeepsDelayedPair();
     driverAllocations();
     std::printf("launch MIDI: %d checks, %d failures\n", checks, failures);
     return failures != 0;

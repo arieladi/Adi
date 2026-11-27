@@ -36,6 +36,7 @@ struct LaunchCapturedStart {
     float velocity = 1.0f;
     bool fade = false;
     std::int64_t fadeElapsed = 0;
+    std::uint64_t run = 0; // stable driver identity when capture starts mid-run
     bool operator==(const LaunchCapturedStart&) const = default;
 };
 

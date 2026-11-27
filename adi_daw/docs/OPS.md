@@ -2224,6 +2224,8 @@ Two §7 points specific to remarks:
 | `session.stopAll` | s | N | — | P2 |
 | `session.cancelSceneLaunch` | s | N | — | P2 |
 | `session.backToArrangement` | s | N | — | P2 |
+| `session.setFollowActionsEnabled` | s | S | — | P2 |
+| `capture.sessionPerformance` | e | G | cap | P2 |
 
 - `scene.create {id, ord, name?, color?}` inserts at an explicit order.
   `scene.delete {id}` removes the scene and its slots.
@@ -2257,6 +2259,16 @@ incarnation. The driver validates the whole gesture against its pinned
 generation. An owner can dispatch directly or deliver the committed audit batch
 as one gesture. A live Session with persisted slots subscribes to its Store's
 committed batches. The journal retains the commands outside the Undo head.
+`session.setFollowActionsEnabled {on}` saves the global playback switch
+outside Undo. The default is enabled. The driver reads it from the pinned
+performance snapshot.
+
+`capture.sessionPerformance {changes}` places a prepared Session performance
+in the Arrangement in one undo transaction. The preparation pins the exact
+slot material and checks the performed clock. The literal change images
+contain the copied clip rows and their dependent material, along with the
+Arrangement ranges displaced by launches and stops. The journal replay
+restores those rows without running the launcher again.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every

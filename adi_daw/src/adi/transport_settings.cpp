@@ -10,7 +10,7 @@ TransportSettings readTransportSettings(const Store& store) {
         const_cast<SQLite::Database &>(store.db()),
         "SELECT key,value FROM session_state WHERE key IN "
         "('transport.metronome','transport.loop','transport.countIn','transport.songStart',"
-        "'transport.punch','transport.launchQuantization')");
+        "'transport.punch','transport.launchQuantization','session.followActionsEnabled')");
     while(rows.executeStep()) {
         try {
             const auto value=Payload::parse(rows.getColumn(1).getString());
@@ -33,6 +33,9 @@ TransportSettings readTransportSettings(const Store& store) {
                 if (value.is_number_integer() && value >= 0 &&
                     value <= static_cast<std::int32_t>(LaunchQuantization::ThirtySecond))
                     result.launchQuantization = static_cast<LaunchQuantization>(value.get<std::int32_t>());
+            } else if (rows.getColumn(0).getString() == "session.followActionsEnabled") {
+                if (value.is_boolean())
+                    result.followActionsEnabled = value.get<bool>();
             } else {
                 const auto on=value.at("on").get<bool>();
                 const auto start=value.at("start").get<std::int64_t>(),end=value.at("end").get<std::int64_t>();

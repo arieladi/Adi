@@ -36,16 +36,26 @@ LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, st
                                        std::vector<LaunchSlot> slots, std::vector<std::int64_t> scenes,
                                        std::vector<LaunchAudioClip> clips, LaunchQuantization global,
                                        std::shared_ptr<const LaunchFollowPlayer> follow, std::uint64_t followSeed,
-                                       std::vector<std::int64_t> midiTracks, bool stored)
+                                       std::vector<std::int64_t> midiTracks, bool stored,
+                                       std::vector<LaunchSceneClock> sceneClocks)
     : incarnation_(incarnation), pcmRevision_(nextPcmRevision.fetch_add(1, std::memory_order_relaxed)),
       bpm_(bpm), tracks_(std::move(tracks)), scenes_(std::move(scenes)),
       slots_(std::move(slots)), clips_(std::move(clips)), global_(global), follow_(std::move(follow)),
-      followSeed_(followSeed), midiTracks_(std::move(midiTracks)), stored_(stored) {
+      followSeed_(followSeed), midiTracks_(std::move(midiTracks)), stored_(stored), sceneClocks_(std::move(sceneClocks)) {
     if (incarnation_ == 0 || !std::isfinite(bpm_) || bpm_ < 20.0 || bpm_ > 999.0 ||
         !isLaunchQuantizationCode(static_cast<std::int64_t>(global_)) ||
         !positiveAscending(tracks_) || !positiveAscending(scenes_) || !positiveAscending(midiTracks_) ||
         !std::includes(tracks_.begin(), tracks_.end(), midiTracks_.begin(), midiTracks_.end()))
         throw std::invalid_argument("invalid Session audio project clock, tracks or scenes");
+
+    std::ranges::sort(sceneClocks_, {}, &LaunchSceneClock::scene);
+    std::int64_t priorScene = 0;
+    for (const auto& item : sceneClocks_) {
+        if (item.scene <= priorScene || !std::ranges::binary_search(scenes_, item.scene) ||
+            (!item.bpm && !item.signature))
+            throw std::invalid_argument("invalid Session scene clock");
+        priorScene = item.scene;
+    }
 
     const auto lessClip = [](const LaunchAudioClip& a, const LaunchAudioClip& b) {
         return a.clip() < b.clip();
@@ -74,6 +84,15 @@ LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, st
             throw std::invalid_argument("invalid Session audio slot or missing prepared PCM");
         previous = key;
     }
+}
+
+const LaunchSceneClock* LaunchAudioProject::sceneClock(std::int64_t scene) const noexcept {
+    if (sceneClocks_.empty()) return nullptr;
+    const auto* start = sceneClocks_.data();
+    const auto* finish = start + sceneClocks_.size();
+    const auto* match = std::lower_bound(start, finish, scene,
+        [](const LaunchSceneClock& item, std::int64_t id) { return item.scene < id; });
+    return match != finish && match->scene == scene ? match : nullptr;
 }
 
 bool LaunchAudioProject::isMidiTrack(std::int64_t track) const noexcept {
@@ -129,13 +148,16 @@ void LaunchAudioRuntime::startIfQueued(LaunchAudioDriver& driver, LaunchBlock bl
     block.followPass = driver.pass_;
     auto view = project_->view();
     view.tracks = tracks_;
-    if (driver.launcher_.admitWhileStopped(block, view)) transport.play();
+    if ((block.preparedScene && block.preparedScene->token > driver.performedSceneToken()) ||
+        driver.launcher_.admitWhileStopped(block, view)) transport.play();
 }
 
 void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                                const Transport& transport, std::int64_t streamSample,
                                void* observerContext,
-                               void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept) noexcept {
+                               void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
+                               void* sceneObserverContext,
+                               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept) noexcept {
     for (std::size_t index = 0; index < ranges_.size(); ++index) {
         auto& ranges = ranges_.data()[index];
         ranges.size = 0;
@@ -163,7 +185,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     driver.tailCount_ = remainingTails;
     block.followPass = driver.pass_;
     const auto* follow = project_->followPlayer();
-    block.followActionsEnabled = follow != nullptr;
+    block.followActionsEnabled &= follow != nullptr;
     auto view = project_->view();
     view.tracks = tracks_;
     struct Context {
@@ -177,12 +199,17 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         std::int32_t frames;
         void* observerContext;
         void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept;
+        void* sceneObserverContext;
+        void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept;
         std::int32_t offset = 0;
     };
-    if (streamSample < 0 || streamSample > std::numeric_limits<std::int64_t>::max() - frames)
+    if (streamSample < 0 || streamSample > std::numeric_limits<std::int64_t>::max() - frames) {
         observer = nullptr;
+        sceneObserver = nullptr;
+    }
     Context context{*this, driver, view, block, follow, block.incarnation,
-        followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer};
+        followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer,
+        sceneObserverContext, sceneObserver};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
         call.runtime.add(call.driver.gains_, section, call.block, call.offset);
@@ -197,7 +224,23 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchTransition& edge) noexcept -> std::optional<LaunchFollowRequest> {
         const auto& call = *static_cast<const Context*>(state);
         if (!call.follow) return std::nullopt;
-        return call.follow->followOnLaunch(edge, call.view, call.incarnation, true, call.seed);
+        return call.follow->followOnLaunch(edge, call.view, call.incarnation, call.block.followActionsEnabled, call.seed);
+    }, nullptr, [](void* state, const LaunchSceneTransition& edge) noexcept {
+        const auto& call = *static_cast<const Context*>(state);
+        if (edge.preparedToken != 0)
+            call.driver.performedScene_.store(edge.preparedToken, std::memory_order_release);
+        if (call.sceneObserver) {
+            auto logicalEdge = edge;
+            logicalEdge.offset += call.offset;
+            call.sceneObserver(call.sceneObserverContext, logicalEdge, call.streamSample + logicalEdge.offset);
+        }
+    }, [](void* state, const LaunchSceneTransition& edge) noexcept -> std::optional<LaunchFollowRequest> {
+        const auto& call = *static_cast<const Context*>(state);
+        if (!call.follow) return std::nullopt;
+        const auto next = call.follow->followOnSceneLaunch(edge.scene, edge.tick, edge.ordinal,
+            call.incarnation, call.block.followActionsEnabled, call.seed);
+        if (next && next->request.scene && call.runtime.sceneClock(*next->request.scene)) return std::nullopt;
+        return next;
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);
@@ -217,6 +260,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         driver.loopEnd_ = transport.loopEnd();
         driver.transportRevision_ = transport.revision();
     }
+}
+
+bool LaunchAudioRuntime::hasScene(std::int64_t scene) const noexcept {
+    const auto scenes = project_->view().scenes;
+    return std::binary_search(scenes.begin(), scenes.end(), scene);
 }
 
 bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t offset,
