@@ -1942,7 +1942,7 @@ add_executable(adi_warp_playback_tests tests/test_warp_playback.cpp)
 target_link_libraries(adi_warp_playback_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_warp_playback_tests COMMAND adi_warp_playback_tests)
 
-foreach(suite streaming_warp_playback realtime_warp_r3 realtime_warp_alignment)
+foreach(suite streaming_warp_playback streaming_warp_rates realtime_warp_r3 realtime_warp_alignment warp_launch)
     add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
     target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
     add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)

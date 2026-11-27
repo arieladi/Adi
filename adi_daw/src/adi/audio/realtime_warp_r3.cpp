@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace adi::audio {
@@ -19,6 +20,10 @@ constexpr std::int64_t frameLimit = std::int64_t{1} << 50;
 
 double pitchScale(const WarpRenderPlan& plan, std::uint32_t sourceRate) noexcept {
     return std::exp2(plan.transposeSemis / 12) * sourceRate / plan.outputRate;
+}
+
+double clampRatio(double ratio) noexcept {
+    return std::clamp(ratio, RealtimeWarpR3::minRatio, RealtimeWarpR3::maxRatio);
 }
 
 Stretcher::Options options(const WarpRenderPlan& plan) noexcept {
@@ -43,10 +48,10 @@ struct RealtimeWarpR3::Impl {
     std::array<float*, maxChannels> output{};
 
     Impl(const WarpRenderPlan& plan, std::uint32_t sourceRate, std::uint16_t channelCount,
-         double ratio)
-        : stretcher(sourceRate, channelCount, options(plan), ratio, pitchScale(plan, sourceRate)),
+         double ratio, std::int64_t firstSourceFrame)
+        : stretcher(sourceRate, channelCount, options(plan), clampRatio(ratio), clampRatio(pitchScale(plan, sourceRate))),
           channels(channelCount), latency(stretcher.getStartDelay()),
-          scratch(static_cast<std::size_t>(channelCount) * quantum) {
+          next(firstSourceFrame), scratch(static_cast<std::size_t>(channelCount) * quantum) {
         if (stretcher.getEngineVersion() != 3) throw std::runtime_error("R3 engine unavailable");
         for (std::size_t channel = 0; channel < channels; ++channel) {
             output[channel] = scratch.data() + channel * quantum;
@@ -59,7 +64,7 @@ struct RealtimeWarpR3::Impl {
     }
 
     void prime(double ratio) {
-        stretcher.setTimeRatio(ratio);
+        stretcher.setTimeRatio(clampRatio(ratio));
         discard = stretcher.getStartDelay();
         auto pad = stretcher.getPreferredStartPad();
         std::fill(scratch.begin(), scratch.end(), 0.0f);
@@ -72,7 +77,11 @@ struct RealtimeWarpR3::Impl {
 };
 
 bool RealtimeWarpR3::supportsRatio(double ratio) noexcept {
-    return ratio >= minRatio && ratio <= maxRatio;
+    // Equivalent output/source mappings can round on either side of a limit
+    // when expressed as a division or via ticks. Clamp accepted roundoff
+    // before handing ratios to R3, so the DSP domain itself stays bounded.
+    constexpr auto roundoff = 8 * std::numeric_limits<double>::epsilon();
+    return ratio >= minRatio - roundoff && ratio <= maxRatio + roundoff;
 }
 
 bool RealtimeWarpR3::supports(const WarpRenderPlan& plan, std::uint32_t sourceRate,
@@ -95,11 +104,24 @@ bool RealtimeWarpR3::supports(const WarpRenderPlan& plan, std::uint32_t sourceRa
     return false;
 }
 
-RealtimeWarpR3::RealtimeWarpR3(const WarpRenderPlan& plan, std::uint32_t sourceRate,
-                               std::uint16_t channels, double initialRatio) {
-    if (onAudioThread || !supports(plan, sourceRate, channels) || !supportsRatio(initialRatio))
+std::int32_t RealtimeWarpR3::configuredLatencySamples(const WarpRenderPlan& plan, std::uint32_t sourceRate,
+                                                       double initialRatio) {
+    if (onAudioThread || !supports(plan, sourceRate, 1) || !supportsRatio(initialRatio))
         throw std::invalid_argument("unsupported real-time R3 Warp configuration");
-    impl_ = std::make_unique<Impl>(plan, sourceRate, channels, initialRatio);
+    // R3 derives start delay from its window size and fixed pitch conversion.
+    // Those settings are independent of channel count, so graph preparation
+    // can measure the delay without reserving a playback voice for every clip.
+    const Stretcher probe(sourceRate, 1, options(plan), clampRatio(initialRatio), clampRatio(pitchScale(plan, sourceRate)));
+    if (probe.getEngineVersion() != 3) throw std::runtime_error("R3 engine unavailable");
+    return static_cast<std::int32_t>(probe.getStartDelay());
+}
+
+RealtimeWarpR3::RealtimeWarpR3(const WarpRenderPlan& plan, std::uint32_t sourceRate,
+                               std::uint16_t channels, double initialRatio, std::int64_t firstSourceFrame) {
+    if (onAudioThread || !supports(plan, sourceRate, channels) || !supportsRatio(initialRatio) ||
+        firstSourceFrame < -frameLimit || firstSourceFrame >= frameLimit)
+        throw std::invalid_argument("unsupported real-time R3 Warp configuration");
+    impl_ = std::make_unique<Impl>(plan, sourceRate, channels, initialRatio, firstSourceFrame);
 }
 
 RealtimeWarpR3::~RealtimeWarpR3() = default;
@@ -147,7 +169,7 @@ bool RealtimeWarpR3::pull(std::span<float> frame, const R3WarpInput& source) {
         const auto ratio = source.timeRatioAt(source.context, voice.next);
         if (!supportsRatio(ratio) || voice.next > frameLimit - static_cast<std::int64_t>(quantum))
             return false;
-        voice.stretcher.setTimeRatio(ratio);
+        voice.stretcher.setTimeRatio(clampRatio(ratio));
         const auto required = voice.stretcher.getSamplesRequired();
         const auto count = required == 0 ? quantum : std::min(required, quantum);
         std::size_t read = 0;

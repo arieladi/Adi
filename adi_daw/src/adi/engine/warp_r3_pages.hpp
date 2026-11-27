@@ -38,14 +38,22 @@ public:
     /// source history before that page. Source errors propagate to the worker.
     [[nodiscard]] bool render(std::int64_t firstArrangementFrame, std::uint32_t frameCount,
                               float* interleaved, const WarpR3Source&);
+    /// Page worker only, after output pages have been reclaimed.
+    void releaseIdle() noexcept;
 
 private:
     struct InputPage {
         std::int64_t first = -1;
         std::vector<float> pcm;
     };
+    struct SteadyTile {
+        std::int64_t first = -1;
+        std::vector<float> pcm;
+        std::optional<std::int32_t> stitchLag;
+    };
 
     [[nodiscard]] double sourceAtTick(double tick) const noexcept;
+    [[nodiscard]] double ticksPerSourceFrameAt(double localTick) const noexcept;
     [[nodiscard]] double relativeTickAt(std::int64_t arrangementFrame) const noexcept;
     [[nodiscard]] double loopLapAt(double relativeTick) const noexcept;
     [[nodiscard]] double unrolledSourceAt(std::int64_t arrangementFrame) const noexcept;
@@ -53,20 +61,30 @@ private:
     [[nodiscard]] double timeRatioAt(std::int64_t arrangementFrame) const noexcept;
     [[nodiscard]] const float* sourceFrame(std::int64_t, const WarpR3Source&);
     [[nodiscard]] bool readFrame(std::int64_t, std::span<float>, const WarpR3Source&);
+    [[nodiscard]] bool renderSteady(std::int64_t first, std::int64_t begin, std::int64_t end,
+                                    float* output, const WarpR3Source&);
+    [[nodiscard]] SteadyTile* steadyTile(std::int64_t first, const WarpR3Source&);
 
     const WarpArrangementClock& tempo_;
     std::vector<WarpMarker> markers_;
     const std::uint64_t sourceStart_;
+    const std::uint32_t sourceRate_;
     const std::uint16_t channels_;
     const double originTick_, loopStartTick_, loopLengthTicks_;
+    const double steadyFramesPerTick_;
     double endFileFrame_ = 0;
     double loopStartFileFrame_ = 0, loopLengthFileFrames_ = 0;
     double originRounding_ = 0;
     std::int64_t firstOutputFrame_ = 0, endOutputFrame_ = 0;
     std::optional<std::int64_t> nextOutputFrame_;
+    audio::WarpRenderPlan voicePlan_;
+    std::int32_t latency_ = 0;
     std::unique_ptr<audio::RealtimeWarpR3> voice_;
     std::array<InputPage, 2> inputPages_;
     std::size_t nextInputPage_ = 0;
+    std::array<SteadyTile, 2> steadyTiles_;
+    std::size_t lastSteadyTile_ = 0;
+    std::int64_t steadyLoopStart_ = 0, steadyLoopLength_ = 0;
 };
 
 } // namespace adi::engine

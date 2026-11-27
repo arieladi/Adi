@@ -194,6 +194,7 @@ struct Clip {
     std::array<Page*,slots> admitted{};
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
+    std::atomic<bool> invalidWarpRate{false};
     Clip() { for (auto& r : requests) r.store(-1); }
     bool warpPending() const noexcept {
         return (warp && warp->pending.load(std::memory_order_acquire)) ||
@@ -545,7 +546,9 @@ struct Clip {
             const auto now=std::chrono::steady_clock::now();
             if(releaseAfter==std::chrono::steady_clock::time_point{})
                 releaseAfter=now+std::chrono::milliseconds(250);
-            return now>=releaseAfter && reclaimPages(seq);
+            const bool reclaimed=now>=releaseAfter && reclaimPages(seq);
+            if(reclaimed && r3Warp && !allocatedPages) r3Warp->releaseIdle();
+            return reclaimed;
         }
         releaseAfter={};
         bool worked=false;
@@ -688,7 +691,11 @@ public:
                 if (clip->streamingWarp) {
                     if (time < clip->start || time >= clip->end) continue;
                     streamReader.missing = false;
-                    clip->streamingWarp->renderFrame(time,streamInput,std::span(warpedFrame.data(),clip->channels));
+                    if (!clip->streamingWarp->renderFrame(time,streamInput,std::span(warpedFrame.data(),clip->channels))) {
+                        if (!clip->invalidWarpRate.exchange(true,std::memory_order_relaxed))
+                            clip->errors.fetch_add(1,std::memory_order_relaxed);
+                        continue;
+                    }
                     if (streamReader.missing) { ++missing; continue; }
                     sample = warpedFrame.data();
                 } else {
@@ -747,7 +754,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
     const auto tempo = TempoMap::fromRows(project->rows.tempo);
-    impl_->warpClock.emplace(project->rows.tempo,rate);
+    impl_->warpClock.emplace(tempo,rate);
     const auto& warpClock = *impl_->warpClock;
     std::unordered_map<fs::path, SourceReaders> readers;
     std::unordered_map<const audio::WarpTask*, std::weak_ptr<WarpSource>> warpedReaders;
@@ -763,7 +770,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const bool nativeWarp = warpMode && (a->formantShift == 0) &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
                  (*warpMode == audio::WarpMode::RePitch && a->transposeSemis == 0));
-            const bool rampR3 = warpMode && warpClock.hasLinearRamp() &&
+            const bool r3Mode = warpMode &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
             if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
@@ -799,7 +806,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     clip->channels=static_cast<std::uint16_t>(info.channels);
                     clip->sourceRate=info.sampleRate;
                     sourceFrames=info.frames;
-                    if ((nativeWarp || rampR3) && info.frames && *info.frames) {
+                    if ((nativeWarp || r3Mode) && info.frames && *info.frames) {
                         auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
                         clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
                     }
@@ -849,11 +856,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 spec.transposeSemis=a->transposeSemis;
                 spec.formantScale=std::exp2(a->formantShift/12);
             }
-            const bool r3 = rampR3 && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
+            const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
                 supportsR3Ratios(map.markers,warpClock);
             const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
-            if (rampR3 && !stream)
-                impl_->problems.push_back(label+"real-time Warp ramp outside source format or rate bounds (prepared step-tempo render)");
             if (stream && !r3)
                 clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));
             const auto beginNs = row.posNs.value_or(0);
@@ -861,35 +866,15 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             // integer nanosecond rounded below its originating tick maps back to it.
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
-            const bool rampPlacement=stream && warpClock.hasLinearRamp();
-            const auto rampTickAtNs = [&](std::int64_t ns) {
-                const auto tick=warpClock.tickAtFrame(static_cast<double>(ns)*rate*1e-9);
-                const auto whole=std::round(tick);
-                const auto projected=static_cast<long double>(warpClock.frameAtTick(whole))/rate*1e9L;
-                const auto stored=static_cast<long double>(ns);
-                return projected>=stored-0.5L && projected<stored+0.5L ? whole : tick;
-            };
-            // A material split uses the same source origin after integer
-            // nanosecond storage. Retain the edit clock's jump-tempo rounding.
-            const auto warpOrigin=row.timeBase==0 || !rampPlacement ? static_cast<double>(origin) : rampTickAtNs(beginNs);
-            const auto warpSourceOrigin = warpOrigin - static_cast<double>(row.contentOffsetTicks);
-            const auto positionSeconds = [&](std::int64_t tick) {
-                return stream ? warpClock.frameAtTick(static_cast<double>(tick))/rate : tempo.ticksToSeconds(tick);
-            };
             auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                if (stream) return (warpClock.frameAtTick(warpOrigin+static_cast<double>(ticks))-
-                                    warpClock.frameAtTick(warpOrigin))/rate;
-                return positionSeconds(origin+ticks)-positionSeconds(origin);
+                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
             };
             auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
             if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
                 throw std::runtime_error("negative clip content offset needs an unwarped source clock");
             const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
             auto sourceDuration=[&](std::int64_t ticks) {
-                if (ticks < 0) throw std::runtime_error("negative Warp source duration");
-                if (stream) return samples((warpClock.frameAtTick(warpSourceOrigin+static_cast<double>(ticks))-
-                                            warpClock.frameAtTick(warpSourceOrigin))/rate, rate);
                 return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);
             };
             if(a->warpEnabled) {
@@ -917,8 +902,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                clip->start=samples(positionSeconds(origin),rate);
-                clip->end=samples(positionSeconds(endTicks),rate);
+                clip->start=samples(tempo.ticksToSeconds(origin),rate);
+                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
                 if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
@@ -926,14 +911,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto endNs = beginNs + nanos;
                 clip->start=samplesAtNs(beginNs,clip->rate);
                 clip->end=samplesAtNs(endNs,clip->rate);
-                if (rampPlacement) {
-                    const auto tick = std::floor(rampTickAtNs(endNs));
-                    if (tick >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
-                        throw std::runtime_error("Warp clip end exceeds the musical clock range");
-                    endTicks=static_cast<std::int64_t>(tick);
-                } else {
-                    endTicks=tempo.storedNanosecondsToTicks(endNs);
-                }
+                endTicks=tempo.storedNanosecondsToTicks(endNs);
             }
             auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
@@ -983,7 +961,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto tickSpan = endTicks - origin;
             const auto frameSpan = clip->end - clip->start;
             clip->fadeOut = row.fadeOutTicks > 0 && row.fadeOutTicks >= tickSpan ? frameSpan : std::min(frameSpan,
-                samples(positionSeconds(endTicks) - positionSeconds(endTicks - row.fadeOutTicks), rate));
+                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
@@ -1001,6 +979,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto end = row.loopEnabled ? tail : std::min(tail,row.endMarkerTicks.value_or(tail));
                 const auto loopStart=static_cast<double>(row.loopEnabled ? row.loopStartTicks : 0);
                 const auto loopLength=static_cast<double>(row.loopEnabled ? row.loopLenTicks.value_or(0) : 0);
+                const auto warpSourceOrigin=static_cast<double>(sourceOrigin);
                 if (r3) {
                     clip->r3Warp=std::make_unique<WarpR3Pages>(spec,clip->sourceRate,clip->channels,
                         map.markers,warpClock,warpSourceOrigin,static_cast<double>(end),loopStart,loopLength);
@@ -1109,7 +1088,9 @@ std::vector<std::string> ClipPlayback::decodeProblems() const {
             else if(clip->errors.load(std::memory_order_relaxed))
                 result.push_back("clips#"+std::to_string(clip->clipId)+": cannot read prepared Warp source");
         }
-        if (clip->streamingWarp && clip->errors.load(std::memory_order_relaxed) && !clip->progressive)
+        if (clip->invalidWarpRate.load(std::memory_order_relaxed))
+            result.push_back("clips#"+std::to_string(clip->clipId)+": Re-Pitch Warp rate exceeds the streaming resampler range");
+        else if (clip->streamingWarp && clip->errors.load(std::memory_order_relaxed) && !clip->progressive)
             result.push_back("clips#"+std::to_string(clip->clipId)+": cannot prepare or read streaming Warp source");
         if (clip->r3Warp && clip->errors.load(std::memory_order_relaxed))
             result.push_back("clips#"+std::to_string(clip->clipId)+": cannot render a real-time Warp output page at this rate or source position");

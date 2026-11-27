@@ -99,25 +99,32 @@ edited-clip Warp toggling or individual catalogue marker setters.
 ## Streaming warp playback (TM-WT-04)
 
 The Arrangement's native Beats, Texture and Re-Pitch players read the original
-source window through the bounded PCM page cache. A compiled clock integrates
-linear BPM ramps in musical time and maps each output frame to fractional AWRP
-ticks. A loop iteration uses the tempo at its own position. Tempo edits use
-the existing Session generation handover. Beats onset analysis stays off the
-callback and is reusable across tempo changes. Re-Pitch prepares its sinc
-kernel from the pinned sample-rate converter off the callback.
+source window through the bounded PCM page cache. The compiled Warp index uses
+the shared TM-TT-01 step, linear and Bézier tempo integral to map each output
+frame to fractional AWRP ticks. Each loop iteration uses the tempo at its own
+position. Tempo edits and Link changes use the existing Session generation
+handover. Beats onset analysis stays off the callback and is reusable across
+tempo changes. The native players prepare their bandlimited sample-rate
+conversion kernels from the pinned converter off the callback.
 
-On arrangements with linear ramps, supported Tones, Complex and Complex Pro
-clips can use a bounded worker-side R3 voice. It runs in real-time mode,
-supplies `getPreferredStartPad()` and discards `getStartDelay()` output
-frames. Sequential pages share the same voice. A cold seek primes from a
-bounded window before the seek. R3 reset can allocate, so the audio callback
-reads only published PCM pages. The track source delays its clips by the
-declared R3 latency, and the graph compensates parallel paths. The streaming
-R3 path supports time ratios and effective pitch scales from 0.5 to 2.
-The prepared path supplies steady-tempo R3 playback and serves as the fallback
+Supported Tones, Complex and Complex Pro clips use a bounded worker-side R3
+voice at steady tempo and through tempo changes. It supplies
+`getPreferredStartPad()` and discards `getStartDelay()` output frames. Variable
+tempo pages share a voice in order, with bounded preroll after a cold seek.
+Steady tempo uses independently primed 8,192-frame tiles on the clip's source
+clock. A 512-frame overlap aligns adjacent waveforms within a 64-frame search
+window. Two tiles and bounded source pages are enough for arbitrary seeks and
+exact repeat, trim and split behavior. The worker reclaims idle scratch.
+
+R3 reset can allocate, so the audio callback reads published PCM pages. The
+track source delays its clips by the declared R3 latency, and the graph
+compensates parallel paths. Export removes that preroll from the requested
+timeline range. The streaming R3 path supports time ratios and effective pitch
+scales from 0.5 to 2. The prepared path still serves unsupported configurations,
 with a clip diagnostic when a ramp falls outside the streaming domain.
 
-The warp clock is scoped to Warp clip placement and playback. The shared
-tempo map and Bézier ramp timing are part of TM-TT-01. Generated audio
-fixtures exercise these engine paths. Live timing and listening measurements
-are tracked in the seat report.
+`WarpClipPlayer::launchAt` prepares a value on the driver from a quantized
+project tick and the clip's Legato phase. Rendering and page demand use that
+placement with the current shared clock. The Session launcher can bind this
+seam to its scene and slot transitions. Measurements for ADI's generated
+playback and export fixtures and the Live readings owed are in the seat report.

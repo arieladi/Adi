@@ -28,9 +28,11 @@ public:
     [[nodiscard]] static bool supports(const WarpRenderPlan&, std::uint32_t sourceRate,
                                        std::uint16_t channels) noexcept;
     [[nodiscard]] static bool supportsRatio(double) noexcept;
+    [[nodiscard]] static std::int32_t configuredLatencySamples(const WarpRenderPlan&, std::uint32_t sourceRate,
+                                                               double initialRatio);
 
     RealtimeWarpR3(const WarpRenderPlan&, std::uint32_t sourceRate, std::uint16_t channels,
-                   double initialRatio);
+                   double initialRatio, std::int64_t firstSourceFrame = 0);
     ~RealtimeWarpR3();
     RealtimeWarpR3(const RealtimeWarpR3&) = delete;
     RealtimeWarpR3& operator=(const RealtimeWarpR3&) = delete;

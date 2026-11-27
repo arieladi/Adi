@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/realtime_warp_r3.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/engine/warp_arrangement_clock.hpp"
 #include "adi/engine/warp_r3_pages.hpp"
+#include "adi/store_rows.hpp"
+#include "adi/textproj.hpp"
+#include "temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -103,6 +107,9 @@ void testVoice() {
         check(frame == expected, "R3 seek must discard old phase and audio");
     }
     check(!voice.restart(loc, 0.0), "R3 must refuse unsupported ratios");
+    check(voice.restart(loc, std::nextafter(RealtimeWarpR3::maxRatio, 3.0)) &&
+          voice.restart(loc, std::nextafter(RealtimeWarpR3::minRatio, 0.0)),
+          "R3 accepts mapping roundoff at the exact supported bounds");
     std::cout << "R3 latency " << voice.latencySamples() << " frames at " << sampleRate
               << " Hz, ramp pitch error " << cents << " cents, stereo peak error " << stereoError << '\n';
 }
@@ -190,9 +197,123 @@ void testRepeatedRampPages() {
               << " frames over " << projectBeats << " beats, cold seek error " << seekError << " frames\n";
 }
 
+void testSteadyPages() {
+    using namespace adi;
+    using namespace adi::engine;
+    constexpr std::size_t sourceBeat = 18000, outputBeat = sampleRate / 2;
+    constexpr std::size_t sourceFrames = 4 * sourceBeat, outputFrames = 4 * outputBeat;
+    constexpr std::int64_t beatTicks = textproj::kPPQ;
+    const std::array<rows::TempoEvent, 1> events{{{0, 120, 0}}};
+    const WarpArrangementClock tempo(events, sampleRate);
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {sourceFrames, 4 * beatTicks}}};
+    test::TempDirectory tmp{"realtime_warp_r3", "steady"};
+
+    std::vector<float> pcm(sourceFrames);
+    for (std::size_t frame = 0; frame < pcm.size(); ++frame) {
+        const auto at = static_cast<double>(frame % sourceBeat);
+        const auto envelope = std::clamp(std::min(at - 3000, 16000 - at) / 512, 0.0, 1.0);
+        const auto phase = 2 * std::numbers::pi * frequency * static_cast<double>(frame) / sampleRate;
+        pcm[frame] = static_cast<float>(0.3 * envelope * std::sin(phase));
+    }
+    audio::WarpRenderPlan plan;
+    plan.source = tmp.path() / "steady.wav";
+    plan.workFolder = tmp.path();
+    plan.grainSeconds = 0.03;
+    plan.outputRate = sampleRate;
+    plan.sourceFrames = pcm.size();
+    plan.anchors = {{0, 0}, {sourceFrames, outputFrames}};
+    audio::WavWriter wav(plan.source, sampleRate, 1, audio::WavFormat::Float32);
+    wav.write(pcm.data(), static_cast<std::uint32_t>(sourceFrames));
+    wav.close();
+    const WarpR3Source source{&pcm, [](void* context, std::uint64_t first, float* output, std::uint32_t count) {
+        const auto& input = *static_cast<const std::vector<float>*>(context);
+        check(first + count <= input.size(), "steady R3 read must stay in its physical window");
+        std::copy_n(input.data() + first, count, output);
+    }};
+
+    constexpr std::uint32_t request = 4096;
+    std::array<float, request> piece{};
+    std::vector<float> stream(outputFrames), reference(outputFrames);
+    for (const auto mode : {audio::WarpMode::Tones, audio::WarpMode::Complex, audio::WarpMode::ComplexPro}) {
+        plan.mode = mode;
+        WarpR3Pages sequential(plan, sampleRate, 1, markers, tempo, 0, 4 * beatTicks, 0, 0);
+        for (std::size_t first = 0; first < stream.size(); first += request) {
+            const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(request, stream.size() - first));
+            check(sequential.render(static_cast<std::int64_t>(first), count, stream.data() + first, source),
+                  "steady R3 supplies consecutive page requests");
+        }
+        WarpR3Pages seeking(plan, sampleRate, 1, markers, tempo, 0, 4 * beatTicks, 0, 0);
+        for (const auto first : {65001, 7702, 72505, 32001, 2, 65001}) {
+            check(seeking.render(first, request, piece.data(), source) &&
+                  std::equal(piece.begin(), piece.end(), stream.begin() + first),
+                  "steady R3 PCM is exact through cold and repeated out-of-order seeks");
+        }
+        const auto latency = seeking.latencySamples();
+        seeking.releaseIdle();
+        check(seeking.latencySamples() == latency && seeking.render(32001, request, piece.data(), source) &&
+              std::equal(piece.begin(), piece.end(), stream.begin() + 32001),
+              "steady R3 remains exact after idle storage reclamation");
+
+        constexpr std::int64_t moveTicks = 2 * beatTicks, moveFrames = 2 * outputBeat;
+        constexpr std::int64_t trim = 5 * outputBeat / 2;
+        WarpR3Pages moved(plan, sampleRate, 1, markers, tempo, moveTicks, 5 * beatTicks / 2, 0, 0);
+        check(moved.render(moveFrames + trim - request / 2, request, piece.data(), source) &&
+              std::equal(piece.begin(), piece.begin() + request / 2, stream.begin() + trim - request / 2) &&
+              std::all_of(piece.begin() + request / 2, piece.end(), [](float value) { return value == 0; }),
+              "steady R3 move and end trim retain exact source-clock PCM before the cut");
+
+        constexpr std::int64_t loopEnd = 3 * outputBeat;
+        WarpR3Pages looped(plan, sampleRate, 1, markers, tempo, 0, 4 * beatTicks, beatTicks, 2 * beatTicks);
+        check(looped.render(loopEnd - request / 2, request, piece.data(), source) &&
+              std::equal(piece.begin(), piece.begin() + request / 2, stream.begin() + loopEnd - request / 2) &&
+              std::equal(piece.begin() + request / 2, piece.end(), stream.begin() + outputBeat),
+              "steady R3 loop folds to exact existing samples at the loop boundary");
+
+        const auto prepared = audio::prepareWarp(plan);
+        check(static_cast<bool>(prepared) && prepared.prepared->frames == outputFrames,
+              "prepare steady offline R3 reference of the same duration");
+        audio::WavReader offline(prepared.prepared->file);
+        check(offline.read(reference.data(), static_cast<std::uint32_t>(outputFrames)) == outputFrames,
+              "read steady R3 reference");
+        double streamPower = 0, referencePower = 0, worstLocalLevelDb = 0;
+        std::int64_t largestOnsetDelta = 0;
+        for (std::size_t beat = 0; beat < 4; ++beat) {
+            const auto onset = [beat](std::span<const float> signal) {
+                const auto begin = signal.begin() + static_cast<std::ptrdiff_t>(beat * outputBeat + 2500);
+                const auto end = begin + 3500;
+                const auto found = std::find_if(begin, end, [](float value) { return std::abs(value) > 0.075f; });
+                check(found != end, "steady R3 onset remains audible");
+                return found - begin;
+            };
+            largestOnsetDelta = std::max(largestOnsetDelta,
+                static_cast<std::int64_t>(std::abs(onset(stream) - onset(reference))));
+            constexpr std::size_t window = 256;
+            for (auto offset = beat * outputBeat + 7000; offset + window < beat * outputBeat + 19000; offset += window / 2) {
+                double streamWindow = 0, referenceWindow = 0;
+                for (auto i = offset; i < offset + window; ++i) {
+                    streamWindow += static_cast<double>(stream[i])*stream[i];
+                    referenceWindow += static_cast<double>(reference[i])*reference[i];
+                }
+                streamPower += streamWindow;
+                referencePower += referenceWindow;
+                worstLocalLevelDb = std::max(worstLocalLevelDb, std::abs(10 * std::log10(streamWindow / referenceWindow)));
+            }
+        }
+        const auto pitch = [](std::span<const float> signal) { return measurePitch(signal.subspan(11000, 4500)); };
+        const auto pitchCents = std::abs(1200 * std::log2(pitch(stream) / pitch(reference)));
+        const auto levelDb = 10 * std::log10(streamPower / referencePower);
+        check(pitchCents <= 5 && std::abs(levelDb) < 0.3 && worstLocalLevelDb <= 1.5 && largestOnsetDelta <= 96,
+              "steady real-time and offline R3 agree in pitch, RMS and onset timing");
+        std::cout << audio::warpModeName(mode) << " steady real-time versus prepared: pitch " << pitchCents
+                  << " cents, RMS " << levelDb << " dB, local window " << worstLocalLevelDb
+                  << " dB, onset delta " << largestOnsetDelta << " frames\n";
+    }
+}
+
 } // namespace
 
 int main() {
     testVoice();
     testRepeatedRampPages();
+    testSteadyPages();
 }

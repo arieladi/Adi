@@ -20,13 +20,16 @@ constexpr std::size_t maxWarpPoints = 1000000;
 constexpr double beatsAttackSeconds = 0.01;
 constexpr double beatsEnvelopeRate = 12;
 constexpr int sincPhases = 256;
-constexpr int sincHalfWidth = 144;
+constexpr int rePitchHalfWidth = 144;
+constexpr int nativeHalfWidth = 46;
 constexpr double maxSincStride = 256;
+constexpr int maxPageRangeSegments = 8;
 
+template<int converter, std::size_t halfWidth>
 const float* impulseResponse() {
-    // Obtain the pinned libsamplerate sinc-best kernel to table precision by
-    // resampling a centred impulse. Random access to the kernel lets a loop,
-    // seek or tempo edit start directly at its exact fractional source frame.
+    // Obtain the pinned libsamplerate kernel to table precision by resampling
+    // a centred impulse. Random access to the kernel lets a loop, seek or
+    // tempo edit start directly at its exact fractional source frame.
     static const auto response = [] {
         constexpr int center = 256;
         constexpr int frames = center * 2 + 1;
@@ -40,10 +43,10 @@ const float* impulseResponse() {
         data.output_frames = static_cast<long>(output.size());
         data.end_of_input = 1;
         data.src_ratio = sincPhases;
-        std::array<float, sincHalfWidth * sincPhases + 2> result{};
-        if (src_simple(&data, SRC_SINC_BEST_QUALITY, 1) != 0 ||
+        std::array<float, halfWidth * sincPhases + 2> result{};
+        if (src_simple(&data, converter, 1) != 0 ||
             data.output_frames_gen < static_cast<long>(center * sincPhases + result.size()))
-            throw std::runtime_error("cannot prepare the streaming Re-Pitch filter");
+            throw std::runtime_error("cannot prepare the streaming warp sample-rate filter");
         std::copy_n(output.begin() + center * sincPhases, result.size(), result.begin());
         return result;
     }();
@@ -57,13 +60,18 @@ std::uint64_t grainRandom(std::uint64_t seed, std::int64_t index) noexcept {
     return value ^ (value >> 31);
 }
 
-template<auto from, auto to>
-double project(std::span<const WarpMarker> markers, double position) noexcept {
+template<auto from>
+const WarpMarker* markerAfter(std::span<const WarpMarker> markers, double position) noexcept {
     const auto* begin = markers.data();
     const auto* end = begin + markers.size();
     const auto* next = std::upper_bound(begin, end, position,
         [](double at, const WarpMarker& point) { return at < static_cast<double>(point.*from); });
-    const auto* high = std::clamp(next, begin + 1, end - 1);
+    return std::clamp(next, begin + 1, end - 1);
+}
+
+template<auto from, auto to>
+double project(std::span<const WarpMarker> markers, double position) noexcept {
+    const auto* high = markerAfter<from>(markers, position);
     const auto& a = *(high - 1);
     const auto& b = *high;
     return static_cast<double>(a.*to) + (position - static_cast<double>(a.*from)) *
@@ -138,10 +146,18 @@ StreamingWarp::StreamingWarp(const WarpRenderPlan& plan, std::span<const WarpMar
     case WarpMode::RePitch:
         if (plan.transposeSemis != 0)
             throw std::invalid_argument("streaming Re-Pitch derives pitch from the warp rate");
-        sinc_ = impulseResponse();
+        sinc_ = impulseResponse<SRC_SINC_BEST_QUALITY, rePitchHalfWidth>();
+        sincHalfWidth_ = rePitchHalfWidth;
         break;
     default:
         throw std::invalid_argument("the native streaming player cannot play this warp mode");
+    }
+    if (mode_ != WarpMode::RePitch && sourceRate != plan.outputRate) {
+        // Keep Beats and Texture pitch in the device band even when the file
+        // is at a different rate. Their same-rate interpolation is unchanged.
+        sinc_ = impulseResponse<SRC_SINC_MEDIUM_QUALITY, nativeHalfWidth>();
+        sincHalfWidth_ = nativeHalfWidth;
+        nativeCutoff_ = std::min(1.0, static_cast<double>(plan.outputRate) / sourceRate);
     }
 }
 
@@ -153,7 +169,20 @@ double StreamingWarp::tickAtSource(double frame) const noexcept {
     return project<&WarpMarker::sourceFrame, &WarpMarker::tick>(markers_, frame);
 }
 
-std::size_t StreamingWarp::sliceAtFrame(double frame, WarpStreamClock clock) const noexcept {
+double StreamingWarp::maxFramesPerTick(double firstTick, double lastTick) const noexcept {
+    const auto* first = markerAfter<&WarpMarker::tick>(markers_, firstTick);
+    const auto* last = markerAfter<&WarpMarker::tick>(markers_, lastTick);
+    // Bound the page planner's callback work even for a densely marked clip.
+    if (last < first || last - first >= maxPageRangeSegments) return maxFramesPerTick_;
+    double maximum = 0;
+    for (auto* marker = first; marker <= last; ++marker) {
+        maximum = std::max(maximum, static_cast<double>(marker->sourceFrame - marker[-1].sourceFrame) /
+            static_cast<double>(marker->tick - marker[-1].tick));
+    }
+    return maximum;
+}
+
+StreamingWarp::SliceLocation StreamingWarp::sliceAtFrame(double frame, WarpStreamClock clock) const noexcept {
     // A physical onset time is rounded once to the nearest output frame.
     // The approach from below at a half-frame keeps ties on the later frame.
     const double tick = clock.tickAtFrame(clock.context, frame + 0.5);
@@ -161,7 +190,18 @@ std::size_t StreamingWarp::sliceAtFrame(double frame, WarpStreamClock clock) con
     const auto* end = begin + slices_.size();
     const auto* next = std::lower_bound(begin, end, tick,
         [](const auto& point, double position) { return point.tick < position; });
-    return static_cast<std::size_t>(std::clamp(next, begin + 1, end - 1) - begin - 1);
+    const auto projected = [&](const Slice& slice) { return std::round(clock.frameAtTick(clock.context, slice.tick)); };
+    const auto* current = std::clamp(next, begin + 1, end - 1) - 1;
+    auto start = projected(*current);
+    // A floating-point inverse can land either side of an exact half-sample.
+    // In that case the forward projection owns the rounded boundary.
+    if ((current != begin && start > frame) || (current + 1 < end - 1 && projected(current[1]) <= frame)) {
+        next = std::upper_bound(begin, end, frame,
+            [&](double position, const Slice& slice) { return position < projected(slice); });
+        current = std::clamp(next, begin + 1, end - 1) - 1;
+        start = projected(*current);
+    }
+    return {static_cast<std::size_t>(current - begin), start};
 }
 
 double StreamingWarp::sliceStartFrame(std::size_t slice, WarpStreamClock clock) const noexcept {
@@ -207,13 +247,22 @@ std::pair<double, double> StreamingWarp::beatsRange(double first, double last, s
     return {start + std::min(a, begin), start + span};
 }
 
-float StreamingWarp::sample(WarpStreamInput input, double position, std::uint16_t channel) const noexcept {
-    if (!(position >= 0 && position < static_cast<double>(sourceFrames_))) return 0;
+void StreamingWarp::sampleFrame(WarpStreamInput input, double position, std::span<float> output) const noexcept {
+    if (!(position >= 0 && position < static_cast<double>(sourceFrames_))) {
+        std::fill_n(output.data(), output.size(), 0.0f);
+        return;
+    }
+    if (nativeCutoff_ != 0) {
+        sincFrame(input, position, nativeCutoff_, output);
+        return;
+    }
     const auto first = static_cast<std::int64_t>(position);
     const double fraction = position - static_cast<double>(first);
-    const double a = finiteSample(input.sample(input.context, first, channel));
-    const double b = first + 1 < sourceFrames_ ? finiteSample(input.sample(input.context, first + 1, channel)) : 0;
-    return static_cast<float>(a * (1 - fraction) + b * fraction);
+    for (std::uint16_t channel = 0; channel < output.size(); ++channel) {
+        const double a = finiteSample(input.sample(input.context, first, channel));
+        const double b = first + 1 < sourceFrames_ ? finiteSample(input.sample(input.context, first + 1, channel)) : 0;
+        output[channel] = static_cast<float>(a * (1 - fraction) + b * fraction);
+    }
 }
 
 void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStreamClock clock,
@@ -225,6 +274,7 @@ void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStrea
     const auto last = static_cast<std::int64_t>(std::floor((frame + static_cast<double>(half)) / hop));
     double weights = 0;
     std::array<double, 64> mix{};
+    std::array<float, 64> grainPcm;
     for (auto index = first; index <= last; ++index) {
         const auto center = static_cast<double>(index * grainHop_);
         const double phase = (frame - center + static_cast<double>(half)) / grain;
@@ -232,8 +282,9 @@ void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStrea
         const double jitter = (static_cast<double>(grainRandom(seed_, index) >> 11) / 0x1p53 - 0.5) *
             (2 * grainJitterFrames_);
         const double readAt = sourceAtTick(clock.tickAtFrame(clock.context, center)) + jitter + (frame - center) * pitch_;
+        sampleFrame(input, readAt, {grainPcm.data(), output.size()});
         for (std::uint16_t channel = 0; channel < output.size(); ++channel)
-            mix[channel] += sample(input, readAt, channel) * weight;
+            mix[channel] += grainPcm[channel] * weight;
         weights += weight;
     }
     if (weights > 0)
@@ -241,17 +292,15 @@ void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStrea
             output[channel] = static_cast<float>(mix[channel] / weights);
 }
 
-void StreamingWarp::renderRePitch(double frame, double source, WarpStreamInput input, WarpStreamClock clock,
-                                  std::span<float> output) const noexcept {
-    const double stride = sourceAtTick(clock.tickAtFrame(clock.context, frame + 1)) - source;
-    if (!(stride >= 1.0 / maxSincStride && stride <= maxSincStride)) return;
-    // The same bandwidth reduction and gain normalization as libsamplerate
-    // applies when decimating. At unity, the impulse table is its kernel.
-    const double cutoff = 1 / std::max(1.0, stride);
-    const double radius = sincHalfWidth / cutoff;
+void StreamingWarp::sincFrame(WarpStreamInput input, double source, double cutoff,
+                             std::span<float> output) const noexcept {
+    const double radius = sincHalfWidth_ / cutoff;
     const double from = std::max(0.0, std::ceil(source - radius));
     const double to = std::min(static_cast<double>(sourceFrames_ - 1), std::floor(source + radius));
-    if (from > to) return;
+    if (from > to) {
+        std::fill_n(output.data(), output.size(), 0.0f);
+        return;
+    }
     const auto first = static_cast<std::int64_t>(from);
     const auto last = static_cast<std::int64_t>(to);
     std::array<double, 64> mix{};
@@ -285,34 +334,45 @@ void StreamingWarp::renderRePitch(double frame, double source, WarpStreamInput i
         output[channel] = static_cast<float>(mix[channel] * cutoff);
 }
 
-void StreamingWarp::renderFrame(std::int64_t outputFrame, WarpStreamInput input, WarpStreamClock clock,
+bool StreamingWarp::renderRePitch(double frame, double source, WarpStreamInput input, WarpStreamClock clock,
+                                  std::span<float> output) const noexcept {
+    const double stride = sourceAtTick(clock.tickAtFrame(clock.context, frame + 1)) - source;
+    // Account for one frame's subtraction at a long absolute source position.
+    const double error = 2 * std::numeric_limits<double>::epsilon() * (std::abs(source) + maxSincStride);
+    if (!(stride > 0 && stride + error >= 1.0 / maxSincStride && stride - error <= maxSincStride)) return false;
+    // The same bandwidth reduction and gain normalization as libsamplerate
+    // applies when decimating. At unity, the impulse table is its kernel.
+    sincFrame(input, source, 1 / std::clamp(stride, 1.0, maxSincStride), output);
+    return true;
+}
+
+bool StreamingWarp::renderFrame(std::int64_t outputFrame, WarpStreamInput input, WarpStreamClock clock,
                                 std::span<float> output) const noexcept {
     std::fill_n(output.data(), output.size(), 0.0f);
-    if (!input.sample || !clock.tickAtFrame || !clock.frameAtTick || output.empty()) return;
+    if (!input.sample || !clock.tickAtFrame || !clock.frameAtTick || output.empty()) return true;
     output = output.first(std::min<std::size_t>(channels_, output.size()));
     const double frame = static_cast<double>(outputFrame);
     const auto tick = clock.tickAtFrame(clock.context, frame);
     const auto endFrame = std::round(clock.frameAtTick(clock.context, static_cast<double>(markers_.back().tick)));
-    if (!std::isfinite(tick) || frame >= endFrame) return;
+    if (!std::isfinite(tick) || frame >= endFrame) return true;
     if (mode_ == WarpMode::Beats) {
         const auto slice = sliceAtFrame(frame, clock);
-        const double start = static_cast<double>(slices_[slice].frame);
-        const double span = static_cast<double>(slices_[slice + 1].frame - slices_[slice].frame);
-        const double startFrame = sliceStartFrame(slice, clock);
-        const double local = (frame - startFrame) * pitch_;
-        if (!(local >= 0)) return;
+        const double start = static_cast<double>(slices_[slice.index].frame);
+        const double span = static_cast<double>(slices_[slice.index + 1].frame - slices_[slice.index].frame);
+        const double local = (frame - slice.outputFrame) * pitch_;
+        if (!(local >= 0)) return true;
         const double readAt = beatsReadAt(local, span);
-        if (readAt < 0) return;
+        if (readAt < 0) return true;
         const double gain = std::exp(-beatsEnvelopeRate * (1 - transientEnvelope_) * local / span);
+        sampleFrame(input, start + readAt, output);
         for (std::uint16_t channel = 0; channel < output.size(); ++channel)
-            output[channel] = static_cast<float>(sample(input, start + readAt, channel) * gain);
-        return;
+            output[channel] = static_cast<float>(output[channel] * gain);
+        return true;
     }
-    if (frame < std::round(clock.frameAtTick(clock.context, 0))) return;
-    if (mode_ == WarpMode::Texture)
-        renderTexture(frame, input, clock, output);
-    else
-        renderRePitch(frame, sourceAtTick(tick), input, clock, output);
+    if (frame < std::round(clock.frameAtTick(clock.context, 0))) return true;
+    if (mode_ == WarpMode::RePitch) return renderRePitch(frame, sourceAtTick(tick), input, clock, output);
+    renderTexture(frame, input, clock, output);
+    return true;
 }
 
 WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::int64_t lastOutputFrame,
@@ -325,8 +385,8 @@ WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::i
     double end = 0;
     switch (mode_) {
     case WarpMode::Beats: {
-        const auto a = sliceAtFrame(first, clock);
-        const auto b = sliceAtFrame(last, clock);
+        const auto a = sliceAtFrame(first, clock).index;
+        const auto b = sliceAtFrame(last, clock).index;
         if (a == b) {
             const auto range = beatsRange(first, last, a, clock);
             begin = range.first;
@@ -351,9 +411,14 @@ WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::i
         break;
     }
     case WarpMode::RePitch: {
-        const double maxStride = clock.maxTicksPerFrame > 0 ? clock.maxTicksPerFrame * maxFramesPerTick_ : maxSincStride;
-        const double stride = first == last ? at(first + 1) - at(first) : maxStride;
-        const double radius = sincHalfWidth * std::clamp(stride, 1.0, maxSincStride);
+        double stride = maxSincStride;
+        if (first == last) {
+            stride = at(first + 1) - at(first);
+        } else if (clock.maxTicksPerFrame > 0) {
+            stride = clock.maxTicksPerFrame * maxFramesPerTick(clock.tickAtFrame(clock.context, first),
+                                                               clock.tickAtFrame(clock.context, last + 1));
+        }
+        const double radius = sincHalfWidth_ * std::clamp(stride, 1.0, maxSincStride);
         begin = at(first) - radius;
         end = at(last) + radius + 1;
         break;
@@ -362,6 +427,11 @@ WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::i
         return {};
     }
     if (!std::isfinite(begin) || !std::isfinite(end) || end <= begin) return {};
+    if (nativeCutoff_ != 0) {
+        const auto radius = sincHalfWidth_ / nativeCutoff_;
+        begin -= radius;
+        end += radius;
+    }
     const auto length = static_cast<double>(sourceFrames_);
     return {static_cast<std::int64_t>(std::clamp(std::floor(begin), 0.0, length)),
             static_cast<std::int64_t>(std::clamp(std::ceil(end), 0.0, length))};

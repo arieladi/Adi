@@ -101,19 +101,27 @@ void arrange(Store& store) {
 
 using Channels = std::array<std::vector<float>, 2>;
 
-Channels render(Session& session, std::int64_t frames) {
+Channels render(Session& session, Precision precision, std::int64_t frames) {
     Channels channels{std::vector<float>(static_cast<std::size_t>(frames)),
                       std::vector<float>(static_cast<std::size_t>(frames))};
+    std::array<double, block> left{}, right{};
+    double* wide[]{left.data(), right.data()};
     for (std::int64_t first = 0; first < frames;) {
         require(session.clips()->prime(std::chrono::seconds(5)), "prime latency proof source pages");
         float* out[]{channels[0].data() + first, channels[1].data() + first};
         AudioIo io;
-        io.out = out;
+        if (precision == Precision::Float64) io.out64 = wide;
+        else io.out = out;
         io.numOut = 2;
         io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(frames - first, block));
         {
             const audio::CallbackScope callback;
             session.process(io);
+        }
+        if (precision == Precision::Float64) {
+            for (std::size_t channel = 0; channel < channels.size(); ++channel)
+                std::transform(wide[channel], wide[channel] + io.frames, out[channel],
+                               [](double sample) { return static_cast<float>(sample); });
         }
         first += io.frames;
     }
@@ -154,6 +162,48 @@ void checkAlignment(const Channels& audio, std::int64_t frame, std::int32_t late
     require(dry == expected, "PDC delays the dry track by the reported latency exactly");
     require(std::abs(error) <= tolerance, "Complex and the dry pulse align at the master");
 }
+
+void runAlignment(Store& store, Precision precision, bool readAhead) {
+    Session session;
+    SessionSpec spec{2, rate, block};
+    spec.precision = precision;
+    spec.synchronousClipReads = !readAhead;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, spec)) throw std::runtime_error(session.error());
+    const auto* graph = session.graph().currentGraph();
+    require(graph != nullptr, "session has a master graph");
+    const auto latency = graph->latencySamples();
+    std::printf("Complex session graph: %d samples at %u Hz, %s, %s\n", latency, rate,
+                precision == Precision::Float64 ? "64-bit" : "32-bit",
+                readAhead ? "worker read-ahead" : "synchronous current-block reads");
+    require(latency > 0, "real-time Complex declares its source delay to the graph");
+
+    const auto landmark = static_cast<std::int64_t>(rampPulseFrame());
+    constexpr auto rampTolerance = rate / 500; // 2 ms at the signal crest
+    const auto fileIoBefore = audio::callbackFileIo.load();
+    session.transport().locate(0);
+    session.transport().play();
+    const auto rolling = render(session, precision, landmark + latency + 4096);
+    checkAlignment(rolling, earlyPulse, latency, 4, "Constant tempo after start");
+    checkAlignment(rolling, landmark, latency, rampTolerance, "Inside tempo ramp while rolling");
+    const auto silenceStart = static_cast<std::size_t>((earlyPulse + landmark) / 2 + latency - rate / 2);
+    const auto silentRms = rms(std::span(rolling[0]).subspan(silenceStart, rate));
+    std::printf("Complex silent middle second: RMS %.4g\n", silentRms);
+    require(silentRms < 1e-6, "Complex preserves the silent middle second");
+
+    session.transport().play(false);
+    const auto stopped = render(session, precision, block);
+    for (const auto& channel : stopped)
+        require(std::all_of(channel.begin(), channel.end(), [](float sample) { return sample == 0; }),
+                "stop leaves no stale Complex pulse");
+
+    constexpr auto seekLead = 12000;
+    session.transport().locate(landmark - seekLead);
+    session.transport().play();
+    const auto afterSeek = render(session, precision, seekLead + latency + 4096);
+    checkAlignment(afterSeek, seekLead, latency, rampTolerance, "Inside tempo ramp after seek");
+    require(audio::callbackFileIo.load() == fileIoBefore, "Complex source reads stay off the audio thread");
+}
 } // namespace
 
 int main() {
@@ -163,39 +213,9 @@ int main() {
         auto store = Store::createEmpty(tmp.path() / "alignment.adi", error);
         if (!store) throw std::runtime_error(toString(error));
         arrange(*store);
-
-        Session session;
-        session.graph().setFadeFrames(0);
-        if (!session.load(*store, {}, SessionSpec{2, rate, block})) throw std::runtime_error(session.error());
-        const auto* graph = session.graph().currentGraph();
-        require(graph != nullptr, "session has a master graph");
-        const auto latency = graph->latencySamples();
-        std::printf("Complex session graph reports %d samples of latency at %u Hz\n", latency, rate);
-        require(latency > 0, "real-time Complex declares its source delay to the graph");
-
-        const auto landmark = static_cast<std::int64_t>(rampPulseFrame());
-        constexpr auto rampTolerance = rate / 500; // 2 ms at the signal crest
-        session.transport().locate(0);
-        session.transport().play();
-        const auto rolling = render(session, landmark + latency + 4096);
-        checkAlignment(rolling, earlyPulse, latency, 4, "Constant tempo after start");
-        checkAlignment(rolling, landmark, latency, rampTolerance, "Inside tempo ramp while rolling");
-        const auto silenceStart = static_cast<std::size_t>((earlyPulse + landmark) / 2 + latency - rate / 2);
-        const auto silentRms = rms(std::span(rolling[0]).subspan(silenceStart, rate));
-        std::printf("Complex silent middle second: RMS %.4g\n", silentRms);
-        require(silentRms < 1e-6, "Complex preserves the silent middle second");
-
-        session.transport().play(false);
-        const auto stopped = render(session, block);
-        for (const auto& channel : stopped)
-            require(std::all_of(channel.begin(), channel.end(), [](float sample) { return sample == 0; }),
-                    "stop leaves no stale Complex pulse");
-
-        constexpr auto seekLead = 12000;
-        session.transport().locate(landmark - seekLead);
-        session.transport().play();
-        const auto afterSeek = render(session, seekLead + latency + 4096);
-        checkAlignment(afterSeek, seekLead, latency, rampTolerance, "Inside tempo ramp after seek");
+        for (const auto precision : {Precision::Float32, Precision::Float64})
+            for (const bool readAhead : {true, false})
+                runAlignment(*store, precision, readAhead);
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::printf("FAIL: %s\n", error.what());

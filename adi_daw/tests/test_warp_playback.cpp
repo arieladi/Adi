@@ -59,13 +59,22 @@ struct Fixture {
     std::vector<double> render(std::size_t frames,Precision width) {
         std::vector<double> result(frames*2);std::array<float,2048> narrow{};std::array<double,2048> wide{};
         float* out[]={narrow.data(),narrow.data()+1024};double* out64[]={wide.data(),wide.data()+1024};
-        for(std::size_t first=0;first<frames;) {
-            const auto count=static_cast<std::int32_t>(std::min<std::size_t>(1024,frames-first));
+        // Compare Arrangement frames at their compensated output positions,
+        // including when a seek or play starts the source delay pipeline.
+        const auto* graph=session.graph().currentGraph();
+        const auto delay=graph?graph->latencySamples():0;
+        const auto preroll=static_cast<std::size_t>(std::max<std::int64_t>(0,delay-session.transport().streamedFrames()));
+        const auto rawFrames=frames+preroll;
+        for(std::size_t first=0;first<rawFrames;) {
+            const auto count=static_cast<std::int32_t>(std::min<std::size_t>(1024,rawFrames-first));
             if(!session.clips()->prime(std::chrono::seconds(5)))throw std::runtime_error("prime warped project");
             AudioIo io;io.frames=count;io.numOut=2;if(width==Precision::Float64)io.out64=out64;else io.out=out;
             {audio::CallbackScope scope;session.process(io);}
-            for(std::size_t channel=0;channel<2;++channel)for(std::int32_t frame=0;frame<count;++frame)
-                result[(first+static_cast<std::size_t>(frame))*2+channel]=width==Precision::Float64?wide[channel*1024+static_cast<std::size_t>(frame)]:narrow[channel*1024+static_cast<std::size_t>(frame)];
+            for(std::size_t channel=0;channel<2;++channel)for(std::int32_t frame=0;frame<count;++frame) {
+                const auto position=first+static_cast<std::size_t>(frame);
+                if(position>=preroll)
+                    result[(position-preroll)*2+channel]=width==Precision::Float64?wide[channel*1024+static_cast<std::size_t>(frame)]:narrow[channel*1024+static_cast<std::size_t>(frame)];
+            }
             first+=static_cast<std::size_t>(count);
         }
         return result;

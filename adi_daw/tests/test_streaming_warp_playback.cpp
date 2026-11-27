@@ -10,6 +10,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
+#include "adi/render/queue.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 
@@ -137,7 +138,8 @@ struct Project {
         const auto digest = media::blake3File(source);
         if (!digest) throw std::runtime_error("hash Warp proof fixture");
         auto& db = store->db();
-        db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Warp'),(9,'master','Main')");
+        db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Warp proof',48000);"
+                "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Warp'),(9,'master','Main')");
         SQLite::Statement mediaRow(db, "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
                                         "VALUES(1,?,'source.wav','wav',48000,2,?)");
         mediaRow.bind(1, digest.hex);
@@ -163,18 +165,21 @@ struct Project {
         warp.exec();
     }
 
-    void tempo(int initialCurve, std::int64_t boundary, double bpm, double initialBpm = 120.0) {
+    void tempo(int initialCurve, std::int64_t boundary, double bpm, double initialBpm = 120.0,
+               double tension = 0.0) {
         auto& db = store->db();
         db.exec("DELETE FROM tempo_map");
-        SQLite::Statement row(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(?,?,?)");
+        SQLite::Statement row(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(?,?,?,?)");
         row.bind(1, 0);
         row.bind(2, initialBpm);
         row.bind(3, initialCurve);
+        row.bind(4, tension);
         row.exec();
         row.reset();
         row.bind(1, boundary);
         row.bind(2, bpm);
         row.bind(3, 0);
+        row.bind(4, 0.0);
         row.exec();
     }
 
@@ -330,14 +335,22 @@ void typedTempo() {
           "the first callback after a typed tempo has ready source audio");
 }
 
-void steadyTempo(std::string_view mode, double bpm) {
+std::vector<StereoFrame> compensatedPlayback(Session& session, std::size_t frames, std::int32_t blockFrames) {
+    const auto* graph = session.graph().currentGraph();
+    if (!graph || graph->latencySamples() < 0) throw std::runtime_error("read Warp graph latency");
+    const auto latency = static_cast<std::size_t>(graph->latencySamples());
+    std::vector<StereoFrame> raw(frames + latency);
+    render(session, Precision::Float32, raw, blockFrames);
+    return {raw.begin() + static_cast<std::ptrdiff_t>(latency), raw.end()};
+}
+
+void steadyTempo(std::string_view mode, double bpm, float peakTolerance = 0.002f, double rmsTolerance = 0.0001) {
     Project project(mode);
     project.tempo(0, arrangementBeats * quarter, bpm, bpm);
     Session session;
     project.load(session, Precision::Float32, sourceRate);
     const auto outputFrames = static_cast<std::uint32_t>(std::llround(sourceFrames * 120.0 / bpm));
-    std::vector<StereoFrame> heard(outputFrames);
-    render(session, Precision::Float32, heard, maxFrames);
+    const auto heard = compensatedPlayback(session, outputFrames, maxFrames);
     audio::WarpRenderPlan plan;
     plan.source = project.source;
     plan.workFolder = project.temporary.path() / "prepared";
@@ -368,8 +381,110 @@ void steadyTempo(std::string_view mode, double bpm) {
     const auto rms = std::sqrt(power / (outputFrames - 2 * edgeFrames));
     std::printf("steady %s at %.0f BPM: streamed/prepared peak difference %.6f, RMS %.6f\n",
                 mode.data(), bpm, peakError, rms);
-    check(peakError <= 0.002f && rms <= 0.0001,
+    check(peakError <= peakTolerance && rms <= rmsTolerance,
           "steady-tempo streaming matches the prepared reference within tolerance");
+}
+
+constexpr double bezierTension = 0.72;
+
+double bezierSecondsAtBeat(double beat) {
+    // Independently integrate dseconds = 60 / bpm dbeats in the authored
+    // quadratic Bezier parameter rather than using the engine's clock.
+    const auto fraction = beat / arrangementBeats;
+    auto lo = 0.0, hi = 1.0;
+    for (int step = 0; step < 48; ++step) {
+        const auto middle = (lo + hi) / 2;
+        const auto x = middle + bezierTension * middle * (1 - middle);
+        if (x < fraction) lo = middle;
+        else hi = middle;
+    }
+    const auto integrand = [](double t) {
+        const auto y = t - bezierTension * t * (1 - t);
+        const auto dx = 1 + bezierTension * (1 - 2 * t);
+        return 60 * arrangementBeats * dx / (120 + 20 * y);
+    };
+    constexpr int intervals = 256;
+    const auto dt = (lo + hi) / (2 * intervals);
+    auto sum = integrand(0) + integrand(dt * intervals);
+    for (int i = 1; i < intervals; ++i) {
+        sum += (i % 2 == 0 ? 2 : 4) * integrand(dt * i);
+    }
+    return dt * sum / 3;
+}
+
+std::vector<StereoFrame> exportWav(const std::filesystem::path& project, std::size_t frames) {
+    render::Job job;
+    job.project = project;
+    job.directory = project.parent_path();
+    job.endSample = static_cast<std::int64_t>(frames);
+    job.session = SessionSpec{2, sourceRate, 179};
+    job.encoding.format = audio::WavFormat::Float32;
+    const auto result = render::renderMasterWav(job, {});
+    if (result.state != render::JobState::Completed || result.framesWritten != frames) {
+        throw std::runtime_error("export Warp proof WAV: " + result.error);
+    }
+    audio::WavReader reader(result.output);
+    if (reader.frames() != frames || reader.channels() != 2 || reader.sampleRate() != sourceRate) {
+        throw std::runtime_error("verify Warp proof WAV format and length");
+    }
+    std::vector<float> samples(frames * 2);
+    if (reader.read(samples.data(), static_cast<std::uint32_t>(frames)) != frames) {
+        throw std::runtime_error("read Warp proof WAV");
+    }
+    std::vector<StereoFrame> stereo(frames);
+    for (std::size_t i = 0; i < frames; ++i) stereo[i] = {samples[2 * i], samples[2 * i + 1]};
+    return stereo;
+}
+
+void playbackExportAndReopen(std::string_view mode, bool bezier) {
+    Project project(mode);
+    if (bezier) project.tempo(2, arrangementBeats * quarter, 140, 120, bezierTension);
+    const auto secondsAtBeat = bezier ? bezierSecondsAtBeat : +[](double beat) { return beat / 2; };
+    const auto frames = static_cast<std::size_t>(std::llround(sourceRate * secondsAtBeat(arrangementBeats))) + sourceRate / 10;
+    const auto seek = static_cast<std::size_t>(std::llround(sourceRate * secondsAtBeat(3))) - 137;
+    const auto savedDirectory = project.temporary.path() / "saved";
+    std::filesystem::create_directory(savedDirectory);
+    const auto saved = savedDirectory / "copy.adi";
+    std::vector<StereoFrame> original;
+    bool seekMatches = false;
+    {
+        Session session;
+        project.load(session, Precision::Float32, sourceRate);
+        original = compensatedPlayback(session, frames, 257);
+        check(mode != "complex" || session.graph().currentGraph()->latencySamples() > 0,
+              "steady Complex playback goes through the latency-reporting streaming R3 path");
+        const auto error = beatLandmarks(original, sourceRate, secondsAtBeat, mode.data());
+        check(error <= (bezier ? 4 : 64), "native Warp acceptance fixture lands on its authored beat grid");
+
+        // Jump back past the page cache's retained tail, then start a different
+        // callback partition. The range crosses the pulse 137 frames after seek.
+        session.transport().play(false);
+        session.transport().locate(static_cast<std::int64_t>(seek));
+        session.transport().play();
+        const auto sought = compensatedPlayback(session, 4096, 113);
+        seekMatches = std::equal(sought.begin(), sought.end(), original.begin() + static_cast<std::ptrdiff_t>(seek));
+        check(seekMatches,
+              "offline timeline and stop, cold seek, and play return the same compensated PCM");
+        check(session.clips()->underrunSamples() == 0 && session.clips()->readErrors() == 0,
+              "native playback and cold seek complete without underruns or read errors");
+        const auto result = project.store->saveAs(saved);
+        if (!result.ok) throw std::runtime_error("save Warp proof project: " + result.error);
+    }
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(saved, openError);
+    if (!project.store) throw std::runtime_error(toString(openError));
+    Session reopenedSession;
+    project.load(reopenedSession, Precision::Float32, sourceRate);
+    const auto reopened = compensatedPlayback(reopenedSession, frames, 311);
+    const auto exported = exportWav(saved, frames);
+    const auto reopenMatches = original == reopened;
+    const auto exportMatches = original == exported;
+    check(reopenMatches, "closing and reopening the saved Warp project preserves compensated PCM bit for bit");
+    check(exportMatches, "queued Float32 WAV export equals compensated native playback bit for bit");
+    std::printf("M2-A-WARP 7 %s: %zu stereo frames, graph latency %d samples, cold seek %s, reopen %s, export %s\n",
+                mode.data(), frames, reopenedSession.graph().currentGraph()->latencySamples(),
+                seekMatches ? "exact" : "different", reopenMatches ? "exact" : "different", exportMatches ? "exact" : "different");
 }
 }
 
@@ -390,6 +505,11 @@ int main() {
         steadyTempo("beats", 120.0);
         steadyTempo("re-pitch", 100.0);
         steadyTempo("texture", 120.0);
+        // Real-time and offline R3 use different spectral histories around
+        // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.
+        steadyTempo("complex", 120.0, 0.08f, 0.004);
+        playbackExportAndReopen("complex", false);
+        playbackExportAndReopen("beats", true);
     } catch (const std::exception& error) {
         check(false, error.what());
     }

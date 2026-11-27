@@ -49,7 +49,9 @@ public:
 
     /// Render one frame into source-channel order. Unavailable source frames
     /// are returned as zero by the reader. No callback allocation or I/O.
-    void renderFrame(std::int64_t outputFrame, WarpStreamInput, WarpStreamClock,
+    /// False means that Re-Pitch refused the instantaneous source/output
+    /// ratio. Output is silent in that case.
+    bool renderFrame(std::int64_t outputFrame, WarpStreamInput, WarpStreamClock,
                      std::span<float> output) const noexcept;
 
     /// Bounds on PCM required for inclusive output frames in one monotone
@@ -68,19 +70,27 @@ private:
         std::int64_t frame;
         double tick;
     };
+    struct SliceLocation {
+        std::size_t index;
+        double outputFrame;
+    };
 
-    [[nodiscard]] std::size_t sliceAtFrame(double frame, WarpStreamClock) const noexcept;
+    [[nodiscard]] SliceLocation sliceAtFrame(double frame, WarpStreamClock) const noexcept;
     [[nodiscard]] double sliceStartFrame(std::size_t slice, WarpStreamClock) const noexcept;
     [[nodiscard]] double beatsReadAt(double local, double span) const noexcept;
     [[nodiscard]] std::pair<double, double> beatsRange(double first, double last, std::size_t slice,
                                                       WarpStreamClock) const noexcept;
-    [[nodiscard]] float sample(WarpStreamInput, double position, std::uint16_t channel) const noexcept;
+    [[nodiscard]] double maxFramesPerTick(double firstTick, double lastTick) const noexcept;
+    void sampleFrame(WarpStreamInput, double position, std::span<float>) const noexcept;
+    void sincFrame(WarpStreamInput, double position, double cutoff, std::span<float>) const noexcept;
     void renderTexture(double frame, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
-    void renderRePitch(double frame, double source, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
+    bool renderRePitch(double frame, double source, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
 
     std::vector<WarpMarker> markers_;
     std::vector<Slice> slices_;
     const float* sinc_ = nullptr;
+    int sincHalfWidth_ = 0;
+    double nativeCutoff_ = 0;
     std::int64_t sourceFrames_ = 0;
     std::int64_t grain_ = 0;
     std::int64_t grainHop_ = 0;

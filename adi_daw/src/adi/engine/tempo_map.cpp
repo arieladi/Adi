@@ -2,11 +2,13 @@
 #include "adi/engine/snapshot.hpp"
 
 #include "adi/engine/curves.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include "adi/store_rows.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 namespace adi::engine {
 namespace {
@@ -22,8 +24,8 @@ bool isRamp(const TempoEvent& left, const TempoEvent& right) noexcept {
     return (left.curve == 1 || left.curve == 2) && span.firstBpm != span.lastBpm;
 }
 
-long double fraction(const TempoRampSpan& span, std::int64_t tick) noexcept {
-    return static_cast<long double>(tick - span.firstTick) /
+long double fraction(const TempoRampSpan& span, long double tick) noexcept {
+    return (tick - span.firstTick) /
            static_cast<long double>(span.lastTick - span.firstTick);
 }
 
@@ -62,17 +64,29 @@ long double integral(long double start, long double change, long double shape,
     return 2 * reciprocal - std::log1p(delta) / change;
 }
 
-double segmentSeconds(const TempoEvent& left, const TempoEvent& right, std::int64_t tick) noexcept {
-    if (tick <= left.posTicks) return 0.0;
-    if (!isRamp(left, right))
-        return static_cast<double>(tick - left.posTicks) / ticksPerQuarter * 60.0 / left.bpm;
+long double rampSeconds(const TempoEvent& left, const TempoEvent& right, long double tick) noexcept {
     const auto span = spanFor(left, right);
     const auto quarters = static_cast<long double>(span.lastTick - span.firstTick) / ticksPerQuarter;
     const long double change = static_cast<long double>(span.lastBpm) - span.firstBpm;
     const auto tension = tensionOf(left);
     const auto begin = integral(span.firstBpm, change, tension, fraction(span, left.posTicks));
     const auto end = integral(span.firstBpm, change, tension, fraction(span, tick));
-    return static_cast<double>(60 * quarters * (end - begin));
+    return 60 * quarters * (end - begin);
+}
+
+double segmentSeconds(const TempoEvent& left, const TempoEvent& right, std::int64_t tick) noexcept {
+    if (tick <= left.posTicks) return 0.0;
+    if (!isRamp(left, right))
+        return static_cast<double>(tick - left.posTicks) / ticksPerQuarter * 60.0 / left.bpm;
+    return static_cast<double>(rampSeconds(left, right, tick));
+}
+
+double segmentBpm(const TempoEvent& left, const TempoEvent& right, long double tick) noexcept {
+    if (!isRamp(left, right)) return left.bpm;
+    const auto span = spanFor(left, right);
+    const auto x = static_cast<double>(fraction(span, tick));
+    return curveValue(span.firstBpm, span.lastBpm, x, static_cast<std::uint8_t>(CurveShape::Bezier),
+                      tensionOf(left));
 }
 
 std::int64_t stepTick(const TempoEvent& left, double elapsed, double seconds) noexcept {
@@ -102,13 +116,7 @@ double TempoMap::bpmAt(std::int64_t ticks) const noexcept {
     if (events.empty()) return 120.0;
     auto left = TempoEvent{0, events.front().bpm, 0, 0};
     for (const auto& right : events) {
-        if (right.posTicks > ticks) {
-            if (!isRamp(left, right)) return left.bpm;
-            const auto span = spanFor(left, right);
-            const auto x = static_cast<double>(fraction(span, ticks));
-            return curveValue(span.firstBpm, span.lastBpm, x, static_cast<std::uint8_t>(CurveShape::Bezier),
-                              tensionOf(left));
-        }
+        if (right.posTicks > ticks) return segmentBpm(left, right, ticks);
         left = right;
     }
     return left.bpm;
@@ -178,5 +186,121 @@ long double TempoMap::positionAtSeconds(long double seconds) const noexcept {
     const auto finish = static_cast<long double>(ticksToSeconds(anchor + 1));
     if (finish <= start) return static_cast<long double>(anchor);
     return static_cast<long double>(anchor) + std::clamp((seconds - start) / (finish - start), 0.0L, 1.0L);
+}
+
+struct WarpArrangementClock::Segment {
+    TempoEvent left, right;
+    double startFrame, endFrame;
+
+    [[nodiscard]] long double secondsAtTick(long double tick) const noexcept {
+        if (isRamp(left, right)) return rampSeconds(left, right, tick);
+        return (tick - left.posTicks) * 60 / (ticksPerQuarter * left.bpm);
+    }
+};
+
+WarpArrangementClock::WarpArrangementClock(std::span<const rows::TempoEvent> rows, double sampleRate)
+    : WarpArrangementClock(TempoMap::fromRows(rows), sampleRate) {}
+
+WarpArrangementClock::WarpArrangementClock(const TempoMap& tempo, double sampleRate)
+    : sampleRate_(sampleRate), minimumBpm_(tempo.bpmAt(0)), maximumBpm_(minimumBpm_) {
+    segments_.reserve(tempo.events.size() + 1);
+    auto left = TempoEvent{0, tempo.events.empty() ? 120.0 : tempo.events.front().bpm, 0, 0};
+    double seconds = 0;
+    for (const auto& right : tempo.events) {
+        if (right.posTicks > left.posTicks) {
+            const double duration = segmentSeconds(left, right, right.posTicks);
+            const double first = segmentBpm(left, right, left.posTicks);
+            const double last = segmentBpm(left, right, right.posTicks);
+            minimumBpm_ = std::min({minimumBpm_, first, last});
+            maximumBpm_ = std::max({maximumBpm_, first, last});
+            segments_.push_back({left, right, seconds * sampleRate_, (seconds + duration) * sampleRate_});
+            seconds += duration;
+        }
+        left = right;
+    }
+    minimumBpm_ = std::min(minimumBpm_, left.bpm);
+    maximumBpm_ = std::max(maximumBpm_, left.bpm);
+    // The final point holds its BPM. Discard any performance-only curve span
+    // on that point since it has no outgoing destination.
+    left.curve = 0;
+    segments_.push_back({left, left, seconds * sampleRate_, std::numeric_limits<double>::infinity()});
+}
+
+WarpArrangementClock::~WarpArrangementClock() = default;
+
+const WarpArrangementClock::Segment& WarpArrangementClock::segmentAtTick(double tick) const noexcept {
+    const auto* first = segments_.data();
+    const auto* next = std::upper_bound(first, first + segments_.size(), tick,
+        [](double value, const Segment& segment) { return value < static_cast<double>(segment.left.posTicks); });
+    return next == first ? *first : *(next - 1);
+}
+
+const WarpArrangementClock::Segment& WarpArrangementClock::segmentAtFrame(double frame) const noexcept {
+    const auto* first = segments_.data();
+    const auto* next = std::upper_bound(first, first + segments_.size(), frame,
+        [](double value, const Segment& segment) { return value < segment.startFrame; });
+    return next == first ? *first : *(next - 1);
+}
+
+double WarpArrangementClock::frameAtTick(double tick) const noexcept {
+    if (tick < 0) return tick * framesPerTickAt(0);
+    const auto& segment = segmentAtTick(tick);
+    const long double frame = segment.startFrame + segment.secondsAtTick(tick) * sampleRate_;
+    return static_cast<double>(frame);
+}
+
+double WarpArrangementClock::tickAtFrame(double frame) const noexcept {
+    if (frame < 0) return frame / framesPerTickAt(0);
+    const auto& segment = segmentAtFrame(frame);
+    const auto& left = segment.left;
+    const auto& right = segment.right;
+    const double startTick = static_cast<double>(left.posTicks);
+    const double elapsed = (frame - segment.startFrame) / sampleRate_;
+    if (!isRamp(left, right)) return startTick + elapsed * left.bpm * ticksPerQuarter / 60;
+
+    const auto span = spanFor(left, right);
+    const double tension = tensionOf(left);
+    const double firstBpm = segmentBpm(left, right, left.posTicks);
+    if (tension == 0) {
+        const double slope = (span.lastBpm - span.firstBpm) / static_cast<double>(span.lastTick - span.firstTick);
+        return startTick + firstBpm / slope * std::expm1(slope * elapsed * ticksPerQuarter / 60);
+    }
+
+    // Newton steps use the derivative of the same integral as placement.
+    // Keep a bracket so even the steep endpoint of a full-tension curve
+    // converges without unbounded callback work or per-sample state.
+    double low = startTick;
+    double high = static_cast<double>(right.posTicks);
+    double tick = std::lerp(low, high, (frame - segment.startFrame) / (segment.endFrame - segment.startFrame));
+    for (int i = 0; i < 48; ++i) {
+        const double error = static_cast<double>(segment.secondsAtTick(tick)) - elapsed;
+        if (std::abs(error * sampleRate_) < 1.0e-8) break;
+        if (error > 0) high = tick;
+        else low = tick;
+        const double bpm = segmentBpm(left, right, tick);
+        const double next = tick - error * bpm * ticksPerQuarter / 60;
+        const auto candidate = next > low && next < high ? next : std::midpoint(low, high);
+        if (candidate == tick) break;
+        tick = candidate;
+    }
+    return tick;
+}
+
+double WarpArrangementClock::framesPerTickAt(double tick) const noexcept {
+    const auto& segment = segmentAtTick(tick);
+    const double bpm = segmentBpm(segment.left, segment.right, tick);
+    return sampleRate_ * 60 / (ticksPerQuarter * bpm);
+}
+
+double WarpArrangementClock::constantFramesPerTick() const noexcept {
+    return minimumBpm_ == maximumBpm_ ? framesPerTickAt(0) : 0;
+}
+
+double WarpArrangementClock::maxTicksPerFrame() const noexcept {
+    return maximumBpm_ * ticksPerQuarter / (sampleRate_ * 60);
+}
+
+double WarpArrangementClock::minTicksPerFrame() const noexcept {
+    return minimumBpm_ * ticksPerQuarter / (sampleRate_ * 60);
 }
 }  // namespace adi::engine
