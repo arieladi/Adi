@@ -3905,9 +3905,9 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
         return;
     auto selected = target;
     if (target.ownerKind == "routing") {
-        const auto mixer = ::adi::ui::automationChoices(*current, track, nullptr);
-        const auto found = std::find(mixer.begin(), mixer.end(), target);
-        if (found == mixer.end())
+        const auto mixerChoices = ::adi::ui::automationChoices(*current, track, nullptr);
+        const auto found = std::find(mixerChoices.begin(), mixerChoices.end(), target);
+        if (found == mixerChoices.end())
             return;
         selected = *found;
     }
