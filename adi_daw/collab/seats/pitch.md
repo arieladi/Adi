@@ -25,3 +25,10 @@
 - Cubase side-by-side gate for exact tilt anchor/range rules, adjacent segment timing, interaction with Warp, and how correcting a segment behaves after split or glue. The current engine takes explicit destination bounds and can apply adjacent changes in one batch. [Cubase manual](https://www.steinberg.help/r/cubase-pro/15.0/en/cubase_nuendo/topics/sample_editor_variaudio/sample_editor_variaudio_segment_editing_c.html)
 - Reason's exact incoming transition curve and default. The engine blends adjacent transpose offsets with a smoothstep taper and uses the documented limit of 200 ms or half the note. [Reason 14 manual](https://docs.reasonstudios.com/reason14/audio-editing-in-the-sequencer)
 - Live 12.4 track and rack names, quantization, velocities, Warp/transient mapping and Harmony's polyphony ceiling are still measurements for TM-WT-09. [Live 12 manual](https://www.ableton.com/en/live-manual/12/converting-audio-to-midi/)
+
+## Chain gate
+
+- `seats/pitch-chain` at `83601c9e`, based on `origin/main` at `17a68880`.
+- GCC 14.2 Debug with `ADI_WERROR=ON` and the headless Pd tier built successfully. The cloud disk filled during the first link pass. The completed build stripped executable debug sections at link time.
+- CTest passed 282 of 282 suites in 117.48 s. All five `tools/validate_*.py` validators and the SPEC layout check passed. Disabling pitch-cache publication in a scratch build failed the ADIA regression as expected.
+- The clip-owned schema and operation reservations are the outstanding integration dependency. All five seat log branches are present on origin.
