@@ -418,10 +418,8 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
             .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
     }
-    if (marker >= 0) {
-        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+    if (marker >= 0)
         return;
-    }
     view.followPaused = false;
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
@@ -479,7 +477,6 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
     }
     if (dragged_ < 0)
         return;
-    pan();
     const auto raw = view.geometry.tick(e.position.x) - grabbed_;
     const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
     const auto snapped = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
