@@ -7143,6 +7143,65 @@ void browserContextMenus(AppCommands &commands, const std::filesystem::path &dir
               invoke("Remove from Places") && removed == place && invoke("Rescan Library") && rescans == 2,
           "SC-129: a Place's popup offers reveal, removal and the installed rescan action");
 }
+void browserClearSearch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string why;
+    auto doc = ProjectDocument::open(dir / "browser-clear-search.adi", true, {}, why);
+    check(doc != nullptr, "SC-130: a project for the Browser search field");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(), "clear-search");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    LibraryListing listing;
+    listing.samples = {{"Kick.wav", dir / "Kick.wav", {}}, {"Snare.wav", dir / "Snare.wav", {}}};
+    browser.setListing(std::move(listing));
+    const auto samples = std::ranges::find(browser.sidebar(), true, &BrowserPanel::Entry::samples);
+    const auto clearItem = std::ranges::find_if(browser.getChildren(), [](const auto *c) { return c->getTitle() == "Clear Search"; });
+    auto *clear = clearItem == browser.getChildren().end() ? nullptr : dynamic_cast<juce::Button *>(*clearItem);
+    check(samples != browser.sidebar().end() && clear != nullptr, "SC-130: the Samples label and accessible clear button exist");
+    if (samples == browser.sidebar().end() || !clear)
+        return;
+    const int label = static_cast<int>(samples - browser.sidebar().begin());
+    browser.choose(label);
+    const auto field = browser.search.getBounds();
+    const auto initialBorder = browser.search.getBorder();
+    const auto type = [&](const juce::String &text) {
+        browser.search.setText(text, false);
+        browser.search.onTextChange();
+    };
+    const juce::KeyPress escape(juce::KeyPress::escapeKey);
+    const auto escInSearch = [&] { return browser.searchKeys().keyPressed(escape, &browser.search); };
+    check(!clear->isVisible() && !clear->getWantsKeyboardFocus() && !clear->getMouseClickGrabsKeyboardFocus() &&
+              !escInSearch(),
+          "an empty search leaves the button out of view and Escape free");
+    type("kick");
+    check(browser.shown().size() == 1 && clear->isVisible() && browser.search.getBounds() == field &&
+              clear->getBounds() == juce::Rectangle<int>(field.getRight() - 20, field.getY() + 1, 19, 19) &&
+              browser.getComponentAt(clear->getBounds().getCentre()) == clear &&
+              browser.search.getBorder().getRight() == initialBorder.getRight() + 21,
+          "typing makes the x clickable inside the same field with space reserved beside the text");
+    check(!browser.list.keyPressed(escape) && browser.search.getText() == "kick" && escInSearch() &&
+              browser.search.isEmpty() && !clear->isVisible() && browser.search.getBorder() == initialBorder &&
+              browser.shown().size() == 2 && browser.selected() == label,
+          "Escape in the search field clears the query and restores its label's results");
+    type("snare");
+    clear->onClick();
+    check(browser.search.isEmpty() && !clear->isVisible() && browser.shown().size() == 2,
+          "the x clears an ordinary query immediately");
+    type("snare");
+    const BrowserPanel::HotSwapFilter sampleSlot{{}, "OneShot", true};
+    browser.setHotSwap(sampleSlot);
+    check(browser.search.isEmpty() && !clear->isVisible(), "changing modes updates the x to match the active search");
+    type("kick");
+    clear->onClick();
+    check(browser.hotSwapActive() && browser.search.isEmpty() && !clear->isVisible() && browser.shown().size() == 2,
+          "the x clears the Hot-Swap filter while keeping that mode open");
+    type("kick");
+    check(escInSearch() && !browser.hotSwapActive() && browser.search.getText() == "snare" && clear->isVisible(),
+          "Escape keeps its Hot-Swap exit action and restores the ordinary query");
+    browser.setHotSwap(sampleSlot);
+    check(browser.search.getText() == "kick" && clear->isVisible(), "Hot-Swap keeps its own query between visits");
+}
 void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     const auto base = dir / "places-test";
@@ -26187,6 +26246,7 @@ int main(int argc, char **argv) {
     trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
+    trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });

@@ -7,6 +7,7 @@
 #include <unordered_set>
 namespace adi::ui {
 namespace {
+constexpr int kSearchClearSlot = 21;
 constexpr int kFolderIndent = 12, kFolderDisclosureWidth = 20;
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
@@ -139,12 +140,11 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     search.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     search.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible(search);
+    addChildComponent(searchClear_);
+    searchClear_.onClick = [this] { clearSearch(); };
     baseEntries_ = sidebar_.size();
     // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
-    search.onTextChange = [this] {
-        refill();
-        startSearchPluginScan();
-    };
+    search.onTextChange = [this] { searchEdited(); };
     search.onReturnKey = [this] { enterList(); };
     search.addKeyListener(&searchKeys_);
     list.setTitle("Browser content");
@@ -161,6 +161,42 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     addChildComponent(previewToggle);
     selected_ = findLabel(kFirstLabel);
     refill();
+}
+BrowserPanel::SearchClearButton::SearchClearButton() : juce::Button("Clear Search") {
+    setTitle("Clear Search");
+    setTooltip("Clear the Browser search.");
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void BrowserPanel::SearchClearButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto centre = getLocalBounds().toFloat().getCentre();
+    constexpr float radius = 3.5f;
+    g.setColour(down ? look::textBright : over ? look::text : look::textDim);
+    g.drawLine(centre.x - radius, centre.y - radius, centre.x + radius, centre.y + radius, 1.2f);
+    g.drawLine(centre.x + radius, centre.y - radius, centre.x - radius, centre.y + radius, 1.2f);
+}
+void BrowserPanel::syncSearchClearButton() {
+    auto field = search.getBounds();
+    const bool shown = !search.isEmpty() && field.getWidth() >= 2 * kSearchClearSlot;
+    searchClear_.setBounds(shown ? field.removeFromRight(kSearchClearSlot).reduced(1) : juce::Rectangle<int>{});
+    searchClear_.setVisible(shown);
+    auto border = searchBorder_;
+    if (shown)
+        border.setRight(border.getRight() + kSearchClearSlot);
+    if (search.getBorder() != border)
+        search.setBorder(border);
+}
+void BrowserPanel::searchEdited() {
+    syncSearchClearButton();
+    refill();
+    startSearchPluginScan();
+}
+bool BrowserPanel::clearSearch() {
+    if (search.isEmpty())
+        return false;
+    search.setText({}, false);
+    searchEdited();
+    return true;
 }
 BrowserPanel::PreviewToggle::PreviewToggle() : juce::Button("Browser Preview") {
     setTitle("Browser Preview");
@@ -268,7 +304,7 @@ void BrowserPanel::selectedRowsChanged(int row) {
 }
 bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
     if (k == juce::KeyPress::escapeKey)
-        return panel.cancelHotSwap();
+        return panel.cancelHotSwap() || panel.clearSearch();
     if (k != juce::KeyPress::downKey)
         return false;
     panel.enterList();
@@ -388,6 +424,7 @@ void BrowserPanel::setHotSwap(std::optional<HotSwapFilter> filter) {
         search.setText(std::exchange(idleSearch_, {}), false);
     }
     hotSwap_ = std::move(filter);
+    syncSearchClearButton();
     list.setMultipleSelectionEnabled(!hotSwap_);
     refill();
     setPreviewRowShown(false);
@@ -952,6 +989,7 @@ void BrowserPanel::resized() {
     const auto r = getLocalBounds();
     const int edge = look::border;
     search.setBounds(kStripWidth + edge, edge, std::max(0, r.getWidth() - kStripWidth - 2 * edge), 21);
+    syncSearchClearButton();
     const int top = kBarHeight, bottom = r.getHeight() - (previewRowShown_ ? kBarHeight : 0) - edge;
     const bool keepInView = selected_ >= 0 &&
         (sidebarArea_.isEmpty() || sidebarArea_.intersects(sidebarRowBounds(selected_)));

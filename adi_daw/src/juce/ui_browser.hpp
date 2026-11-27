@@ -186,7 +186,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The drag's description of these files: what the lanes accept as a drop (`dropDescription`).
     static juce::String dragDescription(const std::vector<const LibraryFile *> &);
     static juce::StringArray droppedFiles(const juce::var &description);
-    // The search field's own keys: the down arrow goes into the list.
+    // The search field's own keys: Down enters the list and Escape clears the search.
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
@@ -197,6 +197,15 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void presentContextMenu(juce::PopupMenu, const juce::MouseEvent &);
     void addRevealItem(juce::PopupMenu &, const std::filesystem::path &, bool builtin = false);
     void addRescanItem(juce::PopupMenu &);
+    void searchEdited();
+    bool clearSearch();
+    void syncSearchClearButton();
+    class SearchClearButton final : public juce::Button {
+      public:
+        SearchClearButton();
+        void paintButton(juce::Graphics &, bool over, bool down) override;
+    } searchClear_;
+    const juce::BorderSize<int> searchBorder_ = search.getBorder();
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
