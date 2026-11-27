@@ -24028,9 +24028,21 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
     check(recordFolder && available(recordFolder->key) && panel.change(*recordFolder, recordPath) &&
               settings.get(recordFolder->key) == recordPath,
           "the recording folder is editable on File & Folder");
+    const auto *sampleEditor = settings::find("files.sampleEditor");
+    const auto *sampleEditorOpens = settings::find("files.sampleEditorOpens");
+    const auto editorPath = media::pathUtf8(dir / "Sample Editor");
+    check(sampleEditor && available(sampleEditor->key) && panel.change(*sampleEditor, editorPath) &&
+              settings.get(sampleEditor->key) == editorPath,
+          "SC-213: the sample editor path is editable on File & Folder");
+    check(sampleEditorOpens && available(sampleEditorOpens->key) && panel.change(*sampleEditorOpens, "copy") &&
+              settings.get(sampleEditorOpens->key) == "copy",
+          "SC-213: the sample editor can be set to open a copy");
     panel.defaults.onClick();
     check(recordFolder && settings.get(recordFolder->key) == recordFolder->defaultValue,
           "File & Folder Restore Defaults resets the recording folder");
+    check(sampleEditor && sampleEditorOpens && settings.get(sampleEditor->key) == sampleEditor->defaultValue &&
+              settings.get(sampleEditorOpens->key) == "inPlace",
+          "SC-213: File & Folder Restore Defaults clears the editor and restores opening in place");
     panel.showPage("Devices");
     const auto *freezeTail = settings::find("devices.freezeTailSeconds");
     check(freezeTail && available(freezeTail->key) && panel.change(*freezeTail, 7.0) &&

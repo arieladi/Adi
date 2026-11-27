@@ -15,6 +15,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -82,7 +83,7 @@ void replaceWarpedSource() {
     check(db.execAndGet("SELECT media_id=18 AND warp_enabled=1 AND warp_mode='complex' AND transpose_semis=2.5 FROM audio_clips WHERE clip_id=7").getInt()==1 &&
           db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=7").getString()==originalMap &&
           db.execAndGet("SELECT media_id FROM audio_clips WHERE clip_id=12").getInt64()==8 &&
-          db.execAndGet("SELECT gain_db FROM clips WHERE id=7").getDouble()==-7.,
+          std::abs(db.execAndGet("SELECT gain_db FROM clips WHERE id=7").getDouble() + 7.0) < 1e-6,
           "equal-duration replacement retains exact marker bytes and settings and leaves the other clip alone");
     History history(store);
     check(history.undo().ok && digestProject(store).text==before,"undo restores the original source and every clip property");

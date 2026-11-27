@@ -2068,7 +2068,7 @@ void importWithChoices(const std::filesystem::path &dir) {
     doc->synchronise();
     const auto *recalledTrack = doc->view().current()->findTrack(audioTrack);
     check(recalled != 0 && recalledTrack && recalledTrack->clips.size() == 2 &&
-              recalledTrack->clips.back()->id == recalled && recalledTrack->clips.back()->gainDb == -7.0 &&
+              recalledTrack->clips.back()->id == recalled && std::abs(recalledTrack->clips.back()->gainDb + 7.0) < 1e-6 &&
               recalledTrack->clips.back()->posTicks == 8 * halfBeat,
           "a prompted drop recalls authored gain and Warp off before trying to find a beat");
     doc->release();
@@ -2090,7 +2090,7 @@ void importWithChoices(const std::filesystem::path &dir) {
           "commit a defaulted clip, its new track and its new pool row in one drop");
     const auto *plainTrack = fresh->view().current()->findTrack(drop.select);
     check(plainTrack && plainTrack->clips.size() == 1 && plainTrack->clips.front()->name == "Renamed Tone" &&
-              plainTrack->clips.front()->gainDb == -7.0 && plainTrack->clips.front()->posTicks == halfBeat &&
+              std::abs(plainTrack->clips.front()->gainDb + 7.0) < 1e-6 && plainTrack->clips.front()->posTicks == halfBeat &&
               drop.endOnTarget == 5 * halfBeat,
           "the plain drop uses sample defaults by content and keeps the new clip's name and position");
     check(fresh->ops().undo().ok && fresh->synchronise() && !fresh->view().current()->findTrack(drop.select),
