@@ -33,8 +33,8 @@ Windows landing stack. The combined Debug app, private-desktop Audio Settings sm
 suites, and all three acceptance tests passed. The latest landing update allows rounding in two
 unrelated SC-82 test assertions.
 
-Routing has its own claimed log. Under the current handoff, this session continues with recording
-wave 2 once the first recording queue is finished.
+The report covers all 22 rows assigned to recording across the three waves. Routing remains with
+the session that claimed its log. [Routing report](https://github.com/arieladi/Adi/blob/basics/routing-log/adi_daw/collab/basics/routing.md)
 
 ## Windows landing check
 
