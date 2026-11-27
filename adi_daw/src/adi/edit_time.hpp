@@ -8,6 +8,8 @@ namespace adi::edit {
 class TimeMap {
 public:
     explicit TimeMap(SQLite::Database&);
+    /// Plan an edit against an exact, not-yet-committed tempo row image.
+    explicit TimeMap(engine::TempoMap);
     [[nodiscard]] double seconds(std::int64_t ticks)const;
     [[nodiscard]] double durationSeconds(std::int64_t origin,std::int64_t ticks)const;
     [[nodiscard]] std::int64_t nanos(std::int64_t ticks)const;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/freeze_groups.hpp"
 
@@ -313,7 +314,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement notes(db, "SELECT e.clip_id,e.data FROM event_streams e JOIN clips c ON c.id=e.clip_id "
                                     "WHERE c.kind='midi' AND e.stream_kind='notes' AND e.channel IS NULL "
-                                    "AND e.controller IS NULL ORDER BY e.clip_id,e.id");
+                                    "AND e.controller IS NULL" + excludeSlotClips(db, "c.id") +
+                                    " ORDER BY e.clip_id,e.id");
         while (notes.executeStep()) {
             const auto clip = notes.getColumn(0).getInt64();
             if (!midiContents.contains(clip)) midiContents.emplace(clip, readMidiBars(notes.getColumn(1)));
@@ -328,7 +330,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
             "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color, "
             "kind,loop_enabled,loop_start_ticks,loop_len_ticks "
-            "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+            "FROM clips WHERE track_id IS NOT NULL" + excludeSlotClips(db, "clips.id") +
+            " ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();

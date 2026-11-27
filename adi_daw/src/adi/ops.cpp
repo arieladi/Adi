@@ -3,6 +3,7 @@
 #include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
+#include "adi/engine/launch_ops.hpp"
 #include "adi/op_transaction_resources_detail.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
@@ -774,7 +775,9 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         // toward the undo budget. Leave the history scan to an edit.
         const bool navigationOnly = !inputs && !options.beforeCommit &&
             std::all_of(descs.begin(), descs.end(), [](const auto* descriptor) {
-                return descriptor->ephemeral && isEphemeralTransportNavigation(descriptor->name);
+                return descriptor->ephemeral &&
+                    (isEphemeralTransportNavigation(descriptor->name) ||
+                     engine::isSessionLaunchOperation(descriptor->name));
             });
         if (!navigationOnly) {
             // ADR-0213: optional compaction owns its savepoint. A failure

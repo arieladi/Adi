@@ -16,6 +16,9 @@
 
 #include "adi/split_pan_ops.hpp"
 #include "adi/device_key_routes.hpp"
+#include "adi/engine/launch_ops.hpp"
+#include "adi/session_ops.hpp"
+#include "adi/session_performance_capture.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
@@ -579,6 +582,13 @@ bool clipCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& 
 bool clipDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         auto image=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));
+        if (const auto slot = image.find("session_slot"); slot != image.end()) {
+            if (image.contains("session_launch"))
+                (void)detail::eraseRowKey(c.db, "clip_launch", {{"clip_id", p.at("id")}});
+            const Payload key{{"track_id", slot->at("track_id")}, {"scene_id", slot->at("scene_id")}};
+            (*slot)["clip_id"] = nullptr;
+            detail::updateRowKey(c.db, "clip_slots", *slot, key);
+        }
         edit::RowEdits deletion(c.db);clip_edit::deleteImage(deletion,image);
         return edit::applyRows(c,{{"changes",deletion.changes()}},err);
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -1114,6 +1124,26 @@ bool transportSongStart(OpContext &c, const Payload &p, std::string &error) {
     set.exec();
     return true;
 }
+bool transportLaunchQuantization(OpContext& c, const Payload& p, std::string& error) {
+    const auto& code = p.at("code");
+    if (!code.is_number_integer() || code < 0 ||
+        code > static_cast<std::int32_t>(LaunchQuantization::ThirtySecond)) {
+        error = "launch quantization needs a code between 0 and 13";
+        return false;
+    }
+    SQLite::Statement set(c.db,
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.launchQuantization',?)");
+    set.bind(1, code.dump());
+    set.exec();
+    return true;
+}
+bool sessionFollowActions(OpContext& c, const Payload& p, std::string&) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) "
+                                "VALUES('session.followActionsEnabled',?)");
+    set.bind(1, p.at("on").dump());
+    set.exec();
+    return true;
+}
 bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
 bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
@@ -1282,6 +1312,7 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportQuantization[] = {{"code", FieldType::Int, true}};
 constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
@@ -2398,6 +2429,10 @@ const OpDescriptor kHandWritten[] = {
      kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setCountIn", "Set the recording count-in", Scope::Transport, EngineImpact::Snapshot,
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
+    {"transport.setLaunchQuantization", "Set Global Quantization", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportQuantization, false, true, transportLaunchQuantization, nullptr, ""},
+    {"session.setFollowActionsEnabled", "Enable Session Follow Actions", Scope::Session, EngineImpact::Snapshot,
+     kFTransportFlag, false, true, sessionFollowActions, nullptr, ""},
     {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
      kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
@@ -2432,6 +2467,12 @@ std::span<const OpDescriptor> builtinOps() {
         v.insert(v.end(),recording.begin(),recording.end());
         const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
         const auto keys=deviceKeyRouteOps();v.insert(v.end(),keys.begin(),keys.end());
+        const auto launch = engine::launchOperationDescriptors();
+        v.insert(v.end(), launch.begin(), launch.end());
+        const auto session = sessionEditOps();
+        v.insert(v.end(), session.begin(), session.end());
+        const auto performance = sessionPerformanceOps();
+        v.insert(v.end(), performance.begin(), performance.end());
         const auto automation = automation::descriptors();
         v.insert(v.end(), automation.begin(), automation.end());
         const auto lanes = automation::laneDescriptors();

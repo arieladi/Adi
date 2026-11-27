@@ -423,6 +423,7 @@ Payload recordedMidiImage(Store& store, const MidiLinearTake& take, clip_edit::C
     return {{"id", take.clip}, {"row", std::move(row)}, {"children", std::move(children)},
             {"alias_links", Payload::array()}};
 }
+
 }
 StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path& projectFolder,std::stop_token stop) {
     StagedTake result;
@@ -637,6 +638,59 @@ RecordingEdit prepareCommit(Store& store, const engine::AudioRecordingResult& re
 
 RecordingEdit prepareMidiLinearCommit(Store& store, std::span<const MidiLinearTake> midi, double sampleRate) {
     return RecordingEdit::prepareLinear(store, nullptr, {}, midi, sampleRate, 0);
+}
+
+std::vector<std::int64_t> RecordingEdit::prepareSlotFiles(Store& store, std::string_view sourceProject,
+    const engine::AudioRecordingResult* audio, std::span<const ClipIds> ids, RecordingEdit& result,
+    const StagedTake* staged) {
+    const auto project = identity(store);
+    if (sourceProject.empty() || sourceProject != project)
+        throw std::runtime_error("slot recording belongs to a different project");
+    std::vector<std::int64_t> media;
+    if (audio) {
+        if (staged && (!staged->ok || !staged->data_ || staged->data_->recorded.directory() != audio->directory()))
+            throw std::runtime_error("staged audio does not belong to this recorded slot take");
+        auto sources = prepareSources(store, *audio, ids, result, staged);
+        media.reserve(sources.size());
+        for (auto& source : sources) {
+            media.push_back(source.mediaId);
+            if (source.mediaEdit) result.requests.push_back(std::move(*source.mediaEdit));
+        }
+    } else {
+        if (staged) throw std::runtime_error("MIDI-only slot recording has no staged media");
+        result.sourceProject = project;
+        result.owner_ = &store;
+        result.client_ = store.clientId();
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        result.files_ = std::make_shared<Files>();
+    }
+    return media;
+}
+
+std::int64_t RecordingEdit::slotTickAt(const engine::TempoMap& clock, std::int64_t sample, std::uint32_t rate) {
+    return tickAt(clock, sample, rate);
+}
+
+Payload RecordingEdit::slotAudioImage(Store& store, const engine::TempoMap& clock, const ClipIds& ids,
+    std::int64_t track, std::int64_t media, std::int64_t frames, std::int64_t ticks, std::uint32_t rate) {
+    const RecordedPiece piece{ids.clip, 0, frames, 0, ids.name.empty() ? "Recording" : ids.name,
+                              std::pair<std::int64_t, std::int64_t>{0, ticks}};
+    auto image = recordedImage(store, clock, piece, track, media, rate);
+    if (image.at("children").at("audio_clips").front().at("warp_enabled") == 1) {
+        auto& row = image.at("row");
+        row["loop_enabled"] = 1;
+        row["loop_start_ticks"] = 0;
+        row["loop_len_ticks"] = ticks;
+    }
+    return image;
+}
+
+Payload RecordingEdit::slotMidiImage(Store& store, const MidiLinearTake& take, clip_edit::CopyIds& allocated) {
+    return recordedMidiImage(store, take, allocated);
+}
+
+Payload RecordingEdit::slotStreamBytes(std::span<const std::byte> bytes) {
+    return binary(bytes);
 }
 
 RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioRecordingResult* audioTake,

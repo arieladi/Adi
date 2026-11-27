@@ -203,7 +203,8 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             const auto matches = [&](const auto& clip) { return clip.id == *data.clipId; };
             const auto c = std::ranges::find_if(playingClips, matches);
             if (c == playingClips.end()) {
-                if (std::ranges::none_of(model.clips, matches)) throw std::runtime_error("missing clip");
+                if (std::ranges::none_of(model.clips, matches) &&
+                    std::ranges::none_of(model.slotClips, matches)) throw std::runtime_error("missing clip");
                 continue;
             }
             if(c->muted)continue;

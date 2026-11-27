@@ -75,13 +75,40 @@ Payload captureImage(OpContext& context,std::int64_t id) {
 }
 Payload captureDeleted(OpContext& context,std::int64_t id) {
     auto result=captureImage(context,id);
-    edit::RowEdits removal(context.db);deleteImage(removal,result);std::string error;
-    if(!edit::validateRows(context,{{"changes",removal.changes()}},error))throw std::runtime_error(error);
+    if (tablePresent(context.db, "clip_slots")) {
+        SQLite::Statement slot(context.db, "SELECT * FROM clip_slots WHERE clip_id=?");
+        slot.bind(1, id);
+        if (slot.executeStep()) {
+            result["session_slot"] = detail::captureQueryRow(slot);
+            if (const auto settings = detail::captureRow(context.db, "clip_launch", "clip_id", id))
+                result["session_launch"] = *settings;
+        }
+    }
+    // A slot owns its clip's launch rows. The delete handler explicitly
+    // detaches those rows before applying the normal Arrangement row patch.
+    if (!result.contains("session_slot")) {
+        edit::RowEdits removal(context.db);deleteImage(removal,result);std::string error;
+        if(!edit::validateRows(context,{{"changes",removal.changes()}},error))throw std::runtime_error(error);
+    }
     return result;
 }
 void restoreDeleted(OpContext& context,const Payload& image) {
     edit::RowEdits insertion(context.db);createImage(insertion,image);std::string error;
     if(!edit::applyRows(context,{{"changes",insertion.changes()}},error))throw std::runtime_error(error);
+    if (const auto slot = image.find("session_slot"); slot != image.end()) {
+        const Payload key{{"track_id", slot->at("track_id")}, {"scene_id", slot->at("scene_id")}};
+        const auto current = detail::captureRowKey(context.db, "clip_slots", key);
+        auto expected = *slot;
+        expected["clip_id"] = nullptr;
+        if (current != expected || slot->at("clip_id") != image.at("id"))
+            throw std::runtime_error("the Session slot changed after the clip was deleted");
+        detail::updateRowKey(context.db, "clip_slots", *slot, key);
+        if (const auto settings = image.find("session_launch"); settings != image.end()) {
+            if (settings->at("clip_id") != image.at("id"))
+                throw std::runtime_error("captured Session settings belong to a different clip");
+            detail::restoreRow(context.db, "clip_launch", *settings);
+        }
+    }
 }
 void CopyIds::reserve(const std::string& table,std::int64_t id) {
     const auto& spec=edit::rowSpec(table);
