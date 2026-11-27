@@ -4161,20 +4161,22 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         late.poll();
         check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
         late.stop();
-        // SC-330: the scan's progress in the Status Bar while it runs; another message keeps the bar.
+        // SC-330: the scan's progress in the Status Bar while it runs; the newest message wins.
         {
             ScanStatusLine bar;
             PluginScan scanning;
             scanning.phase = PluginScan::Phase::Scanning;
             scanning.candidates = 40;
             scanning.completed = 7;
-            const auto shownFirst = bar.next(scanning, "");
+            const auto shownFirst = bar.next(scanning, "Audio buffer: requested 512 frames, running at 480");
             check(shownFirst && *shownFirst == "Scanning plug-ins: 7 of 40 files…",
-                  "a running scan's count stands in an empty Status Bar (SC-330)");
+                  "a scan that starts takes the bar from a note said before it (SC-330)");
             scanning.completed = 8;
             const auto second = bar.next(scanning, shownFirst.value_or(""));
             check(second && *second == "Scanning plug-ins: 8 of 40 files…", "and follows the count");
-            check(!bar.next(scanning, "Snapshot taken: Verse"), "another message holds the bar: the scan leaves it");
+            check(!bar.next(scanning, "Snapshot taken: Verse"), "a message said during the scan holds the bar");
+            scanning.completed = 9;
+            check(!bar.next(scanning, "Snapshot taken: Verse"), "and keeps it while the scan goes on");
             PluginScan done;
             done.phase = PluginScan::Phase::Done;
             done.listing.complete = true;
@@ -13093,6 +13095,8 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     check(root.togglePluginWindow(3, false) && host.contains(key3), "a resizable plug-in's window opens");
     if (auto *window = dynamic_cast<juce::ResizableWindow *>(host.window(key3))) {
         check(window->isResizable(), "and it can be resized from its edges (SC-328)");
+        check(window->getContentComponentBorder().getLeft() >= 6 && window->getContentComponentBorder().getBottom() >= 6,
+              "with an edge wide enough to take outside the plug-in's own view (the desk: one pixel was none)");
         const auto border = window->getContentComponentBorder();
         window->setSize(border.getLeftAndRight() + 480, border.getTopAndBottom() + 360);
         check(host.content(key3) != nullptr && host.content(key3)->getWidth() == 480 &&
