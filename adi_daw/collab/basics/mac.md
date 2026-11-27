@@ -89,6 +89,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/land/basics-1127j` | `e0f00f0d86e5c2dc9c3d247c353ed4ce9ba731a0` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Includes the Analysers stack and ADR-0262. The shared analysis and window checks exercise spectrum, goniometer, third-octave bands, period scope, and color waveform. All five repository validators also passed. |
 | `origin/basics/analysers-chain` | `6e1b969551379fc4d3f49451b9a22390c4fa351e` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. Checks cover the passive stereo analysis tap, meter DSP, and Main meter rendering. |
 | `origin/basics/analysers-chain` | `ff0e566b46a7f797b8c520fe6f7685906cc52f4b` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. The shared spectrum suite checks rendered Phase goniometer traces, four-frame persistence, freeze, and clear. |
+| `origin/basics/analysers-chain` | `31d621d0c743bb769ead41d771cb7d5973b737d0` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. Shared analysis and window checks cover Third-Octave Bands, held peak markers, and the resampled mono period scope. |
 
 ## Nine-step window walk
 
