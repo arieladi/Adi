@@ -109,13 +109,18 @@ private:
     struct Parameter {
         struct Echo { double value = 0.0; std::int64_t armedMs = 0; };
         bool known = false, open = false, implicit = false, hasValue = false;
-        bool guarded = false;
+        bool guarded = false, tracked = false;
         bool promoteEarlierActivity = false; // scratch for an absorbing drain's reverse pass
         double last = 0.0, before = 0.0, after = 0.0, echo = 0.0;
         std::int64_t lastValueMs = 0, armedMs = 0;
         std::vector<Echo> echoes; // consumer only; never inspected by push
     };
     using Key = std::pair<std::int64_t, std::int32_t>;
+    struct Maintenance {
+        Key key;
+        Parameter* parameter;
+    };
+    void track(const Key&, Parameter&);
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);
     std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb, std::vector<ParamActivity>* activity = nullptr);
     struct Slot {
@@ -130,6 +135,10 @@ private:
     // Only the producer writes these counters; no contended RMW or retry loop.
     std::atomic<std::int64_t> pushed_{0}, dropped_{0};
     std::map<Key, Parameter> parameters_;
+    // Map entries stay in place. Only armed echoes and open implicit gestures
+    // need clock-driven work. Keep key order for simultaneous completions.
+    std::vector<Maintenance> maintenance_;
+    bool maintenanceOrdered_ = true;
     std::int64_t quietMs_ = 150, echoTtlMs_ = 500;
     std::int32_t lastTouched_ = -1;
     double echoTolerance_ = 1e-6;
