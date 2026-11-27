@@ -69,6 +69,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/land/basics-1127g` | `007397e7ec8daa73889a53d93e49b21fe306f215` | App only | The app passed 37/37, including window and mixer 32/32 and recording and session 5/5. The recording test compiles with Apple Clang warnings as errors. Relative to d307da19, this revision only changes that test to take each loop item by reference. |
 | `origin/land/basics-1127h` | `5cd62ffc4c295bbca77f25c5a692ed834a269fb8` | App only | The landing carries the M4 palette image teardown fix. The app passed all 35 window, mixer and session checks, including the Apple image-leak check. Native smoke exited 0 without leak diagnostics. Built on a temporary RAM volume because the local drive was below the space required for the native build. |
 | `origin/land/basics-1127i` | `ed0f2aa18795792818fd3581793c6030e2a2a9b1` | No | An Apple Clang 21 syntax build of the exact committed header failed at `src/adi/audio/warp.hpp:74:52`. Apple libc++ requires a trivially copyable type for `std::atomic<std::shared_ptr<const WarpResult>>`. Both Warp files match the earlier failing speed heads. Mac fix `4679066f` is available. This build error gates the runtime suites. |
+| `origin/basics/recording-chain` | `d1f309b3830a677e5106b598834f3524a3890da8` | Yes | Passed 49/49, including 32 window and mixer, 3 acceptance, and 14 affected checks. The standalone VST3 host and editor probe passed. |
 
 ## Nine-step window walk
 
