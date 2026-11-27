@@ -5655,6 +5655,10 @@ void consolidateMidiCommand(AppCommands &commands, const std::filesystem::path &
         if (it.getItem().itemID == AppCommands::ConsolidateMidi)
             hasCommand = it.getItem().isEnabled;
     check(hasCommand, "SC-178 the eligible Arrangement range offers Consolidate");
+    check(root.setMixView(true, false), "SC-178 switch to the docked Mix View");
+    check(!root.canConsolidateMidi() && !root.command(AppCommands::ConsolidateMidi),
+          "SC-178 Consolidate cannot edit the Arrangement while its workspace is hidden");
+    check(root.setMixView(false, false), "SC-178 return to the Arrangement");
     check(root.keyPressed(juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)),
           "SC-178 Ctrl/Cmd+J consolidates in the Arrangement");
     root.frame();

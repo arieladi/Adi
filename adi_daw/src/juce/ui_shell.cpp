@@ -2443,8 +2443,12 @@ clip_edit::MidiConsolidation AdiRootComponent::prepareMidiConsolidation() const 
     const auto current = view_.current();
     const auto &geo = arrangement.geometry;
     const auto &sel = geo.selection;
-    if (!current || noteEditorHasContext() || sel.track == 0)
+    if (!current || !arrangement.isVisible() || noteEditorHasContext() || sel.track == 0)
         return unavailable;
+    if (submitter_.store().readOnly()) {
+        unavailable.edit.error = "This project is read-only.";
+        return unavailable;
+    }
     auto tracks = geo.selectedTracks(reader());
     if (tracks.size() != 1 || !geo.shown(tracks.front()))
         return unavailable;
