@@ -38,11 +38,12 @@ struct PluginHostingScope {
     std::size_t audioBytesPerBlock = 0;
 };
 
-// A lease is issued by the app's consent ledger for the complete disclosure.
-// Checking it on the worker must be thread-safe and should read a local
-// publication that updates when a grant expires or is revoked.
+// The loader borrows the Store synchronously during authorization, so the
+// app can bind consent to the native project file. A lease captures only
+// app-owned state and must be safe to check on the I/O worker after issuance.
+// Its local grant publication tracks expiry and revocation.
 using PluginHostingLease = std::function<bool()>;
-using PluginHostingAuthorize = std::function<PluginHostingLease(const PluginHostingScope&)>;
+using PluginHostingAuthorize = std::function<PluginHostingLease(const Store&, const PluginHostingScope&)>;
 
 struct PluginServerBinding {
     // Application-owned pairing and full plugin identity resolve the requested

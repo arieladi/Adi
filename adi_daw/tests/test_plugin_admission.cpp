@@ -3,6 +3,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/offline_render_scope.hpp"
 #include "adi/engine/remote_devices.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/store.hpp"
 #include "juce/net_plugin_admission.hpp"
 #include "juce/net_plugin_server.hpp"
@@ -80,6 +81,9 @@ void run() {
     auto original = project(dir.path() / "one.adi", "project-one");
     auto other = project(dir.path() / "two.adi", "project-two");
     auto old = project(dir.path() / "old.adi", "");
+    std::error_code identityError;
+    const auto originalFile = media::readFileIdentity(original->path(), identityError);
+    if (!originalFile) throw std::runtime_error("cannot identify the original admission test project");
     rows::Device row;
     row.remoteHostId = 7;
     rows::PluginRef ref;
@@ -111,12 +115,14 @@ void run() {
                 return std::make_unique<Processor>(preparations, packets, parameterWrites);
             }};
         },
-        [&](const net::PluginHostingScope& scope) -> net::PluginHostingLease {
+        [&](const Store& source, const net::PluginHostingScope& scope) -> net::PluginHostingLease {
             ++authorizations;
             if (scope.app != "adi-daw" || scope.projectUuid != "project-one" ||
                 scope.connectionId != "private-test" || scope.serverFingerprint != "paired-room" ||
                 scope.address != expected || scope.audioBytesPerBlock != 512) return {};
-            return [&] { return valid.load(); };
+            std::error_code fileError;
+            if (media::readFileIdentity(source.path(), fileError) != originalFile) return {};
+            return [&valid] { return valid.load(); };
         });
     std::string error;
     auto refused = loader(request, error);
@@ -188,6 +194,24 @@ void run() {
         "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,remote_host_id) VALUES(1,1,0,1,7);"
         "INSERT INTO plugin_params(device_id,param_id,name,normalized_value) VALUES(1,'17','Gain',0.625);");
+    const auto copyPath = dir.path() / "copy.adi";
+    const auto copied = original->saveCopy(copyPath);
+    check(copied.ok, "copy the granted project to another native file");
+    if (copied.ok) {
+        StoreError copyError{};
+        const auto copy = Store::open(copyPath, copyError, /*readOnly=*/true);
+        check(copy && copy->db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString() ==
+              "project-one", "the copy retains the original project UUID");
+        if (copy) {
+            const auto attemptsBeforeCopy = authorizations;
+            request.project = copy.get();
+            refused = loader(request, error);
+            request.project = original.get();
+            check(!refused && authorizations == attemptsBeforeCopy + 1 && factories == 1 &&
+                  error.find("consent") != std::string::npos,
+                  "the native copy cannot use the original file's grant despite the shared UUID");
+        }
+    }
     engine::Session session;
     engine::SessionSpec spec{2, 48000, 64};
     spec.offline = true;

@@ -129,8 +129,8 @@ engine::DeviceLoader makePluginServerLoader(std::string app, PluginServerResolve
             }
             const auto pcmBytes = sizeof(float) * static_cast<std::size_t>(request.channels) *
                                   static_cast<std::size_t>(request.maxFrames);
-            auto lease = authorize({app, uuid, binding->connectionId, binding->serverFingerprint, server->address,
-                                    pcmBytes});
+            auto lease = authorize(*request.project,
+                {app, uuid, binding->connectionId, binding->serverFingerprint, server->address, pcmBytes});
             if (!lease || !lease()) {
                 error = serverName + ": plug-in hosting consent is required";
                 return {};

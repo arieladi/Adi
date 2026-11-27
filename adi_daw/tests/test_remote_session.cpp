@@ -233,7 +233,7 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
                     return device::makeAudioGridderProcessor({address.host, address.port}, std::move(plugin));
                 }};
         },
-        [&](const net::PluginHostingScope& scope) -> net::PluginHostingLease {
+        [&](const Store&, const net::PluginHostingScope& scope) -> net::PluginHostingLease {
             if (scope.projectUuid != "remote-session-fixture" || scope.address != endpoint ||
                 scope.serverFingerprint != "fixture-server") return {};
             return [] { return true; };
