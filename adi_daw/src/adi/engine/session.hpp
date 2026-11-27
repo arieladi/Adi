@@ -98,6 +98,7 @@ struct LaunchSceneTransition;
 struct LaunchStatusHeader;
 struct LaunchTrackStatus;
 struct LaunchTransition;
+class LaunchCaptureBuffer;
 struct PreparedSceneLaunch;
 class MidiInputCapture;
 struct RecordingTarget;
@@ -369,6 +370,8 @@ public:
             sceneObserverContext_ = context;
             sceneObserver_ = observe;
         }
+        /// Driver-only capture of performed edges and run-local source edits.
+        void observeLaunchCapture(LaunchCaptureBuffer& capture) noexcept { launchCapture_ = &capture; }
         bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
@@ -381,6 +384,7 @@ public:
         void (*launchObserver_)(void*, const LaunchTransition&, std::int64_t) noexcept = nullptr;
         void* sceneObserverContext_ = nullptr;
         void (*sceneObserver_)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr;
+        LaunchCaptureBuffer* launchCapture_ = nullptr;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
 

@@ -8,6 +8,7 @@
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
@@ -340,6 +341,149 @@ void appliedSceneClock() {
             "reopened Undo and Redo cover tempo, meter, clips and physical survivor offsets");
 }
 
+struct HeardNote {
+    std::int64_t sample = 0;
+    EventType type = EventType::NoteOn;
+    std::uint8_t channel = 0;
+    std::uint16_t dim = 0;
+    std::uint32_t param = 0;
+    double value = 0;
+    bool operator==(const HeardNote&) const = default;
+};
+
+struct NoteProbe final : device::DeviceInstance {
+    device::DeviceIdentity identityRow;
+    std::array<HeardNote, 24> notes{};
+    std::array<std::uint64_t, 24> voices{};
+    std::size_t count = 0;
+    std::int64_t sample = 0;
+
+    const device::DeviceIdentity& identity() const noexcept override { return identityRow; }
+    bool loaded() const noexcept override { return true; }
+    EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+    void process(const NodeIo& io) noexcept override {
+        for (const auto& event : io.events) {
+            if (!isNoteStream(event.type) || count == notes.size()) continue;
+            notes[count] = {sample + event.frame, event.type, event.channel, event.dim, event.paramId, event.value};
+            voices[count++] = event.noteId;
+        }
+        for (std::int32_t channel = 0; channel < io.channels; ++channel)
+            std::fill_n(io.out[channel] + io.blockOffset, io.frames, 0.0f);
+    }
+};
+
+std::vector<HeardNote> renderExpression(Store& store, LaunchCaptureBuffer* tape) {
+    Session session;
+    session.graph().setFadeFrames(0);
+    NoteProbe* probe = nullptr;
+    const SessionSpec spec{2, 48000, 257};
+    if (!session.load(store, [&probe](const DeviceRequest&, std::string&) {
+            auto instrument = std::make_unique<NoteProbe>();
+            probe = instrument.get();
+            return instrument;
+        }, spec)) throw std::runtime_error(session.error());
+    require(probe && session.problems().empty(), "load the actual native MIDI graph");
+    session.transport().play();
+    std::array<float, 514> pcm{};
+    std::array output{pcm.data(), pcm.data() + 257};
+    std::int64_t at = 0;
+    for (const auto frames : {55, 197, 257, 221, 79}) {
+        if (tape && (at == 55 || at == 730)) {
+            LaunchRequest request;
+            request.kind = at == 55 ? LaunchRequestKind::SlotPress : LaunchRequestKind::BackToArrangement;
+            request.track = 21;
+            request.scene = 1;
+            request.clip = 51;
+            request.incarnation = session.launchIncarnation();
+            require(session.postLaunchGesture(std::array{request}), "apply the launched MIDI source or Arrangement return");
+        }
+        AudioIo io;
+        io.out = output.data();
+        io.numOut = 2;
+        io.frames = frames;
+        io.streamTimeSamples = at;
+        probe->sample = at;
+        auto block = session.beginRender();
+        if (tape) block.observeLaunchCapture(*tape);
+        require(block.process(io), "render a native note/expression trace");
+        at += frames;
+    }
+    require(probe->count == 5 && probe->voices.front() != 0 &&
+            std::all_of(probe->voices.begin(), probe->voices.begin() + 5, [&](std::uint64_t voice) {
+                return voice == probe->voices.front();
+            }), "all five observed events belong to the same note voice");
+    return {probe->notes.begin(), probe->notes.begin() + 5};
+}
+
+void heldExpressionCapture() {
+    Project project;
+    project.db().exec("DELETE FROM clip_slots WHERE clip_id=52; DELETE FROM clips WHERE id=52;"
+        "UPDATE clips SET length_ticks=216216 WHERE id=51;"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(99,'master','Main',3);"
+        "INSERT INTO clip_launch(clip_id,launch_quant) VALUES(51,1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(101,'vst3','test.native','Probe','instrument');"
+        "INSERT INTO device_chains(id,track_id) VALUES(101,21);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(101,101,0,101,'Probe');");
+    test::seedSessionMarker(project.db());
+    NoteRecord note{};
+    note.start_ticks = tick(20);
+    note.dur_ticks = tick(700);
+    note.note_id = 176;
+    note.key = 64;
+    note.vel_on = 99;
+    note.vel_off = 33;
+    note.probability = 10000;
+    note.tuning_cents = 31.25f;
+    require(project.store->putEventStream(51, "notes", writeStream<NoteRecord>(FourCC::Notes, std::array{note})),
+            "store a tuned native note crossing the capture exit");
+    std::array<ExpressionPoint, 3> points{{{0, 1.0f, 0, 0, 0, {}},
+        {tick(200), 3.0f, 0, 0, 0, {}}, {tick(500), -0.5f, 0, 0, 0, {}}}};
+    const auto writeExpression = [&] {
+        const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression, points);
+        SQLite::Statement upsert(project.db(), "INSERT INTO note_expression(clip_id,note_id,dimension,data) "
+            "VALUES(51,176,0,?) ON CONFLICT(clip_id,note_id,dimension) DO UPDATE SET data=excluded.data");
+        upsert.bind(1, bytes.data(), static_cast<int>(bytes.size()));
+        upsert.exec();
+    };
+    writeExpression();
+    std::array<LaunchTransition, 8> edges{};
+    LaunchCaptureBuffer tape(edges);
+    const auto heard = renderExpression(*project.store, &tape);
+    require(heard[0].sample == 75 && heard[0].type == EventType::NoteOn &&
+            heard[1].sample == 75 && heard[1].value == 1.3125 &&
+            heard[2].sample == 275 && heard[2].value == 3.3125 &&
+            heard[3].sample == 575 && heard[3].value == -0.1875 &&
+            heard[4].sample == 730 && heard[4].type == EventType::NoteOff,
+            "the native Session graph emits the exact held pitch changes and release");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1, "capture the run from its authored start");
+    points.front().curve = static_cast<std::uint8_t>(Curve::Linear);
+    writeExpression();
+    const auto unsafe = prepareSessionPerformance(*project.store, project.freeze(), plan, 48000);
+    require(!unsafe.ok && unsafe.error.find("held-value") != std::string::npos,
+            "a shaped AEXP segment remains outside sample-identical capture");
+    points.front().curve = 0;
+    writeExpression();
+    const auto source = project.freeze();
+    const auto before = digestProject(*project.store).text;
+    const auto prepared = prepareSessionPerformance(*project.store, source, plan, 48000);
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    require(project.count("SELECT count(*) FROM note_expression a,note_expression b "
+        "WHERE a.clip_id=51 AND b.clip_id<>51 AND a.data=b.data AND a.note_id=b.note_id") == 1,
+        "literal Arrangement capture retains every original AEXP byte and note identity");
+    const auto after = digestProject(*project.store).text;
+    project.store.reset();
+    StoreError error{};
+    project.store = Store::open(project.path, error, false);
+    require(project.store && renderExpression(*project.store, nullptr) == heard,
+        "reopened Arrangement delivers the same ordered note, pitch, and release values at every sample");
+    require(History(*project.store).undo().ok && digestProject(*project.store).text == before &&
+            History(*project.store).redo().ok && digestProject(*project.store).text == after,
+            "one reopened Undo and Redo include the literal AEXP source image");
+}
+
 } // namespace
 
 int main() {
@@ -348,6 +492,7 @@ int main() {
         refusals();
         sourceMediaChanged();
         appliedSceneClock();
+        heldExpressionCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

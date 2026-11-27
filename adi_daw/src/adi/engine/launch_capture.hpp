@@ -10,18 +10,21 @@ struct LaunchTransition;
 
 /// The owner supplies storage before attaching the capture to the driver. Once
 /// detached, the owner can read the trace and prepare the entire Arrangement
-/// edit. An overflow invalidates the whole trace.
+/// edit. An overflow or a transient source edit invalidates the whole trace.
 class LaunchCaptureBuffer {
 public:
     explicit LaunchCaptureBuffer(std::span<LaunchTransition> storage) noexcept;
     bool append(const LaunchTransition&) noexcept;
+    void markSourceEdit() noexcept { sourceEdited_ = true; }
     [[nodiscard]] bool overflowed() const noexcept { return overflowed_; }
+    [[nodiscard]] bool sourceEdited() const noexcept { return sourceEdited_; }
     [[nodiscard]] std::span<const LaunchTransition> transitions() const noexcept;
 
 private:
     std::span<LaunchTransition> storage_;
     std::size_t size_ = 0;
     bool overflowed_ = false;
+    bool sourceEdited_ = false;
 };
 
 struct LaunchCaptureTime {
@@ -49,7 +52,7 @@ struct LaunchCapturedSpan {
     bool operator==(const LaunchCapturedSpan&) const = default;
 };
 
-enum class LaunchCaptureError { None, Overflow, InvalidRange, InconsistentTrack };
+enum class LaunchCaptureError { None, Overflow, InvalidRange, InconsistentTrack, SourceEdited };
 
 struct LaunchCapturePlan {
     LaunchCaptureError error = LaunchCaptureError::None;

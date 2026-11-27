@@ -138,11 +138,7 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
         bool rendered = false;
         {
             auto block = session.beginRender();
-            if (capture)
-                block.observeLaunchTransitions(capture, [](void* context, const LaunchTransition& edge,
-                                                           std::int64_t) noexcept {
-                    (void)static_cast<LaunchCaptureBuffer*>(context)->append(edge);
-                });
+            if (capture) block.observeLaunchCapture(*capture);
             if (scenes)
                 block.observeSceneLaunches(scenes, [](void* context, const LaunchSceneTransition& edge,
                                                       std::int64_t) noexcept {

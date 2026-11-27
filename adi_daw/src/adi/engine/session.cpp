@@ -3183,7 +3183,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     }
     if (launchAudio && launchDriver) {
         launchAudio->begin(*launchDriver, timing->launchBlock(io.frames), transport, io.streamTimeSamples,
-                           launchObserverContext_, launchObserver_, sceneObserverContext_, sceneObserver_);
+                           launchObserverContext_, launchObserver_, sceneObserverContext_, sceneObserver_, launchCapture_);
     } else if (launchDriver) {
         launchDriver->suspend();
     }
