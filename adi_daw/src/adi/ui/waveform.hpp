@@ -424,6 +424,11 @@ class ClipSourceMap {
         double seconds;
         std::optional<double> warpTicks;
     };
+    struct RepeatedRange {
+        // An empty start keeps the original selection start on the first pass.
+        std::optional<LoopPosition> from;
+        LoopPosition to;
+    };
 
     // A caller already holding the clip's parsed Warp map can borrow it for a frame.
     ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate,
@@ -463,13 +468,32 @@ class ClipSourceMap {
 
     // The Sample Editor's source ruler is musical for Warp and physical otherwise.
     std::optional<LoopPosition> repeatedPositionAt(std::int64_t tick) const {
-        if (const auto seconds = repeatedClockAt(tick)) {
-            LoopPosition position{*seconds, std::nullopt};
-            if (!markers().empty())
-                position.warpTicks = sourceTickAt(*seconds);
-            return position;
-        }
+        if (const auto seconds = repeatedClockAt(tick))
+            return loopPosition(*seconds);
         return {};
+    }
+
+    // The continuous source-ruler interval covering the audible selection [first, last).
+    std::optional<RepeatedRange> repeatedRangeAcross(std::int64_t first, std::int64_t last) const {
+        const auto lastRepeat = repeatAt(last);
+        if (lastRepeat < 1.)
+            return {};
+        const auto firstRepeat = repeatAt(first);
+        if (firstRepeat == lastRepeat)
+            return RepeatedRange{repeatedPositionAt(first), loopPosition(clockInRepeat(last, lastRepeat))};
+
+        const auto loopEnd = loopPosition(loopStart_ + loopLength_);
+        const auto lastClock = clockAt(last);
+        const auto wrapClock = loopStart_ + lastRepeat * loopLength_;
+        const auto error = std::numeric_limits<double>::epsilon() * std::max(lastClock, wrapClock) * 8.;
+        if (lastRepeat == firstRepeat + 1. && std::abs(lastClock - wrapClock) <= error)
+            return RepeatedRange{repeatedPositionAt(first), loopEnd};
+
+        // A wrap includes the tail and head of the loop. Keep any lead-in before it too.
+        RepeatedRange range{std::nullopt, loopEnd};
+        if (clockAt(first) >= loopStart_)
+            range.from = loopPosition(loopStart_);
+        return range;
     }
 
     Column framesAcross(std::int64_t first, std::int64_t last) const {
@@ -517,9 +541,18 @@ class ClipSourceMap {
         const auto repeat = repeatAt(tick);
         if (repeat < 1.)
             return {};
+        return clockInRepeat(tick, repeat);
+    }
+    double clockInRepeat(std::int64_t tick, double repeat) const {
         return std::clamp(clockAt(tick) - repeat * loopLength_, loopStart_, loopStart_ + loopLength_);
     }
 
+    LoopPosition loopPosition(double seconds) const {
+        LoopPosition position{seconds, std::nullopt};
+        if (!markers().empty())
+            position.warpTicks = sourceTickAt(seconds);
+        return position;
+    }
     double sourceTickAt(double seconds) const {
         const auto absolute = warpOriginSeconds_ + seconds;
         if (tempo_ == nullptr || absolute < 0)
