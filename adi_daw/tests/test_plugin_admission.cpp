@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/offline_render_scope.hpp"
+#include "adi/engine/remote_devices.hpp"
 #include "adi/store.hpp"
 #include "juce/net_plugin_admission.hpp"
 #include "juce/net_plugin_server.hpp"
@@ -175,6 +176,27 @@ void run() {
     }
     check(!refused && authorizations == attempts && factories == 1,
           "audio callbacks cannot consult the ledger or create a worker");
+
+    remote.reset();
+    original->db().exec(
+        "UPDATE remote_hosts SET port=55056 WHERE id=7;"
+        "INSERT INTO project(id,name,sample_rate) VALUES(1,'Remote saved control',48000);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Track',0),(2,'master','Master',1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype)"
+        " VALUES(1,'vst3','157c0f3844664a65b03c829f28b96435','Remote test','effect');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,remote_host_id) VALUES(1,1,0,1,7);"
+        "INSERT INTO plugin_params(device_id,param_id,name,normalized_value) VALUES(1,'17','Gain',0.625);");
+    engine::Session session;
+    engine::SessionSpec spec{2, 48000, 64};
+    spec.offline = true;
+    const auto previousWrites = parameterWrites.load();
+    const bool loaded = session.load(*original, engine::withRemoteDevices({}, loader), spec);
+    const auto* saved = loaded ? session.instanceFor(1) : nullptr;
+    check(loaded && saved && session.stats().paramsApplied == 1 &&
+          parameterWrites.load() == previousWrites + 1 && saved->getParam("17").normalized == .625,
+          "project open restores the saved normalized value to the admitted remote device");
 }
 
 void cataloguedBindings() {
