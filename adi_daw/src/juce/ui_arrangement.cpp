@@ -1566,7 +1566,7 @@ void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose pur
     if (const auto *t = geometry.trackAt(reader(), y)) {
         const auto at = geometry.tick(x);
         // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
-        const auto *c = geometry.hit(*t, at);
+        const auto *c = purpose == SelectionPurpose::InsertMarker ? nullptr : geometry.hit(*t, at);
         const auto tick = snapToGrid ? geometry.snap(at, false) : at;
         if (purpose == SelectionPurpose::ContextMenu) {
             auto &sel = geometry.selection;
@@ -1594,7 +1594,7 @@ void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose pur
         geometry.selection.marked = true;
         geometry.selection.start = c ? c->posTicks : tick;
         geometry.selection.end = c ? c->posTicks + c->lengthTicks : tick;
-        if (purpose == SelectionPurpose::Edit)
+        if (purpose != SelectionPurpose::ContextMenu)
             locate();
         changed();
     }
@@ -4080,12 +4080,15 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             extendTo(e.x, e.y, view.snaps(e.mods));
             return;
         }
-        view.select(e.x, e.y, view.snaps(e.mods));
-        if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && c->id == view.geometry.selection.clip) {
-            moving_ = c->id;
-            movingFrom_ = movingTo_ = c->posTicks;
+        const auto *bar = barAt(e.x, e.y, track, edge);
+        using Purpose = ArrangementView::SelectionPurpose;
+        const auto purpose = bar != nullptr ? Purpose::Edit : Purpose::InsertMarker;
+        view.select(e.x, e.y, view.snaps(e.mods), purpose);
+        if (bar != nullptr && bar->id == view.geometry.selection.clip) {
+            moving_ = bar->id;
+            movingFrom_ = movingTo_ = bar->posTicks;
             movingSource_ = movingTrack_ = track;
-            grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+            grabTicks_ = view.geometry.tick(e.x) - bar->posTicks;
         }
     }
 }
@@ -4289,17 +4292,17 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
+        auto &sel = view.geometry.selection;
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
         const bool envelopeSelection = hasAutomationSelection();
         if (e.mouseWasDraggedSinceMouseDown())
             view.edgeScroll(e.x, e.y, true);
         if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
-            view.geometry.selection.toTrack = over->id == view.geometry.selection.track ? 0 : over->id;
+            sel.toTrack = over->id == sel.track ? 0 : over->id;
         // A time selection covers whole grid cells while snapping (§6.10).
         const auto at = view.geometry.tick(e.x);
-        view.geometry.selection.end =
-            view.snaps(e.mods) ? view.geometry.snap(at, at >= view.geometry.selection.start) : at;
+        sel.end = view.snaps(e.mods) ? view.geometry.snap(at, at >= sel.start) : at;
         if (envelopeSelection)
             rememberAutomationSelection();
     }
