@@ -833,7 +833,7 @@ void sessionLoopPasses() {
 }
 void loopBoundsAndCapacity() {
     test::TempDirectory directory{"audio_recording","loop_bounds"};AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.loop=AudioRecordingLoop{100,104,2};std::string error;
-    for(const auto invalidLoop:{AudioRecordingLoop{-1,4,2},AudioRecordingLoop{4,4,2},AudioRecordingLoop{4,3,2},AudioRecordingLoop{0,4,0},AudioRecordingLoop{0,4,65537}}) {
+    for(const auto& invalidLoop:{AudioRecordingLoop{-1,4,2},AudioRecordingLoop{4,4,2},AudioRecordingLoop{4,3,2},AudioRecordingLoop{0,4,0},AudioRecordingLoop{0,4,65537}}) {
         auto invalid=request;invalid.loop=invalidLoop;check(!recorder.start(invalid,error) && !recorder.pending(),"invalid loop bounds or excessive pass allocation refuses before publication");
     }
     std::array<float,128> values{};for(std::size_t index=0;index<values.size();++index)values[index]=static_cast<float>(index)/256;
