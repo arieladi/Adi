@@ -1,5 +1,20 @@
 2026-11-27 — Codex took the pitch engine seat.
 
+## Still unbuilt
+
+- Independent split and merge producers with exact Undo and Redo, plus separately reserved wire op names.
+- Boundary uncertainty marks for aperiodic transitions, fast runs and competing periodicity.
+- Unsnapped pitch and timing nudges.
+- Drift straightening that preserves vibrato.
+- Original/corrected playback at one playhead.
+- Native 1.27 activation, its migration/text-projection checks and the installed-DAW reference runs.
+- Durable MIDI extraction provenance, channel-wide pitch bend and plug-in-specific extraction modes.
+
+## For win, 27 November continuation
+
+- Reserve `clip.splitPitchSegment` and `clip.mergePitchSegments`. Each will carry the resolved source-bound edit image so Undo/Redo and replay use captured bytes. Boundary correction can continue through the existing reserved edit operation.
+- Please retest the final continuation head with the Windows checker. The reported MIDI fixture fix has been merged.
+
 ## For win
 
 - Please reserve a P1 plan row and appendix card for ADR-0241 d1 and ADR-0242 d2. TM-WT-09 Melody can use the same monophonic analysis.
@@ -71,3 +86,9 @@ A. The reference manual describes both whole-event and selected-segment flatteni
 - Remote code tip is `b478b4f9`, on main base `6f96847b`. The CLI credential expired during the run. The connector published fast-forwards with file trees verified against the local commits. Tested local tip `d641a413` and remote tip have identical tree `f52a5905f7b6aa2eb4af0de1da6c79e53c4da706`.
 - Linux GCC 14.2 Debug headless build passed with `ADI_WERROR=ON`. Executable links stripped debug sections to fit the workspace. CTest passed 292 of 292 suites in 109.38 s. All five validators and the SPEC layout check passed.
 - Final-tree sung-scale replay committed and read back all 17 notes. Maximum error was 4.972 cents with tuning, 50.000 cents at the nearest MIDI key, 34.060 ms at onset and 22.450 ms at offset.
+
+## Windows check and daily editing feedback
+
+| Item | Change | Proof | State |
+| --- | --- | --- | --- |
+| Windows MIDI callback fixture | Merged the checker's `wincheck/seats/pitch-chain` patch after merging main. The fixture prepares the empty vector before entering the callback. | The checker reports 54 checks passing under MSVC after its fix. The merged tip also passed all 54 checks in the local strict GCC suite. | Pushed `af6ddc9c`. Native retest of the merged tip remains open. |
