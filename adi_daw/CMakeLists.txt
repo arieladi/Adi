@@ -311,6 +311,7 @@ add_library(adi_core STATIC
     src/juce/device_model.cpp
     src/juce/remote_device.cpp
     src/juce/audiogridder_transport.cpp
+    src/juce/native_plugin_transport.cpp
     # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
     # with no dependencies, so the host side lives in adi_core and its tests
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
@@ -1133,6 +1134,14 @@ if(Python3_Interpreter_FOUND)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_tcp_playback.py"
         "$<TARGET_FILE:adi_remote_tcp_playback_tests>")
     set_tests_properties(adi_remote_tcp_playback_tests PROPERTIES TIMEOUT 40)
+
+    add_executable(adi_native_plugin_transport_tests tests/test_native_plugin_transport.cpp)
+    target_link_libraries(adi_native_plugin_transport_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_native_plugin_transport_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_native_plugin_transport_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_plugin_fixture.py"
+        "$<TARGET_FILE:adi_native_plugin_transport_tests>")
 endif()
 
 add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)

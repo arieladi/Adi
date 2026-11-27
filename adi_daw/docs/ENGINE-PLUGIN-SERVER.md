@@ -185,14 +185,43 @@ capturing the other devices. The window's save and quit policy uses this
 receipt as part of SC-430.
 
 The stock prototype covers explicit IPv4 endpoints, mono or stereo float32
-PCM, ordinary MIDI input and transport. The server-fork extension still
-needs typed note expression, outgoing events, state exchange, peer
-authentication and offline mode. The fixture TCP run exercises stock
-framing. A second loopback test serves an actual CLAP fixture from another
+PCM, ordinary MIDI input and transport. The native loopback protocol
+negotiates activation, offline mode and state. Its typed block codec carries
+sample offsets and double-precision expression with independent note and
+port identities. The client exposes decoded reply events to its caller.
+The release server will need peer authentication, encrypted transport and
+a maintained hosting target. The fixture TCP run exercises stock framing.
+A second loopback test serves an actual CLAP fixture from another
 process, using a fixture lookup token. ADI's compensated WAV export matched
 all 1,732 samples of the same local CLAP render exactly (peak 0.37109375).
 Disconnecting after seven replies failed export by device name and discarded
 the staged audio.
+
+### Surge XT acceptance
+
+The official Surge XT 1.3.4 Linux plug-in ran in two comparisons. Each
+comparison rendered 500 stereo blocks of 64 frames at 48 kHz and aligned
+the remote output by the 64 samples reported by ADI.
+
+| Host path | Aligned float32 samples | Peak | Maximum absolute difference |
+| --- | ---: | ---: | ---: |
+| Stock server VST3 and local VST3 | 64,000 | 0.253958732 | 0 |
+| Native CLAP server fixture and local ADI CLAP | 64,000 | 0.504983 | 0 |
+
+The stock run enabled oscillator retrigger on both hosts and verified
+the switched values before playing A4. The official Linux server used
+the scratch scheduler fallback described below. A separate state test
+showed that sending the same 69,314-byte stock state back through the
+stock server silenced Surge XT, despite exact state readback. This is
+an outstanding stock-compatibility case.
+
+The native run drove identical authored MIDI through two ADI Sessions,
+with the remote CLAP loaded in a separate process. Two overlapping notes
+on the same key reached the server as distinct runtime IDs at offsets
+0 and 32 with exact tuning of +0.125 and −0.375 semitones. A direct
+native fixture also measured a 0.62385 peak PCM difference from
+neutral expression and preserved finer fractional values bit for bit.
+The native test protocol is scoped to loopback. [Official Surge XT release][surge-release]
 
 ## Measuring the link and deciding when PTP is needed
 
@@ -375,4 +404,5 @@ stock TCP as an explicitly selected trusted-LAN mode as well.
 [plan]: PLAN.md#dev-27-audiogridder-remote-devices
 [probe]: ../tools/plugin_server_latency.py
 [stock-fixture]: ../tests/fixtures/vst3_expression_synth.cpp
+[surge-release]: https://github.com/surge-synthesizer/releases-xt/releases/tag/1.3.4
 [wire-transport]: ../src/juce/audiogridder_transport.cpp
