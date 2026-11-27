@@ -2,6 +2,8 @@
 #include "juce/net_plugin_socket.hpp"
 #include "juce/audiogridder_transport.hpp"
 
+#include "adi/audio/io_audit.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -14,6 +16,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -171,6 +175,126 @@ bool validToken(std::string_view token) {
            token.substr(prefix.size()).find_first_not_of(hex) == std::string_view::npos;
 }
 
+bool validEndpoint(const AudioGridderEndpoint& endpoint, in_addr& address, std::string& error) {
+    using namespace std::chrono_literals;
+    if (endpoint.port != 0 && endpoint.address.find('\0') == std::string::npos &&
+        inet_pton(AF_INET, endpoint.address.c_str(), &address) == 1 &&
+        endpoint.setupTimeout > 0ms && endpoint.setupTimeout <= 60s) return true;
+    error = "invalid numeric IPv4 endpoint or timeout";
+    return false;
+}
+
+struct HandshakeShape {
+    double sampleRate = 48000;
+    std::int32_t channels = 2;
+    std::int32_t frames = 64;
+    bool instrument = false;
+    bool unfilteredList = false;
+};
+
+bool openWorker(in_addr address, std::uint16_t port, const HandshakeShape& shape, Deadline deadline,
+                const std::array<Socket*, 4>& workers, std::string& error) {
+    Socket handshake;
+    if (!handshake.open(address, port, deadline, error)) return false;
+    std::array<std::byte, handshakeRequestSize> request{};
+    put(request, 0, protocolVersion);
+    put(request, 4, shape.instrument ? std::int32_t{0} : shape.channels);
+    put(request, 8, shape.channels);
+    put(request, 16, shape.sampleRate);
+    put(request, 24, shape.frames);
+    static std::atomic<std::uint64_t> nextId{0};
+    const auto now = static_cast<std::uint64_t>(Clock::now().time_since_epoch().count());
+    put(request, 32, now + nextId.fetch_add(1, std::memory_order_relaxed));
+    request[40] = shape.unfilteredList ? std::byte{1} : std::byte{};
+    const auto bits = (std::uint64_t{1} << shape.channels) - 1;
+    put(request, 48, shape.instrument ? bits : bits | (bits << 32));
+    std::array<std::byte, handshakeResponseSize> response{};
+    if (!handshake.write(request, deadline, error) || !handshake.read(response, deadline, error))
+        return false;
+    if (get<std::int32_t>(response, 0) != protocolVersion) {
+        error = "server protocol version is not stock v13";
+        return false;
+    }
+    const auto workerPort = get<std::int32_t>(response, 8);
+    if (workerPort < 1 || workerPort > 65535) {
+        error = "server worker port is invalid";
+        return false;
+    }
+    handshake.reset();
+    // The server assigns command, notifications, audio, and screen sockets
+    // solely by connection order, including for a catalogue-only request.
+    for (auto* worker : workers) {
+        if (!worker->open(address, static_cast<std::uint16_t>(workerPort), deadline, error))
+            return false;
+    }
+    return true;
+}
+
+constexpr std::size_t maxCatalogueRows = 16384;
+
+// Check depth, element counts, and duplicate keys before building a JSON DOM
+// from the server's MessagePack. The control envelope already caps the bytes.
+class CatalogueGuard final : public nlohmann::json_sax<Json> {
+public:
+    bool null() override { return token(); }
+    bool boolean(bool) override { return token(); }
+    bool number_integer(number_integer_t) override { return token(); }
+    bool number_unsigned(number_unsigned_t) override { return token(); }
+    bool number_float(number_float_t, const string_t&) override { return token(); }
+    bool string(string_t& value) override { return value.size() <= 4096 && token(); }
+    bool binary(binary_t&) override { return false; }
+    bool start_object(std::size_t count) override { return count <= 128 && start(); }
+    bool key(string_t& value) override {
+        return value.size() <= 128 && token() && scopes_.back().insert(value).second;
+    }
+    bool end_object() override { return end(); }
+    bool start_array(std::size_t count) override { return count <= maxCatalogueRows && start(); }
+    bool end_array() override { return end(); }
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override {
+        return false;
+    }
+private:
+    bool token() { return ++tokens_ <= 500000; }
+    bool start() {
+        if (scopes_.size() >= 8 || !token()) return false;
+        scopes_.emplace_back();
+        return true;
+    }
+    bool end() {
+        scopes_.pop_back();
+        return true;
+    }
+    std::vector<std::set<std::string>> scopes_;
+    std::size_t tokens_ = 0;
+};
+
+bool decodeCatalogue(ReadOnlyBytes bytes, std::vector<AudioGridderCatalogueEntry>& entries) {
+    CatalogueGuard bounds;
+    if (!Json::sax_parse(bytes, &bounds, Json::input_format_t::msgpack)) return false;
+    const auto document = Json::from_msgpack(bytes, /*strict=*/true, /*allow_exceptions=*/false);
+    const auto rows = document.find("plugins");
+    if (rows == document.end() || !rows->is_array()) return false;
+    std::map<std::string, std::size_t> tokenCounts;
+    for (const auto& row : *rows) {
+        const auto type = row.find("type");
+        const auto id = row.find("id2");
+        if (type == row.end() || *type != "VST3" || id == row.end() || !id->is_string()) continue;
+        const auto& token = id->get_ref<const std::string&>();
+        if (!validToken(token)) continue;
+        ++tokenCounts[token];
+        const auto label = row.find("name");
+        const auto instrument = row.find("isInstrument");
+        if (label == row.end() || !label->is_string() ||
+            instrument == row.end() || !instrument->is_boolean()) continue;
+        const auto& name = label->get_ref<const std::string&>();
+        if (name.empty() || name.size() > 256 || std::any_of(name.begin(), name.end(),
+            [](unsigned char ch) { return ch < 32 || ch == 127; })) continue;
+        entries.push_back({token, name, "vst3", instrument->get<bool>()});
+    }
+    std::erase_if(entries, [&](const auto& entry) { return tokenCounts.at(entry.serverToken) > 1; });
+    return true;
+}
+
 std::array<std::byte, positionInfoSize> positionInfo(
     const std::optional<engine::DeviceTransport>& transport, double sampleRate) {
     std::array<std::byte, positionInfoSize> bytes{};
@@ -244,9 +368,8 @@ public:
         error.clear();
         in_addr address{};
         using namespace std::chrono_literals;
-        if (endpoint_.port == 0 || inet_pton(AF_INET, endpoint_.address.c_str(), &address) != 1 ||
-            endpoint_.setupTimeout <= 0ms || endpoint_.setupTimeout > 60s ||
-            endpoint_.blockTimeout <= 0ms || endpoint_.blockTimeout > 10s) {
+        if (!validEndpoint(endpoint_, address, error)) return fail(error);
+        if (endpoint_.blockTimeout <= 0ms || endpoint_.blockTimeout > 10s) {
             error = "invalid numeric IPv4 endpoint or timeout";
             return fail(error);
         }
@@ -265,18 +388,10 @@ public:
         channels_ = channels;
         frames_ = frames;
         const auto deadline = Clock::now() + endpoint_.setupTimeout;
-        std::uint16_t workerPort = 0;
-        if (!handshake(address, deadline, workerPort, error)) return fail(error);
-
-        // The server assigns four worker sockets by connection order. Without
-        // an editor, keep the final two ancillary receive streams open and idle.
-        if (!commands_.open(address, workerPort, deadline, error) ||
-            !notifications_.open(address, workerPort, deadline, error) ||
-            !audio_.open(address, workerPort, deadline, error) ||
-            !screen_.open(address, workerPort, deadline, error) ||
-            !loadPlugin(deadline, error)) {
-            return fail(error);
-        }
+        const HandshakeShape setup{sampleRate, channels, frames, plugin_.instrument};
+        if (!openWorker(address, endpoint_.port, setup, deadline,
+                        {&commands_, &notifications_, &audio_, &screen_}, error) ||
+            !loadPlugin(deadline, error)) return fail(error);
         ready_ = true;
         stateStreamUsable_ = true;
         pluginLatency = latency_;
@@ -383,36 +498,6 @@ private:
         return false;
     }
 
-    bool handshake(in_addr address, Deadline deadline, std::uint16_t& workerPort, std::string& error) {
-        Socket handshakeSocket;
-        if (!handshakeSocket.open(address, endpoint_.port, deadline, error)) return false;
-        std::array<std::byte, handshakeRequestSize> request{};
-        put(request, 0, protocolVersion);
-        put(request, 4, plugin_.instrument ? std::int32_t{0} : channels_);
-        put(request, 8, channels_);
-        put(request, 16, sampleRate_);
-        put(request, 24, frames_);
-        static std::atomic<std::uint64_t> nextId{0};
-        const auto now = static_cast<std::uint64_t>(Clock::now().time_since_epoch().count());
-        put(request, 32, now + nextId.fetch_add(1, std::memory_order_relaxed));
-        const auto bits = (std::uint64_t{1} << channels_) - 1;
-        put(request, 48, plugin_.instrument ? bits : bits | (bits << 32));
-        std::array<std::byte, handshakeResponseSize> response{};
-        if (!handshakeSocket.write(request, deadline, error) ||
-            !handshakeSocket.read(response, deadline, error)) return false;
-        const auto port = get<std::int32_t>(response, 8);
-        if (get<std::int32_t>(response, 0) != protocolVersion) {
-            error = "server protocol version is not stock v13";
-            return false;
-        }
-        if (port < 1 || port > 65535) {
-            error = "server worker port is invalid";
-            return false;
-        }
-        workerPort = static_cast<std::uint16_t>(port);
-        return true;
-    }
-
     bool loadPlugin(Deadline deadline, std::string& error) {
         std::vector<std::byte> payload;
         if (!readControl(commands_, Command::PluginList, payload, deadline, error)) return false;
@@ -479,6 +564,32 @@ private:
 };
 
 } // namespace
+
+bool readAudioGridderCatalogue(const AudioGridderEndpoint& endpoint,
+                               std::vector<AudioGridderCatalogueEntry>& rows, std::string& error) {
+    if (audio::onAudioThread) return false;
+    error.clear();
+    in_addr address{};
+    if (!validEndpoint(endpoint, address, error)) return false;
+    const auto deadline = Clock::now() + endpoint.setupTimeout;
+    Socket commands, notifications, audioSocket, screen;
+    std::vector<std::byte> payload;
+    const HandshakeShape setup{.unfilteredList = true};
+    if (!openWorker(address, endpoint.port, setup, deadline,
+                    {&commands, &notifications, &audioSocket, &screen}, error) ||
+        !readControl(commands, Command::PluginList, payload, deadline, error)) return false;
+    std::vector<AudioGridderCatalogueEntry> entries;
+    if (!decodeCatalogue(payload, entries)) {
+        error = "invalid stock plug-in catalogue";
+        return false;
+    }
+    if (Clock::now() >= deadline) {
+        error = "stock plug-in catalogue timed out";
+        return false;
+    }
+    rows = std::move(entries);
+    return true;
+}
 
 std::unique_ptr<RemoteProcessor> makeAudioGridderProcessor(
     AudioGridderEndpoint endpoint, AudioGridderPlugin plugin) {

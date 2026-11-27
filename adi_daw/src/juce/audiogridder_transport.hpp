@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace adi::device {
 
@@ -28,6 +29,20 @@ struct AudioGridderPlugin {
     std::string encodedState{};
     bool instrument = false;
 };
+
+struct AudioGridderCatalogueEntry {
+    /// Stock id2 token. A paired source must supply the full class ID.
+    std::string serverToken;
+    std::string name;
+    std::string format;
+    bool instrument = false;
+};
+
+/// Worker-side query for an explicitly authorized endpoint. Requests the
+/// unfiltered stock list and closes without activating any plug-in. Returns
+/// supported VST3 rows with unambiguous tokens. Failure leaves rows intact.
+[[nodiscard]] bool readAudioGridderCatalogue(const AudioGridderEndpoint& endpoint,
+    std::vector<AudioGridderCatalogueEntry>& rows, std::string& error);
 
 /// Builds the worker-owned side of a stock protocol v13 mono/stereo float32
 /// device. Creation does not connect. See docs/ENGINE-PLUGIN-SERVER.md.

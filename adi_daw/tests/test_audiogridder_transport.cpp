@@ -31,6 +31,22 @@ int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     adi::device::AudioGridderEndpoint endpoint{"127.0.0.1", port, 2s, 150ms};
     const std::string_view mode(argv[2]);
+    if (mode == "catalogue" || mode == "bad-catalogue") {
+        std::vector<adi::device::AudioGridderCatalogueEntry> entries{{"original", "Cached row", "vst3", false}};
+        std::string error;
+        const bool read = adi::device::readAudioGridderCatalogue(endpoint, entries, error);
+        if (mode == "bad-catalogue")
+            return check(!read && entries.size() == 1 && entries[0].serverToken == "original" &&
+                         error.find("catalogue") != std::string::npos,
+                         "a malformed catalogue replaced the cached row") ? 0 : 1;
+        const bool exact = read && entries.size() == 2 &&
+            entries[0].serverToken == "VST3-12ab" && entries[0].name == "Engine Synth" &&
+            entries[0].format == "vst3" && entries[0].instrument &&
+            entries[1].serverToken == "VST3-34cd" && entries[1].name == "Engine Gain" &&
+            entries[1].format == "vst3" && !entries[1].instrument;
+        if (exact) std::puts("stock v13 loopback fixture: two exact metadata rows, ambiguous and legacy tokens omitted");
+        return check(exact, "stock catalogue did not preserve two eligible metadata rows") ? 0 : 1;
+    }
     auto processor = adi::device::makeAudioGridderProcessor(
         endpoint, {mode == "unknown" ? "VST3-400" : "VST3-12ab", "Stereo"});
     std::string error;

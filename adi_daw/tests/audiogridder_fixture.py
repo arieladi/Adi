@@ -27,6 +27,26 @@ def send_control(sock, kind, payload):
     sock.sendall(struct.pack("<iii", kind, 4 + len(payload), len(payload)) + payload)
 
 
+def short_text(value):
+    data = value.encode()
+    assert len(data) <= 31
+    return bytes([0xA0 | len(data)]) + data
+
+
+def catalogue():
+    def row(name, token, kind="VST3", instrument=False):
+        return (b"\x84" + short_text("name") + short_text(name) + short_text("id2") +
+                short_text(token) + short_text("type") + short_text(kind) +
+                short_text("isInstrument") + (b"\xc3" if instrument else b"\xc2"))
+
+    return (b"\x81" + short_text("plugins") + b"\x95" +
+            row("Engine Synth", "VST3-12ab", instrument=True) +
+            row("Engine Gain", "VST3-34cd") +
+            row("Legacy", "VST-1", kind="VST") +
+            row("First", "VST3-99ef") +
+            row("Second", "VST3-99ef"))
+
+
 def encode_stock_state(payload):
     alphabet = b".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
     value = int.from_bytes(payload, "little")
@@ -92,6 +112,8 @@ class Fixture:
             format_fields = struct.unpack_from("<iiiidi?", request)
             assert format_fields == (13, 2, 2, 0, 48000.0, self.expected_frames, False), format_fields
             assert struct.unpack_from("<Q", request, 48)[0] == 0x300000003
+            catalogue_only = self.mode in ("catalogue", "bad-catalogue")
+            assert request[40] == (1 if catalogue_only else 0)
             version = 12 if self.mode == "version" else 13
             master.sendall(struct.pack("<9i", version, 0, worker.getsockname()[1], *([0] * 6)))
             if self.mode == "version":
@@ -107,6 +129,11 @@ class Fixture:
                 # the native transport already chose its server token.
                 if self.mode == "control":
                     commands.sendall(struct.pack("<iii", 10, 4, 1))
+                    return
+                if catalogue_only:
+                    payload = catalogue() if self.mode == "catalogue" else b"\x91" * 1024 + b"\xc0"
+                    send_control(commands, 10, payload)
+                    assert commands.recv(1) == b"", "metadata query activated a plug-in"
                     return
                 send_control(commands, 10, b"\x81\xa7plugins\x90")
                 kind, size, size2 = struct.unpack("<iii", read(commands, 12))
@@ -195,10 +222,11 @@ class Fixture:
 
 def main():
     for mode in ("pcm", "version", "control", "unknown", "shape", "latency", "nonfinite", "timeout", "disconnect",
-                 "state", "bad-state"):
+                 "state", "bad-state", "catalogue", "bad-catalogue"):
         with Fixture(mode=mode, fail_after=0 if mode == "disconnect" else None) as server:
             subprocess.run([sys.argv[1], str(server.port), mode], check=True, timeout=8)
-        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state") else 1
+        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state",
+                                        "catalogue", "bad-catalogue") else 1
         assert server.blocks == expected_blocks, (mode, server.blocks)
 
 
