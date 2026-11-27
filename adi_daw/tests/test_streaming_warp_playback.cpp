@@ -350,6 +350,31 @@ std::vector<StereoFrame> compensatedPlayback(Session& session, std::size_t frame
     return {raw.begin() + static_cast<std::ptrdiff_t>(latency), raw.end()};
 }
 
+void r3UsesLocalTempoDomain() {
+    for (const auto changeBeat : {arrangementBeats, arrangementBeats + 64}) {
+        Project project("complex");
+        project.tempo(0, changeBeat * quarter, 300);
+        Session session;
+        project.load(session, Precision::Float32, sourceRate);
+        const auto latency = session.graph().currentGraph()->latencySamples();
+        const auto heard = compensatedPlayback(session, framesPerBeat + 1024, maxFrames);
+        const auto begin = heard.begin() + framesPerBeat - 4;
+        const auto end = begin + 9;
+        const auto peak = std::max_element(begin, end, [](const auto& a, const auto& b) { return a.left < b.left; });
+        std::printf("Complex clip followed by 300 BPM at beat %u: graph latency %d samples, beat peak %.3f FS\n",
+                    changeBeat, latency, static_cast<double>(peak->left));
+        check(latency > 0 && peak->left > 0.5f && session.clips()->underrunSamples() == 0,
+              "a tempo step at or after the placement end preserves audible streaming R3");
+    }
+
+    Project within("complex");
+    within.tempo(0, 4 * quarter, 300);
+    Session session;
+    within.load(session, Precision::Float32, sourceRate);
+    check(session.graph().currentGraph()->latencySamples() == 0,
+          "a genuinely unsupported tempo step inside the placement retains the prepared fallback");
+}
+
 void steadyTempo(std::string_view mode, double bpm, float peakTolerance = 0.002f, double rmsTolerance = 0.0001) {
     Project project(mode);
     project.tempo(0, arrangementBeats * quarter, bpm, bpm);
@@ -509,6 +534,7 @@ int main() {
         tempoRamp("texture", Precision::Float32, sourceRate, 1024);
         typedTempo("beats", 4 * framesPerBeat, 4);
         typedTempo("complex", 12 * 8192 + 64, 160);
+        r3UsesLocalTempoDomain();
         steadyTempo("beats", 120.0);
         steadyTempo("re-pitch", 100.0);
         steadyTempo("texture", 120.0);

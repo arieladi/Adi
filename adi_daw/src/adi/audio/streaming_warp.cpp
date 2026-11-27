@@ -15,7 +15,7 @@
 namespace adi::audio {
 namespace {
 
-constexpr std::int64_t maxSourceFrames = (std::int64_t{1} << 31) - 1;
+constexpr std::uint64_t maxSourceFrames = (std::uint64_t{1} << 31) - 1;
 constexpr std::size_t maxWarpPoints = 1000000;
 constexpr double beatsAttackSeconds = 0.01;
 constexpr double beatsEnvelopeRate = 12;
@@ -88,7 +88,7 @@ StreamingWarp::StreamingWarp(const WarpRenderPlan& plan, std::span<const WarpMar
                              std::uint32_t sourceRate, std::uint16_t channels) {
     if (onAudioThread)
         throw std::runtime_error("streaming warp must be prepared away from the audio callback");
-    if (sourceRate < 8000 || sourceRate > 768000 || plan.outputRate < 44100 || plan.outputRate > 768000 ||
+    if (sourceRate < 8000u || sourceRate > 768000u || plan.outputRate < 44100u || plan.outputRate > 768000u ||
         channels == 0 || channels > 64 || plan.sourceFrames == 0 || plan.sourceFrames > maxSourceFrames ||
         !std::isfinite(plan.transposeSemis) || std::abs(plan.transposeSemis) > 96 ||
         markers.size() < 2 || markers.size() > maxWarpPoints || markers.front() != WarpMarker{0, 0} ||
@@ -201,7 +201,14 @@ StreamingWarp::SliceLocation StreamingWarp::sliceAtFrame(double frame, WarpStrea
         current = std::clamp(next, begin + 1, end - 1) - 1;
         start = projected(*current);
     }
-    return {static_cast<std::size_t>(current - begin), start};
+    const auto* following = current + 1;
+    // Several detected onsets can round to the same output sample. As in
+    // the prepared render, keep the earliest source attack for that slice.
+    if (current != begin && projected(current[-1]) == start) {
+        current = std::lower_bound(begin, current, start,
+            [&](const Slice& slice, double position) { return projected(slice) < position; });
+    }
+    return {static_cast<std::size_t>(current - begin), static_cast<std::size_t>(following - begin), start};
 }
 
 double StreamingWarp::sliceStartFrame(std::size_t slice, WarpStreamClock clock) const noexcept {
@@ -220,13 +227,11 @@ double StreamingWarp::beatsReadAt(double local, double span) const noexcept {
     return begin + std::min(phase, 2 * (body - 1) - phase);
 }
 
-std::pair<double, double> StreamingWarp::beatsRange(double first, double last, std::size_t slice,
-                                                   WarpStreamClock clock) const noexcept {
-    const double startFrame = sliceStartFrame(slice, clock);
-    const double localFirst = std::max(0.0, (first - startFrame) * pitch_);
-    const double localLast = (last - startFrame) * pitch_;
-    const double start = static_cast<double>(slices_[slice].frame);
-    const double span = static_cast<double>(slices_[slice + 1].frame - slices_[slice].frame);
+std::pair<double, double> StreamingWarp::beatsRange(double first, double last, SliceLocation slice) const noexcept {
+    const double localFirst = std::max(0.0, (first - slice.outputFrame) * pitch_);
+    const double localLast = (last - slice.outputFrame) * pitch_;
+    const double start = static_cast<double>(slices_[slice.index].frame);
+    const double span = static_cast<double>(slices_[slice.next].frame - slices_[slice.index].frame);
     const double a = beatsReadAt(localFirst, span);
     const double b = beatsReadAt(localLast, span);
     const double infinity = std::numeric_limits<double>::infinity();
@@ -258,9 +263,10 @@ void StreamingWarp::sampleFrame(WarpStreamInput input, double position, std::spa
     }
     const auto first = static_cast<std::int64_t>(position);
     const double fraction = position - static_cast<double>(first);
+    const bool needsNext = fraction != 0 && first + 1 < sourceFrames_;
     for (std::uint16_t channel = 0; channel < output.size(); ++channel) {
         const double a = finiteSample(input.sample(input.context, first, channel));
-        const double b = first + 1 < sourceFrames_ ? finiteSample(input.sample(input.context, first + 1, channel)) : 0;
+        const double b = needsNext ? finiteSample(input.sample(input.context, first + 1, channel)) : 0;
         output[channel] = static_cast<float>(a * (1 - fraction) + b * fraction);
     }
 }
@@ -279,6 +285,7 @@ void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStrea
         const auto center = static_cast<double>(index * grainHop_);
         const double phase = (frame - center + static_cast<double>(half)) / grain;
         const double weight = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * phase);
+        if (weight == 0) continue;
         const double jitter = (static_cast<double>(grainRandom(seed_, index) >> 11) / 0x1p53 - 0.5) *
             (2 * grainJitterFrames_);
         const double readAt = sourceAtTick(clock.tickAtFrame(clock.context, center)) + jitter + (frame - center) * pitch_;
@@ -358,7 +365,7 @@ bool StreamingWarp::renderFrame(std::int64_t outputFrame, WarpStreamInput input,
     if (mode_ == WarpMode::Beats) {
         const auto slice = sliceAtFrame(frame, clock);
         const double start = static_cast<double>(slices_[slice.index].frame);
-        const double span = static_cast<double>(slices_[slice.index + 1].frame - slices_[slice.index].frame);
+        const double span = static_cast<double>(slices_[slice.next].frame - slices_[slice.index].frame);
         const double local = (frame - slice.outputFrame) * pitch_;
         if (!(local >= 0)) return true;
         const double readAt = beatsReadAt(local, span);
@@ -385,20 +392,20 @@ WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::i
     double end = 0;
     switch (mode_) {
     case WarpMode::Beats: {
-        const auto a = sliceAtFrame(first, clock).index;
-        const auto b = sliceAtFrame(last, clock).index;
-        if (a == b) {
-            const auto range = beatsRange(first, last, a, clock);
+        const auto a = sliceAtFrame(first, clock);
+        const auto b = sliceAtFrame(last, clock);
+        if (a.index == b.index) {
+            const auto range = beatsRange(first, last, a);
             begin = range.first;
             end = range.second + 2;
         } else {
-            const auto firstRange = beatsRange(first, sliceStartFrame(a + 1, clock) - 1, a, clock);
-            const auto lastRange = beatsRange(sliceStartFrame(b, clock), last, b, clock);
+            const auto firstRange = beatsRange(first, sliceStartFrame(a.next, clock) - 1, a);
+            const auto lastRange = beatsRange(b.outputFrame, last, b);
             begin = std::min(firstRange.first, lastRange.first);
             end = std::max(firstRange.second, lastRange.second) + 2;
-            if (b > a + 1) {
-                begin = std::min(begin, static_cast<double>(slices_[a + 1].frame));
-                end = std::max(end, static_cast<double>(slices_[b].frame) + 2);
+            if (b.index > a.next) {
+                begin = std::min(begin, static_cast<double>(slices_[a.next].frame));
+                end = std::max(end, static_cast<double>(slices_[b.index].frame) + 2);
             }
         }
         break;

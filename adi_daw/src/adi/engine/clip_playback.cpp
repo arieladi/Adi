@@ -76,14 +76,16 @@ std::int32_t contiguousPlayback(const Transport& transport,std::int32_t offset,s
                                 std::int32_t delay) noexcept {
     return transport.inputContiguousFrames(playbackSample(transport,offset,delay),frames);
 }
-bool supportsR3Ratios(std::span<const WarpMarker> markers,const WarpArrangementClock& clock) noexcept {
-    // A conservative clip-wide range preserves the prepared path for a source
-    // that would leave the bounded R3 ratio during a later ramp or loop lap.
+bool supportsR3Ratios(std::span<const WarpMarker> markers,const WarpArrangementClock& clock,
+                      double sourceOrigin,double endTick) noexcept {
+    // Include source history before a trimmed placement, and the tempo of
+    // each audible loop lap. Tempo changes after the clip cannot affect it.
+    const auto [minimum,maximum]=clock.framesPerTickRange(sourceOrigin,endTick);
     for (std::size_t i=1; i<markers.size(); ++i) {
         const double ticksPerSourceFrame = static_cast<double>(markers[i].tick-markers[i-1].tick) /
             static_cast<double>(markers[i].sourceFrame-markers[i-1].sourceFrame);
-        if (!audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame/clock.maxTicksPerFrame()) ||
-            !audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame/clock.minTicksPerFrame())) return false;
+        if (!audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame*minimum) ||
+            !audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame*maximum)) return false;
     }
     return true;
 }
@@ -865,11 +867,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 spec.transposeSemis=a->transposeSemis;
                 spec.formantScale=std::exp2(a->formantShift/12);
             }
-            const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
-                supportsR3Ratios(map.markers,warpClock);
-            const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
-            if (stream && !r3)
-                clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));
             const auto beginNs = row.posNs.value_or(0);
             // Project stored nanoseconds as the edit clock and Snapshot do: an
             // integer nanosecond rounded below its originating tick maps back to it.
@@ -883,6 +880,33 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
                 throw std::runtime_error("negative clip content offset needs an unwarped source clock");
             const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
+            std::int64_t endTicks=origin;
+            if(row.timeBase==0) {
+                const auto ticks=row.lengthTicks.value_or(0);
+                if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
+                endTicks+=ticks;
+                clip->start=samples(tempo.ticksToSeconds(origin),rate);
+                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
+            } else {
+                const auto nanos=row.lengthNs.value_or(0);
+                if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
+                    throw std::runtime_error("invalid clip duration");
+                const auto endNs = beginNs + nanos;
+                clip->start=samplesAtNs(beginNs,clip->rate);
+                clip->end=samplesAtNs(endNs,clip->rate);
+                endTicks=tempo.storedNanosecondsToTicks(endNs);
+            }
+            auto r3EndTick = static_cast<double>(endTicks);
+            if (r3Mode && !row.loopEnabled) {
+                const auto tail = map.markers.back().tick;
+                const auto end = std::min(tail,row.endMarkerTicks.value_or(tail));
+                r3EndTick = std::min(r3EndTick, static_cast<double>(sourceOrigin)+static_cast<double>(end));
+            }
+            const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
+                supportsR3Ratios(map.markers,warpClock,static_cast<double>(sourceOrigin),r3EndTick);
+            const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
+            if (stream && !r3)
+                clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));
             auto sourceDuration=[&](std::int64_t ticks) {
                 return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);
             };
@@ -905,22 +929,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     clip->reader.reset();
                     clip->progressive.reset();
                 }
-            }
-            std::int64_t endTicks=origin;
-            if(row.timeBase==0) {
-                const auto ticks=row.lengthTicks.value_or(0);
-                if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
-                endTicks+=ticks;
-                clip->start=samples(tempo.ticksToSeconds(origin),rate);
-                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
-            } else {
-                const auto nanos=row.lengthNs.value_or(0);
-                if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
-                    throw std::runtime_error("invalid clip duration");
-                const auto endNs = beginNs + nanos;
-                clip->start=samplesAtNs(beginNs,clip->rate);
-                clip->end=samplesAtNs(endNs,clip->rate);
-                endTicks=tempo.storedNanosecondsToTicks(endNs);
             }
             auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
