@@ -3386,6 +3386,159 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     }
 }
+void mixerSendOverflow(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "mixer-send-overflow.adi", error);
+    check(store != nullptr, "SC-272: a project with more returns than the Mixer can show");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Mixer Sends')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    constexpr std::int64_t outside = 1, group = 2, inside = 3, groupReturn = 4, main = 5, firstReturn = 20;
+    constexpr std::size_t topReturns = 12;
+    constexpr auto lastReturn = firstReturn + static_cast<std::int64_t>(topReturns) - 1;
+    std::vector<OpRequest> setup;
+    const auto op = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        request.label = "Mixer sends fixture";
+        setup.push_back(std::move(request));
+    };
+    const auto track = [&](std::int64_t id, const char *kind, const char *name, std::int64_t index) {
+        op("track.create", {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}});
+    };
+    track(outside, "audio", "Outside", 0);
+    track(group, "group", "Drums", 1);
+    track(inside, "audio", "Inside", 0);
+    track(groupReturn, "return", "Drums Return", 1);
+    op("track.setParent", {{"id", inside}, {"parent", group}});
+    op("track.setParent", {{"id", groupReturn}, {"parent", group}});
+    for (auto id = firstReturn; id <= lastReturn; ++id)
+        track(id, "return", "Return", id);
+    track(main, "master", "Main", lastReturn + 1);
+    const bool ready = submitter.submit(std::move(setup)).ok;
+    check(ready, "the Mixer fixture creates its audio, group, return and Main tracks");
+    if (!ready)
+        return;
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mixer-send-overflow");
+    root.setSize(2400, 1100);
+    root.state().mixerInOut = false;
+    root.state().mixerTrackOptions = false;
+    const bool opened = root.command(AppCommands::ToggleMixerView);
+    root.resizeMixerView(260);
+    root.frame();
+    auto &mixer = root.mixerView;
+    const auto stripOf = [&](std::int64_t id) -> MixerStrip * {
+        for (const auto &strip : mixer.strips())
+            if (strip->isVisible() && strip->track() == id)
+                return strip.get();
+        return nullptr;
+    };
+    const auto visibleSends = [](const MixerStrip &strip) {
+        std::vector<std::int64_t> ids;
+        for (std::size_t i = 0; i < strip.sendKnobs().size(); ++i)
+            if (strip.sendKnobs()[i]->isVisible())
+                ids.push_back(strip.sendsTo(i));
+        return ids;
+    };
+    const auto sendPoint = [&](const MixerStrip &strip) {
+        for (const auto &knob : strip.sendKnobs())
+            if (knob->isVisible())
+                return mixer.getLocalPoint(&strip, knob->getBounds().getCentre()).toFloat();
+        return juce::Point<float>{};
+    };
+    const auto wheel = [&](juce::Point<float> at, float x, float y) {
+        mixer.mouseWheelMove(pressAt(mixer, at), {x, y, false, false, false});
+    };
+    auto *out = stripOf(outside), *in = stripOf(inside), *master = stripOf(main);
+    const bool columns = opened && out && in && master && in->sendsShown() > 1 && in->sendsShown() < topReturns &&
+                         in->sendKnobs().size() == topReturns + 1 && out->sendKnobs().size() == topReturns &&
+                         master->returnSwitches().size() == topReturns + 1;
+    check(columns, "the short Mixer has an overflow window and realises both channels and Main");
+    if (!columns)
+        return;
+    const auto initial = visibleSends(*in);
+    check(!initial.empty() && initial.front() == firstReturn && visibleSends(*out) == initial,
+          "both channels initially show the same first returns");
+    const auto at = sendPoint(*in);
+    const auto originalHead = OpJournal(*store).headSeq();
+    wheel(at, 0.f, -1.f);
+    const auto next = visibleSends(*in);
+    check(!next.empty() && next.front() == firstReturn + 1 && visibleSends(*out) == next,
+          "one notch over Sends advances the shared window by one return");
+    for (std::size_t i = 0; i < topReturns; ++i)
+        wheel(at, 0.f, -1.f);
+    const auto end = visibleSends(*in), ungroupedEnd = visibleSends(*out);
+    auto &lastKnob = *in->sendKnobs().back();
+    auto &lastSwitch = *master->returnSwitches().back();
+    check(!end.empty() && end.back() == groupReturn && !ungroupedEnd.empty() && ungroupedEnd.back() == lastReturn &&
+              end.size() == ungroupedEnd.size() + 1 && in->sendsShown() == master->sendsShown() &&
+              out->volume.getY() == in->volume.getY() && master->volume.getY() == in->volume.getY() &&
+              lastKnob.isVisible() && lastSwitch.isVisible() && lastSwitch.getTitle() == "Pre/Post DA" &&
+              lastSwitch.getX() == lastKnob.getX() && lastSwitch.getY() == lastKnob.getY() + 9 &&
+              OpJournal(*store).headSeq() == originalHead,
+          "the final group return aligns with Main while the outside track leaves its slot empty, with no project edit");
+
+    lastKnob.setValue(-14., juce::sendNotificationSync);
+    root.frame();
+    const auto *landed = findSend(root.reader().sends(), inside, groupReturn);
+    check(landed && std::abs(landed->gainDb + 14.) < 1.e-9 && !findSend(root.reader().sends(), inside, firstReturn),
+          "the last scrolled knob writes to that return ID");
+    lastSwitch.onClick();
+    root.frame();
+    const auto *pre = findSend(root.reader().sends(), inside, groupReturn);
+    check(pre && pre->preFader && returnPre(root.reader().findTrack(groupReturn)) &&
+              !returnPre(root.reader().findTrack(firstReturn)),
+          "the aligned Main switch changes only the final return's Pre/Post");
+
+    check(root.moveTracks(lastReturn, {0, firstReturn}), "move the last top-level return to the first position");
+    root.frame();
+    master = stripOf(main);
+    if (master && master->returnSwitches().size() == topReturns + 1 && master->returnSwitches()[topReturns - 1]->isVisible())
+        master->returnSwitches()[topReturns - 1]->onClick();
+    root.frame();
+    check(returnPre(root.reader().findTrack(lastReturn - 1)) && !returnPre(root.reader().findTrack(lastReturn)),
+          "after reordering returns, Main's visible switch follows the return now at that index");
+    for (std::size_t i = 0; i < topReturns; ++i)
+        wheel(at, 0.f, 1.f);
+    in = stripOf(inside);
+    const auto back = in ? visibleSends(*in) : std::vector<std::int64_t>{};
+    check(back.size() == initial.size() && !back.empty() && back.front() == lastReturn,
+          "scrolling back shows the new first return");
+
+    root.setSize(1000, 1100);
+    root.frame();
+    const auto leftColumn = [&] {
+        for (const auto &strip : mixer.strips())
+            if (strip->isVisible() && strip->getRight() > 0 && strip->getX() < mixer.getWidth())
+                return strip->track();
+        return std::int64_t{0};
+    };
+    out = stripOf(outside);
+    const auto leftmost = leftColumn();
+    check(out && leftmost == outside, "the narrower Mixer starts at the first track");
+    if (!out)
+        return;
+    const auto overKnob = sendPoint(*out);
+    wheel(overKnob, 0.f, -1.f);
+    const auto scrolled = visibleSends(*out);
+    check(leftColumn() == leftmost && !scrolled.empty() && scrolled.front() == firstReturn,
+          "vertical wheel over an overflowing sends area leaves horizontally scrollable channels in place");
+    wheel(overKnob, -1.f, 0.f);
+    check(leftColumn() != leftmost, "horizontal wheel over Sends still scrolls Mixer channels sideways");
+    wheel(overKnob, 1.f, 0.f);
+    out = stripOf(outside);
+    check(leftColumn() == leftmost && out && visibleSends(*out) == scrolled,
+          "horizontal scrolling back preserves the shared sends window");
+    wheel({12.f, 8.f}, 0.f, -1.f);
+    check(leftColumn() != leftmost, "vertical wheel outside Sends still scrolls the Mixer sideways");
+}
 void deviceOutputMeters(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "device-meters.adi", true, {}, error);
@@ -19143,6 +19296,7 @@ int main(int argc, char **argv) {
         trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+        trace("mixerSendOverflow", [&] { mixerSendOverflow(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -22834,6 +22988,7 @@ int main(int argc, char **argv) {
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+    trace("mixerSendOverflow", [&] { mixerSendOverflow(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
