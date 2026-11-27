@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 00:53 IST — libcxx/control/agent-chain `a0e5dfc3daffe115ec9630bdaeae2ba6f7b265ac`
+
+The raw `control/agent-chain` head `d68937dc5f4413e3f55d44070da33135710938c2` failed the full headless build in `adi_daw/src/juce/app_control.cpp:292:58`. This was the only failed compile target. The raw head could not run the suites.
+
+The one-commit snapshot publication fix built in strict Debug with Clang 20, libc++ and Pd. All 287 headless CTest suites passed. JUCE Debug linked libc++ and libc++abi, and all three offscreen window suites passed.
+
 ### 28 November 2026, 00:33 IST — main `facf39b4a23f7fbffaf3d0d52ecc7de1ed3fd1dd`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 279 registered CTest suites passed.
