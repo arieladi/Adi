@@ -33,6 +33,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-290 | `basics/look-chain` at `9b50a04d` | Show the preceding device's stereo output in each Device View gap. Window seat. | Headless tap, channel, clipping, stale signal and visibility checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-291 | `basics/look-chain` at `8a670768` | Show sample filenames and waveforms and reveal file-backed samples. Window, Mix View and engine seats. | Peerless waveform and folder request checks passed. Debug Werror, 17 UI suites without DISPLAY, 5 sample and snapshot suites and 3 acceptance suites passed. | Pushed |
 | SC-292 | `basics/look-chain` at `6fd1d48a` | Name the valid drops for MIDI tracks and Main in Device View. Window seat. | The peerless paint test distinguished the new instructions from the earlier text. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-355 | `basics/look-chain` at `5c3b9050` | Switch the detail panes with Shift+Tab or F12 and show both on Alt-click. Window seat. | Headless keyboard, focus navigation, mouse modifier, layout and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -270,6 +271,25 @@ The table gives the actual text ink bounds measured from the 2× JUCE software r
 An instrumentless MIDI chain that already contains MIDI effects offers a MIDI effect or instrument at its end. A VCA reports that it does not take devices. The change uses the published track and device state and touches the window seat's Device View paint path and shell tests.
 
 The standalone measurement executable emitted the same JUCE software image shutdown diagnostics in both builds. The comparison assertions ran before shutdown. The chain's full UI and acceptance gates can verify the change under the repository's usual harness.
+
+### SC-355
+
+Logical pixels with Compact density, a 1440 × 900 root at 100 percent interface zoom, default Browser width, and the Arrangement open. Bounds use `(x, y, width, height)` in root coordinates. The numeric expectations come from the root layout and are checked by the peerless shell fixture.
+
+| Gesture and starting view | Clip View before → after | Device View before → after | Arrangement lanes before → after |
+| --- | --- | --- | --- |
+| Shift+Tab from Devices | Empty → `(324,576,1108,286)` | `(324,666,1108,196)` → empty | `(328,115,788,525)` → `(328,115,788,435)` |
+| F12 from Clip | `(324,576,1108,286)` → empty | Empty → `(324,666,1108,196)` | `(328,115,788,435)` → `(328,115,788,525)` |
+| Alt-click Device toggle from Devices | Empty → `(324,372,1108,286)` | Empty → `(324,666,1108,196)` | `(328,115,788,721)` → `(328,115,788,231)` |
+| Alt-click Clip selector from Clip | Empty → `(324,372,1108,286)` | Empty → `(324,666,1108,196)` | `(328,115,788,721)` → `(328,115,788,231)` |
+
+In the Alt-click rows, the before and after columns describe the result of each gesture on the old and new build. The Status Bar controls keep the Clip selector at `(1064,870,206,22)` and the Device toggle at `(1413,871,19,19)`.
+
+When the two panes are already visible, the shortcut shows Clip alone if a Device control has the keyboard and Devices alone otherwise. When both are hidden it opens Clip. Shift+Tab follows the existing backward-focus setting when Tab navigation is enabled. F12 remains available there. The Note Editor’s Cmd/Ctrl+F12 invokes its existing Set End shortcut. WIN-08 still owns moving Detail View between an Arrangement and a Second Window.
+
+The test sends keys to the root and Alt-click press and release events to the two JUCE buttons. It checks the pane bounds, the persisted both-visible state, backward focus compatibility, and the first switch with both panes hidden. Three PC keymap text fixtures add the new command beside the existing defaults. No software PNG fixture changed.
+
+Commit `18e7e955`. The modified shell and shell test translation units passed the configured Linux Debug warnings-as-errors syntax checks. `git diff --check` passed. Integrated CTest and acceptance runs remain with the chain gate.
 
 ## For the director
 
