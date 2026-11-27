@@ -5687,7 +5687,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     // The later clip is between grid lines, so both must use the earlier clip's step size.
     arrangement.geometry.grid.fixed = true;
     arrangement.geometry.grid.fixedQuarters = 16.;
-    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
     root.frame();
     check(clipsOf(2) == Clips{{bar, bar / 2}, {4 * bar, bar}, {gapAt, bar / 4}} &&
               clipsOf(3) == between && clipsOf(20) == Clips{{6 * bar, bar / 2}},
