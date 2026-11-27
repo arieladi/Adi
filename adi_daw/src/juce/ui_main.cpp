@@ -2249,18 +2249,15 @@ class AdiApplication final : public juce::JUCEApplication,
                                                document_->landingTake());
     }
     void syncControlHost() {
-        if (testLaunch() || settings_->get("control.enabled") != true) {
-            if (appControl_) appControl_->stop();
-            controlSettings_.clear();
-            return;
-        }
+        if (testLaunch()) return;
+        const auto enabled = settings_->get("control.enabled");
         const auto port = settings_->get("control.port");
         const auto origins = settings_->get("control.allowedOrigins");
         const auto location = settings_->get("control.tokenLocation");
         const auto tier = settings_->get("agent.tier");
         const auto maxOps = settings_->get("agent.maxOpsPerRequest");
         const auto minute = settings_->get("agent.maxOpsPerMinute");
-        const auto stamp = Payload::array({port, origins, location, tier, maxOps, minute}).dump();
+        const auto stamp = Payload::array({enabled, port, origins, location, tier, maxOps, minute}).dump();
         if (stamp == controlSettings_) return;
         controlSettings_ = stamp;
         control::AppControlOptions options;
@@ -2282,7 +2279,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         appControl_->attach(document_.get());
         std::string error;
-        if (!appControl_->start(error)) juce::Logger::writeToLog(juce::String(error));
+        if (enabled == true && !appControl_->start(error)) juce::Logger::writeToLog(juce::String(error));
     }
 
     void timerCallback() override {

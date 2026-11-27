@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/app_control.hpp"
 
+#include "adi/control/agent_runtime.hpp"
 #include "adi/control/agent_stop.hpp"
 #include "adi/control/jobs.hpp"
 #include "adi/control/live_project.hpp"
@@ -30,6 +31,12 @@ using SessionId = LoopbackListener::SessionId;
 using Reply = LoopbackListener::Reply;
 using Cancel = LoopbackListener::Cancel;
 
+struct AgentToolReply {
+    std::mutex mutex;
+    std::condition_variable_any ready;
+    std::optional<Outcome> outcome;
+};
+
 struct McpWork {
     Incoming frame;
     Reply reply;
@@ -52,21 +59,48 @@ class AppControl::Impl {
 public:
     Impl(Executor owner, AppControlOptions config)
         : options(std::move(config)),
+          currentTier(options.tier), currentMaxOps(options.limits.maxOps), currentMinute(options.maxOpsPerMinute),
           service([owner = std::move(owner), alive = std::weak_ptr<int>(lifetime)](Task task) {
               owner([alive, task = std::move(task)] { if (alive.lock()) task(); });
           }, grants),
           context{projects, queue, options.limits, nowMicros, {}, "adi", kVersion, "control"},
+          agent(ledger, jobs, [this](ConsentRequest question) { ask(std::move(question)); }),
           mcp(service, projects, {"adi", "ADI", kVersion}) {
-        context.appTier = [this] { return options.tier; };
-        context.maxOpsPerMinute = [this] { return options.maxOpsPerMinute; };
+        if (!agentCredential.empty()) grants.grant(agentCredential, Tier::Apply);
+        context.appTier = [this] { return currentTier.load(); };
+        context.readLimits = [this] { return adi::agent::Limits{currentMaxOps.load()}; };
+        context.maxOpsPerMinute = [this] { return currentMinute.load(); };
         context.consentLedger = &ledger;
         context.jobs = &jobs;
         context.agentWrites = &agentWrites;
-        context.askConsent = [this](ConsentRequest question) {
-            std::lock_guard lock(questionMutex);
-            if (questions.size() < 64) questions.push_back(std::move(question));
-        };
+        context.askConsent = [this](ConsentRequest question) { ask(std::move(question)); };
         registerControlMethods(service, context);
+    }
+
+    void ask(ConsentRequest question) {
+        std::lock_guard lock(questionMutex);
+        if (questions.size() < 64) questions.push_back(std::move(question));
+    }
+
+    Outcome agentTool(const Principal& who, std::string_view method, const Json& args,
+                      const RequestMeta& meta, std::stop_token stop) {
+        if (stop.stop_requested()) return Outcome::fail(errc::AgentStopped, "the agent run stopped");
+        auto response = std::make_shared<AgentToolReply>();
+        auto pending = service.call(who, method, args, meta, [response](Outcome value) {
+            {
+                std::lock_guard lock(response->mutex);
+                response->outcome = std::move(value);
+            }
+            response->ready.notify_one();
+        });
+        std::unique_lock lock(response->mutex);
+        using namespace std::chrono_literals;
+        if (!response->ready.wait_for(lock, stop, 10s, [&] { return response->outcome.has_value(); })) {
+            pending->abandon();
+            return Outcome::fail(stop.stop_requested() ? errc::AgentStopped : errc::DeadlinePassed,
+                                 "the agent tool call ended while waiting for ADI");
+        }
+        return std::move(*response->outcome);
     }
 
     ~Impl() {
@@ -223,6 +257,9 @@ public:
     }
 
     AppControlOptions options;
+    std::atomic<Tier> currentTier;
+    std::atomic<std::size_t> currentMaxOps, currentMinute;
+    const std::string agentCredential = makeSessionToken();
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     GrantTable grants;
     Service service;
@@ -232,6 +269,7 @@ public:
     AgentWriteGate agentWrites;
     ConsentLedger ledger;
     ControlContext context;
+    AgentRuntime agent;
     McpEndpoint mcp;
     SessionDiscoveryFile discovery;
     std::optional<SessionDiscovery> activeSession;
@@ -252,14 +290,16 @@ void AppControl::stop() { impl_->stop(); }
 void AppControl::configure(AppControlOptions options) {
     impl_->stop();
     impl_->options = std::move(options);
-    impl_->context.limits = impl_->options.limits;
+    impl_->currentTier.store(impl_->options.tier);
+    impl_->currentMaxOps.store(impl_->options.limits.maxOps);
+    impl_->currentMinute.store(impl_->options.maxOpsPerMinute);
 }
 std::optional<SessionDiscovery> AppControl::session() const { return impl_->activeSession; }
 void AppControl::attach(ui::ProjectDocument* doc) { impl_->attach(doc); }
 
 void AppControl::tick(ui::ProjectDocument* doc) {
-    if (!impl_->activeSession) return;
     impl_->attach(doc);
+    if (!impl_->activeSession) return;
     if (impl_->live) impl_->live->publishTelemetry(impl_->service.now());
 }
 
@@ -295,6 +335,31 @@ void AppControl::rearmAgent() {
 }
 
 bool AppControl::agentStopped() const { return impl_->agentWrites.stopped(); }
+
+AgentCheck AppControl::checkAgent(const AgentLaunch& launch, std::string_view project) {
+    const auto active = impl_->projects.find(project);
+    return active ? impl_->agent.check(launch, active->projectUuid()) : AgentCheck{};
+}
+
+AgentCheck AppControl::agentReadiness(std::string_view project) const {
+    const auto active = impl_->projects.find(project);
+    return active ? impl_->agent.readiness(active->projectUuid()) : AgentCheck{};
+}
+
+AgentRunResult AppControl::runAgent(const AgentLaunch& launch, std::string_view project,
+                                     std::string request, RunOrigin origin) {
+    const auto epoch = impl_->agentWrites.generation();
+    const auto active = impl_->projects.find(project);
+    if (!active) return {{}, {}, "project_unavailable"};
+    if (impl_->agentCredential.empty()) return {{}, {}, "unavailable"};
+    const Principal who{impl_->agentCredential, "ADI agent"};
+    return impl_->agent.run(launch, "adi-agent", active->projectUuid(), active->handle(), std::move(request),
+                           origin, [&](std::string_view method, const Json& args, RequestMeta meta,
+                                       std::stop_token stop) {
+        meta.receivedAgentEpoch = epoch;
+        return impl_->agentTool(who, method, args, meta, stop);
+    });
+}
 
 agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
     if (approve && agentStopped()) return {false, agent::Refusal::Invalid, "agent writes are stopped"};

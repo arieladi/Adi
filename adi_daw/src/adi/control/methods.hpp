@@ -54,6 +54,7 @@ struct ControlContext {
     std::function<void(ConsentRequest)> askConsent = {};
     JobBook* jobs = nullptr;
     const AgentWriteGate* agentWrites = nullptr;
+    std::function<agent::Limits()> readLimits = {};
 };
 
 /// Registers the control methods. `context` must outlive `service`.

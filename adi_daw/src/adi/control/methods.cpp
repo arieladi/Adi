@@ -187,11 +187,12 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
     if (opsIt == p.end() || !opsIt->is_array())
         return refusal(errc::InvalidParams, "ops is a list of {op, payload, label?}", "invalid");
     if (opsIt->empty()) return refusal(errc::InvalidParams, "the changeset is empty", "empty");
-    if (opsIt->size() > ctx.limits.maxOps)
+    const auto cap = ctx.readLimits ? ctx.readLimits().maxOps : ctx.limits.maxOps;
+    if (opsIt->size() > cap)
         return refusal(errc::OverLimit,
                        std::to_string(opsIt->size()) + " ops, over the per-request cap of " +
-                           std::to_string(ctx.limits.maxOps),
-                       "too many ops", {{"cap", ctx.limits.maxOps}});
+                           std::to_string(cap),
+                       "too many ops", {{"cap", cap}});
 
     // Every op screened with the remote bounds (CTL-02): the allow-list, then
     // the registry's own validation -- the one validator.
@@ -784,7 +785,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                 cs.ops.push_back(std::move(q));
             }
 
-            auto limits = ctx.limits;
+            auto limits = ctx.readLimits ? ctx.readLimits() : ctx.limits;
             limits.measureClipImpact = call.tier == Tier::Apply && project->allowsAutomaticApply();
             const agent::Preview pv = project->preview(cs, limits);
             if (ctx.agentWrites && !ctx.agentWrites->stillAdmitted(call.agentWriteEpoch))

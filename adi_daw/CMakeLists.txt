@@ -862,6 +862,8 @@ add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
 # gives these suites their ADI_HOME and test_all.sh finds them.
 # ---------------------------------------------------------------------------
 add_library(adi_control STATIC
+    src/adi/control/agent_process.cpp
+    src/adi/control/agent_runtime.cpp
     src/adi/control/consent.cpp
     src/adi/control/consent_file.cpp
     src/adi/control/consent_scope.cpp
@@ -910,6 +912,10 @@ add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
 add_executable(adi_jobs_tests tests/test_jobs.cpp)
 target_link_libraries(adi_jobs_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_jobs_tests COMMAND adi_jobs_tests)
+
+add_executable(adi_agent_runtime_tests tests/test_agent_runtime.cpp)
+target_link_libraries(adi_agent_runtime_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_agent_runtime_tests COMMAND adi_agent_runtime_tests)
 
 add_executable(adi_tracked_render_queue_tests tests/test_tracked_render_queue.cpp)
 target_link_libraries(adi_tracked_render_queue_tests PRIVATE adi_control adi_warnings)

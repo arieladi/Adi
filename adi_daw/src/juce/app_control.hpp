@@ -14,6 +14,10 @@ class ProjectDocument;
 
 namespace adi::control {
 
+struct AgentLaunch;
+struct AgentCheck;
+struct AgentRunResult;
+
 struct AppControlOptions {
     std::uint16_t port = 0;
     std::vector<std::string> allowedOrigins;
@@ -54,6 +58,11 @@ public:
     [[nodiscard]] AgentStopReport stopAgent(std::string surface);
     void rearmAgent();
     [[nodiscard]] bool agentStopped() const;
+    /// Trusted worker seams. The application owns the worker lifetime.
+    [[nodiscard]] AgentCheck checkAgent(const AgentLaunch&, std::string_view project);
+    [[nodiscard]] AgentCheck agentReadiness(std::string_view project) const;
+    [[nodiscard]] AgentRunResult runAgent(const AgentLaunch&, std::string_view project,
+                                         std::string request, RunOrigin = RunOrigin::Direct);
 
 private:
     class Impl;
