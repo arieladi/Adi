@@ -419,6 +419,71 @@ void reverseSelectedRange() {
     check(History(*f.store).undo().ok && f.session.refresh(*f.store) && matches(false),
           "one undo restores the original uninterrupted playback");
 }
+void reverseSelectedRepeats() {
+    constexpr int block=256, loopSource=7, nextSource=500;
+    const auto at=[](std::int64_t frame) {return frame*textproj::kPPQ/24000;};
+    Fixture f(48000,2,2000);
+    f.add(1,0,1200,loopSource,300);
+    f.add(2,1200,120,nextSource,120);
+    const auto hash=media::blake3File(f.dir.path()/"audio.wav");
+    if(!hash){check(false,"hash the looping Reverse selection source");return;}
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
+    f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=24024 WHERE id=1;"
+                       "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,48048);"
+                       "INSERT INTO clip_playback_details(clip_id,source_end_ns,loop_begin_ns,loop_end_ns,in_begin_ns,in_end_ns) "
+                       "VALUES(1,4166667,2083333,4166667,0,520833);");
+    const std::array both{std::int64_t{1},std::int64_t{2}};
+    const std::array loop{std::int64_t{1}};
+    const auto head=OpJournal(*f.store).headSeq();
+    const auto mixed=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(250)},48000);
+    check(!mixed.ok && mixed.error.find("intro")!=std::string::npos && OpJournal(*f.store).headSeq()==head,
+          "an intro followed by loop wraps refuses without changing any clip");
+
+    const auto read=[&] {
+        std::array<float,1320> pcm{};
+        f.session.transport().locate(0);
+        for(int start=0;start<1320;start+=block) {
+            const auto out=f.render(block);
+            std::copy_n(out.begin(),std::min(block,1320-start),pcm.data()+start);
+        }
+        return pcm;
+    };
+    f.load(block);
+    const auto original=read();
+    const auto matches=[&](auto&& originalIndex) {
+        const auto pcm=read();
+        for(int i=0;i<1320;++i)
+            if(pcm[static_cast<std::size_t>(i)]!=original[static_cast<std::size_t>(originalIndex(i))])return false;
+        return true;
+    };
+    const auto reversed=clip_edit::prepareReverse(*f.store,both,std::pair{at(900),at(1250)},48000);
+    check(reversed.ok && reversed.requests.size()==1,"a late repeat and its neighbor can be reversed in one prepared edit");
+    if(reversed.ok && clip_edit::commitPrepared(*f.store,reversed).ok && f.session.refresh(*f.store)) {
+        check(matches([](int frame) {
+            if(frame>=900 && frame<1200)return 2099-frame;
+            if(frame>=1200 && frame<1250)return 2449-frame;
+            return frame;
+        }),"Reverse changes only the selected later repeats and the covered portion of the neighboring clip");
+        if(!History(*f.store).undo().ok || !f.session.refresh(*f.store)) {
+            check(false,"one Undo restores both selected clips");
+            return;
+        }
+        check(read()==original,"one Undo restores the initial loop phase and neighboring PCM");
+    } else if(reversed.ok) {
+        check(false,"commit the single captured Reverse edit for both clips");
+        return;
+    }
+
+    const auto firstPass=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(175)},48000);
+    const bool committed=firstPass.ok && clip_edit::commitPrepared(*f.store,firstPass).ok && f.session.refresh(*f.store);
+    check(committed && matches([](int frame) {
+        return frame>=50 && frame<175?224-frame:frame;
+    }),"the intro and uninterrupted first pass reverse as a one-shot, keeping the surrounding loop intact");
+}
 void takeLanePlayback() {
     Fixture f;
     f.add(1, 0, 500, 11, 1000);
@@ -1909,7 +1974,7 @@ int main(int argc,char** argv) {
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
-        if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();}
+        if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();reverseSelectedRepeats();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
