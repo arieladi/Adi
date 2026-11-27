@@ -4,23 +4,14 @@
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
+#include <unordered_set>
 namespace adi::ui {
 namespace {
-constexpr std::size_t kMaxGramBytes = 3;
-std::uint32_t addGramByte(std::uint32_t key, char byte) {
-    return (key << 8U) | static_cast<std::uint32_t>(static_cast<unsigned char>(byte));
-}
-std::string foldSearchText(std::string_view text) {
-    return text.empty() ? std::string{}
-                        : juce::String::fromUTF8(text.data(), static_cast<int>(text.size())).toLowerCase().toStdString();
-}
-bool matchesSearchWords(std::span<const std::string> words, std::string_view name, std::string_view maker = {}) {
-    return std::ranges::all_of(words, [name, maker](const std::string &word) {
-        return name.find(word) != std::string_view::npos || maker.find(word) != std::string_view::npos;
-    });
-}
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
+constexpr auto kLastLabel = "browser.lastLabel";
+constexpr auto kAllLabel = "label:All";
+constexpr auto kFirstLabel = "label:Instruments";
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     g.setColour(look::text);
     const float x = r.getX(), y = r.getY(), w = r.getWidth(), h = r.getHeight();
@@ -120,82 +111,6 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     }
 }
 } // namespace
-BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing_(std::move(listing)) {
-    foldedNames_.reserve(listing_.samples.size());
-    for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
-        const auto &sample = listing_.samples[i];
-        const auto &name = foldedNames_.emplace_back(foldSearchText(sample.name));
-        for (std::size_t start = 0; start < name.size(); ++start) {
-            // A leading 1 distinguishes grams of different widths, even for non-ASCII names.
-            std::uint32_t key = 1;
-            const auto length = std::min(kMaxGramBytes, name.size() - start);
-            for (std::size_t offset = 0; offset < length; ++offset) {
-                key = addGramByte(key, name[start + offset]);
-                auto &posting = postings_[key];
-                if (posting.empty() || posting.back() != i)
-                    posting.push_back(i);
-            }
-        }
-    }
-    // A sample deduplicated by the library index may belong to several overlapping Places.
-    // Keep their path-based membership here, so changing the query never compares paths.
-    for (const auto &place : listing_.places) {
-        if (place.volumeId.empty())
-            continue;
-        auto &scope = places_[place.volumeId];
-        scope.ordered.clear();
-        scope.contains.assign(listing_.samples.size(), false);
-        if (place.root.empty())
-            continue;
-        for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
-            const auto relative = listing_.samples[i].path.lexically_relative(place.root);
-            if (!relative.empty() && *relative.begin() != "..") {
-                scope.ordered.push_back(i);
-                scope.contains[i] = true;
-            }
-        }
-    }
-}
-void BrowserLibrarySnapshot::appendSamples(std::span<const std::string> words, const std::string *volume,
-                                           std::vector<const LibraryFile *> &results) const {
-    const PlaceSamples *scope = nullptr;
-    if (volume != nullptr) {
-        const auto found = places_.find(*volume);
-        if (found == places_.end())
-            return;
-        scope = &found->second;
-    }
-
-    const SampleIndices *shortest = nullptr;
-    for (const std::string_view word : words) {
-        const auto gramSize = std::min(kMaxGramBytes, word.size());
-        for (std::size_t start = 0; start <= word.size() - gramSize; ++start) {
-            std::uint32_t key = 1;
-            for (const char byte : word.substr(start, gramSize))
-                key = addGramByte(key, byte);
-            const auto found = postings_.find(key);
-            if (found == postings_.end())
-                return;
-            if (shortest == nullptr || found->second.size() < shortest->size())
-                shortest = &found->second;
-        }
-    }
-    // Every posting follows library order. The rarest gram across the words (or a smaller Place)
-    // limits how many names need checking. A query with just one gram already matches exactly.
-    if (scope != nullptr && (shortest == nullptr || scope->ordered.size() < shortest->size())) {
-        for (const auto i : scope->ordered)
-            if (matchesSearchWords(words, foldedNames_[i]))
-                results.push_back(&listing_.samples[i]);
-    } else if (shortest != nullptr) {
-        const bool exact = words.size() == 1 && words.front().size() <= kMaxGramBytes;
-        for (const auto i : *shortest)
-            if ((scope == nullptr || scope->contains[i]) && (exact || matchesSearchWords(words, foldedNames_[i])))
-                results.push_back(&listing_.samples[i]);
-    } else {
-        for (const auto &sample : listing_.samples)
-            results.push_back(&sample);
-    }
-}
 BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
@@ -237,6 +152,8 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
     addAndMakeVisible(list);
+    selected_ = findLabel(kFirstLabel);
+    refill();
 }
 void BrowserPanel::enterList() {
     if (firstItem() >= 0) {
@@ -303,16 +220,43 @@ const LibraryListing &BrowserPanel::listing() const noexcept {
     static const LibraryListing empty;
     return library_ ? library_->listing() : empty;
 }
+std::string BrowserPanel::labelKey(int index) const {
+    if (index < 0 || index >= static_cast<int>(sidebar_.size()))
+        return {};
+    const auto i = static_cast<std::size_t>(index);
+    const auto &entry = sidebar_[i];
+    if (entry.heading || entry.glyph == AddFolder)
+        return {};
+    return i < baseEntries_ - 1 ? "label:" + entry.name.toStdString() : "place:" + entry.place;
+}
+int BrowserPanel::findLabel(std::string_view key) const {
+    if (!key.empty())
+        for (int i = 0; i < static_cast<int>(sidebar_.size()); ++i)
+            if (labelKey(i) == key)
+                return i;
+    return -1;
+}
+void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
+    labelSettings_ = &settings;
+    const auto saved = settings.get(kLastLabel).get<std::string>();
+    selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
+    pendingLabel_.clear();
+    if (selected_ < 0) {
+        if (!ready_ && saved.starts_with("place:"))
+            pendingLabel_ = saved;
+        selected_ = findLabel(kAllLabel);
+    }
+    refill();
+    repaint();
+}
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
-    // The label chosen stays chosen across a new listing, found again by its name and place.
-    const auto keep = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : Entry{};
+    const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
     library_ = std::move(library);
     ready_ = ready;
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
-    sidebar_.resize(baseEntries_);
-    auto addFolder = sidebar_.back();
-    sidebar_.pop_back();
+    auto addFolder = std::move(sidebar_.back());
+    sidebar_.resize(baseEntries_ - 1);
     for (auto &e : sidebar_)
         if (e.name == "User Library" && !e.heading)
             e.place.clear();
@@ -326,12 +270,11 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User, false, false, place.volumeId});
     }
     sidebar_.push_back(addFolder);
-    selected_ = -1;
-    // The User Library's label is Live's own, whatever folder it names now; any other by its place.
-    for (std::size_t i = 0; i < sidebar_.size() && keep.name.isNotEmpty() && selected_ < 0; ++i)
-        if (sidebar_[i].name == keep.name && sidebar_[i].heading == keep.heading &&
-            (sidebar_[i].place == keep.place || (keep.name == "User Library" && i < baseEntries_)))
-            selected_ = static_cast<int>(i);
+    selected_ = findLabel(keep);
+    if (ready_ || selected_ >= 0)
+        pendingLabel_.clear();
+    if (selected_ < 0)
+        selected_ = findLabel(kAllLabel);
     refill();
     repaint();
 }
@@ -353,8 +296,9 @@ void BrowserPanel::setHotSwap(std::optional<HotSwapFilter> filter) {
         return;
     if (!hotSwap_) {
         idleSearch_ = search.getText();
-        search.setText({}, false);
+        search.setText(swapSearch_, false);
     } else if (!filter) {
+        swapSearch_ = search.getText();
         search.setText(std::exchange(idleSearch_, {}), false);
     }
     hotSwap_ = std::move(filter);
@@ -377,31 +321,30 @@ void BrowserPanel::refill() {
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    const bool all = chosen.glyph == All;
     const bool swappingDevices = hotSwap_ && !hotSwap_->samples;
+    const bool showPlugins = swappingDevices || all || chosen.glyph == PlugIns;
     using Role = ::adi::detail::DeviceRole;
     const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
-    auto tokens = juce::StringArray::fromTokens(search.getText().toLowerCase(), false);
-    tokens.removeEmptyStrings();
-    std::vector<std::string> words;
-    words.reserve(static_cast<std::size_t>(tokens.size()));
-    for (const auto &token : tokens)
-        words.push_back(token.toStdString());
-    const bool all = !hotSwap_ && (chosen.glyph == All || (selected_ < 0 && !words.empty()));
+    const LibraryQuery query{search.getText().toStdString()};
+    // Keep the typed results separate from how a panel groups them for display.
     const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
-    const bool showPlugins = swappingDevices || all || chosen.glyph == PlugIns;
-    if (library_ && (samples || !chosen.place.empty()))
-        library_->appendSamples(words, samples ? nullptr : &chosen.place, shown_);
+    LibraryQueryResults hits;
+    if (all) {
+        hits.samples.swap(shown_);
+        queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_}, hits);
+        hits.samples.swap(shown_);
+    } else if (library_ && (samples || !chosen.place.empty())) {
+        library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
+    }
+    std::unordered_set<const preset::Entry *> unusedPresets(hits.presets.begin(), hits.presets.end());
     rows_.clear();
     rows_.reserve(shown_.size());
-    // Counts update this heading in place while results, selections and scrolling stay intact.
     if (showPlugins && pluginScan_.phase == PluginScan::Phase::Scanning)
         rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str())});
     for (const auto *f : shown_)
         rows_.push_back({f, nullptr, {}});
     // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
-    const auto matches = [&words](std::string_view name, std::string_view maker = {}) {
-        return words.empty() || matchesSearchWords(words, foldSearchText(name), foldSearchText(maker));
-    };
     const auto visiblePresets = [&](std::string_view format, std::string_view uid,
                                     std::optional<std::int64_t> shellId, bool entireDevice) {
         std::vector<const preset::Entry *> out;
@@ -409,19 +352,21 @@ void BrowserPanel::refill() {
             const auto found = devicePresets_.find(preset::deviceKey({std::string(format), std::string(uid), shellId}));
             if (found != devicePresets_.end())
                 for (const auto &entry : found->second)
-                    if (entireDevice || matches(entry.name))
+                    if (entireDevice || (all ? unusedPresets.contains(&entry) : query.matches(entry.name)))
                         out.push_back(&entry);
         }
         return out;
     };
     const auto addPresets = [&](const std::vector<const preset::Entry *> &presets, int depth) {
-        for (const auto *entry : presets)
+        for (const auto *entry : presets) {
+            unusedPresets.erase(entry);
             rows_.push_back({nullptr, nullptr, {}, nullptr, depth, entry});
+        }
     };
     const auto addBuiltin = [&](const BuiltinInfo &d, int depth, const char *heading = nullptr) {
         if (swappingDevices && (!d.available || swapRole != (d.instrument ? Role::Instrument : Role::AudioEffect)))
             return false;
-        const bool ownMatch = matches(d.name);
+        const bool ownMatch = all ? std::ranges::binary_search(hits.builtins, &d) : query.matches(d.name);
         const auto presets = visiblePresets("internal", d.uid, std::nullopt, ownMatch);
         if (!ownMatch && presets.empty())
             return false;
@@ -445,9 +390,7 @@ void BrowserPanel::refill() {
                     heading = nullptr;
         }
     }
-    // Keep the initial instrument list while there is no chosen label or query.
-    const bool startupInstruments = !hotSwap_ && selected_ < 0 && words.empty();
-    if (swappingDevices || all || startupInstruments || chosen.glyph == Instruments) {
+    if (swappingDevices || all || chosen.glyph == Instruments) {
         // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
         std::vector<const BuiltinInfo *> in;
         for (const auto &d : builtinCatalog())
@@ -475,7 +418,8 @@ void BrowserPanel::refill() {
                           (p->kind == K::Effect && swapRole == Role::AudioEffect)))
                         continue;
                 }
-                const bool ownMatch = matches(p->name, p->vendor);
+                const bool ownMatch = all ? std::ranges::binary_search(hits.plugins, p)
+                                          : query.matches(p->name, p->vendor);
                 const auto presets = visiblePresets(p->format, p->uid, p->shellId, ownMatch);
                 if (!ownMatch && presets.empty())
                     continue;
@@ -494,7 +438,7 @@ void BrowserPanel::refill() {
         for (const auto &failure : pluginScan_.listing.scanFailures) {
             const auto path = juce::String::fromUTF8(failure.path.c_str());
             const auto name = path.substring(path.lastIndexOfAnyOf("/\\") + 1);
-            if (!matches(name.toStdString()))
+            if (!query.matches(name.toStdString()))
                 continue;
             const auto heading = (failure.state == scan::State::Quarantined ? "Blocked: " : "Scan failed: ") + name;
             const auto reason = juce::String::fromUTF8(failure.error.c_str());
@@ -502,6 +446,9 @@ void BrowserPanel::refill() {
             rows_.push_back({nullptr, nullptr, heading, nullptr, 0, nullptr, tooltip});
         }
     }
+    for (const auto *entry : hits.presets)
+        if (unusedPresets.contains(entry))
+            rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
     list.updateContent();
@@ -632,8 +579,8 @@ std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
     return "Loading " + p.name + " needs the application's plug-in host.";
 }
 bool BrowserPanel::pluginsShown() const {
-    if (selected_ < 0)
-        return search.getText().trim().isNotEmpty();
+    if (selected_ < 0 || selected_ >= static_cast<int>(sidebar_.size()))
+        return false;
     const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
     return glyph == PlugIns || glyph == All;
 }
@@ -657,7 +604,7 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     if (!(hotSwap_ ? !hotSwap_->samples : pluginsShown()))
         return;
     if (countOnly) {
-        if (!rows_.empty()) {
+        if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
             rows_.front().heading = juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str());
             list.repaint();
         }
@@ -855,14 +802,13 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
         choose((e.y - sidebarArea_.getY() - 1) / kRowHeight);
 }
 void BrowserPanel::searchAll() {
-    if (hotSwap_)
+    const SafePointer<BrowserPanel> alive(this);
+    cancelHotSwap();
+    if (!alive)
         return;
-    const auto entry = std::ranges::find(sidebar_, static_cast<int>(All), &Entry::glyph);
-    if (entry == sidebar_.end())
-        return;
-    const auto index = static_cast<int>(entry - sidebar_.begin());
-    if (selected_ != index)
-        choose(index);
+    const int all = findLabel(kAllLabel);
+    if (selected_ != all)
+        choose(all);
     else
         startSearchPluginScan();
 }
@@ -871,25 +817,32 @@ void BrowserPanel::choose(int i) {
         return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
+        pendingLabel_.clear();
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
         // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.
         const bool plugIns = entry.glyph == PlugIns;
         repaint();
         refill();
-        if (entry.glyph == All) {
-            startSearchPluginScan();
-            return;
+        startSearchPluginScan();
+        const auto key = labelKey(i);
+        if (labelSettings_ && !key.empty() && labelSettings_->get(kLastLabel) != key) {
+            std::string why;
+            if (!labelSettings_->set(kLastLabel, key, {}, why) || !labelSettings_->save(why)) {
+                root_.say(std::move(why));
+                return;
+            }
         }
-        const bool library = entry.samples || entry.glyph == User;
-        if (entry.glyph == Instruments || entry.glyph == AudioFx || entry.glyph == Pd) {
+        if (entry.glyph == All)
+            return;
+        const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
+        if (entry.name == "Instruments" || entry.name == "Audio Effects" || entry.name == "Pd Devices") {
             // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
             if (!rows_.empty() && std::none_of(rows_.begin(), rows_.end(), [](const Row &r) {
                     return r.device != nullptr && unavailable(*r.device).empty();
                 }))
                 root_.say("ADI's built-in devices run on its Pd devices, which this build leaves out.");
         } else if (plugIns) {
-            startSearchPluginScan();
             if (!scanPlugins)
                 root_.say("Plug-ins list in the application, from its plug-in scan.");
             else

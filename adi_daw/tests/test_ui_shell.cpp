@@ -6625,18 +6625,30 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     query("northwind reverb");
     check(hasPlugin("Tape Reverb") && !hasPlugin("Tape Echo") && !hasDevice("Hybrid Reverb") && browser.shown().empty(),
           "SC-122: words can match both a plug-in maker and plug-in name");
+    browser.setDevicePresets({{"not-in-the-device-catalogue", "Bright Plate", dir / "plate.adipreset"}});
+    query("plate bright");
+    check(std::ranges::any_of(browser.rows(), [](const BrowserPanel::Row &row) {
+              return row.savedPreset && row.savedPreset->name == "Bright Plate";
+          }), "SC-120: All can find a preset whose device is currently absent");
     browser.search.clear();
     browser.search.onTextChange();
     check(browser.shown().size() == 4 && hasDevice("OneShot") && hasPlugin("Tape Reverb"),
           "SC-120: clearing the All query restores all result types");
+    query("reverb");
     browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(browser.search.getText().isEmpty() && !hasDevice("OneShot"),
+          "SC-120: ordinary search text stays out of a first Hot-Swap");
     query("kick 808");
-    check(root.command(AppCommands::SearchBrowser) && browser.hotSwapActive() && browser.shown().size() == 1 &&
-              !hasDevice("OneShot") && !hasPlugin("Tape Reverb") && scans == 1,
-          "SC-120: global Search keeps a sample Hot-Swap in its own scope");
+    check(root.command(AppCommands::SearchBrowser) && !browser.hotSwapActive() &&
+              browser.search.getText() == "reverb" && hasPlugin("Tape Reverb") && scans == 1,
+          "SC-120: global Search ends Hot-Swap and restores the All search text");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(browser.search.getText() == "kick 808" && browser.shown().size() == 1 &&
+              browser.shown().front()->name == "808 Kick.wav",
+          "SC-120: Hot-Swap retains its separate words between entries");
     browser.setHotSwap(std::nullopt);
-    check(browser.search.getText().isEmpty() && browser.shown().size() == 4,
-          "SC-120: leaving Hot-Swap restores the previous All results");
+    check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
+          "SC-120: the two modes keep separate text and results");
 }
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -6722,8 +6734,8 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
     browser.choose(user);
     check(browser.shown().size() == sampleCount - 1 && matches(0, "Take 1000000.wav"),
           "Browser search: blank User Library includes descendants and excludes the neighboring Place");
-    constexpr std::array queries{"Q", "QX", "QXY"};
-    constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3};
+    constexpr std::array queries{"Q", "QX", "QXY", "QXY 100000"};
+    constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3, 1};
     constexpr std::size_t trials = 7;
     std::array<std::array<double, trials>, queries.size()> timings{};
     for (std::size_t trial = 0; trial < trials; ++trial) {
@@ -6739,10 +6751,13 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         std::sort(times.begin(), times.end());
         medians[key] = times[trials / 2];
     }
-    std::printf("Browser search in a %d-file listing, median of %zu trials: Q %.3f ms, QX %.3f ms, QXY %.3f ms\n",
-                sampleCount, trials, medians[0], medians[1], medians[2]);
+    std::printf("Browser search in a %d-file listing, median of %zu trials:\n", sampleCount, trials);
+    for (std::size_t key = 0; key < queries.size(); ++key)
+        std::printf("  %s: %.3f ms\n", queries[key], medians[key]);
     check(std::ranges::all_of(medians, [](double ms) { return ms < 40.; }),
           "SC-421: a search keystroke in a large Place takes under 40 ms");
+    check(matches(0, "Take 1000004 QXylophone.wav"), "SC-122: the two-word query finds the sample with both words");
+    edit("QXY");
     check(matches(0, "Take 1000004 QXylophone.wav") && matches(1, "Take 1000027 qxyLead.wav") &&
               matches(2, "Take 1000200 AqxYtone.wav"),
           "Browser search: case-insensitive filename substrings keep library order");
@@ -12026,6 +12041,59 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
 // tracks then Main, and nothing to undo.
+void browserStartupLabel(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-startup.adi", true, {}, error);
+    check(document != nullptr, "SC-121: a project for Browser startup");
+    if (!document)
+        return;
+    const auto makeRoot = [&](const char *window) {
+        return std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), window);
+    };
+    const auto label = [](const BrowserPanel &browser) {
+        const int index = browser.selected();
+        return index >= 0 ? browser.sidebar()[static_cast<std::size_t>(index)].name : juce::String{};
+    };
+    const auto file = dir / "browser-label-settings.json";
+    const auto place = dir / "Samples";
+    LibraryListing listing;
+    listing.places = {{"Samples", place, "browser-startup-place"}};
+    listing.samples = {{"Kick.wav", place / "Kick.wav", "browser-startup-place"}};
+    {
+        settings::AppSettings prefs(appdata::App::Daw, file);
+        auto window = makeRoot("browser-new");
+        auto &browser = window->browser;
+        browser.restoreLabel(prefs);
+        check(label(browser) == "Instruments" && !browser.rows().empty(),
+              "SC-121: a first window has a selected, useful label before any scan");
+        browser.setListing(listing);
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
+            if (browser.sidebar()[i].place == "browser-startup-place")
+                browser.choose(static_cast<int>(i));
+        check(prefs.get("browser.lastLabel") == "place:browser-startup-place" && browser.shown().size() == 1,
+              "SC-121: the added folder is kept by its identity, distinct from the Samples category");
+    }
+    {
+        settings::AppSettings prefs(appdata::App::Daw, file);
+        auto window = makeRoot("browser-open");
+        auto &browser = window->browser;
+        browser.restoreLabel(prefs);
+        browser.setLibrarySnapshot(nullptr, false);
+        check(label(browser) == "All" && !browser.rows().empty(),
+              "SC-121: All is useful while a remembered folder is still being indexed");
+        browser.setListing(listing);
+        check(label(browser) == "Samples" && browser.shown().size() == 1 &&
+                  browser.sidebar()[static_cast<std::size_t>(browser.selected())].place == "browser-startup-place",
+              "SC-121: Open restores the remembered Place as soon as the listing contains it");
+        browser.setListing({});
+        check(label(browser) == "All" && !browser.rows().empty() && browser.sidebar().back().name == "Add Folder...",
+              "SC-121: a label that is no longer shown falls back to All");
+        check(prefs.set("browser.lastLabel", "label:AI", {}, error), "SC-121: simulate an unavailable saved label");
+        browser.restoreLabel(prefs);
+        check(label(browser) == "All", "SC-121: an unavailable saved label never puts the Browser in that mode");
+    }
+}
 void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "new.adi", true, {}, error);
@@ -23952,22 +24020,15 @@ int main(int argc, char **argv) {
                   "Alt/Option+5 moves the focus to the browser, ringed");
             juce::Component &browserKeys = browserPanel;
             const juce::KeyPress down(juce::KeyPress::downKey), up(juce::KeyPress::upKey);
-            const auto browserLabel = [&] {
-                const auto index = browserPanel.selected();
-                return index >= 0 ? browserPanel.sidebar()[static_cast<std::size_t>(index)].name : juce::String{};
-            };
+            browserPanel.choose(1); // Favorites, before the Categories group.
+            const int favorites = browserPanel.selected();
             browserKeys.keyPressed(down);
-            const auto favorites = browserLabel();
-            browserKeys.keyPressed(down);
-            const auto all = browserLabel();
-            browserKeys.keyPressed(down);
-            const auto sounds = browserLabel();
+            const auto nextCategory = browserPanel.sidebar()[static_cast<std::size_t>(browserPanel.selected())].name;
             browserKeys.keyPressed(up);
-            const auto back = browserLabel();
+            const int back = browserPanel.selected();
             browserKeys.keyPressed(up);
-            browserKeys.keyPressed(up);
-            check(favorites == "Favorites" && all == "All" && sounds == "Sounds" && back == "All" &&
-                      browserLabel() == "Favorites" && integrated.error() == "Favorites is not listed yet.",
+            check(favorites == 1 && nextCategory == "All" && back == 1 && browserPanel.selected() == 1 &&
+                      integrated.error() == "Favorites is not listed yet.",
                   "the arrows move between the sidebar's labels, past the headings");
             integrated.command(AppCommands::ToggleDeviceView);
             check(!integrated.state().docked && integrated.command(AppCommands::FocusDeviceView) &&
@@ -25272,6 +25333,7 @@ int main(int argc, char **argv) {
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
     trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });

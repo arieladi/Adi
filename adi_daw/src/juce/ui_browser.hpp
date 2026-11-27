@@ -2,7 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_presets.hpp"
-#include "adi/ui/library_listing.hpp"
+#include "adi/ui/library_query.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cstdint>
@@ -10,34 +10,13 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
+namespace adi::settings { class AppSettings; }
 namespace adi::ui {
 class AdiRootComponent;
-// A listing and its search data, prepared on the library worker and shared by the app and windows.
-class BrowserLibrarySnapshot {
-  public:
-    explicit BrowserLibrarySnapshot(LibraryListing);
-    const LibraryListing &listing() const noexcept { return listing_; }
-
-  private:
-    friend class BrowserPanel;
-    using SampleIndices = std::vector<std::size_t>;
-    struct PlaceSamples {
-        SampleIndices ordered;
-        std::vector<bool> contains;
-    };
-    void appendSamples(std::span<const std::string> words, const std::string *volume,
-                       std::vector<const LibraryFile *> &results) const;
-    LibraryListing listing_;
-    std::vector<std::string> foldedNames_;
-    std::unordered_map<std::uint32_t, SampleIndices> postings_;
-    std::unordered_map<std::string, PlaceSamples> places_;
-};
 // The browser's content list (Live 12 manual 4.1): its rows take up and down, and left goes back to
 // the sidebar (41.22).
 class BrowserList final : public juce::ListBox {
@@ -107,9 +86,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
     void setListing(LibraryListing, bool ready = true);
     const LibraryListing &listing() const noexcept;
+    void restoreLabel(settings::AppSettings &);
     // Selects a label, as a click on it does.
     void choose(int);
-    // The global search shortcut selects All, unless a Hot-Swap owns the search.
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
@@ -172,6 +151,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
     bool loadHotSwap(const Row &);
+    std::string labelKey(int) const;
+    int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
     void refill();
     int getNumRows() override;
@@ -186,7 +167,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
     std::optional<HotSwapFilter> hotSwap_;
-    juce::String idleSearch_;
+    juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
     bool ready_ = false;
@@ -205,6 +186,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     AdiRootComponent &root_;
     std::vector<Entry> sidebar_;
     int selected_ = -1;
+    settings::AppSettings *labelSettings_ = nullptr;
+    std::string pendingLabel_;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };

@@ -466,6 +466,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "The most results a browser search shows. 0: unlimited (the default, so "
                        "nothing Live would show is hidden; ADR-0203).",
                        0, 0, 1000000));
+    r.push_back(make("browser.lastLabel", Type::Text, "", "Last Browser label",
+                     "The Browser label to restore when a project opens.", ""));
 
     // --- Plug-Ins (catalogue II §8) --------------------------------------------------------------
     r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-Ins", "Use VST3 Plug-In System Folders",

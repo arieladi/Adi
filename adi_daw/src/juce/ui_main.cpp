@@ -1346,6 +1346,7 @@ class AdiApplication final : public juce::JUCEApplication,
             juce::MessageManager::callAsync(std::move(action));
         });
         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
+        root->browser.restoreLabel(*settings_);
         root->browser.setLibrarySnapshot(library_, libraryReady_);
         refreshDevicePresets();
         root->browser.loadDevicePreset = [this](const std::filesystem::path &path) {
