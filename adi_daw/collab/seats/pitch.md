@@ -3,14 +3,16 @@
 ## Still unbuilt
 
 - Separate wire op names for split and merge, pending reservation. The individual journal actions have exact Undo and Redo through `clip.setPitchEdits`.
-- Original/corrected playback at one playhead.
 - Native 1.27 activation, its migration/text-projection checks and the installed-DAW reference runs.
-- Durable MIDI extraction provenance, channel-wide pitch bend and plug-in-specific extraction modes.
+- Durable MIDI extraction provenance, native channel-wide pitch bend and plug-in-specific extraction modes.
+- Phase-linked stereo correction, and a reference ruling for Reverse with Warp and permanent flattening.
 
 ## For win, 27 November continuation
 
 - Reserve `clip.splitPitchSegment` and `clip.mergePitchSegments`. Each will carry the resolved source-bound edit image so Undo/Redo and replay use captured bytes. Boundary correction can continue through the existing reserved edit operation.
 - Please retest the final continuation head with the Windows checker. The reported MIDI fixture fix has been merged.
+- For automatic extraction replacement, reserve the output-owned `clip_pitch_extractions` marker in the staged 1.27 shape. Existing creation and placement images would capture it. The marker survives deleting the audio source.
+- Confirm the native `event_streams.pitchbend` ACTL value and compatibility contract, and coordinate the shared MIDI playback lane. The schema permits the stream kind. Arrangement chase, loop and centering need its actual semantics.
 
 ## For win
 
@@ -93,3 +95,4 @@ A. The reference manual describes both whole-event and selected-segment flatteni
 | Drift straightening | The ordinary drift command subtracts fitted drift and preserves residual vibrato. Hard straightening remains a separate action. | 62 edit checks passed under strict GCC and ASan/UBSan. Fitted slope moved from 63.8450 to 0 cents, and vibrato RMS remained 16.7530 cents. The previous default failed two regression checks. | Pushed `a4511315`. |
 | Split, merge and start/end correction | Separate edit producers record one journal step per action and keep exact source and destination frame mappings. | 31 focused checks passed. Split placed source frame 300 at destination frame 1300 (1.5×), retained the compatible correction controls and reopened with byte-exact Undo and Redo. The regression that removed intent labels failed 10 checks. | Pushed `0f22571f`. Distinct wire names await reservation. |
 | Uncertain note boundaries | Source-frame hints mark aperiodic attacks and releases, rapid pitch changes and competing periodicity. They survive the optional PNOT cache and leave note identities intact. | Noisy edges and six 65 ms fast-run transitions localized within 5 ms. A two-tone overlap localized within 3.33 ms. Three signal regressions failed with hints suppressed and 28 cache checks passed. | Pushed `d0ba1792`. Competing periods are review hints. Close-unison doubles can remain indistinguishable. |
+| Original / Corrected at one playhead | Arrangement compares two verified, clip-clock-aligned renditions. The live switch preserves transport and loop phase. Export uses the committed render. Small shared changes are in ClipPlayback, Session retirement and CMake. | 27 comparator and 23 Session checks passed, and ignoring the switch failed eight. A live switch matched exact PCM at frame 7,024. Loop wrap matched at frame 8,000. In 10,000 held-frame switches no callback allocations or file reads were counted. The warped pair measured 99.996 cents apart. | Pushed `ac1d1b49`. One opt-in comparison per source generation uses a bounded resident PCM pair. |
