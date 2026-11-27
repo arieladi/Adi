@@ -12,7 +12,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **A lesson for win's own landings.** A pull request that touches `README.md`, `collab/README.md` or any file that is not Markdown runs the whole matrix, an hour of the one macOS runner. Prompts go in a pull request of their own, which runs no check; an ADR rides inside the next landing stack.
 
-**The sheet.** Win drew the Browser's sheet, proposal 2, the same day and he chose from it: the AI column widens by itself; the full list of a proposed change opens in a floating window; in the Mix View the floating search calls the agent; four buttons. ADR-0262. Nothing of it is built before the basics.
+**The sheet.** Win drew the Browser's sheet, proposal 2, the same day and he chose from it: the AI column widens by itself; the full list of a proposed change opens in a floating window; in the Mix View the floating search calls the agent; four buttons. His word for the sheet: "agreed". ADR-0262. Nothing of it is built before the basics.
 
 **Seats started by his pastes:** the Browser session (it claimed `basics/browser-log`; the integrator had built items 1 and 2 on `basics/integrate-2` before the handover, and the session was told to merge them, not rebuild them); the agent seat (`control/agent-chain`, the chain of ADR-0261 d6, the marker-prompt hole first).
 

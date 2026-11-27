@@ -70,6 +70,8 @@ inline constexpr int kGraphWorkersMinimumFrames = 1024;
 /// Unknown and nonpositive buffer sizes keep the serial path.
 [[nodiscard]] bool graphWorkersEnabled(const Value& setting, int grantedFrames) noexcept;
 
+inline constexpr char kNewMidiInputTrackKey[] = "midi.trackOnForNewInputs";
+
 /// Every setting, including internal preferences. Displayed rows keep their
 /// page order and display order.
 [[nodiscard]] const std::vector<Setting>& registry();

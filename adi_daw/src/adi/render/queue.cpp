@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/audio/aiff_file.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -127,14 +128,24 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
+    const char* suffix = pcmSuffix(j.container);
+    if (j.container != PcmContainer::Wav && j.niStems)
+        throw std::invalid_argument("NI Stems require WAV capture.");
+    if (j.exactPcmFilename) {
+        if (j.exactWavFilename || j.niStems || j.collision == Collision::Increment)
+            throw std::invalid_argument("A literal filename requires one PCM delivery.");
+        const auto& literal = *j.exactPcmFilename;
+        if (portableName(literal) != literal || !foldedFilename(media::pathFromUtf8(literal)).ends_with(suffix))
+            throw std::invalid_argument("The selected filename does not match the export format.");
+    }
     if (j.exactWavFilename) {
-        if (j.niStems || j.collision == Collision::Increment)
+        if (j.container != PcmContainer::Wav || j.niStems || j.collision == Collision::Increment)
             throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
         const auto& literal = *j.exactWavFilename;
         if (portableName(literal) != literal ||
             !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
             throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
-    } else {
+    } else if (!j.exactPcmFilename) {
         (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
     }
 }
@@ -269,6 +280,14 @@ void verifyMedia(MediaVerification& report,const Control& control) {
     report.publicationVerified=true;
 }
 } // namespace
+
+const char* pcmSuffix(PcmContainer container) {
+    switch (container) {
+    case PcmContainer::Wav: return ".wav";
+    case PcmContainer::Aiff: return ".aiff";
+    }
+    throw std::invalid_argument("Unsupported PCM export format.");
+}
 
 std::string resolveName(const std::string& pattern, const NameContext& context) {
     std::string name;
@@ -487,9 +506,10 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 if (!session.load(*store, std::move(loader), renderSpec))
                     throw std::runtime_error(session.error());
             });
-            if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
-                std::string why = "export requires a fully resolved project";
-                for (const auto& problem : session.problems()) why += "; " + problem;
+            const auto blockingProblems = session.exportBlockingProblems();
+            if (session.stats().skipped || !blockingProblems.empty()) {
+                std::string why = "Some parts of this song cannot be exported";
+                for (const auto& problem : blockingProblems) why += "\n" + problem;
                 throw std::runtime_error(why);
             }
             names.project = store->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
@@ -515,10 +535,14 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
-        const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-            resolveName(job.nameTemplate, names) + ".wav";
+        const auto* suffix = pcmSuffix(job.container);
+        if (job.container == PcmContainer::Aiff)
+            audio::validateAiffSize(static_cast<std::uint64_t>(job.endSample - job.beginSample),
+                                    static_cast<std::uint16_t>(job.session.channels), job.encoding.format);
+        const auto& exactFilename = job.exactPcmFilename ? job.exactPcmFilename : job.exactWavFilename;
+        const auto filename = exactFilename ? *exactFilename : resolveName(job.nameTemplate, names) + suffix;
         result.output = job.directory / media::pathFromUtf8(filename);
-        detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        detail::prepareOutput(result,job.collision,suffix,"export destination already exists");
         if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
@@ -533,6 +557,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto rawBegin = addLatency(job.beginSample, latency);
         const auto rawEnd = addLatency(job.endSample, latency);
         const auto total = static_cast<std::uint64_t>(job.endSample - job.beginSample);
+        const auto leadingSilence = rawBegin < 0 ? (std::min)(total, static_cast<std::uint64_t>(-rawBegin)) : 0;
         const auto channels = static_cast<std::size_t>(job.session.channels);
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
         std::vector<float> narrow(channels * block);
@@ -558,11 +583,25 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             else writer->write(interleaved.data(),frames);
             result.framesWritten+=frames;
         };
-        auto progress = [&] {
-            if (control.progress) control.progress(id, result.framesWritten, total);
+        const auto passes = job.normalization.mode == NormalizeMode::Loudness ? maxLoudnessEncodingPasses :
+                            (normalized ? 1u : 0u);
+        const double totalWork = static_cast<double>(leadingSilence) +
+                                 static_cast<double>((std::max)(std::int64_t{0}, rawEnd)) +
+                                 2.0 * static_cast<double>(total) * passes; // encode and measure each pass
+        double workDone = 0;
+        auto advanceWork = [&](std::uint32_t frames) {
+            if (!control.wavProgress) return;
+            workDone += frames;
+            // Keep the last percentage for verification and publication.
+            control.wavProgress(id, (std::min)(workDone / totalWork, 0.99));
             cancellation(control);
         };
-        progress();
+        auto progress = [&](std::uint32_t frames) {
+            if (control.progress) control.progress(id, result.framesWritten, total);
+            cancellation(control);
+            advanceWork(frames);
+        };
+        progress(0);
         if (!session.clips()->waitForWarp(control.stop)) {
             cancellation(control);
             std::string why = "export Warp preparation failed";
@@ -571,13 +610,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         }
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
-        if (rawBegin < 0) {
-            auto silence = (std::min)(total, static_cast<std::uint64_t>(-rawBegin));
-            while (silence > 0) {
-                const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
-                write(frames);
-                silence -= frames; progress();
-            }
+        for (auto silence = leadingSilence; silence > 0;) {
+            const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
+            write(frames);
+            silence -= frames;
+            progress(frames);
         }
         session.transport().loop(0, 0, false);
         session.transport().locate(0);
@@ -631,7 +668,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 write(count);
             }
             at = last;
-            progress();
+            progress(static_cast<std::uint32_t>(frames));
         }
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
@@ -639,10 +676,19 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control);
             if (control.serviceHost) onHost(control.serviceHost);
             cancellation(control);
-        });
+        },advanceWork);
         else writer->close();
         cancellation(control);
-        detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
+        auto delivery = staged;
+        if (job.container == PcmContainer::Aiff) {
+            delivery = stage.path / "render.aiff";
+            audio::writeAiffFromWav(staged, delivery, [&] { cancellation(control); });
+        }
+        detail::publishVerifiedOutput(delivery, result, control, "export destination already exists");
+        if (control.wavProgress) {
+            // A display update cannot change the state of the published file.
+            try { control.wavProgress(id, 1.0); } catch (...) {}
+        }
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
@@ -767,6 +813,8 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};
             if (job.exactWavFilename) item["job"]["exact_wav_filename"] = *job.exactWavFilename;
+            if (job.container != PcmContainer::Wav) item["job"]["delivery_suffix"] = pcmSuffix(job.container);
+            if (job.exactPcmFilename) item["job"]["exact_pcm_filename"] = *job.exactPcmFilename;
         }
         if (member.result) {
             const auto& result = *member.result;
