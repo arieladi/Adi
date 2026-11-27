@@ -863,8 +863,17 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             // integer nanosecond rounded below its originating tick maps back to it.
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
-            const auto warpOrigin = row.timeBase==0 ? static_cast<double>(origin) :
-                warpClock.tickAtFrame(static_cast<double>(beginNs)*rate*1e-9);
+            const bool rampPlacement=stream && warpClock.hasLinearRamp();
+            const auto rampTickAtNs = [&](std::int64_t ns) {
+                const auto tick=warpClock.tickAtFrame(static_cast<double>(ns)*rate*1e-9);
+                const auto whole=std::round(tick);
+                const auto projected=static_cast<long double>(warpClock.frameAtTick(whole))/rate*1e9L;
+                const auto stored=static_cast<long double>(ns);
+                return projected>=stored-0.5L && projected<stored+0.5L ? whole : tick;
+            };
+            // A material split uses the same source origin after integer
+            // nanosecond storage. Retain the edit clock's jump-tempo rounding.
+            const auto warpOrigin=row.timeBase==0 || !rampPlacement ? static_cast<double>(origin) : rampTickAtNs(beginNs);
             const auto warpSourceOrigin = warpOrigin - static_cast<double>(row.contentOffsetTicks);
             const auto positionSeconds = [&](std::int64_t tick) {
                 return stream ? warpClock.frameAtTick(static_cast<double>(tick))/rate : tempo.ticksToSeconds(tick);
@@ -919,8 +928,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto endNs = beginNs + nanos;
                 clip->start=samplesAtNs(beginNs,clip->rate);
                 clip->end=samplesAtNs(endNs,clip->rate);
-                if (stream) {
-                    const auto tick = std::floor(warpClock.tickAtFrame(static_cast<double>(endNs)*rate*1e-9));
+                if (rampPlacement) {
+                    const auto tick = std::floor(rampTickAtNs(endNs));
                     if (tick >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
                         throw std::runtime_error("Warp clip end exceeds the musical clock range");
                     endTicks=static_cast<std::int64_t>(tick);
