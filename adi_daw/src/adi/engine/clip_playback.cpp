@@ -1086,6 +1086,14 @@ static void appendLaunchSource(ClipProject& project, const ClipProject& original
     model.clips.push_back(std::move(source));
 }
 
+static std::optional<audio::WarpMode> nativeLaunchWarpMode(const rows::AudioClip& clip) noexcept {
+    if (!clip.warpEnabled || clip.formantShift != 0) return {};
+    const auto mode=audio::parseWarpMode(clip.warpMode);
+    if (mode && (*mode == audio::WarpMode::Beats || *mode == audio::WarpMode::Texture ||
+                 (*mode == audio::WarpMode::RePitch && clip.transposeSemis == 0))) return mode;
+    return {};
+}
+
 static LaunchAudioClip prepareStreamingLaunchClip(const ClipProject& project, const rows::Clip& clip,
     const rows::AudioClip& audioRow, audio::WarpMode mode, const TempoMap& reference,
     const std::shared_ptr<const WarpArrangementClock>& clock, std::int64_t endTick, std::uint32_t rate,
@@ -1188,13 +1196,23 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
-    std::vector<std::string>& problems, std::uint64_t residentBudget) {
+    std::vector<std::string>& problems, std::uint64_t residentBudget, bool allowSteadyWarp) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
     const auto bpm = clock.bpmAt(0);
-    const bool constantTempo = std::ranges::all_of(clock.events, [bpm](const TempoEvent& e) { return e.bpm == bpm; });
-    std::shared_ptr<const WarpArrangementClock> streamingClock;
+    const auto streamingClock=std::make_shared<const WarpArrangementClock>(clock,rate);
+    const bool constantTempo=streamingClock->constantFramesPerTick() != 0;
+    // A scene tempo can switch any queued or active slot. Only the bank whose
+    // audible slots can all stream may keep its audio through a clock change.
+    const bool nativeSceneBank=allowSteadyWarp && constantTempo &&
+        std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; }) &&
+        std::ranges::all_of(original.rows.slotClips, [&](const rows::Clip& clip) {
+            if (clip.kind != "audio" || clip.muted) return true;
+            const auto source=std::ranges::find(original.rows.audioClips,clip.id,&rows::AudioClip::clipId);
+            const auto settings=data.settings(clip.id);
+            return settings && settings->ramMode && source != original.rows.audioClips.end() && nativeLaunchWarpMode(*source);
+        });
     TempoMap fixedClock;
     fixedClock.events.push_back({0, bpm, 0});
     std::vector<std::int64_t> tracks, midiTracks, scenes;
@@ -1279,17 +1297,19 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             launchSlots.push_back(slot);
             if (clip->kind == "audio" && !clip->muted) {
                 const auto end = std::max(slot.endTick, slot.loopEndTick);
-                const auto mode = warped ? audio::parseWarpMode(audioRow->warpMode) : std::nullopt;
-                const bool native = mode && audioRow->formantShift == 0 &&
-                    (*mode == audio::WarpMode::Beats || *mode == audio::WarpMode::Texture ||
-                     (*mode == audio::WarpMode::RePitch && audioRow->transposeSemis == 0));
-                if (!constantTempo && setting.ramMode && native) {
-                    if (!streamingClock) streamingClock = std::make_shared<WarpArrangementClock>(clock,rate);
-                    auto audioClip=prepareStreamingLaunchClip(original,*clip,*audioRow,*mode,fixedClock,
-                                                              streamingClock,end,rate,channels,remaining);
-                    remaining-=audioClip.bytes();
-                    pcm.push_back(std::move(audioClip));
-                    continue;
+                const auto mode=warped ? nativeLaunchWarpMode(*audioRow) : std::nullopt;
+                if ((!constantTempo || nativeSceneBank) && setting.ramMode && mode) {
+                    try {
+                        auto audioClip=prepareStreamingLaunchClip(original,*clip,*audioRow,*mode,fixedClock,
+                                                                  streamingClock,end,rate,channels,remaining);
+                        remaining-=audioClip.bytes();
+                        pcm.push_back(std::move(audioClip));
+                        continue;
+                    } catch (const std::exception&) {
+                        // Keep fixed playback available if this source cannot
+                        // fit the streaming backend's PCM or ratio budget.
+                        if (!constantTempo) throw;
+                    }
                 }
                 if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
                 if (setting.ramMode) {

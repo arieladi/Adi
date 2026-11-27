@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <stdexcept>
@@ -36,6 +37,8 @@ using namespace adi;
 using namespace adi::engine;
 constexpr std::int32_t rate = 48'000, blockFrames = 257, lastBeat = 12;
 constexpr auto quarter = textproj::kPPQ;
+constexpr auto ticksPerFrame = quarter * 140 / (60 * rate) + 1;
+constexpr std::int64_t tempoSceneFrame = 2 * rate;
 
 void require(bool pass, const char* message) {
     if (!pass) throw std::runtime_error(message);
@@ -44,6 +47,21 @@ void require(bool pass, const char* message) {
 std::int64_t frameAtBeat(int beat) {
     constexpr double slope = 20.0 / lastBeat;
     return std::llround(rate * 60.0 / slope * std::log1p(slope * beat / 120.0));
+}
+
+std::int64_t frameAfterTempoScene(int beats) {
+    return tempoSceneFrame + std::llround(beats * (60.0 * rate / 140));
+}
+
+std::unique_ptr<Store> sceneProject(const std::filesystem::path& folder) {
+    StoreError error{};
+    auto store = Store::createEmpty(folder/"song.adi", error);
+    require(static_cast<bool>(store), "create project");
+    test::applySessionSchema(store->db());
+    store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Session Warp',48000);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
+        "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1);");
+    return store;
 }
 
 void addClip(Store& store, const std::filesystem::path& folder, int clip, int scene,
@@ -84,10 +102,13 @@ void addClip(Store& store, const std::filesystem::path& folder, int clip, int sc
 
 struct Playback {
     struct Edge { std::int64_t newClip = 0, sample = 0, sourceTick = 0; };
+    struct Scene { std::int64_t scene = 0, sample = 0; double bpm = 0; };
     Session& session;
     std::span<float> pcm;
     std::array<Edge,8> edges{};
+    std::array<Scene,4> scenes{};
     std::size_t count = 0;
+    std::size_t sceneCount = 0;
     std::int64_t first = 0;
 
     void through(std::int64_t target) {
@@ -104,6 +125,12 @@ struct Playback {
                     auto& self = *static_cast<Playback*>(opaque);
                     if (self.count < self.edges.size()) {
                         self.edges[self.count++] = {edge.newClip, edge.sample, edge.sourceTick};
+                    }
+                });
+                block.observeSceneLaunches(this, [](void* opaque, const LaunchSceneTransition& edge, std::int64_t) noexcept {
+                    auto& self = *static_cast<Playback*>(opaque);
+                    if (self.sceneCount < self.scenes.size()) {
+                        self.scenes[self.sceneCount++] = {edge.scene, edge.sample, edge.tempoBpm};
                     }
                 });
                 rendered = block.process(io);
@@ -124,14 +151,8 @@ void scene(Store& store, const Session& session, int sceneId) {
 
 void exercise() {
     test::TempDirectory temporary{"session_warp_integration", "project"};
-    StoreError error{};
-    auto store = Store::createEmpty(temporary.path()/"song.adi", error);
-    require(static_cast<bool>(store), "create project");
-    test::applySessionSchema(store->db());
+    auto store = sceneProject(temporary.path());
     auto& db = store->db();
-    db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Session Warp',48000);"
-            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
-            "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1);");
     SQLite::Statement tempo(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
     tempo.bind(1, lastBeat * quarter); tempo.exec();
     addClip(*store, temporary.path(), 101, 10, 3, false);
@@ -157,7 +178,6 @@ void exercise() {
             "both persisted scenes fired on the slot track");
     require(playback.edges[0].sample == frameAtBeat(4) && playback.edges[1].sample == frameAtBeat(8),
             "the launch lane used both analytically integrated bar boundaries");
-    constexpr auto ticksPerFrame = quarter * 140 / (60 * rate) + 1;
     require(std::abs(playback.edges[1].sourceTick - quarter) <= ticksPerFrame,
             "second scene receives one beat of Legato phase from the shorter first loop");
     require(std::all_of(pcm.begin(), pcm.begin()+frameAtBeat(4), [](float value) { return value == 0; }),
@@ -185,9 +205,132 @@ void exercise() {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,
             "the native slot callback performs no allocation or file I/O");
 }
+
+void enableTempoScene(Store& store) {
+    store.db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+        "UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+}
+
+void checkTempoScene(Store& store, Session& session, const Playback& playback) {
+    require(playback.sceneCount == 2 && playback.scenes[1].scene == 20 &&
+        playback.scenes[1].sample == tempoSceneFrame && playback.scenes[1].bpm == 140,
+        "the 140 BPM scene performs once at frame 96000 on the actual launch lane");
+    require(session.beginRender().bpmAtTick(4 * quarter) == 140,
+        "the rendered clock applies the scene tempo at the bar");
+    require(store.db().execAndGet("SELECT bpm FROM tempo_map WHERE pos_ticks=0").getDouble() == 120,
+        "scene tempo leaves the saved 120 BPM project tempo intact");
+    require(session.problems().empty(), "the new scene bank reports no playback problem");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+        "the tempo scene callback performs no allocation or file I/O");
+}
+
+std::int64_t checkTempoPulses(std::span<const float> pcm, std::span<const float> expectedLevels,
+                             float levelTolerance, const char* name) {
+    std::int64_t worst = 0;
+    for (std::size_t beat = 0; beat < expectedLevels.size(); ++beat) {
+        const auto expected = frameAfterTempoScene(static_cast<int>(beat));
+        const auto from = beat == 0 ? expected : expected - 256;
+        const auto peak = std::min_element(pcm.begin() + from, pcm.begin() + expected + 257);
+        const auto error = std::abs((peak - pcm.begin()) - expected);
+        worst = std::max(worst, error);
+        std::printf("%s pulse %zu: level %.6f, error %lld samples\n", name, beat, *peak, static_cast<long long>(error));
+        require(std::abs(*peak - expectedLevels[beat]) <= levelTolerance,
+            "each scene pulse is audible at the expected clip phase and level");
+    }
+    return worst;
+}
+
+void preparedTempoScene(bool paged) {
+    test::TempDirectory folder{"session_scene_warp", "prepared"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    addClip(*store, folder.path(), 101, 10, 3, false);
+    addClip(*store, folder.path(), 102, 20, 4, true);
+    // This unwarped slot keeps the scene on the prepared-bank path even when
+    // the replacement's Re-Pitch media would be eligible for native Warp.
+    store->db().exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
+        "UPDATE clip_launch SET legato=0 WHERE clip_id=102");
+    if (paged) store->db().exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102;"
+        "UPDATE audio_clips SET warp_mode='complex' WHERE clip_id=102");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(), "initial tempo bank is prepared");
+    const auto last = frameAfterTempoScene(paged ? 1 : 3) + 1024;
+    std::vector<float> pcm(static_cast<std::size_t>(last));
+    Playback playback{session, pcm};
+    scene(*store, session, 10);
+    playback.through(blockFrames);
+    scene(*store, session, 20);
+    playback.through(last);
+    checkTempoScene(*store, session, playback);
+    require(playback.count == 2 && playback.edges[0].sample == 0 &&
+        playback.edges[1].sample == tempoSceneFrame && playback.edges[1].newClip == 102 &&
+        playback.edges[1].sourceTick == 0, "the addressed slot starts from source zero at the exact tempo bar");
+    constexpr std::array<float,2> complexPeaks{-.304f, -.426f};
+    constexpr std::array<float,4> resampledPeaks{-.5f, -.6f, -.7f, -.8f};
+    const auto error = paged ? checkTempoPulses(pcm, complexPeaks, 0.08f, "Paged Complex")
+        : checkTempoPulses(pcm, resampledPeaks, 0.03f, "RAM Re-Pitch");
+    require(error <= (paged ? 64 : 2), "prepared slot audio follows the performed 140 BPM playback grid");
+}
+
+LaunchTrackStatus trackState(const Session& session) {
+    std::array<LaunchTrackStatus,4> tracks{};
+    LaunchStatusHeader header;
+    require(session.readLaunchStatus(tracks, header) && header.trackCount == 1 && tracks[0].track == 1,
+        "read the actual slot track's published launch state");
+    return tracks[0];
+}
+
+void continuingTempoScene(bool legato) {
+    test::TempDirectory folder{"session_scene_warp", legato ? "legato" : "retained"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    addClip(*store, folder.path(), 101, 10, 3, true);
+    if (legato) addClip(*store, folder.path(), 102, 20, 4, true);
+    else store->db().exec("INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0)");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(), "prepare the native resident warp slot");
+    const auto last = frameAfterTempoScene(3) + 1024;
+    std::vector<float> pcm(static_cast<std::size_t>(last));
+    Playback playback{session, pcm};
+    scene(*store, session, 10);
+    playback.through(blockFrames);
+    const auto before = trackState(session);
+    require(before.clip == 101 && before.run != 0, "the first scene starts the initial resident run");
+    scene(*store, session, 20);
+    playback.through(last);
+    checkTempoScene(*store, session, playback);
+    const auto after = trackState(session);
+    if (legato) {
+        require(playback.count == 2 && playback.edges[1].sample == tempoSceneFrame &&
+            std::abs(playback.edges[1].sourceTick - quarter) <= ticksPerFrame &&
+            after.clip == 102 && after.run != before.run,
+            "the tempo scene starts the replacement run at the inherited one-beat phase");
+    } else {
+        require(playback.count == 1 && after.clip == 101 && after.run == before.run,
+            "a tempo scene with an empty No Stop cell preserves the same running clip and run identity");
+    }
+    constexpr std::array<float,4> retainedPeaks{-.6f, -.7f, -.5f, -.6f};
+    constexpr std::array<float,4> legatoPeaks{-.6f, -.7f, -.8f, -.5f};
+    const auto error = checkTempoPulses(pcm, legato ? legatoPeaks : retainedPeaks, 0.08f,
+        legato ? "Legato tempo scene" : "Retained tempo scene");
+    require(error <= 2 && pcm[static_cast<std::size_t>(tempoSceneFrame)] < -0.58f,
+        "the inherited phase follows 140 BPM in the boundary callback and after the next loop wrap");
+}
 }
 
 int main() {
-    try { exercise(); }
+    try {
+        exercise();
+        preparedTempoScene(false);
+        preparedTempoScene(true);
+        continuingTempoScene(false);
+        continuingTempoScene(true);
+    }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL -- %s\n", error.what()); return 1; }
 }

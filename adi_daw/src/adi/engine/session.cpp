@@ -929,7 +929,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != mediaClock.events) {
             auto diagnostics = model.slotProblems;
             auto prepared = prepareStoredLaunchProject(*clipProject_, mediaClock, rate, channels, timing.spec.maxFrames,
-                storedLaunchIncarnation_, diagnostics, budget);
+                storedLaunchIncarnation_, diagnostics, budget, !beforeClock);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock && (!prepared || std::ranges::any_of(prepared->view().slots, [&](const LaunchSlot& slot) {
@@ -2245,27 +2245,44 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     const auto bpm = clock->bpm;
     auto signature = clock->signature;
     auto nextBanks = sceneTempoBanks_;
+    const auto hasAudio = [](const rows::Clip& clip) { return clip.kind == "audio" && !clip.muted; };
+    const auto followsSceneTempo = [&](const LaunchAudioProject& project) {
+        return project.stored() && std::ranges::all_of(model_.slotClips, [&](const rows::Clip& clip) {
+            if (!hasAudio(clip)) return true;
+            const auto* source=project.clip(clip.id);
+            return source && source->followsTempo();
+        });
+    };
+    bool keepStreamingBank = false;
     if (bpm && tick > 0) {
         const auto& before = timing->launchAudio->mediaAt(sample - 1);
-        const auto hasAudio = [](const rows::Clip& clip) { return clip.kind == "audio" && !clip.muted; };
-        if (*bpm != before->bpm() && std::ranges::any_of(model_.slotClips, hasAudio)) {
-            const auto view = before->view();
-            const auto needsRestart = [&](const rows::Clip& clip) {
-                if (!hasAudio(clip)) return false;
-                const auto cell = std::ranges::find_if(view.slots, [&](const LaunchSlot& slot) {
-                    return slot.track == clip.trackId && slot.scene == scene;
-                });
-                return cell != view.slots.end() && (cell->clip ? cell->legato : !cell->hasStop);
-            };
-            const auto since = sceneTempoBanks_ ? sceneTempoBanks_->tick : 0;
-            if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
-                std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
-                    return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
-                }) || std::ranges::any_of(model_.slotClips, needsRestart)) {
-                error_ = "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
-                return false;
+        if ((*bpm != before->bpm() || *bpm != timing->tempo.bpmAt(tick)) &&
+            std::ranges::any_of(model_.slotClips, hasAudio)) {
+            keepStreamingBank = followsSceneTempo(*before);
+            if (keepStreamingBank) {
+                // The performed clock carries the same prefix and the new
+                // tempo after the scene. Resident Warp keeps its source
+                // phase and run identity on that clock.
+                nextBanks.reset();
+            } else {
+                const auto view = before->view();
+                const auto needsRestart = [&](const rows::Clip& clip) {
+                    if (!hasAudio(clip)) return false;
+                    const auto cell = std::ranges::find_if(view.slots, [&](const LaunchSlot& slot) {
+                        return slot.track == clip.trackId && slot.scene == scene;
+                    });
+                    return cell != view.slots.end() && (cell->clip ? cell->legato : !cell->hasStop);
+                };
+                const auto since = sceneTempoBanks_ ? sceneTempoBanks_->tick : 0;
+                if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
+                    std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
+                        return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
+                    }) || std::ranges::any_of(model_.slotClips, needsRestart)) {
+                    error_ = "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
+                    return false;
+                }
+                nextBanks = SceneTempoBanks{before, tick, *bpm};
             }
-            nextBanks = SceneTempoBanks{before, tick, *bpm};
         }
     } else if (bpm) {
         nextBanks.reset();
@@ -2274,6 +2291,9 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     // the only admission point: a full audit queue cannot orphan the clock.
     const auto maxFrames = timing->spec.maxFrames;
     const std::function<bool()> guard = [&] {
+        // A ratio or memory bound in the retimed clock may refuse a source.
+        // Leave the old graph playing rather than publish an incomplete bank.
+        if (keepStreamingBank && (!storedLaunchProject_ || !followsSceneTempo(*storedLaunchProject_))) return false;
         DriverClock latest;
         return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
             (!latest.playing || sample - latest.sample >= maxFrames);
@@ -2312,6 +2332,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         performedSignatures_ = std::move(previousSignatures);
         preparedScene_ = previousScene;
         sceneTempoBanks_ = previousBanks;
+        if (keepStreamingBank && storedLaunchProject_ && !followsSceneTempo(*storedLaunchProject_) && !launchProblems_.empty())
+            error_ = launchProblems_.front();
     } else sceneClockRollback_ = std::move(previousClock);
     return admitted;
 }

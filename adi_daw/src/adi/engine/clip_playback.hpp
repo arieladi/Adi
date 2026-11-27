@@ -32,7 +32,7 @@ inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} <<
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
     std::uint64_t incarnation, std::vector<std::string>& problems,
-    std::uint64_t residentBudget = kSessionResidentPcmBudget);
+    std::uint64_t residentBudget = kSessionResidentPcmBudget, bool allowSteadyWarp = true);
 class ClipPlayback {
 public:
     enum class WarpPlayback { Streaming, Prepared };

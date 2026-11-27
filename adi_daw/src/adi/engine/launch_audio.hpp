@@ -61,6 +61,7 @@ public:
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
+    [[nodiscard]] bool followsTempo() const noexcept { return static_cast<bool>(warp_); }
     // Returns false for a regular PCM backend and lets the fixed render proceed.
     bool renderWarp(const AudioIo&, std::int32_t offset, std::int32_t frames,
                     LaunchWarpPosition, double gain, std::int64_t fadeElapsed,
