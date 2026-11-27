@@ -181,6 +181,8 @@ void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSin
         followScene_.reset();
         sceneOrdinal_ = 0;
         lastPreparedScene_ = 0;
+        stoppedPreparedAllThrough_ = 0;
+        stopAllSuppressesSceneFollow_ = false;
     }
     if (view.tracks.size() == trackCount_ &&
         std::equal(view.tracks.begin(), view.tracks.end(), activeTracks_,
@@ -231,13 +233,28 @@ bool Launcher::valid(const LaunchRequest& request, const LaunchBlock& block,
     return false;
 }
 
+void Launcher::queueStop(Track& track, const Pending& stop, std::uint64_t preparedThrough) noexcept {
+    track.user = stop;
+    track.back.reset();
+    track.gateStop.reset();
+    track.follow.reset();
+    track.repeat.reset();
+    track.sceneFollow.reset();
+    track.dueScene.reset();
+    track.stoppedPreparedThrough = std::max(track.stoppedPreparedThrough,preparedThrough);
+    track.stopSuppressesFollow = true;
+}
+
+bool Launcher::preparedFollowersCanceled(const Track& track, std::uint64_t token) const noexcept {
+    return token && token <= std::max(stoppedPreparedAllThrough_,track.stoppedPreparedThrough);
+}
+
 void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
                          const LaunchView& view, std::int64_t now) noexcept {
     // The owner has already published this scene's clock. Its performed
     // boundary must remain paired with that published timing generation.
     if (userScene_ && userScene_->preparedToken &&
         (request.kind == LaunchRequestKind::ScenePress || request.kind == LaunchRequestKind::CancelScene ||
-         request.kind == LaunchRequestKind::StopAll ||
          (request.kind == LaunchRequestKind::BackToArrangement && !request.track)))
         return;
     switch (request.kind) {
@@ -249,12 +266,26 @@ void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
                 track.user.reset();
         }
         return;
+    case LaunchRequestKind::StopTrack:
     case LaunchRequestKind::StopAll: {
-        userScene_.reset();
-        if (stopAllCancelsSceneFollow) cancelSceneFollow();
-        const auto grid = stopAllUsesGlobalLaunchQuantization ? block.global : LaunchQuantization::None;
+        const bool all = request.kind == LaunchRequestKind::StopAll;
+        const auto grid = !all || stopAllUsesGlobalLaunchQuantization ? block.global : LaunchQuantization::None;
         const Pending stop{Action::Stop,gridForPress(block,grid,now),0,0,1.0f,grid,false,0,false,admission_};
-        for (auto& track : std::span(activeTracks_,trackCount_)) track.user = stop;
+        const auto preparedThrough = std::max({request.preparedSceneToken,
+            block.preparedScene ? block.preparedScene->token : 0, userScene_ ? userScene_->preparedToken : 0});
+        if (all) {
+            // A published clock still settles when the owner cannot withdraw it.
+            // Its followers and scene Follow Action are canceled independently.
+            if (userScene_ && !userScene_->preparedToken) userScene_.reset();
+            stoppedPreparedAllThrough_ = std::max(stoppedPreparedAllThrough_,preparedThrough);
+            if (stopAllCancelsSceneFollow) {
+                cancelSceneFollow();
+                stopAllSuppressesSceneFollow_ = true;
+            }
+            for (auto& track : std::span(activeTracks_,trackCount_)) queueStop(track,stop,preparedThrough);
+        } else {
+            queueStop(*findTrack(*request.track),stop,preparedThrough);
+        }
         return;
     }
     case LaunchRequestKind::BackToArrangement: {
@@ -275,10 +306,6 @@ void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
         }
         return;
     }
-    case LaunchRequestKind::StopTrack:
-        findTrack(*request.track)->user = Pending{Action::Stop,gridForPress(block,block.global,now),
-                                                0,0,1.0f,block.global,false,0,false,admission_};
-        return;
     case LaunchRequestKind::ScenePress:
         armUserScene({*request.scene,gridForPress(block,block.global,now),0,block.global,admission_},
             request.velocity,block,view,now);
@@ -330,6 +357,7 @@ void Launcher::armUserScene(ScenePending scene, float velocity, const LaunchBloc
     for (auto& track : std::span(activeTracks_,trackCount_)) {
         if (displaced && track.user && track.user->sceneGesture && track.user->scene == displaced->scene)
             track.user.reset();
+        if (preparedFollowersCanceled(track,scene.preparedToken)) continue;
         const auto* slot = findSlot(view,track.id,scene.scene);
         if (occupied(slot)) {
             const auto grid = scene.preparedToken || scenesUseGlobalLaunchQuantization
@@ -352,19 +380,25 @@ void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock&
     const auto followGrid = followBypassesGlobalLaunchQuantization ? LaunchQuantization::None : block.global;
     if (request.kind == LaunchRequestKind::SlotPress) {
         const auto& slot = *addressedSlot(view,request);
+        auto& track = *findTrack(slot.track);
+        if (track.stopSuppressesFollow) return;
         const auto grid = slot.quantization.value_or(followGrid);
         const auto tick = launch_quantize::nextGridTick(due,grid,block.meters).value_or(lastTick);
-        findTrack(slot.track)->follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
+        track.follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
             grid,false,earliestSample};
     }
-    if (request.kind == LaunchRequestKind::StopTrack)
-        findTrack(*request.track)->follow = Pending{Action::Stop,due,0,0,1.0f,
-            LaunchQuantization::None,false,earliestSample};
+    if (request.kind == LaunchRequestKind::StopTrack) {
+        auto& track = *findTrack(*request.track);
+        if (track.stopSuppressesFollow) return;
+        track.follow = Pending{Action::Stop,due,0,0,1.0f,LaunchQuantization::None,false,earliestSample};
+    }
     if (request.kind == LaunchRequestKind::ScenePress) {
+        if (stopAllSuppressesSceneFollow_) return;
         followScene_ = ScenePending{*request.scene,due,earliestSample};
         for (auto& track : std::span(activeTracks_,trackCount_)) {
-            const auto* slot = findSlot(view,track.id,*request.scene);
             track.sceneFollow.reset();
+            if (track.stopSuppressesFollow) continue;
+            const auto* slot = findSlot(view,track.id,*request.scene);
             if (occupied(slot)) {
                 track.sceneFollow = Pending{Action::Start,due,slot->scene,slot->clip,request.velocity,
                     LaunchQuantization::None,false,earliestSample,true};
@@ -411,6 +445,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
     if (!validScene) return;
     if (pending.preparedToken) {
         for (auto& track : std::span(activeTracks_,trackCount_)) {
+            if (preparedFollowersCanceled(track,pending.preparedToken)) continue;
             const auto* slot = findSlot(view,track.id,pending.scene);
             if (occupied(slot) || !slot || slot->hasStop) {
                 const auto action = occupied(slot) ? Action::Start : Action::Stop;
@@ -421,10 +456,14 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
             }
         }
     }
-    if (!fromFollow) cancelSceneFollow();
+    const bool clockOnly = pending.preparedToken && pending.preparedToken <= stoppedPreparedAllThrough_;
+    if (!fromFollow && !clockOnly) {
+        cancelSceneFollow();
+        stopAllSuppressesSceneFollow_ = false;
+    }
     const LaunchSceneTransition edge{pending.scene,sample,tick,offset,++sceneOrdinal_,fromFollow,pending.preparedToken};
     if (sink.scenePerformed) sink.scenePerformed(sink.context,edge);
-    if (rolling && block.followActionsEnabled && sink.followOnSceneLaunch) {
+    if (!clockOnly && rolling && block.followActionsEnabled && sink.followOnSceneLaunch) {
         const auto follow = sink.followOnSceneLaunch(sink.context,edge);
         if (follow && follow->tick > tick && follow->request.kind == LaunchRequestKind::ScenePress)
             applyFollow(*follow,block,view,tick,sample + 1);
@@ -452,6 +491,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     track.run = {};
     track.run.arrangement = pending.action == Action::Arrangement;
     if (pending.action == Action::Start) {
+        track.stopSuppressesFollow = false;
         auto position = target->startTick;
         LaunchSlot oldGeometry;
         const auto* oldSlot = effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry);

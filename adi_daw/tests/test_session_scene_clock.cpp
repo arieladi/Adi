@@ -52,6 +52,8 @@ struct Render {
     Session& session;
     std::array<LaunchSceneTransition, 6> scenes{};
     std::size_t count = 0;
+    std::array<LaunchTransition, 8> clips{};
+    std::size_t clipCount = 0;
     std::int64_t stream = 0;
     std::array<float, blockSize> left{}, right{};
 
@@ -65,6 +67,10 @@ struct Render {
                 block.observeSceneLaunches(this, [](void* user, const LaunchSceneTransition& scene, std::int64_t) noexcept {
                     auto& self = *static_cast<Render*>(user);
                     if (self.count < self.scenes.size()) self.scenes[self.count++] = scene;
+                });
+                block.observeLaunchTransitions(this, [](void* user, const LaunchTransition& edge, std::int64_t) noexcept {
+                    auto& self = *static_cast<Render*>(user);
+                    if (self.clipCount < self.clips.size()) self.clips[self.clipCount++] = edge;
                 });
                 rendered = block.process(io);
             }
@@ -152,6 +158,121 @@ void exercise() {
     require(allocations == 0 && audio::callbackFileIo == 0, "scene clock handling performs no allocation or file I/O on the driver");
     std::printf("PASS -- 120→140 at 96000, 7/8 at 178286, next scene at 250286, 0 callback allocations/file calls\n");
 }
+
+void stopPreparedScenes(Store& store) {
+    store.db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(2,'audio','Other Session track',2);"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(103,2,'audio',0,11531520);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers) "
+        "SELECT 103,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers FROM audio_clips WHERE clip_id=102;"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(2,10,NULL,0),(2,20,103,1);"
+        "INSERT INTO clip_launch(clip_id,clip_fade,ram_mode) VALUES(103,0,1);");
+
+    enum class StopCase { Track, AllEarly, AllLate };
+    constexpr std::int64_t cut = 96'000;
+    constexpr auto boundary = 4 * quarter;
+    for (const auto mode : {StopCase::Track, StopCase::AllEarly, StopCase::AllLate}) {
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+        const auto stamp = session.launchIncarnation();
+        const auto audit = [&](const char* operation, Payload payload) {
+            payload["incarnation"] = stamp;
+            OpRequest request;
+            request.opType = operation;
+            request.payload = std::move(payload);
+            require(OpJournal(store).commit(request).ok,
+                "audit a stop or scene on the live Session owner");
+        };
+        audit("session.launchScene", {{"scene", 10}});
+        Render render{session};
+        render.runThrough(0);
+        audit("session.launchScene", {{"scene", 20}});
+        require(!session.prepareSceneLaunch(store, 20, 8 * quarter), "prepare the audited clock scene before requesting stop");
+        // The late case is inside a single buffer of the cut. The new clock
+        // can no longer be withdrawn, but its tracks can still be stopped.
+        render.runThrough(mode == StopCase::AllLate ? cut - blockSize : 400);
+        if (mode == StopCase::Track) audit("session.stopTrack", {{"track", 1}});
+        else audit("session.stopAll", {});
+
+        float before = 0, afterFade = 0;
+        while (session.transport().position() <= cut + 192) {
+            const auto first = session.transport().position();
+            render.runThrough(first);
+            if (first <= cut - 1 && cut - 1 < first + blockSize)
+                before = render.left[static_cast<std::size_t>(cut - 1 - first)];
+            if (first <= cut + 192 && cut + 192 < first + blockSize)
+                afterFade = render.left[static_cast<std::size_t>(cut + 192 - first)];
+        }
+        const auto edges = std::span(render.clips).first(render.clipCount);
+        require(std::ranges::any_of(edges, [&](const LaunchTransition& edge) {
+            return edge.track == 1 && edge.oldClip == 101 && edge.newClip == 0 && edge.sample == cut;
+        }), "stop the already-running track at the bar");
+        require(std::ranges::none_of(edges, [](const LaunchTransition& edge) { return edge.newClip == 102; }) &&
+            std::abs(before - 0.25f) < 0.0005f, "old audio reaches the stop boundary and its canceled follower stays silent");
+
+        double bpm;
+        {
+            const auto pin = session.beginRender();
+            bpm = pin.bpmAtTick(boundary);
+        }
+        if (mode == StopCase::AllEarly) {
+            require(render.count == 1 && bpm == 120 && afterFade == 0,
+                "early StopAll withdraws the queued tempo action and all replacement clips");
+        } else if (mode == StopCase::AllLate) {
+            require(render.count == 2 && render.scenes[1].sample == cut && bpm == 140 && afterFade == 0,
+                "late StopAll keeps the pinned clock edge and no scene follower keeps playing");
+        } else {
+            require(render.count == 2 && render.scenes[1].sample == cut && bpm == 140 &&
+                std::ranges::any_of(edges, [&](const LaunchTransition& edge) {
+                    return edge.track == 2 && edge.newClip == 103 && edge.sample == cut;
+                }) && std::abs(afterFade + 0.25f) < 0.0005f,
+                "StopTrack leaves the prepared tempo and other track's literal follower intact");
+        }
+    }
+    require(allocations == 0 && audio::callbackFileIo == 0, "prepared scene stops run with no callback allocation or file I/O");
+    std::printf("PASS -- audited Track and All stops mask prepared audio at 96000, including early and late clock withdrawal\n");
+}
+
+void verifyHandover(Store& store) {
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    LaunchRequest start;
+    start.kind = LaunchRequestKind::ScenePress;
+    start.scene = 10;
+    start.incarnation = session.launchIncarnation();
+    require(session.postLaunchGesture(std::array{start}), "queue initial resident sound");
+    Render render{session};
+    render.runThrough(0);
+    require(!session.prepareSceneLaunch(store, 30, 4 * quarter), "retaining an old audio run needs a phase handover");
+    if (!session.prepareSceneLaunch(store, 20, 4 * quarter)) throw std::runtime_error(session.error());
+
+    constexpr auto cut = 96'000;
+    constexpr std::array samples{cut - 1,cut,cut + 192,cut + 9000,cut + 11'000,cut + 22'000};
+    std::array<float, samples.size()> heard{};
+    bool rebuilt = false;
+    while (session.transport().position() <= samples.back()) {
+        const auto first = session.transport().position();
+        render.runThrough(first);
+        for (std::size_t index = 0; index < samples.size(); ++index) {
+            if (samples[index] >= first && samples[index] < first + blockSize)
+                heard[index] = render.left[static_cast<std::size_t>(samples[index] - first)];
+        }
+        if (!rebuilt && first <= cut && first + blockSize > cut) {
+            require(session.setDelayCompensation(false), "rebuild graph during outgoing old-tempo fade");
+            rebuilt = true;
+        }
+    }
+    const auto close = [](float actual, float expected) { return std::abs(actual - expected) < 0.0005f; };
+    require(render.count == 2 && render.scenes[1].sample == cut && render.scenes[1].tempoBpm == 140 &&
+        close(heard[0], 0.25f) && close(heard[1], 0.25f) && close(heard[2], -0.25f) &&
+        close(heard[3], -0.25f) && close(heard[4], 0.375f) && close(heard[5], 0.0f),
+        "old source/fade and new 140 BPM Warp bank agree with the performed scene boundary");
+    require(allocations == 0 && audio::callbackFileIo == 0, "paired media preparation keeps callback allocation and I/O at zero");
+    std::printf("PASS -- paired banks preserve the 192-frame fade at 96000, including graph rebuild, then play Warp at 140 BPM\n");
+}
+
 void audioHandover() {
     test::TempDirectory folder{"scene_audio_clock", "project"};
     StoreError error{};
@@ -184,42 +305,8 @@ void audioHandover() {
     warp.bind(1, anchors.bytes.data(), static_cast<int>(anchors.bytes.size()));
     warp.exec();
 
-    Session session;
-    session.graph().setFadeFrames(0);
-    if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
-    LaunchRequest start;
-    start.kind = LaunchRequestKind::ScenePress;
-    start.scene = 10;
-    start.incarnation = session.launchIncarnation();
-    require(session.postLaunchGesture(std::array{start}), "queue initial resident sound");
-    Render render{session};
-    render.runThrough(0);
-    require(!session.prepareSceneLaunch(*store, 30, 4 * quarter), "retaining an old audio run needs a phase handover");
-    if (!session.prepareSceneLaunch(*store, 20, 4 * quarter)) throw std::runtime_error(session.error());
-
-    constexpr auto cut = 96'000;
-    constexpr std::array samples{cut - 1,cut,cut + 192,cut + 9000,cut + 11'000,cut + 22'000};
-    std::array<float, samples.size()> heard{};
-    bool rebuilt = false;
-    while (session.transport().position() <= samples.back()) {
-        const auto first = session.transport().position();
-        render.runThrough(first);
-        for (std::size_t index = 0; index < samples.size(); ++index) {
-            if (samples[index] >= first && samples[index] < first + blockSize)
-                heard[index] = render.left[static_cast<std::size_t>(samples[index] - first)];
-        }
-        if (!rebuilt && first <= cut && first + blockSize > cut) {
-            require(session.setDelayCompensation(false), "rebuild graph during outgoing old-tempo fade");
-            rebuilt = true;
-        }
-    }
-    const auto close = [](float actual, float expected) { return std::abs(actual - expected) < 0.0005f; };
-    require(render.count == 2 && render.scenes[1].sample == cut && render.scenes[1].tempoBpm == 140 &&
-        close(heard[0], 0.25f) && close(heard[1], 0.25f) && close(heard[2], -0.25f) &&
-        close(heard[3], -0.25f) && close(heard[4], 0.375f) && close(heard[5], 0.0f),
-        "old source/fade and new 140 BPM Warp bank agree with the performed scene boundary");
-    require(allocations == 0 && audio::callbackFileIo == 0, "paired media preparation keeps callback allocation and I/O at zero");
-    std::printf("PASS -- paired banks preserve the 192-frame fade at 96000, including graph rebuild, then play Warp at 140 BPM\n");
+    verifyHandover(*store);
+    stopPreparedScenes(*store);
 }
 } // namespace
 

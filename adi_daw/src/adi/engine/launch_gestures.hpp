@@ -60,6 +60,9 @@ struct LaunchRequest {
     // relaunch of the same clip ID.
     std::optional<std::int64_t> expectedClip{};
     std::uint64_t expectedRun = 0;
+    // Stop may reach a callback still rendering the graph before a timed
+    // scene. Its owner stamps the pending clock so that scene cannot restart it.
+    std::uint64_t preparedSceneToken = 0;
     bool operator==(const LaunchRequest &) const = default;
 };
 

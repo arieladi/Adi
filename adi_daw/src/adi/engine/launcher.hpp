@@ -205,6 +205,8 @@ private:
         std::optional<Pending> user, back, gateStop, follow, repeat, sceneFollow, dueScene;
         std::uint64_t followOrdinal = 0;
         std::optional<RegionPending> regionEdit{};
+        std::uint64_t stoppedPreparedThrough = 0;
+        bool stopSuppressesFollow = false;
     };
     struct ScenePending {
         std::int64_t scene, tick, earliestSample = 0;
@@ -221,6 +223,8 @@ private:
                                           const LaunchView&) noexcept;
     void drain(const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
     void drainRegionEdits(const LaunchBlock&, const LaunchView&) noexcept;
+    void queueStop(Track&, const Pending&, std::uint64_t preparedThrough) noexcept;
+    [[nodiscard]] bool preparedFollowersCanceled(const Track&, std::uint64_t token) const noexcept;
     void applyUser(const LaunchRequest&, const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
     void armUserScene(ScenePending, float velocity, const LaunchBlock&, const LaunchView&,
                       std::int64_t now) noexcept;
@@ -265,7 +269,8 @@ private:
     std::uint64_t incarnation_ = 0, runSerial_ = 0, followPass_ = 0, admission_ = 0;
     std::optional<ScenePending> userScene_, followScene_;
     std::uint64_t sceneOrdinal_ = 0;
-    std::uint64_t lastPreparedScene_ = 0;
+    std::uint64_t lastPreparedScene_ = 0, stoppedPreparedAllThrough_ = 0;
+    bool stopAllSuppressesSceneFollow_ = false;
     std::int64_t nextSample_ = -1, nextTick_ = 0;
     std::array<StatusBuffer,statusBufferCount> statusBuffers_;
     std::atomic<std::uint32_t> publishedStatus_{statusBufferCount};
