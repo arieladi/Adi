@@ -29,7 +29,7 @@ struct Tone final:engine::Node {
             for(int c=0;c<io.channels;++c)io.out[c][io.blockOffset+i]=value;}
     }
 };
-bool edit(ui::ProjectDocument& doc,const ui::DevicePanelData& data,const std::string& id,double value){
+bool editParameter(ui::ProjectDocument& doc,const ui::DevicePanelData& data,const std::string& id,double value){
     const auto* instance=doc.session().instanceFor(data.id);if(!instance)return false;
     const auto before=instance->getParam(id).normalized;using K=engine::ParamEventKind;
     const bool accepted=doc.parameterGestureExpected(data.id,id,K::Begin,before,data.runtime,data.instance)&&
@@ -101,8 +101,8 @@ void bypassedClaim(bool full) {
     // against immutable serial compensation; Lite enables its actual Limiter.
     const std::string stage = full ? "20" : "19";
     constexpr double seededGain = .3;
-    const bool initial = edit(*doc, shown, "0", seededGain) &&
-        (full ? edit(*doc, shown, std::to_string(21 + mix::clip::threshold), .75) : edit(*doc, shown, stage, 0));
+    const bool initial = editParameter(*doc, shown, "0", seededGain) &&
+        (full ? editParameter(*doc, shown, std::to_string(21 + mix::clip::threshold), .75) : editParameter(*doc, shown, stage, 0));
     check(initial, "prepare an audible effect and an initially disabled stage");
     if (!initial) return;
     cycle(16);
@@ -115,7 +115,7 @@ void bypassedClaim(bool full) {
     check(seeded, "both native providers start the claim test with a durable Gain value");
     if (!seeded) return;
     const auto previousLatency = instance->latencySamples();
-    check(instance->getParam(stage).real == 0 && edit(*doc, shown, stage, 1),
+    check(instance->getParam(stage).real == 0 && editParameter(*doc, shown, stage, 1),
           "a real authored edit requests the latency-changing stage enable");
     // Document delivery may rebuild or prepare while publishing the new
     // latency. The separate one-prepare graph fixture isolates the live claim.
@@ -371,8 +371,8 @@ int main(){
     if(fresh==prepared->end())return 2;
     shown=*fresh;instance=doc->session().instanceFor(shown.id);
     const auto limiterLatency=instance->latencySamples();
-    check(edit(*doc,shown,std::to_string(21+mix::clip::threshold),.875),"Clip threshold uses shared gesture path");
-    check(edit(*doc,shown,"20",1),"Clip can turn on while Limiter stays on");
+    check(editParameter(*doc,shown,std::to_string(21+mix::clip::threshold),.875),"Clip threshold uses shared gesture path");
+    check(editParameter(*doc,shown,"20",1),"Clip can turn on while Limiter stays on");
     std::array<float,256> left{},right{};std::array<float*,2> pointers{left.data(),right.data()};
     engine::AudioIo io;io.out=pointers.data();io.numOut=2;io.frames=256;
     bool finite=true;
@@ -396,9 +396,9 @@ int main(){
         check(offline->latencySamples()>limiterLatency&&offline->getParam("7").normalized==online,
               "export quality is prepared before audio and preserves online control");offline->release();
     }
-    check(edit(*doc,shown,"0",.1),"Limiter input edit has a history title");
+    check(editParameter(*doc,shown,"0",.1),"Limiter input edit has a history title");
     const auto limiterTitle=History(doc->store()).nextUndo()->label;
-    check(edit(*doc,shown,std::to_string(21+mix::clip::input),.6),"Clip input edit has a history title");
+    check(editParameter(*doc,shown,std::to_string(21+mix::clip::input),.6),"Clip input edit has a history title");
     const auto clipTitle=History(doc->store()).nextUndo()->label;
     check(!limiterTitle.empty() && limiterTitle!=clipTitle && clipTitle.find("Clip")!=std::string::npos,
         "Clip and Limiter input gains have distinct page-aware Undo labels");
