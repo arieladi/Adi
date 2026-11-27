@@ -22644,6 +22644,16 @@ int main(int argc, char **argv) {
             return ids;
         };
         using C = AppCommands;
+        int openBackupId = 0;
+        const auto fileMenu = bar->getMenuForIndex(names.indexOf("File"), "File");
+        for (juce::PopupMenu::MenuItemIterator it(fileMenu); it.next();)
+            if (it.getItem().text == "Open Project Backup...") openBackupId = it.getItem().itemID;
+        check(openBackupId != 0, "SC-157: the File menu offers project backup recovery");
+        bool backupRequested = false;
+        window.root().openProjectBackup = [&] { backupRequested = true; };
+        bar->menuItemSelected(openBackupId, names.indexOf("File"));
+        check(backupRequested, "SC-157: Open Project Backup dispatches through the application's callback");
+        window.root().openProjectBackup = {};
         const auto create = items("Create");
         juce::ApplicationCommandInfo import(C::ImportAudioFile);
         commands.getCommandInfo(C::ImportAudioFile, import);
@@ -22658,7 +22668,7 @@ int main(int argc, char **argv) {
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio,
                                                 C::ExportMidiClip},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -22666,7 +22676,7 @@ int main(int argc, char **argv) {
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -22682,8 +22692,8 @@ int main(int argc, char **argv) {
         {
             const auto fileIndex = names.indexOf("File");
             const auto recentMenu = [&] {
-                const auto fileMenu = bar->getMenuForIndex(fileIndex, "File");
-                for (juce::PopupMenu::MenuItemIterator it(fileMenu); it.next();)
+                const auto recentFileMenu = bar->getMenuForIndex(fileIndex, "File");
+                for (juce::PopupMenu::MenuItemIterator it(recentFileMenu); it.next();)
                     if (it.getItem().text == "Open Recent" && it.getItem().subMenu)
                         return *it.getItem().subMenu;
                 return juce::PopupMenu{};

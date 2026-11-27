@@ -51,6 +51,72 @@ std::string historyBytes(Store& s) {
 bool resolves(Store& s) {
     std::string error;return media::resolveMedia(media::projectFolder(s),media::mediaRow(s.db(),10),error).is_absolute();
 }
+void projectBackups() {
+    Fixture fixture;
+    auto &db = fixture.store->db();
+    db.exec("UPDATE project SET name='Latest committed edit' WHERE id=1;"
+            "INSERT INTO session_lock VALUES(1,'fixture',7,'test',1,1)");
+    constexpr std::int64_t later = 1'800'000'000'000'000;
+    constexpr std::int64_t earlier = later - 3'600'000'000;
+    const auto write = [&](const fs::path &project, std::int64_t utc) {
+        return std::async(std::launch::async, [project, utc] {
+            return Store::writeProjectBackup(project, utc);
+        }).get();
+    };
+    const auto initial = write(fixture.source, later);
+    check(initial.ok, "SC-157: an open project's committed database backs up on a worker");
+    if (!initial.ok) {
+        std::printf("backup: %s\n", initial.error.c_str());
+        return;
+    }
+    check(write(fixture.source, earlier).ok && write(fixture.source, later).ok,
+          "SC-157: a backwards or repeated wall-clock reading publishes distinct backups");
+
+    const auto sibling = fixture.source.parent_path() / "Source Two.adi";
+    check(fixture.store->saveCopy(sibling).ok && write(sibling, later).ok,
+          "SC-157: a second project can use the same Backup folder");
+    const auto backups = Store::projectBackups(fixture.source);
+    check(backups.size() == 3 && backups[0].createdUtc == later && backups[1].createdUtc == later &&
+          backups[2].createdUtc == earlier && backups[0].path != backups[1].path &&
+          Store::projectBackups(sibling).size() == 1,
+          "SC-157: the list sorts UTC metadata and matches the exact source project");
+    if (backups.size() != 3) return;
+    check(db.execAndGet("SELECT count(*) FROM session_lock").getInt() == 1,
+          "SC-157: creating a backup leaves the live session lock alone");
+
+    StoreError error{};
+    auto saved = Store::open(backups.front().path, error, true);
+    check(saved && saved->db().execAndGet("SELECT name FROM project").getString() == "Latest committed edit" &&
+          saved->db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 0 &&
+          saved->db().execAndGet("SELECT count(*) FROM ops").getInt() == 3 && resolves(*saved),
+          "SC-157: backup contains committed work and keeps history and media without the session lock");
+    saved.reset();
+
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    check(!Store::writeProjectBackup(fixture.source, later + 1, cancelled.get_token()).ok &&
+          Store::projectBackups(fixture.source).size() == backups.size(),
+          "SC-157: cancelled backup leaves no partially published file");
+
+    fixture.store.reset();
+    fs::resize_file(fixture.source, 1024);
+    check(!Store::open(fixture.source, error, true), "SC-157: a truncated original cannot open");
+    fs::path recovered;
+    const auto wrongProject = Store::restoreProjectBackup(sibling, backups.front().path, recovered);
+    check(!wrongProject.ok && recovered.empty(), "SC-157: recovery refuses a different project's backup");
+    const auto restored = Store::restoreProjectBackup(fixture.source, backups.front().path, recovered);
+    auto reopened = restored.ok ? Store::open(recovered, error, true) : nullptr;
+    check(reopened && fs::file_size(fixture.source) == 1024 && fs::exists(backups.front().path) &&
+          reopened->db().execAndGet("SELECT name FROM project").getString() == "Latest committed edit" &&
+          reopened->db().execAndGet("SELECT count(*) FROM adi_meta WHERE key='backup_origin'").getInt() == 0 &&
+          resolves(*reopened),
+          "SC-157: restore opens a new playable project and keeps the damaged original and backup");
+    fs::path another;
+    check(Store::restoreProjectBackup(fixture.source, backups.front().path, another).ok &&
+          another != recovered && fs::exists(recovered),
+          "SC-157: recovering again never replaces the prior recovery");
+}
+
 void copiesAndSwitches() {
     Fixture f;const auto before=digestProject(*f.store).text,history=historyBytes(*f.store);
     const auto target=f.target("elsewhere");
@@ -344,5 +410,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{copiesAndSwitches();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();copiesAndSwitches();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

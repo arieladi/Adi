@@ -15,14 +15,18 @@
 #include <SQLiteCpp/Backup.h>
 #include <sqlite3.h>
 #include <utf8proc.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <charconv>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <limits>
 #include <map>
 #include <functional>
 #include <set>
+#include <thread>
 #include <vector>
 
 namespace adi {
@@ -550,6 +554,170 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCol
     auto result=saveCopyImpl(output,collision);
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
+namespace {
+constexpr auto backupOrigin = "backup_origin";
+constexpr auto backupCreated = "backup_created_utc";
+
+std::string backupBaseName(const fs::path& project) {
+    return media::detail::portableFilename(media::pathUtf8(project.stem()), "Project");
+}
+
+std::string backupTimestamp(std::int64_t createdUtc) {
+    using namespace std::chrono;
+    const sys_time<microseconds> instant{microseconds{createdUtc}};
+    const auto midnight = floor<days>(instant);
+    const year_month_day date{midnight};
+    const hh_mm_ss clock{instant - midnight};
+    char name[48];
+    std::snprintf(name, sizeof(name), "%04d-%02u-%02u_%02d-%02d-%02d.%06dZ",
+                  static_cast<int>(date.year()), static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()),
+                  static_cast<int>(clock.hours().count()), static_cast<int>(clock.minutes().count()),
+                  static_cast<int>(clock.seconds().count()), static_cast<int>(clock.subseconds().count()));
+    return name;
+}
+
+std::optional<std::int64_t> readBackupUtc(SQLite::Database& database, const fs::path& project) {
+    if (database.execAndGet("PRAGMA application_id").getInt() != kApplicationId) return {};
+    SQLite::Statement marker(database, "SELECT (SELECT value FROM main.adi_meta WHERE key=?),"
+                                       "(SELECT value FROM main.adi_meta WHERE key=?)");
+    marker.bind(1, backupOrigin);
+    marker.bind(2, backupCreated);
+    if (!marker.executeStep() || marker.getColumn(0).getString() != media::pathUtf8(project.filename())) return {};
+    const auto stamp = marker.getColumn(1).getString();
+    std::int64_t micros{};
+    const auto parsed = std::from_chars(stamp.data(), stamp.data() + stamp.size(), micros);
+    if (parsed.ec != std::errc{} || parsed.ptr != stamp.data() + stamp.size()) return {};
+    return micros;
+}
+
+void backUpDatabase(SQLite::Database& destination, SQLite::Database& source, std::stop_token stop) {
+    using namespace std::chrono_literals;
+    // Each step takes its own short source read lock. SQLite restarts from the
+    // latest committed image when another connection writes between steps.
+    SQLite::Backup backup(destination, source);
+    auto deadline = std::chrono::steady_clock::now() + 30s;
+    int fewestRemaining = std::numeric_limits<int>::max();
+    while (true) {
+        checkSaveCancellation(stop);
+        const auto state = backup.executeStep(128);
+        if (state == SQLITE_DONE) return;
+        const auto now = std::chrono::steady_clock::now();
+        const auto remaining = backup.getRemainingPageCount();
+        if (state == SQLITE_OK && remaining < fewestRemaining) {
+            fewestRemaining = remaining;
+            deadline = now + 30s;
+        }
+        if (now >= deadline)
+            throw std::runtime_error("the project stayed too busy to make a backup");
+        if (state == SQLITE_BUSY || state == SQLITE_LOCKED) std::this_thread::sleep_for(10ms);
+    }
+}
+
+fs::path numberedAdiFile(const fs::path& folder, const std::string& stem, unsigned number) {
+    const auto suffix = number == 1 ? std::string{} : " (" + std::to_string(number) + ")";
+    return folder / media::pathFromUtf8(stem + suffix + ".adi");
+}
+} // namespace
+
+StoreFileResult Store::writeProjectBackup(const fs::path& project, std::int64_t createdUtc, std::stop_token stop) {
+    try {
+        checkSaveCancellation(stop);
+        StoreError error{};
+        auto source = open(project, error, true);
+        if (!source) return {false, toString(error), {}};
+        if (source->major_ != kSchemaMajor) return {false, "this project version cannot be backed up", {}};
+        const auto base = media::projectFolder(*source);
+        const auto folder = base / "Backup";
+        if (!fs::create_directory(folder) && !fs::is_directory(fs::symlink_status(folder)))
+            return {false, "Backup must be a regular directory in the project folder", {}};
+        const auto stem = backupBaseName(project) + " - " + backupTimestamp(createdUtc);
+        for (unsigned number = 1; number <= 1000; ++number) {
+            checkSaveCancellation(stop);
+            const auto target = numberedAdiFile(folder, stem, number);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
+            auto copied = writeFileCopy(target, base, source->fileLease_, source->major_, StoreFileCollision::Fail,
+                [&](SQLite::Database& destination) {
+                    backUpDatabase(destination, source->db(), stop);
+                    SQLite::Transaction finish(destination);
+                    destination.exec("DELETE FROM main.session_lock");
+                    SQLite::Statement stamp(destination, "INSERT OR REPLACE INTO main.adi_meta(key,value) VALUES(?,?),(?,?)");
+                    stamp.bind(1, backupOrigin);
+                    stamp.bind(2, media::pathUtf8(project.filename()));
+                    stamp.bind(3, backupCreated);
+                    stamp.bind(4, std::to_string(createdUtc));
+                    stamp.exec();
+                    finish.commit();
+                }, stop);
+            if (copied.ok || fs::symlink_status(target).type() == fs::file_type::not_found) return copied;
+        }
+        return {false, "could not reserve a name for the project backup", {}};
+    } catch (const SaveCancelled&) {
+        return {false, "project backup cancelled", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+std::vector<ProjectBackup> Store::projectBackups(const fs::path& project) {
+    std::vector<ProjectBackup> files;
+    std::error_code error;
+    const auto folder = fs::weakly_canonical(project, error).parent_path() / "Backup";
+    if (error || !fs::is_directory(fs::symlink_status(folder, error))) return files;
+    const auto prefix = backupBaseName(project) + " - ";
+    for (fs::directory_iterator file(folder, error), end; !error && file != end; file.increment(error)) {
+        std::error_code entryError;
+        const auto& path = file->path();
+        if (path.extension() != ".adi" || !media::pathUtf8(path.filename()).starts_with(prefix) ||
+            !fs::is_regular_file(file->symlink_status(entryError))) continue;
+        try {
+            SQLite::Database reader(media::pathUtf8(path), SQLite::OPEN_READONLY);
+            if (const auto utc = readBackupUtc(reader, project)) files.push_back({path, *utc});
+        } catch (const SQLite::Exception&) {
+            // An incomplete or unreadable file is not offered or rotated.
+        }
+    }
+    std::ranges::sort(files, [](const auto& left, const auto& right) {
+        if (left.createdUtc != right.createdUtc) return left.createdUtc > right.createdUtc;
+        return left.path > right.path;
+    });
+    return files;
+}
+
+StoreFileResult Store::restoreProjectBackup(const fs::path& project, const fs::path& backup,
+                                           fs::path& restored, std::stop_token stop) {
+    restored.clear();
+    try {
+        checkSaveCancellation(stop);
+        const auto folder = fs::weakly_canonical(project).parent_path();
+        if (fs::canonical(backup.parent_path()) != folder / "Backup" ||
+            !fs::is_regular_file(fs::symlink_status(backup)))
+            return {false, "choose a backup from this project's Backup folder", {}};
+        StoreError error{};
+        auto source = open(backup, error, true);
+        if (!source) return {false, toString(error), {}};
+        if (source->major_ != kSchemaMajor || !readBackupUtc(source->db(), project))
+            return {false, "this file is not a backup of the project", {}};
+        const auto stem = backupBaseName(project) + " - Recovered";
+        for (unsigned number = 1; number <= 1000; ++number) {
+            checkSaveCancellation(stop);
+            const auto target = numberedAdiFile(folder, stem, number);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
+            auto copied = writeFileCopy(target, media::projectFolder(*source), source->fileLease_, source->major_,
+                StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+                    backUpDatabase(destination, source->db(), stop);
+                    destination.exec("DELETE FROM main.adi_meta WHERE key IN ('backup_origin','backup_created_utc')");
+                }, stop);
+            if (copied.ok) restored = target;
+            if (copied.ok || fs::symlink_status(target).type() == fs::file_type::not_found) return copied;
+        }
+        return {false, "could not reserve a name for the recovered project", {}};
+    } catch (const SaveCancelled&) {
+        return {false, "project recovery cancelled", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
 Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {

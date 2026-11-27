@@ -5765,17 +5765,19 @@ struct MenuEntries {
 };
 // Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
 constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2, kOpenRecentMenu = -3;
+constexpr int kOpenBackupMenu = -4;
 constexpr int kFirstRecentProject = 0x4000;
 constexpr int kClearRecentProjects = kFirstRecentProject + kRecentProjectLimit;
 constexpr int kRemoveUnavailableProjects = kClearRecentProjects + 1;
+constexpr int kOpenProjectBackup = kRemoveUnavailableProjects + 1;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip}},
 #else
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
@@ -5861,13 +5863,17 @@ class ShellMenu final : public juce::MenuBarModel {
                     else if (id == kOpenRecentMenu) {
                         auto recent = recentMenu();
                         menu.addSubMenu("Open Recent", std::move(recent), !recentItems_.empty());
-                    } else
+                    } else if (id == kOpenBackupMenu)
+                        menu.addItem(kOpenProjectBackup, "Open Project Backup...", static_cast<bool>(root.openProjectBackup));
+                    else
                         menu.addCommandItem(&commands.manager, id);
                 }
         return menu;
     }
     void menuItemSelected(int id, int) override {
-        if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
+        if (id == kOpenProjectBackup) {
+            if (const auto open = root.openProjectBackup) open();
+        } else if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
             commands.clearRecentProjects(id == kRemoveUnavailableProjects);
             menuItemsChanged();
         } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);

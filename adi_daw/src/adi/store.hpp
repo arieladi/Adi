@@ -68,6 +68,11 @@ struct StoreFileResult {
     std::string warning;
 };
 
+struct ProjectBackup {
+    std::filesystem::path path;
+    std::int64_t createdUtc = 0; // microseconds
+};
+
 enum class StoreSaveKind { copy, saveAs, firstSave };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
@@ -163,6 +168,15 @@ public:
     /// aliases refuse replacement. Rebase media
     /// paths in both rows and captured history so undo/redo still finds audio.
     [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// File-worker operations use their own read connection. The active
+    /// project and the recovery source are kept in place.
+    [[nodiscard]] static StoreFileResult writeProjectBackup(const std::filesystem::path& project,
+                                                           std::int64_t createdUtc, std::stop_token = {});
+    /// Managed copies for this project, newest first. Missing folders have no copies.
+    [[nodiscard]] static std::vector<ProjectBackup> projectBackups(const std::filesystem::path& project);
+    [[nodiscard]] static StoreFileResult restoreProjectBackup(const std::filesystem::path& project,
+                                                             const std::filesystem::path& backup,
+                                                             std::filesystem::path& restored, std::stop_token = {});
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
