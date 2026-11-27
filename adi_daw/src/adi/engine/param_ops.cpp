@@ -3,6 +3,7 @@
 // See param_ops.hpp. ADR-0124; the chunk snapshot is ADR-0142.
 
 #include "adi/engine/param_ops.hpp"
+#include "adi/applied_batches_detail.hpp"
 #include "adi/audio/io_audit.hpp"
 
 #include "adi/engine/session.hpp"
@@ -134,7 +135,8 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
     std::size_t drain(std::int64_t, std::vector<OpRequest>&);
     std::size_t snapshot(std::int64_t, std::int64_t, std::vector<OpRequest>&);
-    SnapshotAllResult snapshotAll(std::int64_t nowMs, SnapshotGestures, std::optional<std::int64_t> onlyDevice = {});
+    SnapshotAllResult snapshotAll(std::int64_t nowMs, SnapshotGestures, SnapshotPolicy,
+                                  std::optional<std::int64_t> onlyDevice = {});
     std::optional<DevicePresetState> readDevicePresetState(std::int64_t, std::string&);
     std::vector<StateBlob> takeBlobs();
     bool writeBlobs(Store&, std::string&);
@@ -161,6 +163,8 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
                                           const std::string& pairedParameter={});
     enum class ImagePurpose { Snapshot, Preset };
     bool readImage(Attached&,ParameterImage&,ImagePurpose = ImagePurpose::Snapshot);
+    gesture::Status readSnapshotImage(Attached&, ParameterImage&);
+    void markSnapshotStale(std::int64_t);
     std::vector<PendingParameterGesture> pendingGestures() const;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&,std::int64_t,bool);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&,std::int64_t,bool);
@@ -178,6 +182,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     std::int64_t ownerNow_=0;
     bool pumpingGestures_=false;
     bool snapshottingDevices_ = false;
+    std::vector<std::int64_t>* staleSnapshotDevices_ = nullptr;
     /// One state stream of a device, as the glue last saw it.
     struct Role {
         std::string hash;                    ///< of the chunk the plugin last reported
@@ -986,13 +991,14 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
     // signal arrives after the plugin already changed.
     a.seenEpoch = inst.stateEpoch();
     a.roles.clear();
-    for (const std::string& role : inst.stateRoles()) {
-        std::vector<std::uint8_t> bytes = inst.saveState(role);
-        Role r;
-        r.recorded = rec != nullptr && rec->stateRoles.count(role) != 0;
-        if (!bytes.empty()) r.hash = hashOf(bytes);
-        if (!r.recorded) r.baseline = std::move(bytes);
-        a.roles.emplace(role, std::move(r));
+    if (!session) {
+        for (const auto& role : inst.stateRoles()) {
+            auto bytes = inst.saveState(role);
+            Role captured;
+            if (!bytes.empty()) captured.hash = hashOf(bytes);
+            captured.baseline = std::move(bytes);
+            a.roles.emplace(role, std::move(captured));
+        }
     }
 
     if(session) {
@@ -1009,8 +1015,28 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
         a.capture->retainFence(a.parameterFence);
         a.runtimeToken=session->deviceRuntimeToken(deviceId);
         a.committed.deviceId=deviceId;a.committed.token=a.runtimeToken;
-        if(!readImage(a,a.committed)) {
-            a.active=false;replay_->invalidate("initial device image is incomplete");return false;
+        if (!readSnapshotImage(a, a.committed).ok()) {
+            // A plug-in may start without being able to read its state. Seed
+            // this one from the Store so it cannot block the other devices.
+            try {
+                const auto* store = adi::detail::appliedSourceStore(a.fenceSource);
+                if (!store) throw std::runtime_error("plug-in state source is unavailable");
+                a.committed = committedImage(*store, a.committed);
+            } catch (const std::exception& error) {
+                a.active = false;
+                replay_->invalidate(error.what());
+                return false;
+            }
+        }
+        for (const auto& [role, bytes] : a.committed.roles) {
+            Role capture;
+            capture.recorded = rec && rec->stateRoles.contains(role);
+            capture.hash = bytesHash(bytes);
+            if (!capture.recorded && !bytes.empty()) {
+                capture.baseline.resize(bytes.size());
+                std::memcpy(capture.baseline.data(), bytes.data(), bytes.size());
+            }
+            a.roles.emplace(role, std::move(capture));
         }
         auto binding=std::make_shared<device::DeviceCaptureBinding>();
         binding->deviceId=deviceId;binding->parameters=a.capture;
@@ -1710,7 +1736,7 @@ std::size_t ParamOps::Runtime::snapshot(std::int64_t deviceId, std::int64_t nowM
 }
 
 ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, SnapshotGestures gestures,
-                                                          std::optional<std::int64_t> onlyDevice) {
+                                                          SnapshotPolicy policy, std::optional<std::int64_t> onlyDevice) {
     SnapshotAllResult result;
     const auto refuse = [&](gesture::Status status, std::optional<std::int64_t> id = {}) {
         result.status = std::move(status);
@@ -1719,9 +1745,15 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
     };
     if (snapshottingDevices_ || pumpingGestures_)
         return refuse({gesture::Error::Reentrant, "device state snapshot is already active"});
-    struct Reset { bool& flag; ~Reset() { flag = false; } };
+    struct Reset {
+        bool& flag;
+        std::vector<std::int64_t>*& stale;
+        ~Reset() { flag = false; stale = nullptr; }
+    };
     snapshottingDevices_ = true;
-    const Reset reset{snapshottingDevices_};
+    const Reset reset{snapshottingDevices_, staleSnapshotDevices_};
+    const bool bestEffort = policy == SnapshotPolicy::UseStoredOnCaptureFailure;
+    if (bestEffort) staleSnapshotDevices_ = &result.staleDevices;
     discardExpiredSessions();
     if (!coordinator_ || !replay_->session || !replay_->source.alive())
         return refuse({gesture::Error::SourceLost, "device state snapshot needs an attached Session"});
@@ -1783,6 +1815,8 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
             if (entry.placeholder || entry.parked || entry.retired ||
                 (onlyDevice && entry.deviceId != *onlyDevice)) continue;
             const auto id = entry.deviceId;
+            if (std::find(result.staleDevices.begin(), result.staleDevices.end(), id) != result.staleDevices.end())
+                continue; // A failed signalled read already left this device's state stale.
             device = id;
             const auto found = devices_.find(id);
             auto* instance = session.instanceFor(id);
@@ -1801,8 +1835,11 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
                 marks.reserved != marks.consumed || inputPending())
                 return refuse({gesture::Error::Busy, "device input is pending before state capture"}, id);
             ParameterImage image;
-            if (!readImage(attached, image))
-                return refuse({gesture::Error::CaptureFailed, "device returned an incomplete state image"}, id);
+            if (auto status = readSnapshotImage(attached, image); !status.ok()) {
+                if (!bestEffort) return refuse(std::move(status), id);
+                markSnapshotStale(id);
+                continue;
+            }
             const auto after = attached.stateFence->watermarks();
             if (instance->stateEpoch() != epoch || after.reserved != marks.reserved ||
                 after.fault || after.closed || inputPending())
@@ -2230,6 +2267,20 @@ bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image,Image
     return true;
 }
 
+gesture::Status ParamOps::Runtime::readSnapshotImage(Attached& attached, ParameterImage& image) {
+    try {
+        if (readImage(attached, image)) return {};
+        return {gesture::Error::CaptureFailed, "device returned an incomplete state image"};
+    } catch (const std::exception& error) {
+        return captureFailure(error);
+    }
+}
+
+void ParamOps::Runtime::markSnapshotStale(std::int64_t id) {
+    auto& stale = *staleSnapshotDevices_;
+    if (std::find(stale.begin(), stale.end(), id) == stale.end()) stale.push_back(id);
+}
+
 std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std::int64_t id,const std::string& parameter,ParameterImage input,bool state,bool unchanged,
                                                                         const std::string& pairedParameter) {
     if(!coordinator_ || replay_->blocked)return {};
@@ -2383,10 +2434,31 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs, bool finishOpen) {
             if(signalled) {
                 if(!attached.pendingState) {
                     ParameterImage image;
-                    if(!readImage(attached,image))throw std::runtime_error("state snapshot is incomplete");
+                    const auto captured = readSnapshotImage(attached, image);
+                    if (!captured.ok() && !staleSnapshotDevices_) throw std::runtime_error(captured.message);
                     const auto after=attached.stateFence?attached.stateFence->watermarks():marks;
                     if(attached.inst->stateEpoch()!=epoch || after.reserved!=marks.reserved || after.published!=marks.published || after.fault || attached.inst->hasPendingParamChanges()) {
                         attached.captureBlocked=true;ready=false;continue;
+                    }
+                    if (!captured.ok()) {
+                        markSnapshotStale(id);
+                        // Explicit edits already have their own owners. The
+                        // remaining implicit callbacks belong to these unreadable bytes.
+                        for (auto& activity : attached.activities) {
+                            if (!activity.fence) continue;
+                            const auto discarded = activity.fence->discardUnchanged(1);
+                            if (!discarded.ok()) throw std::runtime_error(discarded.message);
+                            activity.fence = nullptr;
+                        }
+                        if (attached.stateFence) {
+                            const auto discarded = attached.stateFence->discardStalePrefix(marks.published);
+                            if (!discarded.ok()) throw std::runtime_error(discarded.message);
+                        }
+                        // The next explicit save reads the device again even
+                        // without another signal. Save As can carry the device over.
+                        attached.seenEpoch = epoch;
+                        if (attached.capture->hasPendingEvents()) { attached.captureBlocked = true; ready = false; }
+                        continue;
                     }
                     bool unchanged=true;
                     for(const auto& [role,bytes]:image.roles) {
@@ -2605,12 +2677,12 @@ AppliedDeliveryStatus ParamOps::retryApplied(std::int64_t now) { return runtime_
 const AppliedDeliveryStatus& ParamOps::appliedDeliveryStatus() const noexcept { return runtime_->appliedDeliveryStatus(); }
 std::size_t ParamOps::drain(std::int64_t now,std::vector<OpRequest>& out) { return runtime_->drain(now,out); }
 std::size_t ParamOps::snapshot(std::int64_t id,std::int64_t now,std::vector<OpRequest>& out) { return runtime_->snapshot(id,now,out); }
-ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now, SnapshotGestures gestures) {
-    return runtime_->snapshotAll(now, gestures);
+ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now, SnapshotGestures gestures, SnapshotPolicy policy) {
+    return runtime_->snapshotAll(now, gestures, policy);
 }
 ParamOps::SnapshotAllResult ParamOps::snapshotDeviceState(std::int64_t deviceId, std::int64_t now,
                                                          SnapshotGestures gestures) {
-    return runtime_->snapshotAll(now, gestures, deviceId);
+    return runtime_->snapshotAll(now, gestures, SnapshotPolicy::RequireAll, deviceId);
 }
 std::optional<ParamOps::DevicePresetState> ParamOps::readDevicePresetState(std::int64_t id, std::string& error) {
     return runtime_->readDevicePresetState(id, error);

@@ -183,6 +183,7 @@ class SurfaceKnobs : public device::DeviceInstance {
 class SilentStateKnobs final : public SurfaceKnobs {
   public:
     SilentStateKnobs() : SurfaceKnobs(0) {}
+    std::uint64_t stateEpoch() const noexcept override { return epoch_; }
     std::vector<std::string> stateRoles() const override { return {"chunk"}; }
     std::vector<std::uint8_t> saveState(const std::string &role) const override {
         if (role != "chunk" || refuseSave)
@@ -200,15 +201,25 @@ class SilentStateKnobs final : public SurfaceKnobs {
         controls.setParam("gain", device::ParamValue::fromNormalized(value));
         broadcastParam(1, engine::ParamEventKind::Value, value);
     }
+    void signalChangedState() {
+        const auto announced = beginStateSignal();
+        ++epoch_;
+    }
     std::uint8_t patch = 1;
     bool refuseSave = false;
+  private:
+    std::uint64_t epoch_ = 0;
 };
 
 void capturedPluginState(const std::filesystem::path &dir) {
-    const auto loader = [](const engine::DeviceRequest &request, std::string &)
+    bool refuseAtOpen = false;
+    const auto loader = [&](const engine::DeviceRequest &request, std::string &)
         -> std::unique_ptr<device::DeviceInstance> {
-        if (request.ref && request.ref->uid == "test.silent-state")
-            return std::make_unique<SilentStateKnobs>();
+        if (request.ref && (request.ref->uid == "test.silent-state" || request.ref->uid == "test.second-state")) {
+            auto device = std::make_unique<SilentStateKnobs>();
+            device->refuseSave = refuseAtOpen && request.ref->uid == "test.silent-state";
+            return device;
+        }
         return {};
     };
     std::string error;
@@ -249,15 +260,93 @@ void capturedPluginState(const std::filesystem::path &dir) {
     check(document->takeSnapshot("Same patch", 3'000'000, 0).ok && History(document->store()).head() == head,
           "SC-09: capturing unchanged state appends no undo step");
 
+    plugin.uid = "test.second-state";
+    plugin.name = "Other sampler";
+    const bool insertedSecond = document->insertPlugin(plugin, 4);
+    const auto &currentDevices = document->session().model().devices;
+    const auto secondRow = std::find_if(currentDevices.begin(), currentDevices.end(),
+                                       [&](const auto &device) { return device.name == plugin.name; });
+    check(insertedSecond && secondRow != currentDevices.end(), "SC-430: insert an independent second sampler");
+    if (!insertedSecond || secondRow == currentDevices.end()) return;
+    const auto secondId = secondRow->id;
+    const auto secondInstance = [secondId](ui::ProjectDocument &doc) {
+        return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(secondId));
+    };
+    sampler = instance(*document);
+    auto *second = secondInstance(*document);
+    if (!sampler || !second) return;
+
+    const auto markedStale = [id, secondId](Store &store) {
+        SQLite::Statement read(store.db(), "SELECT value FROM session_state WHERE key='devices.stale_state'");
+        if (!read.executeStep()) return false;
+        const auto marks = Payload::parse(read.getColumn(0).getString());
+        return marks.contains(std::to_string(id)) && !marks.contains(std::to_string(secondId));
+    };
+    const auto namesStaleSampler = [](const std::string &warning) {
+        return warning.find("Silent sampler") != std::string::npos && warning.find("stale") != std::string::npos &&
+               warning.find("Other sampler") == std::string::npos;
+    };
     sampler->patch = 3;
     sampler->refuseSave = true;
+    check(!document->capturePluginState(id) && document->error().find("Silent sampler") != std::string::npos,
+          "SC-430: a structural per-device capture still refuses unreadable state");
+    sampler->signalChangedState();
+    second->patch = 7;
+    check(document->takeSnapshot("Sampler did not answer", 4'000'000, 0).ok &&
+          namesStaleSampler(document->pluginStateWarning()) && markedStale(document->store()),
+          "SC-430: a signalled but unreadable plug-in does not hold Take Snapshot");
     const auto copy = dir / "silent-copy.adi";
-    check(!document->saveCopy(copy) && !std::filesystem::exists(copy) &&
-              document->error().find("Silent sampler") != std::string::npos,
-          "SC-09: refused opaque capture leaves no published copy and names the plug-in");
-    sampler->refuseSave = false;
-    check(document->saveCopy(copy), "SC-09: retry copies the now readable state");
+    check(document->saveCopy(copy) && namesStaleSampler(document->warning()),
+          "SC-430: Save a Copy names the device and uses its last saved state");
+    refuseAtOpen = true;
     auto reopened = ui::ProjectDocument::open(copy, false, loader, error);
+    refuseAtOpen = false;
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 2 &&
+          secondInstance(*reopened) && secondInstance(*reopened)->patch == 7 && markedStale(reopened->store()),
+          "SC-430: the copy keeps old failed bytes, fresh healthy bytes, and just the failed device's stale mark");
+    check(reopened && reopened->capturePluginState() && namesStaleSampler(reopened->pluginStateWarning()),
+          "SC-430: a device already unreadable when the project opens does not block capture");
+    reopened.reset();
+
+    sampler->signalChangedState();
+    const auto staleSave = dir / "silent-stale-save.adi";
+    check(document->saveAs(staleSave) && namesStaleSampler(document->warning()) && markedStale(document->store()),
+          "SC-430: synchronous Save As switches projects with the stale state marked");
+    sampler = instance(*document);
+    if (!sampler) return;
+    sampler->signalChangedState();
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    const auto asyncSave = dir / "silent-stale-async.adi";
+    check(document->startSave(asyncSave, ui::ProjectDocument::SaveKind::as), "SC-430: begin staged Save As");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    auto progress = document->saveProgress();
+    while (progress && progress->phase != Phase::succeeded && progress->phase != Phase::failed &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        document->advanceSave();
+        progress = document->saveProgress();
+    }
+    check(progress && progress->phase == Phase::succeeded && namesStaleSampler(document->warning()) &&
+          markedStale(document->store()), "SC-430: staged Save As publishes with the warning saved alongside its result");
+    document->clearSave();
+
+    ui::ProjectDocument::ExportJob exportJob;
+    const auto zip = dir / "silent-stale.zip";
+    if (document->prepareCollectAndExport(zip, exportJob)) {
+        const auto exported = ui::ProjectDocument::runCollectAndExport(exportJob);
+        check(exported.ok && std::filesystem::is_regular_file(zip) && namesStaleSampler(exported.warning),
+              "SC-430: Collect and Export finishes and carries the stale state warning");
+    } else {
+        check(false, "SC-430: Collect and Export prepares despite unreadable device state");
+    }
+
+    sampler = instance(*document);
+    if (!sampler) return;
+    sampler->refuseSave = false;
+    const auto recoveredCopy = dir / "silent-recovered.adi";
+    check(document->saveCopy(recoveredCopy) && document->warning().empty() && !markedStale(document->store()),
+          "SC-430: successful retry captures the device and clears the stale mark");
+    reopened = ui::ProjectDocument::open(recoveredCopy, false, loader, error);
     check(reopened && instance(*reopened) && instance(*reopened)->patch == 3,
           "SC-09: opening Save a Copy restores the patch that made no callback");
     reopened.reset();
@@ -1478,8 +1567,8 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     const auto recallHead = OpJournal(recall->store()).headSeq();
     const auto originalAudio = renderNote(*recall);
     const auto originalAutomation = [&] {
-        const auto snapshot = recall->view().current();
-        const auto *row = snapshot->findAutomationLane(lane.id);
+        const auto recallSnapshot = recall->view().current();
+        const auto *row = recallSnapshot->findAutomationLane(lane.id);
         return row && row->ownerId == device && row->paramRef == lane.paramRef;
     };
     auto unsupported = values;
