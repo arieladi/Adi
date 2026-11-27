@@ -1226,8 +1226,18 @@ bool ProjectDocument::capturePluginStateImpl(std::optional<std::int64_t> deviceI
     }
     if (!deviceId && mixerDrag_ && !endMixerDrag())
         return false;
+    // Observe hosted touches already queued for the owner. A recorded touch
+    // must close as an envelope edit before ParamOps finishes ordinary knobs.
+    if (recording_ && session_.automationArmed() && !drainParameterEdits(256))
+        return false;
+    if (!closeAutomationWrites(deviceId))
+        return false;
     const auto now = captureNowMs();
-    const auto finish = engine::ParamOps::SnapshotGestures::FinishOpen;
+    // State capture keeps a global pending FIFO. A targeted request can
+    // refuse an unrelated open touch, but must not finish it as a static edit.
+    using Gestures = engine::ParamOps::SnapshotGestures;
+    const auto finish = deviceId && (!parameterWrites_.empty() || !nativeWrites_.empty())
+                            ? Gestures::Completed : Gestures::FinishOpen;
     using Policy = engine::ParamOps::SnapshotPolicy;
     const auto policy = bestEffort ? Policy::UseStoredOnCaptureFailure : Policy::RequireAll;
     const auto captured = deviceId ? parameterOps_.snapshotDeviceState(*deviceId, now, finish)
@@ -1977,8 +1987,22 @@ std::optional<ProjectDocument::HotSwapTargetInfo> ProjectDocument::hotSwapTarget
     }
 }
 
+std::optional<ProjectDocument::HotSwapTargetInfo> ProjectDocument::hotSwapTargetAfterCapture(
+    const DevicePanelData &target) {
+    const auto current = hotSwapTarget(target);
+    // Built-in edits already own their state in the journal. Preset recall
+    // keeps their inverse in the same transaction, including unauthored rows.
+    if (!current || current->device.format == "internal")
+        return current;
+    if (!capturePluginState(target.id))
+        return std::nullopt;
+    // The plug-in's capture runs on the owner and may yield to UI changes.
+    // Prepare the swap against the committed state and the same live target.
+    return hotSwapTarget(target);
+}
+
 std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, const std::string &uid) {
-    if (!hotSwapTarget(target))
+    if (!hotSwapTargetAfterCapture(target))
         return 0;
     auto prepared = prepareBuiltinReplacement(*store_, uid, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
@@ -1986,7 +2010,7 @@ std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, cons
 }
 
 std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const rows::PluginRef &ref) {
-    if (!hotSwapTarget(target))
+    if (!hotSwapTargetAfterCapture(target))
         return 0;
     auto prepared = preparePluginReplacement(*store_, ref, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
@@ -2000,7 +2024,7 @@ bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t 
 
 std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, preset::Preset presetValue,
                                           const std::optional<rows::PluginRef> &installed) {
-    const auto identity = hotSwapTarget(target);
+    const auto identity = hotSwapTargetAfterCapture(target);
     if (!identity)
         return 0;
     PreparedBuiltinInsert prepared;
@@ -2969,13 +2993,25 @@ void ProjectDocument::advanceAutomationWrites() {
     for(auto &pass:nativeWrites_)if(!pass.nativeReleased)pass.advance(clock);
 }
 
-void ProjectDocument::closeAutomationWrites() {
-    if(!mixerWrites_.empty())endMixerDrag();
-    while(!parameterWrites_.empty()) {
-        const auto key=parameterWrites_.begin()->first;
-        if(!commitParameterAutomation(key.first,key.second))break;
+bool ProjectDocument::closeAutomationWrites(std::optional<std::int64_t> deviceId) {
+    std::optional<std::string> failure;
+    if (!deviceId && !mixerWrites_.empty() && !endMixerDrag())
+        failure = error_;
+    for (;;) {
+        const auto found = deviceId ? parameterWrites_.lower_bound({*deviceId, {}}) : parameterWrites_.begin();
+        if (found == parameterWrites_.end() || (deviceId && found->first.first != *deviceId))
+            break;
+        const auto key = found->first;
+        if (!commitParameterAutomation(key.first, key.second)) {
+            if (!failure)
+                failure = error_;
+            break;
+        }
     }
-    finishNativeAutomation(true);
+    const bool nativeClosed = finishNativeAutomation(true, deviceId);
+    if (failure)
+        error_ = std::move(*failure);
+    return nativeClosed && !failure;
 }
 
 bool ProjectDocument::commitAutomation(std::vector<AutomationPass> passes,std::vector<OpRequest> requests) {
@@ -3096,8 +3132,13 @@ bool ProjectDocument::observeNativeAutomation(std::int64_t id,const device::Para
     return true;
 }
 
-void ProjectDocument::finishNativeAutomation(bool stop) {
+bool ProjectDocument::finishNativeAutomation(bool stop, std::optional<std::int64_t> deviceId) {
+    std::optional<std::string> failure;
     for(std::size_t i=0;i<nativeWrites_.size();) {
+        if (deviceId && nativeWrites_[i].target.ownerId != *deviceId) {
+            ++i;
+            continue;
+        }
         if(!stop && !nativeWrites_[i].nativeReleased) {
             // The parameter drain relies on the attached runtime. Change its
             // playback ownership only after the drain releases it.
@@ -3106,12 +3147,21 @@ void ProjectDocument::finishNativeAutomation(bool stop) {
             continue;
         }
         const auto owner=nativeWrites_[i].owner;
-        if(!releaseParameterPreview(owner)){++i;continue;}
+        if (!releaseParameterPreview(owner)) {
+            if (!failure)
+                failure = error_;
+            ++i;
+            continue;
+        }
         std::vector<AutomationPass> passes;
         passes.push_back(std::move(nativeWrites_[i]));
         nativeWrites_.erase(nativeWrites_.begin()+static_cast<std::ptrdiff_t>(i));
-        (void)commitAutomation(std::move(passes));
+        if (!commitAutomation(std::move(passes)) && !failure)
+            failure = error_;
     }
+    if (failure)
+        error_ = std::move(*failure);
+    return !failure;
 }
 
 bool ProjectDocument::releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken> &owner) {

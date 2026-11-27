@@ -1765,7 +1765,8 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
             if (!capturePending(nowMs, true))
                 return refuse({gesture::Error::Busy, "device input capture is pending"});
             for (const auto& task : gestures_) {
-                if (task->state || task->complete || task->terminal() || task->cancelRequested) continue;
+                if (task->state || task->complete || task->terminal() || task->cancelRequested ||
+                    task->nativeAutomation) continue;
                 task->complete = true;
                 if (task->pairedParameter.empty())
                     openGestures_.erase({task->deviceId, task->parameter});
@@ -1798,7 +1799,7 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
         // An open gesture retains its own origin and must finish first.
         const auto pending = gestures_;
         for (const auto& task : pending) {
-            if (!task->terminal() && (!task->complete || task->cancelRequested))
+            if (!task->terminal() && (!task->complete || task->cancelRequested || task->nativeAutomation))
                 return refuse({gesture::Error::Busy, "finish the open device edit before saving state"},
                               task->deviceId);
         }
@@ -2602,6 +2603,17 @@ gesture::CancelOutcome ParamOps::Runtime::cancelPending(const gesture::OwnerToke
     if(!task)return {{gesture::Error::Closed,"captured gesture is unavailable"},{}};
     task->cancelRequested=true;
     auto attachedAt=devices_.find(task->deviceId);
+    if (task->nativeAutomation && attachedAt != devices_.end()) {
+        auto& attached = attachedAt->second;
+        const auto open = openGestures_.find({task->deviceId, task->parameter});
+        if (open != openGestures_.end() && open->second.lock() == task && attached.inst &&
+            attached.runtimeToken.sameInstance(task->input.token)) {
+            // The envelope owns the observed values. A later forced flush must not
+            // turn this raw gesture's synthetic end into a new scalar edit.
+            attached.capture->discardGesture(task->deviceId, indexOf(*attached.inst, task->parameter));
+            openGestures_.erase(open);
+        }
+    }
     if(attachedAt!=devices_.end() && attachedAt->second.detached && attachedAt->second.inst && attachedAt->second.inst->captureCallbacksQuiescent()) {
         auto& attached=attachedAt->second;
         if(task->recovery)for(const auto& other:gestures_)if(other->deviceId==task->deviceId && !other->terminal())other->cancelRequested=true;

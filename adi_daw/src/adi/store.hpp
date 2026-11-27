@@ -61,6 +61,9 @@ enum class StoreError {
 
 const char* toString(StoreError);
 
+// Discard a closed provisional project still owned by this launch, with no edits or recovery files.
+bool discardUntouchedProject(const std::filesystem::path&, const media::FileIdentity&);
+
 enum class StoreFileCollision { Fail, ReplaceConfirmed };
 
 struct StoreFileResult {

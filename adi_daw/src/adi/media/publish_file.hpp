@@ -65,6 +65,9 @@ public:
     static std::shared_ptr<ProjectFileLease> openExclusive(const std::filesystem::path&, std::error_code&) noexcept;
     FileIdentity identity() const noexcept;
     const std::filesystem::path& path() const noexcept;
+    // Remove a closed project under an exclusive lease if its revision still matches.
+    bool removeExclusive(const FileRevision&, std::error_code&,
+                         const std::function<std::error_code()>& validate) noexcept;
     // Failed creation only; never removes a different file now at that name.
     bool removeCreated(std::error_code&,
                        const std::function<std::error_code()>& validate = {}) noexcept;

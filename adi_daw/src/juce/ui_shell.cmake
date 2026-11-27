@@ -75,6 +75,25 @@ if(ADI_WITH_JUCE)
         endif()
     endif()
     add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_export.cpp)
+    # Some libraries offer only integer charconv, or expose floating symbols
+    # that the selected macOS deployment target cannot call.
+    set(adi_ui_charconv_flags)
+    if(APPLE)
+        list(APPEND adi_ui_charconv_flags -Werror=unguarded-availability)
+    endif()
+    try_compile(adi_ui_float_charconv SOURCE_FROM_CONTENT charconv.cpp [=[
+        #include <charconv>
+        int main() {
+            char buffer[64]{};
+            double value = 1.25;
+            const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general);
+            return static_cast<int>(std::from_chars(buffer, written.ptr, value, std::chars_format::general).ec);
+        }
+    ]=] NO_CACHE COMPILE_DEFINITIONS ${adi_ui_charconv_flags})
+    if(adi_ui_float_charconv)
+        set_property(SOURCE src/juce/ui_arrangement.cpp src/juce/ui_clipview.cpp APPEND
+            PROPERTY COMPILE_DEFINITIONS ADI_UI_FLOAT_CHARCONV)
+    endif()
     set(classic_skin "${CMAKE_CURRENT_LIST_DIR}/smexoscope/images")
     juce_add_binary_data(adi_scope_skin NAMESPACE ScopeClassicImages HEADER_NAME ScopeClassicImages.h SOURCES
         ${classic_skin}/body.png ${classic_skin}/blue_knob1_4.png ${classic_skin}/free_etc.png
@@ -98,9 +117,6 @@ if(ADI_WITH_JUCE)
     target_sources(adi_ui_shell_tests PRIVATE tests/test_ui_shell.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp)
     target_link_libraries(adi_ui_shell_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
     target_compile_definitions(adi_ui_shell_tests PRIVATE ADI_UI_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ui")
-    # WTS-02: JUCE's assertions logged, so the suite's AssertionWatch counts them. On test targets only:
-    # never on adi_app, where it would keep jassert live in the release ADI.exe.
-    target_compile_definitions(adi_ui_shell_tests PRIVATE JUCE_LOG_ASSERTIONS=1)
     # The suite's fixtures keep whole root windows on the stack. Windows gives a program 1 MB of stack
     # where Linux and macOS give 8 MB, and a Debug build's frames are large: on 27 November the root grew
     # (the Info box's own analyser, the recording fixtures) and the suite overflowed on Windows only. The

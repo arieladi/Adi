@@ -132,9 +132,10 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
     const auto end = io.streamTimeSamples + io.frames;
     const auto first = read_.load(std::memory_order_relaxed);
     const auto written = written_.load(std::memory_order_acquire);
-    const bool changesHistory = !histories.empty() && (first != written || renderedHistoryEpoch_ != epoch);
+    // Silent slices advance every history's capture boundary, and a newly
+    // armed history can appear without changing the input epoch.
+    const bool changesHistory = !histories.empty();
     if (changesHistory) historyRevision_.fetch_add(1);
-    renderedHistoryEpoch_ = epoch;
     for (const auto& history : histories) {
         if (history->inputEpoch == epoch) continue;
         history->memory.setListening(true, false);
