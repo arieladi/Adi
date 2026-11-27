@@ -33,8 +33,6 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
-// Live's measures, in points at 100 %: the AI tab and the browser's preview strip.
-constexpr int kTabHeight = 20, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -1331,7 +1329,6 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
     addAndMakeVisible(browser);
-    addAndMakeVisible(aiTab);
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
@@ -1370,18 +1367,6 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     arrangement.geometry.grid = {state_.gridSnap, state_.gridFixed, state_.gridTriplet, state_.gridNarrow,
                                  state_.gridFixedQuarters};
     clipView.applyState(state_);
-    aiTab.setColour(juce::TextButton::buttonColourId, look::columnHead);
-    aiTab.setTitle("AI");
-    aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");
-    aiTab.onClick = [this] {
-        state_.aiChatOpen = !state_.aiChatOpen;
-        if (!persist()) {
-            state_.aiChatOpen = !state_.aiChatOpen;
-            fail(error_);
-            return;
-        }
-        resized();
-    };
     reader_.emplace(view_.current());
     setSize(1200, 720);
     frame();
@@ -1709,10 +1694,10 @@ void AdiRootComponent::resized() {
     transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
     if (fullMix) {
         for (auto *child : std::initializer_list<juce::Component*>{
-                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &aiTab,
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser,
                  &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
             child->setVisible(false);
-        browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
+        browserArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
         clipArea_ = deviceArea_ = infoArea_ = {};
         if (mixViewPanel.getParentComponent() == this) {
             mixViewPanel.setBounds(mixViewArea_);
@@ -1805,22 +1790,6 @@ void AdiRootComponent::resized() {
     strip.setBounds(stripArea_);
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
-    // The AI chat is a tab at the browser's foot, collapsed by default, so the
-    // column looks as Live's (ADR-0203 d6). Open, it takes the lower part.
-    if (browserArea_.isEmpty()) {
-        chatArea_ = {};
-        aiTab.setVisible(false);
-    } else {
-        // ADI's addition (Master Reference 3.1): the tab sits at the foot of the
-        // browser's panes, above Live's preview strip.
-        const int inner = browserArea_.getHeight() - kPreviewHeight - look::border;
-        const int chatH = state_.aiChatOpen ? std::max(kTabHeight, inner * 2 / 5) : kTabHeight;
-        chatArea_ = juce::Rectangle<int>(browserArea_.getX() + look::border, browserArea_.getY() + inner - chatH,
-                                         browserArea_.getWidth() - 2 * look::border, chatH);
-        aiTab.setVisible(true);
-        aiTab.setBounds(chatArea_.withHeight(kTabHeight));
-        browser.setFootLimit(chatArea_.getY() - browserArea_.getY());
-    }
     leftWidth_ = left;
     rightWidth_ = right;
     // The arrangement fills what the side panels leave, between the browser's gap and
@@ -1926,10 +1895,6 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         juce::Graphics::ScopedSaveState clip(g);
         g.reduceClipRegion(inner);
         layout.draw(g, inner.withTrimmedTop(20).reduced(5, 2).toFloat());
-    }
-    if (!chatArea_.isEmpty() && state_.aiChatOpen) {
-        g.setColour(look::panel);
-        g.fillRect(chatArea_);
     }
 }
 void AdiRootComponent::applyInfoAnalyserMode() {
@@ -4192,14 +4157,7 @@ bool AdiRootComponent::jumpTo(std::int64_t tick) {
             return fail("The project has no tempo map to locate in.");
         return true;
     }
-    auto &sel = arrangement.geometry.selection;
-    sel.insert = sel.start = sel.end = tick;
-    sel.clip = 0;
-    sel.pickedClips.clear();
-    sel.marked = true;
-    arrangement.locate();
-    publishSelection();
-    arrangement.changed();
+    arrangement.placeInsertMarker(tick, true);
     return true;
 }
 bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
@@ -4413,17 +4371,6 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         tapStep_ = after->txnId;
     return true;
 }
-namespace {
-// The insert marker, a point, at `tick`, and the playhead with it.
-void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
-    auto &sel = arrangement.geometry.selection;
-    sel.insert = sel.start = sel.end = tick;
-    sel.clip = 0;
-    sel.pickedClips.clear();
-    sel.marked = true;
-    arrangement.root.locate(tick);
-}
-} // namespace
 bool AdiRootComponent::setPositionAt(const std::string &text) {
     const auto at = parsePosition(text);
     if (!at)
@@ -4432,23 +4379,7 @@ bool AdiRootComponent::setPositionAt(const std::string &text) {
     if (!tick)
         return fail("Bar " + std::to_string(at->bar) + " has no beat " + std::to_string(at->beat) + ", sixteenth " +
                     std::to_string(at->sixteenth) + " in its time signature.");
-    placeInsertMarker(arrangement, *tick);
-    publishSelection();
-    arrangement.changed();
-    return true;
-}
-bool AdiRootComponent::stepPosition(int bars) {
-    const auto &meters = reader().meters();
-    const auto from = barPosition(playing_ ? timelineTick() : arrangement.geometry.selection.insert, meters);
-    const BarPosition to{std::max<std::int64_t>(1, from.bar + bars), from.beat, from.sixteenth};
-    auto tick = tickOf(to, meters);
-    if (!tick)
-        tick = tickOf({to.bar, 1, 1}, meters); // a beat that bar does not have: its start
-    if (!tick)
-        return false;
-    placeInsertMarker(arrangement, *tick);
-    publishSelection();
-    arrangement.changed();
+    arrangement.placeInsertMarker(*tick);
     return true;
 }
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
