@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159 is ready for Win's Windows check. SC-157 is next.
+SC-159 is ready for Win's Windows check. SC-157 is in progress.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -11,3 +11,8 @@ SC-159 is ready for Win's Windows check. SC-157 is next.
 - The published revision was tested on `main` at `de2a5b99`. While validation ran, the landing stack at `9dc43173` changed the neighboring warning hooks in `project_document.cpp` and `ui_main.cpp`; a dry merge identified conflicts there.
 
 ## For the director
+
+Should SC-157 replace the Take Snapshot trigger in ADR-0255 d6(e) and ADR-0213 d4?
+I recommend following the assigned queue. Make a backup when opening a saved song and
+check every ten minutes for changes. Keep the ten newest versions and move older ones
+to the system trash. [Ableton's backup behavior](https://help.ableton.com/hc/en-us/articles/360000377870-Backup-Sets)
