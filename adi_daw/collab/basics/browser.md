@@ -10,6 +10,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-125, SC-132 | `basics/browser-chain` at `d205b620e` | Add and remove Places from the Browser, including folder drops and read-only folders. Browser, application and library seats. | Peerless chooser/menu/drop tests passed. A read-only folder and a copied User Library marker also passed a direct smoke test. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-126 | `basics/browser-chain` at `2a3da1da4` | Show a Place as a directory tree while typed searches stay flat. Browser and library seats. | Peerless keyboard, folder, duplicate name and search checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-123 | `basics/browser-chain` at `7a1e22ab9` | Audition a sample through the app-owned streaming Cue player with keyboard and waveform control. Browser, application and engine seats. | Headless streaming, Cue, live recording isolation, key rebinding and waveform seek passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-429 | `basics/browser-chain` at `f2c761cd8` | Reveal preview from the first eligible sample selection and retain the current list height. Browser seat. | The headless visibility, reservation, folder and hidden-command checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -100,6 +101,12 @@ The peerless shell fixture covers disclosure clicks, Right, Left, Enter, duplica
 In the 256 × 320 Compact software fixture, the preview row is (24, 295, 228, 21) before and after. The former decorative 11 × 11 ring has center (37, 305). It keeps that geometry inside the new 26 × 21 switch at (24, 295). The waveform and its 1 px cursor occupy (54, 298, 194, 15), inside the existing row. For a click at x=151 in that fixture, playback starts at 97/193 of the source duration.
 
 Preview on/off and Preview Selected are app commands `browser.toggle-preview` (29066) and `browser.preview-selected` (29067). Shift+Return and Right are assignable defaults while the sample list has focus and auto Preview is off. Space never auditions. The app stores the toggle under `browser.previewEnabled`. The app-owned service can mix a standalone audition to outputs 1 and 2; the current Browser is shown by a project window.
+
+### SC-429
+
+At 256 × 320 Compact, the list previously used `(119,46,133,243)` and the preview row was always visible. An unselected list now uses `(119,46,133,270)` and the preview has no bounds. Selecting an audio file with the player available restores the list to `(119,46,133,243)` and the existing preview to `(24,295,228,21)`. The list keeps that height as selection moves or clears. A folder selection in a newly shown list leaves the preview hidden. Preview on/off remains available in the key map while the row is hidden.
+
+The software-rendered root comparisons changed only the bottom of the Browser list and former preview row. At 960 × 540 the changed region runs from `(8,267)` to `(316,298)`, or `(644,267)` to `(952,298)` after Swap Sides. At 1200 × 720 it runs from `(8,447)` to `(316,478)` and at 1440 × 900 from `(8,627)` to `(316,658)`. End coordinates are exclusive.
 
 ## For the director
 
