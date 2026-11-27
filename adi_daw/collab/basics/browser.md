@@ -2,6 +2,21 @@
 
 Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The code chain is `basics/browser-chain`, based on `origin/basics/integrate-1`. Linux window suites run in Debug with warnings treated as errors and `DISPLAY` unset.
 
+## Director’s macOS Release
+
+The native Release build is blocked in this Linux session, which has no access to the director’s Mac or Xcode. A source merge preflight for `origin/basics/integrate-1` at `a7d02bcf` with `origin/main` at `9dc43173` passed. The Mac report had no Release bundle for that combined source. App build, macOS suites, and installation are pending. [Mac checks](https://github.com/arieladi/Adi/blob/basics/mac-log/adi_daw/collab/basics/mac.md)
+
+The proposed fixed folder is `~/ADI-Director-Test`, with `ADI.app` and a separate `Data` folder. Once the bundle is installed, quit any other ADI instance and paste this into Terminal.
+
+```sh
+ADI_HOME="$HOME/ADI-Director-Test/Data" \
+  "$HOME/ADI-Director-Test/ADI.app/Contents/MacOS/ADI"
+```
+
+New projects go under `Data/config/ADI/projects`. Settings go in `Data/config/ADI/settings.json`. ADI puts its test User Library, caches, and shared data under this same Data folder. Once win confirms landing, rebuild from the merged main into the same app path and retain Data for the director’s test project.
+
+Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested in the rewritten queue. SC-135 is recorded by the project seat. [Project report](https://github.com/arieladi/Adi/blob/basics/project-log/adi_daw/collab/basics/project.md)
+
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
 | SC-121 | `basics/browser-chain` at `da5adae5a` | Show an initial list and restore the last Browser label across projects and launches. Browser, application and Settings seats. | Headless startup, persistence and missing-Place behavior passed. Debug Werror, 18 no-display UI suites, the Settings suite and all 3 acceptance suites passed. | Pushed |
