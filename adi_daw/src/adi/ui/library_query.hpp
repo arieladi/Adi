@@ -46,9 +46,14 @@ class BrowserLibrarySnapshot {
     [[nodiscard]] std::span<const Folder> folders(const std::string &volume) const noexcept;
     // A null volume searches all samples. A named volume includes its descendant files.
     void appendSamples(const LibraryQuery &, const std::string *volume, std::vector<const LibraryFile *> &results) const;
+    // The first matching file at this path, in listing order.
+    [[nodiscard]] const LibraryFile *matchingFileAtPath(const std::filesystem::path &, const LibraryQuery &) const;
 
   private:
     using SampleIndices = std::vector<std::size_t>;
+    struct PathEntry {
+        std::size_t hash, index;
+    };
     struct PlaceSamples {
         SampleIndices ordered;
         std::vector<bool> contains;
@@ -56,6 +61,7 @@ class BrowserLibrarySnapshot {
     };
     LibraryListing listing_;
     std::vector<std::string> foldedNames_;
+    std::vector<PathEntry> paths_;
     std::unordered_map<std::uint32_t, SampleIndices> postings_;
     std::unordered_map<std::string, PlaceSamples> places_;
 };
@@ -65,6 +71,7 @@ struct LibraryQuerySources {
     std::span<const BuiltinInfo> builtins;
     std::span<const PluginEntry> plugins;
     const std::map<std::string, std::vector<preset::Entry>> *presets = nullptr;
+    const BrowserLibrarySnapshot *projectSamples = nullptr;
 };
 
 // Typed matches in source order. Results borrow their source entries, and views may order them.

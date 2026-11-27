@@ -47,6 +47,12 @@ struct LibraryListing {
     std::vector<LibraryFile> samples; // by name, case-insensitive
     std::string error;                // the first folder that could not be read, and why
 };
+inline void sortLibrarySamples(std::vector<LibraryFile> &samples) {
+    std::stable_sort(samples.begin(), samples.end(), [](const LibraryFile &a, const LibraryFile &b) {
+        return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
+                                            [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+    });
+}
 // Provision a new default User Library once. An existing library belongs to
 // the user, who may move or remove any of its initial folders.
 inline bool provisionDefaultUserLibrary(const std::filesystem::path& root, std::string& error) {
@@ -198,10 +204,7 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
     } catch (const std::exception &e) {
         out.error = std::string("The library index could not be read: ") + e.what();
     }
-    std::stable_sort(out.samples.begin(), out.samples.end(), [](const LibraryFile &a, const LibraryFile &b) {
-        return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
-                                            [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
-    });
+    sortLibrarySamples(out.samples);
     return out;
 }
 } // namespace adi::ui

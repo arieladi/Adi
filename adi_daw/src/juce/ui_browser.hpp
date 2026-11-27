@@ -120,6 +120,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
     void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
+    void setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrarySnapshot>);
     void setListing(LibraryListing, bool ready = true);
     const LibraryListing &listing() const noexcept;
     void restoreLabel(settings::AppSettings &);
@@ -266,6 +267,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    std::shared_ptr<const BrowserLibrarySnapshot> projectLibrary_;
     std::map<std::string, std::set<std::filesystem::path>> openFolders_;
     bool ready_ = false;
     PluginScan pluginScan_;

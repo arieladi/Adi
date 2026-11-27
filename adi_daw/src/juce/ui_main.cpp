@@ -21,6 +21,7 @@
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/plugin_state_quit.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/project_library.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
@@ -1453,6 +1454,7 @@ class AdiApplication final : public juce::JUCEApplication,
             samplePreview_.stop();
             previewError_.clear();
         };
+        root->browser.setCurrentProjectSnapshot(projectLibrary_.update(document_->store()));
         root->browser.restoreLabel(*settings_);
         root->browser.setLibrarySnapshot(library_, libraryReady_);
         root->browser.requestLibraryRescan = [this] { startLibrary(true); };
@@ -2938,6 +2940,7 @@ class AdiApplication final : public juce::JUCEApplication,
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
+            root_->browser.setCurrentProjectSnapshot(projectLibrary_.update(document_->store()));
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
                     root_->status.setAudioDeviceProblem(std::move(problem));
@@ -3070,6 +3073,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<LibraryOwner> libraryOwner_;
     settings::Value libraryPreferences_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    ProjectLibrary projectLibrary_;
     bool libraryReady_ = false;
     // Collect and Export's worker. Completion becomes visible at thread exit.
     std::thread export_;

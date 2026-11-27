@@ -7336,6 +7336,70 @@ void browserClearSearch(AppCommands &commands, const std::filesystem::path &dir)
     browser.setHotSwap(sampleSlot);
     check(browser.search.getText() == "kick" && clear->isVisible(), "Hot-Swap keeps its own query between visits");
 }
+void browserCurrentProject(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "current-project.adi", true, {}, error);
+    check(document != nullptr, "SC-134: open a project for the Current Project Browser label");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "current-project");
+    root.setSize(1000, 650);
+    auto &browser = root.browser;
+    const auto rowFor = [&](const juce::String &name) {
+        const auto found = std::ranges::find(browser.sidebar(), name, &BrowserPanel::Entry::name);
+        return found == browser.sidebar().end() ? -1 : static_cast<int>(found - browser.sidebar().begin());
+    };
+    const auto bounds = [&](int row) {
+        return browser.sidebarRowBounds(row).translated(browser.getX(), browser.getY());
+    };
+    LibraryListing shared;
+    shared.places = {{"Added samples", dir, "added"}};
+    browser.setListing(shared);
+    const auto priorAdded = bounds(rowFor("Added samples"));
+    check(rowFor("Current Project") == -1, "SC-134: an unattached Browser has no Current Project label");
+    browser.setCurrentProjectSnapshot(std::make_shared<const BrowserLibrarySnapshot>(LibraryListing{}));
+    const auto current = rowFor("Current Project");
+    check(current >= 0 && current == rowFor("User Library") + 1 && current + 1 == rowFor("Added samples"),
+          "SC-134: a backed Current Project is visible between User Library and added Places");
+    if (current < 0)
+        return;
+    const auto currentBounds = bounds(current), added = bounds(rowFor("Added samples"));
+    std::printf("SC-134 previously following Place %d,%d %dx%d, Current Project %d,%d %dx%d, following Place %d,%d %dx%d\n",
+                priorAdded.getX(), priorAdded.getY(), priorAdded.getWidth(), priorAdded.getHeight(),
+                currentBounds.getX(), currentBounds.getY(), currentBounds.getWidth(), currentBounds.getHeight(),
+                added.getX(), added.getY(), added.getWidth(), added.getHeight());
+    check(currentBounds == priorAdded && added == currentBounds.translated(0, BrowserPanel::kRowHeight),
+          "SC-134: Current Project takes one standard row before added folders");
+    settings::AppSettings prefs(appdata::App::Daw, dir / "current-project-settings.json");
+    check(prefs.set("browser.lastLabel", "label:Current Project", {}, error), "SC-134: remember the Current Project label");
+    browser.restoreLabel(prefs);
+    check(browser.selected() == current && browser.rows().empty(), "SC-134: the remembered label restores even with no local audio");
+
+    const auto take = dir / "Samples" / "Recorded" / "Lead 0001.wav";
+    const auto bounce = dir / "audio" / "import-7-hash.wav";
+    const auto project = std::make_shared<const BrowserLibrarySnapshot>(LibraryListing{
+        {}, {{"bounce.wav", bounce, {}}, {"Lead 0001.wav", take, {}}}, {}});
+    browser.setCurrentProjectSnapshot(project);
+    browser.setListing(shared);
+    check(browser.selected() == current && browser.shown().size() == 2,
+          "SC-134: the project publication fills the current label and survives an independent Places update");
+    browser.search.setText("0001 lead", false);
+    browser.search.onTextChange();
+    std::filesystem::path audition;
+    root.playSamplePreview = [&](std::filesystem::path path, double) { audition = std::move(path); };
+    browser.list.selectRow(0);
+    check(browser.shown().size() == 1 && browser.previewSelected() && audition == take,
+          "SC-134: project recordings use shared word matching and the regular audio audition seam");
+    check(browser.toggleSelectionMark(0), "SC-134: project recordings can be marked as Favorites");
+    browser.choose(rowFor("Favorites"));
+    check(browser.shown().size() == 1 && browser.shown().front()->path == take,
+          "SC-134: Favorites can find a marked project recording without a shared library entry");
+    browser.choose(current);
+    browser.setCurrentProjectSnapshot({});
+    check(rowFor("Current Project") == -1 && browser.selected() == rowFor("All") && browser.shown().empty(),
+          "SC-134: detaching the project restores All and clears the borrowed project rows");
+}
 void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     const auto base = dir / "places-test";
@@ -26469,6 +26533,7 @@ int main(int argc, char **argv) {
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
+    trace("browserCurrentProject", [&] { browserCurrentProject(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });

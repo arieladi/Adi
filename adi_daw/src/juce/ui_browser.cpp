@@ -461,6 +461,40 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         setPreviewRowShown(false);
     repaint();
 }
+void BrowserPanel::setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library) {
+    if (projectLibrary_ == library)
+        return;
+    // Keep the previous publication alive until the rows that borrowed it have been cleared.
+    const auto previous = std::exchange(projectLibrary_, std::move(library));
+    updateMarkedSamples();
+    bool keepListPosition = true;
+    if (static_cast<bool>(previous) != static_cast<bool>(projectLibrary_)) {
+        const auto key = labelKey(selected_);
+        const bool inView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
+        if (projectLibrary_) {
+            sidebar_.insert(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1), {"Current Project", Project});
+            ++baseEntries_;
+        } else {
+            --baseEntries_;
+            sidebar_.erase(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1));
+        }
+        selected_ = findLabel(key);
+        if (selected_ < 0) {
+            selected_ = findLabel(kAllLabel);
+            setPreviewRowShown(false);
+            keepListPosition = false;
+        }
+        setSidebarScroll(sidebarScroll_);
+        if (inView)
+            revealSidebarSelection();
+        repaint();
+    }
+    if (!hotSwap_ && selected_ >= 0) {
+        const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
+        if (glyph == Project || glyph == All || glyph == Favorite)
+            refill(-1, keepListPosition);
+    }
+}
 void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
     devicePresets_.clear();
     for (auto &entry : entries)
@@ -567,8 +601,15 @@ void BrowserPanel::updateMarkedSamples() {
     markedSamples_.clear();
     if (sampleMarks_.empty())
         return;
+    std::unordered_set<std::filesystem::path> projectMarks;
+    if (projectLibrary_)
+        for (const auto &sample : projectLibrary_->listing().samples)
+            if (sampleMarks_.contains(sample.path)) {
+                markedSamples_.push_back(&sample);
+                projectMarks.insert(sample.path);
+            }
     for (const auto &sample : listing().samples)
-        if (sampleMarks_.contains(sample.path))
+        if (sampleMarks_.contains(sample.path) && !projectMarks.contains(sample.path))
             markedSamples_.push_back(&sample);
 }
 bool BrowserPanel::toggleSelectionMark(unsigned slot) {
@@ -742,8 +783,11 @@ void BrowserPanel::refillRows() {
     LibraryQueryResults hits;
     if (all) {
         hits.samples.swap(shown_);
-        queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_}, hits);
+        queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_,
+                             projectLibrary_.get()}, hits);
         hits.samples.swap(shown_);
+    } else if (chosen.glyph == Project && projectLibrary_) {
+        projectLibrary_->appendSamples(query, nullptr, shown_);
     } else if (sounds) {
         queryLibrary(query, {nullptr, {}, {}, &devicePresets_}, hits);
         std::ranges::sort(hits.presets, presetNameLess, [](const preset::Entry *entry) -> const preset::Entry & {
@@ -1559,7 +1603,9 @@ void BrowserPanel::choose(int i) {
                 return;
             }
         }
-        if (entry.glyph == All || entry.glyph == Sounds || entry.glyph == Favorite)
+        if (entry.glyph == Project && projectLibrary_ && !projectLibrary_->listing().error.empty())
+            root_.say(projectLibrary_->listing().error);
+        if (entry.glyph == All || entry.glyph == Sounds || entry.glyph == Project || entry.glyph == Favorite)
             return;
         const bool library = entry.samples || entry.glyph == User || entry.glyph == Drums;
         if (!entry.place.empty()) {
