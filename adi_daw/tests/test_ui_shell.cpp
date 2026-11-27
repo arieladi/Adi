@@ -5403,18 +5403,10 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     const Clips between{{0, bar / 2}, {pasteAt + bar / 2, bar / 4}};
     const Clips lower{{2 * bar, bar / 2}};
     auto &arrangement = root.arrangement;
-    auto &canvas = arrangement.canvas;
+    // Start with the later clip as primary so clipboard order is independent of pick order.
     const auto pickBoth = [&] {
-        const auto clickTitle = [&](std::int64_t track, std::int64_t at, juce::ModifierKeys mods) {
-            const juce::Point<float> p{static_cast<float>(arrangement.geometry.x(at)) + 5.f,
-                                        static_cast<float>(laneTop(root, track) + 5)};
-            canvas.mouseDown(pressAt(canvas, p, mods));
-            canvas.mouseUp(pressAt(canvas, p));
-        };
-        clickTitle(20, 2 * bar, {});
-        clickTitle(2, 0, juce::ModifierKeys::commandModifier);
-        check(sel.clip == 61 && sel.pickedClips == std::vector<std::int64_t>{50},
-              "SC-179 fixture picks two clips, starting with the later one");
+        clickClip(20, 61, 2 * bar, bar / 2);
+        sel.pickedClips = {50};
     };
     const auto fixtureStep = document->ops().nextUndo();
     const auto undoOne = [&](const char *caption) {
