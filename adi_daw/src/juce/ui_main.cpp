@@ -139,7 +139,8 @@ juce::File fileFromPath(const std::filesystem::path &path) {
     const auto value = nativePath.make_preferred().u8string();
     return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(value.data()), static_cast<int>(value.size())));
 }
-std::string launchExternalSampleEditor(const juce::File &editor, juce::File source, const juce::File &project, bool copy) {
+std::string launchExternalSampleEditor(juce::ChildProcess &process, const juce::File &editor, juce::File source,
+                                       const juce::File &project, bool copy) {
     juce::StringArray arguments;
 #if JUCE_MAC
     if (editor.isDirectory() && editor.hasFileExtension(".app"))
@@ -159,7 +160,6 @@ std::string launchExternalSampleEditor(const juce::File &editor, juce::File sour
         source = target;
     }
     arguments.add(source.getFullPathName());
-    juce::ChildProcess process;
     if (!process.start(arguments, 0))
         return "The configured Sample Editor could not be started.";
     return copy ? "Opened an editable copy of " + source.getFileName().toStdString() + "." : std::string{};
@@ -1401,13 +1401,19 @@ class AdiApplication final : public juce::JUCEApplication,
                                          identity = std::move(identity), copy] {
                 std::string error;
                 const auto source = media::resolveMedia(folder, identity, error);
+                juce::ChildProcess process;
                 auto message = source.empty() ? "The sample could not be opened: " + error
-                                               : launchExternalSampleEditor(editor, fileFromPath(source), project, copy);
+                                               : launchExternalSampleEditor(process, editor, fileFromPath(source), project, copy);
                 if (!message.empty())
                     juce::MessageManager::callAsync([asker, message = std::move(message)] {
                         if (asker != nullptr)
                             asker->say(message);
                     });
+#if !JUCE_WINDOWS
+                // JUCE reaps a POSIX child when isRunning observes its exit.
+                while (process.isRunning())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+#endif
             });
         };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
