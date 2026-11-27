@@ -16591,7 +16591,7 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
         verticalZoom->setValue(24., juce::sendNotificationSync);
         check(std::abs(waveformHeight() - inside) <= 4 && waves.builds() == 1,
               "24 dB of display zoom enlarges the same cached peaks");
-        check(root.reader().findTrack(4)->clips[0]->gainDb == -24. &&
+        check(std::abs(root.reader().findTrack(4)->clips[0]->gainDb + 24.) < 1e-9 &&
                   document->ops().nextUndo()->txnId == undoBeforeZoom,
               "waveform vertical zoom preserves clip gain and does not add an Undo step");
         verticalZoom->setValue(0., juce::sendNotificationSync);
