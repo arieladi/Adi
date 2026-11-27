@@ -16246,6 +16246,194 @@ void automationAdditionalLanes(AppCommands &commands, const std::filesystem::pat
               "Minus removes the Volume row without erasing its authored points or hiding Pan");
     }
 }
+void automationBreakpointDrags(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-breakpoint-drags.adi", true, {}, error);
+    check(document != nullptr, "a project for breakpoint drags");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    automation::LaneSpec lane;
+    lane.id = 31;
+    lane.ownerId = track;
+    lane.paramRef = pan.paramRef;
+    lane.paramName = pan.paramName;
+    lane.valueDomain = pan.valueDomain;
+    lane.minValue = pan.minimum;
+    lane.maxValue = pan.maximum;
+    auto write = automation::writePoints(41, lane.id, nullptr,
+        Payload::array({{{"id", 7}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+                        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}}}));
+    const bool authored = document->ops().submit({automation::createLane(lane), std::move(write)}).ok &&
+                          document->synchronise();
+    check(authored, "two authored Pan breakpoints on the same envelope");
+    if (!authored)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-breakpoint-drags");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == pan;
+    });
+    check(body != bodies.end(), "the Pan envelope body is on screen");
+    if (body == bodies.end())
+        return;
+
+    const auto readPoints = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto original = readPoints();
+    check(original.size() == 2, "the Pan envelope holds the two fixture points");
+    if (original.size() != 2)
+        return;
+    const auto baseline = undoStep();
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto pointAt = [&](const auto &point) {
+        const auto travel = static_cast<float>((point.value - pan.minimum) / (pan.maximum - pan.minimum));
+        return juce::Point<float>{x(point.time), body->scaleBottom - (body->scaleBottom - body->top) * travel};
+    };
+    const auto first = pointAt(original[0]);
+    const auto second = pointAt(original[1]);
+    const auto firstHit = canvas.automationPointAt(first);
+    const auto secondHit = canvas.automationPointAt(second);
+    const bool hit = firstHit && firstHit->point == 7 && secondHit && secondHit->point == 9;
+    check(hit, "both authored breakpoints are independently hittable");
+    if (!hit)
+        return;
+
+    const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+    const auto press = [&](juce::Point<float> at) { canvas.mouseDown(pressAt(canvas, at, left)); };
+    const auto drag = [&](juce::Point<float> from, juce::Point<float> to) {
+        canvas.mouseDrag(dragAt(canvas, from, to, left));
+    };
+    const auto release = [&](juce::Point<float> from, juce::Point<float> to) {
+        canvas.mouseUp(dragAt(canvas, from, to, left));
+        root.frame();
+    };
+    const auto undoGesture = [&](const char *message) {
+        if (undoStep() == baseline)
+            return true;
+        const bool restored = root.command(AppCommands::Undo) && undoStep() == baseline && readPoints() == original;
+        check(restored, message);
+        root.frame();
+        return restored;
+    };
+
+    const float background = body->bottom - 6.f;
+    const juce::Point<float> selectionStart{x(bar / 2), background}, selectionEnd{x(5 * bar / 2), background};
+    press(selectionStart);
+    drag(selectionStart, selectionEnd);
+    release(selectionStart, selectionEnd);
+    const bool selected = canvas.hasAutomationSelection() && geometry.selection.start == bar / 2 &&
+                          geometry.selection.end == 5 * bar / 2;
+    check(selected, "the background drag selects a time range containing both breakpoints");
+    if (!selected)
+        return;
+
+    const juce::Point<float> movedFirst{x(original[0].time + bar / 2), first.y};
+    press(first);
+    drag(first, movedFirst);
+    check(undoStep() == baseline && readPoints() == original, "a held breakpoint drag has not written history");
+    release(first, movedFirst);
+    const auto translated = readPoints();
+    const bool bothMoved = translated.size() == 2 &&
+        std::equal(translated.begin(), translated.end(), original.begin(), [&](const auto &after, const auto &before) {
+            return after.id == before.id && after.time == before.time + bar / 2 &&
+                   after.curve == before.curve && after.tension == before.tension &&
+                   std::abs(after.value - before.value) < 1.e-6;
+        });
+    check(bothMoved && undoStep() != baseline, "dragging one selected breakpoint moves both by the same time offset");
+    if (!undoGesture("one Undo restores both selected breakpoints"))
+        return;
+
+    canvas.clearAutomationSelection();
+    const juce::Point<float> middle{(first.x + second.x) / 2, (first.y + second.y) / 2};
+    // Start six pixels from the drawn segment, outside the point insertion hit area.
+    const auto segmentStart = middle.translated(0.f, 6.f);
+    const auto segmentEnd = segmentStart.translated(0.f, -18.f);
+    const bool segmentSetup = canvas.automationLineAt(middle).has_value() && !canvas.automationPointAt(segmentStart);
+    check(segmentSetup, "the drag starts near the visible segment and away from either breakpoint");
+    if (!segmentSetup)
+        return;
+    press(segmentStart);
+    drag(segmentStart, segmentEnd);
+    check(undoStep() == baseline && readPoints() == original, "a held segment drag has not written history");
+    release(segmentStart, segmentEnd);
+    const auto raised = readPoints();
+    const bool samePoints = raised.size() == 2 &&
+        std::equal(raised.begin(), raised.end(), original.begin(), [](const auto &after, const auto &before) {
+            return after.id == before.id && after.time == before.time &&
+                   after.curve == before.curve && after.tension == before.tension && after.value > before.value;
+        });
+    const bool sameRise = samePoints &&
+        std::abs((raised[0].value - original[0].value) - (raised[1].value - original[1].value)) < 1.e-6;
+    check(sameRise && undoStep() != baseline, "a near-line segment drag raises both endpoints at their original times");
+    if (!undoGesture("one Undo restores both segment endpoints"))
+        return;
+
+    constexpr auto begin = 5 * bar / 4, end = 7 * bar / 4;
+    const juce::Point<float> sliceStart{x(begin), background}, sliceEnd{x(end), background};
+    press(sliceStart);
+    drag(sliceStart, sliceEnd);
+    release(sliceStart, sliceEnd);
+    const bool sliceSelected = canvas.hasAutomationSelection() && geometry.selection.start == begin &&
+                               geometry.selection.end == end;
+    check(sliceSelected, "the selected Pan range lies strictly between the authored points");
+    if (!sliceSelected)
+        return;
+
+    press(segmentStart);
+    drag(segmentStart, segmentEnd);
+    release(segmentStart, segmentEnd);
+
+    const auto current = root.current();
+    const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+    const auto originalValue = [&](std::int64_t tick) {
+        const auto fraction = static_cast<double>(tick - original[0].time) /
+                              static_cast<double>(original[1].time - original[0].time);
+        return original[0].value + (original[1].value - original[0].value) * fraction;
+    };
+    const bool originalsPreserved = envelope.data &&
+        std::all_of(original.begin(), original.end(), [&](const auto &before) {
+            return std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+                return point.id == before.id && point.time == before.time && point.value == before.value;
+            });
+        });
+    const auto hasRaisedBoundary = [&](std::int64_t tick) {
+        return envelope.data && std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+            [&](const auto &point) { return point.time == tick && point.value > originalValue(tick) + 1.e-6; });
+    };
+    const auto unchangedAt = [&](std::int64_t tick) {
+        const auto actual = envelope.data ? envelopeValue(*envelope.data, tick) : std::nullopt;
+        return actual && std::abs(*actual - originalValue(tick)) < 1.e-6;
+    };
+    check(originalsPreserved && hasRaisedBoundary(begin) && hasRaisedBoundary(end) &&
+              unchangedAt(begin - bar / 8) && unchangedAt(end + bar / 8) && undoStep() != baseline,
+          "dragging the selected segment raises both boundaries without changing the envelope outside");
+    undoGesture("one Undo removes the inserted boundaries and restores the original Pan envelope");
+}
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;
     auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
@@ -23050,6 +23238,7 @@ int main(int argc, char **argv) {
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
+    trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });

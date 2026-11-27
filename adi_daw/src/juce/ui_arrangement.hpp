@@ -425,6 +425,33 @@ class ArrangementCanvas final : public juce::Component,
         bool stepped = false, cancelled = false;
     };
     std::optional<AutomationStroke> automationStroke_;
+    struct AutomationDragPoint {
+        std::uint64_t id;
+        std::int64_t time;
+        double value;
+        std::uint8_t curve;
+        float tension;
+    };
+    struct AutomationDragLane {
+        std::int64_t track = 0, lane = 0, data = 0;
+        AutomationTarget target;
+        std::vector<AutomationDragPoint> points;
+    };
+    struct AutomationDrag {
+        std::vector<AutomationDragLane> lanes;
+        juce::Point<float> origin;
+        std::int64_t anchorTick = 0, timeDelta = 0;
+        double valueDelta = 0;
+        float height = 1;
+        std::uint64_t generation = 0;
+        bool verticalOnly = false, movesSelection = false, cancelled = false;
+        std::optional<std::pair<std::int64_t, std::int64_t>> spliceBounds;
+    };
+    bool beginSelectedAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
+    bool beginAutomationSegmentDrag(const juce::MouseEvent &);
+    void updateAutomationDrag(const juce::MouseEvent &);
+    bool commitAutomationDrag(const AutomationDrag &);
+    std::optional<AutomationDrag> automationDrag_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
