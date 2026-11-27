@@ -65,3 +65,9 @@ B. If automatic previous-extraction replacement is required on reopen, reserve p
 ## For the director
 
 A. The reference manual describes both whole-event and selected-segment flattening. Use the existing engine render for comparison and settle the permanent commit scope from the reference run before assigning a flatten action. [Reference functions](https://www.steinberg.help/r/cubase-pro/15.0/en/cubase_nuendo/topics/sample_editor_variaudio/sample_editor_variaudio_functions_menu_r.html)
+
+## Continued chain gate
+
+- Remote code tip is `b478b4f9`, on main base `6f96847b`. The CLI credential expired during the run. The connector published fast-forwards with file trees verified against the local commits. Tested local tip `d641a413` and remote tip have identical tree `f52a5905f7b6aa2eb4af0de1da6c79e53c4da706`.
+- Linux GCC 14.2 Debug headless build passed with `ADI_WERROR=ON`. Executable links stripped debug sections to fit the workspace. CTest passed 292 of 292 suites in 109.38 s. All five validators and the SPEC layout check passed.
+- Final-tree sung-scale replay committed and read back all 17 notes. Maximum error was 4.972 cents with tuning, 50.000 cents at the nearest MIDI key, 34.060 ms at onset and 22.450 ms at offset.
