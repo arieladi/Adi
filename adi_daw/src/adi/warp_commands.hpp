@@ -20,6 +20,10 @@ struct WarpOptions {
 /// Commit with commitPrepared on the same document generation. Both directions
 /// capture actual source clocks and duration; replay never analyzes a file.
 [[nodiscard]] PreparedEdit prepareSetWarp(Store&,std::int64_t clipId,const WarpOptions&,double referenceRate);
+/// Scale a warped clip's musical source clock and place its stretched span
+/// together. This uses the existing map and source window without reading PCM.
+[[nodiscard]] PreparedEdit prepareStretchWarpedClip(Store&,std::int64_t clipId,std::int64_t position,
+    std::int64_t length,double referenceRate);
 enum class WarpMarkerChange { Add, Move, Remove };
 /// Edit an interior anchor by its source frame; the endpoint anchors stay fixed.
 [[nodiscard]] PreparedEdit prepareWarpMarkerEdit(Store&,std::int64_t clipId,WarpMarkerChange,
