@@ -13896,6 +13896,22 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
         root.frame();
         check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
               "a tempo change preserves both unwarped source clock readings");
+        const bool changedEnd = panel.typeField(Field::End, "0:01.100");
+        root.frame();
+        check(changedEnd && panel.readings().start == "0:01.000" && panel.readings().end == "0:01.100",
+              "after a tempo change, End can move just past the pinned Start");
+        if (root.undoTitle(false) == "Undo Set Clip End") {
+            check(root.command(AppCommands::Undo), "undo the new End and keep the tempo change");
+            root.frame();
+        }
+        const bool changedStart = panel.typeField(Field::Start, "0:01.200");
+        root.frame();
+        check(changedStart && panel.readings().start == "0:01.200" && panel.readings().end == "0:03.000",
+              "after a tempo change, Start can move to the old marker's now different timestamp");
+        if (root.undoTitle(false) == "Undo Set Clip Start") {
+            check(root.command(AppCommands::Undo), "undo the new Start and keep the tempo change");
+            root.frame();
+        }
         check(root.command(AppCommands::Undo), "undo the tempo change before the Sample Editor gestures");
         root.frame();
     } else {
