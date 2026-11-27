@@ -3025,6 +3025,23 @@ std::int64_t SampleEditor::sourceTick(std::int64_t arrangementTick) const noexce
                                     sourceTicksToSeconds(arrangementTick - window.pos));
     return window.toSource(arrangementTick);
 }
+std::pair<std::int64_t, std::int64_t> SampleEditor::sourceRange(std::int64_t from, std::int64_t to) const {
+    auto range = std::pair{sourceTick(from), sourceTick(to)};
+    const auto *node = panel.node();
+    if (node && node->loopEnabled && node->audio && node->audio->mediaInfo) {
+        const auto rate = static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0));
+        const ClipSourceMap source(*node, panel.root.reader().tempo(), rate, std::span<const WarpMarker>(markers_));
+        if (const auto repeated = source.repeatedRangeAcross(from, to)) {
+            const auto rulerTick = [&](const ClipSourceMap::LoopPosition &position) {
+                return position.warpTicks ? std::llround(*position.warpTicks) : sourceSecondsToTicks(position.seconds);
+            };
+            if (repeated->from)
+                range.first = rulerTick(*repeated->from);
+            range.second = rulerTick(repeated->to);
+        }
+    }
+    return range;
+}
 std::int64_t SampleEditor::playheadTick(std::int64_t arrangementTick) const {
     const auto *node = panel.node();
     if (node && node->loopEnabled && node->audio && node->audio->mediaInfo) {
@@ -4437,23 +4454,20 @@ void ClipViewPanel::fitArrangementSelection(const SnapshotReader &reader) {
         return;
     }
     const auto clipEnd = node_->posTicks + node_->lengthTicks;
-    auto from = std::max(node_->posTicks, std::min(selection.start, selection.end));
-    auto to = std::min(clipEnd, std::max(selection.start, selection.end));
+    const auto from = std::max(node_->posTicks, std::min(selection.start, selection.end));
+    const auto to = std::min(clipEnd, std::max(selection.start, selection.end));
     if (from >= to || (geometry.clipSelected(clip_) && from == node_->posTicks && to == clipEnd)) {
         fittedRange_.reset();
         return;
     }
-    if (audio()) {
-        from = sample.sourceTick(from);
-        to = sample.sourceTick(to);
-    }
-    const ArrangementRange range{clip_, from, to};
-    if (from >= to || fittedRange_ == range)
+    const auto source = audio() ? sample.sourceRange(from, to) : std::pair{from, to};
+    const ArrangementRange range{clip_, from, to, source};
+    if (source.first >= source.second || fittedRange_ == range)
         return;
     fittedRange_ = range;
     auto &editor = audio() ? static_cast<juce::Component &>(sample) : static_cast<juce::Component &>(notes);
     auto &time = audio() ? sample.time : notes.time;
-    time.fit(from, to, width, true, 1. / textproj::kPPQ);
+    time.fit(source.first, source.second, width, true, 1. / textproj::kPPQ);
     editor.repaint();
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {

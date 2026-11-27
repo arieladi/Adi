@@ -294,27 +294,47 @@ Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint po
     return right;
 }
 using ClockRange=std::pair<std::int64_t,std::int64_t>;
-std::int64_t reverseOffset(std::int64_t size,std::int64_t offset,std::int64_t span,
-                           std::optional<std::int64_t> end,std::optional<ClockRange> loop) {
-    if(offset<0 || span<=0 || offset>=size)throw std::runtime_error("audio does not cover the selected range");
+struct ReverseWindow {std::int64_t start,end;bool loop;};
+ReverseWindow reverseWindow(std::int64_t size,std::int64_t offset,std::int64_t span,
+                            std::optional<std::int64_t> end,std::optional<ClockRange> loop) {
+    if(offset<0 || span<=0)throw std::runtime_error("audio does not cover the selected range");
     const auto endOfSelection=edit::addTime(offset,span);
     if(loop) {
         const auto [first,last]=*loop;
         if(first<0 || last<=first || last>size)throw std::runtime_error("clip loop is outside its source");
-        const auto final=endOfSelection-1;
-        if(final>=first)return size-1-(first+(final-first)%(last-first));
+        if(offset<first) {
+            // The clip plays contiguous material until its first wrap. Reversed
+            // repeats followed by an outro need more than one clip window.
+            if(endOfSelection>last)throw std::runtime_error("Select either the intro or the repeating loop to reverse it.");
+            return {size-endOfSelection,size-offset,false};
+        }
+        const auto final=first+(endOfSelection-1-first)%(last-first);
+        const auto start=size-1-final;
+        // A split on a later repeat can store an unrolled Start beyond the
+        // file. Use the mirrored loop End when that Start cannot give an End.
+        const auto mirroredEnd=size-offset;
+        return {start,mirroredEnd>start?mirroredEnd:size-first,true};
     }
     const auto through=std::min({size,endOfSelection,end.value_or(size)});
     if(through<=offset)throw std::runtime_error("audio does not cover the selected range");
-    return size-through;
+    return {size-through,size-offset,false};
 }
-void shiftFadeClocks(Payload& clocks,const char* in,const char* inEnd,const char* out,const char* outEnd,
-                     std::int64_t delta) {
+void shiftFadeClocks(Payload& row,Payload& clocks,const char* in,const char* inEnd,const char* out,const char* outEnd,
+                     std::int64_t delta,std::int64_t start) {
     for(const auto& pair:{std::pair{in,inEnd},std::pair{out,outEnd}}) {
         if(clocks.at(pair.first).is_null())continue;
         const auto begin=edit::addTime(detail::signedInteger(clocks.at(pair.first)),delta);
         const auto end=edit::addTime(detail::signedInteger(clocks.at(pair.second)),delta);
-        if(begin<0)throw std::runtime_error("Reverse cannot retain this clip's fade clock");
+        if(begin<0) {
+            // A split can retain a fade-in that already finished before this
+            // piece began. It has no gain effect in the reversed placement.
+            if(pair.first==in && end<=start) {
+                clocks[pair.first]=nullptr;clocks[pair.second]=nullptr;
+                row["fade_in_ticks"]=0;
+                continue;
+            }
+            throw std::runtime_error("Reverse cannot retain this clip's fade clock");
+        }
         clocks[pair.first]=begin;clocks[pair.second]=end;
     }
 }
@@ -356,13 +376,15 @@ void reverseImage(Store& store,Payload& image,const edit::TimeMap& time,double r
         const auto span=row.at("time_base")==0?detail::signedInteger(row.at("length_ticks")):
             time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),detail::signedInteger(row.at("length_ns"))))-origin;
         const auto lastLoop=hasLoop?edit::addTime(loopTicks,detail::signedInteger(loopLength)):0;
-        const auto start=reverseOffset(size,offsetTicks,span,hasEnd?std::optional{detail::signedInteger(*end)}:std::nullopt,
+        const auto window=reverseWindow(size,offsetTicks,span,hasEnd?std::optional{detail::signedInteger(*end)}:std::nullopt,
             looping?std::optional{ClockRange{loopTicks,lastLoop}}:std::nullopt);
-        row["content_offset_ticks"]=start;
-        if(hasEnd)*end=size-offsetTicks;
+        row["content_offset_ticks"]=window.start;
+        row["loop_enabled"]=window.loop?1:0;
+        if(hasEnd)*end=window.end;
         if(hasLoop && loopTicks>=0 && lastLoop<=size)row["loop_start_ticks"]=size-lastLoop;
         for(auto& clocks:children.at("clip_warp_fade_domains"))
-            shiftFadeClocks(clocks,"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks",start-offsetTicks);
+            shiftFadeClocks(row,clocks,"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks",
+                            window.start-offsetTicks,window.start);
     } else {
         auto& clocks=ensurePlayback(store,image);
         const auto clockSample=[&](const char* column) {
@@ -375,15 +397,16 @@ void reverseImage(Store& store,Payload& image,const edit::TimeMap& time,double r
         if(sourceRate<=0)throw std::runtime_error("audio source sample rate is unavailable");
         const auto size=sample(static_cast<double>(frames)/static_cast<double>(sourceRate),rate);
         const auto authoredLoop=looping?std::optional{ClockRange{clockSample("loop_begin_ns"),clockSample("loop_end_ns")}}:std::nullopt;
-        const auto start=reverseOffset(size,offset,span,physicalEnd,authoredLoop);
+        const auto window=reverseWindow(size,offset,span,physicalEnd,authoredLoop);
         const auto ticksAt=[&](std::int64_t at){return time.ticks(edit::addTime(time.nanos(origin),sampleNanos(at,rate)))-origin;};
-        const auto startNs=sampleNanos(start,rate);
-        shiftFadeClocks(clocks,"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns",
-                       startNs-detail::signedInteger(clocks.at("content_offset_ns")));
-        row["content_offset_ticks"]=ticksAt(start);
+        const auto startNs=sampleNanos(window.start,rate);
+        shiftFadeClocks(row,clocks,"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns",
+                       startNs-detail::signedInteger(clocks.at("content_offset_ns")),startNs);
+        row["content_offset_ticks"]=ticksAt(window.start);
+        row["loop_enabled"]=window.loop?1:0;
         clocks["content_offset_ns"]=startNs;
-        if(physicalEnd)clocks["source_end_ns"]=sampleNanos(size-offset,rate);
-        if(hasEnd)*end=ticksAt(size-offset);
+        if(physicalEnd)clocks["source_end_ns"]=sampleNanos(window.end,rate);
+        if(hasEnd)*end=ticksAt(window.end);
         if(authoredLoop) {
             const auto [first,last]=*authoredLoop;
             clocks["loop_begin_ns"]=sampleNanos(size-last,rate);
