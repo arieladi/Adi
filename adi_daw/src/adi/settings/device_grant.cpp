@@ -6,6 +6,17 @@
 
 namespace adi::settings {
 
+std::string driverSettingFor(const std::string& typeName) {
+    if (typeName == "Windows Audio") return "WASAPI";
+    if (typeName == "Windows Audio (Exclusive Mode)") return "WASAPI Exclusive";
+    if (typeName == "Windows Audio (Low Latency Mode)") return "WASAPI Low Latency";
+    return typeName;
+}
+
+bool driverSettingNames(const std::string& setting, const std::string& typeName) {
+    return !setting.empty() && (setting == typeName || driverSettingFor(typeName) == setting);
+}
+
 bool keepGrant(AppSettings& s, const DeviceGrant& grant, const ChangeContext& who, std::string& why) {
     bool ok = true;
     auto set = [&](const char* key, const Value& value) {

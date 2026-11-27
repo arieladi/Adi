@@ -1219,6 +1219,38 @@ void testDeviceGrant() {
           "an offered grant becomes the setting (the Audio page's own change): " + why);
 }
 
+void testDriverModeKept() {
+    section("SC-379: Windows Audio's mode is kept: Exclusive and Low Latency reopen as themselves");
+    using adi::settings::driverSettingFor;
+    using adi::settings::driverSettingNames;
+    check(driverSettingFor("Windows Audio") == "WASAPI" &&
+              driverSettingFor("Windows Audio (Exclusive Mode)") == "WASAPI Exclusive" &&
+              driverSettingFor("Windows Audio (Low Latency Mode)") == "WASAPI Low Latency" &&
+              driverSettingFor("ASIO") == "ASIO" && driverSettingFor("DirectSound") == "DirectSound",
+          "each mode has a setting of its own; other types keep their names");
+    const std::vector<std::string> types{"Windows Audio", "Windows Audio (Exclusive Mode)",
+                                         "Windows Audio (Low Latency Mode)", "DirectSound", "ASIO"};
+    for (const auto& type : types) {
+        int matches = 0;
+        std::string matched;
+        for (const auto& candidate : types)
+            if (driverSettingNames(driverSettingFor(type), candidate)) {
+                ++matches;
+                matched = candidate;
+            }
+        check(matches == 1 && matched == type, "\"" + type + "\" saved reopens as itself, and only itself");
+    }
+    check(driverSettingNames("WASAPI", "Windows Audio") && !driverSettingNames("WASAPI", "Windows Audio (Exclusive Mode)"),
+          "an older file's \"WASAPI\" is shared mode, as it was");
+    check(!driverSettingNames("", "Windows Audio"), "an empty setting names no type (the system's default)");
+    adi::test::TempDirectory temp("settings", "driver-mode");
+    AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
+    std::string why;
+    for (const auto* mode : {"WASAPI Exclusive", "WASAPI Low Latency", "WASAPI"})
+        check(keepGrant(s, {mode, "", "Speakers", 48000, 512}, kUser, why) && s.get("audio.driverType") == mode,
+              std::string("the store keeps ") + mode + ": " + why);
+}
+
 void testChannelConfig() {
     section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
     const Setting* c = find("audio.channelConfig");
@@ -1403,6 +1435,7 @@ int runAll() {
     testWindowZoom();
     testChannelConfig();
     testDeviceGrant();
+    testDriverModeKept();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

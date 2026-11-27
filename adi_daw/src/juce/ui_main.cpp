@@ -1305,8 +1305,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!requested.empty())
             for (auto *type : manager_.getAvailableDeviceTypes()) {
                 const auto name = type->getTypeName();
-                if (name == juce::String(requested) ||
-                    (requested == "WASAPI" && name.startsWith("Windows Audio"))) {
+                if (settings::driverSettingNames(requested, name.toStdString())) { // SC-379: the mode too
                     matched = true;
                     manager_.setCurrentAudioDeviceType(name, true);
                     break;
@@ -1821,9 +1820,8 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!manager_.getCurrentAudioDevice())
             return;
         // A grant the setting does not offer (WASAPI's 480) keeps the request; the page shows the grant.
-        auto type = manager_.getCurrentAudioDeviceType();
-        if (type.startsWith("Windows Audio"))
-            type = "WASAPI";
+        // SC-379: Windows Audio's mode is kept, not folded into shared mode.
+        const auto type = juce::String(settings::driverSettingFor(manager_.getCurrentAudioDeviceType().toStdString()));
         std::string why;
         if (!settings::keepGrant(*settings_,
                                  {type.toStdString(), setup.inputDeviceName.toStdString(),

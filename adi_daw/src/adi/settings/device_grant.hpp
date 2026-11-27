@@ -20,11 +20,18 @@
 namespace adi::settings {
 
 struct DeviceGrant {
-    std::string driverType;     // "WASAPI" for JUCE's "Windows Audio" types
+    std::string driverType;     // the setting's name for the type: driverSettingFor
     std::string inputDevice, outputDevice;
     int sampleRate = 0;
     int bufferSize = 0;
 };
+
+/// SC-379: `audio.driverType`'s value for one of JUCE's device type names. Windows Audio has three modes,
+/// each its own type: "WASAPI" (shared), "WASAPI Exclusive", "WASAPI Low Latency"; every other type keeps
+/// its own name. All three were saved as "WASAPI" and reopened shared.
+[[nodiscard]] std::string driverSettingFor(const std::string& typeName);
+/// Whether JUCE's type `typeName` is the one the setting names.
+[[nodiscard]] bool driverSettingNames(const std::string& setting, const std::string& typeName);
 
 /// Writes the grant back. False, with `why`, only for a value the store
 /// refuses that is not a granted rate or size. Does not save.
