@@ -47,8 +47,10 @@ int main(int argc, char** argv) {
         if (exact) std::puts("stock v13 loopback fixture: two exact metadata rows, ambiguous and legacy tokens omitted");
         return check(exact, "stock catalogue did not preserve two eligible metadata rows") ? 0 : 1;
     }
+    const auto initialState = mode == "initial-state" ? "4..nx+G." : "";
+    if (mode == "state-deadline") endpoint.blockTimeout = 1500ms;
     auto processor = adi::device::makeAudioGridderProcessor(
-        endpoint, {mode == "unknown" ? "VST3-400" : "VST3-12ab", "Stereo"});
+        endpoint, {mode == "unknown" ? "VST3-400" : "VST3-12ab", "Stereo", initialState});
     std::string error;
     std::int32_t latency = 0;
     const bool prepared = processor->prepare(48000, 2, 64, false, latency, error);
@@ -61,7 +63,7 @@ int main(int argc, char** argv) {
     if (!check(prepared, error.c_str()) || !check(latency == 7, "initial plugin latency was not 7"))
         return 1;
 
-    if (mode == "state" || mode == "bad-state") {
+    if (mode == "state" || mode == "bad-state" || mode == "state-deadline") {
         const auto deadline = std::chrono::steady_clock::now() + 1s;
         std::vector<std::uint8_t> state;
         const bool fetched = processor->fetchState(state, deadline, error);
@@ -71,6 +73,13 @@ int main(int argc, char** argv) {
         if (!check(processor->supportsState() && fetched && state == std::vector<std::uint8_t>{0, 42, 255, 7},
                    "stock state was not decoded to exact raw bytes")) return 1;
         const std::vector<std::uint8_t> update{4, 128, 11, 222, 3};
+        if (mode == "state-deadline") {
+            const auto start = std::chrono::steady_clock::now();
+            const auto result = processor->restoreState(update, start + 150ms, error);
+            return check(!result && error.find("timed out") != std::string::npos &&
+                         std::chrono::steady_clock::now() - start < 750ms,
+                         "stock warm-up exceeded the original state deadline") ? 0 : 1;
+        }
         const auto next = std::chrono::steady_clock::now() + 1s;
         if (!check(processor->restoreState(update, next, error) && processor->fetchState(state, next, error) &&
                    state == update, "restored stock state did not round-trip")) return 1;

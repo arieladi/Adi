@@ -398,55 +398,13 @@ public:
             !loadPlugin(deadline, error)) return fail(error);
         ready_ = true;
         stateStreamUsable_ = true;
+        if (!plugin_.encodedState.empty() && !settleState(deadline, error)) return false;
         pluginLatency = latency_;
         return true;
     }
 
     bool exchange(const RemoteBlock& input, std::span<float> output, std::string& error) override {
-        error.clear();
-        const auto samples = static_cast<std::size_t>(channels_) * static_cast<std::size_t>(frames_);
-        if (!ready_ || input.channels != channels_ || input.frames != frames_ ||
-            input.audio.size() != samples || output.size() != samples || input.events.size() > maxMidiEvents) {
-            error = "connection is closed or audio block shape is invalid";
-            return fail(error);
-        }
-        const auto audioBytes = plugin_.instrument ? std::size_t{0} : input.audio.size_bytes();
-        request_.assign(audioRequestHeaderSize + audioBytes, std::byte{});
-        put(request_, 0, plugin_.instrument ? std::int32_t{0} : channels_);
-        put(request_, 4, plugin_.instrument ? std::int32_t{0} : frames_);
-        put(request_, 8, channels_);
-        put(request_, 12, frames_);
-        put(request_, 16, static_cast<std::int32_t>(input.events.size()));
-        if (audioBytes != 0) std::memcpy(request_.data() + audioRequestHeaderSize, input.audio.data(), audioBytes);
-        for (const auto& event : input.events) {
-            if (!appendMidi(request_, event, frames_, error)) return fail(error);
-        }
-        const auto position = positionInfo(input.transport, sampleRate_);
-        request_.insert(request_.end(), position.begin(), position.end());
-        const auto deadline = Clock::now() + endpoint_.blockTimeout;
-        std::array<std::byte, audioResponseHeaderSize> response{};
-        if (!audio_.write(request_, deadline, error) || !audio_.read(response, deadline, error))
-            return fail(error);
-        if (get<std::int32_t>(response, 0) != channels_ || get<std::int32_t>(response, 4) != frames_) {
-            error = "server changed the audio block shape";
-            return fail(error);
-        }
-        if (get<std::int32_t>(response, 12) != latency_) {
-            error = "server changed plug-in latency during the stream";
-            return fail(error);
-        }
-        const auto returnedEvents = get<std::int32_t>(response, 8);
-        if (returnedEvents < 0 || static_cast<std::size_t>(returnedEvents) > maxMidiEvents) {
-            error = "invalid v13 response MIDI count";
-            return fail(error);
-        }
-        if (!audio_.read(std::as_writable_bytes(output), deadline, error) ||
-            !discardMidi(returnedEvents, deadline, error)) return fail(error);
-        if (std::any_of(output.begin(), output.end(), [](float sample) { return !std::isfinite(sample); })) {
-            error = "server sent nonfinite audio";
-            return fail(error);
-        }
-        return true;
+        return exchangeBefore(input, output, Clock::now() + endpoint_.blockTimeout, error);
     }
 
     [[nodiscard]] bool supportsState() const noexcept override { return true; }
@@ -483,7 +441,7 @@ public:
         // until the server dispatches SET before audio starts on its other
         // socket. The plug-in can reserialize valid bytes differently.
         std::vector<std::uint8_t> settled;
-        return fetchState(settled, deadline, error);
+        return fetchState(settled, deadline, error) && settleState(deadline, error);
     }
 
     void release() noexcept override {
@@ -500,6 +458,63 @@ private:
         release();
         error = "server plug-in " + plugin_.serverToken + ": " + error;
         return false;
+    }
+
+    bool settleState(Deadline deadline, std::string& error) {
+        // Some stock-hosted plug-ins consume restored state at the next DSP
+        // call. Let them do so without the first timeline block's notes.
+        const auto samples = static_cast<std::size_t>(channels_) * static_cast<std::size_t>(frames_);
+        const std::vector<float> silent(samples);
+        std::vector<float> discard(samples);
+        const RemoteBlock warmup{channels_, frames_, silent, {}, std::nullopt};
+        return exchangeBefore(warmup, discard, std::min(deadline, Clock::now() + endpoint_.blockTimeout), error);
+    }
+
+    bool exchangeBefore(const RemoteBlock& input, std::span<float> output, Deadline deadline,
+                        std::string& error) {
+        error.clear();
+        const auto samples = static_cast<std::size_t>(channels_) * static_cast<std::size_t>(frames_);
+        if (!ready_ || input.channels != channels_ || input.frames != frames_ ||
+            input.audio.size() != samples || output.size() != samples || input.events.size() > maxMidiEvents) {
+            error = "connection is closed or audio block shape is invalid";
+            return fail(error);
+        }
+        const auto audioBytes = plugin_.instrument ? std::size_t{0} : input.audio.size_bytes();
+        request_.assign(audioRequestHeaderSize + audioBytes, std::byte{});
+        put(request_, 0, plugin_.instrument ? std::int32_t{0} : channels_);
+        put(request_, 4, plugin_.instrument ? std::int32_t{0} : frames_);
+        put(request_, 8, channels_);
+        put(request_, 12, frames_);
+        put(request_, 16, static_cast<std::int32_t>(input.events.size()));
+        if (audioBytes != 0) std::memcpy(request_.data() + audioRequestHeaderSize, input.audio.data(), audioBytes);
+        for (const auto& event : input.events) {
+            if (!appendMidi(request_, event, frames_, error)) return fail(error);
+        }
+        const auto position = positionInfo(input.transport, sampleRate_);
+        request_.insert(request_.end(), position.begin(), position.end());
+        std::array<std::byte, audioResponseHeaderSize> response{};
+        if (!audio_.write(request_, deadline, error) || !audio_.read(response, deadline, error))
+            return fail(error);
+        if (get<std::int32_t>(response, 0) != channels_ || get<std::int32_t>(response, 4) != frames_) {
+            error = "server changed the audio block shape";
+            return fail(error);
+        }
+        if (get<std::int32_t>(response, 12) != latency_) {
+            error = "server changed plug-in latency during the stream";
+            return fail(error);
+        }
+        const auto returnedEvents = get<std::int32_t>(response, 8);
+        if (returnedEvents < 0 || static_cast<std::size_t>(returnedEvents) > maxMidiEvents) {
+            error = "invalid v13 response MIDI count";
+            return fail(error);
+        }
+        if (!audio_.read(std::as_writable_bytes(output), deadline, error) ||
+            !discardMidi(returnedEvents, deadline, error)) return fail(error);
+        if (std::any_of(output.begin(), output.end(), [](float sample) { return !std::isfinite(sample); })) {
+            error = "server sent nonfinite audio";
+            return fail(error);
+        }
+        return true;
     }
 
     bool loadPlugin(Deadline deadline, std::string& error) {

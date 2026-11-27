@@ -81,6 +81,7 @@ class Fixture:
         self.stop = threading.Event()
         self.error = None
         self.blocks = 0
+        self.warmups = 0
 
     def __enter__(self):
         self.master = listener()
@@ -141,7 +142,8 @@ class Fixture:
                 plugin = json.loads(read(commands, size2))
                 token = "VST3-400" if self.mode == "unknown" else self.expected_token
                 assert plugin["id"] == token and plugin["monoChannels"] == 0, plugin
-                assert plugin["layout"] in ("Default", "Stereo") and not plugin["settings"], plugin
+                expected_state = "4..nx+G." if self.mode == "initial-state" else ""
+                assert plugin["layout"] in ("Default", "Stereo") and plugin["settings"] == expected_state, plugin
                 if self.mode == "unknown":
                     send_control(commands, 21, b'{"success":false,"err":"plugin not found"}')
                     return
@@ -150,13 +152,30 @@ class Fixture:
                 send_control(commands, 21, json.dumps(result).encode())
                 send_control(commands, 110, b"")
                 send_control(commands, 100, b"\x90")
-                if self.mode in ("state", "bad-state"):
-                    self.state(commands)
-                if self.mode == "bad-state":
+                if self.mode == "initial-state":
+                    self.warm(audio)
+                if self.mode in ("state", "bad-state", "state-deadline"):
+                    self.state(commands, audio)
+                if self.mode in ("bad-state", "state-deadline"):
                     return
                 self.stream(audio)
 
-    def state(self, commands):
+    def warm(self, audio):
+        request = read(audio, 40)
+        assert struct.unpack_from("<iiiii?", request) == (2, self.expected_frames, 2, self.expected_frames, 0, False)
+        samples = self.expected_frames * 2
+        assert read(audio, samples * 4) == bytes(samples * 4)
+        position = read(audio, 104)
+        assert struct.unpack_from("<q", position, 96)[0] == 0, "warm-up carries transport"
+        self.warmups += 1
+        if self.mode == "state-deadline":
+            self.stop.wait(2)
+            return
+        # A nonzero warm-up reply must stay outside the user's timeline.
+        audio.sendall(struct.pack("<4i", 2, self.expected_frames, 0, self.latency) +
+                      struct.pack("<f", 0.75) * samples)
+
+    def state(self, commands, audio):
         assert struct.unpack("<iii", read(commands, 12)) == (70, 4, 0)
         if self.mode == "bad-state":
             send_control(commands, 72, b"99999999999999999999.AAA")
@@ -167,7 +186,10 @@ class Fixture:
         assert kind == 72 and size == size2 + 4 and 0 < size2 < 128
         updated = encode_stock_state(bytes([4, 128, 11, 222, 3]))
         assert read(commands, size2) == updated
-        for _ in range(2):  # Ordered readback after SET, then a fresh capture.
+        assert struct.unpack("<iii", read(commands, 12)) == (70, 4, 0)
+        send_control(commands, 72, updated)
+        self.warm(audio)
+        if self.mode != "state-deadline":
             assert struct.unpack("<iii", read(commands, 12)) == (70, 4, 0)
             send_control(commands, 72, updated)
 
@@ -222,12 +244,14 @@ class Fixture:
 
 def main():
     for mode in ("pcm", "version", "control", "unknown", "shape", "latency", "nonfinite", "timeout", "disconnect",
-                 "state", "bad-state", "catalogue", "bad-catalogue"):
+                 "state", "initial-state", "state-deadline", "bad-state", "catalogue", "bad-catalogue"):
         with Fixture(mode=mode, fail_after=0 if mode == "disconnect" else None) as server:
             subprocess.run([sys.argv[1], str(server.port), mode], check=True, timeout=8)
-        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state",
+        expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state", "state-deadline",
                                         "catalogue", "bad-catalogue") else 1
         assert server.blocks == expected_blocks, (mode, server.blocks)
+        expected_warmups = 1 if mode in ("state", "initial-state", "state-deadline") else 0
+        assert server.warmups == expected_warmups, (mode, server.warmups)
 
 
 if __name__ == "__main__":
