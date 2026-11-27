@@ -31,3 +31,14 @@ A. Stock server support in the release. I recommend using stock TCP for the trus
 - AGT-02’s durable UUID writer and AGT-03’s ledger are the sources for the app owner’s hosting lease and revocation. The seat exposes the gate and its tests. A project UUID is required before a ledger check.
 - DEV-25 / DF-E25(c) supplies the validated installed full-class-ID lookup to the VST3 loader and the trusted class map for stock catalogue tokens. The seat supplies both call sites. Browser presentation, the Privacy list and Save/Quit presentation belong to their separately owned rows.
 - The release server fork owns authenticated transport and the VST3/CLAP production host. The native proof uses a loopback engine fixture. The named stock Surge recall compatibility case remains; exact-readback native CLAP recall passes.
+
+## Verification
+
+The strict GCC Debug build passed 290 of 290 headless CTests, including both
+acceptance cases and the performance suite. The latest missing-server and
+missing-local placeholder test rebuilt and passed in 0.27 s. All five
+validators and the SPEC ABI layout check passed. The current JUCE render
+suite compiled with warnings as errors and passed under private Xvfb,
+including full-class-ID local fallback and mono, four- and six-channel
+offline capture. Its existing JUCE MessageListener debug assertions during
+settings discovery were nonfatal. Verified chain `f42f89a44`.
