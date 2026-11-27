@@ -13414,7 +13414,9 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
 
     root.setAutomationMode(true);
     const auto pan = panTarget(1);
-    const bool hasPanLane = root.addAutomationPoint(1, pan, bar / 4, .25, true) && root.addAutomationLane(1, pan);
+    check(root.addAutomationLane(1, pan) && root.addAutomationPoint(1, pan, bar / 4, .25, true),
+          "SC-339/253: show and author Pan in a separate lane above the takes");
+    const auto followingWithoutTakes = geo.rowTop(root.reader(), 2);
     geo.selection.track = 1;
     const bool takesReopened = headers.keyPressed(show);
     root.frame();
@@ -13424,11 +13426,12 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
     const auto takeY = automationY + automationHeight;
     const auto shiftedTake = geo.takeLaneAt(root.reader(), takeY);
     const auto *takeTrack = root.reader().findTrack(1);
-    check(hasPanLane && takesReopened && automationHeight > 5 &&
+    check(takesReopened && automationHeight > 5 &&
               !geo.takeLaneAt(root.reader(), automationY) &&
               shiftedTake && takeTrack && !takeTrack->takeLanes.empty() &&
               shiftedTake->track->id == 1 && shiftedTake->lane->id == takeTrack->takeLanes.front().id &&
-              geo.rowTop(root.reader(), 2) == rowWithoutTakes + automationHeight + 3 * ArrangementGeometry::takeLaneHeight,
+              followingWithoutTakes == rowWithoutTakes + automationHeight &&
+              geo.rowTop(root.reader(), 2) == followingWithoutTakes + 3 * ArrangementGeometry::takeLaneHeight,
           "SC-339/253: separate automation shifts the takes and the following track without becoming a take hit");
     if (shiftedTake) {
         const auto lane = shiftedTake->lane->id;
@@ -22825,7 +22828,9 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     auto &geometry = root.arrangement.geometry;
     geometry.grid.fixed = true;
     geometry.grid.fixedQuarters = 1.;
-    const float y = body->bottom - 4;
+    // The backward drag starts near the right edge of the range restored by Undo.
+    // Keep its press clear of that range's bottom-right transform handle.
+    const float y = body->bottom - 12.f;
     const auto at = [&](std::int64_t tick, float offset = 1.f) {
         return juce::Point<float>(static_cast<float>(geometry.x(tick)) + offset, y);
     };
