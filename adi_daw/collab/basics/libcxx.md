@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 00:03 IST — seats/library-chain `081971490757cceb72037e5b29cb16efedb980c3`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 293 registered CTest suites passed.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 27 November 2026, 23:50 IST — libcxx/seats/server-chain `5cce04174ef3834163f3bd66ece335cb10440c13`
 
 The fixed Server branch built with Clang 20, libc++, Pd and the strict flags. All 290 headless suites passed, including the AudioGridder transport fixture. JUCE Debug also linked libc++ and libc++abi, and all three offscreen window suites passed.
