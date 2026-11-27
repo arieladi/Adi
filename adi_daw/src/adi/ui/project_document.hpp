@@ -35,6 +35,7 @@
 #include <optional>
 #include <span>
 namespace adi::recording { struct RecordingEdit; }
+namespace adi::engine::recording_recovery { struct LaunchTake; }
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -242,6 +243,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                         std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},
                         audio::WavFormat format = audio::WavFormat::Float32, bool overdub = false);
+    // The application owns launch discovery. Headless and transient document
+    // hosts do not create entries in the application's recording registry.
+    void enableRecordingRecovery() noexcept { recordingRecoveryEnabled_ = true; }
+    bool startTakeRecovery(const engine::recording_recovery::LaunchTake &);
     // The application replaces these routes when the device or its channel config changes.
     // An empty list means the device has no enabled inputs. The view lasts until the next set.
     void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
@@ -514,6 +519,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): capture, staged audio files, then one owner commit.
     struct TakePublication;
+    struct RecoveryWork;
     struct MidiRecording;
     void pollRecording(bool deviceStopped);
     void landTake();
@@ -524,6 +530,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    bool recordingRecoveryEnabled_ = false;
+    std::unique_ptr<RecoveryWork> recoveryWork_;
     std::unique_ptr<MidiRecording> midiRecording_;
     std::optional<engine::AudioRecordingResult> audioTake_;
     bool recordingAudio_ = false;

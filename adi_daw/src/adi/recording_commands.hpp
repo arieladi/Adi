@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/blob.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
@@ -69,6 +70,29 @@ struct MidiTakePass {
     // The main image is the recorder's cumulative audible result for this pass.
     std::span<const notes::NoteValues> takeNotes,mainNotes;
 };
+enum class RecoveryStatus {Ready, AlreadyPlaced, Refused};
+struct RecoveryTake {
+    RecoveryStatus status=RecoveryStatus::Refused;
+    engine::AudioRecordingResult capture;
+    std::string error;
+};
+// Document owner. Sets the project's stable identity in the recorder spec.
+// The normal Session::startRecording path then persists the private take plan.
+[[nodiscard]] bool configureRecovery(Store&,engine::AudioRecordingSpec&,std::string& error);
+// Called only for a directory identified by the launch/session owner. The
+// directory must be directly inside the known recording root. A live recorder,
+// another project, a read-only store, and missing destinations are refused.
+// A Ready take is prepared by the existing linear or loop Stop command.
+[[nodiscard]] RecoveryTake recoverInterrupted(Store&,const std::filesystem::path& recordingRoot,
+    const std::filesystem::path& directory);
+// A file worker may validate with a private read-only Store and repair its
+// staging copies. Only the editable document owner can place the result.
+[[nodiscard]] RecoveryTake prepareInterrupted(Store&,const std::filesystem::path& recordingRoot,
+    const std::filesystem::path& directory,std::string_view expectedRecording,std::stop_token);
+// Startup worker API for PD-05. Skips live sessions, incomplete takes and
+// receipts already placed in the matching project. Holding Alt can skip this
+// call entirely. The caller presents the candidates and revalidates on reopen.
+[[nodiscard]] std::vector<engine::recording_recovery::LaunchTake> discoverInterrupted();
 struct RecordingEdit {
     bool ok=false;
     bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch
@@ -180,7 +204,8 @@ struct MidiRecordQuantize {
 };
 // Quantize only the newly recorded identities, sharing one Undo across all armed tracks.
 [[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::span<const MidiRecordQuantize>);
-/// Linear captures have one Undo. Loop captures have one per pass. Failure rolls
+/// Linear and recovered captures have one Undo. Ordinary loop captures have
+/// one per pass. Failure rolls
 /// back project rows, cleans only identity-verified publications where supported,
 /// and leaves private takes for retry.
 [[nodiscard]] CommitResult commit(Store&,RecordingEdit&,Actor=Actor::User);

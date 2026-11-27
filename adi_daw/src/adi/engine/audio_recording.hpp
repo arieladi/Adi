@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -16,6 +17,7 @@ namespace adi::engine {
 class Transport;
 struct AudioMemorySnapshot;
 struct TempoMap;
+namespace recording_recovery { struct OwnedPlan; }
 struct AudioMemoryTakeSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // resolved by recording::captureMemory on the owner
@@ -54,6 +56,9 @@ struct AudioRecordingSpec {
     std::vector<RecordingTarget> targets;
     std::optional<AudioRecordingLoop> loop; // absent retains linear capture
     std::int64_t placementOffsetSamples = 0; // captured with the device settings for a linear take
+    // The document owner supplies this through recording::configureRecovery.
+    // Empty keeps transient callers and custom recorder sinks unchanged.
+    std::string recoveryProjectUuid{};
 };
 enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture,PassLimit};
 struct RecordedTrack {
@@ -103,6 +108,11 @@ public:
     [[nodiscard]] const RecordingPunchWindow& punchWindow()const noexcept{return punchWindow_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
     [[nodiscard]] bool hasAttachableAudio()const noexcept;
+    [[nodiscard]] const std::string& recordingId()const noexcept{return recordingId_;}
+    [[nodiscard]] const std::string& recoveryProjectUuid()const noexcept{return recoveryProjectUuid_;}
+    [[nodiscard]] const std::string& recoveryWarning()const noexcept{return recoveryWarning_;}
+    [[nodiscard]] bool recovered()const noexcept{return recovered_;}
+    [[nodiscard]] const std::filesystem::path& recoverySource()const noexcept{return recoverySource_;}
     // Owner thread, after recording has finished. A cleanup error retains the
     // directory reference so the owner can report and retry it.
     std::error_code discard();
@@ -112,6 +122,11 @@ public:
     // Keep the snapshot for retry. Placement is supplied explicitly in session
     // samples at the captured rate, independently of the input stream clock.
     [[nodiscard]] static AudioRecordingResult fromMemory(const AudioMemorySnapshot&,const AudioMemoryTakeSpec&);
+    // Off callback. Rebuild a private copy from the verified common PCM
+    // prefix. The captured files remain intact until the project places it.
+    [[nodiscard]] static AudioRecordingResult fromInterrupted(
+        recording_recovery::OwnedPlan, const std::filesystem::path& directory, std::string sourceProject,
+        std::stop_token = {});
 private:
     struct Files;
     std::shared_ptr<Files> files_;
@@ -120,6 +135,9 @@ private:
     RecordingPunchWindow punchWindow_;
     std::vector<RecordedPass> passes_;
     bool finalizedPrefix_=false;
+    std::string recordingId_,recoveryProjectUuid_,recoveryWarning_;
+    std::filesystem::path recoverySource_;
+    bool recovered_=false;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.

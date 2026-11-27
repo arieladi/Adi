@@ -7,6 +7,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/recording_commands.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/media/media_ops.hpp"
@@ -355,20 +356,23 @@ class AdiApplication final : public juce::JUCEApplication,
         if (smokeOutput_ == juce::File{} && !quitExportProbe_)
             startPluginCatalogue();
         manager_.addChangeListener(this);
-        if (project == juce::File{}) {
-            // ADI has no unsaved state: every op is committed to a file, so a new
-            // project is made in the default projects folder (File & Folder).
-            project = nextUntitledProject(*settings_);
-            if (!installNew(project)) {
-                setApplicationReturnValue(1);
-                quit();
-                return;
-            }
-            startAfterFirstOpen();
-            startTimer(20);
+        startTimer(20);
+        if (testLaunch() || juce::ModifierKeys::getCurrentModifiersRealtime().isAltDown()) {
+            openStartupProject(project);
         } else {
-            startTimer(20);
-            openProject(project, false);
+            startupProject_ = project;
+            try {
+                interruptedRecordings_ = std::async(std::launch::async, [project] {
+                    auto takes = recording::discoverInterrupted();
+                    if (project != juce::File{})
+                        std::erase_if(takes, [&project](const auto &take) {
+                            return juce::File(juce::String(take.sourceProject)) != project;
+                        });
+                    return takes;
+                });
+            } catch (const std::system_error &) {
+                openStartupProject(project);
+            }
         }
     }
     void startAfterFirstOpen() {
@@ -1033,6 +1037,61 @@ class AdiApplication final : public juce::JUCEApplication,
         }
     }
 
+    void openStartupProject(const juce::File &project) {
+        if (project != juce::File{}) {
+            openProject(project, false);
+            return;
+        }
+        // ADI opens a new Untitled when there is no requested or recovered project.
+        if (!installNew(nextUntitledProject(*settings_))) {
+            setApplicationReturnValue(1);
+            quit();
+            return;
+        }
+        startAfterFirstOpen();
+    }
+    void pollInterruptedRecordings() {
+        using namespace std::chrono_literals;
+        if (!interruptedRecordings_.valid() || interruptedRecordings_.wait_for(0ms) != std::future_status::ready)
+            return;
+        std::vector<InterruptedTake> takes;
+        try {
+            takes = interruptedRecordings_.get();
+        } catch (const std::exception &failure) {
+            if (diagnosticLog_) diagnosticLog_->write("Recording recovery check failed", failure.what());
+        }
+        if (document_ || projectOpen_ || quitAfterExport_)
+            return;
+        if (takes.empty()) {
+            openStartupProject(startupProject_);
+            return;
+        }
+        juce::StringArray names;
+        for (const auto &take : takes) {
+            const auto label = take.projectName.empty() ? media::pathUtf8(pathFromUtf8(take.sourceProject).filename()) : take.projectName;
+            names.add(juce::String(take.trackNames.empty() ? label : label + " · " + take.trackNames));
+        }
+        auto *prompt = new juce::AlertWindow("Recover Interrupted Recording",
+            "ADI found a recording that was not added to its project. Choose a take to recover and open its project.",
+            juce::MessageBoxIconType::WarningIcon);
+        recordingRecoveryPrompt_ = prompt;
+        prompt->addComboBox("take", names, "Recording");
+        prompt->getComboBoxComponent("take")->setSelectedItemIndex(0);
+        prompt->addButton("Recover and Open", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        prompt->addButton("Not Now", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        prompt->enterModalState(true, juce::ModalCallbackFunction::create([this, prompt, takes = std::move(takes)](int answer) mutable {
+            if (document_ || projectOpen_ || quitAfterExport_)
+                return;
+            const auto index = prompt->getComboBoxComponent("take")->getSelectedItemIndex();
+            if (answer != 1 || index < 0 || static_cast<std::size_t>(index) >= takes.size()) {
+                openStartupProject(startupProject_);
+                return;
+            }
+            startupTake_ = std::move(takes[static_cast<std::size_t>(index)]);
+            openStartupProject(juce::File(juce::String(startupTake_->sourceProject)));
+        }), true);
+    }
+
     void openProject(const juce::File &file, bool create) {
         if (pluginStateQuit_.pending())
             return;
@@ -1083,6 +1142,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void openFailed(std::string error) {
         const auto failed = projectOpen_ ? projectOpen_->path : std::filesystem::path{};
+        startupTake_.reset();
         clearProjectOpen();
         if (!chooseProjectBackup(failed, error)) {
             report(error);
@@ -1161,6 +1221,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             if (crashed)
                 askHeldOff(*crashed);
+            if (auto take = std::exchange(startupTake_, {})) {
+                if (document_->startTakeRecovery(*take))
+                    root_->say("Recovering the interrupted recording…");
+                else
+                    root_->say(document_->error());
+            }
             requestProjectBackup();
             if (first)
                 startAfterFirstOpen();
@@ -1227,6 +1293,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (backupJob_.valid()) backupJob_.wait();
         if (restoreJob_.valid()) restoreJob_.wait();
         if (backupPrompt_ != nullptr) delete backupPrompt_.getComponent();
+        if (recordingRecoveryPrompt_ != nullptr) delete recordingRecoveryPrompt_.getComponent();
         // The normal Quit path waits in the message loop. Keep ownership here
         // if the platform shuts the application down directly.
         if (export_.joinable())
@@ -1466,6 +1533,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!afterHistoryReload)
             closeProject(takeSettled);
         document_ = std::move(next);
+        if (!testLaunch()) document_->enableRecordingRecovery();
         projectPlugins_ = std::move(plugins);
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
             -> std::optional<engine::RouteChoice> {
@@ -3167,6 +3235,7 @@ class AdiApplication final : public juce::JUCEApplication,
         wakeDiscoveredPlugins();
         if (!quitAfterExport_ && !pluginStateQuit_.pending())
             advanceProjectOpen();
+        pollInterruptedRecordings();
         pollProjectRecovery();
         pollProjectBackups();
         reloadStoredHistory();
@@ -3300,6 +3369,11 @@ class AdiApplication final : public juce::JUCEApplication,
         StoreFileResult outcome;
         std::uint64_t generation;
     };
+    using InterruptedTake = engine::recording_recovery::LaunchTake;
+    std::future<std::vector<InterruptedTake>> interruptedRecordings_;
+    std::optional<InterruptedTake> startupTake_;
+    juce::File startupProject_;
+    juce::Component::SafePointer<juce::AlertWindow> recordingRecoveryPrompt_;
     std::future<BackupJobResult> backupJob_;
     std::future<RestoreJobResult> restoreJob_;
     std::stop_source backupStop_;

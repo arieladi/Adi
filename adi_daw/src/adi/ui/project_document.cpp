@@ -250,6 +250,12 @@ struct ProjectDocument::TakePublication {
     }
 };
 
+struct ProjectDocument::RecoveryWork {
+    std::stop_source stop;
+    std::future<recording::RecoveryTake> result;
+    ~RecoveryWork() { stop.request_stop(); }
+};
+
 struct ProjectDocument::SaveJob {
     using Phase = SaveProgress::Phase;
     std::filesystem::path path;
@@ -3338,6 +3344,14 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                                 keep ? std::optional<std::int64_t>{0} : std::nullopt});
     }
     std::string why;
+    if (!spec.targets.empty() && recordingRecoveryEnabled_) {
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
+        if (!recording::configureRecovery(*store_, spec, why)) {
+            error_ = "Recording recovery could not be prepared. " + why;
+            return false;
+        }
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
+    }
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
         error_ = "Recording did not start: " + why;
         return false;
@@ -3392,11 +3406,53 @@ std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
         return {};
     return midi->preview;
 }
+bool ProjectDocument::startTakeRecovery(const engine::recording_recovery::LaunchTake &take) {
+    if (recording_ || landing_ || store_->readOnly()) {
+        error_ = store_->readOnly() ? "Project is read-only." : "Finish the current recording first.";
+        return false;
+    }
+    const auto project = store_->path();
+    try {
+        auto work = std::make_unique<RecoveryWork>();
+        work->result = std::async(std::launch::async, [project, take, stop = work->stop.get_token()] {
+            StoreError opened{};
+            auto snapshot = Store::open(project, opened, true);
+            if (!snapshot)
+                return recording::RecoveryTake{recording::RecoveryStatus::Refused, {}, toString(opened)};
+            return recording::prepareInterrupted(*snapshot, take.directory.parent_path(), take.directory,
+                                                 take.recordingId, stop);
+        });
+        recoveryWork_ = std::move(work);
+        landing_ = true;
+        error_.clear();
+        return true;
+    } catch (const std::exception &failure) {
+        error_ = failure.what();
+        return false;
+    }
+}
 void ProjectDocument::pollRecording(bool deviceStopped) {
     if (!recording_ && !landing_)
         return;
     if (takePublication_) {
         pollTakePublication();
+        return;
+    }
+    if (recoveryWork_) {
+        if (recoveryWork_->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        auto recovered = recoveryWork_->result.get();
+        recoveryWork_.reset();
+        if (recovered.status == recording::RecoveryStatus::Ready) {
+            audioTake_ = std::move(recovered.capture);
+            landTake();
+        } else {
+            landing_ = false;
+            const auto message = recovered.status == recording::RecoveryStatus::AlreadyPlaced
+                ? "The interrupted take has already been recovered."
+                : "Could not recover the interrupted take. " + recovered.error;
+            landed_ = TakeLanded{false, {}, message};
+        }
         return;
     }
     if (!recordingAudio_ && !midiRecording_) {
@@ -3454,7 +3510,8 @@ std::string midiRecordingFailure(engine::MidiCaptureState state) {
     }
 }
 std::string retainedCaptureLocation(const engine::AudioRecordingResult &result) {
-    return " Look for the recorded WAV files in " + media::pathUtf8(result.directory()) + ".";
+    const auto &original = result.recovered() ? result.recoverySource() : result.directory();
+    return " Look for the recorded WAV files in " + media::pathUtf8(original) + ".";
 }
 std::string recordedTakeMessage(std::size_t clips, const std::string &audioProblem,
                                 const std::string &midiProblem, bool hasAudio, bool hasMidi,
@@ -3723,6 +3780,8 @@ void ProjectDocument::landTake() {
         const auto passes = audio->passes().size();
         outcome.message = passes == 1 ? "Recorded one pass of the loop."
                                       : "Recorded " + std::to_string(passes) + " passes of the loop, a take each.";
+        if (audio->recovered()) outcome.message = "Recovered the interrupted loop recording.";
+        if (!audio->recoveryWarning().empty()) outcome.message += " " + audio->recoveryWarning();
         if (!audioProblem.empty())
             outcome.message += " Capture stopped because " + audioProblem + ".";
         landed_ = std::move(outcome);
@@ -3846,6 +3905,8 @@ void ProjectDocument::pollTakePublication() {
         take.outcome.clips.insert(take.outcome.clips.begin(), edit.placedAudioClips.begin(), edit.placedAudioClips.end());
         take.outcome.message = recordedTakeMessage(take.outcome.clips.size() + edit.midiLandings.size(), recordingFailure(take.recorded),
                                                    take.midiProblem, true, take.midi != nullptr);
+        if (take.recorded.recovered()) take.outcome.message = "Recovered the interrupted audio recording.";
+        if (!take.recorded.recoveryWarning().empty()) take.outcome.message += " " + take.recorded.recoveryWarning();
         const auto skippedAudioTracks = take.ids.size() - edit.placedAudioClips.size();
         if (skippedAudioTracks > 0) {
             take.outcome.message += skippedAudioTracks == 1

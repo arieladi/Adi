@@ -2,6 +2,7 @@
 #include "adi/recording_commands.hpp"
 #include "adi/engine/audio_memory.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -100,6 +101,25 @@ std::string identity(Store& store) {
     SQLite::Statement query(store.db(),"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
     throw std::runtime_error("recording needs a project connection");
+}
+std::string projectUuid(const SQLite::Database& db) {
+    SQLite::Statement query(db,"SELECT value FROM adi_meta WHERE key='project_uuid'");
+    return query.executeStep()?query.getColumn(0).getString():std::string{};
+}
+std::string receiptKey(const std::string& id) {
+    return "recording.placed."+id;
+}
+bool hasReceipt(const SQLite::Database& db,const std::string& id) {
+    SQLite::Statement query(db,"SELECT 1 FROM adi_meta WHERE key=?");
+    query.bind(1,receiptKey(id));
+    return query.executeStep();
+}
+bool isRecordingDestination(const SQLite::Database& db,std::int64_t id) {
+    SQLite::Statement track(db,"SELECT kind,locked FROM tracks WHERE id=?");
+    track.bind(1,id);
+    if(!track.executeStep() || track.getColumn(1).getInt()!=0)return false;
+    const auto kind=track.getColumn(0).getString();
+    return kind=="audio" || kind=="midi";
 }
 struct Read {
     std::optional<SQLite::Transaction> transaction;
@@ -605,6 +625,99 @@ StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path
     return result;
 }
 
+bool configureRecovery(Store& store,engine::AudioRecordingSpec& spec,std::string& error) {
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("configure recording recovery off callback");
+        if(store.readOnly())throw std::runtime_error("project is read-only");
+        const auto source=identity(store);
+        if(source.empty())throw std::runtime_error("recording recovery needs a saved project");
+        auto uuid=projectUuid(store.db());
+        if(uuid.empty()) {
+            SQLite::Statement persist(store.db(),
+                "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE COALESCE(adi_meta.value,'')=''");
+            persist.bind(1,store.clientId());
+            persist.exec();
+            uuid=projectUuid(store.db());
+        }
+        spec.sourceProject=source;
+        spec.recoveryProjectUuid=std::move(uuid);
+        error.clear();
+        return true;
+    } catch(const std::exception& failure) {
+        error=failure.what();
+        return false;
+    }
+}
+RecoveryTake recoverInterrupted(Store& store,const fs::path& recordingRoot,const fs::path& directory) {
+    if (store.readOnly()) return {RecoveryStatus::Refused, {}, "project is read-only"};
+    return prepareInterrupted(store,recordingRoot,directory,{},{});
+}
+RecoveryTake prepareInterrupted(Store& store,const fs::path& recordingRoot,const fs::path& directory,
+                                std::string_view expectedRecording,std::stop_token stop) {
+    RecoveryTake result;
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("recover recording off callback");
+        for(const auto& component:directory) {
+            if(component=="..")
+                throw std::runtime_error("recording path contains a parent traversal");
+        }
+        if(recordingRoot.empty() || directory.empty() || directory.filename().empty() ||
+           fs::canonical(recordingRoot)!=fs::canonical(directory.parent_path()))
+            throw std::runtime_error("recording directory is outside the known recording root");
+        const auto root=fs::canonical(recordingRoot);
+        const auto ownedDirectory=root/directory.filename();
+        auto owned=engine::recording_recovery::openInactive(ownedDirectory);
+        if (!expectedRecording.empty() && owned.plan.recordingId != expectedRecording)
+            throw std::runtime_error("the interrupted take changed after launch");
+        const auto source=identity(store);
+        if(owned.plan.projectUuid!=projectUuid(store.db()) || owned.plan.sourceProject!=source)
+            throw std::runtime_error("recording belongs to a different project");
+        if(hasReceipt(store.db(),owned.plan.recordingId)) {
+            result.status=RecoveryStatus::AlreadyPlaced;
+            return result;
+        }
+        for(const auto& target:owned.plan.targets) {
+            if(!isRecordingDestination(store.db(),target.trackId))
+                throw std::runtime_error("recording track "+std::to_string(target.trackId)+" no longer accepts a take");
+        }
+        result.capture=engine::AudioRecordingResult::fromInterrupted(std::move(owned),ownedDirectory,source,stop);
+        result.status=RecoveryStatus::Ready;
+    } catch(const std::exception& failure) {
+        result.error=failure.what();
+    }
+    return result;
+}
+std::vector<engine::recording_recovery::LaunchTake> discoverInterrupted() {
+    auto candidates = engine::recording_recovery::findLaunchTakes();
+    std::vector<engine::recording_recovery::LaunchTake> admitted;
+    for (auto &candidate : candidates) {
+        try {
+            StoreError error{};
+            const auto project=Store::open(media::pathFromUtf8(candidate.sourceProject),error,true);
+            if (!project || candidate.sourceProject!=identity(*project) ||
+                candidate.projectUuid!=projectUuid(project->db()) ||
+                hasReceipt(project->db(),candidate.recordingId)) continue;
+            auto &db = project->db();
+            SQLite::Statement title(db, "SELECT name FROM project WHERE id=1");
+            if (title.executeStep()) candidate.projectName = title.getColumn(0).getString();
+            SQLite::Statement track(db, "SELECT name FROM tracks WHERE id=?");
+            for (const auto id : candidate.tracks) {
+                track.bind(1, id);
+                auto name = track.executeStep() ? track.getColumn(0).getString() : std::string{};
+                if (name.empty()) name = "Track " + std::to_string(id);
+                if (!candidate.trackNames.empty()) candidate.trackNames += ", ";
+                candidate.trackNames += name;
+                track.reset();
+            }
+            admitted.push_back(std::move(candidate));
+        } catch(const std::exception&) {
+            // A candidate whose project cannot be read stays in its private
+            // recording folder, available when the project opens again.
+        }
+    }
+    return admitted;
+}
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
     try {
@@ -622,6 +735,12 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
     result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
     if(recorded.sourceProject().empty() || recorded.sourceProject()!=result.sourceProject)throw std::runtime_error("recording belongs to a different project");
+    if(!recorded.recordingId().empty()) {
+        if(recorded.recoveryProjectUuid()!=projectUuid(store.db()))
+            throw std::runtime_error("recording project identity changed");
+        if(hasReceipt(store.db(),recorded.recordingId()))
+            throw std::runtime_error("recording is already placed");
+    }
     if(!recorded.hasAttachableAudio() || recorded.sampleRate<8000 || recorded.sampleRate>768000 ||
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
@@ -1442,6 +1561,19 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     auto options=edit.options;const auto previous=options.beforeCommit;const auto hooks=edit.publicationHooks;
     options.beforeCommit=[files,previous,rollback,hooks](SQLite::Database& db,std::int64_t transaction,std::string& error) {
         if(previous && !previous(db,transaction,error))return false;
+        if(!files->source.recordingId().empty()) {
+            if(files->source.recoveryProjectUuid()!=projectUuid(db)) {
+                error="recording project identity changed";
+                return false;
+            }
+            SQLite::Statement receipt(db,"INSERT OR IGNORE INTO adi_meta(key,value) VALUES(?,?)");
+            receipt.bind(1,receiptKey(files->source.recordingId()));
+            receipt.bind(2,std::to_string(transaction));
+            if(receipt.exec()!=1) {
+                error="recording is already placed";
+                return false;
+            }
+        }
         if (files->stagedTake) {
             try {
                 requireRecordingFolder(files->stagedTake->folder);
@@ -1484,7 +1616,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
         return true;
     };
     auto requests=edit.requests;for(auto& request:requests)request.actor=actor;
-    auto result=edit.groupEnds_.empty()?OpJournal(store).commit(requests,options):
+    auto result=(edit.groupEnds_.empty() || files->source.recovered())?OpJournal(store).commit(requests,options):
         OpJournal(store).commitGrouped(requests,edit.groupEnds_,options);
     if(result.ok) {
         rollback->committed=true;
