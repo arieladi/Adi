@@ -15,6 +15,8 @@
 #include <chrono>
 #include <cstdio>
 #include <future>
+#include <fstream>
+#include <iterator>
 
 namespace {
 using namespace adi;
@@ -121,7 +123,8 @@ void copiesAndSwitches() {
     Fixture f;const auto before=digestProject(*f.store).text,history=historyBytes(*f.store);
     const auto target=f.target("elsewhere");
     check(fs::exists(media::pathFromUtf8(media::pathUtf8(f.source)+"-wal")),"the source has committed WAL data");
-    const auto copied=f.store->saveCopy(target);check(copied.ok,"Save a Copy succeeds from a live source");
+    const auto copied=f.store->saveCopy(target, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo);
+    check(copied.ok,"Save a Copy with Undo succeeds from a live source");
     if(!copied.ok){std::printf("%s\n",copied.error.c_str());return;}
     check(f.store->path()==f.source && digestProject(*f.store).text==before && historyBytes(*f.store)==history,
           "Copy preserves the active source, rows and recorded history bytes");
@@ -163,6 +166,81 @@ void copiesAndSwitches() {
     auto reopened=Store::open(newPath,error);
     check(reopened && resolves(*reopened) && History(*reopened).canUndo(),"Save As and its history survive reopen");
 }
+void sharedCopyPrivacy() {
+    Fixture fixture;
+    auto& source = *fixture.store;
+    source.db().exec("UPDATE adi_meta SET value='source-project-identity' WHERE key='project_uuid';"
+                     "INSERT INTO remote_hosts(id,host,port,enabled) VALUES(1,'example.invalid',1234,1);");
+    OpRequest edit;
+    edit.opType = "project.setName";
+    edit.payload = {{"name", "Current music"}};
+    edit.actor = Actor::Agent;
+    edit.actorDetail = "TEST_AGENT_REQUEST_SOURCE";
+    edit.label = edit.actorDetail;
+    check(OpJournal(source).commit(edit).ok, "privacy fixture has a committed agent edit");
+    source.db().exec("INSERT INTO agent_requests(txn_id,request,created_utc) "
+                     "SELECT MAX(txn_id),'TEST_AGENT_REQUEST_SOURCE',0 FROM ops;"
+                     "INSERT INTO history_snapshots(name,op_seq,branch_id,created_utc) "
+                     "SELECT 'Milestone',head_seq,id,0 FROM op_branches WHERE is_current=1;");
+    source.db().exec(R"(INSERT INTO session_state VALUES('devices.reported_latency',
+        '{"version":1,"sample_rate":48000,"history_head":null,"devices":[]}');)");
+    const auto defaultPath = fixture.target("share-default");
+    const auto withUndoPath = fixture.target("share-with-undo");
+    check(source.saveCopy(defaultPath).ok, "sharing defaults to fresh undo history");
+    StoreFileSave job;
+    check(source.prepareFileSave(withUndoPath, StoreSaveKind::copy, job, StoreFileCollision::Fail,
+        nullptr, StoreCopyPolicy::shareWithUndo).ok && job.write().ok, "the prepared copy can keep Undo history");
+    StoreError error{};
+    auto plain = Store::open(defaultPath, error);
+    auto withUndo = Store::open(withUndoPath, error);
+    check(plain && withUndo, "both shared copies reopen");
+    if (!plain || !withUndo) return;
+
+    for (auto* share : {plain.get(), withUndo.get()}) {
+        auto& db = share->db();
+        check(db.execAndGet("SELECT name FROM project").getString() == "Current music",
+              "the current musical change survives each history policy");
+        check(db.execAndGet("SELECT COUNT(*) FROM agent_requests").getInt() == 0 &&
+              db.execAndGet("SELECT enabled FROM remote_hosts").getInt() == 0 &&
+              db.execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString() != "source-project-identity",
+              "sharing removes agent requests and detaches authorization while keeping the server entry");
+        std::ifstream file(share->path(), std::ios::binary);
+        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        check(bytes.find("TEST_AGENT_REQUEST_SOURCE") == std::string::npos,
+              "private request text is gone from the published database bytes");
+    }
+    check(plain->db().execAndGet("SELECT COUNT(*) FROM session_state WHERE key='devices.reported_latency'").getInt() == 0 &&
+          withUndo->db().execAndGet("SELECT COUNT(*) FROM session_state WHERE key='devices.reported_latency'").getInt() == 1,
+          "fresh history omits a stale latency report and kept history retains its measured point");
+    History clean(*plain);
+    check(!clean.canUndo() && !clean.canRedo() &&
+          plain->db().execAndGet("SELECT COUNT(*) FROM history_snapshots").getInt() == 0 &&
+          plain->db().execAndGet("SELECT COUNT(*) FROM ops WHERE op_type<>'history.root'").getInt() == 0,
+          "the default copy has no prior edit or saved history point");
+    auto replay = Store::create(defaultPath.parent_path() / "Replay.adi", error);
+    check(replay && History::restoreReplayBase(*plain, *replay).ok &&
+          digestProject(*replay).text == digestProject(*plain).text,
+          "fresh history can replay from the copied musical state");
+    edit.actor = Actor::User;
+    edit.actorDetail.clear();
+    edit.label = "Rename";
+    edit.payload = {{"name", "Edited copy"}};
+    check(OpJournal(*plain).commit(edit).ok && clean.undo().ok && !clean.canUndo() &&
+          plain->db().execAndGet("SELECT name FROM project").getString() == "Current music",
+          "the first new edit undoes back to the copied song");
+    History retained(*withUndo);
+    const auto next = retained.nextUndo();
+    check(next && next->label == "Agent edit" && next->actorDetail.empty() &&
+          withUndo->db().execAndGet("SELECT COUNT(*) FROM history_snapshots").getInt() == 1 &&
+          retained.undo().ok && withUndo->db().execAndGet("SELECT name FROM project").getString() == "Original",
+          "keeping Undo preserves history and milestones without sensitive labels");
+    check(source.db().execAndGet("SELECT request FROM agent_requests").getString() == "TEST_AGENT_REQUEST_SOURCE" &&
+          source.db().execAndGet("SELECT enabled FROM remote_hosts").getInt() == 1 &&
+          source.db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString() ==
+              "source-project-identity" && History(source).canUndo(),
+          "sharing leaves the source request, authorization, and undo history intact");
+}
+
 void namedSaveAsKeepsMediaReferences() {
     const fs::path recording = "Samples/Recorded/Audio.wav";
     Fixture f(recording);
@@ -213,7 +291,7 @@ void refusalsAndMissingMedia() {
     check(copy && resolves(*copy),"the missing file's original location is retained for later recovery");
     const auto bad=f.target("invalid");
     f.store->db().exec("UPDATE ops SET payload=X'FF' WHERE op_type='media.import'");
-    check(!f.store->saveCopy(bad).ok && !fs::exists(bad),"unreadable captured media history fails without publishing a broken copy");
+    check(!f.store->saveCopy(bad, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok && !fs::exists(bad),"unreadable captured media history fails without publishing a broken copy");
     check(fs::is_empty(bad.parent_path()),"failed saves remove their private staging directory");
 }
 void readOnlySource() {
@@ -231,7 +309,7 @@ void historyBranches() {
     OpRequest rename;rename.opType="project.setName";rename.payload={{"name","Fork"}};
     check(OpJournal(s).commit(rename).ok,"fork from the imported project");
     std::int64_t firstBranch=0;for(const auto& branch:history.branches())if(!branch.isCurrent)firstBranch=branch.id;
-    const auto target=f.target("branched");check(s.saveCopy(target).ok,"copy includes inactive branches");
+    const auto target=f.target("branched");check(s.saveCopy(target, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok,"copy includes inactive branches");
     StoreError error{};auto copy=Store::open(target,error);if(!copy)return;
     History copied(*copy);
     check(copied.switchToBranch(firstBranch).ok && resolves(*copy) && media::mediaRow(copy->db(),10).at("rel_path").get<std::string>().ends_with("moved.wav"),"switching to the old branch replays relocated relink paths");
@@ -240,7 +318,7 @@ void historyBranches() {
     OpRequest detach;detach.opType="clip.detachAudio";detach.payload={{"id",5}};
     OpRequest unlink;unlink.opType="media.unlink";unlink.payload={{"id",10}};
     check(OpJournal(*copy).commit(std::vector<OpRequest>{detach,unlink}).ok,"capture an absent media row in unlink's inverse");
-    const auto third=f.target("third");check(copy->saveCopy(third).ok,"a relocated copy can itself be copied");
+    const auto third=f.target("third");check(copy->saveCopy(third, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok,"a relocated copy can itself be copied");
     auto final=Store::open(third,error);
     check(final && History(*final).undo().ok && resolves(*final),"unlink's captured media row resolves after two relocations");
 }
@@ -262,7 +340,8 @@ void symlinkedDestination() {
         return;
     }
     const auto target=f.temp.path()/"link/Copy.adi";
-    check(f.store->saveCopy(target).ok,"Copy publishes through a symlinked destination folder");
+    check(f.store->saveCopy(target, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok,
+          "Copy publishes through a symlinked destination folder");
     StoreError error{};auto copy=Store::open(target,error);
     check(copy && resolves(*copy),"a copy saved through a symlink resolves media from the folder it opens in");
     if(!copy)return;
@@ -271,14 +350,19 @@ void symlinkedDestination() {
 }
 void checkpointRelocation() {
     Fixture f;History history(*f.store);UndoRetentionPolicy policy;policy.maxTransactions=2;
+    f.store->db().exec("INSERT INTO remote_hosts(id,host,port,enabled) VALUES(1,'example.invalid',1234,1)");
     check(history.setUndoRetentionPolicy(policy).ok,"checkpoint relocation policy");
     for(const char* name:{"A","B","C"}){OpRequest edit;edit.opType="project.setName";edit.payload={{"name",name}};if(!OpJournal(*f.store).commit(edit).ok)throw std::runtime_error("checkpoint edit");}
     const auto hash=f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
-    const auto copyPath=f.target("checkpoint-copy");check(f.store->saveCopy(copyPath).ok,"copy a compacted project with checkpoint media");
+    const auto copyPath=f.target("checkpoint-copy");check(f.store->saveCopy(copyPath, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok,
+        "copy a compacted project with checkpoint media");
     StoreError error{};auto copy=Store::open(copyPath,error);check(copy!=nullptr,"compacted copy reopens");if(!copy)return;
     auto replay=Store::create(copyPath.parent_path()/"Replay.adi",error);
     if(!replay)throw std::runtime_error("checkpoint replay fixture (Replay.adi): "+std::string(toString(error)));
     check(History::restoreReplayBase(*copy,*replay).ok && resolves(*replay),"copied legacy checkpoint resolves media from its relocated folder");
+    check(replay->db().execAndGet("SELECT enabled FROM remote_hosts").getInt() == 0 &&
+          f.store->db().execAndGet("SELECT enabled FROM remote_hosts").getInt() == 1,
+          "replaying kept history cannot restore the source's server enable flag");
     const auto copiedHash=copy->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
     check(copiedHash!=hash && f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString()==hash,"copy refreshes its checkpoint content identity without changing source content");
     auto cached=Store::create(copyPath.parent_path()/"Cached.adi",error);
@@ -306,8 +390,9 @@ void unknownMajorAndReaders() {
     StoreError error{};auto newer=Store::open(future,error);
     check(newer && error==StoreError::SchemaTooNew && newer->readOnly(),"unknown major fixture opens read-only");
     const auto target=f.target("future-copy");
-    const auto copied=newer->saveCopy(target);
-    check(copied.ok && !copied.warning.empty(),"unknown major supports a verbatim copy without interpreting its history");
+    check(!newer->saveCopy(target).ok && !fs::exists(target), "unknown format is not published as a shared copy");
+    const auto copied=newer->saveCopy(target, StoreFileCollision::Fail, StoreCopyPolicy::preserve);
+    check(copied.ok && !copied.warning.empty(),"internal backup can copy an unknown major verbatim");
     auto reopened=Store::open(target,error);
     check(reopened && reopened->schemaMajor()==2 && reopened->readOnly(),"the future copy keeps its version and read-only policy");
     const auto refused=f.target("future-save-as");
@@ -410,5 +495,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();copiesAndSwitches();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

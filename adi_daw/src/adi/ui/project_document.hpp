@@ -103,7 +103,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
     // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused.
-    bool saveCopy(const std::filesystem::path &);
+    bool saveCopy(const std::filesystem::path &, bool keepUndoHistory = false);
     enum class SaveKind { as, copy, firstSave };
     struct SaveProgress {
         enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
@@ -114,7 +114,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     // File-menu saves progress between owner turns. Only Save As switches the live document.
     bool startSave(const std::filesystem::path &, SaveKind, StoreFileCollision = StoreFileCollision::Fail,
-                   const media::FileIdentity *expectedTarget = nullptr);
+                   const media::FileIdentity *expectedTarget = nullptr, bool keepUndoHistory = false);
     std::optional<SaveProgress> saveProgress() const;
     void advanceSave();
     void cancelSave();
@@ -133,8 +133,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     struct ExportJob {
         std::filesystem::path project, zip;
         std::string stateWarning;
+        bool keepUndoHistory = false;
     };
-    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory = false);
     static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     // Finish pending device edits and capture even plug-ins that never report changed state.
     // Call before closing the document or reading the file for an offline render.

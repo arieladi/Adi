@@ -175,15 +175,19 @@ there is no visible copy fallback. Missing media does not prevent a save. No sav
 op is appended. An existing SQLite WAL, SHM or rollback journal at the destination
 refuses the operation without deleting recovery material.
 
-For a supported major, relative media locations are rebased for the destination
-folder, including captured media.import/media.relink paths on **every history
-branch and their inverses**. This is a location representation change in the new
-file, preserving media identity/hash and op/transaction/branch identities; it
-prevents Undo/Redo from interpreting an old relative path against a new folder.
-Other captured fields, future fields and unrelated op bytes are preserved.
-The old implicit audio/ fallback is retained when it is the existing source.
+Shared copies keep the current song as the starting point for new Undo history.
+**Keep Undo history** also includes the existing operations, branches and named
+history snapshots. Both choices remove agent requests and any agent-supplied
+Undo labels from the published database. The new project UUID requires separate
+authorization for a requested plug-in server, and legacy server enable flags
+are cleared.
 
-`Store::saveAs(path)` makes that copy and switches the **same Store object** to
+Relative media locations are rebased for the destination folder. Files with
+existing history retained also rebase captured media.import/media.relink paths on
+**every history branch and their inverses**. The old implicit audio/ fallback is
+retained when it is the existing source.
+
+`Store::saveAs(path)` copies the complete file and switches the **same Store object** to
 its new writable database. Existing History/OpJournal objects still address it.
 The caller refreshes ProjectView/Session and its displayed filename after
 success. Project name, UUID, writer identity, history, snapshots and UI/session
@@ -205,9 +209,9 @@ A directory-sync failure after publication also returns success with a durabilit
 warning: the old file has already been replaced. Save As verifies the published
 file identity before switching; a different replacement in that interval keeps
 the original project active and reports that the copy could not be selected.
-An unknown newer major supports **Save a Copy** verbatim, without interpreting
-or relocating its media paths; it remains read-only. Save As into an editable
-Store refuses that major.
+A shared copy requires a format version whose private fields are known.
+Internal backups may copy an unknown newer major verbatim. The result
+remains read-only, and Save As into an editable Store refuses that major.
 
 ### 3.8 Collect All and Save / Collect and Export
 
@@ -234,9 +238,11 @@ a blocked passive checkpoint is reported as a warning, with success retained.
 on a private SQLite backup, collects that copy by the same rules, checks it,
 folds its WAL and publishes the archive without replacing an existing output.
 The live source and its paths/history stay unchanged. Read-only sources are
-supported. A missing or changed current **or history-only** asset fails export
-without a partial ZIP. `media::collectExport(input, zip)` remains the path-based
-entry point used by `adi_tool collect-export`.
+supported. The default archive uses the shared copy privacy policy above.
+Choose **Keep Undo history** to collect both the song and its history-only
+media. A missing or changed asset selected for collection fails export without
+a partial ZIP. `media::collectExport(input, zip)` is the path-based entry point
+used by `adi_tool collect-export`, which accepts `--keep-undo-history`.
 
 ## 4. The time model
 

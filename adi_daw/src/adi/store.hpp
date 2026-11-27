@@ -75,6 +75,8 @@ struct ProjectBackup {
 };
 
 enum class StoreSaveKind { copy, saveAs, firstSave };
+/// Backups and relocation preserve identity. Shared copies always remove private audit data.
+enum class StoreCopyPolicy { share, shareWithUndo, preserve };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
     StoreSavePhase phase = StoreSavePhase::copying;
@@ -166,9 +168,10 @@ public:
     /// Owner thread, outside any SQL transaction. Snapshot committed WAL data
     /// into a new file. Existing files require ReplaceConfirmed, supplied only
     /// after the save dialog's explicit confirmation. Active Store files and
-    /// aliases refuse replacement. Rebase media
-    /// paths in both rows and captured history so undo/redo still finds audio.
-    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// aliases refuse replacement. Shared copies start new undo history by default.
+    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail,
+                                          StoreCopyPolicy=StoreCopyPolicy::share,
+                                          std::stop_token={}) const;
     /// File-worker operations use their own read connection. The active
     /// project and the recovery source are kept in place.
     [[nodiscard]] static StoreFileResult writeProjectBackup(const std::filesystem::path& project,
@@ -197,7 +200,8 @@ public:
     /// committed database (including WAL) at invocation.
     [[nodiscard]] StoreFileResult prepareFileSave(const std::filesystem::path&, StoreSaveKind, StoreFileSave&,
                                                   StoreFileCollision = StoreFileCollision::Fail,
-                                                  const media::FileIdentity* expectedTarget = nullptr);
+                                                  const media::FileIdentity* expectedTarget = nullptr,
+                                                  StoreCopyPolicy = StoreCopyPolicy::share);
     /// Owner finalization for Save As. Retains the completed copy and the
     /// current Store if the source changed since preflight.
     [[nodiscard]] StoreFileResult adoptFileSave(StoreFileSave&);
@@ -205,9 +209,8 @@ public:
     /// save the new locations atomically. Owner thread; no live SQL statements
     /// or transaction. Refresh readers after success. No undo step is appended.
     [[nodiscard]] StoreFileResult collectAllAndSave();
-    /// Portable ZIP of a committed snapshot, including undo/branch media.
-    /// The active project is unchanged; the destination must not exist.
-    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
+    /// Portable ZIP of a committed snapshot. The destination must not exist.
+    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&, bool keepUndoHistory = false) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
     [[nodiscard]] bool synchronizedLocation() const noexcept { return synchronizedLocation_; }
@@ -285,11 +288,11 @@ private:
     static std::filesystem::path copyBeforeMigration(SQLite::Database&, int fromMinor, std::int64_t now,
                                                       const std::shared_ptr<media::ProjectFileLease>&);
     friend class StoreFileSave;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,StoreCopyPolicy,std::stop_token) const;
     static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
         const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision,
         const std::function<void(SQLite::Database&)>&, std::stop_token = {}, const StoreFileSave::Progress& = {},
-        const StoreFileSave* pending = nullptr);
+        const StoreFileSave* pending = nullptr, StoreCopyPolicy = StoreCopyPolicy::preserve);
     StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,
         std::unique_ptr<Store>& retired, const StoreFileSave* pending = nullptr);
     StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,StoreSaveKind,

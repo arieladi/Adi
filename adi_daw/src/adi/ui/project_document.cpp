@@ -256,6 +256,7 @@ struct ProjectDocument::SaveJob {
     SaveKind kind;
     StoreFileCollision collision;
     std::optional<media::FileIdentity> expectedTarget;
+    bool keepUndoHistory;
     Phase phase = Phase::waitingForRecording;
     bool wasRecording;
     bool keptTake = false;
@@ -271,9 +272,10 @@ struct ProjectDocument::SaveJob {
     std::future<std::string> retirement;
 
     SaveJob(std::filesystem::path output, SaveKind operation, bool recording, StoreFileCollision collisionMode,
-            const media::FileIdentity *confirmedTarget)
+            const media::FileIdentity *confirmedTarget, bool keepUndo)
         : path(std::move(output)), kind(operation), collision(collisionMode),
-          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt), wasRecording(recording) {}
+          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt),
+          keepUndoHistory(keepUndo), wasRecording(recording) {}
     ~SaveJob() { stop.request_stop(); }
     bool terminal() const noexcept {
         return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
@@ -710,13 +712,14 @@ bool refuseExisting(const std::filesystem::path &path, const char *what, std::st
     return false;
 }
 } // namespace
-bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
+bool ProjectDocument::saveCopy(const std::filesystem::path &path, bool keepUndoHistory) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
     if (!capturePluginState())
         return false;
-    const auto result = store_->saveCopy(path);
+    const auto result = store_->saveCopy(path, StoreFileCollision::Fail,
+        keepUndoHistory ? StoreCopyPolicy::shareWithUndo : StoreCopyPolicy::share);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
         return false;
@@ -728,14 +731,14 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 
 bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind, StoreFileCollision collision,
-                                const media::FileIdentity *expectedTarget) {
+                                const media::FileIdentity *expectedTarget, bool keepUndoHistory) {
     if (saveJob_) return false;
     warning_.clear();
     const bool switching = kind != SaveKind::copy;
     if (collision == StoreFileCollision::Fail && refuseExisting(path, switching ? "Save As" : "Save a Copy", error_))
         return false;
     error_.clear();
-    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget);
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget, keepUndoHistory);
     if (saveJob_->wasRecording) stopRecording();
     advanceSave();
     return true;
@@ -806,7 +809,9 @@ void ProjectDocument::advanceSave() {
             const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
                             : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
             const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
-                                                          job.expectedTarget ? &*job.expectedTarget : nullptr);
+                                                          job.expectedTarget ? &*job.expectedTarget : nullptr,
+                                                          job.keepUndoHistory ? StoreCopyPolicy::shareWithUndo
+                                                                              : StoreCopyPolicy::share);
             if (!prepared.ok) {
                 fail(prepared.error, prepared.warning);
                 return;
@@ -904,7 +909,7 @@ bool ProjectDocument::collectAllAndSave() {
     error_.clear();
     return true;
 }
-bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
+bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
     if (!capturePluginState())
@@ -912,12 +917,13 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     out.stateWarning = pluginStateWarning_;
+    out.keepUndoHistory = keepUndoHistory;
     error_.clear();
     return true;
 }
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        auto result = media::collectExport(job.project, job.zip, control);
+        auto result = media::collectExport(job.project, job.zip, control, job.keepUndoHistory);
         appendWarning(result.warning, job.stateWarning);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {

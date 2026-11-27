@@ -178,6 +178,20 @@ class UndoHistoryWindow final : public juce::DocumentWindow {
     }
     void closeButtonPressed() override { setVisible(false); }
 };
+class CopyHistoryChoice final : public juce::FilePreviewComponent {
+  public:
+    CopyHistoryChoice() {
+        setSize(160, 36);
+        addAndMakeVisible(keepUndo_);
+    }
+    void selectedFileChanged(const juce::File &) override {}
+    void resized() override { keepUndo_.setBounds(getLocalBounds().reduced(6).removeFromTop(26)); }
+    bool keepUndoHistory() const { return keepUndo_.getToggleState(); }
+
+  private:
+    juce::ToggleButton keepUndo_{"Keep Undo history"};
+};
+
 class ProjectProgressWindow final : public juce::DocumentWindow {
   public:
     ProjectProgressWindow(const juce::String& title, const juce::File& file, juce::Component* previous)
@@ -2408,10 +2422,11 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
     // else in the window changes.
-    void saveCopy(const juce::File &file) {
+    void saveCopy(const juce::File &file, bool keepUndoHistory) {
         if (!document_ || !root_ || projectOpen_ || projectSave_ || installingDocument_)
             return;
-        startProjectSave(file, pathFromUtf8(file.getFullPathName().toStdString()), SaveKind::copy, false);
+        startProjectSave(file, pathFromUtf8(file.getFullPathName().toStdString()), SaveKind::copy, false,
+                         StoreFileCollision::Fail, nullptr, keepUndoHistory);
     }
     static void removeEmptySaveFolder(const std::filesystem::path &folder) {
         std::error_code error;
@@ -2420,9 +2435,9 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void startProjectSave(const juce::File &file, const std::filesystem::path &path, SaveKind kind, bool createdFolder,
                           StoreFileCollision collision = StoreFileCollision::Fail,
-                          const media::FileIdentity *expectedTarget = nullptr) {
+                          const media::FileIdentity *expectedTarget = nullptr, bool keepUndoHistory = false) {
         const auto before = kind != SaveKind::copy ? document_->deviceCopyIdentity() : std::string{};
-        if (!document_->startSave(path, kind, collision, expectedTarget)) {
+        if (!document_->startSave(path, kind, collision, expectedTarget, keepUndoHistory)) {
             if (createdFolder)
                 removeEmptySaveFolder(path.parent_path());
             root_->say(document_->error());
@@ -2541,7 +2556,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // Collect and Export, once the chooser has a file: on a worker the application owns, so the
     // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
     // runs, then how it ended. One at a time.
-    void collectAndExport(const juce::File &file, media::ArchiveControl control = {}) {
+    void collectAndExport(const juce::File &file, media::ArchiveControl control = {}, bool keepUndoHistory = false) {
         if (!document_ || !root_ || quitAfterExport_ || pluginStateQuit_.pending())
             return;
         if (export_.joinable()) {
@@ -2549,7 +2564,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         ProjectDocument::ExportJob job;
-        if (!document_->prepareCollectAndExport(pathFromUtf8(file.getFullPathName().toStdString()), job)) {
+        if (!document_->prepareCollectAndExport(pathFromUtf8(file.getFullPathName().toStdString()), job, keepUndoHistory)) {
             root_->say(document_->error());
             return;
         }
@@ -2817,21 +2832,29 @@ class AdiApplication final : public juce::JUCEApplication,
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
+            chooserHistory_ = std::make_unique<CopyHistoryChoice>();
             chooser_ = std::make_unique<juce::FileChooser>(
                 zip ? "Collect and export ADI project as" : "Save a copy of the ADI project as",
-                zip ? current.withFileExtension("zip") : current, zip ? "*.zip" : "*.adi");
+                zip ? current.withFileExtension("zip") : current, zip ? "*.zip" : "*.adi",
+                false, false, window_.get());
             const auto generation = installGeneration_;
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this, zip, generation](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
-                                      if (file != juce::File{} && generation == installGeneration_)
-                                          zip ? collectAndExport(withExtension(file, "zip"))
-                                              : saveCopy(withAdiExtension(file));
+                                      if (file != juce::File{} && generation == installGeneration_) {
+                                          const bool keepUndoHistory = chooserHistory_->keepUndoHistory();
+                                          if (zip)
+                                              collectAndExport(withExtension(file, "zip"), {}, keepUndoHistory);
+                                          else
+                                              saveCopy(withAdiExtension(file), keepUndoHistory);
+                                      }
                                       juce::MessageManager::callAsync([this] {
-                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                          if (juce::JUCEApplicationBase::getInstance() == this) {
                                               chooser_.reset();
+                                              chooserHistory_.reset();
+                                          }
                                       });
-                                  });
+                                  }, chooserHistory_.get());
             return true;
         }
         // Live's Collect All and Save (manual 5.7): the outside media copied into `audio/`; the
@@ -3154,6 +3177,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<AdiWindow> window_;
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
+    std::unique_ptr<CopyHistoryChoice> chooserHistory_;
     std::unique_ptr<juce::FileChooser> chooser_;
     std::optional<juce::ScopedMessageBox> replaceProjectPrompt_;
     // The library index's owner and what it last listed (D1).
