@@ -16782,19 +16782,20 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     auto edit = dropAudio(*document->view().current(), 4, 0, "Moved audio", import);
     check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok, "drop audio linked to its original file");
     if (!document->synchronise() || !document->prepareImport(media::pathUtf8(wrong), 2, import)) {
-        check(false, "capture another file for an unsupported reversed clip");
+        check(false, "capture another file for the clip with unsupported playback");
         return;
     }
-    auto reversed = dropAudio(*document->view().current(), 4, 4 * textproj::kPPQ, "Reversed audio", import);
-    const auto reversedId = reversed.clip;
-    if (!reversed.refusal.empty() || !document->ops().submit(std::move(reversed.ops)).ok) {
+    auto unsupported = dropAudio(*document->view().current(), 4, 4 * textproj::kPPQ, "Unwarped formant shift", import);
+    const auto unsupportedId = unsupported.clip;
+    if (!unsupported.refusal.empty() || !document->ops().submit(std::move(unsupported.ops)).ok) {
         check(false, "drop the second audio clip");
         return;
     }
     {
-        SQLite::Statement reverse(document->store().db(), "UPDATE audio_clips SET reverse=1 WHERE clip_id=?");
-        reverse.bind(1, reversedId);
-        reverse.exec();
+        SQLite::Statement setFormant(document->store().db(),
+                                     "UPDATE audio_clips SET warp_enabled=0,formant_shift=1 WHERE clip_id=?");
+        setFormant.bind(1, unsupportedId);
+        setFormant.exec();
     }
     document.reset();
     std::filesystem::rename(original, relocated);
@@ -16821,6 +16822,7 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     root.frame();
     root.status.setPlaybackProblems(document->session().problems());
     root.status.playbackIssues.onClick();
+    const auto unsupportedProblem = "clips#" + std::to_string(unsupportedId) + ": unwarped formant shift unsupported";
     const auto lists = [&](std::string_view text) {
         return std::any_of(shownProblems.begin(), shownProblems.end(), [text](const auto &problem) {
             return problem.find(text) != std::string::npos;
@@ -16828,7 +16830,7 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     };
     check(root.status.playbackIssues.isVisible() && shownProblems.size() == previousProblemCount + 2 &&
               root.status.playbackIssues.getButtonText() == juce::String(shownProblems.size()) + " playback issues" &&
-              lists("missing") && lists("reverse unsupported"),
+              lists("missing") && lists(unsupportedProblem),
           "SC-151: on open the Status Bar lists both the missing sample and unsupported playback");
     root.status.setAudioDeviceProblem("The audio driver stopped.");
     check(root.status.audioSettings.isVisible() &&
@@ -16871,11 +16873,11 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         return false;
     };
     const auto *track = root.reader().findTrack(4);
-    const auto *reversedClip = track && track->clips.size() == 2 && track->clips.back()->id == reversedId
+    const auto *unsupportedClip = track && track->clips.size() == 2 && track->clips.back()->id == unsupportedId
         ? track->clips.back().get() : nullptr;
     check(marked(*clip), "the offline sample is marked on its clip");
-    check(reversedClip && !root.clipMediaOffline(*reversedClip) && marked(*reversedClip),
-          "SC-151: a reversed clip with a readable file is marked as unable to play");
+    check(unsupportedClip && !root.clipMediaOffline(*unsupportedClip) && marked(*unsupportedClip),
+          "SC-151: an unsupported formant shift marks a clip with a readable file as unable to play");
 
     root.selectClip(clip->id);
     const auto locateAction = [&] {
@@ -16901,7 +16903,7 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         root.status.setPlaybackProblems(document->session().problems());
         root.status.playbackIssues.onClick();
         check(shownProblems.size() == previousProblemCount + 1 &&
-                  !lists("missing") && lists("reverse unsupported"),
+                  !lists("missing") && lists(unsupportedProblem),
               "SC-151: relinking clears only the repaired clip's problem");
         if (recovered && recovered->audio) waveforms.peaks(*recovered->audio);
         for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
