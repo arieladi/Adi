@@ -58,8 +58,9 @@ struct Ready {
 // Fixed layout integer fields. Callers check the frame length before reading.
 template<std::unsigned_integral Unsigned>
 inline void put(std::span<std::byte> bytes, std::size_t offset, Unsigned value) noexcept {
+    const auto bits = static_cast<std::uint64_t>(value);
     for (std::size_t i = 0; i < sizeof(Unsigned); ++i)
-        bytes[offset + i] = static_cast<std::byte>((value >> (8 * i)) & 0xffu);
+        bytes[offset + i] = static_cast<std::byte>((bits >> (8 * i)) & 0xffu);
 }
 
 template<std::unsigned_integral Unsigned>
