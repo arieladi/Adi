@@ -1,6 +1,6 @@
 # Basics tracks
 
-**Newest branch** `basics/sc-317-plugin-parameter-touch` at `35b782d6858d4f0a7bb3cfef6103e4a4208ea6d9`. The consolidated `basics/tracks-chain` points to the same commit. All 20 item branches in the table are on `origin`. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-317-plugin-parameter-touch) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+**Newest branch** `basics/sc-317-plugin-parameter-touch` at `35b782d6858d4f0a7bb3cfef6103e4a4208ea6d9`. The consolidated `basics/tracks-chain` is at `7bd59032`. All 20 item branches in the table are on `origin`. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-317-plugin-parameter-touch) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -26,6 +26,10 @@
 | SC-317 | `basics/sc-317-plugin-parameter-touch` `35b782d6` | Configure opens the plug-in editor and appends new touches in their original order, including two controls reported in one update. The searchable Parameter List remains available. Outside Configure the latest touch is offered in Device View and first under that device in the Arrangement Automation chooser. Choosing it can pin the control and show its lane. Touched engine parameter capture, and window and window-fn Device View, Arrangement, publication and document. | On the native baseline the editor committed a control value but Device View offered no parameter. Linux Debug WERROR passed all 17 no-display UI suites, four parameter suites and acceptance 3/3. In Xvfb, a touch in Configure added exactly one control to a 65-parameter CLAP plug-in. Outside Configure, the same touch was temporary until chosen. Both the Device View and Arrangement menus selected its exact automation lane and pinned only that control. The headless shell also verified two touches in order and one Undo for their panel edit. | PR requested |
 
 The tracks prompt and its wave-two follow-ups are through SC-317. A separate session claimed the second queue on [basics/edit-log](https://github.com/arieladi/Adi/blob/basics/edit-log/adi_daw/collab/basics/edit.md).
+
+The SC-289 and SC-317 integration resolves the conflicts with `land/basics-1127i` and main. SC-417 still reads hidden plug-in controls on demand. A headless regression shows that selecting a hidden device's last touch adds its panel control without retaining live parameter demand. All 24 targeted Linux Debug tests passed with DISPLAY unset, along with acceptance 3/3.
+
+SC-88 stays with DEV-22. The Browser dynamics still depend on the unmerged measured Compressor, Glue, Gate, and live Limiter branches. The standalone Mixer overflow item is SC-272.
 
 Note grouping is tracked under MI-09. Native Mix View functions keep their dedicated Move controls.
 
