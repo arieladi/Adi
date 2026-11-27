@@ -33,6 +33,8 @@ The original Export tip is included. The Edit report at `fd5eb152e8fd495fb7fa401
 
 Browser ownership moved to the session on `basics/browser-chain`. The published SC-121 and SC-120/122 results are recorded above. The in-progress SC-124 draft was archived locally at reassignment. The integration will use the original Browser chain.
 
+Agent Settings at `906a2dd8d5646111076724f6bc58c95b3accc8f6` keeps `agent.tier` and `agent.maxOpsPerRequest` editable. The Settings and MCP suites and all 18 no-display window suites passed. A subprocess probe confirmed Observe removes write proposals and a saved cap of one rejects a two-op request.
+
 ## For the director
 
 - SC-398. Should EX-04 receive the libFLAC and LAME dependency grants? I recommend the planned pinned in-process encoders, including LAME 3.100. The published Export chain includes AIFF.
