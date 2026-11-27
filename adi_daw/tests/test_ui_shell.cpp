@@ -14053,6 +14053,16 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
         copied.push_back(copy);
         return true;
     };
+    engine::Transport editPlayback;
+    editPlayback.play(true);
+    document->mailbox().publish(editPlayback);
+    root.frame();
+    clickEdit();
+    check(root.playing() && copied.empty() && root.error().find("Stop playback before editing") != std::string::npos,
+          "Edit blocks the external sample editor while playback is active");
+    editPlayback.play(false);
+    document->mailbox().publish(editPlayback);
+    root.frame();
     clickEdit();
     check(settings.set("files.sampleEditorOpens", "copy", {}, why), "set the configured editor to open a copy");
     clickEdit();
