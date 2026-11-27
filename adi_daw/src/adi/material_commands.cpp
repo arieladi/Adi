@@ -121,17 +121,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
-        std::optional<library::SampleSettings> saved;
-        if(index) {
-            std::string hash;
-            if(mediaRequest.opType=="media.import")hash=mediaRequest.payload.at("row").at("hash_blake3").get<std::string>();
-            else {SQLite::Statement key(store.db(),"SELECT hash_blake3 FROM media_files WHERE id=?");key.bind(1,imported.mediaId);if(!key.executeStep())throw std::runtime_error("imported source identity is missing");hash=key.getColumn(0).getString();}
-            const auto loaded=index->sampleSettings(hash);
-            if(loaded) {
-                if(loaded.data->sampleRate!=info.sampleRate || loaded.data->channels!=info.channels || loaded.data->frames!=static_cast<std::uint64_t>(info.frames))throw std::runtime_error("saved sample defaults do not match source dimensions");
-                saved=*loaded.data;
-            }else if(loaded.problem!=library::SampleSettingsProblem::Missing)throw std::runtime_error("cannot recall authored sample defaults: "+loaded.error);
-        }
+        const auto saved=index?loadSampleDefaults(store,*index,imported,mediaRequest):std::nullopt;
         std::optional<audio::AutoWarpResult> warped;
         std::optional<audio::WarpMapWrite> markers;
         if(options.warp && !saved) {

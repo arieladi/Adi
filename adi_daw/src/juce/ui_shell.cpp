@@ -3601,7 +3601,7 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         dropped.push_back(std::move(file));
     }
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
-                                   &commands_.recordingDefaults());
+                                   &commands_.recordingDefaults(), &submitter_.store(), editRate());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (track != 0) {

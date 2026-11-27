@@ -8,7 +8,6 @@
 #include "adi/library/index.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
-#include "adi/sample_defaults.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_document.hpp"
@@ -1685,11 +1684,10 @@ void importWithChoices(const std::filesystem::path &dir) {
     check(doc->ops().submit(std::move(gain)).ok, "set the sample's own gain before saving defaults");
     doc->synchronise();
     const auto defaultsPath = dir / "import-sample-defaults.sqlite";
-    auto defaults = library::Index::open(defaultsPath, error, false);
-    check(defaults && clip_edit::saveSampleDefaults(doc->store(), original, 48000.0, *defaults, error) ==
-                          library::SampleSettingsProblem::None,
-          "save the source's authored defaults to the library");
-    defaults.reset();
+    const auto beforeSave = doc->ops().nextUndo();
+    check(doc->saveSampleDefaults(original, defaultsPath) && beforeSave && doc->ops().nextUndo() &&
+              beforeSave->txnId == doc->ops().nextUndo()->txnId,
+          "saving authored defaults writes to the Library without adding project history");
     job = doc->materialJob(wav.string(), audioTrack, 8 * halfBeat, warp, 1'700'000'000'000'006);
     job.defaultsIndex = defaultsPath;
     prepared = ui::ProjectDocument::prepareMaterial(job);
@@ -1701,6 +1699,30 @@ void importWithChoices(const std::filesystem::path &dir) {
               recalledTrack->clips.back()->posTicks == 8 * halfBeat,
           "a prompted drop recalls authored gain and Warp off before trying to find a beat");
     doc->release();
+
+    // A renamed copy of the same content recalls the defaults in a new project and a new media row.
+    auto fresh = ui::ProjectDocument::open(dir / "plain-defaults.adi", true, {}, error);
+    check(fresh != nullptr, "open another project for a plain drop");
+    if (!fresh)
+        return;
+    const auto renamed = outside / "Renamed Tone.wav";
+    std::filesystem::copy_file(wav, renamed);
+    ui::AudioImport imported;
+    check(fresh->prepareImport(renamed.string(), 1'700'000'000'000'007, imported, defaultsPath),
+          "prepare a plain drop with the same content under a different path");
+    std::vector<ui::DroppedAudio> files{{"Renamed Tone", std::move(imported)}};
+    auto drop = ui::dropAudio(*fresh->view().current(), 0, halfBeat, std::move(files), false, nullptr,
+                              &fresh->store());
+    check(drop.refusal.empty() && fresh->ops().submit(std::move(drop.ops)).ok && fresh->synchronise(),
+          "commit a defaulted clip, its new track and its new pool row in one drop");
+    const auto *plainTrack = fresh->view().current()->findTrack(drop.select);
+    check(plainTrack && plainTrack->clips.size() == 1 && plainTrack->clips.front()->name == "Renamed Tone" &&
+              plainTrack->clips.front()->gainDb == -7.0 && plainTrack->clips.front()->posTicks == halfBeat &&
+              drop.endOnTarget == 5 * halfBeat,
+          "the plain drop uses sample defaults by content and keeps the new clip's name and position");
+    check(fresh->ops().undo().ok && fresh->synchronise() && !fresh->view().current()->findTrack(drop.select),
+          "one undo takes the whole drop away");
+    fresh->release();
 }
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.
 // Arrangement Record (MX-09; Live 12 manual 21.1): the armed audio track records from the device's

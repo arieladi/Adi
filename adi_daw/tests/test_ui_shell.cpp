@@ -13251,6 +13251,20 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo the cents drag");
     root.frame();
     check(pitchIs(11.5), "pitch Undo restores the previous cents");
+    const auto defaultsIndex = dir / "clip-view-defaults.sqlite";
+    root.saveSampleDefaults = [&](std::int64_t id, std::string &why) {
+        const bool saved = document->saveSampleDefaults(id, defaultsIndex);
+        why = document->error();
+        return saved;
+    };
+    const auto menu = panel.titleMenu();
+    bool offersSave = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        offersSave = offersSave || (it.getItem().itemID == ClipViewPanel::kSaveSampleDefaults && it.getItem().isEnabled);
+    const auto undoBeforeSave = root.undoTitle(false);
+    check(offersSave && panel.chooseTitleItem(ClipViewPanel::kSaveSampleDefaults) && root.undoTitle(false) == undoBeforeSave &&
+              std::filesystem::exists(defaultsIndex),
+          "the audio Clip View's title action saves defaults to the Library without making an undo step");
     root.afterEdit = nullptr;
     document->release();
 }

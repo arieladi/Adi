@@ -2,9 +2,12 @@
 #pragma once
 #include <string_view>
 #include "adi/engine/snapshot.hpp"
+#include "adi/sample_defaults.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <exception>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,9 +16,9 @@ namespace adi::ui {
 // an audio file dropped on an audio track makes a clip there, starting where it was dropped; one
 // dropped on the drop area below the tracks makes a new audio track holding it. One batch, so one
 // undo step: the media row the import captured (#308, N5), the new track if there is one, the clip
-// and its audio, Warp off, the whole file. The batch is built from the snapshot the drop lands on
-// (ADR-0201). Reading the file and the media pool is the document's (`ProjectDocument::
-// prepareImport`): the window never reads the store.
+// and its audio. With no saved defaults, it starts Warp off and plays the whole file. The batch is
+// built from the snapshot the drop lands on (ADR-0201). The document reads the file, media pool and
+// Library settings (`ProjectDocument::prepareImport`).
 //
 // What the document's capture found, for the batch.
 struct AudioImport {
@@ -25,6 +28,7 @@ struct AudioImport {
     // In: the least id a new pool row may take. Several files dropped at once are captured before
     // their one batch lands, so each after the first starts past the ids the earlier ones took.
     std::int64_t firstFreeId = 0;
+    std::shared_ptr<const library::SampleSettings> savedDefaults = {};
 };
 // One file of a drop: its clip's name and what its capture found.
 struct DroppedAudio {
@@ -83,7 +87,8 @@ inline std::string audioDropRefusal(const engine::Snapshot &snapshot, std::int64
 // The first clip and its track are selected.
 inline AudioDropEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
                            std::vector<DroppedAudio> files, bool separate = false,
-                           const RecordingDefaults *defaults = nullptr) {
+                           const RecordingDefaults *defaults = nullptr, Store *store = nullptr,
+                           double referenceRate = 48000.0) {
     using namespace track_edits_detail;
     constexpr const char *label = "Insert Audio Clip";
     AudioDropEdit edit;
@@ -132,13 +137,31 @@ inline AudioDropEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t tr
         const auto &f = files[i];
         const auto on = separate && i > 0 ? newTrack() : track;
         const auto start = separate ? pos : at;
-        const double seconds = static_cast<double>(f.import.frames) / static_cast<double>(f.import.sampleRate);
-        const auto length = std::max<std::int64_t>(1, tempo.secondsToTicks(tempo.ticksToSeconds(start) + seconds) - start);
-        edit.ops.push_back(op("clip.create",
-                              {{"id", clip}, {"track", on}, {"kind", "audio"}, {"name", f.name}, {"pos", start}, {"length", length}},
-                              label));
-        edit.ops.push_back(
-            op("clip.attachAudio", {{"id", clip}, {"media", f.import.mediaId}, {"frames", f.import.frames}}, label));
+        std::int64_t length;
+        if (f.import.savedDefaults) {
+            if (!store) {
+                edit.refusal = "An open project is needed to recall sample defaults.";
+                return edit;
+            }
+            try {
+                auto prepared = clip_edit::prepareDefaultedAudioClip(*store, clip, on, f.import.mediaId, f.name,
+                                                                    start, *f.import.savedDefaults, referenceRate);
+                length = prepared.lengthTicks;
+                prepared.request.label = label;
+                edit.ops.push_back(std::move(prepared.request));
+            } catch (const std::exception &e) {
+                edit.refusal = f.name + " was not imported: " + e.what();
+                return edit;
+            }
+        } else {
+            const double seconds = static_cast<double>(f.import.frames) / static_cast<double>(f.import.sampleRate);
+            length = std::max<std::int64_t>(1, tempo.secondsToTicks(tempo.ticksToSeconds(start) + seconds) - start);
+            edit.ops.push_back(op("clip.create",
+                                  {{"id", clip}, {"track", on}, {"kind", "audio"}, {"name", f.name}, {"pos", start}, {"length", length}},
+                                  label));
+            edit.ops.push_back(
+                op("clip.attachAudio", {{"id", clip}, {"media", f.import.mediaId}, {"frames", f.import.frames}}, label));
+        }
         if (i == 0) {
             edit.select = on;
             edit.clip = clip;

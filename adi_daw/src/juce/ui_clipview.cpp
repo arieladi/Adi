@@ -5168,6 +5168,10 @@ juce::PopupMenu ClipViewPanel::titleMenu() const {
         colours.addItem(std::move(item));
     }
     menu.addSubMenu("Color", colours);
+    if (node_ && node_->audio && root.saveSampleDefaults) {
+        menu.addSeparator();
+        menu.addItem(kSaveSampleDefaults, "Save Default Clip");
+    }
     menu.addSeparator();
     menu.addItem(2, "Arrange Clip View Panels Automatically", true, arrangement_ == Panels::Automatic);
     menu.addItem(3, "Fold", true, panelsFolded_);
@@ -5188,6 +5192,12 @@ bool ClipViewPanel::chooseTitleItem(int item) {
     if (item == 3) {
         foldPanels(!panelsFolded_);
         return true;
+    }
+    if (item == kSaveSampleDefaults && node_ && node_->audio && root.saveSampleDefaults) {
+        std::string why;
+        const bool saved = root.saveSampleDefaults(node_->id, why);
+        root.say(saved ? "Saved default clip settings for this sample." : std::move(why));
+        return saved;
     }
     return item >= 100 && item < 100 + kTitleColours && recolour(item - 100);
 }

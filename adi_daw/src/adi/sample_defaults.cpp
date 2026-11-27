@@ -7,6 +7,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/engine/warp_projection.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -15,6 +16,8 @@
 #include <cstring>
 #include <limits>
 #include <set>
+#include <stdexcept>
+#include <utility>
 namespace adi::clip_edit {
 namespace {
 using library::SampleSettings;
@@ -112,6 +115,21 @@ library::SampleSettingsProblem saveSampleDefaults(Store& store,std::int64_t clip
     const auto captured=captureSampleDefaults(store,clipId,referenceRate);if(!captured.ok){error=captured.error;return library::SampleSettingsProblem::Invalid;}
     return index.saveSampleSettings(captured.hash,*captured.settings,error);
 }
+std::optional<SampleSettings> loadSampleDefaults(Store &store, library::Index &index, const media::MediaResult &imported,
+                                                 const OpRequest &capture) {
+    const auto key = capture.opType == "media.import" ? capture.payload.at("row").at("hash_blake3")
+                                                      : media::mediaRow(store.db(), imported.mediaId).at("hash_blake3");
+    auto loaded = index.sampleSettings(key.get<std::string>());
+    if (loaded.problem == library::SampleSettingsProblem::Missing)
+        return {};
+    if (!loaded)
+        throw std::runtime_error("cannot recall authored sample defaults: " + loaded.error);
+    if (!imported.audio || loaded.data->sampleRate != imported.audio->sampleRate ||
+        loaded.data->channels != imported.audio->channels ||
+        loaded.data->frames != static_cast<std::uint64_t>(imported.audio->frames))
+        throw std::runtime_error("saved sample defaults do not match source dimensions");
+    return std::move(loaded.data);
+}
 void applySampleDefaults(Store& store,Payload& image,const SampleSettings& s,double referenceRate) {
     if(audio::onAudioThread)throw std::runtime_error("sample defaults cannot be applied on the callback");
     std::string error;if(library::validateSampleSettings(s,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
@@ -160,5 +178,28 @@ void applySampleDefaults(Store& store,Payload& image,const SampleSettings& s,dou
     if(std::any_of(s.fadeClockTicks.begin(),s.fadeClockTicks.end(),[](const auto& value){return value.has_value();})) {
         Payload fades={{"clip_id",image.at("id")}};constexpr std::array<const char*,4> names{"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"};for(std::size_t i=0;i<4;++i)fades[names[i]]=optional(s.fadeClockTicks[i]);image["children"]["clip_warp_fade_domains"]=Payload::array({edit::defaultRow(store.db(),"clip_warp_fade_domains",fades)});
     }
+}
+DefaultedAudioClip prepareDefaultedAudioClip(Store &store, std::int64_t id, std::int64_t track,
+                                            std::int64_t mediaId, const std::string &name, std::int64_t start,
+                                            const SampleSettings &settings, double referenceRate) {
+    auto &db = store.db();
+    auto row = edit::defaultRow(db, "clips", {{"id", id}, {"track_id", track}, {"kind", "audio"},
+                                              {"name", name}, {"time_base", 0}, {"pos_ticks", start}, {"length_ticks", 1}});
+    auto source = edit::defaultRow(db, "audio_clips", {{"clip_id", id}, {"media_id", mediaId},
+                                                       {"src_len_frames", settings.frames}});
+    Payload image = {{"id", id}, {"row", std::move(row)}, {"alias_links", Payload::array()},
+                     {"children", {{"audio_clips", Payload::array({std::move(source)})}}}};
+    applySampleDefaults(store, image, settings, referenceRate);
+    auto &length = image.at("row").at("length_ticks");
+    const auto ticks = std::max<std::int64_t>(1, length.get<std::int64_t>());
+    length = ticks;
+    edit::RowEdits plan(db);
+    createImage(plan, image);
+    OpRequest request;
+    request.opType = "clip.duplicate";
+    request.targetKind = "clip";
+    request.targetId = id;
+    request.payload = {{"id", id}, {"changes", plan.changes()}};
+    return {std::move(request), ticks};
 }
 } // namespace adi::clip_edit

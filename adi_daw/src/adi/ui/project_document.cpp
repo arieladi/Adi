@@ -16,6 +16,8 @@
 #include "adi/recording_commands.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "adi/library/index.hpp"
+#include "adi/sample_defaults.hpp"
 #include "juce/builtin_samples.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -26,6 +28,7 @@
 #include <cmath>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -272,6 +275,16 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
         end = std::max(end, seconds);
     }
     return end > 0 ? end + tailSeconds : 0;
+}
+
+std::unique_ptr<library::Index> openSampleDefaults(const std::filesystem::path &file) {
+    if (file.empty() || !std::filesystem::exists(file))
+        return {};
+    std::string error;
+    auto index = library::Index::open(file, error, false);
+    if (!index)
+        throw std::runtime_error("cannot read sample defaults from the Library: " + error);
+    return index;
 }
 
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
@@ -2036,7 +2049,8 @@ bool ProjectDocument::pasteDevices(std::span<const DeviceCopy> copies, std::int6
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
-bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                                    const std::filesystem::path &defaultsIndex) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
     // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
@@ -2055,12 +2069,31 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
         error_ = "That file holds no audio ADI can play.";
         return false;
     }
+    out.savedDefaults.reset();
+    try {
+        if (auto index = openSampleDefaults(defaultsIndex)) {
+            if (auto saved = clip_edit::loadSampleDefaults(*store_, *index, result, captured))
+                out.savedDefaults = std::make_shared<library::SampleSettings>(std::move(*saved));
+        }
+    } catch (const std::exception &e) {
+        error_ = utf8Path + " was not imported: " + e.what();
+        return false;
+    }
     out.mediaId = result.mediaId;
     out.sampleRate = result.audio->sampleRate;
     out.frames = result.audio->frames;
     out.media = std::move(captured);
     error_.clear();
     return true;
+}
+bool ProjectDocument::saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex) {
+    auto index = library::Index::open(defaultsIndex, error_, false);
+    if (!index) {
+        error_ = "Cannot open the Library to save sample defaults: " + error_;
+        return false;
+    }
+    const auto rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    return clip_edit::saveSampleDefaults(*store_, clip, rate, *index, error_) == library::SampleSettingsProblem::None;
 }
 ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
                                                           std::int64_t atTicks, const ImportChoices &choices,
@@ -2102,7 +2135,12 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.warpMode = job.choices.mode;
     options.stop = stop;
     options.arrangementPlacement = job.placementPolicy;
-    out = clip_edit::prepareImportAudio(*store, options, job.rate);
+    try {
+        auto index = openSampleDefaults(job.defaultsIndex);
+        out = clip_edit::prepareImportAudio(*store, options, job.rate, index.get());
+    } catch (const std::exception &e) {
+        out.edit.error = e.what();
+    }
     return out;
 }
 std::int64_t ProjectDocument::commitMaterial(clip_edit::MaterialEdit &material, const MaterialJob &job) {

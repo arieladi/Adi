@@ -351,7 +351,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
-    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                       const std::filesystem::path &defaultsIndex = {});
+    // An explicit Library write, available even for a read-only project.
+    bool saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy

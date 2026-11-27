@@ -446,6 +446,8 @@ class AdiRootComponent final : public juce::Component,
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // The explicit sample-defaults write belongs to the active Library profile.
+    std::function<bool(std::int64_t clip, std::string &why)> saveSampleDefaults;
     // ADI's import with choices (E5): the file prepared off the message thread with the prompt's
     // Warp, edge fades and copy (the document's `prepareMaterial`), then committed here as one undo
     // step; `done` comes on the message thread with the new clip's id, or 0 and why not. False when

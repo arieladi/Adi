@@ -1392,8 +1392,9 @@ class AdiApplication final : public juce::JUCEApplication,
             if (importing_ && importing_->load())
                 return false;
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            const auto job = document_->materialJob(path, track, pos, choices, now,
-                                                    edit_plan::capturePolicy(*settings_));
+            auto job = document_->materialJob(path, track, pos, choices, now,
+                                              edit_plan::capturePolicy(*settings_));
+            job.defaultsIndex = appdata::libraryIndexFile();
             if (import_.joinable())
                 import_.join(); // the last one has finished
             importing_ = std::make_shared<std::atomic<bool>>(true);
@@ -1422,7 +1423,13 @@ class AdiApplication final : public juce::JUCEApplication,
         root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
             // The history's clock: microseconds UTC.
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            if (document_->prepareImport(path, now, out))
+            if (document_->prepareImport(path, now, out, appdata::libraryIndexFile()))
+                return true;
+            why = document_->error();
+            return false;
+        };
+        root->saveSampleDefaults = [this](std::int64_t clip, std::string &why) {
+            if (document_->saveSampleDefaults(clip, appdata::libraryIndexFile()))
                 return true;
             why = document_->error();
             return false;

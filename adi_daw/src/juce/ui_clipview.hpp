@@ -607,6 +607,7 @@ class ClipViewPanel final : public juce::Component {
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
     // (manual 10.8); one undo step. Item 1 is Rename; items 100 on are the colours.
     static constexpr int kTitleColours = 14;
+    static constexpr int kSaveSampleDefaults = 4;
     juce::PopupMenu titleMenu() const;
     bool chooseTitleItem(int item);
     bool rename(const juce::String &name);
