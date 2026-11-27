@@ -17,6 +17,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-435 | `basics/test-chain` at `a07084ccc` | Resize Main and pinned Returns from the top edge with the bottom held. Arrangement and mixer seats. | The headless fixture moved the Main header and Return mixer hit zones and measured their anchored bounds. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-436 | `basics/test-chain` at `51d7e02c3` | Update lane, header and mixer together throughout the drag. Arrangement and mixer seats. | Peerless divider pixels and actual strip bounds changed before release, including when pinned growth recycles the mixer slots. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-434 | `basics/test-chain` at `6684a5b50` | Offer all 70 track colour slots using the ADR-0211 fallback palette. Arrangement seat. | The display-free fixture painted and hit-tested all 70 slots, refused spacer clicks, and checked saved colour and Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-437 | `basics/test-chain` at `948ca190e` | New projects open with Main and four source tracks, with no factory Returns. Project and Store seats. | The bootstrap failed before and passed after. Explicit-return, render-intent and stem rollback fixtures and the acceptance project verified both defaults and authored routing. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -109,6 +110,14 @@ The secondary 1200×720 fixture has a 345 px lane body and three pinned 48 px ro
 The palette goes from a single row of 14 swatches to five rows of 14. The component grows from 246 × 22 px to 246 × 90 px. Swatches remain 14 × 14 px on a 17 px pitch, with the first at `(4,4)` and the last at `(225,72)`. A display-free software paint and hit test visited all 70 entries and six spacer or exterior points. The shell regression checks assignment beyond the former row and Undo.
 
 ADR-0211 d3 specifies repeating the 14 tracked swatches until the approved colours are available. The complete measured table is cited under the first Live 12 checkpoint in `collab/win.md`. It was recorded in the private measurement folder. The 70 addresses are usable, and exact RGB parity remains pending that table.
+
+### SC-437 · New projects
+
+Before, New seeded four source tracks, A Reverb, B Delay and Main. The two Returns created eight sends and included their own devices, chains, references and parameters. New now creates four source tracks and Main. Their names and colours carry forward, and Main takes the fifth position. Opening an existing project or an authored template uses its saved routing.
+
+The linked headless bootstrap failed on the old default and passed all 39 checks after the change, including initial silence and history. Return-specific fixtures explicitly author their Returns and sends, and the acceptance walkthrough creates them before testing routing.
+
+The linked Debug Linux shell passed 5,365 checks, the document suite passed 1,037, the view seams passed 629, and WTS01 had zero failures. Each ran with DISPLAY unset. WTS01 begins with the clean five-track song and creates its returns explicitly before checking send levels, group routing, reopening and a bit-identical export.
 
 ## For the director
 
