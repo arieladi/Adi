@@ -118,28 +118,64 @@ bool StereoMeterWeighting::prepare(double sampleRate, Weighting weighting, Purpo
     return true;
 }
 
-bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
-    if (!positiveFinite(s.sampleRate) || !positiveFinite(s.peakDecaySeconds) ||
-        !positiveFinite(s.meanSquareSeconds) || !positiveFinite(s.coincidenceSeconds) ||
-        !std::isfinite(s.coincidenceFloor) || s.coincidenceFloor < 0)
+namespace {
+constexpr double crestSeconds = .050;
+constexpr double holdSeconds = 3.;
+constexpr double balanceSeconds = 3.;
+constexpr double balanceEpsilon = 1.e-10;
+constexpr double clipThreshold = .999;
+
+void updateHold(double current, double &held, std::size_t &remaining, std::size_t duration) noexcept {
+    if (current > held) {
+        held = current;
+        remaining = duration;
+    } else if (remaining == 0 || --remaining == 0) {
+        held = current;
+    }
+}
+
+double dynamicLevel(double peakPower, double rmsPower) noexcept {
+    return peakPower > 0. && rmsPower > 0. ? 10. * std::log10(peakPower / rmsPower) : 0.;
+}
+}
+
+bool StereoEnvelopeMeter::prepare(const Settings &settings) noexcept {
+    if (!positiveFinite(settings.sampleRate) || !positiveFinite(settings.peakDecaySeconds) ||
+        !positiveFinite(settings.meanSquareSeconds) || !positiveFinite(settings.coincidenceSeconds) ||
+        !std::isfinite(settings.coincidenceFloor) || settings.coincidenceFloor < 0)
         return false;
-    const double interval = 1.0 / s.sampleRate;
-    const double decay = std::exp(-interval / s.peakDecaySeconds);
-    const double powerStep = -std::expm1(-interval / s.meanSquareSeconds);
-    const double coincidenceStep = -std::expm1(-interval / s.coincidenceSeconds);
-    if (!std::isfinite(interval) || !(decay < 1) || !(powerStep > 0) || !(coincidenceStep > 0))
+    const auto rate = settings.sampleRate;
+    const auto interval = 1. / rate;
+    const auto release = -std::expm1(std::log(.1) * interval / settings.peakDecaySeconds);
+    const auto coincidenceStep = -std::expm1(-interval / settings.coincidenceSeconds);
+    const auto floorPower = settings.coincidenceFloor * settings.coincidenceFloor;
+    const auto rmsLength = std::max(1., std::round(rate * settings.meanSquareSeconds));
+    const auto crestLength = std::max(1., std::round(rate * crestSeconds));
+    const auto holdLength = std::max(1., std::round(rate * holdSeconds));
+    const auto maxLength = static_cast<double>(powerHistory_.max_size());
+    if (!std::isfinite(interval) || !std::isfinite(floorPower) || !(release > 0) || !(coincidenceStep > 0) ||
+        rmsLength >= maxLength || crestLength >= maxLength || holdLength >= maxLength) return false;
+    StereoMeterWeighting nextWeighting;
+    if (!nextWeighting.prepare(rate, settings.weighting, StereoMeterWeighting::Purpose::Measurement)) return false;
+    try {
+        powerHistory_.resize(static_cast<std::size_t>(std::max(rmsLength, crestLength)));
+    } catch (...) {
         return false;
-    if (s.sampleRate >= static_cast<double>(std::numeric_limits<std::int64_t>::max()) * .5 ||
-        !weighting_.prepare(s.sampleRate, s.weighting, StereoMeterWeighting::Purpose::Measurement)) return false;
-    peakDecay_ = decay;
-    powerStep_ = powerStep;
+    }
+
+    rmsSamples_ = static_cast<std::size_t>(rmsLength);
+    crestSamples_ = static_cast<std::size_t>(crestLength);
+    holdSamples_ = static_cast<std::size_t>(holdLength);
+    rmsScale_ = 1. / rmsLength;
+    crestScale_ = 1. / crestLength;
+    peakReleaseStep_ = release;
     coincidenceStep_ = coincidenceStep;
-    floor_ = s.coincidenceFloor;
-    midSide_ = s.midSide;
-    linkedDynamic_ = s.linkedDynamic;
-    drStep_ = -std::expm1(-interval / .4);
+    balanceStep_ = -std::expm1(-interval / balanceSeconds);
+    floorPower_ = floorPower;
+    midSide_ = settings.midSide;
+    linkedDynamic_ = settings.linkedDynamic;
     floatStep_ = -std::expm1(-interval / .7);
-    holdSamples_ = static_cast<std::int64_t>(2. * s.sampleRate);
+    weighting_ = nextWeighting;
     prepared_ = true;
     reset();
     return true;
@@ -148,83 +184,106 @@ bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
 void StereoEnvelopeMeter::reset() noexcept {
     lanes_ = {};
     filterState_ = {};
-    balance_ = coincidence_ = linkedRatio_ = 0;
+    correlationPower_ = balancePower_ = {};
+    crossPower_ = 0.;
+    maxCrestRatio_ = 1.;
+    clipCount_ = {};
+    clipping_ = {};
+    // Samples left in the ring are ignored until they have been replaced.
+    historyNext_ = historyFilled_ = 0;
 }
 
 bool StereoEnvelopeMeter::process(std::span<const float> left, std::span<const float> right) noexcept {
     if (!prepared_ || left.size() != right.size()) return false;
-    if (weighting_.flat())
-        return linkedDynamic_ ? update<false, true>(left, right) : update<false, false>(left, right);
+    // Validate first so a rejected block cannot mutate the sliding history.
+    for (std::size_t i = 0; i < left.size(); ++i)
+        if (!std::isfinite(left[i]) || !std::isfinite(right[i])) return false;
     [[maybe_unused]] mix::filters::FlushDenormals flush;
-    return linkedDynamic_ ? update<true, true>(left, right) : update<true, false>(left, right);
+    if (weighting_.flat()) update<false>(left, right);
+    else update<true>(left, right);
+    return true;
 }
 
-template <bool weighted, bool linked>
-bool StereoEnvelopeMeter::update(std::span<const float> left, std::span<const float> right) noexcept {
-    auto lanes = lanes_;
-    auto filterState = filterState_;
-    double coincidence = coincidence_, balance = balance_, linkedRatio = linkedRatio_;
+template <bool weighted>
+void StereoEnvelopeMeter::update(std::span<const float> left, std::span<const float> right) noexcept {
+    const auto capacity = powerHistory_.size();
+    const auto previous = [this, capacity](std::size_t samples) {
+        return historyNext_ >= samples ? historyNext_ - samples : capacity - (samples - historyNext_);
+    };
     for (std::size_t i = 0; i < left.size(); ++i) {
         const double l = left[i], r = right[i];
-        if (!std::isfinite(l) || !std::isfinite(r)) return false;
-        const double absL = std::abs(l), absR = std::abs(r);
-        const double larger = std::max(absL, absR), smaller = std::min(absL, absR);
-        const double sign = smaller > floor_ ? ((l < 0) == (r < 0) ? 1. : -1.) : 0.;
-        coincidence += coincidenceStep_ * (sign - coincidence);
-        const double offset = larger > floor_ ? std::clamp((absR - absL) / larger * (4. / 3.), -1., 1.) : 0.;
-        balance += coincidenceStep_ * (offset - balance);
-        const std::array samples = midSide_ ? std::array{.5 * (l + r), .5 * (l - r)}
-                                           : std::array{l, r};
-        for (std::size_t lane = 0; lane < lanes.size(); ++lane) {
-            auto &m = lanes[lane];
-            const double x = std::abs(samples[lane]);
-            double measured = samples[lane];
-            if constexpr (weighted) measured = weighting_.process(measured, filterState[lane]);
-            m.maximum = std::max(m.maximum, x);
-            m.peak = std::max(x, m.peak * peakDecay_);
-            m.power += powerStep_ * (measured * measured - m.power);
-            m.floatingPeak += floatStep_ * (m.peak - m.floatingPeak);
-            const double ratio = m.peak > floor_ ? std::min(.5, m.power / (m.peak * m.peak)) : .5;
-            m.ratio += drStep_ * (ratio - m.ratio);
-            if (m.peak >= m.heldPeak) { m.heldPeak = m.peak; m.peakWait = holdSamples_; }
-            else if (m.peakWait > 0) --m.peakWait;
-            else m.heldPeak = std::max(m.peak, m.heldPeak * peakDecay_);
-            if (m.power >= m.heldPower) { m.heldPower = m.power; m.rmsWait = holdSamples_; }
-            else if (m.rmsWait > 0) --m.rmsWait;
-            else m.heldPower = std::max(m.power, m.heldPower * (1. - powerStep_));
+        const std::array raw{l, r};
+        const auto samples = midSide_ ? std::array{.5 * (l + r), .5 * (l - r)} : raw;
+        const auto rmsStart = previous(rmsSamples_), crestStart = previous(crestSamples_);
+        const bool rmsFull = historyFilled_ >= rmsSamples_, crestFull = historyFilled_ >= crestSamples_;
+        crossPower_ += coincidenceStep_ * (l * r - crossPower_);
+        for (std::size_t lane = 0; lane < lanes_.size(); ++lane) {
+            const auto rawPower = raw[lane] * raw[lane];
+            correlationPower_[lane] += coincidenceStep_ * (rawPower - correlationPower_[lane]);
+            balancePower_[lane] += balanceStep_ * (rawPower - balancePower_[lane]);
+            const bool clipped = std::abs(raw[lane]) >= clipThreshold;
+            if (clipped && !clipping_[lane]) ++clipCount_[lane];
+            clipping_[lane] = clipped;
+
+            auto &value = lanes_[lane];
+            const auto magnitude = std::abs(samples[lane]);
+            value.maximum = std::max(value.maximum, magnitude);
+            value.peak = magnitude >= value.peak ? magnitude : std::lerp(value.peak, magnitude, peakReleaseStep_);
+            updateHold(magnitude, value.heldPeak, value.peakWait, holdSamples_);
+            value.floatingPeak += floatStep_ * (value.heldPeak - value.floatingPeak);
+
+            auto measured = samples[lane];
+            if constexpr (weighted) measured = weighting_.process(measured, filterState_[lane]);
+            const auto power = measured * measured;
+            if (rmsFull) value.rmsSum -= powerHistory_[rmsStart][lane];
+            if (crestFull) value.crestSum -= powerHistory_[crestStart][lane];
+            powerHistory_[historyNext_][lane] = power;
+            value.rmsSum += power;
+            value.crestSum += power;
+            // Cancel rounding residue when the entire window is silent.
+            value.silentSamples = power > 0. ? 0 : std::min(capacity, value.silentSamples + 1);
+            if (value.silentSamples >= rmsSamples_) value.rmsSum = 0.;
+            if (value.silentSamples >= crestSamples_) value.crestSum = 0.;
+            const auto meanPower = std::max(0., value.rmsSum * rmsScale_);
+            updateHold(meanPower, value.heldPower, value.rmsWait, holdSamples_);
+            // Both windows must have filled before their ratio counts.
+            if (historyFilled_ >= capacity - 1 && meanPower > floorPower_)
+                maxCrestRatio_ = std::max(maxCrestRatio_, value.crestSum * crestScale_ / meanPower);
         }
-        if constexpr (linked) {
-            const double power = lanes[0].power + lanes[1].power;
-            if (power > 1.e-6) {
-                const double peak = std::max(lanes[0].peak, lanes[1].peak);
-                linkedRatio += drStep_ * (2. * peak * peak / power - linkedRatio);
-            } else {
-                linkedRatio = 0.;
-            }
-        }
+        if (++historyNext_ == capacity) historyNext_ = 0;
+        historyFilled_ = std::min(capacity, historyFilled_ + 1);
     }
-    lanes_ = lanes;
-    if constexpr (weighted) filterState_ = filterState;
-    if constexpr (linked) linkedRatio_ = linkedRatio;
-    coincidence_ = coincidence;
-    balance_ = balance;
-    return true;
 }
 
 StereoEnvelopeMeter::Reading StereoEnvelopeMeter::reading() const noexcept {
     Reading out;
-    out.signCoincidence = coincidence_;
-    out.balance = balance_;
-    if (linkedRatio_ > 0.) out.linkedDynamicDb = 10. * std::log10(.5 * linkedRatio_);
+    if (correlationPower_[0] > floorPower_ && correlationPower_[1] > floorPower_) {
+        const auto powerProduct = correlationPower_[0] * correlationPower_[1];
+        if (powerProduct > 0.)
+            out.signCoincidence = std::clamp(crossPower_ / std::sqrt(powerProduct), -1., 1.);
+    }
+    out.balanceDb = 10. * std::log10((balancePower_[1] + balanceEpsilon) / (balancePower_[0] + balanceEpsilon));
+    out.balance = std::clamp(out.balanceDb / 12., -1., 1.);
+    out.clipCount = clipCount_;
+    out.maxCrestFactorDb = 10. * std::log10(maxCrestRatio_);
+    std::array<double, 2> rmsPower{}, peakPower{};
     for (std::size_t i = 0; i < lanes_.size(); ++i) {
-        const auto &m = lanes_[i];
-        out.peak[i] = m.peak;
-        out.sineReferencedRms[i] = std::sqrt(2. * m.power);
-        out.maximumPeak[i] = m.maximum;
-        out.peakHold[i] = m.heldPeak;
-        out.rmsHold[i] = std::sqrt(2. * m.heldPower);
-        out.floatingPeak[i] = m.floatingPeak;
-        out.dynamicDb[i] = -10. * std::log10(std::max(2. * m.ratio, 1.e-30));
+        const auto &value = lanes_[i];
+        rmsPower[i] = std::max(0., value.rmsSum * rmsScale_);
+        peakPower[i] = value.heldPeak * value.heldPeak;
+        out.peak[i] = value.peak;
+        out.sineReferencedRms[i] = std::sqrt(2. * rmsPower[i]); // AES-17 sine reference
+        out.maximumPeak[i] = value.maximum;
+        out.peakHold[i] = value.heldPeak;
+        out.rmsHold[i] = std::sqrt(2. * value.heldPower);
+        out.floatingPeak[i] = value.floatingPeak;
+        out.dynamicDb[i] = dynamicLevel(peakPower[i], rmsPower[i]);
+    }
+    if (linkedDynamic_) {
+        const auto combinedPower = (rmsPower[0] + rmsPower[1]) * .5;
+        const auto combinedPeakPower = (peakPower[0] + peakPower[1]) * .5;
+        out.linkedSineReferencedRms = std::sqrt(2. * combinedPower);
+        if (combinedPower > 0.) out.linkedDynamicDb = dynamicLevel(combinedPeakPower, combinedPower);
     }
     return out;
 }

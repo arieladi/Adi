@@ -2744,6 +2744,56 @@ void actualRateHistory() {
     }
 }
 
+bool matchingStereoMeterReadings(const adi::dsp::StereoEnvelopeMeter::Reading &actual,
+                                 const adi::dsp::StereoEnvelopeMeter::Reading &expected) {
+    const bool linkedMatches = actual.linkedDynamicDb.has_value() == expected.linkedDynamicDb.has_value() &&
+        (!actual.linkedDynamicDb || near(*actual.linkedDynamicDb, *expected.linkedDynamicDb));
+    return actual.peak == expected.peak && actual.sineReferencedRms == expected.sineReferencedRms &&
+           actual.signCoincidence == expected.signCoincidence && actual.balance == expected.balance &&
+           actual.maximumPeak == expected.maximumPeak && actual.peakHold == expected.peakHold &&
+           actual.rmsHold == expected.rmsHold && actual.floatingPeak == expected.floatingPeak &&
+           actual.clipCount == expected.clipCount && actual.linkedSineReferencedRms == expected.linkedSineReferencedRms &&
+           near(actual.dynamicDb[0], expected.dynamicDb[0]) && near(actual.dynamicDb[1], expected.dynamicDb[1]) &&
+           near(actual.balanceDb, expected.balanceDb) && near(actual.maxCrestFactorDb, expected.maxCrestFactorDb) && linkedMatches;
+}
+
+void stereoMeterReferenceProfiles() {
+    using Meter = adi::dsp::StereoEnvelopeMeter;
+    for (const int sampleRate : {44100, 96000}) {
+        const auto tap = std::make_shared<ScopeTap>(sampleRate, SharedAnalysis::kTapSeconds);
+        SharedAnalysis broker([&](std::int64_t, ScopePoint) { return tap; }, [](std::int64_t, ScopePoint) {},
+                              SharedAnalysis::Mode::Manual);
+        const auto dbfs = broker.acquireStereoMeter(1, {});
+        const auto kScale = broker.acquireStereoMeter(1, {false, Meter::Weighting::A, false, true});
+        const auto flatKScale = broker.acquireStereoMeter(1, {false, Meter::Weighting::Standard, false, true});
+        std::vector<float> loud(static_cast<std::size_t>(sampleRate), -.5f);
+        tap->write(loud.data(), loud.data(), sampleRate, 0, true, 1);
+        broker.pump();
+        const auto before = dbfs.readStereoMeter(), kBefore = kScale.readStereoMeter();
+        check(before && kBefore && kBefore == flatKScale.readStereoMeter() && before != kBefore &&
+                  before->sampleRate == sampleRate && kBefore->sampleRate == sampleRate &&
+                  broker.stats().domains == 2 && broker.stats().taps == 1 && broker.stats().spectralPlans == 0,
+              "K scales bypass the selected weighting and share one unweighted profile on the physical tap");
+        if (!before || !kBefore) continue;
+        check(near(20. * std::log10(before->reading.peak[0]), -6.0206, .1) &&
+                  near(20. * std::log10(before->reading.sineReferencedRms[0] / std::sqrt(2.)), -6.0206, .1) &&
+                  near(20. * std::log10(kBefore->reading.sineReferencedRms[0] / std::sqrt(2.)), -6.0206, .1),
+              "both profiles read the negative half-scale plateau within 0.1 dB of the reference's raw level");
+
+        const auto quietFrames = sampleRate * 3 / 5;
+        std::vector<float> quiet(static_cast<std::size_t>(quietFrames));
+        tap->write(quiet.data(), quiet.data(), quietFrames, sampleRate, true, 1);
+        broker.pump();
+        const auto after = dbfs.readStereoMeter(), kAfter = kScale.readStereoMeter();
+        check(after && kAfter && near(after->reading.sineReferencedRms[0] / before->reading.sineReferencedRms[0], std::sqrt(.4)) &&
+                  kAfter->reading.sineReferencedRms[0] < .001 &&
+                  near(20. * std::log10(after->reading.peak[0] / before->reading.peak[0]), -40., .1) &&
+                  near(20. * std::log10(kAfter->reading.peak[0] / kBefore->reading.peak[0]), -20., .1) &&
+                  near(after->reading.peakHold[0], .5) && near(kAfter->reading.peakHold[0], .5),
+              "600 ms of silence leaves 40% of dBFS window power, expires the K window, and exercises both peak release laws");
+    }
+}
+
 void stereoMeterSharingAndIntervals() {
     using Meter = adi::dsp::StereoEnvelopeMeter;
     Fixture f;
@@ -2759,7 +2809,7 @@ void stereoMeterSharingAndIntervals() {
         right[i] = -.5f * left[i];
     }
     Meter scalar;
-    check(scalar.prepare({48000., .6, .5, .5, 1.e-6}) && scalar.process(left, right),
+    check(scalar.prepare({48000., .3, 1., .5, 1.e-6}) && scalar.process(left, right),
           "scalar reference accepts one interval");
     const auto feed = [&](std::size_t offset, std::size_t count) {
         f.tap->write(left.data() + offset, right.data() + offset, static_cast<std::int32_t>(count),
@@ -2769,7 +2819,8 @@ void stereoMeterSharingAndIntervals() {
     feed(0, 97);
     feed(97, left.size() - 97);
     const auto lr = meter.readStereoMeter(), ms = midSide.readStereoMeter();
-    check(lr && lr == mirror.readStereoMeter() && lr->reading == scalar.reading() && lr->reading.signCoincidence < 0 &&
+    check(lr && lr == mirror.readStereoMeter() && matchingStereoMeterReadings(lr->reading, scalar.reading()) &&
+              lr->reading.signCoincidence < 0 &&
               ms && ms->reading.maximumPeak[0] < ms->reading.maximumPeak[1] && f.broker.stats().transforms == 0,
           "meter uses each new sample once and publishes identical readings across split callbacks");
     check(meter.restartStereoMeter() && !mirror.readStereoMeter() && midSide.readStereoMeter() == ms,
@@ -2799,7 +2850,7 @@ void stereoMeterTransportContinuity() {
     transport.play();
     std::array<float, frames> left{}, right{}, silent{};
     Meter direct;
-    check(direct.prepare({48000., .6, .5, .5, 1.e-6}), "continuous stereo-meter oracle prepares");
+    check(direct.prepare({48000., .3, 1., .5, 1.e-6}), "continuous stereo-meter oracle prepares");
     const auto step = [&](float l, float r, bool parkedSilence = false) {
         left.fill(l); right.fill(r);
         const auto &oracleLeft = parkedSilence ? silent : left;
@@ -2814,7 +2865,7 @@ void stereoMeterTransportContinuity() {
     const auto first = step(.9f, .45f);
     const auto initialSpectrum = spectrum.read();
     const auto wrapped = step(.1f, -.05f);
-    check(first && wrapped && wrapped->epoch == first->epoch && wrapped->reading == direct.reading() &&
+    check(first && wrapped && wrapped->epoch == first->epoch && matchingStereoMeterReadings(wrapped->reading, direct.reading()) &&
               wrapped->reading.maximumPeak[0] == .9f && wrapped->reading.peakHold[0] == .9f,
           "the same-revision loop wrap preserves exact continuous envelope and held peaks");
     check(initialSpectrum && spectrum.read() && spectrum.read()->sourceEpoch > initialSpectrum->sourceEpoch,
@@ -2822,20 +2873,21 @@ void stereoMeterTransportContinuity() {
 
     transport.play(false);
     const auto stopped = step(0.f, 0.f, true);
-    check(wrapped && stopped && stopped->epoch == wrapped->epoch && stopped->reading == direct.reading() &&
+    check(wrapped && stopped && stopped->epoch == wrapped->epoch && matchingStereoMeterReadings(stopped->reading, direct.reading()) &&
               stopped->reading.maximumPeak[0] == .9f && std::isfinite(stopped->reading.peakHold[0]) &&
               stopped->reading.peak[0] < wrapped->reading.peak[0],
           "Stop decays the envelope continuously and preserves its interval maximum and holds");
     transport.play();
     const auto restarted = step(.2f, .1f);
-    check(stopped && restarted && restarted->epoch == stopped->epoch && restarted->reading == direct.reading() &&
+    check(stopped && restarted && restarted->epoch == stopped->epoch &&
+              matchingStereoMeterReadings(restarted->reading, direct.reading()) &&
               restarted->reading.maximumPeak[0] == .9f,
           "Play maintains the measurement interval across the engine's advancing revision change");
 
     transport.locate(0);
     direct.reset();
     const auto sought = step(.125f, .0625f);
-    check(restarted && sought && sought->epoch > restarted->epoch && sought->reading == direct.reading() &&
+    check(restarted && sought && sought->epoch > restarted->epoch && matchingStereoMeterReadings(sought->reading, direct.reading()) &&
               sought->reading.maximumPeak[0] == .125f,
           "a same-stamp seek clears highs from the prior interval");
     transport.play(false);
@@ -2843,7 +2895,7 @@ void stereoMeterTransportContinuity() {
     direct.reset();
     const auto skippedSeek = step(0.f, 0.f, true);
     check(sought && skippedSeek && skippedSeek->epoch > sought->epoch &&
-              skippedSeek->reading == Meter::Reading{},
+              matchingStereoMeterReadings(skippedSeek->reading, Meter::Reading{}),
           "an advancing flip cannot mask a seek also issued before the next audio block");
 }
 
@@ -2860,18 +2912,19 @@ void parkedStereoMeter() {
     const auto before = f.broker.stats();
     for (int block = 0; block < 1100; ++block) quiet(1);
     const auto after = f.broker.stats();
-    check(parked && parked->reading == Meter::Reading{} && view.readStereoMeter() == parked &&
+    check(parked && matchingStereoMeterReadings(parked->reading, Meter::Reading{}) && view.readStereoMeter() == parked &&
           after.workerPasses == before.workerPasses && after.cursorReads == before.cursorReads &&
           after.publications == before.publications,
           "empty stereo meter does no analysis across a parked ring wrap");
     const std::array<float, 480> left = [] { std::array<float, 480> values{}; values.fill(.1f); return values; }();
     Meter direct;
-    const auto ready = direct.prepare({48000., .6, .5, .5, 1.e-6, false, Meter::Weighting::A}) &&
+    const auto ready = direct.prepare({48000., .3, 1., .5, 1.e-6, false, Meter::Weighting::A}) &&
                        direct.process(left, left);
     f.tap->write(left.data(), left.data(), static_cast<int>(left.size()), 0, false, 1);
     f.broker.pump();
     const auto sounding = view.readStereoMeter();
-    check(ready && sounding && parked && sounding->epoch == parked->epoch && sounding->reading == direct.reading(),
+    check(ready && sounding && parked && sounding->epoch == parked->epoch &&
+              matchingStereoMeterReadings(sounding->reading, direct.reading()),
           "a parked meter picks up live monitoring at the first audible sample without a false gap");
     quiet(1);
     const auto settled = view.readStereoMeter();
@@ -2884,7 +2937,7 @@ void parkedStereoMeter() {
     quiet(2);
     const auto afterSeek = view.readStereoMeter();
     check(oldInterval && afterSeek && afterSeek->epoch > oldInterval->epoch &&
-          afterSeek->reading == Meter::Reading{},
+          matchingStereoMeterReadings(afterSeek->reading, Meter::Reading{}),
           "a new parked source epoch invalidates the old interval");
 }
 
@@ -3150,7 +3203,7 @@ ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operat
 #undef ADI_TEST_NOINLINE
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -484,13 +484,6 @@ void permanentMainMeter() {
     const auto initial = meter.reading();
     check(initial && std::abs(initial->reading.maximumPeak[0] - .5) < 1.e-6 && meter.loudness() && reads == 1,
           "Main meter publishes the stereo envelope and projects one existing loudness snapshot");
-    const auto beforeScale = f.broker->stats();
-    meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
-    meter.frame(f.broker, 1, source);
-    const auto afterScale = f.broker->stats();
-    check(meter.reading() == initial && afterScale.publications == beforeScale.publications &&
-              afterScale.spectralPlans == beforeScale.spectralPlans,
-          "K scale relabels the same reading without a new publication or plan");
     const auto releaseMouse = [&](juce::Point<float> down, juce::Point<float> up, juce::ModifierKeys buttons,
                                   bool dragged = false) {
         const auto now = juce::Time::getCurrentTime();
@@ -525,7 +518,7 @@ void permanentMainMeter() {
     meter.channelBox.setSelectedId(2, juce::sendNotificationSync);
     meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
     meter.frame(f.broker, 1, source);
-    check(!meter.reading() && meter.scaleBox.getSelectedId() == 3, "M/S and A weighting start a fresh measurement, retaining its scale");
+    check(!meter.reading() && meter.scaleBox.getSelectedId() == 1, "M/S and A weighting start a fresh measurement, retaining its scale");
     f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
     check(meter.reading() && meter.reading()->reading.maximumPeak[1] == 0.,
           "in-phase stereo shows no Side signal after changing the meter profile");
@@ -578,6 +571,48 @@ void permanentMainMeter() {
     check(!meter.subscribed() && f.broker->stats().consumers == 0,
           "moving the meter itself out of view also releases its lease immediately");
     meter.setAuditionSink({});
+    root.removeFromDesktop();
+}
+
+void referenceMainMeterScale() {
+    using namespace adi::ui;
+    Fixture f;
+    Root root;
+    MixOutputMeter meter;
+    root.setSize(152, 520);
+    meter.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(meter);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    f.write(); f.broker->pump(); meter.frame(f.broker, 1);
+    const auto weighted = meter.reading();
+    meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(weighted && !meter.reading() && !meter.weightingBox.isEnabled(),
+          "K-14 starts the fixed-time unweighted measurement");
+    f.write(1024); f.broker->pump(); meter.frame(f.broker, 1);
+    const auto k14 = meter.reading();
+    meter.scaleBox.setSelectedId(4, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(k14 && meter.reading() == k14 && !meter.weightingBox.isEnabled(),
+          "changing the K reference level keeps the same fixed-time interval");
+    const auto paintTop = [&] {
+        juce::Image raster(juce::Image::RGB, 152, 520, true, juce::SoftwareImageType{});
+        juce::Graphics g(raster);
+        meter.paintEntireComponent(g, true);
+        return raster.getPixelAt(35, 123);
+    };
+    check(paintTop() != juce::Colour(look::record), "K bias does not light the raw clip indicator");
+    constexpr std::array left{-1.f, 0.f}, right{0.f, 0.f};
+    f.tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 2048, true);
+    f.broker->pump(); meter.frame(f.broker, 1);
+    check(paintTop() == juce::Colour(look::record), "a negative full-scale sample lights the left clip strip");
+    meter.scaleBox.setSelectedId(1, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(meter.weightingBox.isEnabled() && meter.weightingBox.getSelectedId() == 2 && !meter.reading(),
+          "dBFS resumes the saved A-weighted profile at the next samples");
     root.removeFromDesktop();
 }
 
@@ -2392,7 +2427,8 @@ void compareHoldSurvivesInvalidA() {
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
+          linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();

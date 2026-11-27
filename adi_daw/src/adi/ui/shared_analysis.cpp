@@ -43,6 +43,8 @@ bool valid(const SharedAnalysis::Request &r) {
 SharedAnalysis::Request keyFor(SharedAnalysis::Request r) {
     r.hopSize = r.hopSize ? r.hopSize : r.fftSize / 4;
     r.outputs = 0;
+    if (r.stereoMeter && r.stereoMeter->kScale)
+        r.stereoMeter->weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
     return r;
 }
 bool usable(const std::shared_ptr<const engine::ScopeTap> &tap, std::int32_t n) {
@@ -389,8 +391,11 @@ struct SharedAnalysis::Domain {
             neutralMeter.store(false, std::memory_order_release);
             publishMeter({});
             const auto profile = *request.stereoMeter;
+            const double releaseSeconds = profile.kScale ? .6 : .3;
+            const double integrationSeconds = profile.kScale ? .6 : 1.;
+            constexpr double correlationSeconds = .5;
             meterPrepared = usable(tap, request.fftSize) &&
-                meter->prepare({tap->sampleRate(), .6, .5, .5, 1.e-6,
+                meter->prepare({tap->sampleRate(), releaseSeconds, integrationSeconds, correlationSeconds, 1.e-6,
                                 profile.midSide, profile.weighting, profile.linkedDynamic});
         }
         updateAvailability();
