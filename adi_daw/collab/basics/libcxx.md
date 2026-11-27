@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 00:13 IST — control/agent-chain `d68937dc5f4413e3f55d44070da33135710938c2`
+
+The headless `adi_control` translation unit fails under Clang 20 and libc++. At `adi_daw/src/juce/app_control.cpp:292:58`, libc++ rejects `std::atomic<std::shared_ptr<const BrowserCatalogue>>` because the primary atomic template requires a trivially copyable type. The callback error at `88:34` follows from that instantiation. Full build and suites are queued.
+
+A mutex now protects copying and swapping the immutable snapshot pointer. The owner constructs the new catalogue before locking and releases the old snapshot after unlocking. The affected file passed strict syntax checks with Clang 20/libc++ and GCC 14/libstdc++. GCC 14 treats the older shared-pointer atomic free functions as deprecated under `-Werror`. One fix commit `a0e5dfc3` is on [libcxx/control/agent-chain](https://github.com/arieladi/Adi/tree/libcxx/control/agent-chain).
+
 ### 28 November 2026, 00:03 IST — seats/library-chain `081971490757cceb72037e5b29cb16efedb980c3`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 293 registered CTest suites passed.
