@@ -374,7 +374,9 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
 }
 } // namespace
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
-    : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
+    : store_(std::move(s)), name_(std::move(name)), dailyHistory_(*store_),
+      dailyHistorySource_(appliedSource(*store_)), dailyHistorySequence_(dailyHistorySource_.sequence()),
+      ops_(*store_, view_), views_(*store_),
       sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
       waveforms_(peaksFrom(waveformSource_)) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
@@ -557,6 +559,7 @@ ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRes
         return out;
     }
     out.replayBaseChanged = true;
+    updateDailyHistory();
     const auto opening = store_->openingHistory();
     const auto reopen = [&](std::string& error) {
         auto document = open(store_->path(), false, renderLoader_, error);
@@ -572,6 +575,7 @@ ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRes
         out.error += " The previous version could not be restored: " + rollback.error;
         return out;
     }
+    updateDailyHistory();
     std::string reloadError;
     out.document = reopen(reloadError);
     if (out.document)
@@ -1028,7 +1032,28 @@ bool ProjectDocument::synchronise() {
     // or one a gesture set since the last frame, reaches the snapshot now.
     followOverrides();
     syncMonitorInputs(); // a track added or removed is fed or let go (N65)
+    updateDailyHistory();
     return true;
+}
+void ProjectDocument::updateDailyHistory(bool closing) {
+    if (!dailyHistoryClock_ || store_->readOnly())
+        return;
+    const auto source = appliedSource(*store_);
+    const auto sequence = source.sequence();
+    if (!closing && source.sameConnection(dailyHistorySource_) && sequence == dailyHistorySequence_)
+        return;
+    auto* database = store_->db().getHandle();
+    if (!sqlite3_get_autocommit(database))
+        return;
+    const auto [nowUtc, utcOffsetMinutes] = dailyHistoryClock_();
+    const bool viewWasCurrent = view_.storeCurrent(*store_);
+    const auto before = sqlite3_total_changes64(database);
+    dailyHistory_.poll(nowUtc, utcOffsetMinutes);
+    dailyHistorySource_ = source;
+    dailyHistorySequence_ = sequence;
+    const auto written = sqlite3_total_changes64(database) - before;
+    if (viewWasCurrent && written > 0)
+        view_.acknowledgeAdvisoryWrite(*store_, written);
 }
 void ProjectDocument::setExternalAudioInputs(std::vector<ExternalAudioInput> inputs) {
     externalAudioInputs_ = std::move(inputs);

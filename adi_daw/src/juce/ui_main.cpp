@@ -1561,6 +1561,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         const auto path = document_->store().path();
         const bool mayDiscard = takeSettled && document_->pendingParameterGestures().empty();
+        document_->flushDailyHistory();
         document_.reset();
         if (untitledIdentity_) {
             if (mayDiscard && discardUntouchedProject(path, *untitledIdentity_)) {
@@ -1662,6 +1663,10 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!afterHistoryReload)
             closeProject(takeSettled);
         document_ = std::move(next);
+        document_->setDailyHistoryClock([] {
+            const auto now = juce::Time::getCurrentTime();
+            return std::pair<std::int64_t, int>{now.toMilliseconds() * 1000, now.getUTCOffsetSeconds() / 60};
+        });
         if (!testLaunch()) document_->enableRecordingRecovery();
         projectPlugins_ = std::move(plugins);
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)

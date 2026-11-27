@@ -4900,6 +4900,81 @@ void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
               active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
           "first-save cleanup preserves a newer source revision after its writer closes");
 }
+void automaticDailyVersions(const std::filesystem::path &path) {
+    constexpr std::int64_t noon = 1'761'566'400'000'000; // 27 October 2025, noon UTC
+    constexpr std::int64_t day = 86'400'000'000;
+    std::int64_t now = noon;
+    int clockReads = 0;
+    const auto clock = [&] {
+        ++clockReads;
+        return std::pair<std::int64_t, int>{now, 120};
+    };
+    std::string error;
+    auto doc = ui::ProjectDocument::open(path, true, {}, error);
+    check(doc != nullptr, "SC-156: open the document with a daily version clock");
+    if (!doc)
+        return;
+    doc->setDailyHistoryClock(clock);
+    const auto rename = [](ui::ProjectDocument &target, const char *name) {
+        OpRequest request;
+        request.opType = "track.rename";
+        request.payload = {{"id", 4}, {"name", name}};
+        return target.ops().submit(request).ok;
+    };
+    History history(doc->store());
+    doc->tick(0);
+    check(history.listSnapshots().empty() && clockReads == 0,
+          "SC-156: opening or ticking an unchanged project does not take a daily snapshot");
+    check(rename(*doc, "Monday edit"), "SC-156: create a committed edit");
+    const auto generation = doc->view().generation();
+    const auto operations = OpJournal(doc->store()).count();
+    check(doc->synchronise(), "SC-156: synchronise the first edit of the local day");
+    const auto first = history.listSnapshots();
+    check(first.size() == 1 && first.front().automatic && first.front().opSeq == history.head() &&
+              first.front().createdUtc == noon && first.front().name.ends_with("2025-10-27 14:00") &&
+              OpJournal(doc->store()).count() == operations && doc->view().generation() == generation &&
+              doc->view().storeCurrent(doc->store()),
+          "SC-156: the first edit takes one dated version without an Undo step or stale view");
+    if (first.empty())
+        return;
+    now += 60'000'000;
+    check(rename(*doc, "Later on Monday") && doc->synchronise(), "SC-156: another edit on the same day");
+    const auto later = history.listSnapshots();
+    check(later.size() == 1 && later.front().id == first.front().id &&
+              later.front().opSeq == history.head() && later.front().createdUtc == now &&
+              doc->view().storeCurrent(doc->store()),
+          "SC-156: later edits move the same daily version to the new state");
+    now += day;
+    const int beforeIdle = clockReads;
+    doc->tick(1);
+    check(history.listSnapshots().size() == 1 && clockReads == beforeIdle,
+          "SC-156: the day changing on its own does not take a snapshot");
+    check(rename(*doc, "Tuesday edit"), "SC-156: edit on the next day");
+    doc->tick(2);
+    const auto twoDays = history.listSnapshots();
+    check(twoDays.size() == 2 && twoDays.front().id == first.front().id &&
+              twoDays.back().createdUtc == now && twoDays.back().opSeq == history.head(),
+          "SC-156: yesterday's version survives today's edit");
+    check(doc->ops().undo().ok && doc->synchronise(), "SC-156: reflect today's Undo in its version");
+    const auto afterUndo = history.listSnapshots();
+    check(afterUndo.size() == 2 && afterUndo.back().opSeq == history.head(),
+          "SC-156: Undo updates the current day's version without taking another");
+    check(rename(*doc, "Last edit before closing"), "SC-156: commit an edit before the next window update");
+    doc->flushDailyHistory();
+    const auto closedHead = history.head();
+    doc.reset();
+    auto reopened = ui::ProjectDocument::open(path, false, {}, error);
+    check(reopened != nullptr, "SC-156: reopen the project the next day");
+    if (!reopened)
+        return;
+    now += day;
+    reopened->setDailyHistoryClock(clock);
+    reopened->tick(3);
+    const auto persisted = History(reopened->store()).listSnapshots();
+    check(persisted.size() == 2 && persisted.front().id == first.front().id &&
+              persisted.back().opSeq == closedHead && reopened->view().storeCurrent(reopened->store()),
+          "SC-156: closing keeps the last edit and reopening without changes takes no new snapshot");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -5107,6 +5182,10 @@ int main(int argc, char **argv) {
               doc->ops().nextUndo()->label != "Verse idea",
           "a snapshot is not an op, an edit or an undo step");
     check(History(doc->store()).listSnapshots().size() == 1, "and the history lists it");
+    {
+        test::TempDirectory daily("ui_document", "daily-versions");
+        automaticDailyVersions(daily.path() / "versions.adi");
+    }
     auto invalid = ui::ProjectDocument::open(temp.path() / "missing.adi", false, {}, error);
     check(!invalid && doc->session().loaded(), "failed Open leaves current document intact");
     check(!ui::ProjectDocument::open(doc->store().path(), true, {}, error),

@@ -34,6 +34,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <utility>
 namespace adi::recording { struct RecordingEdit; }
 namespace adi::engine::recording_recovery { struct LaunchTake; }
 namespace adi::ui {
@@ -97,6 +98,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
                                          int utcOffsetMinutes);
+    // The app supplies local civil time alongside UTC microseconds. The
+    // document updates the daily version after committed history changes.
+    using DailyHistoryClock = std::function<std::pair<std::int64_t, int>()>;
+    void setDailyHistoryClock(DailyHistoryClock clock) { dailyHistoryClock_ = std::move(clock); }
+    void flushDailyHistory() { updateDailyHistory(true); }
     // What the Take Snapshot prompt is pre-filled with: the project's name and the time.
     std::string snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const;
     const std::string &name() const noexcept { return name_; }
@@ -493,10 +499,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
+    void updateDailyHistory(bool closing = false);
     bool followSaveAs(const StoreFileResult &, bool keptTake);
     struct SaveJob;
     std::unique_ptr<Store> store_;
     std::string name_;
+    DailyHistorySnapshots dailyHistory_;
+    AppliedSource dailyHistorySource_;
+    std::uint64_t dailyHistorySequence_ = 0;
+    DailyHistoryClock dailyHistoryClock_;
     engine::ProjectView view_;
     OpSubmitter ops_;
     ViewStateStore views_;
