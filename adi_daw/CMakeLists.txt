@@ -297,6 +297,7 @@ add_library(adi_core STATIC
     src/adi/interchange/smf.cpp
     src/adi/interchange/midi_clip_file.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp

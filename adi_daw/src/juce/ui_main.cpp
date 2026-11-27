@@ -11,6 +11,8 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/device_grant.hpp"
 #include "adi/ui/audio_test_tone.hpp"
+#include "adi/ui/export_preferences.hpp"
+#include "adi/ui/export_interruption.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -131,6 +133,21 @@ juce::File defaultUserLibraryFolder() {
     const auto parent = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
 #endif
     return parent == juce::File{} ? juce::File{} : parent.getChildFile("ADI").getChildFile("User Library");
+}
+bool hasStemAudio(const engine::TrackNode &track, const rows::Model &model) {
+    if (track.kind != "midi" || track.frozen)
+        return true;
+    return std::any_of(model.devices.begin(), model.devices.end(), [&](const rows::Device &device) {
+        const auto chain = std::find_if(model.deviceChains.begin(), model.deviceChains.end(),
+                                        [&](const rows::DeviceChain &row) { return row.id == device.chainId; });
+        if (chain == model.deviceChains.end() || chain->trackId != track.id)
+            return false;
+        const auto plugin = std::find_if(model.pluginRefs.begin(), model.pluginRefs.end(),
+                                          [&](const rows::PluginRef &ref) { return ref.id == device.pluginRefId; });
+        if (plugin != model.pluginRefs.end())
+            return plugin->subtype != "midi_effect";
+        return device.isRack && device.rackKind != "midi_effect";
+    });
 }
 // Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
 // which closing hides. The list stays the root's; the window only shows it.
@@ -535,8 +552,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // The render Session owns its plug-ins on the message thread and processes on the worker.
     void openExport(const ExportChoices &initial) {
         if (exportWindow_) {
-            // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
-            // with the choices of now.
+            // A visible or rendering page keeps its state. Reopen a hidden page with the current range.
             if (exportWindow_->isVisible() || render_.joinable()) {
                 exportWindow_->setVisible(true);
                 exportWindow_->toFront(true);
@@ -547,13 +563,19 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_ || !root_)
             return;
         // Rendered Track: the tracks in the lanes' order, as the Arrangement shows them.
-        std::vector<std::pair<std::int64_t, std::string>> tracks;
+        std::vector<ExportTrack> tracks;
         std::vector<textproj::Meter> meters;
-        for (const auto &row : root_->arrangement.geometry.rows(root_->reader()))
-            if (row.track != nullptr && row.track->kind != "master")
-                tracks.emplace_back(row.track->id, displayName(row.track->name, row.number())); // as headed (B13)
+        const auto selected = root_->arrangement.geometry.selectedTracks(root_->reader());
+        for (const auto &row : root_->arrangement.geometry.rows(root_->reader())) {
+            const auto &track = *row.track;
+            if (track.kind != "vca")
+                tracks.push_back({track.kind == "master" ? 0 : track.id, displayName(track.name, row.number()),
+                                  std::find(selected.begin(), selected.end(), track.id) != selected.end(),
+                                  hasStemAudio(track, document_->session().model())});
+        }
         meters = root_->reader().meters();
-        auto page = std::make_unique<ExportPage>(initial, std::move(tracks), std::move(meters));
+        auto page = std::make_unique<ExportPage>(exportPreferences_.open(initial, *settings_), std::move(tracks),
+                                                 std::move(meters));
         exportPage_ = page.get();
         page->onCancel = [this] {
             if (render_.joinable()) {
@@ -573,6 +595,8 @@ class AdiApplication final : public juce::JUCEApplication,
         exportWindow_->setVisible(true);
     }
     void closeExport() {
+        if (exportPage_)
+            exportPreferences_.remember(exportPage_->choices());
         exportPage_ = nullptr;
         exportWindow_.reset();
     }
@@ -580,12 +604,16 @@ class AdiApplication final : public juce::JUCEApplication,
         if (chooser_ || render_.joinable() || !document_)
             return;
         const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
-        chooser_ = std::make_unique<juce::FileChooser>("Export Audio", project.getParentDirectory().getChildFile(
-                                                                           project.getFileNameWithoutExtension() + ".wav"),
-                                                       "*.wav");
+        const auto folder = exportPreferences_.folder(*settings_, document_->store().path().parent_path());
+        const auto destination = juce::File(juce::String::fromUTF8(media::pathUtf8(folder).c_str()));
+        const bool batch = c.tracks != ExportTracks::One;
+        const auto* suffix = render::pcmSuffix(exportContainer(c));
+        chooser_ = std::make_unique<juce::FileChooser>(batch ? "Name the Exported Tracks" : "Export Audio",
+                                                       destination.getChildFile(project.getFileNameWithoutExtension() + suffix),
+                                                       juce::String("*") + suffix);
         const int flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
-                          juce::FileBrowserComponent::warnAboutOverwriting;
-        chooser_->launchAsync(flags, [this, c](const juce::FileChooser &chosen) {
+                          (batch ? 0 : juce::FileBrowserComponent::warnAboutOverwriting);
+        chooser_->launchAsync(flags, [this, c, batch, suffix](const juce::FileChooser &chosen) {
             auto file = chosen.getResult();
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)
@@ -593,25 +621,26 @@ class AdiApplication final : public juce::JUCEApplication,
             });
             if (file == juce::File{} || !document_)
                 return;
-            // ".wav" is added to a name without it, never swapped for another extension the name holds; a
-            // file the chooser did not ask about is never replaced.
+            // Append the selected extension when needed. A file the chooser did not ask about is never replaced.
             const auto chosenFile = file;
-            file = withExtension(file, "wav");
-            if (file != chosenFile && file.exists()) {
+            file = withExtension(file, suffix + 1);
+            if (!batch && file != chosenFile && file.exists()) {
                 if (exportPage_)
                     exportPage_->showDone(file.getFileName().toStdString() + " already exists; choose it to replace it.");
                 return;
             }
-            // The renderer writes the name as given or not at all.
+            const auto output = pathFromUtf8(file.getFullPathName().toStdString());
+            // The renderer takes the exact filename, including the case of its extension.
             const auto stem = file.getFileNameWithoutExtension().toStdString();
-            std::string resolved;
+            bool validName = false;
             try {
-                resolved = render::resolveName(literalTemplate(stem), {});
+                render::validateOutputName(output);
+                validName = render::resolveName(literalTemplate(stem), {}) == stem;
             } catch (const std::exception &) {
             }
-            if (resolved != stem) {
+            if (!validName) {
                 if (exportPage_)
-                    exportPage_->showDone("A WAV cannot be named \"" + stem + "\"; choose another name.");
+                    exportPage_->showDone("The export file cannot be named \"" + stem + "\". Choose another name.");
                 return;
             }
             if (!document_->capturePluginState()) {
@@ -620,7 +649,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             }
             // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
-            if (file.existsAsFile() && !file.moveToTrash()) {
+            if (!batch && file.existsAsFile() && !file.moveToTrash()) {
                 if (exportPage_)
                     exportPage_->showDone("The existing file could not be moved to the trash; choose another name.");
                 return;
@@ -628,15 +657,17 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto current = document_->view().current();
             if (!current || !current->tempo)
                 return;
-            startRender(exportJob(c, document_->store().path(), pathFromUtf8(file.getFullPathName().toStdString()),
-                                  *current->tempo));
+            exportPreferences_.rememberFolder(*settings_, output.parent_path());
+            startRender(exportJobs(c, document_->store().path(), output, *current->tempo));
         });
     }
-    void startRender(render::Job job) {
+    void startRender(std::vector<render::Job> jobs) {
         renderStop_ = std::stop_source{};
         auto alive = renderAlive_;
         if (exportPage_)
             exportPage_->showProgress(0);
+        if (root_)
+            root_->status.setExportProgress(0);
         auto host = std::make_shared<render::HostDispatch>();
         renderHost_ = host;
         auto completed = std::make_shared<std::promise<void>>();
@@ -648,37 +679,62 @@ class AdiApplication final : public juce::JUCEApplication,
                 juce::MessageManager::callAsync([host] { (void)host->service(); });
             });
         };
-        control.progress = [this, alive](render::JobId, std::uint64_t written, std::uint64_t total) {
-            const double fraction = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
+        control.wavProgress = [this, alive, count = jobs.size(), lastPercent = 0](render::JobId id, double current) mutable {
+            const double fraction = (static_cast<double>(id - 1) + current) / static_cast<double>(count);
+            const auto percent = static_cast<int>(fraction * 100);
+            if (percent == lastPercent)
+                return;
+            lastPercent = percent;
             juce::MessageManager::callAsync([this, alive, fraction] {
-                if (alive->load() && exportPage_)
+                if (!alive->load())
+                    return;
+                if (exportPage_)
                     exportPage_->showProgress(fraction);
+                if (root_)
+                    root_->status.setExportProgress(static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100));
             });
         };
-        render_ = std::thread([this, alive, completed, job = std::move(job),
+        render_ = std::thread([this, alive, completed, jobs = std::move(jobs),
                                made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
-            auto result = render::renderWav(std::move(job), std::move(made), std::move(control));
-            // A Cancel while devices were made reads as the cancel it is.
-            if (stop.stop_requested() && result.state != render::JobState::Completed)
-                result.state = render::JobState::Cancelled;
+            std::string message;
+            try {
+                render::Queue queue;
+                for (auto &job : jobs)
+                    queue.add(std::move(job));
+                queue.run(std::move(made), std::move(control));
+                const auto entries = queue.snapshot();
+                const auto succeeded = std::count_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
+                    return entry.result.state == render::JobState::Completed;
+                });
+                const auto failed = std::find_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
+                    return entry.result.state == render::JobState::Failed;
+                });
+                if (entries.size() == 1 && succeeded == 1)
+                    message = "Exported " + media::pathUtf8(entries.front().result.output.filename()) + ".";
+                else if (static_cast<std::size_t>(succeeded) == entries.size())
+                    message = "Exported " + std::to_string(succeeded) + " tracks.";
+                else if (stop.stop_requested())
+                    message = "The export was cancelled.";
+                else
+                    message = "The export failed: " + (failed == entries.end() ? std::string("unknown error") : failed->result.error);
+                if (succeeded > 0 && static_cast<std::size_t>(succeeded) < entries.size())
+                    message += " " + std::to_string(succeeded) + " tracks were exported.";
+            } catch (const std::exception &e) {
+                message = "The export failed: " + std::string(e.what());
+            }
             completed->set_value();
-            juce::MessageManager::callAsync([this, alive, result = std::move(result)] {
+            juce::MessageManager::callAsync([this, alive, message = std::move(message)] {
                 if (!alive->load())
                     return;
                 if (render_.joinable())
                     render_.join();
                 renderHost_.reset();
-                std::string message;
-                if (result.state == render::JobState::Completed)
-                    message = "Exported " + media::pathUtf8(result.output.filename()) + ".";
-                else if (result.state == render::JobState::Cancelled)
-                    message = "The export was cancelled.";
-                else
-                    message = "The export failed: " + result.error;
                 if (exportPage_)
                     exportPage_->showDone(message);
-                if (root_)
+                if (root_) {
+                    root_->status.setExportProgress(std::nullopt);
                     root_->say(message);
+                }
             });
         });
     }
@@ -691,6 +747,32 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         renderHost_.reset();
         renderAlive_ = std::make_shared<std::atomic<bool>>(true);
+        if (root_)
+            root_->status.setExportProgress(std::nullopt);
+    }
+    void confirmExportInterruption(const juce::String &action, std::function<void()> proceed) {
+        const bool exporting = render_.joinable() &&
+                               renderDone_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+        const auto interruptedRender = renderStop_.get_token();
+        if (!exportInterruption_.request(exporting, [this, exporting, interruptedRender, proceed = std::move(proceed)] {
+                if (exporting && interruptedRender == renderStop_.get_token()) renderStop_.request_stop();
+                proceed();
+            }))
+            return;
+        const auto options = juce::MessageBoxOptions()
+                                 .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                 .withTitle("Export in progress")
+                                 .withMessage(action + " will cancel the audio export.")
+                                 .withButton(juce::MessageBoxButtonOptions("Keep Exporting", 0)
+                                                 .withRole(juce::MessageBoxButtonRole::cancel)
+                                                 .withPreferredAction())
+                                 .withButton(juce::MessageBoxButtonOptions("Cancel Export and Continue", 1)
+                                                 .withRole(juce::MessageBoxButtonRole::destroy))
+                                 .withAssociatedComponent(window_.get());
+        exportInterruptionPrompt_ = juce::AlertWindow::showScopedAsync(options, [this](int answer) {
+            if (juce::JUCEApplicationBase::getInstance() == this)
+                exportInterruption_.answer(answer == 1);
+        });
     }
     // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
     // adopted on the message thread; the loader runs each on its own worker. Never in a smoke run.
@@ -793,6 +875,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // SC-330 and SC-415: open against the current catalogue and yield between device loads.
     // Discovery may finish during those turns and wake newly available placeholders after install.
     void openProject(const juce::File &file, bool create) {
+        confirmExportInterruption(create ? "Creating a new project" : "Opening another project",
+                                  [this, file, create] { beginProjectOpen(file, create); });
+    }
+    void beginProjectOpen(const juce::File &file, bool create) {
         if (quitAfterExport_)
             return;
         if (projectSave_) {
@@ -806,7 +892,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         if (create) {
-            (void)installNew(file);
+            (void)installNew(nextUntitledProject(*settings_));
             return;
         }
         try {
@@ -984,6 +1070,8 @@ class AdiApplication final : public juce::JUCEApplication,
         importStop_.request_stop();
         if (import_.joinable())
             import_.join();
+        exportInterruption_.answer(false);
+        exportInterruptionPrompt_.close();
         stopRender();
         stopLibrary();
         stopPluginCatalogue();
@@ -1012,6 +1100,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // Every edit is already in the file (ADR-0203 d13). Keep the window
     // responsive while an archive finishes before quitting.
     void systemRequestedQuit() override {
+        confirmExportInterruption("Quitting ADI", [this] { finishQuit(); });
+    }
+    void finishQuit() {
         if (export_.joinable()) {
             quitAfterExport_ = true;
             showExportQuitProgress();
@@ -1155,6 +1246,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // An export of the old project stops, and its page goes: its tracks and range were that project's.
         stopRender();
         closeExport();
+        exportPreferences_.forgetTrack();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
@@ -2275,7 +2367,7 @@ class AdiApplication final : public juce::JUCEApplication,
         export_.join(); // the result becomes ready at thread exit
         if (quitAfterExport_) {
             quitAfterExport_ = false;
-            systemRequestedQuit();
+            finishQuit();
             return;
         }
         if (root_)
@@ -2614,7 +2706,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (chooser_ || projectOpen_ || projectSave_ || installingDocument_)
             return false;
         if (id == AppCommands::NewProject) {
-            openProject(nextUntitledProject(*settings_), true);
+            openProject({}, true);
             return true;
         }
         chooser_ = std::make_unique<juce::FileChooser>("Open ADI project", projectsFolder(*settings_), "*.adi");
@@ -2841,6 +2933,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // names files by.
     std::unique_ptr<juce::DialogWindow> exportWindow_;
     ExportPage *exportPage_ = nullptr;
+    ExportPreferences exportPreferences_;
+    ExportInterruption exportInterruption_;
+    juce::ScopedMessageBox exportInterruptionPrompt_;
     std::thread render_;
     std::stop_source renderStop_;
     std::shared_ptr<render::HostDispatch> renderHost_;

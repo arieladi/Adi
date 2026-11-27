@@ -31,7 +31,10 @@
 
 namespace adi::engine {
 namespace fs = std::filesystem;
-namespace { fs::path utf8Path(const std::string& s) { return fs::path(std::u8string(s.begin(),s.end())); } }
+namespace {
+fs::path utf8Path(const std::string& s) { return fs::path(std::u8string(s.begin(),s.end())); }
+struct MissingClipMedia : std::runtime_error { using std::runtime_error::runtime_error; };
+}
 struct ClipProject {
     rows::Model rows;
     fs::path folder;
@@ -628,6 +631,7 @@ struct ClipPlayback::Impl {
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
     std::unordered_set<std::int64_t> unavailableMedia;
+    std::vector<std::size_t> missingMediaProblems;
     std::atomic<bool> stalled{false};
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     // Last member so all workers join before any of their clips are destroyed.
@@ -669,14 +673,16 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 auto& resolved = found->second;
                 if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
                     source.origName, source.hashBlake3, resolved.error);
-                if (resolved.path.empty()) throw std::runtime_error(
-                    (resolved.error.empty() ? "missing media: " + source.origName : resolved.error) + "; silent");
+                if (resolved.path.empty()) {
+                    if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
+                    throw std::runtime_error(resolved.error);
+                }
                 return resolved.path;
             }
             return path;
         }
         if (hint != project->hints.end()) return hint->second;
-        throw std::runtime_error("no media path; silent");
+        throw MissingClipMedia("no media path");
     };
     std::unordered_map<std::int64_t, bool> skippedMediaAvailable;
     const auto checkSkippedMedia = [&](std::int64_t clipId, std::int64_t mediaId) {
@@ -711,7 +717,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
             openingMedia = true;
             const auto* source = mediaRow(a->mediaId);
-            if(!source || source->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
+            if (!source) throw MissingClipMedia("missing media");
+            if (source->embedded) throw std::runtime_error("embedded media; extract first");
             auto clip=std::make_unique<Clip>();
             clip->clipId=row.id; clip->mediaId=source->id; clip->storedBlake3=source->hashBlake3;
             clip->path = mediaPath(*source);
@@ -727,7 +734,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     opened.native = clip->reader;
                 } catch (const std::exception&) { opened.refusedNative = true; }
             }
-            if(!clip->reader) {
+            if (!clip->reader) {
+                std::error_code inspectError;
+                if (!fs::exists(clip->path, inspectError) && !inspectError)
+                    throw MissingClipMedia("missing audio file");
                 if(!opened.compressedInfo) opened.compressedInfo=audio::inspectPcm(clip->path);
                 const auto& info=*opened.compressedInfo;
                 if(a->warpEnabled) {
@@ -894,6 +904,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
+        } catch(const MissingClipMedia& e) {
+            impl_->unavailableMedia.insert(row.id);
+            impl_->missingMediaProblems.push_back(impl_->problems.size());
+            impl_->problems.push_back(label+e.what()+"; silent");
         } catch(const std::exception& e) {
             if (openingMedia) impl_->unavailableMedia.insert(row.id);
             impl_->problems.push_back(label+e.what()+"; silent");
@@ -960,6 +974,11 @@ void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 bool ClipPlayback::mediaUnavailable(std::int64_t clipId) const noexcept { return impl_->unavailableMedia.contains(clipId); }
+void ClipPlayback::appendExportBlockingProblems(std::vector<std::string>& out) const {
+    const auto& missing=impl_->missingMediaProblems;
+    for(std::size_t i=0;i<impl_->problems.size();++i)
+        if(!std::binary_search(missing.begin(),missing.end(),i)) out.push_back(impl_->problems[i]);
+}
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
     if(audio::onAudioThread)return {};
     return impl_->externalSources;

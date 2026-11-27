@@ -598,7 +598,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         e.error = err;
         inst = makePlaceholder(store, row, ref);
         ++stats_.placeholders;
-        sessionProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
+        placeholderProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
     } else {
         inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
@@ -1323,24 +1323,38 @@ bool Session::rebuild() {
 }
 
 void Session::refreshProblems() {
-    problems_ = model_.problems;
-    if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
-    if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
-    problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
-    problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
-    problems_.insert(problems_.end(), summing_.problems().begin(), summing_.problems().end());
+    problems_ = collectProblems(true);
+}
+
+std::vector<std::string> Session::exportBlockingProblems() {
+    return collectProblems(false);
+}
+
+std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
+    auto problems = model_.problems;
+    const auto append = [&](const std::vector<std::string>& found) {
+        problems.insert(problems.end(), found.begin(), found.end());
+    };
+    if (midi_) append(midi_->problems());
+    if (auto* c = clips()) {
+        if (includeUnavailable) append(c->problems());
+        else c->appendExportBlockingProblems(problems);
+    }
+    append(sessionProblems_);
+    if (includeUnavailable) append(placeholderProblems_);
+    append(strips_.problems());
+    append(summing_.problems());
     // The program's own findings only when there is automation to find them in:
     // a project with a tempo ramp and no lanes has no automation problem.
     if (stripAutomation_ && stripAutomation_->program && !model_.automationLanes.empty()) {
-        const auto& found = stripAutomation_->program->problems();
-        problems_.insert(problems_.end(), found.begin(), found.end());
-        problems_.insert(problems_.end(), stripAutomation_->problems.begin(), stripAutomation_->problems.end());
+        append(stripAutomation_->program->problems());
+        append(stripAutomation_->problems);
     }
-    if (deviceAutomation_)
-        problems_.insert(problems_.end(), deviceAutomation_->problems.begin(), deviceAutomation_->problems.end());
-    problems_.insert(problems_.end(), deviceSourceProblems_.begin(), deviceSourceProblems_.end());
-    const std::vector<std::string>& fromGraph = graph_.problems();
-    problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
+    if (deviceAutomation_) append(deviceAutomation_->problems);
+    append(deviceSourceProblems_);
+    if (includeUnavailable) append(placeholderAutomationProblems_);
+    append(graph_.problems());
+    return problems;
 }
 
 bool Session::parkedDevice(const rows::Device &device) const {
@@ -2314,6 +2328,7 @@ void Session::attachTaps() {
 
 void Session::bindDeviceSources() {
     deviceSourceProblems_.clear();
+    placeholderAutomationProblems_.clear();
     std::set<std::int64_t> attached;
     for (Entry& e : entries_) {
         device::DeviceNode& node = devices_.nodeAt(e.hostIndex);
@@ -2329,7 +2344,7 @@ void Session::bindDeviceSources() {
         if (source != nullptr) {
             attached.insert(e.deviceId);
             if (e.placeholder)
-                deviceSourceProblems_.push_back("devices#" + std::to_string(e.deviceId) +
+                placeholderAutomationProblems_.push_back("devices#" + std::to_string(e.deviceId) +
                                                 ": a placeholder; its automation waits for the plug-in");
         }
     }

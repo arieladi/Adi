@@ -20,8 +20,10 @@
 #include "adi/transport_settings.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/export_interruption.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/audio_test_tone.hpp"
+#include "adi/ui/export_preferences.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -16393,7 +16395,8 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     // The page: Live's rows in Live's order, Main and the tracks to render.
     ExportChoices c = *asked;
     c.lengthTicks = textproj::kWhole * 2; // two 4/4 bars
-    ExportPage page(c, {{4, "3 Audio"}, {6, "A Reverb"}}, root.reader().meters());
+    ExportPage page(c, {{4, "3 Audio", true}, {6, "A Reverb"}, {3, "2 MIDI", true, false}, {0, "Main"}},
+                    root.reader().meters());
     std::vector<juce::String> titles;
     for (auto *control : std::initializer_list<juce::Component *>{&page.renderedTrack, &page.start, &page.length,
                                                                    &page.includeReturnAndMain, &page.renderAsLoop,
@@ -16407,7 +16410,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
                                               "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
                                               "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
           "Live's choices in Live's order [P:export#2]");
-    check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
+    check(page.renderedTrack.getNumItems() == 6 && page.renderedTrack.getText() == "Main" &&
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
           "Main, from 1.1.1 for 2.0.0: Export is offered [P:export#1] [P:export#3]");
@@ -16425,17 +16428,39 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.encodeMp3.setToggleState(true, juce::dontSendNotification);
     page.encodeMp3.onClick();
     check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
-              page.refusals()[0].find("MP3 waits") != std::string::npos,
-          "MP3 on: Export waits, saying why");
+              page.refusals()[0] == "MP3 export is unavailable. Turn off Encode MP3 to export audio.",
+          "MP3 on: Export names the unavailable format and the control to turn off");
     page.encodeMp3.setToggleState(false, juce::dontSendNotification);
     page.encodeMp3.onClick();
+    check(page.dither.getItemText(3) == "Shaped 1" && page.dither.getItemText(4) == "Shaped 2" &&
+              page.dither.getItemText(5) == "Shaped 3",
+          "the dither menu uses the agreed shaped dither names");
+    page.dither.setSelectedId(4, juce::sendNotificationSync);
+    check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
+              page.refusals().front() == "Shaped dither is unavailable. Choose triangular, rectangular or no dither.",
+          "shaped dither explains which choices can be used");
+    page.dither.setSelectedId(3, juce::sendNotificationSync);
+    for (const int rate : {176400, 192000}) {
+        int item = 0;
+        for (int i = 0; i < page.sampleRate.getNumItems(); ++i)
+            if (page.sampleRate.getItemText(i).getIntValue() == rate)
+                item = page.sampleRate.getItemId(i);
+        page.sampleRate.setSelectedId(item, juce::sendNotificationSync);
+        check(item != 0 && page.choices().sampleRate == rate && page.exportButton.isEnabled(),
+              "176.4 and 192 kHz can be selected in a project at a lower rate");
+    }
     page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
-    check(page.choices().track == 4 && !page.exportButton.isEnabled() &&
-              page.refusals()[0].find("Include Return and Main Effects off") != std::string::npos,
-          "a track through the returns and Main waits; the reason says what renders now");
-    page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
-    page.includeReturnAndMain.onClick();
-    check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
+    check(page.choices().tracks == ExportTracks::All &&
+              page.choices().stemTracks == std::vector<std::int64_t>{4, 6, 0} && page.exportButton.isEnabled(),
+          "All Individual Tracks exports audio tracks, returns and Main");
+    page.renderedTrack.setSelectedId(3, juce::sendNotificationSync);
+    check(page.choices().tracks == ExportTracks::Selected &&
+              page.choices().stemTracks == std::vector<std::int64_t>{4} && page.exportButton.isEnabled(),
+          "Selected Tracks Only filters the selection to tracks with audio");
+    const auto batch = page.choices();
+    page.renderedTrack.setSelectedId(4, juce::sendNotificationSync);
+    check(page.choices().track == 4 && page.exportButton.isEnabled(),
+          "an individual track is ready to export on selection");
     page.length.setText("one bar", false);
     page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
@@ -16463,15 +16488,28 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     auto job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto stemJobs = exportJobs(batch, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    check(stemJobs.size() == 1 && stemJobs.front().source.trackId == 4 &&
+              stemJobs.front().nameTemplate == "Song {{mix}} - {track}" &&
+              stemJobs.front().collision == render::Collision::Increment,
+          "Selected Tracks Only queues a named, no-clobber delivery for each selected stem");
     const auto expected = exportSample(*tempo, textproj::kWhole, 44100);
     check(job.directory == dir && job.nameTemplate == "Song {{mix}}" && job.beginSample == 0 && job.endSample == expected &&
               job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
               job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
               job.source.trackId == 0,
           "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize [P:export#16] [P:export#3]");
-    one.normalize = false; // a silent song has no peak to normalize
-    // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
-    // only a project whose every device loads: an empty project here.
+    auto aiff = one;
+    aiff.fileType = "AIFF";
+    aiff.bitDepth = 32;
+    auto aiffJobs = exportJobs(aiff, document->store().path(), dir / "Song {mix}.AIFF", *tempo);
+    check(exportRefusals(aiff).empty() && aiffJobs.size() == 1 &&
+              aiffJobs.front().container == render::PcmContainer::Aiff &&
+              aiffJobs.front().encoding.format == audio::WavFormat::Float32 &&
+              aiffJobs.front().exactPcmFilename == "Song {mix}.AIFF",
+          "the Export page allows 32-bit AIFF-C and preserves the selected filename");
+    // Use a silent project with no device dependencies to exercise the page's
+    // normalized export in builds with or without the Pd device tier.
     {
         StoreError made{};
         auto empty = Store::createEmpty(dir / "export-empty.adi", made);
@@ -16480,12 +16518,47 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
             empty->db().exec("INSERT INTO project(id,name) VALUES(1,'Export'); INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main')");
     }
     job = exportJob(one, dir / "export-empty.adi", dir / "Song {mix}.wav", *tempo);
-    const auto result = render::renderWav(job, {});
+    render::Control progress;
+    bool sawWork = false, disabledWhileRendering = true;
+    progress.wavProgress = [&](render::JobId, double fraction) {
+        page.showProgress(fraction);
+        sawWork = sawWork || (fraction > 0 && fraction < 1);
+        disabledWhileRendering = disabledWhileRendering && !page.exportButton.isEnabled();
+    };
+    const auto result = render::renderWav(job, {}, progress);
     if (result.state != render::JobState::Completed)
         std::printf("render: %s\n", result.error.c_str());
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
           "the renderer writes the chosen file, the whole range [P:export#3]");
+    page.showDone("Exported.");
+    check(sawWork && disabledWhileRendering && page.exportButton.isEnabled(),
+          "render work updates the Export page and completion enables Export again");
+    {
+        ExportInterruption interruption;
+        int proceeded = 0;
+        const auto proceed = [&] { ++proceeded; };
+        check(!interruption.request(false, proceed) && proceeded == 1,
+              "an idle renderer lets a project change or Quit proceed immediately");
+        check(interruption.request(true, proceed) && proceeded == 1,
+              "an active export waits for an explicit answer before the project changes");
+        check(!interruption.request(false, proceed) && proceeded == 1,
+              "another request cannot slip through while an export decision is pending");
+        interruption.answer(false);
+        check(proceeded == 1, "Keep Exporting drops the requested action");
+        check(interruption.request(true, proceed), "a fresh request can prompt again after Keep Exporting");
+        interruption.answer(true);
+        interruption.answer(true);
+        check(proceeded == 2, "cancelling the export proceeds exactly once");
+
+        root.status.setExportProgress(37);
+        root.say("A different status message.");
+        root.frame();
+        check(root.status.exportProgressText() == "Exporting 37%" && root.error() == "A different status message.",
+              "export progress remains in the main window alongside other status messages");
+        root.status.setExportProgress(std::nullopt);
+        check(root.status.exportProgressText().isEmpty(), "a finished or cancelled export clears the progress");
+    }
     document->release();
 }
 void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
@@ -16569,6 +16642,69 @@ void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
     now = .51;
     root.frame();
     check(shows(look::display), "stopping playback clears the held note indication");
+}
+void exportPreferences(const std::filesystem::path &dir) {
+    settings::AppSettings settings(appdata::App::Daw, dir / "export-settings.json");
+    settings.setLogUserChanges(false);
+    std::string why;
+    const auto configuredFolder = dir / "configured export";
+    const auto lastFolder = dir / "last export";
+    std::filesystem::create_directory(configuredFolder);
+    std::filesystem::create_directory(lastFolder);
+    check(settings.set("export.fileType", "flac", {}, why) &&
+              settings.set("export.bitDepth", 16, {}, why) &&
+              settings.set("export.dither", "rectangular", {}, why) &&
+              settings.set("export.normalize", "loudness", {}, why) &&
+              settings.set("export.loudnessTargetLufs", -16.0, {}, why) &&
+              settings.set("export.truePeakCeilingDb", -2.0, {}, why) &&
+              settings.set("files.renderFolder", media::pathUtf8(configuredFolder), {}, why),
+          "Settings accepts the export defaults");
+
+    ExportPreferences preferences;
+    ExportChoices range;
+    range.lengthTicks = textproj::kWhole;
+    ExportPage first(preferences.open(range, settings), {{42, "Audio"}, {43, "Audio"}}, {});
+    const engine::TempoMap tempo{{{0, 120}}};
+    const auto job = exportJob(first.choices(), dir / "Song.adi", configuredFolder / "Song.wav", tempo);
+    check(first.choices().fileType == "FLAC" && first.choices().bitDepth == 16 &&
+              first.choices().dither == "Rectangular" && first.choices().normalize &&
+              job.normalization.mode == render::NormalizeMode::Loudness &&
+              std::abs(job.normalization.targetLufs + 16.0) < 1e-9 &&
+              std::abs(job.normalization.truePeakCeilingDb + 2.0) < 1e-9 &&
+              preferences.folder(settings, dir) == configuredFolder,
+          "the first Export page reads the configured defaults and render folder");
+
+    first.renderedTrack.setSelectedId(5, juce::sendNotificationSync);
+    first.fileType.setSelectedId(1, juce::sendNotificationSync);
+    first.bitDepth.setSelectedId(2, juce::sendNotificationSync);
+    first.dither.setSelectedId(1, juce::sendNotificationSync);
+    first.normalize.setToggleState(false, juce::dontSendNotification);
+    first.normalize.onClick();
+    preferences.remember(first.choices());
+    preferences.rememberFolder(settings, lastFolder);
+
+    range.startTicks = textproj::kWhole;
+    range.lengthTicks = 2 * textproj::kWhole;
+    ExportPage reopened(preferences.open(range, settings), {{43, "Audio"}, {42, "Audio"}}, {});
+    check(reopened.choices().track == 43 && reopened.choices().fileType == "WAV" &&
+              reopened.choices().bitDepth == 24 && reopened.choices().dither == "No Dither" &&
+              !reopened.choices().normalize && preferences.folder(settings, dir) == lastFolder &&
+              reopened.choices().startTicks == range.startTicks && reopened.choices().lengthTicks == range.lengthTicks,
+          "a reopened Export page restores choices by track ID and uses the current time range");
+    ExportPage duplicateName(preferences.open(range, settings), {{42, "Audio"}, {43, "Audio"}}, {});
+    check(duplicateName.choices().track == 43, "a duplicate name cannot steal the remembered track selection");
+    ExportPage removed(preferences.open(range, settings), {{42, "Audio"}}, {});
+    check(removed.choices().track == 0, "a removed track falls back to Main");
+
+    check(settings.set("export.fileType", "mp3", {}, why) && settings.set("export.normalize", "peak", {}, why) &&
+              settings.set("files.renderFolder", "", {}, why),
+          "Settings accepts later export defaults");
+    preferences.forgetTrack();
+    const auto changed = preferences.open(range, settings);
+    check(changed.track == 0 && !changed.encodePcm && changed.encodeMp3 && changed.normalize &&
+              changed.normalization.mode == render::NormalizeMode::Peak &&
+              changed.bitDepth == 24 && changed.dither == "No Dither" && preferences.folder(settings, dir) == dir,
+          "later Settings changes override their choices and a new project starts with Main");
 }
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
 // the release, the selected tracks moving together by the same move, Esc putting them back.
@@ -20212,6 +20348,12 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
           "auto-arm, WAV depth and Start Playback with Record are available to edit");
     panel.showPage("Tempo & MIDI");
     check(available(settings::kNewMidiInputTrackKey), "the default Track switch for new MIDI inputs is available");
+    panel.showPage("Export");
+    check(available("export.fileType") && available("export.bitDepth") && available("export.dither") &&
+              available("export.normalize") && available("export.loudnessTargetLufs") &&
+              available("export.truePeakCeilingDb"), "the export defaults used by the Export page are editable");
+    panel.showPage("File & Folder");
+    check(available("files.renderFolder"), "the render folder used by Export is editable");
     panel.showPage("Licenses & Updates");
     const auto *diagnostics = rowFor("privacy.diagnosticLog");
     check(diagnostics && diagnostics->control->isEnabled(), "the diagnostic logging setting remains editable");
@@ -24826,6 +24968,7 @@ int main(int argc, char **argv) {
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
+    trace("exportPreferences", [&] { exportPreferences(temp.path()); });
     trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
