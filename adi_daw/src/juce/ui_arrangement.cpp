@@ -4109,9 +4109,9 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
         return beginAutomationStroke(e);
     const auto at = e.position;
     if (const auto hit = automationPointAt(at)) {
+        chosenPoint_ = hit;
         if (beginSelectedAutomationDrag(*hit, e))
             return true;
-        chosenPoint_ = hit;
         pointDrag_ = hit;
         pointTick_ = 0;
         if (const auto current = view.root.current())
@@ -4946,11 +4946,16 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         return;
     }
     if (automationDrag_) {
-        if (e.mouseWasDraggedSinceMouseDown())
-            updateAutomationDrag(e);
         auto drag = std::move(*automationDrag_);
         automationDrag_.reset();
-        if (e.mouseWasDraggedSinceMouseDown())
+        const bool dragged = e.mouseWasDraggedSinceMouseDown();
+        if (drag.movesSelection) {
+            if (dragged || drag.cancelled)
+                chosenPoint_.reset();
+            else
+                clearAutomationSelection();
+        }
+        if (dragged)
             commitAutomationDrag(drag);
         repaint();
         return;

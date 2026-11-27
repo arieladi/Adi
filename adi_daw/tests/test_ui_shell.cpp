@@ -16343,9 +16343,19 @@ void automationBreakpointDrags(AppCommands &commands, const std::filesystem::pat
 
     const float background = body->bottom - 6.f;
     const juce::Point<float> selectionStart{x(bar / 2), background}, selectionEnd{x(5 * bar / 2), background};
-    press(selectionStart);
-    drag(selectionStart, selectionEnd);
-    release(selectionStart, selectionEnd);
+    const auto select = [&] {
+        press(selectionStart);
+        drag(selectionStart, selectionEnd);
+        release(selectionStart, selectionEnd);
+    };
+    select();
+    press(first);
+    canvas.mouseUp(pressAt(canvas, first));
+    root.frame();
+    const auto chosen = canvas.chosenAutomationPoint();
+    check(chosen && chosen->point == 7 && !canvas.hasAutomationSelection() && undoStep() == baseline,
+          "a click without a drag still chooses a single breakpoint");
+    select();
     const bool selected = canvas.hasAutomationSelection() && geometry.selection.start == bar / 2 &&
                           geometry.selection.end == 5 * bar / 2;
     check(selected, "the background drag selects a time range containing both breakpoints");
