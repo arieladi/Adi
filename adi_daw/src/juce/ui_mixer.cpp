@@ -13,6 +13,7 @@
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <span>
@@ -80,6 +81,19 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String
         return;
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
+}
+constexpr int kCuePairCount = engine::OutputChannelMap::maximumChannels / 2;
+const juce::String &cuePairLabel(int first) {
+    // The compact button uses channel numbers. Build the labels before its first frame.
+    static const auto labels = [] {
+        std::array<juce::String, kCuePairCount> pairs;
+        for (int pair = 0; pair < kCuePairCount; ++pair) {
+            const auto channel = pair * 2 + 1;
+            pairs[static_cast<std::size_t>(pair)] = juce::String(channel) + "/" + juce::String(channel + 1);
+        }
+        return pairs;
+    }();
+    return labels[static_cast<std::size_t>(std::clamp(first / 2, 0, kCuePairCount - 1))];
 }
 class InputMenuReading {
   public:
@@ -261,7 +275,7 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      controls::stateOf(held >= 1, over, down, isEnabled(), controls::Lit::Record),
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
-MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
+MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(panel) {
     // Focus is explicit for the channel's title menu and for Esc during a live drag (MX-23).
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
@@ -606,10 +620,9 @@ void MixerStrip::frame(bool changed) noexcept {
         if (const auto *snapshot = panel_.root.reader().get()) {
             if (!cueDragging_)
                 cueVolume.setValue(std::max(kCueFloorDb, snapshot->cue.volumeDb), juce::dontSendNotification);
-            if (!panel_.vertical()) {
-                const auto cueLabel = stereoOutputLabel(RoutingChooser::CueOut);
-                if (cueOut.getButtonText() != cueLabel)
-                    cueOut.setButtonText(cueLabel);
+            if (!panel_.vertical() && cueFirstChannel_ != snapshot->cue.firstOutputChannel) {
+                cueFirstChannel_ = snapshot->cue.firstOutputChannel;
+                cueOut.setButtonText(cuePairLabel(cueFirstChannel_));
             }
         }
     if (changed && t && !dragging_) {

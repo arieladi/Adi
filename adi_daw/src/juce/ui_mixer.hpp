@@ -142,7 +142,7 @@ class MixerStrip final : public juce::Component,
     enum class RoutingChooser { MidiFrom, MidiChannel, MidiTo, AudioTo, MainOut, CueOut };
     std::function<void(RoutingChooser, juce::PopupMenu)> onRoutingMenu;
     // The Arrangement's compact Cue Out chooser shares the Mixer View's routing menu.
-    juce::TextButton cueOut{"1/2"};
+    juce::TextButton cueOut;
     void cueOutMenu();
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
@@ -316,6 +316,7 @@ class MixerStrip final : public juce::Component,
     bool midi_ = false, audio_ = true, inGroup_ = false;
     const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
+    int cueFirstChannel_ = 0;
     // Throws a return's own Pre/Post switch (`TrackNode::returnSendTap`): one `return.setSendTap`,
     // one undo step, which the engine spreads over every send into the return.
     void throwPrePost(std::int64_t ret);
