@@ -180,11 +180,36 @@ void complement() {
     audio::onAudioThread = false;
     check(rows(result, {3, 2, 1, 0}), "calling from the audio callback leaves result storage untouched");
 }
+
+void comparableLoudness() {
+    auto reference = sample(audio::SampleKind::OneShot, 1.0, {}, {}, 80.f, 1.f);
+    reference.integratedLufs = -20.f;
+    reference.descriptors.rmsDbfs = -10.f;
+    auto sameRms = reference;
+    sameRms.integratedLufs = -40.f;
+    auto sameLoudness = reference;
+    sameLoudness.descriptors.rmsDbfs = -25.f;
+    const std::array<const SampleAnalysis *, 2> names{&sameRms, &sameLoudness};
+    SampleQuery query;
+    query.rank = SampleQueryRank::Similar;
+    query.reference = &reference;
+    std::vector<SampleQueryMatch> result;
+    querySamples(names, query, result);
+    check(rows(result, {1, 0}), "comparable integrated loudness takes precedence for short samples");
+
+    reference.lengthSeconds = sameRms.lengthSeconds = sameLoudness.lengthSeconds = 3.0;
+    reference.similarityPrefix = reference.descriptors;
+    sameRms.similarityPrefix = sameRms.descriptors;
+    sameLoudness.similarityPrefix = sameLoudness.descriptors;
+    querySamples(names, query, result);
+    check(rows(result, {0, 1}), "a longer sample uses prefix RMS in place of whole-file loudness");
+}
 } // namespace
 
 int main() {
     filters();
     similarity();
     complement();
+    comparableLoudness();
     return failures != 0 ? 1 : 0;
 }

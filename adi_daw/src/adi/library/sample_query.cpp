@@ -80,7 +80,14 @@ double similar(const SampleAnalysis &a, const SampleAnalysis &b, double cutoff) 
 
     const double densityA = 1.0 + first.hitDensityHz;
     const double densityB = 1.0 + other.hitDensityHz;
-    const double loudnessDistance = std::abs(static_cast<double>(first.rmsDbfs) - other.rmsDbfs) / 60.0;
+    // Compare integrated loudness only when both readings cover the same
+    // material as their sound descriptors. Longer files use prefix RMS.
+    const bool comparableLufs = a.integratedLufs && b.integratedLufs &&
+                                a.lengthSeconds <= sampleSimilarityWindowSeconds &&
+                                b.lengthSeconds <= sampleSimilarityWindowSeconds;
+    const double levelA = comparableLufs ? *a.integratedLufs : first.rmsDbfs;
+    const double levelB = comparableLufs ? *b.integratedLufs : other.rmsDbfs;
+    const double loudnessDistance = std::abs(levelA - levelB) / 60.0;
     double distance = spectralDistance +
                       kSimilarityEnvelopeWeight * energyDistance(first.envelopeEnergy, other.envelopeEnergy) +
                       kSimilarityLengthWeight * ratioDistance(a.lengthSeconds, b.lengthSeconds, 4.0) +

@@ -1943,7 +1943,7 @@ target_sources(adi_core PRIVATE
     src/adi/library/sample_tonality.cpp
     src/adi/library/sample_warp_policy.cpp)
 foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
-                       sample_analysis sample_descriptors sample_query sample_tonality)
+                       sample_analysis sample_descriptors sample_query browser_sample_query sample_tonality)
     add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
     target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
     add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
