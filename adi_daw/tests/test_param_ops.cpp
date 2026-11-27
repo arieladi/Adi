@@ -1076,6 +1076,45 @@ void testReadPresetState() {
           "reading a preset does not write history, save project state or reload the instance");
 }
 
+void testSnapshotWithMissingDevice() {
+    section("SC-09 -- an unloaded plug-in keeps its saved rows without a runtime receipt");
+    const adi::test::TempDirectory scratch("param_ops", "snapshot_missing");
+    StoreError error = StoreError::Ok;
+    auto store = Store::createEmpty(scratch.path() / "p.adi", error);
+    check(store != nullptr, "create project for an unavailable plug-in");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','missing.sampler','Sampler','instrument');");
+    Session session;
+    check(session.load(*store, {}, SessionSpec{}), "load without the sampler plug-in");
+    ParamOps ops;
+    ops.attachSession(session);
+    std::vector<OpRequest> requests(3);
+    requests[0].opType = "chain.create";
+    requests[0].payload = {{"id", 10}, {"track", 1}, {"ord", 0}, {"name", "Devices"}};
+    requests[1].opType = "device.insert";
+    requests[1].payload = {{"id", 100}, {"chain", 10}, {"ord", 0}, {"ref", 1}, {"name", "Sampler"}, {"latency", 0}};
+    requests[2].opType = "device.setParam";
+    requests[2].payload = {{"dev", 100}, {"param", "cutoff"}, {"norm", 0.75}};
+    OpJournal journal(*store);
+    const auto committed = journal.commit(requests);
+    check(committed.ok && session.refresh(*store), "insert and realise a missing plug-in with saved parameters");
+    ops.attachSession(session);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 1}, {"name", "After the placeholder"}};
+    check(journal.commit(rename).ok && session.refresh(*store),
+          "realise a second edit before pumping the earlier receipt");
+    ops.attachSession(session);
+    const auto captured = ops.snapshotAll(1000);
+    const auto *entry = session.entryFor(100);
+    check(entry && entry->placeholder && !ops.isAttached(100) && captured.ok() && captured.journalOps == 0 &&
+              ops.appliedDeliveryStatus().state == AppliedDeliveryState::Idle &&
+              near(store->db().execAndGet("SELECT normalized_value FROM plugin_params").getDouble(), 0.75),
+          "save acknowledges the older stored-only receipt without waiting for a plug-in or changing its values");
+}
+
 void testSnapshotAll() {
     section("PD-03 -- save every silent changed device before a snapshot or close");
     const adi::test::TempDirectory scratch("param_ops", "snapshot_all");
@@ -1180,6 +1219,12 @@ void testSnapshotAll() {
     const auto latest = ops.snapshotAll(1900);
     check(latest.ok() && latest.stateOps == 1 && count() == 9 && rowHash(100) == hashOfState(*a),
           "the later silent edit is saved at the next explicit request");
+
+    a->changePatchSilently(23);
+    b->refuseSave = true;
+    const auto selected = ops.snapshotDeviceState(100, 2000, ParamOps::SnapshotGestures::FinishOpen);
+    check(selected.ok() && selected.stateOps == 1 && count() == 10 && rowHash(100) == hashOfState(*a),
+          "capturing one device does not read an unrelated plug-in's opaque state");
 }
 
 }  // namespace
@@ -1199,6 +1244,7 @@ int main() {
     testAppliedMovesTheBaselineWithoutAnEcho();
     testRowsFollowTheChunk();
     testASaveWritesTheFirstRow();
+    testSnapshotWithMissingDevice();
     testSnapshotAll();
     testReadPresetState();
     testAStatelessDeviceWritesItsMoves();

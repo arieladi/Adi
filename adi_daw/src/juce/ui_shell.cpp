@@ -43,6 +43,7 @@ bool deviceOrTrackEditCommand(int id) noexcept {
 // SC-258 provisional policy pending a Live 12 reading of Undo during Arrangement Record.
 constexpr bool kHoldHistoryUntilArrangementTakeLands = true;
 constexpr auto kRecordingHistoryMessage = "Undo and Redo are available after the current take finishes.";
+constexpr int kRecentProjectLimit = 12;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -52,8 +53,46 @@ bool flag(const settings::AppSettings &s, const char *key, bool fallback) {
 }
 } // namespace
 AppCommands::AppCommands(settings::AppSettings &settings) : settings_(settings) {
+    recentProjects_.setMaxNumberOfItems(kRecentProjectLimit);
+    if (const auto directory = settings_.file().parent_path().u8string(); !directory.empty()) {
+        recentProjectsFile_ = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(directory.c_str())))
+                                  .getChildFile("recent-projects.json");
+        const auto recent = juce::JSON::parse(recentProjectsFile_);
+        if (const auto *paths = recent.getArray()) {
+            for (int i = std::min(paths->size(), kRecentProjectLimit); i > 0; --i) {
+                const auto &value = (*paths)[i - 1];
+                const auto path = value.toString();
+                if (value.isString() && juce::File::isAbsolutePath(path))
+                    recentProjects_.addFile(juce::File(path));
+            }
+        }
+    }
     manager.setFirstCommandTarget(this);
     reload();
+}
+void AppCommands::saveRecentProjects() {
+    if (recentProjectsFile_ == juce::File{} || !recentProjectsFile_.getParentDirectory().createDirectory().wasOk())
+        return;
+    juce::Array<juce::var> paths;
+    for (int i = 0; i < recentProjects_.getNumFiles(); ++i)
+        paths.add(recentProjects_.getFile(i).getFullPathName());
+    (void)recentProjectsFile_.replaceWithText(juce::JSON::toString(juce::var(std::move(paths))));
+}
+void AppCommands::rememberProject(const juce::File &file) {
+    if (recentProjects_.getFile(0) == file)
+        return;
+    recentProjects_.addFile(file);
+    saveRecentProjects();
+}
+void AppCommands::clearRecentProjects(bool onlyUnavailable) {
+    if (onlyUnavailable) {
+        for (int i = recentProjects_.getNumFiles(); i-- > 0;)
+            if (const auto file = recentProjects_.getFile(i); !file.existsAsFile())
+                recentProjects_.removeFile(file);
+    } else {
+        recentProjects_.clear();
+    }
+    saveRecentProjects();
 }
 void AppCommands::reload() {
     live_ = settings_.get("shortcuts.preset") == "live";
@@ -196,7 +235,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, AppCommands::LastId - AppCommands::PlayStop + 1> table{{
+    static constexpr auto table = std::to_array<StableEntry>({
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -333,7 +372,10 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.computer-midi-keyboard", "Options"}, // ComputerMidiKeyboard
         {"create.import-midi-file", "Create"}, // ImportMidiFile
         {"file.export-midi-clip", "File"}, // ExportMidiClip
-    }};
+        {"help.about", "Help"}, // About
+        {"create.import-audio-file", "Create"}, // ImportAudioFile
+    });
+    static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
 }
@@ -507,7 +549,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setActive(false);
         return;
     }
-    static const char *names[] = {"Play / stop",         "Stop",
+    static constexpr const char *names[] = {"Play / stop",         "Stop",
                                   "Undo",                "Redo",
                                   "Flip Sides",          "Hide/Show Browser",
                                   "Arrangement Track Controls", "Hide/Show Device View",
@@ -560,8 +602,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
-                                  "Import MIDI File...", "Export MIDI Clip..."};
+                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File..."};
+    static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
+    if (id == TakeSnapshot && active_ && active_->needsFirstSave)
+        info.setInfo("Save Project...", "Name this project", category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
         info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
@@ -638,8 +683,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ZoomOut:
         info.addDefaultKeypress('-', cmd);
         break;
-    // §41.3. Ctrl/Cmd+S takes a named snapshot rather than saving, a deviation the
-    // director ruled (ADR-0203 d6, d12); Save As is Live's, a true one.
+    // Ctrl/Cmd+S names an unnamed project once, then takes named snapshots
+    // (ADR-0258 d3 and ADR-0203 d6, d12).
     case NewProject:
         info.addDefaultKeypress('n', cmd);
         break;
@@ -691,6 +736,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case InsertMidiClip:
         // Live 12's Create menu: Insert Empty MIDI Clip(s), on a time selection (§41.1).
         info.addDefaultKeypress('m', cmd | shift);
+        break;
+    case ImportAudioFile:
+        info.setActive(active_ != nullptr && active_->chooseAudioFile);
         break;
     case DeleteTrack:
         info.addDefaultKeypress(juce::KeyPress::deleteKey, 0);
@@ -1386,6 +1434,26 @@ void StatusBar::paint(juce::Graphics &g) {
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
 }
+BrowserResizer::BrowserResizer(AdiRootComponent &root) : root_(root) {
+    setTitle("Browser width");
+    setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+}
+void BrowserResizer::mouseDown(const juce::MouseEvent &event) {
+    if (!event.mods.isLeftButtonDown() || root_.browserArea().isEmpty()) return;
+    const auto &panels = root_.state().panels;
+    const int direction = panels.slotOf(Panel::Browser) == 0 ? 1 : -1;
+    drag_ = Drag{root_.browserArea().getWidth() + look::gap, panels.find(Panel::Browser)->width, direction};
+}
+void BrowserResizer::mouseDrag(const juce::MouseEvent &event) {
+    if (drag_)
+        root_.resizeBrowser(drag_->visibleWidth + drag_->direction * event.getDistanceFromDragStartX());
+}
+void BrowserResizer::mouseUp(const juce::MouseEvent &) {
+    if (drag_ && root_.state().panels.find(Panel::Browser)->width != drag_->storedWidth)
+        (void)root_.persist();
+    drag_.reset();
+}
+
 AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, SessionState &session,
@@ -1408,6 +1476,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
     addAndMakeVisible(browser);
+    addChildComponent(browserResizer);
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
@@ -1782,6 +1851,11 @@ double AdiRootComponent::bpm() const noexcept {
                        tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
                  : 120.;
 }
+int AdiRootComponent::shownPanelWidth(const PanelGeometry &panel) const noexcept {
+    const int width = state_.panels.occupied(panel);
+    const bool roomForInOut = width >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth + MixerPanel::kRightStrip;
+    return panel.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth : width;
+}
 void AdiRootComponent::resized() {
     const int w = getWidth(), h = getHeight(), gap = look::gap;
     transport.setBounds(0, 0, w, look::controlBarHeight);
@@ -1797,7 +1871,7 @@ void AdiRootComponent::resized() {
     transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
     if (fullMix) {
         for (auto *child : std::initializer_list<juce::Component*>{
-                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser,
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &browserResizer,
                  &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
             child->setVisible(false);
         browserArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
@@ -1835,14 +1909,8 @@ void AdiRootComponent::resized() {
     const auto &slots = state_.panels.slots();
     // Without In/Out, the track controls are narrower by its column, as Live's (§42.1); the
     // stored width is kept for when it comes back.
-    auto shownWidth = [this](const PanelGeometry &slot, int width) {
-        const bool roomForInOut =
-            width >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth + MixerPanel::kRightStrip;
-        return slot.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth
-                                                                           : width;
-    };
-    int left = shownWidth(slots[0], state_.panels.occupied(slots[0]));
-    int right = shownWidth(slots[1], state_.panels.occupied(slots[1]));
+    int left = shownPanelWidth(slots[0]);
+    int right = shownPanelWidth(slots[1]);
     const int leftMin = slots[0].collapsed ? 0 : slots[0].minWidth;
     const int rightMin = slots[1].collapsed ? 0 : slots[1].minWidth;
     const int available = std::max(0, w - state_.panels.arrangementMinWidth());
@@ -1902,6 +1970,9 @@ void AdiRootComponent::resized() {
     strip.setBounds(stripArea_);
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
+    const int browserEdge = browserLeft ? browserArea_.getRight() : browserArea_.getX();
+    browserResizer.setBounds(browserEdge - gap / 2, top, gap, body);
+    browserResizer.setVisible(!browserArea_.isEmpty());
     leftWidth_ = left;
     rightWidth_ = right;
     // The arrangement fills what the side panels leave, between the browser's gap and
@@ -2184,7 +2255,28 @@ void AdiRootComponent::resizeDevices(int height) {
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
 }
-bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+void AdiRootComponent::resizeBrowser(int width) {
+    auto &panels = state_.panels;
+    const auto &browserPanel = *panels.find(Panel::Browser);
+    const auto &mixerPanel = *panels.find(Panel::Mixer);
+    // The mixer keeps its own preference. Account for the hidden In/Out column
+    // and the two gutters when enforcing the arrangement's minimum.
+    const int hiddenMixerWidth = panels.occupied(mixerPanel) - shownPanelWidth(mixerPanel);
+    const int available = getWidth() - 2 * look::gap + hiddenMixerWidth;
+    const int maximum = available - panels.arrangementMinWidth() - panels.occupied(mixerPanel);
+    if (browserPanel.collapsed || maximum < browserPanel.minWidth) return;
+    width = std::clamp(width, browserPanel.minWidth, maximum);
+    if (width != browserPanel.width && !panels.setWidth(Panel::Browser, width, available))
+        resized();
+}
+bool AdiRootComponent::persist() {
+    if (persistence_.save(window_, state_, error_))
+        return true;
+    if (onStatusMessage && !error_.empty())
+        onStatusMessage(error_);
+    dirty_.mark(DirtySet::Status);
+    return false;
+}
 juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
     // ADI; Track Options is the Mixer View's Track Delay section (manual 18.7); the crossfader and
@@ -3234,6 +3326,8 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
     return true;
 }
 void AdiRootComponent::say(std::string message) {
+    if (onStatusMessage && !message.empty() && message != error_)
+        onStatusMessage(message);
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
 }
@@ -3388,8 +3482,7 @@ std::string AdiRootComponent::undoTitle(bool redo) const {
     return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
-    error_ = std::move(message);
-    dirty_.mark(DirtySet::Status);
+    say(std::move(message));
     return false;
 }
 bool AdiRootComponent::toggle(Panel p) {
@@ -3515,7 +3608,12 @@ bool AdiRootComponent::deleteTrack() {
         if (!covered)
             requests.push_back(track_edits_detail::op("track.delete", {{"id", id}}, "Delete Track"));
     }
-    if (requests.empty() || !submitEdits(std::move(requests)))
+    if (requests.empty())
+        return false;
+    std::string error;
+    if (beforeDeleteTrack && !beforeDeleteTrack(error))
+        return fail(std::move(error));
+    if (!submitEdits(std::move(requests)))
         return false;
     auto &selection = arrangement.geometry.selection;
     selection.track = selection.toTrack = 0;
@@ -3718,7 +3816,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     if (importMaterial && importAsks(commands_.settings())) {
         importPrompt_ = std::make_unique<ImportPrompt>(
             files.size(), last,
-            [this, files, track, pos, separate](std::optional<ImportChoices> answer) {
+            [this, files, track, pos, separate](std::optional<ImportChoices> answer, bool stopAsking) {
                 // The prompt goes once it is answered (deleted after its own click returns); the drop
                 // goes on with its choices.
                 if (importPrompt_) {
@@ -3740,7 +3838,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 }
                 std::string why;
                 const bool kept = keepImportChoices(commands_.writableSettings(), *answer, why,
-                                                    juce::Time::currentTimeMillis() * 1000);
+                                                    juce::Time::currentTimeMillis() * 1000, stopAsking);
                 dropWithChoices(files, track, pos, separate, *answer);
                 if (!kept) {
                     const auto warning = "The import's choices were used but not saved: " + why;
@@ -3751,7 +3849,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 }
             });
         addAndMakeVisible(*importPrompt_);
-        importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 214));
+        importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 184));
         importPrompt_->toFront(true);
         return true;
     }
@@ -5146,7 +5244,7 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
-        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport))
+        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -5428,6 +5526,26 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     }
+    case AppCommands::ImportAudioFile: {
+        const auto &selection = arrangement.geometry.selection;
+        const auto *track = reader().findTrack(selection.track);
+        if (track == nullptr || track->kind != "audio")
+            return fail("Select an audio track to import a file.");
+        if (importPrompt_)
+            return fail("Answer the import prompt first.");
+        if (importing_)
+            return fail("The last file is still being imported.");
+        if (!chooseAudioFile)
+            return fail("The audio file chooser is unavailable.");
+        const auto root = juce::Component::SafePointer<AdiRootComponent>(this);
+        if (!chooseAudioFile([root, id = track->id, tick = selection.insert](const juce::File &file) {
+                if (root != nullptr && file != juce::File{})
+                    root->dropAudio(file.getFullPathName().toStdString(), id, tick,
+                                    file.getFileNameWithoutExtension().toStdString());
+            }))
+            return fail("Close the open file chooser before importing audio.");
+        return true;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -5635,15 +5753,18 @@ struct MenuEntries {
     std::vector<int> items;
 };
 // Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
-constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2;
+constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2, kOpenRecentMenu = -3;
+constexpr int kFirstRecentProject = 0x4000;
+constexpr int kClearRecentProjects = kFirstRecentProject + kRecentProjectLimit;
+constexpr int kRemoveUnavailableProjects = kClearRecentProjects + 1;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip}},
 #else
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
@@ -5660,7 +5781,8 @@ const std::vector<MenuEntries> &menuBar() {
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
         // menu is to be read on Live.
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, C::ImportMidiFile, 0,
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, C::ImportMidiFile,
+                    C::ImportAudioFile, 0,
                     C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer. Automation Mode
@@ -5697,7 +5819,7 @@ const std::vector<MenuEntries> &menuBar() {
           C::WrapTabNavigation}},
         // WIN-09: the manual and the keyboard reference, so the Mac's Cmd+? search finds ADI's menus;
         // the Help View (Learn View) joins it later.
-        {"Help", {C::HelpManual, C::KeyboardReference}}};
+        {"Help", {C::HelpManual, C::KeyboardReference, 0, C::About}}};
     return bar;
 }
 } // namespace
@@ -5725,16 +5847,57 @@ class ShellMenu final : public juce::MenuBarModel {
                         menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
                     else if (id == AppCommands::ToggleReferenceTrack || id == AppCommands::PlayReference)
                         root.addReferenceCommand(menu, id);
-                    else
+                    else if (id == kOpenRecentMenu) {
+                        auto recent = recentMenu();
+                        menu.addSubMenu("Open Recent", std::move(recent), !recentItems_.empty());
+                    } else
                         menu.addCommandItem(&commands.manager, id);
                 }
         return menu;
     }
-    void menuItemSelected(int, int) override {}
+    void menuItemSelected(int id, int) override {
+        if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
+            commands.clearRecentProjects(id == kRemoveUnavailableProjects);
+            menuItemsChanged();
+        } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);
+                   index < recentItems_.size() && root.openRecentProject) {
+            // Opening a project replaces the root and its menu. Keep a local copy of the action and path.
+            auto open = root.openRecentProject;
+            const auto file = recentItems_[index];
+            open(file);
+        }
+    }
 
   private:
     AdiRootComponent &root;
     AppCommands &commands;
+    std::vector<juce::File> recentItems_;
+
+    juce::PopupMenu recentMenu() {
+        juce::PopupMenu menu;
+        recentItems_.clear();
+        const auto &files = commands.recentProjects();
+        for (int i = 0; i < files.getNumFiles(); ++i)
+            recentItems_.push_back(files.getFile(i));
+        bool unavailable = false;
+        for (std::size_t i = 0; i < recentItems_.size(); ++i) {
+            const auto &file = recentItems_[i];
+            auto name = file.getFileNameWithoutExtension();
+            if (std::count_if(recentItems_.begin(), recentItems_.end(), [&name](const auto &other) {
+                    return other.getFileNameWithoutExtension() == name;
+                }) > 1)
+                name = file.getFullPathName();
+            const bool present = file.existsAsFile();
+            menu.addItem(kFirstRecentProject + static_cast<int>(i), name, present);
+            unavailable |= !present;
+        }
+        if (!recentItems_.empty()) {
+            menu.addSeparator();
+            menu.addItem(kRemoveUnavailableProjects, "Remove Unavailable Projects", unavailable);
+            menu.addItem(kClearRecentProjects, "Clear List");
+        }
+        return menu;
+    }
 };
 juce::PopupMenu applicationMenu(AppCommands &commands) {
     juce::PopupMenu menu;
@@ -5808,9 +5971,26 @@ juce::File songProjectFile(const juce::File &file) {
     if (name.isEmpty() || name == "." || name == "..")
         return {};
     const auto parent = file.getParentDirectory();
-    if (parent == parent.getSiblingFile(name))
+    if (file.existsAsFile() || parent == parent.getSiblingFile(name))
         return file;
     return parent.getChildFile(name).getChildFile(file.getFileName());
+}
+bool discardUntouchedProject(const std::filesystem::path &path, const media::FileIdentity &expected) {
+    std::error_code error;
+    const auto lease = media::ProjectFileLease::openExclusive(path, error);
+    if (!lease || lease->identity() != expected || !std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)))
+        return false;
+    try {
+        // Read after all document workers have released SQLite and under the exclusive project lease.
+        // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
+        SQLite::Database db(media::pathUtf8(path), SQLite::OPEN_READONLY);
+        if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
+                          "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
+            return false;
+    } catch (const SQLite::Exception &) {
+        return false;
+    }
+    return media::readFileIdentity(path, error) == expected && std::filesystem::remove(path, error);
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
@@ -5949,12 +6129,12 @@ bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
     // A held key comes up wherever the focus is: the root lets it go.
     return root_->keyStateChanged(isKeyDown);
 }
-AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices,
-                                             std::function<void(std::optional<ImportChoices>)> reply)
+AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices, Reply reply)
     : title_(files == 1 ? juce::String("Import Audio") : "Import " + juce::String(static_cast<int>(files)) + " Audio Files"),
       answer_(std::move(reply)) {
-    for (auto *b : {&warp, &fades, &copy})
+    for (auto *b : {&warp, &fades, &copy, &stopAsking})
         addAndMakeVisible(*b);
+    stopAsking.setTooltip("To show this prompt again, set Audio import options to Ask in Settings > Editing.");
     warp.setToggleState(choices.warp, juce::dontSendNotification);
     fades.setToggleState(choices.edgeFades, juce::dontSendNotification);
     copy.setToggleState(choices.copyIn, juce::dontSendNotification);
@@ -5993,7 +6173,8 @@ void AdiRootComponent::ImportPrompt::answer(bool importing) {
         return;
     auto reply = std::move(answer_);
     answer_ = nullptr;
-    reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt);
+    reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt,
+          importing && stopAsking.getToggleState());
 }
 bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     if (key == juce::KeyPress::returnKey) {
@@ -6006,7 +6187,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     }
     if (key.getKeyCode() == juce::KeyPress::tabKey) {
         // Round its own controls, whatever the window's Tab setting.
-        std::array<juce::Component *, 6> order{&warp, &mode, &fades, &copy, &import, &cancel};
+        std::array<juce::Component *, 7> order{&warp, &mode, &fades, &copy, &stopAsking, &import, &cancel};
         const auto at = std::find(order.begin(), order.end(), getCurrentlyFocusedComponent());
         const auto step = key.getModifiers().isShiftDown() ? order.size() - 1 : 1;
         const auto from = at == order.end() ? (step == 1 ? order.size() - 1 : 0)
@@ -6023,7 +6204,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     return true;
 }
 void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
-    // A panel in Live's look: its title bar, then the choices, then a line on where they live.
+    // A title bar above the choices.
     g.setColour(look::panel);
     g.fillRoundedRectangle(getLocalBounds().toFloat(), look::radiusControl);
     g.setColour(look::field);
@@ -6031,11 +6212,6 @@ void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading, true));
     g.drawText(title_, getLocalBounds().withHeight(24).reduced(8, 0), juce::Justification::centredLeft);
-    g.setFont(look::font(look::fontLabel));
-    g.drawFittedText("All off by default. The last choices are kept; Settings > Editing > Audio import options "
-                     "turns this prompt off.",
-                     getLocalBounds().withTrimmedTop(122).withHeight(44).reduced(10, 0), juce::Justification::topLeft, 3,
-                     1.0f);
     g.setColour(look::separator);
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), look::radiusControl, look::hairline);
 }
@@ -6046,6 +6222,7 @@ void AdiRootComponent::ImportPrompt::resized() {
     mode.setBounds(row.removeFromLeft(150).reduced(0, 2));
     fades.setBounds(r.removeFromTop(26));
     copy.setBounds(r.removeFromTop(26));
+    stopAsking.setBounds(r.removeFromTop(26));
     auto foot = getLocalBounds().removeFromBottom(40).reduced(10, 8);
     cancel.setBounds(foot.removeFromRight(80));
     foot.removeFromRight(8);

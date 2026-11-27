@@ -222,13 +222,19 @@ public:
         std::size_t stateOps = 0;
         [[nodiscard]] bool ok() const noexcept { return status.ok(); }
     };
+    enum class SnapshotGestures { Completed, FinishOpen };
 
     /// Owner thread, after attachSession. Resolve completed captured gestures,
     /// then durably save live device state without relying on stateEpoch.
     /// Successful zero journalOps means unchanged. Failure reports the
     /// refused device when available and counts any prior durable writes.
+    /// Explicit save actions may finish open edits at their last accepted value.
     /// Call before publishing a named snapshot, copying or closing the Store.
-    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs,
+                                                SnapshotGestures = SnapshotGestures::Completed);
+    /// As for snapshotAll, but read fresh state from the selected device only.
+    [[nodiscard]] SnapshotAllResult snapshotDeviceState(std::int64_t deviceId, std::int64_t nowMs,
+                                                        SnapshotGestures);
 
     struct DevicePresetState {
         std::map<std::string, double> parameters;

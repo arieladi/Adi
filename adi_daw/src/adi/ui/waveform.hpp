@@ -95,6 +95,14 @@ class WaveformCache {
             return nullptr;
         return peaks(audio.mediaId, audio.mediaInfo->contentHash);
     }
+    // A verified relink preserves valid peaks; a failed build may try the new path.
+    void retry(const std::string &hash) {
+        std::lock_guard lock(mutex_);
+        if (kept_.contains(hash))
+            return;
+        asked_.erase(hash);
+        std::erase_if(queue_, [&hash](const Request &request) { return request.hash == hash; });
+    }
     std::shared_ptr<const media::MediaPeaks> peaks(const engine::SampleSlotNode &slot) {
         if (slot.empty || slot.missing || sampleKey(slot).empty())
             return nullptr;

@@ -65,7 +65,7 @@ public:
     /// Owner only, before publishing a binding that supplies this raw fence.
     void retainFence(std::shared_ptr<gesture::detail::ProducerFence>);
     std::size_t drainLifecycle(std::int64_t nowMs, std::vector<ParamEdit>&,
-                               std::vector<ParamActivity>&, bool absorb = false);
+                               std::vector<ParamActivity>&, bool absorb = false, bool finishOpen = false);
     void seed(std::int64_t deviceId, std::int32_t paramIndex, double value);
     void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value,
                     std::int64_t nowMs);
@@ -141,7 +141,8 @@ private:
     };
     void track(const Key&, Parameter&);
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);
-    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb, std::vector<ParamActivity>* activity = nullptr);
+    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb,
+                          std::vector<ParamActivity>* activity = nullptr, bool finishOpen = false);
     struct Slot {
         ParamEvent event;
         gesture::detail::ProducerFence* fence = nullptr;

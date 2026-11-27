@@ -134,3 +134,5 @@
 29061 Computer MIDI Keyboard: M
 29062 Import MIDI File...: 
 29063 Export MIDI Clip...: Cmd+Shift+E
+29064 About ADI: 
+29065 Import Audio File...: 

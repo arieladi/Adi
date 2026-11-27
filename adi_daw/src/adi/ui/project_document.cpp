@@ -10,6 +10,7 @@
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/midi_capture.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
@@ -29,6 +30,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <future>
 #include <mutex>
 #include <system_error>
@@ -41,8 +43,40 @@ namespace adi::ui {
 // reads it at each build.
 struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
+    void waitForReader(const std::filesystem::path &retiredFile) {
+        std::unique_lock lock(mutex);
+        readerReleased.wait(lock, [&] { return activeReader != retiredFile; });
+    }
+
+    struct Read {
+        explicit Read(WaveformSource &owner) : source(owner) {
+            std::lock_guard lock(source.mutex);
+            file = source.path;
+            source.activeReader = file;
+            store = std::move(source.idleReader);
+        }
+        ~Read() {
+            {
+                std::lock_guard lock(source.mutex);
+                if (source.path == file)
+                    source.idleReader = std::move(store);
+                else
+                    store.reset();
+                source.activeReader.reset();
+            }
+            source.readerReleased.notify_all();
+        }
+
+        WaveformSource &source;
+        std::filesystem::path file;
+        std::unique_ptr<Store> store;
+    };
+
     std::mutex mutex;
+    std::condition_variable readerReleased;
     std::filesystem::path path;
+    std::optional<std::filesystem::path> activeReader;
+    std::unique_ptr<Store> idleReader;
 };
 struct ProjectDocument::MidiRecording {
     struct Track {
@@ -220,10 +254,13 @@ struct ProjectDocument::SaveJob {
     using Phase = SaveProgress::Phase;
     std::filesystem::path path;
     SaveKind kind;
+    StoreFileCollision collision;
+    std::optional<media::FileIdentity> expectedTarget;
     Phase phase = Phase::waitingForRecording;
     bool wasRecording;
     bool keptTake = false;
     bool switched = false;
+    bool readersSwitched = false;
     std::string adoptionWarning;
     std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::stop_source stop;
@@ -233,8 +270,10 @@ struct ProjectDocument::SaveJob {
     std::future<StoreFileResult> copy;
     std::future<std::string> retirement;
 
-    SaveJob(std::filesystem::path output, SaveKind operation, bool recording)
-        : path(std::move(output)), kind(operation), wasRecording(recording) {}
+    SaveJob(std::filesystem::path output, SaveKind operation, bool recording, StoreFileCollision collisionMode,
+            const media::FileIdentity *confirmedTarget)
+        : path(std::move(output)), kind(operation), collision(collisionMode),
+          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt), wasRecording(recording) {}
     ~SaveJob() { stop.request_stop(); }
     bool terminal() const noexcept {
         return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
@@ -291,36 +330,28 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
     return end > 0 ? end + tailSeconds : 0;
 }
 
-// The waveform worker's build: its own read-only store on the project's file, opened on the worker
-// at its first build and kept for the next (the worker is the only caller).
-// The worker's reader follows the document's file: after Save As the pool rows of anything imported
-// since are in the new file only, and a reader left on the old one finds none of them.
+// The waveform worker checks out its read-only store for a build. A Save As
+// can release the idle reader immediately, and an in-flight build hands it
+// back only if the document still uses its file.
 WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
-    auto reader = std::make_shared<std::unique_ptr<Store>>();
-    auto opened = std::make_shared<std::filesystem::path>();
-    return [source = std::move(source), reader, opened](std::optional<std::int64_t> mediaId, const std::string &stateHash,
-                                                       std::stop_token stop) {
-        std::filesystem::path path;
-        {
-            std::lock_guard lock(source->mutex);
-            path = source->path;
-        }
-        if (!*reader || *opened != path) {
-            reader->reset();
+    return [source = std::move(source)](std::optional<std::int64_t> mediaId, const std::string &stateHash,
+                                       std::stop_token stop) {
+        WaveformSource::Read read(*source);
+        auto &reader = read.store;
+        if (!reader) {
             StoreError error{};
-            *reader = Store::open(path, error, true);
-            *opened = path;
-            if (!*reader) {
+            reader = Store::open(read.file, error, true);
+            if (!reader) {
                 media::PeakResult refused;
                 refused.problem = media::PeakProblem::database;
                 refused.detail = "the project could not be read for its waveforms: " + std::string(toString(error));
                 return refused;
             }
         }
-        if (mediaId) return media::buildMediaPeaks(**reader, *mediaId, 4096, stop);
+        if (mediaId) return media::buildMediaPeaks(*reader, *mediaId, 4096, stop);
         try {
             if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
-            const auto bytes = (*reader)->getStateBlob(stateHash);
+            const auto bytes = reader->getStateBlob(stateHash);
             if (!bytes || bytes->empty() || bytes->size() > 40u * 1024u * 1024u)
                 return media::PeakResult{media::PeakProblem::invalidSource, "The embedded sample state is unavailable.", {}};
             const auto *data = reinterpret_cast<const std::uint8_t *>(bytes->data());
@@ -570,22 +601,27 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState()) {
+        History::SnapshotResult refused;
+        refused.error = error_;
+        return refused;
+    }
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
-bool ProjectDocument::saveAs(const std::filesystem::path &path) {
+bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave, StoreFileCollision collision,
+                             const media::FileIdentity *expectedTarget) {
     warning_.clear();
-    // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
-    // the name, since Live would have asked here and replaced it.
+    // The unconfirmed path checks before stopping a recording. The store also checks when publishing.
     std::error_code ignored;
-    if (std::filesystem::exists(path, ignored) ||
-        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+    if (collision == StoreFileCollision::Fail &&
+        (std::filesystem::exists(path, ignored) ||
+         std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored)))) {
         error_ = "Save As: " + media::pathUtf8(path.filename()) +
-                 " already exists; ADI never replaces a project. Choose another name.";
+                 " already exists. Confirm replacement or choose another name.";
         return false;
     }
     // A take recording or landing goes into the file it was recorded in, before the file switches
@@ -601,22 +637,36 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         stopTrackRender();
         trackRenderStatus_ = "Track render cancelled for Save As.";
     }
-    refreshReportedLatenciesForSave();
-    const auto result = store_->saveAs(path);
+    if (!capturePluginState())
+        return false;
+    StoreFileSave file;
+    const auto oldPath = store_->path();
+    const auto kind = firstSave ? StoreSaveKind::firstSave : StoreSaveKind::saveAs;
+    auto result = store_->prepareFileSave(path, kind, file, collision, expectedTarget);
+    if (result.ok) result = file.write();
+    if (result.ok) result = store_->adoptFileSave(file);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
         return false;
     }
-    followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    const bool readersSwitched = followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    waveformSource_->waitForReader(oldPath);
+    if (const auto retirementWarning = file.closeReplacedProject(); !retirementWarning.empty()) {
+        if (!warning_.empty()) warning_ += ' ';
+        warning_ += retirementWarning;
+    }
+    if (readersSwitched && firstSave)
+        store_->finishUntitledSave();
     return true;
 }
-void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
+bool ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
     warning_ = result.warning;
     // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
     if (keptTake)
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
+        waveformSource_->idleReader.reset();
         waveformSource_->path = store_->path();
     }
     const auto stem = store_->path().stem().u8string();
@@ -639,6 +689,7 @@ void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake)
         warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
     error_.clear();
+    return refreshError.empty();
 }
 namespace {
 // The store never replaces a file; the Status Bar says so in the window's words, with the name.
@@ -657,7 +708,8 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
@@ -668,13 +720,15 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     return true;
 }
 
-bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind) {
+bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind, StoreFileCollision collision,
+                                const media::FileIdentity *expectedTarget) {
     if (saveJob_) return false;
     warning_.clear();
-    const bool switching = kind == SaveKind::as;
-    if (refuseExisting(path, switching ? "Save As" : "Save a Copy", error_)) return false;
+    const bool switching = kind != SaveKind::copy;
+    if (collision == StoreFileCollision::Fail && refuseExisting(path, switching ? "Save As" : "Save a Copy", error_))
+        return false;
     error_.clear();
-    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_);
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget);
     if (saveJob_->wasRecording) stopRecording();
     advanceSave();
     return true;
@@ -697,7 +751,7 @@ void ProjectDocument::advanceSave() {
     using Phase = SaveProgress::Phase;
     using namespace std::chrono_literals;
     auto &job = *saveJob_;
-    const bool switching = job.kind == SaveKind::as;
+    const bool switching = job.kind != SaveKind::copy;
     const auto fail = [&](std::string why, std::string warning = {}) {
         error_ = std::string(switching ? "Save As failed: " : "Save a Copy failed: ") + why;
         warning_ = std::move(warning);
@@ -708,6 +762,8 @@ void ProjectDocument::advanceSave() {
         job.phase = Phase::succeeded;
     };
     const auto finishRetirement = [&](std::string warning) {
+        if (job.kind == SaveKind::firstSave && job.readersSwitched)
+            store_->finishUntitledSave();
         warning_ = std::move(job.adoptionWarning);
         if (!warning.empty()) {
             if (!warning_.empty()) warning_ += ' ';
@@ -734,9 +790,14 @@ void ProjectDocument::advanceSave() {
                 return;
             }
             job.keptTake = job.wasRecording && landed_ && landed_->ok;
-            refreshReportedLatenciesForSave();
-            const auto kind = switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
-            const auto prepared = store_->prepareFileSave(job.path, kind, job.file);
+            if (!capturePluginState()) {
+                fail(error_);
+                return;
+            }
+            const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
+                            : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
+            const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
+                                                          job.expectedTarget ? &*job.expectedTarget : nullptr);
             if (!prepared.ok) {
                 fail(prepared.error, prepared.warning);
                 return;
@@ -783,6 +844,7 @@ void ProjectDocument::advanceSave() {
                  result.warning);
             return;
         }
+        auto oldPath = store_->path();
         const auto adopted = store_->adoptFileSave(job.file);
         if (!adopted.ok) {
             fail(adopted.error, adopted.warning);
@@ -790,12 +852,16 @@ void ProjectDocument::advanceSave() {
         }
         job.switched = true;
         job.phase = Phase::finishing;
-        followSaveAs(adopted, job.keptTake);
+        job.readersSwitched = followSaveAs(adopted, job.keptTake);
         job.adoptionWarning = std::move(warning_);
+        const auto retire = [file = &job.file, source = waveformSource_, oldPath = std::move(oldPath)] {
+            source->waitForReader(oldPath);
+            return file->closeReplacedProject();
+        };
         try {
-            job.retirement = std::async(std::launch::async, [job = &job] { return job->file.closeReplacedProject(); });
+            job.retirement = std::async(std::launch::async, retire);
         } catch (const std::system_error &) {
-            finishRetirement(job.file.closeReplacedProject());
+            finishRetirement(retire());
         }
     } catch (const std::exception &error) {
         if (job.phase == Phase::finishing) {
@@ -808,7 +874,8 @@ void ProjectDocument::advanceSave() {
 
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->collectAllAndSave();
     warning_ = result.warning;
     if (!result.ok) {
@@ -830,7 +897,8 @@ bool ProjectDocument::collectAllAndSave() {
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     error_.clear();
@@ -1024,10 +1092,54 @@ void ProjectDocument::pollParameterEdits() {
     drainParameterEdits(256);
     feed_.publish(session_, realisedGeneration_);
 }
+bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
+    if (store_->readOnly())
+        return true;
+    if (!synchronise())
+        return false;
+    if (deviceId) {
+        const auto *entry = session_.entryFor(*deviceId);
+        if (!entry || entry->placeholder || entry->parked || entry->retired)
+            return true;
+    }
+    if (!deviceId && mixerDrag_ && !endMixerDrag())
+        return false;
+    const auto now = captureNowMs();
+    const auto finish = engine::ParamOps::SnapshotGestures::FinishOpen;
+    const auto captured = deviceId ? parameterOps_.snapshotDeviceState(*deviceId, now, finish)
+                                   : parameterOps_.snapshotAll(now, finish);
+    // Several independently committed devices may precede a refusal. Publish those writes too.
+    if (captured.journalOps != 0) {
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (!synchronise() && captured.ok())
+            return false;
+    }
+    if (!surfaceGestures_.empty()) {
+        const auto pending = parameterOps_.pendingGestures();
+        std::erase_if(surfaceGestures_, [&](const auto &item) {
+            return std::none_of(pending.begin(), pending.end(), [&](const auto &edit) {
+                return edit.owner && edit.owner->sameOwner(*item.second.owner);
+            });
+        });
+    }
+    if (!captured.ok()) {
+        const auto *entry = captured.failedDevice ? session_.entryFor(*captured.failedDevice) : nullptr;
+        error_ = "Could not save plug-in state";
+        if (entry)
+            error_ += " for " + entry->name;
+        error_ += captured.status.message.empty() ? "." : ": " + captured.status.message;
+        return false;
+    }
+    refreshReportedLatenciesForSave();
+    error_.clear();
+    return true;
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
-    synchronise();
+    const bool synced = synchronise();
     session_.tick(milliseconds);
     advanceAutomationWrites();
+    if (synced && (!saveJob_ || saveJob_->terminal()))
+        store_->finishUntitledSave();
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();
@@ -1203,7 +1315,7 @@ bool ProjectDocument::startTrackRender(TrackRenderKind kind, std::int64_t track)
             throw std::runtime_error("The project is read-only.");
         if (recording_ || landing_)
             throw std::runtime_error("Stop recording before rendering a track.");
-        if (!settleParameters() || (mixerDragging() && !endMixerDrag()))
+        if (!capturePluginState())
             return false;
         const auto snapshot = view_.committed();
         const auto *node = snapshot ? snapshot->findTrack(track) : nullptr;
@@ -1367,6 +1479,8 @@ std::optional<std::string> ProjectDocument::takeTrackRenderStatus() {
 }
 
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
+    if (op == "device.remove" && !capturePluginState(payload.value("id", std::int64_t{})))
+        return false;
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
@@ -1384,21 +1498,27 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
-bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
-    auto copy = readDeviceCopy(*store_, id);
+namespace {
+bool readClipboardDevice(Store &store, std::int64_t id, DeviceCopy &out, std::string &error) {
+    auto copy = readDeviceCopy(store, id);
     if (!copy.ok) {
-        error_ = copy.error.empty() ? "The device could not be copied." : copy.error;
+        error = copy.error.empty() ? "The device could not be copied." : copy.error;
         return false;
     }
     // A rack with nested chains reads, but the engine cannot paste it (no nested chain image yet):
     // refused here, so a Cut never removes what could not come back.
     if (copy.hasNestedChains) {
-        error_ = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
+        error = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
         return false;
     }
     out = std::move(copy);
-    error_.clear();
+    error.clear();
     return true;
+}
+} // namespace
+
+bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
+    return capturePluginState(id) && readClipboardDevice(*store_, id, out, error_);
 }
 
 std::vector<DeviceMoveSource> ProjectDocument::deviceRange(std::span<const DevicePanelData> selected, bool mutation) {
@@ -1450,6 +1570,11 @@ bool ProjectDocument::removeDevices(std::span<const DevicePanelData> selected) {
 bool ProjectDocument::editDeviceRange(std::span<const DevicePanelData> selected, std::vector<DeviceCopy> *clipboard,
                                       bool remove) {
     try {
+        // Validate first, then let state capture finish its own journal writes. The range read and
+        // removal guards must see that committed state and still name the selected instances.
+        for (const auto &device : deviceRange(selected, remove))
+            if (!capturePluginState(device.device))
+                return false;
         std::vector<DeviceCopy> copied;
         std::vector<OpRequest> requests;
         OpTransactionInputs inputs;
@@ -1465,7 +1590,7 @@ bool ProjectDocument::editDeviceRange(std::span<const DevicePanelData> selected,
             for (const auto &device : devices) {
                 if (clipboard) {
                     DeviceCopy copy;
-                    if (!copyDevice(device.device, copy))
+                    if (!readClipboardDevice(*store_, device.device, copy, error_))
                         return false;
                     copied.push_back(std::move(copy));
                 }
@@ -2139,6 +2264,44 @@ bool ProjectDocument::pasteDevices(std::span<const DeviceCopy> copies, std::int6
         return false;
     feed_.publish(session_, realisedGeneration_);
     return true;
+}
+std::optional<ProjectDocument::ClipRelinkTarget> ProjectDocument::clipRelinkTarget(std::int64_t clip) {
+    SQLite::Statement file(store_->db(), "SELECT m.id,m.hash_blake3,m.orig_name FROM audio_clips a "
+                                        "JOIN media_files m ON m.id=a.media_id WHERE a.clip_id=? AND m.embedded=0");
+    file.bind(1, clip);
+    if (!file.executeStep()) return std::nullopt;
+    return ClipRelinkTarget{clip, file.getColumn(0).getInt64(), file.getColumn(1).getString(),
+                                file.getColumn(2).getString()};
+}
+bool ProjectDocument::relinkClipMedia(const ClipRelinkTarget &target, const std::filesystem::path &path) {
+    const auto current = clipRelinkTarget(target.clipId);
+    if (!current || current->mediaId != target.mediaId || current->hash != target.hash) {
+        error_ = "The clip's sample changed while the file chooser was open. Choose it again.";
+        return false;
+    }
+    return relinkMediaFile(target.mediaId, path);
+}
+bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &path) {
+    const auto result = media::relinkMedia(*store_, mediaId, path);
+    if (!result.ok) {
+        error_ = result.error.starts_with("hash mismatch or unreadable file:")
+            ? "That file could not be read or does not match the original sample."
+            : "Sample relink failed: " + result.error;
+        return false;
+    }
+    try {
+        {
+            SQLite::Statement hash(store_->db(), "SELECT hash_blake3 FROM media_files WHERE id=?");
+            hash.bind(1, mediaId);
+            if (hash.executeStep()) waveforms_.retry(hash.getColumn(0).getString());
+        }
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (synchronise()) return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+    }
+    error_ = "Sample relinked. Playback could not refresh: " + error_;
+    return false;
 }
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture

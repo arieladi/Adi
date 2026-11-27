@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/project_view.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include "adi/ui/computer_midi_keyboard.hpp"
@@ -183,7 +184,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ComputerMidiKeyboard, // the Control Bar and Options menu's Computer MIDI Keyboard, M
         ImportMidiFile,
         ExportMidiClip,
-        LastId = ExportMidiClip
+        About,
+        ImportAudioFile,
+        LastId = ImportAudioFile
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -259,6 +262,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const settings::AppSettings &settings() const noexcept { return settings_; }
     // For what the window writes back: the import prompt's last choices (E5).
     settings::AppSettings &writableSettings() noexcept { return settings_; }
+    const juce::RecentlyOpenedFilesList &recentProjects() const noexcept { return recentProjects_; }
+    void rememberProject(const juce::File &);
+    void clearRecentProjects(bool onlyUnavailable);
     struct TrackCopy {
         std::string sourceFile, kind, name;
         std::int64_t parent = 0, index = 0;
@@ -300,6 +306,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
 
   private:
     settings::AppSettings &settings_;
+    juce::File recentProjectsFile_;
+    juce::RecentlyOpenedFilesList recentProjects_;
+    void saveRecentProjects();
     AdiRootComponent *active_ = nullptr;
     bool live_ = true;
     bool infoView_ = true;
@@ -384,6 +393,22 @@ class StatusBar final : public juce::Component {
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
 };
+// The browser's inner edge follows it from one side of the window to the other.
+class BrowserResizer final : public juce::Component {
+  public:
+    explicit BrowserResizer(AdiRootComponent &);
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+
+  private:
+    AdiRootComponent &root_;
+    struct Drag {
+        int visibleWidth, storedWidth, direction;
+    };
+    std::optional<Drag> drag_;
+};
+
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
 class AdiRootComponent final : public juce::Component,
                                public juce::DragAndDropContainer,
@@ -444,6 +469,7 @@ class AdiRootComponent final : public juce::Component,
     ViewStateStore &viewStateStore() noexcept { return persistence_; }
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
+    std::function<void(const std::string &)> onStatusMessage;
     void sayStaleAddMenu();
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
@@ -464,13 +490,19 @@ class AdiRootComponent final : public juce::Component,
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> openAudioSettings;
+    bool needsFirstSave = false;
+    std::function<void(const juce::File &)> openRecentProject;
     std::function<void()> afterEdit;
     std::function<std::int64_t()> retainedDeviceId;
+    std::function<bool(std::string &)> beforeDeleteTrack;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.
     std::function<bool()> settleEdits;
     // Whether the document holds parameter edits Undo would commit first (DF-W29).
     std::function<bool()> editsHeld;
+    // Opens the application's chooser and supplies the chosen file on the message thread.
+    using ChosenAudioFile = std::function<void(const juce::File &)>;
+    std::function<bool(ChosenAudioFile)> chooseAudioFile;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
@@ -569,6 +601,12 @@ class AdiRootComponent final : public juce::Component,
     TrackRecordState recordState(std::int64_t track) const;
     bool isRecording() const { return recording && recording(); }
     bool arrangementRecordEnabled() const { return recordPending_ || isRecording(); }
+    bool clipMediaOffline(const engine::ClipNode &clip) const {
+        return clip.audio && (!clip.audio->mediaInfo || clip.audio->mediaInfo->missing ||
+                              (unavailableClipMedia && unavailableClipMedia(clip.id)));
+    }
+    std::function<bool(std::int64_t)> unavailableClipMedia;
+    std::function<void(std::int64_t)> locateClipMedia;
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
@@ -616,6 +654,8 @@ class AdiRootComponent final : public juce::Component,
     TransportBar transport;
     StatusBar status;
     BrowserPanel browser{*this};
+    BrowserResizer browserResizer{*this};
+    void resizeBrowser(int width);
     // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the
     // arrangement, which keeps its Show in step with the view chosen.
     NamesBar namesBar;
@@ -1037,6 +1077,7 @@ class AdiRootComponent final : public juce::Component,
     juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
+    int shownPanelWidth(const PanelGeometry &) const noexcept;
     std::string error_;
     // E5: the prompt while open, and a drop with choices landing one file at a time.
     std::unique_ptr<ImportPrompt> importPrompt_;
@@ -1087,8 +1128,11 @@ juce::File projectsFolder(const settings::AppSettings &settings);
 // Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
 // places it. Reserve an exclusive Untitled, Untitled(2), ... directory for launch or New.
 juce::File nextUntitledProject(const settings::AppSettings &settings);
-// Map the save chooser's file to the song file inside its own same-named folder.
+// Keep an explicitly selected existing file. New songs get a same-named folder.
 juce::File songProjectFile(const juce::File &file);
+// After closing the document: discard its provisional file only when the identity is still the
+// one created by this instance and it contains no edits or named snapshots.
+bool discardUntouchedProject(const std::filesystem::path &, const media::FileIdentity &);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
@@ -1164,7 +1208,8 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
 // settings), Cancel imports nothing. It is ADI's dialog: Live imports without asking.
 class AdiRootComponent::ImportPrompt final : public juce::Component {
   public:
-    ImportPrompt(std::size_t files, const ImportChoices &, std::function<void(std::optional<ImportChoices>)> answer);
+    using Reply = std::function<void(std::optional<ImportChoices>, bool stopAsking)>;
+    ImportPrompt(std::size_t files, const ImportChoices &, Reply answer);
     void paint(juce::Graphics &) override;
     void resized() override;
     // What the toggles say now.
@@ -1175,11 +1220,12 @@ class AdiRootComponent::ImportPrompt final : public juce::Component {
     // so the arrangement's keys do not act behind an open prompt.
     bool keyPressed(const juce::KeyPress &) override;
     juce::ToggleButton warp{"Warp"}, fades{"Create Fades on Clip Edges"}, copy{"Copy into the project's folder"};
+    juce::ToggleButton stopAsking{"Do not show this again"};
     juce::ComboBox mode;
     juce::TextButton import{"Import"}, cancel{"Cancel"};
 
   private:
     juce::String title_;
-    std::function<void(std::optional<ImportChoices>)> answer_;
+    Reply answer_;
 };
 } // namespace adi::ui

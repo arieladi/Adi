@@ -134,7 +134,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
     std::size_t drain(std::int64_t, std::vector<OpRequest>&);
     std::size_t snapshot(std::int64_t, std::int64_t, std::vector<OpRequest>&);
-    SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    SnapshotAllResult snapshotAll(std::int64_t nowMs, SnapshotGestures, std::optional<std::int64_t> onlyDevice = {});
     std::optional<DevicePresetState> readDevicePresetState(std::int64_t, std::string&);
     std::vector<StateBlob> takeBlobs();
     bool writeBlobs(Store&, std::string&);
@@ -154,7 +154,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     struct Attached;
     struct Gesture;
     bool presentationReady(const AppliedSource&,std::uint64_t) const noexcept override;
-    bool capturePending(std::int64_t);
+    bool capturePending(std::int64_t, bool finishOpen = false);
     void advanceGestures(std::int64_t);
     std::size_t offerOne(std::vector<OpRequest>&);
     std::shared_ptr<Gesture> beginGesture(std::int64_t,const std::string&,ParameterImage,bool,bool unchanged=false,
@@ -402,6 +402,7 @@ struct ParamOps::Runtime::Replay {
             std::size_t firstOperation = 0;
             bool hasState = false;
             bool retainsInstance = false;
+            bool storedOnly = false;
         };
         std::shared_ptr<const AppliedBatch> batch;
         std::map<std::int64_t,Target> targets;
@@ -476,6 +477,8 @@ struct ParamOps::Runtime::Replay {
             if (found != owner.devices_.end() && found->second.active && found->second.session == session &&
                 !found->second.sessionLife.expired()) {
                 delivery.anchor = found->second.inst;
+            } else if (entry && entry->placeholder && delivery.retainsInstance) {
+                delivery.storedOnly = true;
             }
         }
         const auto operations = receipt.batch->operations();
@@ -1076,6 +1079,19 @@ std::size_t ParamOps::Runtime::attachSession(Session& s) {
             if (pp.deviceId == e.deviceId) rec.paramIds.insert(pp.paramId);
         if (attachImpl(e.deviceId, *inst, &rec, &s)) ++added;
     }
+    // A new placeholder is only available after the Session realises a commit.
+    // Record that exact stored-only delivery before subsequent edits advance
+    // the Session. It will never refer to a live instance in another commit.
+    for (auto& receipt : replay_->pending) {
+        if (receipt.batch->sequence() != s.realisedAppliedSequence()) continue;
+        for (const auto& target : receipt.batch->deviceTargets()) {
+            auto& delivery = receipt.targets.at(target.deviceId);
+            const auto* entry = s.entryFor(target.deviceId);
+            if (!delivery.anchor && entry && !entry->retired && entry->placeholder &&
+                Replay::matchesReference(entry, target))
+                delivery.storedOnly = true;
+        }
+    }
     return added;
 }
 
@@ -1108,23 +1124,27 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
             auto& receipt=replay.pending.front();const auto& batch=*receipt.batch;
             replay.status={};replay.status.state=AppliedDeliveryState::Pending;
             replay.status.pendingBatchCount=replay.pending.size();replay.status.batchSerial=batch.sequence();
-            enum class Target { Ready, Retired, Await, Invalid };
+            enum class Target { Ready, Stored, Retired, Await, Invalid };
             auto target=[&](std::int64_t id)->Target {
                 const auto facts=std::find_if(batch.deviceTargets().begin(),batch.deviceTargets().end(),
                     [id](const auto& item){return item.deviceId==id;});
                 if(facts==batch.deviceTargets().end())throw std::runtime_error("applied parameter batch has no target identity");
                 if(!facts->device)return Target::Retired;
                 auto& delivery = receipt.targets.at(id);
+                if(delivery.storedOnly)return Target::Stored;
                 auto attached=devices_.find(id);
                 const bool active=attached!=devices_.end() && attached->second.active &&
                     attached->second.session==replay.session && !attached->second.sessionLife.expired() && attached->second.inst;
+                const auto* entry=replay.session->entryFor(id);
+                const bool placeholder=entry && !entry->retired && entry->placeholder;
                 if(delivery.anchor) {
-                    const auto* entry=replay.session->entryFor(id);
                     if(!entry || entry->retired)
                         return replay.session->realisedAppliedSequence()<batch.sequence()?Target::Await:Target::Retired;
                     if(replay.session->instanceFor(id)!=delivery.anchor)return Target::Invalid;
-                    if(!active)return Target::Await;
-                    if(attached->second.inst!=delivery.anchor)return Target::Invalid;
+                    if(!placeholder) {
+                        if(!active)return Target::Await;
+                        if(attached->second.inst!=delivery.anchor)return Target::Invalid;
+                    }
                 } else {
                     const auto realised=replay.session->realisedAppliedSequence();
                     if(realised<batch.sequence())return Target::Await;
@@ -1132,7 +1152,7 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     // not evidence of the same instance. Only this exact
                     // realised batch may establish an initially absent anchor.
                     if(realised!=batch.sequence())return Target::Invalid;
-                    if(!active || replay.session->instanceFor(id)!=attached->second.inst)
+                    if(!placeholder && (!active || replay.session->instanceFor(id)!=attached->second.inst))
                         return Target::Await;
                 }
                 const auto row=std::find_if(replay.session->model().devices.begin(),replay.session->model().devices.end(),
@@ -1140,7 +1160,6 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(row==replay.session->model().devices.end())return Target::Retired;
                 const auto expected = Replay::pluginReference(*facts);
                 if(row->pluginRefId!=expected)return Target::Invalid;
-                const auto* entry=replay.session->entryFor(id);
                 if (!Replay::matchesReference(entry, *facts)) return Target::Invalid;
                 if(facts->pluginRef && expected) {
                     // `template` here: MSVC 14.52 (the CI runner's image since
@@ -1153,12 +1172,16 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
                        ref->uid!=expectedUid)return Target::Invalid;
                 }
+                // Placeholder state is already durable in the Store. With no
+                // runtime to notify, it must never hold the delivery queue.
+                if(placeholder)return Target::Stored;
                 delivery.anchor = attached->second.inst;
                 return Target::Ready;
             };
             auto admit=[&](std::int64_t id)->std::optional<bool> {
                 switch(target(id)) {
                     case Target::Ready:return true;
+                    case Target::Stored:
                     case Target::Retired:return false;
                     case Target::Await:stop(AppliedDeliveryState::AwaitingAttachment,"waiting for committed device "+std::to_string(id)+" to attach");return {};
                     case Target::Invalid:
@@ -1686,7 +1709,8 @@ std::size_t ParamOps::Runtime::snapshot(std::int64_t deviceId, std::int64_t nowM
     return appended;
 }
 
-ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
+ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, SnapshotGestures gestures,
+                                                          std::optional<std::int64_t> onlyDevice) {
     SnapshotAllResult result;
     const auto refuse = [&](gesture::Status status, std::optional<std::int64_t> id = {}) {
         result.status = std::move(status);
@@ -1704,6 +1728,17 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
 
     std::optional<std::int64_t> device;
     try {
+        const bool finishOpen = gestures == SnapshotGestures::FinishOpen;
+        if (finishOpen) {
+            if (!capturePending(nowMs, true))
+                return refuse({gesture::Error::Busy, "device input capture is pending"});
+            for (const auto& task : gestures_) {
+                if (task->state || task->complete || task->terminal() || task->cancelRequested) continue;
+                task->complete = true;
+                if (task->pairedParameter.empty())
+                    openGestures_.erase({task->deviceId, task->parameter});
+            }
+        }
         const auto pumped = pumpGestures(nowMs);
         if (!pumped.status.ok())
             return refuse(pumped.status);
@@ -1712,9 +1747,10 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
                 if (!task->status.ok()) return task->status;
                 return gesture::Status{gesture::Error::Busy, "device state capture is not ready to commit"};
             }
-            if (task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused)
+            const bool refused = task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused;
+            if (refused && !finishOpen)
                 return gesture::Status{gesture::Error::CommitRefused, task->transaction->lastRefusal()};
-            const auto saved = commitPending(*task->owner, nowMs, false);
+            const auto saved = commitPending(*task->owner, nowMs, refused);
             if (!saved.status.ok()) return saved.status;
             if (!saved.durable || !saved.durable->ok)
                 return gesture::Status{gesture::Error::CommitRefused, "device state capture did not commit"};
@@ -1744,7 +1780,8 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
         auto& session = *replay_->session;
         for (std::size_t i = 0; i < session.entryCount(); ++i) {
             const auto& entry = session.entryAt(i);
-            if (entry.placeholder || entry.retired) continue;
+            if (entry.placeholder || entry.parked || entry.retired ||
+                (onlyDevice && entry.deviceId != *onlyDevice)) continue;
             const auto id = entry.deviceId;
             device = id;
             const auto found = devices_.find(id);
@@ -2236,7 +2273,7 @@ std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std:
     return task;
 }
 
-bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
+bool ParamOps::Runtime::capturePending(std::int64_t nowMs, bool finishOpen) {
     ownerNow_=nowMs;
     if(!coordinator_ || replay_->blocked)return !replay_->blocked;
     if(replay_->session && (replay_->life.expired() || !replay_->source.alive() ||
@@ -2295,7 +2332,7 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             const bool unacknowledged=std::any_of(attached.activities.begin(),attached.activities.end(),[](const auto& activity){return activity.fence!=nullptr;});
             if(attached.activityCursor==attached.activities.size() && !unacknowledged) {
                 attached.activities.clear();attached.activityEdits.clear();attached.activityCursor=0;
-                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled);
+                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled,finishOpen);
             }
             while(attached.activityCursor<attached.activities.size()) {
                 auto& activity=attached.activities[attached.activityCursor];
@@ -2568,7 +2605,13 @@ AppliedDeliveryStatus ParamOps::retryApplied(std::int64_t now) { return runtime_
 const AppliedDeliveryStatus& ParamOps::appliedDeliveryStatus() const noexcept { return runtime_->appliedDeliveryStatus(); }
 std::size_t ParamOps::drain(std::int64_t now,std::vector<OpRequest>& out) { return runtime_->drain(now,out); }
 std::size_t ParamOps::snapshot(std::int64_t id,std::int64_t now,std::vector<OpRequest>& out) { return runtime_->snapshot(id,now,out); }
-ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now) { return runtime_->snapshotAll(now); }
+ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now, SnapshotGestures gestures) {
+    return runtime_->snapshotAll(now, gestures);
+}
+ParamOps::SnapshotAllResult ParamOps::snapshotDeviceState(std::int64_t deviceId, std::int64_t now,
+                                                         SnapshotGestures gestures) {
+    return runtime_->snapshotAll(now, gestures, deviceId);
+}
 std::optional<ParamOps::DevicePresetState> ParamOps::readDevicePresetState(std::int64_t id, std::string& error) {
     return runtime_->readDevicePresetState(id, error);
 }

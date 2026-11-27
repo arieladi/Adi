@@ -709,7 +709,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("updates.channel", "Licenses & Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
                        {"stable", "beta"}, "stable"));
     r.push_back(make("privacy.diagnosticLog", Type::Bool, "Licenses & Updates", "Write a diagnostic log",
-                     "A local log for support; nothing is sent (R-20).", false));
+                     "Record the ADI version, project names and window messages in a local log for support. "
+                     "Nothing is sent (R-20).", false));
     r.push_back(make("settings.logChanges", Type::Bool, "Licenses & Updates", "Log settings changes",
                      "Settings changes are logged, with the time and the old and new value "
                      "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
@@ -956,7 +957,7 @@ std::vector<Setting> build() {
 
     // --- Library: paths are roles in a bundle (R-05) -------------------------------------
     r.push_back(make("library.userLibrary", Type::Path, "Library", "User Library",
-                     "Your own presets, samples and clips.", ""));
+                     "Your own presets, samples and clips. Leave empty to use the default User Library.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
     // The default record folder is files.recordFolder, on File & Folder (ADR-0203).

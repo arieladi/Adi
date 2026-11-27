@@ -2,6 +2,7 @@
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
 #include "../src/juce/builtin_host.hpp"
+#include "../src/juce/ui_diagnostic_log.hpp"
 #include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
@@ -20,6 +21,7 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
+#include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -45,6 +47,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -3515,6 +3518,56 @@ void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
+
+void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string why;
+    const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
+    check(document != nullptr, "a project for resizing the Browser");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "browser-width");
+    root.setSize(1200, 720);
+    root.setVisible(true);
+    auto &edge = root.browserResizer;
+    const auto width = [&] { return root.state().panels.find(Panel::Browser)->width; };
+    const auto savedWidth = [&] { return document->views().load("browser-width").panels.find(Panel::Browser)->width; };
+    const auto drag = [&](int offset) {
+        const auto start = edge.getLocalBounds().getCentre().toFloat();
+        const auto down = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+        edge.mouseDown(pressAt(edge, start, down));
+        edge.mouseDrag(dragAt(edge, start, start.translated(static_cast<float>(offset), 0), down));
+    };
+    const auto release = [&] { edge.mouseUp(pressAt(edge, edge.getLocalBounds().getCentre().toFloat())); };
+    const auto startWidth = width();
+    const auto mixerWidth = root.state().panels.find(Panel::Mixer)->width;
+    check(edge.isVisible() && edge.getBounds().getCentreX() == root.browserArea().getRight() &&
+              root.getComponentAt(edge.getBounds().getCentre()) == &edge,
+          "the Browser's arrangement-facing edge receives the drag on the left");
+    drag(64);
+    check(width() == startWidth + 64 && root.browserArea().getWidth() == width() - look::gap &&
+              savedWidth() == startWidth,
+          "dragging the Browser's edge updates the layout while saving waits for release");
+    release();
+    check(savedWidth() == startWidth + 64 && root.command(AppCommands::SwapPanels) &&
+              width() == startWidth + 64 && edge.getBounds().getCentreX() == root.browserArea().getX(),
+          "the saved Browser width follows it to the right, along with its inner edge");
+    drag(-32);
+    release();
+    check(width() == startWidth + 96 && savedWidth() == width(), "on the right an inward drag widens the Browser");
+    drag(-2000);
+    release();
+    check(root.arrangement.getWidth() >= root.state().panels.arrangementMinWidth() &&
+              root.state().panels.find(Panel::Mixer)->width == mixerWidth,
+          "widening the Browser preserves the other side panel and room for the Arrangement");
+    drag(2000);
+    release();
+    check(width() == root.state().panels.find(Panel::Browser)->minWidth && savedWidth() == width(),
+          "the Browser stops at its minimum width");
+    check(root.command(AppCommands::ToggleBrowser) && !edge.isVisible() &&
+              root.command(AppCommands::ToggleBrowser) && edge.isVisible() && savedWidth() == width() &&
+              !History(document->store()).head(),
+          "the edge follows Browser visibility and width changes do not enter Undo History");
+}
 // D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
 // Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
 // build cannot load is dimmed and says why; double-click or Enter loads onto the selected track in
@@ -5631,9 +5684,83 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
         prompt->answer(true);
     root.frame();
     check(settings.get("files.copyImportedMedia") == "ask" && clipsOn() == 5, "and the answer leaves \"ask\" as it was");
+
+    AdiRootComponent::ChosenAudioFile chosen;
+    root.chooseAudioFile = [&](AdiRootComponent::ChosenAudioFile callback) {
+        chosen = std::move(callback);
+        return true;
+    };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 0;
+    check(!root.command(AppCommands::ImportAudioFile) && !chosen &&
+              root.error().find("Select an audio track") != std::string::npos,
+          "SC-34: the import command asks for an audio track before opening the chooser");
+    const auto insert = 24 * textproj::kWhole;
+    selection.track = audioTrack;
+    selection.insert = insert;
+    check(root.command(AppCommands::ImportAudioFile) && chosen && clipsOn() == 5,
+          "SC-34: the command opens the chooser, with no change until a file is chosen");
+    if (chosen)
+        std::exchange(chosen, {})(juce::File{});
+    check(!root.importPrompt() && clipsOn() == 5, "SC-34: cancelling the chooser leaves the project alone");
+    check(root.command(AppCommands::ImportAudioFile) && chosen, "SC-34: reopen the chooser");
+    selection.track = 0;
+    selection.insert = 0;
+    if (chosen)
+        std::exchange(chosen, {})(juce::File(juce::String(media::pathUtf8(wav))));
+    check(root.importPrompt() && clipsOn() == 5, "SC-34: choosing the file opens the regular drop import prompt");
+    if (auto *prompt = root.importPrompt())
+        prompt->answer(true);
+    root.frame();
+    const auto *track = root.reader().findTrack(audioTrack);
+    check(track && track->clips.size() == 6 &&
+              std::any_of(track->clips.begin(), track->clips.end(), [&](const auto &clip) {
+                  return clip && clip->posTicks == insert && clip->name == "Prompted";
+              }),
+          "SC-34: import uses the selected audio track and insert marker captured at invocation");
+
     keepImportChoices(settings, ImportChoices{}, why);
     settings.set("files.copyImportedMedia", std::string("never"), {}, why);
     settings.set("editing.importOptions", std::string("ask"), {}, why);
+    const auto beforeOptOut = clipsOn();
+    settings.set("files.copyImportedMedia", std::string("ask"), {}, why);
+    const auto next = 32 * textproj::kWhole;
+    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    check(root.importPrompt() != nullptr, "SC-160: the import prompt offers an opt-out");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(false);
+    }
+    root.frame();
+    check(clipsOn() == beforeOptOut && settings.get("editing.importOptions") == "ask" &&
+              settings.get("files.copyImportedMedia") == "ask",
+          "SC-160: Cancel saves neither the opt-out nor the copy choice");
+    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->fades.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(true);
+    }
+    root.frame();
+    check(clipsOn() == beforeOptOut + 1 && !importAsks(settings) &&
+              settings.get("editing.importOptions") == "never" && settings.get("files.copyImportedMedia") == "always" &&
+              importChoicesFrom(settings).edgeFades,
+          "SC-160: Import remembers the selected options and stops prompting");
+    root.dropAudio(wav.string(), audioTrack, next + 4 * textproj::kWhole, "Prompted");
+    root.frame();
+    check(clipsOn() == beforeOptOut + 2 && root.importPrompt() == nullptr && !asked.empty() &&
+              asked.back().copyIn && asked.back().edgeFades,
+          "SC-160: the next import uses the saved copy and fade options directly");
+    settings.set("editing.importOptions", std::string("ask"), {}, why);
+    root.dropAudio(wav.string(), audioTrack, next + 8 * textproj::kWhole, "Prompted");
+    check(root.importPrompt() && !root.importPrompt()->stopAsking.getToggleState() &&
+              root.importPrompt()->choices().copyIn && root.importPrompt()->choices().edgeFades,
+          "SC-160: Settings can re-enable the prompt with its last import options");
+    if (auto *prompt = root.importPrompt())
+        prompt->answer(false);
+    keepImportChoices(settings, ImportChoices{}, why);
     settings.save(why);
     commands.detach(root);
     document->release();
@@ -6171,7 +6298,16 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
     // lane is the audio drop.
     {
-        const auto library = dir / "Library";
+        const auto library = dir / "User Library";
+        std::string why;
+        check(provisionDefaultUserLibrary(library, why) &&
+                  std::filesystem::is_directory(library / "Clips") &&
+                  std::filesystem::is_directory(library / "Defaults") &&
+                  std::filesystem::is_directory(library / "Grooves") &&
+                  std::filesystem::is_directory(library / "Presets") &&
+                  std::filesystem::is_directory(library / "Samples"),
+              "the first launch creates the User Library and its default folders");
+        std::filesystem::remove(library / "Grooves");
         std::filesystem::create_directories(library / "Drums");
         for (const auto &[name, value] : {std::pair{"Drums/Clap.wav", .2f}, std::pair{"Bass Hit.wav", .4f}}) {
             std::vector<float> samples(4800, value);
@@ -6179,7 +6315,12 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
         }
         std::ofstream(library / "notes.txt") << "not audio";
-        std::string why;
+        check(provisionDefaultUserLibrary(library, why) &&
+                  std::filesystem::is_regular_file(library / "notes.txt") &&
+                  !std::filesystem::exists(library / "Grooves"),
+              "a later launch preserves existing library content and folder choices");
+        check(!provisionDefaultUserLibrary(library / "notes.txt" / "Blocked", why) && !why.empty(),
+              "a blocked User Library reports why it could not be created");
         auto index = library::Index::open(dir / "library.sqlite", why, false);
         check(index != nullptr, "a library index");
         if (!index)
@@ -6192,6 +6333,24 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             audio::WavWriter writer(addedFolder / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
             writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
         }
+        settings::AppSettings librarySettings(appdata::App::Daw, dir / "library-settings.json");
+        SettingsPanel panel(librarySettings);
+        panel.showPage("Library");
+        const auto *contentFolders = settings::find("library.contentFolders");
+        const auto contentFoldersRow = std::find_if(panel.rows().begin(), panel.rows().end(), [contentFolders](const auto &candidate) {
+            return &candidate->setting == contentFolders;
+        });
+        check(contentFoldersRow != panel.rows().end() &&
+                  dynamic_cast<juce::TextButton *>((*contentFoldersRow)->getChildComponent(1)) != nullptr,
+              "Settings' Content folders has a folder-picker button");
+        int libraryChanges = 0;
+        panel.onChange = [&libraryChanges] { ++libraryChanges; };
+        const auto picked = juce::File(juce::String::fromUTF8(media::pathUtf8(addedFolder).c_str()));
+        check(contentFolders && panel.acceptLibraryFolder(*contentFolders, picked) &&
+                  panel.acceptLibraryFolder(*contentFolders, picked) &&
+                  librarySettings.get("library.contentFolders") == settings::Value::array({picked.getFullPathName().toStdString()}) &&
+                  libraryChanges == 1,
+              "the chosen folder is added once and immediately notifies the application");
         library::MarkerVolumeProvider volumes;
         const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
                                                  {"Drums", library / "Drums", false}};
@@ -6200,8 +6359,10 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
                   listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
                   listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
               "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
-        std::atomic<bool> stopNow{true};
-        check(scanLibrary(*index, folders, volumes, &stopNow).places.empty(), "a stop before the first folder scans none");
+        std::stop_source stopNow;
+        stopNow.request_stop();
+        check(scanLibrary(*index, folders, volumes, stopNow.get_token()).places.empty(),
+              "a stop before the first folder scans none");
         auto &browser = root.browser;
         browser.setListing(listing);
         int samples = -1, user = -1;
@@ -6248,9 +6409,23 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
                   browser.shown().size() == 3 && browser.search.getText().isEmpty(),
               "Escape also closes Hot-Swap from the Browser content list");
         browser.swapChoice = {};
+        const auto clipsBeforeLoad = clipsOn(1);
+        geometry.selection.track = 0;
+        check(!browser.load(0) && instruments.size() == 4 && clipsOn(1) == clipsBeforeLoad,
+              "a Browser sample double-click without a selected track leaves the project alone");
         geometry.selection.track = 1;
-        check(!browser.load(0) && instruments.size() == 4,
-              "a Browser sample double-click without MIDI leaves the audio track alone");
+        geometry.selection.insert = 0;
+        const bool loadedOnAudio = browser.load(0);
+        root.frame();
+        auto expectedClips = clipsBeforeLoad;
+        expectedClips.insert(expectedClips.begin(), {"Bass Hit", 0});
+        check(loadedOnAudio && clipsOn(1) == expectedClips && instruments.size() == 4 &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip",
+              "SC-105: on a selected audio track a Browser sample becomes a clip instead of an instrument");
+        if (loadedOnAudio)
+            check(root.command(AppCommands::Undo), "undo placing the Browser sample on the audio track");
+        root.frame();
+        check(clipsOn(1) == clipsBeforeLoad, "Undo restores the audio track before the drop fixtures");
         browser.choose(user);
         check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
         browser.choose(addedSamples);
@@ -6339,6 +6514,33 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         strip.bind(1);
         geometry.selection.insert = bar5;
         checkSampleDrop(strip, {drag, &browser.list, {10, 10}});
+        browser.choose(samples);
+        browser.list.selectRow(1);
+        geometry.selection.track = 1;
+        geometry.selection.insert = bar5;
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)), "Enter on the selected sample");
+        root.frame();
+        const auto entered = clipsOn(1);
+        check(entered.size() == before + 1 && entered.back() == Clips::value_type{"Clap", bar5},
+              "Enter on Clap.wav places a clip on the selected audio track at the insert marker");
+        check(root.command(AppCommands::Undo), "undo the browser's Enter");
+        root.frame();
+        geometry.selection.track = 1;
+        geometry.selection.insert = bar5;
+        // These are painted JUCE rows. getComponentForRowNumber only returns a custom row component.
+        const auto click = browser.list.getRowPosition(1, true).getCentre();
+        auto *item = browser.list.getComponentAt(click);
+        const bool foundRow = item != nullptr && browser.list.getRowNumberOfComponent(item) == 1;
+        check(foundRow, "hit-testing the list finds the painted sample row");
+        if (foundRow)
+            item->mouseDoubleClick(pressAt(*item, item->getLocalPoint(&browser.list, click).toFloat()));
+        root.frame();
+        const auto doubled = clipsOn(1);
+        const bool placed = doubled.size() == before + 1 && doubled.back() == Clips::value_type{"Clap", bar5};
+        check(placed, "double-clicking the sample uses the same clip placement");
+        if (placed)
+            check(root.command(AppCommands::Undo), "undo the browser's double-click");
+        root.frame();
         browser.setListing({});
     }
 }
@@ -13365,6 +13567,127 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     root.afterEdit = nullptr;
     document->release();
 }
+void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto project = dir / "relink-sample.adi";
+    const auto original = dir / "before-relink.wav";
+    const auto relocated = dir / "moved-relink.wav";
+    const auto wrong = dir / "other-relink.wav";
+    const auto wave = [](const std::filesystem::path &file, float value) {
+        const std::vector<float> samples(48000, value);
+        audio::WavWriter writer(file, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), 48000);
+    };
+    wave(original, 0.25f);
+    wave(wrong, 0.5f);
+    std::string error;
+    auto document = ProjectDocument::open(project, true, {}, error);
+    if (!document) { check(false, "create a project to relink missing audio"); return; }
+    AudioImport import;
+    if (!document->prepareImport(media::pathUtf8(original), 1, import)) {
+        check(false, "capture the initial audio file");
+        return;
+    }
+    auto edit = dropAudio(*document->view().current(), 4, 0, "Moved audio", import);
+    check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok, "drop audio linked to its original file");
+    document.reset();
+    std::filesystem::rename(original, relocated);
+
+    document = ProjectDocument::open(project, false, {}, error);
+    if (!document) { check(false, "open a project with the audio file moved"); return; }
+    document->prepare(48000., 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "relink-sample");
+    root.unavailableClipMedia = [&](std::int64_t id) {
+        const auto *playback = document->session().clips();
+        return playback && playback->mediaUnavailable(id);
+    };
+    auto selectedFile = wrong;
+    bool relinked = false;
+    root.locateClipMedia = [&](std::int64_t id) {
+        const auto target = document->clipRelinkTarget(id);
+        relinked = target && document->relinkClipMedia(*target, selectedFile);
+    };
+    root.setSize(1440, 1200);
+    root.frame();
+    auto &geometry = root.arrangement.geometry;
+    geometry.scale = 40;
+    geometry.left = 0;
+    const auto shownClip = [&root]() -> std::shared_ptr<const engine::ClipNode> {
+        const auto *track = root.reader().findTrack(4);
+        return track && !track->clips.empty() ? track->clips.front() : nullptr;
+    };
+    const auto clip = shownClip();
+    if (!clip) { check(false, "the clip survives its missing file"); return; }
+    if (!clip->audio || !clip->audio->mediaInfo) { check(false, "the missing clip retains its media identity"); return; }
+    check(root.clipMediaOffline(*clip), "the reopened clip is offline");
+    geometry.reveal(root.reader(), 4);
+    auto &waveforms = document->waveforms();
+    const auto &hash = clip->audio->mediaInfo->contentHash;
+    waveforms.peaks(*clip->audio);
+    for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    check(waveforms.idle() && (waveforms.holds(hash) || !waveforms.problem().empty()),
+          "a peaks request settles before relink with cached data or a missing-file failure");
+    auto &canvas = root.arrangement.canvas;
+    juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics g(image);
+    canvas.paintEntireComponent(g, true);
+    const int clipLeft = static_cast<int>(std::ceil(geometry.x(clip->posTicks)));
+    const int clipRight = static_cast<int>(std::floor(geometry.x(clip->posTicks + clip->lengthTicks)));
+    const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight;
+    const auto clipBody = image.getBounds().getIntersection({clipLeft, top, std::max(0, clipRight - clipLeft),
+        std::max(0, geometry.heightFor(4) - 4 - ArrangementCanvas::kClipBarHeight)});
+    int markedPixels = 0;
+    for (int y = clipBody.getY(); y < clipBody.getBottom(); ++y)
+        for (int x = clipBody.getX(); x < clipBody.getRight(); ++x)
+            if (image.getPixelAt(x, y) == look::error)
+                ++markedPixels;
+    check(markedPixels > 0, "the offline sample is marked on its clip");
+
+    root.selectClip(clip->id);
+    const auto locateAction = [&] {
+        auto menu = root.arrangement.contextMenuItems(false, nullptr);
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Locate Missing Sample...")
+                return it.getItem().action;
+        return std::function<void()>{};
+    };
+    const auto action = locateAction();
+    check(static_cast<bool>(action), "the offline clip's menu offers Locate Missing Sample");
+    if (action) {
+        const auto head = OpJournal(document->store()).headSeq();
+        action();
+        check(!relinked && document->error().find("does not match") != std::string::npos &&
+                  OpJournal(document->store()).headSeq() == head, "a file with different content leaves the project unchanged");
+        selectedFile = relocated;
+        action();
+        root.frame();
+        const auto recovered = shownClip();
+        check(relinked && recovered && !root.clipMediaOffline(*recovered) && !locateAction(),
+              "the same file at its new path relinks and clears the offline mark and menu action");
+        if (recovered && recovered->audio) waveforms.peaks(*recovered->audio);
+        for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(waveforms.holds(hash), "the waveform is available through the new link");
+        auto &session = document->session();
+        session.graph().setFadeFrames(0);
+        session.transport().play();
+        std::array<float, 64> left{}, right{};
+        float *outs[]{left.data(), right.data()};
+        engine::AudioIo io; io.out = outs; io.numOut = 2; io.frames = 64;
+        const bool ready = session.clips() && session.clips()->prime();
+        if (ready) session.process(io);
+        check(ready && left == right && std::all_of(left.begin(), left.end(), [](float value) { return value == 0.25f; }),
+              "the relinked clip sends the original PCM into the playback graph");
+        const bool undone = document->ops().undo().ok && document->synchronise();
+        root.frame();
+        const auto restored = shownClip();
+        check(undone && restored && root.clipMediaOffline(*restored),
+              "one Undo restores the original missing link");
+    }
+    commands.detach(root);
+    document->release();
+}
 // Live's metronome and Arrangement Loop (C2, N19; Live 12 manual 6.6, 19.4.1, §42.8, §42.16,
 // §42.20): O and the control bar's switches, Loop Selection, the brace dragged and moved by its keys,
 // the Loop Start and Loop Length fields, and editing.linkLoopToSelection. Each writes the transport's
@@ -19851,6 +20174,77 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
         commands.reload();
     }
 }
+void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
+    settings::AppSettings settings(appdata::App::Daw, dir / "settings-availability.json");
+    SettingsPanel panel(settings);
+    panel.setSize(560, 680);
+    const auto *language = settings::find("lookfeel.language");
+    check(language != nullptr && language->choices.size() > 1, "Language setting fixture");
+    if (!language || language->choices.size() <= 1)
+        return;
+    const auto rowFor = [&panel](std::string_view key) -> SettingRow * {
+        for (const auto &row : panel.rows())
+            if (row->setting.key == key)
+                return row.get();
+        return nullptr;
+    };
+    panel.showPage("Display & Input");
+    auto *row = rowFor(language->key);
+    check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
+          "an unimplemented setting is dimmed with an explanation on its page");
+    const auto before = settings.get(language->key);
+    check(!panel.change(*language, language->choices[1]) && settings.get(language->key) == before,
+          "an unavailable setting cannot apply a change");
+    panel.find("Language");
+    row = rowFor(language->key);
+    check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
+          "Find also explains an unavailable setting");
+    const auto available = [&](std::string_view key) {
+        auto *settingRow = rowFor(key);
+        return settingRow && settingRow->control->isEnabled() &&
+               !settingRow->getTooltip().contains("Not available in this build");
+    };
+    panel.showPage("Record, Warp & Launch");
+    check(available("audio.keepMonitoringLatency") && available("record.quantize"),
+          "new-track monitoring latency and quantization defaults are available to edit");
+    check(available("record.autoArmOnSelect") && available("record.bitDepth") &&
+              available("record.startPlaybackWithRecord"),
+          "auto-arm, WAV depth and Start Playback with Record are available to edit");
+    panel.showPage("Tempo & MIDI");
+    check(available(settings::kNewMidiInputTrackKey), "the default Track switch for new MIDI inputs is available");
+    panel.showPage("Licenses & Updates");
+    const auto *diagnostics = rowFor("privacy.diagnosticLog");
+    check(diagnostics && diagnostics->control->isEnabled(), "the diagnostic logging setting remains editable");
+
+    panel.showPage("Audio");
+    check(available("audio.driverErrorCompensationMs"), "Driver Error Compensation is available to edit");
+    const auto *tone = settings::find("audio.testTone");
+    const auto *toneRow = rowFor("audio.testTone");
+    check(tone && toneRow && toneRow->control->isEnabled(), "Test Tone has an active switch");
+    if (!tone)
+        return;
+    check(panel.change(*tone, true) && panel.testTone() && settings.get(tone->key) == false,
+          "setting the test tone only enables the current window's tone");
+
+    AudioTestTone oscillator;
+    std::array<float, 512> left{}, right{};
+    float *outputs[]{left.data(), right.data(), nullptr};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 3;
+    io.frames = 512;
+    oscillator.set(panel.testTone(), -6.0206f, 12000);
+    oscillator.mix(io, 48000.);
+    check(left == right && std::abs(left[401] - 0.5f) < 1e-4f && std::abs(left[403] + 0.5f) < 1e-4f,
+          "the output uses the selected frequency and level on each active channel");
+    panel.stopTestTone();
+    oscillator.set(panel.testTone(), -6.0206f, 12000);
+    left.fill(0.1f);
+    right.fill(0.1f);
+    oscillator.mix(io, 48000.);
+    check(!panel.testTone() && left[401] == 0.1f && left == right,
+          "closing Settings ramps the tone out and leaves project audio alone");
+}
 // The keyboard into the session (N60's window half): the feed drains every port's ring on the
 // audio thread, in time order across ports, each event stamped in the block's stream samples.
 // A function of its own, so its rings and feed are not in main's frame: MSVC's Debug build gives
@@ -20484,6 +20878,76 @@ void windowTeardownRunsTimers() {
     check(app.ticks > 0 && app.rootReads == 0 && app.window == nullptr && app.root == nullptr,
           "a timer run inside the main window's teardown finds the root pointer already null");
 }
+void diagnosticLogFollowsPrivacy(const std::filesystem::path &dir) {
+    const auto data = dir / "diagnostic-data";
+    const auto logs = data / "diagnostic-logs";
+    settings::AppSettings settings(appdata::App::Daw, dir / "diagnostic-settings.json");
+    std::string why;
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "log-song.adi", error);
+    check(store != nullptr, "diagnostic log test project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Log song')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    AppCommands commands(settings);
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    {
+        DiagnosticLog run(data, "test-version");
+        AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "main");
+        root.onStatusMessage = [&run](const std::string &message) { run.write("Status Bar", message); };
+        check(!run.refresh(settings), "diagnostic log starts disabled");
+        root.say("Before opt-in");
+        check(!std::filesystem::exists(logs), "no diagnostic directory is made without opt-in");
+
+        check(settings.set("privacy.diagnosticLog", true, {}, why) && run.refresh(settings),
+              "the Privacy setting starts this run's diagnostic log immediately");
+        run.write("Opened project", "log-song.adi");
+        check(!root.command(AppCommands::DeleteTrack) && root.error() == "Select a track to delete.",
+              "a refusing command puts a notice in the Status Bar");
+        run.write("Alert", "Alert line one\nAlert line two");
+
+        check(settings.set("privacy.diagnosticLog", false, {}, why) && !run.refresh(settings),
+              "disabling the Privacy setting stops logging immediately");
+        root.say("While paused");
+        check(settings.set("privacy.diagnosticLog", true, {}, why) && run.refresh(settings),
+              "diagnostic logging can resume during the same run");
+        root.say("After resuming");
+    }
+    if (!std::filesystem::is_directory(logs)) {
+        check(false, "the enabled diagnostic logger created its directory");
+        return;
+    }
+    auto files = std::filesystem::directory_iterator(logs);
+    const std::filesystem::directory_iterator end;
+    check(files != end, "the enabled logger wrote a file");
+    if (files == end)
+        return;
+    const auto first = files->path();
+    check(++files == end, "pausing and resuming produces exactly one log per run");
+    {
+        std::ifstream input(first);
+        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        check(text.find("ADI version\ttest-version") != std::string::npos &&
+                  text.find("Opened project\tlog-song.adi") != std::string::npos &&
+                  text.find("Status Bar\tSelect a track to delete.") != std::string::npos &&
+                  text.find("Alert\tAlert line one\\nAlert line two") != std::string::npos &&
+                  text.find("Status Bar\tAfter resuming") != std::string::npos,
+              "the readable log has the version, opened file and shown messages");
+        check(text.find("Before opt-in") == std::string::npos && text.find("While paused") == std::string::npos,
+              "diagnostics omit every message while the setting was off");
+    }
+    {
+        DiagnosticLog nextRun(data, "next-version");
+        check(nextRun.refresh(settings), "another enabled run starts its own log");
+    }
+    check(std::distance(std::filesystem::directory_iterator(logs), end) == 2,
+          "a subsequent run never appends to the previous run's log");
+}
 // Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
 // at once, as launch does, with no chooser; Save As names and places it.
 void untitledProjects(const std::filesystem::path &dir) {
@@ -20508,6 +20972,48 @@ void untitledProjects(const std::filesystem::path &dir) {
     check(songProjectFile(file(folder / "Song v1.2.adi")) == file(saved) &&
               songProjectFile(file(saved)) == file(saved),
           "Save As adds one same-named folder and preserves dots in the song name");
+    const auto flat = file(folder / "Legacy.adi");
+    const auto nested = file(folder / "Legacy" / "Legacy.adi");
+    check(nested.getParentDirectory().createDirectory().wasOk() && flat.replaceWithText("flat") &&
+              nested.replaceWithText("nested") && songProjectFile(flat) == flat && songProjectFile(nested) == nested,
+          "Save As keeps the exact existing file selected for replacement in either layout");
+}
+void discardUneditedUntitled(const std::filesystem::path &dir) {
+    std::string why;
+    std::error_code error;
+    const auto untouched = dir / "untouched.adi";
+    const auto edited = dir / "edited.adi";
+    const auto snapshotted = dir / "snapshotted.adi";
+    auto newDocument = ProjectDocument::open(untouched, true, {}, why);
+    auto editedDocument = ProjectDocument::open(edited, true, {}, why);
+    auto snapshotDocument = ProjectDocument::open(snapshotted, true, {}, why);
+    const auto untouchedIdentity = media::readFileIdentity(untouched, error);
+    const auto editedIdentity = media::readFileIdentity(edited, error);
+    const auto snapshotIdentity = media::readFileIdentity(snapshotted, error);
+    check(newDocument && editedDocument && snapshotDocument && untouchedIdentity && editedIdentity && snapshotIdentity,
+          "three Untitled projects are open and tracked by file identity");
+    if (!newDocument || !editedDocument || !snapshotDocument || !untouchedIdentity || !editedIdentity || !snapshotIdentity)
+        return;
+    check(!discardUntouchedProject(untouched, *untouchedIdentity) && std::filesystem::exists(untouched),
+          "an Untitled project still held open stays on disk");
+    newDocument.reset();
+    check(!discardUntouchedProject(untouched, *editedIdentity) && std::filesystem::exists(untouched),
+          "a file other than the Untitled project opened by this instance stays on disk");
+    check(discardUntouchedProject(untouched, *untouchedIdentity) && !std::filesystem::exists(untouched),
+          "closing an untouched Untitled project removes its file");
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 2}, {"name", "Keys"}};
+    check(editedDocument->ops().submit(std::move(rename)).ok && History(editedDocument->store()).undo().ok,
+          "an edit was made and undone in the second project");
+    check(snapshotDocument->takeSnapshot("Keep this", 1'700'000'000'000'000, 0).ok,
+          "the third project has a named snapshot without edit steps");
+    editedDocument.reset();
+    snapshotDocument.reset();
+    check(!discardUntouchedProject(edited, *editedIdentity) && std::filesystem::exists(edited),
+          "an Untitled project with redo history is kept");
+    check(!discardUntouchedProject(snapshotted, *snapshotIdentity) && std::filesystem::exists(snapshotted),
+          "an Untitled project with a named snapshot is kept");
 }
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
@@ -21619,6 +22125,12 @@ int main(int argc, char **argv) {
             return ids;
         };
         using C = AppCommands;
+        const auto create = items("Create");
+        juce::ApplicationCommandInfo import(C::ImportAudioFile);
+        commands.getCommandInfo(C::ImportAudioFile, import);
+        check(std::find(create.begin(), create.end(), C::ImportAudioFile) != create.end() &&
+                  import.shortName == "Import Audio File...",
+              "SC-34: Create contains the Import Audio File command");
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
@@ -21627,7 +22139,7 @@ int main(int argc, char **argv) {
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio,
                                                 C::ExportMidiClip},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -21635,7 +22147,7 @@ int main(int argc, char **argv) {
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -21648,6 +22160,54 @@ int main(int argc, char **argv) {
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
+        {
+            const auto fileIndex = names.indexOf("File");
+            const auto recentMenu = [&] {
+                const auto fileMenu = bar->getMenuForIndex(fileIndex, "File");
+                for (juce::PopupMenu::MenuItemIterator it(fileMenu); it.next();)
+                    if (it.getItem().text == "Open Recent" && it.getItem().subMenu)
+                        return *it.getItem().subMenu;
+                return juce::PopupMenu{};
+            };
+            const auto p = juce::File(juce::String(media::pathUtf8(temp.path())));
+            const auto one = p.getChildFile("First project.adi");
+            const auto two = p.getChildFile("Second project.adi");
+            check(one.replaceWithText("first") && two.replaceWithText("second"), "two named projects for Open Recent");
+            commands.rememberProject(one);
+            commands.rememberProject(two);
+            commands.rememberProject(one);
+            AppCommands restarted(settings);
+            check(restarted.recentProjects().getNumFiles() == 2 && restarted.recentProjects().getFile(0) == one &&
+                      restarted.recentProjects().getFile(1) == two,
+                  "the recent list survives restart, newest first, with reopened projects deduplicated");
+            check(two.deleteFile(), "the second recent project is now unavailable");
+            juce::File chosen;
+            window.root().openRecentProject = [&](const juce::File &file) { chosen = file; };
+            const auto recent = recentMenu();
+            int firstId = 0, removeId = 0, clearId = 0;
+            bool secondDisabled = false;
+            for (juce::PopupMenu::MenuItemIterator it(recent); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == "First project" && item.isEnabled)
+                    firstId = item.itemID;
+                if (item.text == "Second project")
+                    secondDisabled = !item.isEnabled;
+                if (item.text == "Remove Unavailable Projects" && item.isEnabled)
+                    removeId = item.itemID;
+                if (item.text == "Clear List" && item.isEnabled)
+                    clearId = item.itemID;
+            }
+            check(firstId != 0 && secondDisabled && removeId != 0 && clearId != 0,
+                  "File > Open Recent shows an available project, a disabled missing project and the cleanup commands");
+            bar->menuItemSelected(firstId, fileIndex);
+            check(chosen == one, "Open Recent sends the selected file to the application's open callback");
+            bar->menuItemSelected(removeId, fileIndex);
+            check(commands.recentProjects().getNumFiles() == 1 && commands.recentProjects().getFile(0) == one,
+                  "Remove Unavailable Projects keeps the rest of the list");
+            bar->menuItemSelected(clearId, fileIndex);
+            check(recentMenu().getNumItems() == 0, "Clear List empties Open Recent");
+            window.root().openRecentProject = {};
+        }
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
         // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
         // first and B4 (window/track-delay) extends the same tail: SoloInPlace, then the two Track
@@ -21696,7 +22256,7 @@ int main(int argc, char **argv) {
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
                       C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
-                      C::LastId == C::ExportMidiClip,
+                      C::About == C::ExportMidiClip + 1 && C::LastId == C::ImportAudioFile,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -21803,9 +22363,9 @@ int main(int argc, char **argv) {
                   "and undo brings the track back");
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
-                                                  C::InsertMidiClip, C::ImportMidiFile, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
+                                                  C::InsertMidiClip, C::ImportMidiFile, C::ImportAudioFile, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
                                                   C::DeleteLocator, 0, C::CreateFade, C::DeleteFades},
-              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip or a MIDI file, then a time signature "
+              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, a MIDI file or an audio file, then a time signature "
               "change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
               "Fades/Crossfades (§6.8)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement, C::FocusClipView,
@@ -21815,10 +22375,19 @@ int main(int argc, char **argv) {
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
         // WIN-09: the Help menu, last, with the manual and the keyboard reference (the Mac's Cmd+?
         // search then finds ADI's menus); each opens its target.
-        check(names[names.size() - 1] == "Help" && items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference},
-              "the Help menu, last: the manual and the keyboard reference");
+        check(names[names.size() - 1] == "Help" &&
+                  items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference, 0, C::About},
+              "the Help menu, last: the manual, the keyboard reference and About ADI");
         {
             auto &helpRoot = window.root();
+            int applicationCommand = 0;
+            helpRoot.applicationCommand = [&applicationCommand](int id) {
+                applicationCommand = id;
+                return true;
+            };
+            check(helpRoot.command(C::About) && applicationCommand == C::About,
+                  "About ADI opens the application's version and notices dialog");
+            helpRoot.applicationCommand = nullptr;
             std::vector<juce::URL> opened;
             helpRoot.openHelp = [&opened](const juce::URL &u) {
                 opened.push_back(u);
@@ -21991,6 +22560,16 @@ int main(int argc, char **argv) {
               "engine stop reaches bar");
         const auto opsBeforeSnapshot =
             document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+        integrated.needsFirstSave = true;
+        juce::ApplicationCommandInfo firstSaveInfo(AppCommands::TakeSnapshot);
+        commands.getCommandInfo(AppCommands::TakeSnapshot, firstSaveInfo);
+        check(firstSaveInfo.shortName == "Save Project...",
+              "File names the first-save command while the project is unnamed");
+        integrated.needsFirstSave = false;
+        juce::ApplicationCommandInfo snapshotInfo(AppCommands::TakeSnapshot);
+        commands.getCommandInfo(AppCommands::TakeSnapshot, snapshotInfo);
+        check(snapshotInfo.shortName == "Take Snapshot...",
+              "File offers snapshots once the project has a name");
         check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)) &&
                   snapshots == 1,
               "Ctrl/Cmd+S takes a snapshot (ADR-0203 d6), not a save");
@@ -24116,14 +24695,17 @@ int main(int argc, char **argv) {
         bool closed = false;
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
-        // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
+        // Restore Defaults leaves settings with no current implementation alone.
         if (const auto *toggle = settings::find("sync.showLinkToggle")) {
             panel.showPage("Link");
             const auto was = settings.get(toggle->key);
-            panel.change(*toggle, !toggle->defaultValue.get<bool>());
+            std::string restoreReason;
+            const bool kept = !toggle->defaultValue.get<bool>();
+            settings.set(toggle->key, kept, {}, restoreReason);
             panel.defaults.onClick();
-            check(settings.get(toggle->key) == toggle->defaultValue, "Restore Defaults puts the open tab back");
-            panel.change(*toggle, was);
+            check(settings.get(toggle->key) == kept, "Restore Defaults preserves the value of a dimmed setting");
+            settings.set(toggle->key, was, {}, restoreReason);
+            settings.save(restoreReason);
         }
         // Taller than the window, the tab column scrolls; the open tab is kept in view.
         panel.pageList.resized();
@@ -24260,6 +24842,7 @@ int main(int argc, char **argv) {
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
+    trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("trimClipStart", [&] { trimClipStart(commands, temp.path()); });
@@ -24290,12 +24873,14 @@ int main(int argc, char **argv) {
     trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
     trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
+    trace("relinkMissingSample", [&] { relinkMissingSample(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
@@ -24305,7 +24890,9 @@ int main(int argc, char **argv) {
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
+    trace("diagnosticLogFollowsPrivacy", [&] { diagnosticLogFollowsPrivacy(temp.path()); });
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
+    trace("discardUneditedUntitled", [&] { discardUneditedUntitled(temp.path()); });
     trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());

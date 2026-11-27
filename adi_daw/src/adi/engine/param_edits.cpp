@@ -142,8 +142,8 @@ std::size_t ParamEditCapture::drainAbsorbing(std::int64_t nowMs, std::vector<Par
 }
 
 std::size_t ParamEditCapture::drainLifecycle(std::int64_t nowMs,std::vector<ParamEdit>& out,
-                                             std::vector<ParamActivity>& activity,bool absorb) {
-    return drainImpl(nowMs,out,absorb,&activity);
+                                             std::vector<ParamActivity>& activity,bool absorb,bool finishOpen) {
+    return drainImpl(nowMs,out,absorb,&activity,finishOpen);
 }
 void ParamEditCapture::clearLastTouch() noexcept {
     touches_.clear();
@@ -152,7 +152,7 @@ void ParamEditCapture::clearLastTouch() noexcept {
     priorAttachmentEvents_ = write >= read ? write - read : ring_.size() - read + write;
 }
 std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
-                                        bool absorb,std::vector<ParamActivity>* activity) {
+                                        bool absorb,std::vector<ParamActivity>* activity,bool finishOpen) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (const auto& entry : maintenance_) {
@@ -234,6 +234,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             } else if (p.open) {
                 ++stats_.strayBegins;
             } else {
+                track(key, p);
                 p.open = true;
                 p.implicit = false;
                 p.hasValue = false;
@@ -314,8 +315,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     for (const auto& entry : maintenance_) {
         const auto& key = entry.key;
         auto& p = *entry.parameter;
-        if (p.open && p.implicit) {
-            if (absorb) {
+        if (p.open) {
+            if (absorb && p.implicit) {
                 if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
                 // Folded into the snapshot: the value is where the plugin put it,
                 // and no edit says so.
@@ -326,12 +327,17 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                 }
                 p.open = false;
                 p.hasValue = false;
-            } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
-                if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
+            } else if (finishOpen || (p.implicit && elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_))) {
+                if (activity) {
+                    const auto before = p.hasValue ? p.before : p.last;
+                    const auto after = p.hasValue ? p.after : p.last;
+                    activity->push_back({ParamActivityKind::QuietEnd,
+                        {key.first,key.second,ParamEventKind::End,0},before,after,p.implicit,false,nullptr});
+                }
                 close(key, p, out);
             }
         }
-        p.tracked = p.guarded || !p.echoes.empty() || (p.open && p.implicit);
+        p.tracked = p.guarded || !p.echoes.empty() || p.open;
         if (p.tracked) *retained++ = entry;
     }
     maintenance_.erase(retained, maintenance_.end());

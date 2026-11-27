@@ -7,6 +7,7 @@
 #include "adi/engine/clip_details.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_document.hpp"
@@ -30,6 +31,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iterator>
 #include <optional>
 #include <string_view>
@@ -156,7 +158,7 @@ double bin(const std::array<float, 2048> &data, int k) {
 
 // A declared nonzero runtime latency prevents the publication test from passing merely because
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
-class SurfaceKnobs final : public device::DeviceInstance {
+class SurfaceKnobs : public device::DeviceInstance {
   public:
     explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
         : reportedLatency(initialLatency), flow_(flow) {}
@@ -177,6 +179,114 @@ class SurfaceKnobs final : public device::DeviceInstance {
   private:
     engine::EventFlow flow_;
 };
+
+class SilentStateKnobs final : public SurfaceKnobs {
+  public:
+    SilentStateKnobs() : SurfaceKnobs(0) {}
+    std::vector<std::string> stateRoles() const override { return {"chunk"}; }
+    std::vector<std::uint8_t> saveState(const std::string &role) const override {
+        if (role != "chunk" || refuseSave)
+            return {};
+        return {patch};
+    }
+    bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
+        if (role != "chunk" || bytes.size() != 1)
+            return false;
+        patch = bytes.front();
+        return true;
+    }
+    void nativeDragWithoutEnd(double value) {
+        broadcastParam(1, engine::ParamEventKind::Begin, 0);
+        controls.setParam("gain", device::ParamValue::fromNormalized(value));
+        broadcastParam(1, engine::ParamEventKind::Value, value);
+    }
+    std::uint8_t patch = 1;
+    bool refuseSave = false;
+};
+
+void capturedPluginState(const std::filesystem::path &dir) {
+    const auto loader = [](const engine::DeviceRequest &request, std::string &)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == "test.silent-state")
+            return std::make_unique<SilentStateKnobs>();
+        return {};
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "silent.adi", true, loader, error);
+    check(document != nullptr, "SC-09: open a document for a plug-in with silent state changes");
+    if (!document)
+        return;
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = "test.silent-state";
+    plugin.name = "Silent sampler";
+    plugin.subtype = "effect";
+    const bool inserted = document->insertPlugin(plugin, 4);
+    const auto &devices = document->session().model().devices;
+    const auto samplerRow = std::find_if(devices.begin(), devices.end(),
+                                        [&](const auto &device) { return device.name == plugin.name; });
+    check(inserted && samplerRow != devices.end(), "SC-09: insert the sampler");
+    if (!inserted || samplerRow == devices.end())
+        return;
+    const auto id = samplerRow->id;
+    const auto instance = [&](ui::ProjectDocument &doc) {
+        return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(id));
+    };
+    auto *sampler = instance(*document);
+    check(sampler && sampler->stateEpoch() == 0, "SC-09: fixture gives no state-change signal");
+    if (!sampler)
+        return;
+
+    auto snapshot = document->takeSnapshot("Baseline", 1'000'000, 0);
+    check(snapshot.ok, "SC-09: save the first opaque state with a snapshot");
+    sampler->patch = 2;
+    const auto before = History(document->store()).head();
+    snapshot = document->takeSnapshot("Changed patch", 2'000'000, 0);
+    const auto history = History(document->store()).readTimeline();
+    const auto head = History(document->store()).head();
+    check(snapshot.ok && head != before && !history.snapshots.empty() && history.snapshots.front().opSeq == head,
+          "SC-09: a named snapshot follows the new opaque state in history");
+    check(document->takeSnapshot("Same patch", 3'000'000, 0).ok && History(document->store()).head() == head,
+          "SC-09: capturing unchanged state appends no undo step");
+
+    sampler->patch = 3;
+    sampler->refuseSave = true;
+    const auto copy = dir / "silent-copy.adi";
+    check(!document->saveCopy(copy) && !std::filesystem::exists(copy) &&
+              document->error().find("Silent sampler") != std::string::npos,
+          "SC-09: refused opaque capture leaves no published copy and names the plug-in");
+    sampler->refuseSave = false;
+    check(document->saveCopy(copy), "SC-09: retry copies the now readable state");
+    auto reopened = ui::ProjectDocument::open(copy, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 3,
+          "SC-09: opening Save a Copy restores the patch that made no callback");
+    reopened.reset();
+
+    sampler->patch = 4;
+    const auto saved = dir / "silent-saved.adi";
+    check(document->saveAs(saved), "SC-09: Save As captures silent state before it switches");
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 4,
+          "SC-09: opening Save As restores the latest patch");
+    reopened.reset();
+    sampler = instance(*document);
+    if (!sampler)
+        return;
+
+    sampler->patch = 5;
+    using engine::ParamEventKind;
+    check(document->parameterGesture(id, "cutoff", ParamEventKind::Begin, .5) &&
+              document->parameterGesture(id, "cutoff", ParamEventKind::Value, .8),
+          "SC-09: the strip has an unfinished knob drag");
+    sampler->nativeDragWithoutEnd(.6);
+    check(document->capturePluginState(), "SC-09: close captures both open knob drags and the silent patch");
+    document.reset();
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    const auto *closed = reopened ? instance(*reopened) : nullptr;
+    check(closed && closed->patch == 5 && std::abs(closed->getParam("cutoff").normalized - .8) < 1e-12 &&
+              std::abs(closed->getParam("gain").normalized - .6) < 1e-12,
+          "SC-09: reopening restores the silent patch and each drag's last value");
+}
 
 Payload readLatencyReport(Store &store) {
     SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
@@ -4415,6 +4525,195 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
           "as one Record Audio step in the saved file, the file it was saved from untouched");
     doc->release();
 }
+void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = false) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    fs::create_directory(staging);
+    const auto source = staging / "Untitled.adi";
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "first save starts with an unnamed project");
+    if (!doc)
+        return;
+
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "first-save fixture arms its audio track");
+    if (!doc->startRecording(0, 1, false)) {
+        check(false, "first-save fixture records");
+        return;
+    }
+    std::array<float, 64> in{}, left{}, right{};
+    in.fill(0.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    for (int block = 0; block < 16; ++block) {
+        io.streamTimeSamples = block * 64;
+        doc->process(io);
+    }
+    doc->release();
+    check(doc->settleRecording(), "the unnamed project's recording lands");
+    const auto take = doc->takeLanded();
+    check(take && take->ok, "the unnamed project has a recorded clip");
+    if (!take || !take->ok)
+        return;
+    const auto id = doc->store().db().execAndGet("SELECT id FROM media_files").getInt64();
+    const auto mediaPath = [&] {
+        return media::resolveMedia(media::projectFolder(doc->store()), media::mediaRow(doc->store().db(), id), error);
+    };
+    const auto originalAudio = mediaPath();
+    check(!originalAudio.empty(), "the take resolves in unnamed staging");
+    if (originalAudio.empty())
+        return;
+
+    const auto occupied = dir / "Occupied.adi";
+    fs::create_directory(occupied);
+    check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
+              !originalAudio.empty() && fs::is_regular_file(originalAudio),
+          "a refused first save retains the original project and its recording");
+
+    const auto destination = dir / "Song";
+    fs::create_directory(destination);
+    const auto named = destination / "Song.adi";
+    const auto relativeAudio = originalAudio.lexically_relative(fs::canonical(staging));
+    const auto existingAudio = destination / relativeAudio;
+    std::optional<media::FileIdentity> replacementIdentity;
+    if (replace) {
+        StoreError openError{};
+        auto existing = Store::createNewProject(named, openError);
+        check(existing && existing->close(), "the first-save replacement fixture is a closed project");
+        if (!existing)
+            return;
+        existing.reset();
+        fs::create_directories(existingAudio.parent_path());
+        std::ofstream(existingAudio) << "An existing take in the destination folder";
+        std::error_code identityError;
+        replacementIdentity = media::readFileIdentity(named, identityError);
+        const auto wrongIdentity = media::readFileIdentity(source, identityError);
+        check(replacementIdentity && wrongIdentity, "identify both projects in the replacement fixture");
+        if (!replacementIdentity || !wrongIdentity)
+            return;
+        check(!doc->saveAs(named, true) && fs::exists(originalAudio),
+              "a named destination keeps the first save pending until replacement is confirmed");
+        check(!doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed, &*wrongIdentity) &&
+                  doc->store().path() == source && fs::exists(originalAudio) &&
+                  media::readFileIdentity(named, identityError) == replacementIdentity &&
+                  std::distance(fs::directory_iterator(existingAudio.parent_path()), fs::directory_iterator{}) == 1,
+              "a stale confirmation leaves both projects and their media in place");
+    }
+    const auto existingHash = replace ? media::blake3File(existingAudio).hex : std::string{};
+    bool saved = false;
+    if (replacementIdentity) {
+        saved = doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed, &*replacementIdentity);
+    } else {
+        using SaveKind = ui::ProjectDocument::SaveKind;
+        using SavePhase = ui::ProjectDocument::SaveProgress::Phase;
+        using namespace std::chrono_literals;
+        if (doc->startSave(named, SaveKind::firstSave)) {
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            do {
+                doc->advanceSave();
+                const auto progress = doc->saveProgress();
+                if (!progress || progress->phase == SavePhase::failed || progress->phase == SavePhase::cancelled)
+                    break;
+                saved = progress->phase == SavePhase::succeeded && progress->switched;
+                if (saved)
+                    break;
+                std::this_thread::sleep_for(1ms);
+            } while (std::chrono::steady_clock::now() < deadline);
+        }
+        doc->clearSave();
+    }
+    check(saved && doc->name() == "Song" && doc->store().path() == named,
+          "first save names the active project");
+    if (!saved) {
+        std::printf("first save: %s\n", doc->error().c_str());
+        return;
+    }
+    const auto newAudio = mediaPath();
+    const auto localAudio = newAudio.lexically_relative(media::projectFolder(doc->store()));
+    check(!newAudio.empty() && newAudio != originalAudio && localAudio.parent_path() == relativeAudio.parent_path() &&
+              (replace ? localAudio != relativeAudio : localAudio == relativeAudio),
+          "first save keeps the take in the destination's media folder");
+    if (replace)
+        check(!existingHash.empty() && media::blake3File(existingAudio).hex == existingHash,
+              "a first-save replacement leaves the other recording at the conflicting name intact");
+    const auto undoStep = doc->ops().nextUndo();
+    check(undoStep && undoStep->label == "Record Audio", "first save preserves the recording's undo step");
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    check(undone, "the relocated project's recording can be undone");
+    const bool redone = undone && doc->ops().redo().ok && doc->synchronise();
+    check(redone && mediaPath() == newAudio, "redo restores the recording at its relocated path");
+    check(doc->takeSnapshot("First snapshot", 1, 0).ok,
+          "after naming, the project can take a snapshot");
+    doc.reset();
+    check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
+          "the closed named project retains the take and leaves no unnamed copy");
+    if (!redone)
+        return;
+
+    StoreError openError{};
+    const auto reopened = Store::open(named, openError, true);
+    engine::Session playback;
+    engine::SessionSpec spec;
+    spec.sampleRate = 48000;
+    spec.maxFrames = 64;
+    const bool loaded = reopened && playback.load(*reopened, {}, spec);
+    check(loaded, "the named project reopens for playback");
+    if (!loaded)
+        return;
+    playback.transport().locate(0);
+    playback.transport().play();
+    auto *clips = playback.clips();
+    check(clips && clips->prime(), "the relocated take's audio is ready");
+    io.in = nullptr;
+    io.numIn = 0;
+    io.streamTimeSamples = 0;
+    left.fill(0);
+    right.fill(0);
+    playback.process(io);
+    const auto renderedTake = [](float sample) { return std::abs(sample - 0.25f) < 0.01f; };
+    check(std::all_of(left.begin(), left.end(), renderedTake) && std::all_of(right.begin(), right.end(), renderedTake),
+          "the reopened, redone clip plays the recorded PCM with no audio input");
+}
+void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    const auto song = dir / "Song";
+    fs::create_directory(staging);
+    fs::create_directory(song);
+    const auto unnamed = staging / "Untitled.adi";
+    StoreError error{};
+    auto active = Store::create(unnamed, error);
+    auto other = Store::open(unnamed, error);
+    check(active && other, "first-save cleanup has an independent source writer");
+    if (!active || !other)
+        return;
+    const auto named = song / "Song.adi";
+    const auto result = active->saveUntitledAs(named);
+    check(result.ok && active->path() == named && fs::exists(unnamed),
+          "first save publishes the destination while the source writer's lease protects the original");
+    if (!result.ok)
+        return;
+    OpRequest late;
+    late.opType = "project.setName";
+    late.payload = {{"name", "A later source edit"}};
+    check(OpJournal(*other).commit(late).ok && other->close(), "the other writer commits and closes before cleanup");
+    other.reset();
+    active->finishUntitledSave();
+    auto original = Store::open(unnamed, error, true);
+    check(original && original->db().execAndGet("SELECT name FROM project").getString() == "A later source edit" &&
+              active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
+          "first-save cleanup preserves a newer source revision after its writer closes");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -4513,6 +4812,12 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        test::TempDirectory firstSaveDir("ui_document", "first-save");
+        firstSaveMovesTheTake(firstSaveDir.path());
+        test::TempDirectory firstSaveReplacement("ui_document", "first-save-replacement");
+        firstSaveMovesTheTake(firstSaveReplacement.path(), true);
+        test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
+        firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
@@ -4941,6 +5246,18 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+            std::error_code identityError;
+            const auto wrongTarget = media::readFileIdentity(after, identityError);
+            const auto target = media::readFileIdentity(before, identityError);
+            check(wrongTarget && target && !saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*wrongTarget) &&
+                      std::filesystem::equivalent(saving->store().path(), after) &&
+                      media::readFileIdentity(before, identityError) == target,
+                  "the dialog's approval cannot replace a different file at the chosen path");
+            check(saving->ops().submit(second).ok && saving->synchronise(), "an edit to distinguish the replacement");
+            check(target && saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*target) &&
+                      std::filesystem::equivalent(saving->store().path(), before) && saving->name() == "before" &&
+                      saving->store().db().execAndGet("SELECT count(*) FROM tracks").getInt() == 9,
+                  "confirmed Save As replaces the approved closed project and switches the current document");
         }
     }
     {
@@ -5537,6 +5854,7 @@ int main(int argc, char **argv) {
     dropSampleInstrument(temp.path());
     devicePresetRoundTrip(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
+    capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());
     slowProjectOpen(temp.path());
     manyDeviceTickSpeed(temp.path());

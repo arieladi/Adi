@@ -42,9 +42,8 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // Message-thread project lifetime. The callback is detached before destruction.
 // Only process() accesses Transport while the driver is running.
 //
-// There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
-// and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
-// a named snapshot instead, a point in the history that copies nothing.
+// Every op is committed as it happens (ADR-0003, ADR-0203 d13), and the store
+// closes into one file. Ctrl/Cmd+S names the project once and then takes snapshots.
 struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
@@ -95,16 +94,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the store copies the project into a
     // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
     // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
-    // The store never overwrites, so an existing destination is refused and `error()` says why,
-    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // Existing destinations require explicit replacement confirmation. False means nothing moved; once the store has
     // switched the save stands and is true, a warning the store reports, or a session that
     // failed to re-read the new file, in `warning()`.
-    bool saveAs(const std::filesystem::path &);
+    bool saveAs(const std::filesystem::path &, bool firstSave = false,
+                StoreFileCollision = StoreFileCollision::Fail,
+                const media::FileIdentity *expectedTarget = nullptr);
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
-    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused.
     bool saveCopy(const std::filesystem::path &);
-    enum class SaveKind { as, copy };
+    enum class SaveKind { as, copy, firstSave };
     struct SaveProgress {
         enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
         Phase phase;
@@ -113,7 +113,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         bool switched = false;
     };
     // File-menu saves progress between owner turns. Only Save As switches the live document.
-    bool startSave(const std::filesystem::path &, SaveKind);
+    bool startSave(const std::filesystem::path &, SaveKind, StoreFileCollision = StoreFileCollision::Fail,
+                   const media::FileIdentity *expectedTarget = nullptr);
     std::optional<SaveProgress> saveProgress() const;
     void advanceSave();
     void cancelSave();
@@ -134,6 +135,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
     static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
+    // Finish pending device edits and capture even plug-ins that never report changed state.
+    // Call before closing the document or reading the file for an offline render.
+    // An individual device copy or removal supplies its target.
+    bool capturePluginState(std::optional<std::int64_t> deviceId = {});
     bool synchronise();
     // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
     // Returns how many woke (the view then re-reads the session).
@@ -283,8 +288,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::optional<std::string> takeTrackRenderStatus();
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
-    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
-    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy captures live state first and uses
+    // stored state for a device whose plug-in is not loaded; the clipboard is the app's, not the
     // document's. Paste puts a new device, with the next free id and the copy's stored state, in
     // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
     // engine's refusals (a rack with nested chains, a copy from another project) come back in
@@ -358,6 +363,13 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    struct ClipRelinkTarget {
+        std::int64_t clipId{}, mediaId{};
+        std::string hash, originalName;
+    };
+    std::optional<ClipRelinkTarget> clipRelinkTarget(std::int64_t clip);
+    bool relinkClipMedia(const ClipRelinkTarget &, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
@@ -449,7 +461,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
-    void followSaveAs(const StoreFileResult &, bool keptTake);
+    bool followSaveAs(const StoreFileResult &, bool keptTake);
     struct SaveJob;
     std::unique_ptr<Store> store_;
     std::string name_;
