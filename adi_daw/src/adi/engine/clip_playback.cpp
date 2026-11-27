@@ -746,9 +746,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
-    TempoMap tempo;
-    for(const auto& e:project->rows.tempo) tempo.events.push_back({e.posTicks,e.bpm,static_cast<int>(e.curve)});
-    if(tempo.events.empty()) tempo.events.push_back({0,120,0});
+    const auto tempo = TempoMap::fromRows(project->rows.tempo);
     impl_->warpClock.emplace(project->rows.tempo,rate);
     const auto& warpClock = *impl_->warpClock;
     std::unordered_map<fs::path, SourceReaders> readers;

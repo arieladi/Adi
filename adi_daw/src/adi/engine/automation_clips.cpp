@@ -2,6 +2,7 @@
 #include "adi/engine/automation_clips.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
+#include "adi/engine/snapshot.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -14,12 +15,15 @@ struct AutomationClock {
     struct Knot { long double tick=0, seconds=0, ticksPerSecond=0; };
     double rate=0;
     std::vector<Knot> knots;
+    std::optional<TempoMap> rampClock;
     long double secondsAt(long double tick) const noexcept {
+        if (rampClock) return rampClock->secondsAtPosition(tick);
         auto i=std::upper_bound(knots.begin(),knots.end(),tick,[](long double t,const Knot& k){return t<k.tick;});
         if(i!=knots.begin())--i;
         return i->seconds+(tick-i->tick)/i->ticksPerSecond;
     }
     long double ticksAt(long double seconds) const noexcept {
+        if (rampClock) return rampClock->positionAtSeconds(seconds);
         auto i=std::upper_bound(knots.begin(),knots.end(),seconds,[](long double t,const Knot& k){return t<k.seconds;});
         if(i!=knots.begin())--i;
         return i->tick+(seconds-i->seconds)*i->ticksPerSecond;
@@ -54,15 +58,19 @@ std::int64_t sampleAtNs(std::int64_t ns,double rate) {
 }
 std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double rate) {
     auto clock=std::make_shared<AutomationClock>();clock->rate=rate;
+    if (std::any_of(model.tempo.begin(), model.tempo.end(),
+                    [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
+        clock->rampClock = TempoMap::fromRows(model.tempo);
     clock->knots.push_back({0,0,5765760.0L*2});
     for(const auto& row:model.tempo) {
         if(row.posTicks<0 || !std::isfinite(row.bpm) || row.bpm<=0 ||
             static_cast<long double>(row.posTicks)<clock->knots.back().tick)
-            throw std::runtime_error("invalid step tempo map");
+            throw std::runtime_error("invalid clip envelope tempo map");
         const auto t=static_cast<long double>(row.posTicks);
         const auto seconds=clock->secondsAt(t);
         AutomationClock::Knot knot{t,seconds,5765760.0L*static_cast<long double>(row.bpm)/60};
-        if(!std::isfinite(seconds) || !std::isfinite(knot.ticksPerSecond) || knot.ticksPerSecond<=0)throw std::runtime_error("invalid step tempo map");
+        if(!std::isfinite(seconds) || !std::isfinite(knot.ticksPerSecond) || knot.ticksPerSecond<=0)
+            throw std::runtime_error("invalid clip envelope tempo map");
         if(t==clock->knots.back().tick)clock->knots.back()=knot;else clock->knots.push_back(knot);
     }
     return clock;

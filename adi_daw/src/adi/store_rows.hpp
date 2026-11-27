@@ -28,6 +28,7 @@
 #include <array>
 
 #include "adi/track_recording.hpp"
+#include "adi/tempo_ramp.hpp"
 #include "adi/return_send_tap.hpp"
 
 #include "adi/controller_data.hpp"
@@ -61,6 +62,7 @@ struct TempoEvent {
     double bpm = 120.0;
     std::int64_t curve = 0;
     double tension = 0.0;
+    std::optional<TempoRampSpan> rampSpan = std::nullopt;
 };
 
 struct TimeSignature {

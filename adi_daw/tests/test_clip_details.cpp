@@ -109,7 +109,9 @@ void linearAndTuningContext() {
     check(value.signature.numerator == 3 && value.signature.denominator == 8 && value.scale.id == "rast" &&
               value.scale.tuningId == 2 && value.scale.degrees == std::vector<std::int64_t>{0,4,7}, "linear origin selects inherited meter and native tuned scale");
     f.store->db().exec("UPDATE tempo_map SET curve=1 WHERE pos_ticks=0");
-    check(!f.read().propertiesProblem.empty(), "unsupported tempo ramp is named");
+    value = f.read();
+    check(value.propertiesProblem.empty() && value.endMarkerTicks == quarter + 23,
+          "a linear clip after the ramp keeps its musical duration and needs no fallback");
     f.store->db().exec("UPDATE clips SET content_offset_ticks=9223372036854775807 WHERE id=10");
     value = f.read();
     check(!value.endMarkerTicks && !value.propertiesProblem.empty() && value.posNs == 750000000,

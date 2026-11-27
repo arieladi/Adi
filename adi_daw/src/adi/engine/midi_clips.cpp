@@ -777,10 +777,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         }
         source->controllerGeneration=source->controllerVersion->generation;
     }
-    TempoMap tempo;for(const auto& e:model.tempo)tempo.events.push_back({e.posTicks,e.bpm,static_cast<int>(e.curve)});
-    if(tempo.events.empty())tempo.events.push_back({0,120,0});
-    if(std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
-        impl_->problems.push_back("MIDI tempo ramps unsupported; timing uses step tempos");
+    const auto tempo = TempoMap::fromRows(model.tempo);
     std::uint64_t identity=1;
     std::map<std::int64_t, std::vector<const rows::Note*>> notesByClip;
     for (const auto& clip : timelineClips(model)) {

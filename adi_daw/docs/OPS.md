@@ -926,11 +926,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -989,11 +988,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1144,11 +1142,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1268,11 +1265,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1359,10 +1355,10 @@ and `commitMidi`. The spec supplies a fresh positive clip ID, project tick
 position, explicit integer source range containing the complete retained input,
 name and held-note closing policy. Source driver timestamps are independent of
 project placement. A coherent read checks the regular unlocked/unfrozen target,
-new identities and current step-tempo clock. Every note/CC boundary must roundtrip
+new identities and the current tempo map. Every note/CC boundary must roundtrip
 its exact sample at the captured rate. Prefix-truncated histories, serial/time
 gaps, unknown/duplicate ownership, mismatched releases, zero-duration notes,
-tempo ramps and unsupported expressions refuse without writes. Existing ANOT
+and unsupported expressions refuse without writes. Existing ANOT
 velocity bytes accept only source values that roundtrip exactly through the
 MIDI-1 word; arbitrary doubles are refused, never silently quantized. CC values
 remain full double. Held notes optionally close at the explicit Capture end with
@@ -1583,10 +1579,10 @@ underlying clip at its ongoing phase, then the arrangement.
 Owner-thread compilation reads clip-relative points with their original curves,
 content offset and musical loop window. It handles musical/linear placements,
 tick/nanosecond envelopes, the pre-loop intro, loops starting inside their window,
-and step tempos. Native curve phase survives trimming and tempo changes rather
+and tempo ramps. Native curve phase survives trimming and tempo changes rather
 than being renormalized between cropped samples. Nanosecond envelopes use elapsed
 seconds plus the musical content offset; while looping, the musical loop phase
-maps back through the source-relative step-tempo clock. All six shared curves and
+maps back through the source-relative tempo clock. All six shared curves and
 coincident-point ordering are preserved. Device-event emission includes exact
 rounded clip/point/wrap boundaries between the existing cadence ticks. Strip
 processing retains its existing control grid and smoothing; both graph widths
@@ -1600,8 +1596,8 @@ arrangement playback remain. Empty streams do not mask arrangement data. The cli
 must belong to the lane owner's track (including nested-device chains). Unknown
 clocks, aliases, unsupported owners and loops shorter than one session sample
 remain explicitly refused; clip-owned relative gain/modulation semantics are not
-claimed. Ramp tempos remain a reported step-tempo fallback, as in arrangement
-playback. No schema/opcode/UI change or measured Live parity claim is introduced.
+claimed. Tempo ramps are integrated as in arrangement playback (TM-TT-01).
+No schema/opcode/UI change or measured Live parity claim is introduced.
 
 Send gain automation addresses an existing track-origin `routing` row of kind
 `send`, with `owner_kind="routing"`, its row ID as `owner_id`,

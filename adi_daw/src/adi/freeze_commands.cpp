@@ -87,11 +87,7 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
         files->capture = std::move(capture);
         SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
         const auto model = rows::readModel(store);
-        engine::TempoMap tempo;
-        for (const auto &event : model.tempo)
-            tempo.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-        if (tempo.events.empty())
-            tempo.events.push_back({0, 120, 0});
+        const auto tempo = engine::TempoMap::fromRows(model.tempo);
         const auto plan = engine::planGraph(model);
         if (!plan.problems.empty() || !model.problems.empty())
             throw std::runtime_error("freeze requires a fully resolved project");
