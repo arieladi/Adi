@@ -154,7 +154,7 @@ void liveHistoryPublication() {
         io.streamTimeSamples = sample;
         auto block = graph.beginRender();
         audio::CallbackScope callback;
-        input.render(block, io, {}, selected, transport, nullptr, RecordingPunch::Within, {});
+        input.render(block, io, {}, selected, transport, {}, nullptr, RecordingPunch::Within, {});
     };
     check(input.push(1, note(), 1, port), "queue one event for both listening tracks");
     render(0, histories);

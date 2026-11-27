@@ -38,6 +38,7 @@
 #pragma once
 
 #include "adi/blob.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/events.hpp"
 #include "adi/engine/note_expression.hpp"
 
@@ -89,7 +90,7 @@ enum class RouteChoice : std::uint8_t {
 /// VST3's controller numbers for the two MIDI messages that are not CCs, from
 /// `ivstmidicontrollers.h`. Asserted against the SDK in `vst3_events.hpp`.
 inline constexpr std::uint16_t kCtrlAfterTouch = 128;
-inline constexpr std::uint16_t kCtrlPitchBend  = 129;
+inline constexpr std::uint16_t kCtrlPitchBend  = controllers::kPitchBend;
 
 /// MPE's timbre (Y) controller. The same number as the input parser's
 /// `kTimbreCcMsb`; repeated so this header does not pull the parser in.

@@ -428,6 +428,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         view.selectLoop();
         view.loopSelected = true;
         focusIfShowing(view.canvas); // the arrows go to the lanes, which act on the brace
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         repaint();
         return;
     }
@@ -457,6 +458,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         locatorTo_ = pos;
         locatorMoved_ = false;
         focusIfShowing(view.canvas); // Delete and the arrows go to the lanes, which act on it
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         repaint();
         return;
     }
@@ -491,10 +493,15 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     view.root.playFrom(view.geometry.tick(e.position.x));
 }
 void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    const auto pan = [&] {
+        if (e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true, false))
+            view.frame(true);
+    };
     if (locatorDragged_ != 0) {
         if (e.getDistanceFromDragStart() < 3 && !locatorMoved_)
             return; // a click, not a drag
         locatorMoved_ = true;
+        pan();
         const auto raw = view.geometry.tick(e.position.x) - locatorGrab_;
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         locatorTo_ = std::max<std::int64_t>(0, !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up));
@@ -502,6 +509,7 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (brace_ != BracePart::None) {
+        pan();
         // To the nearest grid line while snapping (manual 6.6: "dragging from the left or right edge
         // adjusts the loop start/end points, while dragging the brace bar horizontally moves the loop
         // without changing its length"); never before the start, never shorter than a grid step.
@@ -2179,24 +2187,26 @@ void ArrangementView::addGridItems(juce::PopupMenu &menu) {
     menu.addCommandItem(&root.commands().manager, AppCommands::TripletGrid);
     menu.addCommandItem(&root.commands().manager, AppCommands::SnapToGrid);
 }
-bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
+int ArrangementView::edgeScrollStep(int position, int length) noexcept {
     // How far past the edge zone's inner line, as a step: a few points at its rim, up to a track
     // a step well past it.
-    auto step = [](int depth) { return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2); };
+    const int depth = position < kScrollEdge ? position - kScrollEdge
+                    : position > length - kScrollEdge ? position - (length - kScrollEdge) : 0;
+    return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2);
+}
+bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
     bool moved = false;
     if (upAndDown) {
         // The tracks scroll above the foot: its top is their bottom.
         const int bottom = geometry.footTop(reader());
-        const int depth = y < kScrollEdge ? y - kScrollEdge : y > bottom - kScrollEdge ? y - (bottom - kScrollEdge) : 0;
         const int before = geometry.scrollY;
-        geometry.scrollY = std::clamp(before + step(depth), 0, geometry.maxScroll(reader()));
+        geometry.scrollY = std::clamp(before + edgeScrollStep(y, bottom), 0, geometry.maxScroll(reader()));
         moved = geometry.scrollY != before;
     }
     if (sideways) {
         const int width = canvas.getWidth();
-        const int depth = x < kScrollEdge ? x - kScrollEdge : x > width - kScrollEdge ? x - (width - kScrollEdge) : 0;
         const double before = geometry.left;
-        geometry.pan(step(depth));
+        geometry.pan(edgeScrollStep(x, width));
         if (geometry.left != before) {
             moved = true;
             followPaused = true; // a sideways scroll pauses Follow (§6.2)
@@ -2565,6 +2575,10 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                     const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
                     controls::chooser(g, box.toFloat(), juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value),
                                       look::fontSmall);
+                    if (!record && t->recording.playEnabled) {
+                        g.setColour(look::playQuantize);
+                        g.drawRoundedRectangle(box.toFloat().reduced(.5f), look::radiusBox, 1.f);
+                    }
                 }
         const int stackHeight = view.geometry.stackHeightFor(t->id);
         if (stackHeight > h) {
@@ -7476,6 +7490,11 @@ std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const 
             consider(l.pos);
     return best;
 }
+namespace {
+bool isMidiFileDrop(const juce::String &path) {
+    return path.endsWithIgnoreCase(".mid") || path.endsWithIgnoreCase(".smf");
+}
+} // namespace
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     // One file or several, as Live takes them; what each holds is read on the drop.
     return !files.isEmpty();
@@ -7519,7 +7538,17 @@ std::int64_t ArrangementCanvas::audioDropTick(int x) const {
 }
 void ArrangementCanvas::fileDragEnter(const juce::StringArray &files, int x, int y) { fileDragMove(files, x, y); }
 void ArrangementCanvas::fileDragMove(const juce::StringArray &files, int x, int y) {
-    previewSampleDrop(y, audioDropTick(x), files.size(), false);
+    const auto tick = audioDropTick(x);
+    const auto midiFiles = static_cast<int>(std::count_if(files.begin(), files.end(), isMidiFileDrop));
+    if (midiFiles > 0 && view.reader().get()) {
+        const auto [track, lane] = dropLane(y);
+        if (!track || isMidiTrack(*track)) {
+            const int left = static_cast<int>(view.geometry.x(tick));
+            setDropPreview({lane.withX(left).withWidth(2).getIntersection(getLocalBounds())});
+            return;
+        }
+    }
+    previewSampleDrop(y, tick, files.size() - midiFiles, false);
 }
 void ArrangementCanvas::previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly) {
     const auto [track, lane] = dropLane(y);
@@ -7590,7 +7619,7 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     std::vector<std::pair<std::string, std::string>> midi;
     for (const auto &path : files) {
         const auto file = juce::File::createFileWithoutCheckingPath(path);
-        if (file.hasFileExtension("mid;smf"))
+        if (isMidiFileDrop(path))
             midi.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
         else
             audio.add(path);

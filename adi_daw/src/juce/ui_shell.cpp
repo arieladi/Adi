@@ -14,7 +14,6 @@
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
 #include "adi/clip_image.hpp"
-#include "adi/media/media_ops.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/cue_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -27,6 +26,7 @@
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
+#include "adi/controller_lanes.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
@@ -1328,7 +1328,7 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
             return false;
         if (root.transport.keyboard.getToggleState() &&
-            key == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
+            pressed == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
             return false;
     }
     // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
@@ -2439,7 +2439,7 @@ void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
-bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && clipView.details() != nullptr; }
+bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && !clipView.envelopesShown() && clipView.details() != nullptr; }
 bool AdiRootComponent::noteEditorHasContext() const { return noteEditorShown() && clipView.notes.hasContext(); }
 void AdiRootComponent::toggleClipViewFull() {
     if (!state_.clipView)
@@ -2710,6 +2710,29 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
         return true;
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
+}
+bool AdiRootComponent::writeControllerPoint(const controllers::Address &address, const controllers::Point &point,
+                                            const std::optional<std::int64_t> &expectedHead) {
+    const std::array points{point};
+    auto prepared = controllers::prepareWrite(editStore(), address.clipId, address.channel, address.controller,
+                                              points);
+    if (!prepared.ok)
+        return fail(prepared.error);
+    if ((address.id != 0 && prepared.address.id != address.id) || prepared.expectedHead != expectedHead)
+        return fail("The MIDI controller envelope changed during the edit.");
+    std::vector requests{std::move(prepared.request)};
+    requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(requests, [&](Store &store, Actor) {
+        prepared.request = std::move(requests.front());
+        return controllers::commitPrepared(store, prepared);
+    }));
+}
+bool AdiRootComponent::deleteControllerPoints(const controllers::Lane &lane, std::span<const std::uint64_t> points) {
+    if (!lane.channel || !lane.controller || points.empty())
+        return false;
+    const controllers::Address address{lane.id, lane.clipId, static_cast<int>(*lane.channel),
+                                       static_cast<int>(*lane.controller)};
+    return submitEdits({controllers::deleteRequest(address, points)});
 }
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
@@ -6063,7 +6086,8 @@ bool AdiRootComponent::focusView(int id) {
         if (clipView.details() == nullptr)
             focusIfShowing(clipView);
         else if (clipView.midi())
-            focusIfShowing(clipView.notes);
+            focusIfShowing(clipView.envelopesShown() ? static_cast<juce::Component &>(clipView.envelopes)
+                                                     : static_cast<juce::Component &>(clipView.notes));
         else
             focusIfShowing(clipView.sample);
         return true;

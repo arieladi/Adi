@@ -47,6 +47,9 @@
 namespace adi::automation {
 struct NativeSpliceKnot;
 }
+namespace adi::controllers {
+struct Address;
+}
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
@@ -891,6 +894,9 @@ class AdiRootComponent final : public juce::Component,
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
     Store &editStore() noexcept { return submitter_.store(); }
+    bool writeControllerPoint(const controllers::Address &, const controllers::Point &,
+                              const std::optional<std::int64_t> &expectedHead);
+    bool deleteControllerPoints(const controllers::Lane &, std::span<const std::uint64_t>);
     const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
     // Launch the configured executable or application bundle with a verified source from the pool.
     std::function<bool(const std::filesystem::path &editor, std::int64_t mediaId, bool copy)> launchSampleEditor;

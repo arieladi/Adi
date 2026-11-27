@@ -74,7 +74,7 @@ if(ADI_WITH_JUCE)
             message(FATAL_ERROR "Step 7 JUCE build needs a short Windows build path (under 100 characters).")
         endif()
     endif()
-    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_export.cpp)
+    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_clip_controller.cpp src/juce/ui_export.cpp)
     # Some libraries offer only integer charconv, or expose floating symbols
     # that the selected macOS deployment target cannot call.
     set(adi_ui_charconv_flags)
@@ -126,7 +126,7 @@ if(ADI_WITH_JUCE)
         target_link_options(adi_ui_shell_tests PRIVATE /STACK:8388608)
     endif()
     # Apply our warning policy to our code, not JUCE's module translation units.
-    set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_export.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp tests/test_ui_shell.cpp PROPERTIES
+    set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_clip_controller.cpp src/juce/ui_export.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
     add_test(NAME adi_ui_appearance_settings_tests COMMAND adi_ui_shell_tests --appearance-settings-only)

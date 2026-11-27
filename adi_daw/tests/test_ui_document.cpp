@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/edit_plan.hpp"
@@ -3841,8 +3842,12 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
         check(doc->session().enqueueMidiInput(lead + 96, {0, engine::EventType::NoteOn, 1, 60, 17, 0, 1.0},
                                               lead + 64, engine::midiInputKey("in:test:pads")) &&
                   doc->session().enqueueMidiInput(lead + 104, {0, engine::EventType::NoteOn, 0, 62, 18, 0, 1.0},
-                                                  lead + 72, midiPort),
-              "the callback receives a different endpoint and channel before the matching note");
+                                                  lead + 72, midiPort) &&
+                  doc->session().enqueueMidiInput(lead + 105, {0, engine::EventType::Controller, 1, 0, 0, 74, .5},
+                                                  lead + 73, engine::midiInputKey("in:test:pads")) &&
+                  doc->session().enqueueMidiInput(lead + 106, {0, engine::EventType::Controller, 0, 0, 0, 1, .5},
+                                                  lead + 74, midiPort),
+              "the callback receives notes and controls from a different endpoint and channel");
     }
     check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80, midiPort) &&
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
@@ -3850,8 +3855,12 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
                    static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88, midiPort) &&
               doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88, midiPort),
-          "one held note with bend, slide and pressure and separate played and heard timestamps");
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88, midiPort) &&
+              doc->session().enqueueMidiInput(lead + 121, {0, engine::EventType::Controller, 1, 0, 0, 1, .25},
+                                              lead + 89, midiPort) &&
+              doc->session().enqueueMidiInput(lead + 122, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 0, 0, 1.}, lead + 90, midiPort),
+          "one held MPE note, mod wheel and channel pitch with separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
@@ -3911,6 +3920,16 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
                   std::all_of(curves.begin(), curves.end(), [&](const auto &curve) {
                       return curve.noteId == clip.notes.front().id && curve.points.size() == 1 && curve.points.front().time_ticks > 0;
                   }), "the clip preserves bend, slide and pressure as note-relative curves");
+        const auto controls = controllers::readLanes(doc->store(), id);
+        const auto hasControl = [&](int controller, double value) {
+            return std::any_of(controls.lanes.begin(), controls.lanes.end(), [&](const auto &lane) {
+                return lane.channel == 1 && lane.controller == controller && lane.points.size() == 1 &&
+                       lane.points.front().value == value;
+            });
+        };
+        check(controls.ok && controls.lanes.size() == 2 && hasControl(1, .25) &&
+                  hasControl(controllers::kPitchBend, .75),
+              "MIDI-only and staged mixed publication keep the two controller lanes through Rec-Q undo");
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
@@ -3968,9 +3987,13 @@ void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) 
         doc->tick(io.streamTimeSamples);
     };
     block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+    constexpr double mod = .3 + 0x1p-43;
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    check(doc->session().enqueueMidiInput(108, {0, engine::EventType::Controller, 1, 0, 0, 1, mod}, 76) &&
+              doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+              doc->session().enqueueMidiInput(144, {0, engine::EventType::NoteExpression, 1, pitch, 0, 0, 1.}, 116) &&
               doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0}, 128),
-          "record the same event on each track across the first track's suppression boundary");
+          "record notes and channel controllers on both tracks across an Auto suppression boundary");
     block();
     block();
     const auto expected = [&](std::int64_t track) {
@@ -4000,6 +4023,16 @@ void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) 
         const auto &note = read.clip->notes.front();
         check(*read.clip->posTicks + note.startTicks == start && note.durationTicks == end - start,
               "the landed note preserves both endpoints from its track's selected clock");
+        const auto lanes = controllers::readLanes(doc->store(), id);
+        const bool heardMod = read.clip->trackId == 3 || overdub;
+        const auto modTime = tick(heardMod ? 108 - upstream : 76);
+        check(lanes.ok && lanes.lanes.size() == 2 && lanes.lanes[0].controller == 1 &&
+                  lanes.lanes[0].points.size() == 1 && lanes.lanes[0].points.front().value == mod &&
+                  *read.clip->posTicks + lanes.lanes[0].points.front().timeTicks == modTime &&
+                  lanes.lanes[1].controller == controllers::kPitchBend && lanes.lanes[1].points.size() == 1 &&
+                  lanes.lanes[1].points.front().value == .75 &&
+                  *read.clip->posTicks + lanes.lanes[1].points.front().timeTicks == tick(144 - upstream),
+              "CC retains its audible or raw time, and pitch follows monitoring when the clip ends under a held note");
     }
 }
 void mixedPunchKeepsMidi(const std::filesystem::path &dir, bool keepSecondAudio = false) {
@@ -5626,6 +5659,10 @@ int main(int argc, char **argv) {
         arrangementMidiRecord(midiFilterDir.path() / "midi.adi", false, false, true);
         test::TempDirectory mixedRecordingDir("ui_document", "record-mixed");
         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
+        test::TempDirectory quantizedRecordingDir("ui_document", "record-quantized-mixed");
+        arrangementMidiRecord(quantizedRecordingDir.path() / "quantized-mixed.adi", true, true);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto.adi", false);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto-overdub.adi", true);
         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
         mixedPunchKeepsMidi(punchRecoveryDir.path());
         test::TempDirectory partialPunchDir("ui_document", "mixed-punch-partial");
@@ -5646,10 +5683,6 @@ int main(int argc, char **argv) {
         refusedRecordingKeepsAudio(refusedLoopDir.path(), true);
         test::TempDirectory countInDir("ui_document", "count-in");
         countInPositionFeedback(countInDir.path());
-        test::TempDirectory quantizedMixedDir("ui_document", "quantized-mixed");
-        arrangementMidiRecord(quantizedMixedDir.path() / "quantized-mixed.adi", true, true);
-        arrangementMidiAutoTiming(recordDir.path() / "midi-auto.adi", false);
-        arrangementMidiAutoTiming(recordDir.path() / "midi-auto-overdub.adi", true);
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");

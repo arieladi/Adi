@@ -3,6 +3,7 @@
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/bounce_commands.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/freeze_commands.hpp"
@@ -93,6 +94,7 @@ struct ProjectDocument::MidiRecording {
         std::vector<notes::NoteValues> notes;
         std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
+        std::map<std::pair<int, int>, std::vector<controllers::Point>> controllerPoints;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
@@ -110,6 +112,17 @@ struct ProjectDocument::MidiRecording {
             return tick;
         const auto next = tempo->ticksToSeconds(tick + 1);
         return next - seconds < seconds - tempo->ticksToSeconds(tick) ? tick + 1 : tick;
+    }
+
+    bool monitorsAt(const Track &track, std::int64_t sample) const noexcept {
+        if (!track.monitor)
+            return false;
+        if (overdub)
+            return true;
+        const auto &ranges = track.monitor->blockedRanges;
+        const auto range = std::upper_bound(ranges.begin(), ranges.end(), sample,
+            [](std::int64_t at, const engine::MidiMonitorRange &span) { return at < span.end; });
+        return range == ranges.end() || sample < range->start;
     }
 
     void ingest(const engine::MidiCapturePacket &packet) {
@@ -132,7 +145,14 @@ struct ProjectDocument::MidiRecording {
             return;
         }
         const auto &event = packet.event;
-        if (!started || event.noteId == 0 || event.type == engine::EventType::Controller)
+        const bool channelPitch = capture::isChannelPitchWheel(event);
+        const bool control = event.type == engine::EventType::Controller || channelPitch;
+        if (!started || (!control && event.noteId == 0))
+            return;
+        const auto address = channelPitch ? controllers::kPitchBend : event.paramId;
+        const auto controlValue = channelPitch ? capture::channelPitchWheelValue(event.value) : event.value;
+        if (control && (event.channel >= 16 || !controllers::validController(address) ||
+                        !std::isfinite(controlValue) || controlValue < 0. || controlValue > 1.))
             return;
         const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
@@ -142,17 +162,18 @@ struct ProjectDocument::MidiRecording {
             auto &take = preview[i];
             const auto held = track.held.find(event.noteId);
             // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
-            bool monitored = held != track.held.end() && held->second.monitored;
-            if (event.type == engine::EventType::NoteOn && track.monitor) {
-                const auto& ranges = track.monitor->blockedRanges;
-                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
-                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
-                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
-            }
+            const bool monitored = control || event.type == engine::EventType::NoteOn
+                ? monitorsAt(track, packet.timelineSample)
+                : held != track.held.end() && held->second.monitored;
             // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
             const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
             const auto at = std::clamp(tick, take.start, take.end - 1);
-            if (event.type == engine::EventType::NoteOn) {
+            if (control) {
+                if (!monitored && packet.inputSample < firstStreamSample)
+                    continue;
+                auto &lane = track.controllerPoints[{event.channel, static_cast<int>(address)}];
+                lane.push_back({lane.size() + 1, at - take.start, controlValue});
+            } else if (event.type == engine::EventType::NoteOn) {
                 if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
@@ -210,11 +231,13 @@ struct ProjectDocument::MidiRecording {
 
     struct Placement {
         std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+        std::vector<std::vector<recording::MidiControllerLane>> controllers;
         std::vector<recording::MidiLinearTake> takes;
     };
     Placement placements(RowIds &rows, const SnapshotReader &current) {
         Placement placement;
         placement.expressions.resize(tracks.size());
+        placement.controllers.resize(tracks.size());
         placement.takes.reserve(tracks.size());
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
@@ -225,10 +248,17 @@ struct ProjectDocument::MidiRecording {
                 if (!points.empty())
                     placement.expressions[i].push_back({key.first, key.second, points});
             }
+            for (auto &[address, points] : track.controllerPoints) {
+                // Crossing a Monitor Auto boundary can change the clock for the next control.
+                std::stable_sort(points.begin(), points.end(), [](const auto &a, const auto &b) {
+                    return a.timeTicks < b.timeTicks;
+                });
+                placement.controllers[i].push_back({address.first, address.second, points});
+            }
             auto name = shownTrackName(current, span.track);
             placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
                                        name.empty() ? std::string("Take") : std::move(name),
-                                       track.notes, placement.expressions[i], overdub});
+                                       track.notes, placement.expressions[i], overdub, placement.controllers[i]});
         }
         return placement;
     }
@@ -3792,7 +3822,7 @@ void ProjectDocument::finishMidiTake(const MidiRecording &midi, const recording:
             targets.push_back({landing.clip, landing.sourceStart, span.start, span.end - span.start, grid, landing.noteIds});
     }
     if (keptInTakeLane)
-        outcome.message += " Kept overdub notes in a Take Lane where merging would change other material.";
+        outcome.message += " Kept overdub in a Take Lane where merging would change other material.";
     if (targets.empty())
         return;
     auto quantized = recording::prepareRecordQuantize(*store_, targets);
@@ -3854,7 +3884,8 @@ ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t posi
     if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
     std::erase_if(histories, [this](const auto& history) {
         if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
-                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller ||
+                       capture::isChannelPitchWheel(event.event);
             })) return false;
         session_.consumeMidiHistories(std::span(&history, 1));
         return true;

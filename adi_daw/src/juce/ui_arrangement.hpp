@@ -700,6 +700,7 @@ class ArrangementView final : public juce::Component {
     // farther in, the faster. Points are the lanes' (the canvas's and the names'). True when the
     // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
     bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
+    static int edgeScrollStep(int position, int length) noexcept;
     static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
     enum class SelectionPurpose { Edit, InsertMarker, ContextMenu };
     // Selects the clip or point. A context menu keeps an existing selection under the pointer.

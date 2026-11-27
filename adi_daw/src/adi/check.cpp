@@ -203,7 +203,7 @@ void checkBlobs(Ctx& c) {
             const auto data = blobOf(st.getColumn(3));
             if (kind == "notes")
                 verifyStream<NoteRecord>(c, data, FourCC::Notes, where);
-            else if (kind == "cc")
+            else if (kind == "cc" || kind == "pitchbend")
                 verifyStream<AutomationPoint>(c, data, FourCC::Controller, where);
             // Other stream kinds have no record type yet; not an error.
         }
