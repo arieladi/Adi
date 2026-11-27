@@ -4,8 +4,8 @@
 #include "adi/ui/meters.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <optional>
 #include <string>
-#include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 // One item of Live's control bar: a field with text, or a glyph, flat as Live's.
@@ -51,6 +51,7 @@ class BarItem : public juce::Button {
     // Live's automation LED in a field's upper left corner (manual 6.5: the time signature fields
     // show one "when the Arrangement contains time signature changes").
     bool automationLed = false;
+    bool overloadLed = false;
 
   protected:
     virtual const juce::String &displayText() const noexcept { return text; }
@@ -84,9 +85,7 @@ class BarValue final : public BarItem {
     bool pressed_ = false, dragged_ = false;
 };
 // Live's control bar (manual 3.1): tempo and the metronome on the left, the
-// transport and the loop in the middle, the global switches on the right. What the
-// engine has is live; the rest is drawn as Live draws it and says, when clicked, that
-// it is not built yet.
+// transport and the loop in the middle, the global switches on the right.
 class TransportBar final : public juce::Component {
   public:
     explicit TransportBar(AdiRootComponent &);
@@ -95,6 +94,13 @@ class TransportBar final : public juce::Component {
     // Refreshes the live fields: the tempo, the position, the transport's state.
     void refresh();
     juce::PopupMenu metronomeMenu() const;
+    struct CpuLoad {
+        float current, average;
+        bool missedDeadline = false, deviceReset = false;
+    };
+    // The application supplies a sample at its message-thread timer rate.
+    void setCpuLoad(std::optional<CpuLoad>);
+    std::function<void(juce::PopupMenu)> onCpuMenu;
     // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
     void focus();
     // Live's Tempo and Time Signature fields (manual 9.1.1, 6.5): a click opens a field over one,
@@ -126,7 +132,7 @@ class TransportBar final : public juce::Component {
     BarItem link{"Link"}, tap{"Tap"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
         metronome{{}, BarItem::Glyph::Metronome, true, true},
-        quantize{"1 Bar", BarItem::Glyph::None, true, true},
+        quantize{juce::String::charToString(0x2014), BarItem::Glyph::None, true, true},
         follow{{}, BarItem::Glyph::Follow},
         play{{}, BarItem::Glyph::Play, false}, stop{{}, BarItem::Glyph::Stop, false},
         record{{}, BarItem::Glyph::Record, false}, overdub{{}, BarItem::Glyph::Overdub},
@@ -136,18 +142,24 @@ class TransportBar final : public juce::Component {
         punchIn{{}, BarItem::Glyph::PunchIn}, loop{{}, BarItem::Glyph::Loop},
         punchOut{{}, BarItem::Glyph::PunchOut},
         draw{{}, BarItem::Glyph::Draw}, keyboard{{}, BarItem::Glyph::Keyboard}, key{"Key"},
-        midi{"MIDI"}, cpu{"0 %", BarItem::Glyph::None, true, true}, indicators{{}},
+        midi{"MIDI"}, cpu{{}, BarItem::Glyph::None, true, true}, indicators{{}},
         arrangementPage{"Arrangement"}, mix{"Mix View"};
 
   private:
-    std::vector<BarItem *> items();
     AdiRootComponent &root_;
-    BarItem *lastFocused_ = &link;
+    BarItem *lastFocused_ = nullptr;
     void beginFieldEdit(BarValue &, const juce::String &text, std::function<bool(const std::string &)> commit);
     enum class TimeField { Position, LoopStart, LoopLength };
     juce::String adjustTime(TimeField, int part, int steps, bool commit);
     BarItem *editing_ = nullptr;
     std::function<bool(const std::string &)> commit_;
+    enum class CpuMode { Average, Current, Off };
+    CpuMode cpuMode_ = CpuMode::Average;
+    std::optional<CpuLoad> cpuLoad_;
+    int shownCpuPercent_ = -1;
+    void refreshCpuMeter();
+    void setCpuOverload(bool);
+    juce::PopupMenu cpuMenu();
     // What the fields last showed, so a frame that changes nothing formats nothing.
     double shownBpm_ = -1;
     BarPosition shownPosition_{0, 0, 0};

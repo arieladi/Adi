@@ -6,6 +6,62 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-27, afternoon — the check of the Browser and the AI (ADR-0261); who builds the Browser; four choices asked
+
+**The director's words of the day.** AI is a label in the Browser's Categories list; choosing it turns the Browser into the place to ask (its bar) and to read the answer (its pane): "the browser is where the AI interaction should happen". The floating search is the quick way, "for easy pick of a sample real fast or easy call of an agent real fast", and the Browser the deep one. The label is not shown until ADI can answer. The Browser filters by what a sound measures. Its preview row is hidden until it is needed. "dont forget all the integration of the audiogridder". Delete in a plug-in's window stays as Live's.
+
+**The check he asked for.** Five audits, each a session of its own with one brief: the Browser as a surface, the agent's place in the window, finding and previewing sounds, his words against the record, the plug-in server. 148 findings, about 80 once merged; win tested eleven of their quoted sources against the code and all held. The record is ADR-0261. The worst of what it found:
+- where the agent lives was written four ways (a tab, a first row, a row in the palette, his label), and his own way was written nowhere; twelve texts were stale;
+- the Browser queue ("find a kick and hear it") had three claimants and no builder: the claim of 26 November on `basics/browser-log` built nothing, and its question to the director sat unanswered;
+- `window/command-palette`, finished and waiting, is a command runner: no sample, preset, installed plug-in or agent can be found in it;
+- three matchers (the Browser's, SC-421's index, the palette's) would answer the same words differently;
+- one preview player had three owners on paper and nobody building; SC-429's row would have shown a dead switch;
+- ADR-0257 d8 moved up the agent's hidden parts and left the pane the user talks in at P2;
+- a prompt stored in a marker could run at the agent's tier on one click (ADR-0115 d3 against ADR-0131 d5);
+- the plug-in server is carried by DEV-27 alone, parked since 22 November on questions nobody was given;
+- on `basics/integrate-1`, not on main: Quit is refused when a plug-in cannot hand over its state (SC-430).
+
+**Settled by win, each marked in the ADR as a reading for him to strike:** when the label shows; nothing of the agent shown with no agent; the guards against sending by a slip; one conversation per project, answers in the Browser's AI mode; picking never uses a model; Enter loads with no question; how far "lands as heard" reaches; Live's keys for audition, never Space; the preview row's rule; the Info key with the Browser hidden; the labels' rule; starter sounds under Drums and Samples; a marker's prompt always reviewed; a server's consent in the ledger; a VST3's identity is its class ID; M7 owes the whole of the plug-in server.
+
+**Asked of him, and answered the same day.** Q1, what a plain line does in the floating search: it looks and works as the Mac's own search, a bar with a round button for each kind of thing; it opens on samples, and the mouse or the arrows move to devices, plug-ins and presets, to the agent, and to commands. Q2: the preview's Sync starts on, as Live's. Q3: hearing a loop in time waits for the real-time stretcher. Q4: the agent's hidden half starts now, on a seat of its own (`collab/prompts/2026-11-27-agent-chain.md`). "yes on the rest": win's readings stand. From a new sheet (DF-W61) he chooses the conversation's width, where a proposed change is reviewed, the agent's way in from the Mix View, and the floating search's buttons.
+
+**The Browser queue** is rewritten: one owner, one chain branch `basics/browser-chain` started from `basics/integrate-1`, SC-429 built in it with SC-123 and not on the look chain, the query and the player built as services outside the panel, SC-431 and SC-432 added. Win does not write that queue's log: the session that takes the queue answers the old question there.
+
+**The integrator.** By the director's word one Codex session merges the sessions' chains into `basics/integrate-1`, started from `land/basics-1127i`: six chains at noon (recording, tracks, clips, automation, MIDI, project), then export and edit, then the safety and routing queues on `basics/integrate-2`. It merges the browser chain and no longer builds that queue. Win checks its branch whole and lands it.
+
+**The seventh stack** (`land/basics-1127i`, the speed chain) did not compile on macOS: Apple's library has no `std::atomic<std::shared_ptr>`. The Mac session's two-file fix is cherry-picked onto it (one write, then a ready flag).
+
+**The walkers.** Win gave the director a paste for the Windows 11 walker: a tenth pass on today's main, where 99 rows landed since the ninth and none was seen in the real window, and then the rest of the readings of Live, which stand at R8 of 76. The Windows 10 walker is working the audio device queue.
+
+**Registered:** SC-428 to SC-432; SC-427 marked on main (#811); DF-C9 (the chain before the AI label), DF-W61 (the sheet), DF-E92 (the plug-in server's spike), DF-R3 (the plan rows owed by 30 November, with DF-R2's). Readings R68 to R76 (the Browser's preview, Enter's landing, the arrows). Loans: N76 and DF-E82 to the browser queue; the analyser files to the analysers queue; the device rows to the Windows 10 walker.
+
+**Next free:** ADR-0262; DF-W62, DF-R4, DF-C10, DF-E93; SC-433. DF-M80, N77 and schema minor 1.26 as before.
+
+---
+
+## 2026-11-27, morning — six basics stacks on main (95 rows); the walk on macOS; what waits
+
+**Landed in the night:** #805 (the tracks chain, MIDI monitor, VST3 controllers, plug-in windows), #807 (the ruler and grid, the Info box, a take's waveform as it records, recording on macOS), #808 (the plug-ins chain, no AI tab, Monitor Off on a new audio track), #809 (the Info box in the Browser's column and 21 more of the look queue). With #797 and #801 that is 95 rows of `docs/SANITY-CHECK.md`, each marked "on main" with its pull request. A row closes when it has been seen in the real window.
+
+**The director's word on a picture of the window (27 November):** the ruler and the Info box are good; the Info box becomes part of the Browser's column (SC-424, on main).
+
+**A session on his Mac** built main on Apple Silicon (all 291 suites pass), checks each stack and chain before win pushes, and walked the nine steps on macOS. It found that recording was silent there, for want of the app's declaration of audio input (SC-392, on main), and M2 to M4 (SC-425 to SC-427).
+
+**What win's stacks needed beyond the sessions' work,** each a class to expect again:
+- MSVC only: a point type, locals that hide outer ones (C4456, C4458), and a 1 MB stack: the window suite keeps whole root windows on the stack, and its executable now has 8 MB on Windows as the other platforms give.
+- Apple's compiler only: an implicit conversion of a 64-bit count to `long double`; levels compared exactly.
+- Linux with no display: a test that showed a real menu. `ArrangementView::onContextMenu` is the seam.
+- Reached indirectly: a send test that read a flag SC-87 had split; the text projection's byte-for-byte expectations after SC-249; the settings catalogue's status word; a parity floor; `adi_play`, which only the JUCE-on legs build; a strict GCC warning in a test.
+- Win's own: it had run a chosen subset of suites, and not the validators, before pushing a stack. The local check is now everything: the five validators, the window suites on a hidden desktop, every headless suite, the app and `adi_play`. The sixth stack then passed CI at the first run.
+
+**Waiting, not on main:** about a hundred rows that sessions report finished. The speed and recording chains collide with what landed and wait for their authors' merge. The midi, project, clips, automation and export sessions still push one branch per row, which cannot be stacked. The edit session's branches were never pushed. The readings of Live stopped at 6 of 66: the machine that has Live is switched off.
+
+**Registered:** DF-E91 (five hosting cases and engine notes from a study of a vocal suite, put off by the director until the lead machine is quiet).
+
+**Next free:** DF-E92, SC-428. ADR-0261 and DF-W61 as before.
+
+---
+
 ## 2026-11-27 — the Jam (ADR-0260); two basics stacks on main; one chain per queue
 
 **The Jam.** The director's outside panel proposed a guitar-first way of working. Most of it is decided already; four pieces are new. His words on win's five choices: "all as recommended". Three templates, not a screen of its own; a Mark command and a riff list with Keep, Maybe and Skip, built right after the recording basics; rule-made drum grooves; Make Session after the Foundry; backing to the Cue output, with a notice where the interface has none. DF-W60 holds the work. The same day he took three refinements from the panel into that row: a template never reroutes by itself on another interface; recovery of a take after a crash, past 4 GB too, joins the gate of long takes (PD-06 moves up); and a sixth acceptance test, a 60-minute take.

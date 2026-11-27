@@ -190,6 +190,9 @@ bool ProjectView::applyLocalEdit(const Store& store, LocalEdit edit) {
                 remark = std::move(updated);
             }
             next = std::move(patched);
+        } else if (edit.kind == Kind::MidiNotes) {
+            next = SnapshotBuilder::withMidiClipNotes(store, committed_, edit.id);
+            if (!next) return false;
         }
         if (observed != stamp(store)) return false;
         adoptCommitted(std::move(next), base, {});

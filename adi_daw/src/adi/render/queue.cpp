@@ -482,6 +482,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             auto renderSpec=job.session;
             renderSpec.performanceState=false;
             renderSpec.exporting=true;
+            renderSpec.synchronousClipReads=true;
             onHost([&] {
                 if (!session.load(*store, std::move(loader), renderSpec))
                     throw std::runtime_error(session.error());
@@ -599,7 +600,10 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         // Preroll from zero preserves instruments, effects and automation.
         for (std::int64_t at = 0; at < rawEnd;) {
             service();
-            if (!session.clips()->prime()) throw std::runtime_error("export clip read timed out");
+            if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
+                cancellation(control);
+                throw std::runtime_error("export clip read failed or timed out");
+            }
             const auto frames = static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), rawEnd - at));
             engine::AudioIo io;
             io.out = dp.empty() ? fp.data() : nullptr;

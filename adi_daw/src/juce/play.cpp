@@ -795,11 +795,16 @@ int main(int argc, char** argv) {
     }
     const float peakLast = metered.takePeak();
 
+    const auto runningProblem = bridge.takeDeviceProblem();
     mgr.removeAudioCallback(callback);
     timer.stop();
     const auto nativeXrunsAtStop=dev?dev->getXRunCount():-1;
     const auto managerXrunsAtStop=mgr.getXRunCount();const auto managerCpuAtStop=mgr.getCpuUsage();
     mgr.closeAudioDevice();
+    // Removing our callback deliberately stops its bridge.
+    bridge.acknowledgeDeviceSetup();
+    const auto closingProblem = bridge.takeDeviceProblem();
+    const auto& deviceProblem = runningProblem.isNotEmpty() ? runningProblem : closingProblem;
 
     const adi::device::DeviceCore& core = bridge.core();
     const adi::engine::Session::Stats& ss = session.stats();
@@ -856,8 +861,8 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- the device opened but produced no callbacks.\n");
         return 1;
     }
-    if (bridge.lastError().isNotEmpty()) {
-        std::printf("\nFAILED -- device error: %s\n", bridge.lastError().toRawUTF8());
+    if (deviceProblem.isNotEmpty()) {
+        std::printf("\nFAILED -- device error: %s\n", deviceProblem.toRawUTF8());
         return 1;
     }
     if (resizeMissed) {

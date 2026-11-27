@@ -70,12 +70,16 @@ struct DevicePanelData {
     const auto &parameters() const noexcept { return cachedRecords ? *cachedRecords : records; }
     // Copied nonfatal runtime status; availability and editing remain independent.
     std::string processingIssue{};
+    std::string loadIssue{}; // why a plug-in is a placeholder
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.
 class ParameterFeed {
   public:
     void publish(engine::Session &, std::uint64_t modelRevision);
+    // Read declarations and defaults for an explicit lane chooser on one
+    // track. This does not subscribe to live parameter values.
+    static std::shared_ptr<const ParameterPublication> describeForAutomation(engine::Session &, std::int64_t track);
     // Each surface owns its demand. Releasing one must not silence another.
     // Empty demand removes the consumer; identity/mixer rows remain published.
     bool setDemand(const void *consumer, std::vector<std::int64_t> devices);
