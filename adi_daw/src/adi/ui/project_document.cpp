@@ -1431,17 +1431,19 @@ PreparedBuiltinInsert prepareDeviceDrop(Store &store, bool midi, const Recording
 } // namespace
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
                                     const RecordingDefaults *defaults) {
+    const preset::Identity identity{"internal", uid, {}};
     if (track != 0)
-        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()), identity);
     const auto *info = findBuiltin(uid);
     return finishInsert(prepareDeviceDrop(*store_, info && info->instrument, defaults,
         [&](std::int64_t id, std::span<const OpRequest> newTrack) {
             return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack);
-        }));
+        }), identity);
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
-    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()),
+                        {ref.format, ref.uid, ref.shellId});
 }
 bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
                                  const RecordingDefaults *defaults) {
@@ -1452,7 +1454,7 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
         return finishInsert(prepareDeviceDrop(*store_, ref.subtype == "instrument" || ref.subtype == "midi_effect", defaults,
             [&](std::int64_t id, std::span<const OpRequest> newTrack) {
                 return preparePluginInsert(*store_, ref, id, before, options, retainedDeviceId(), newTrack);
-            }));
+            }), {ref.format, ref.uid, ref.shellId});
     if (ref.subtype == "instrument") {
         try {
             SQLite::Statement kind(store_->db(), "SELECT kind FROM tracks WHERE id=?");
@@ -1471,10 +1473,12 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
     return insertPlugin(ref, track, before, options);
 }
 
-bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std::filesystem::path &library,
-                                       const std::string &name, std::filesystem::path &saved) {
-    if (!deviceTargetCurrent(target.id, target.runtime, target.instance))
-        return false;
+std::optional<preset::Preset> ProjectDocument::captureDevicePreset(const DevicePanelData &target) {
+    error_.clear();
+    if (!deviceTargetCurrent(target.id, target.runtime, target.instance)) {
+        if (error_.empty()) error_ = "The device is no longer current.";
+        return std::nullopt;
+    }
     try {
         preset::Preset values;
         {
@@ -1492,11 +1496,43 @@ bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std:
         }
         auto current = parameterOps_.readDevicePresetState(target.id, error_);
         if (!current)
-            return false;
-        values.name = name;
+            return std::nullopt;
         values.parameters = std::move(current->parameters);
         values.state = std::move(current->state);
-        saved = preset::write(library, values);
+        const auto &panels = session_.model().devicePanels;
+        const auto panel = std::find_if(panels.begin(), panels.end(), [&](const auto &row) { return row.deviceId == target.id; });
+        if (panel != panels.end())
+            values.panel = panel->params;
+        return values;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return std::nullopt;
+    }
+}
+
+bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std::filesystem::path &library,
+                                       const std::string &name, std::filesystem::path &saved) {
+    auto values = captureDevicePreset(target);
+    if (!values)
+        return false;
+    try {
+        values->name = name;
+        saved = preset::write(library, *values);
+        error_.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
+bool ProjectDocument::saveDefaultDevicePreset(const DevicePanelData &target, const std::filesystem::path &library) {
+    auto values = captureDevicePreset(target);
+    if (!values)
+        return false;
+    try {
+        values->name = "Default";
+        (void)preset::writeDefault(library, *values);
         error_.clear();
         return true;
     } catch (const std::exception &e) {
@@ -1570,7 +1606,7 @@ std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, cons
         return 0;
     auto prepared = prepareBuiltinReplacement(*store_, uid, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
-    return finishInsert(std::move(prepared)) ? id : 0;
+    return finishInsert(std::move(prepared), {"internal", uid, {}}) ? id : 0;
 }
 
 std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const rows::PluginRef &ref) {
@@ -1578,7 +1614,7 @@ std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const
         return 0;
     auto prepared = preparePluginReplacement(*store_, ref, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
-    return finishInsert(std::move(prepared)) ? id : 0;
+    return finishInsert(std::move(prepared), {ref.format, ref.uid, ref.shellId}) ? id : 0;
 }
 
 bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t slot,
@@ -1606,14 +1642,21 @@ std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, prese
         error_ = "The exact plug-in for this preset is unavailable.";
         return 0;
     }
-    return finishDevicePreset(std::move(prepared), std::move(presetValue), inPlace);
+    return finishDevicePreset(std::move(prepared), std::move(presetValue), inPlace ? PresetLoad::InPlace : PresetLoad::Insert);
 }
 
 std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared, preset::Preset presetValue,
-                                                 bool inPlace) {
+                                                 PresetLoad load) {
     try {
         if (!prepared.ok)
             throw std::runtime_error(prepared.error);
+        const bool inPlace = load == PresetLoad::InPlace;
+        if (!inPlace && prepared.sourceFile != deviceCopyIdentity())
+            throw std::runtime_error("The project changed while preparing the device preset.");
+        const std::string label = load == PresetLoad::Default ? prepared.requests.front().label
+                                  : inPlace ? "Hot-Swap Device Preset" : "Load Device Preset";
+        if (prepared.newTrack)
+            prepared.requests.front().selBefore = sessionState_.advisory();
 
         const auto device = prepared.deviceId;
         const auto source = appliedSource(*store_);
@@ -1708,9 +1751,11 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
             addState(role, std::move(bytes));
         for (const auto &[param, normalized] : presetValue.parameters)
             addParam(param, normalized);
+        if (presetValue.panel)
+            add("device.setPanel", {{"dev", device}, {"params", *presetValue.panel}});
         add("device.setPreset", {{"dev", device}, {"preset", presetValue.name}});
         for (auto &request : prepared.requests)
-            request.label = inPlace ? "Hot-Swap Device Preset" : "Load Device Preset";
+            request.label = label;
 
         const auto result = ops_.commitPrepared(prepared.requests, [&](Store &store, Actor) {
             return OpJournal(store).commitCaptured(prepared.requests, source, prepared.options, inputs);
@@ -1725,7 +1770,7 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
                 return 0;
             }
         }
-        feed_.publish(session_, realisedGeneration_);
+        publishDeviceEdit(prepared.newTrack);
         return device;
     } catch (const std::exception &e) {
         error_ = e.what();
@@ -1733,10 +1778,21 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
     }
 }
 
-bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
+bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared, const preset::Identity &identity) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
         return false;
+    }
+    if (devicePresetLibrary) {
+        try {
+            const auto library = devicePresetLibrary();
+            if (!library.empty())
+                if (auto saved = preset::readDefault(library, identity))
+                    return finishDevicePreset(std::move(prepared), std::move(*saved), PresetLoad::Default) != 0;
+        } catch (const std::exception &e) {
+            error_ = std::string("The default device preset could not be read. ") + e.what();
+            return false;
+        }
     }
     const auto newTrack = prepared.newTrack;
     if (newTrack)
@@ -1747,6 +1803,10 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
+    publishDeviceEdit(newTrack);
+    return true;
+}
+void ProjectDocument::publishDeviceEdit(std::optional<std::int64_t> newTrack) {
     feed_.publish(session_, realisedGeneration_);
     if (newTrack) {
         auto selected = sessionState_.selection();
@@ -1757,7 +1817,6 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
         selected.start = selected.end = selected.insert;
         (void)sessionState_.select(selected, error_);
     }
-    return true;
 }
 std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {
     std::vector<DeviceKeyChoice> choices;
