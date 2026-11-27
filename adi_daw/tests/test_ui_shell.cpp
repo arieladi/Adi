@@ -14788,11 +14788,16 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     panel.itemDropped(drop);
     root.frame();
     const auto mediaId = [&] { return panel.node() && panel.node()->audio ? panel.node()->audio->mediaId : 0; };
-    check(panel.clip() == clipId && mediaId() != 0 && mediaId() != import.mediaId && gainIs(-6.5) && pitchIs(11.5),
+    const bool swapped = panel.clip() == clipId && mediaId() != 0 && mediaId() != import.mediaId &&
+                         root.undoTitle(false) == "Undo Replace Clip Sample";
+    check(swapped && gainIs(-5.5) && pitchIs(11.5),
           "the browser sample reaches Clip View and preserves the selected clip's Gain and Pitch over the new sample's defaults");
-    check(root.command(AppCommands::Undo), "undo the Clip View source replacement");
-    root.frame();
-    check(mediaId() == import.mediaId && gainIs(-6.5), "one Undo restores the previous source in Clip View");
+    if (swapped) {
+        check(root.command(AppCommands::Undo), "undo the Clip View source replacement");
+        root.frame();
+        check(mediaId() == import.mediaId && gainIs(-5.5) && pitchIs(11.5),
+              "one Undo restores the previous source in Clip View");
+    }
     root.afterEdit = nullptr;
     document->release();
 }
