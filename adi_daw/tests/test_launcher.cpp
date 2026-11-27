@@ -134,6 +134,29 @@ void scenesAtSampleBoundaries() {
     }
 }
 
+void pressesAdjacentToGrid() {
+    const std::array slots{slot(1, 1, 11)};
+    const LaunchView view{tracks, slots, scenes};
+    for (const int rate : {44100, 48000, 96000, 192000}) {
+        for (const auto adjacent : {-1, 0, 1}) {
+            const auto grid = static_cast<std::int64_t>(rate) * 2;
+            const auto press = grid + adjacent;
+            const auto due = adjacent <= 0 ? grid : 2 * grid;
+            Launcher launcher(2);
+            Output output;
+            check(post(launcher, request(LaunchRequestKind::SlotPress, 1, 1, 11)),
+                "queue a press on or one sample beside the Global boundary");
+            const auto earlier = allocations;
+            countAllocations = true;
+            for (auto begin = press; begin <= due; begin += 257)
+                launcher.process(block(begin, 257, rate), view, output.sink());
+            countAllocations = false;
+            check(output.edgeCount == 1 && output.edges[0].sample == due && allocations == earlier,
+                "an on-grid or preceding press launches this bar and a later press launches next bar");
+        }
+    }
+}
+
 void modesAndHandover() {
     constexpr int rate = 48000;
     std::array slots{slot(1,1,11,LaunchMode::Gate),slot(1,2,12,LaunchMode::Toggle),
@@ -341,6 +364,15 @@ void sceneFollowPrecedence() {
           held.process(block(1,24000,rate),view,protectedScene.sink()) &&
           protectedScene.sceneCount == 1 && protectedScene.events[0].preparedToken == 12 &&
           protectedScene.has(1,13,24000),"the driver keeps the timed scene and its followers paired to its published clock");
+
+    Launcher canceled(3);
+    SceneOutput noCommittedScene;
+    armed.preparedScenePinned = true;
+    auto withoutScene = block(1,24000,rate);
+    withoutScene.preparedScenePinned = true;
+    check(canceled.process(armed,view,noCommittedScene.sink()) &&
+          canceled.process(withoutScene,view,noCommittedScene.sink()) && noCommittedScene.sceneCount == 0 &&
+          !noCommittedScene.has(1,13,24000),"a pinned graph that withdrew the clock removes its queued scene action");
 
     Launcher empty(0);
     SceneOutput emptyOutput;
@@ -906,6 +938,7 @@ void captureRetargetWaitsForTheRenderedView() {
 
 int main() {
     scenesAtSampleBoundaries();
+    pressesAdjacentToGrid();
     modesAndHandover();
     followAndStaleRequests();
     sceneFollowPrecedence();

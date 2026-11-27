@@ -14,6 +14,24 @@ enum class ClipUpdateRate : std::uint8_t {
     None, ThirtySecond, Sixteenth, Eighth, Quarter, Half, Bar,
 };
 
+struct LaunchClipLoopRegion {
+    std::int64_t begin = 0, end = 0;
+};
+
+struct LaunchClipRegion {
+    std::int64_t start = 0, end = 0;
+    std::optional<LaunchClipLoopRegion> loop{};
+};
+
+/// Playback geometry relative to the already prepared clip source. Empty
+/// loop means one shot. An edit changes only the addressed live run.
+struct LaunchClipRegionEdit {
+    std::int64_t track = 0, clip = 0;
+    std::uint64_t incarnation = 0, run = 0;
+    LaunchClipRegion region;
+    ClipUpdateRate rate = ClipUpdateRate::Sixteenth;
+};
+
 [[nodiscard]] std::optional<ClipUpdateRate> parseClipUpdateRate(std::string_view) noexcept;
 
 struct ClipUpdateBoundary {

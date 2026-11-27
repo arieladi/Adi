@@ -92,6 +92,7 @@ class LaunchAudioDriver;
 struct AudioRecordingSpec;
 struct LaunchBlock;
 struct LaunchClipGainEdit;
+struct LaunchClipRegionEdit;
 struct LaunchRequest;
 struct LaunchSceneTransition;
 struct LaunchStatusHeader;
@@ -522,8 +523,12 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     /// Single owner to driver. Launches are consumed while transport rolls.
     [[nodiscard]] bool postLaunchGesture(std::span<const LaunchRequest>) noexcept;
+    /// Owner-only launch admission including clock preparation for one scene.
+    [[nodiscard]] bool submitLaunchGesture(std::span<const LaunchRequest>);
     /// Single owner to driver. A prepared multiplier changes the addressed active audio run.
     [[nodiscard]] bool postLaunchClipGainEdit(const LaunchClipGainEdit&) noexcept;
+    /// Schedule a run's start/end and loop against already prepared material.
+    [[nodiscard]] bool postLaunchClipRegionEdit(const LaunchClipRegionEdit&) noexcept;
     /// An owner may stamp a launch op with this published project identity.
     [[nodiscard]] std::uint64_t launchIncarnation() const noexcept;
     [[nodiscard]] bool readLaunchStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
@@ -564,6 +569,7 @@ public:
 private:
     struct LaunchAudit;
     void observeLaunchAudits(bool readOnly);
+    bool cancelPreparedScene(const Store&, std::int64_t);
     friend struct GestureRuntime;
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
@@ -576,6 +582,9 @@ private:
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
     void prepareLaunchAudio(TimingView&, const rows::Model&, ClipPlayback&);
+    [[nodiscard]] bool sceneClockPending() const noexcept;
+    bool applyPerformedTempoAt(const Store&, std::optional<double>, std::int64_t,
+                               const std::function<bool()>& publishGuard);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
@@ -668,6 +677,20 @@ private:
     std::vector<rows::TimeSignature> performedSignatures_;
     std::shared_ptr<const PreparedSceneLaunch> preparedScene_;
     std::uint64_t preparedSceneToken_ = 0;
+    struct SceneTempoBanks {
+        std::shared_ptr<const LaunchAudioProject> before;
+        std::int64_t tick;
+        double bpm;
+    };
+    std::optional<SceneTempoBanks> sceneTempoBanks_;
+    struct SceneClockRollback {
+        std::vector<rows::TempoEvent> tempo;
+        std::vector<rows::TimeSignature> signatures;
+        std::optional<SceneTempoBanks> banks;
+        std::optional<double> externalBpm;
+        std::optional<std::int64_t> authoredResume;
+    };
+    std::optional<SceneClockRollback> sceneClockRollback_;
     std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;

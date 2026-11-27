@@ -105,6 +105,27 @@ std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept 
     return position;
 }
 
+bool validRegion(const LaunchClipRegion& region) noexcept {
+    return region.start >= 0 && region.end > region.start &&
+        (!region.loop || (region.loop->begin >= region.start && region.loop->end > region.loop->begin &&
+                         region.loop->end <= region.end));
+}
+
+bool regionFits(const LaunchSlot* prepared, const LaunchClipRegion& region) noexcept {
+    return occupied(prepared) && region.start >= prepared->startTick && region.end <= prepared->endTick;
+}
+
+const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<LaunchClipRegion>& region,
+                                LaunchSlot& scratch) noexcept {
+    if (!region || !regionFits(prepared,*region)) return prepared;
+    scratch = *prepared;
+    scratch.startTick = region->start;
+    scratch.endTick = region->end;
+    scratch.loopStartTick = region->loop ? region->loop->begin : 0;
+    scratch.loopEndTick = region->loop ? region->loop->end : 0;
+    return &scratch;
+}
+
 float launchVelocity(const LaunchSlot& slot, float velocity) noexcept {
     const auto amount = std::isfinite(slot.velocityAmount)
         ? std::clamp(slot.velocityAmount, 0.0f, 1.0f) : 0.0f;
@@ -116,6 +137,32 @@ Launcher::Launcher(std::size_t maximumTracks)
     : tracks_(maximumTracks), scratch_(maximumTracks),
       activeTracks_(tracks_.data()), spareTracks_(scratch_.data()) {
     for (auto& frame : statusBuffers_) frame.rows = std::make_unique<LaunchTrackStatus[]>(maximumTracks);
+}
+
+bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit) noexcept {
+    if (edit.track <= 0 || edit.clip <= 0 || edit.incarnation == 0 || edit.run == 0 ||
+        !validRegion(edit.region) || edit.rate > ClipUpdateRate::Bar)
+        return false;
+    const auto write = regionWritten_.load(std::memory_order_relaxed);
+    if (write - regionRead_.load(std::memory_order_acquire) == regionMailbox_.size()) return false;
+    regionMailbox_[static_cast<std::size_t>(write % regionMailbox_.size())] = edit;
+    regionWritten_.store(write + 1,std::memory_order_release);
+    return true;
+}
+
+void Launcher::drainRegionEdits(const LaunchBlock& block, const LaunchView& view) noexcept {
+    auto read = regionRead_.load(std::memory_order_relaxed);
+    const auto write = regionWritten_.load(std::memory_order_acquire);
+    while (read != write) {
+        const auto& edit = regionMailbox_[static_cast<std::size_t>(read++ % regionMailbox_.size())];
+        auto* track = findTrack(edit.track);
+        if (!track || track->run.clip != edit.clip || track->run.serial != edit.run ||
+            edit.incarnation != block.incarnation || !regionFits(findClip(view,edit.track,edit.clip),edit.region))
+            continue;
+        if (const auto boundary = nextClipUpdateBoundary(block,block.sample,edit.rate,true))
+            track->regionEdit = RegionPending{edit,*boundary};
+    }
+    regionRead_.store(read,std::memory_order_release);
 }
 
 Launcher::Track* Launcher::findTrack(std::int64_t id) noexcept {
@@ -278,6 +325,7 @@ void Launcher::applyUser(const LaunchRequest& request, const LaunchBlock& block,
 void Launcher::armUserScene(ScenePending scene, float velocity, const LaunchBlock& block,
                             const LaunchView& view, std::int64_t now) noexcept {
     const auto displaced = userScene_;
+    scene.velocity = velocity;
     userScene_ = scene;
     for (auto& track : std::span(activeTracks_,trackCount_)) {
         if (displaced && track.user && track.user->sceneGesture && track.user->scene == displaced->scene)
@@ -334,6 +382,15 @@ void Launcher::cancelSceneFollow() noexcept {
     for (auto& track : std::span(activeTracks_,trackCount_)) track.sceneFollow.reset();
 }
 
+void Launcher::discardUnpublishedScene(const LaunchBlock& block) noexcept {
+    if (!block.preparedScenePinned || !userScene_ || !userScene_->preparedToken ||
+        (block.preparedScene && block.preparedScene->token == userScene_->preparedToken)) return;
+    for (auto& track : std::span(activeTracks_,trackCount_)) {
+        if (track.user && track.user->sceneGesture && track.user->scene == userScene_->scene) track.user.reset();
+    }
+    userScene_.reset();
+}
+
 void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool rolling,
                            const LaunchBlock& block, const LaunchView& view, LaunchSink sink,
                            std::int32_t offset) noexcept {
@@ -352,6 +409,18 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
         }
     }
     if (!validScene) return;
+    if (pending.preparedToken) {
+        for (auto& track : std::span(activeTracks_,trackCount_)) {
+            const auto* slot = findSlot(view,track.id,pending.scene);
+            if (occupied(slot) || !slot || slot->hasStop) {
+                const auto action = occupied(slot) ? Action::Start : Action::Stop;
+                track.dueScene = Pending{action,tick,pending.scene,slot ? slot->clip : 0,pending.velocity,
+                    LaunchQuantization::None,false,sample,true,pending.admission,true};
+                if (track.user && track.user->sceneGesture && track.user->scene == pending.scene)
+                    track.user.reset();
+            }
+        }
+    }
     if (!fromFollow) cancelSceneFollow();
     const LaunchSceneTransition edge{pending.scene,sample,tick,offset,++sceneOrdinal_,fromFollow,pending.preparedToken};
     if (sink.scenePerformed) sink.scenePerformed(sink.context,edge);
@@ -379,11 +448,13 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
 
     track.follow.reset();
     track.repeat.reset();
+    track.regionEdit.reset();
     track.run = {};
     track.run.arrangement = pending.action == Action::Arrangement;
     if (pending.action == Action::Start) {
         auto position = target->startTick;
-        const auto* oldSlot = findClip(view,track.id,previous.clip);
+        LaunchSlot oldGeometry;
+        const auto* oldSlot = effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry);
         if (oldSlot && target->legato && previous.clip != target->clip) {
             const auto oldPosition = wrapSource(*oldSlot,previous.sourceTick);
             position = legatoUsesPreviousClipRelativePosition
@@ -427,15 +498,18 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                       std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
     while (cursor < end) {
-        const LaunchSlot* slot = nullptr;
+        const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
-            slot = findSlot(view,track.id,track.run.scene);
-            if (!slot || slot->clip != track.run.clip) slot = findClip(view,track.id,track.run.clip);
-            if (slot) {
-                track.run.scene = slot->scene;
-                track.run.fade = slot->fade;
+            preparedSlot = findSlot(view,track.id,track.run.scene);
+            if (!preparedSlot || preparedSlot->clip != track.run.clip)
+                preparedSlot = findClip(view,track.id,track.run.clip);
+            if (preparedSlot) {
+                track.run.scene = preparedSlot->scene;
+                track.run.fade = preparedSlot->fade;
             }
         }
+        LaunchSlot regionGeometry;
+        const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
@@ -449,7 +523,10 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         std::optional<Pending>* next = nullptr;
         auto boundary = end;
-        for (auto* candidate : {&track.back,&track.user,&track.gateStop,&track.dueScene,&track.follow,&track.repeat}) {
+        bool editRegion = false;
+        const bool prepared = track.dueScene && track.dueScene->prepared;
+        for (auto* candidate : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
+                                prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
             if (!*candidate) continue;
             const auto earliest = static_cast<std::int32_t>(std::clamp<std::int64_t>(
                 (*candidate)->earliestSample - block.sample, 0, block.frames));
@@ -459,11 +536,35 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 next = candidate;
             }
         }
+        if (track.regionEdit) {
+            const auto& pending = *track.regionEdit;
+            if (pending.edit.clip != track.run.clip || pending.edit.run != track.run.serial ||
+                !regionFits(preparedSlot,pending.edit.region)) {
+                track.regionEdit.reset();
+            } else {
+                const auto editSample = pending.edit.rate == ClipUpdateRate::None
+                    ? pending.boundary.sample : block.sampleAtTick(block.clock,pending.boundary.tick);
+                const auto relative = std::max(block.sample,editSample) - block.sample;
+                const auto offset = static_cast<std::int32_t>(std::min<std::int64_t>(
+                    block.frames,std::max<std::int64_t>(cursor,relative)));
+                if (offset < boundary) {
+                    boundary = offset;
+                    next = nullptr;
+                    editRegion = true;
+                }
+            }
+        }
         if (sourceOffset < boundary) {
             boundary = sourceOffset;
             next = nullptr;
+            editRegion = false;
         }
         auto edgeTick = next ? (*next)->tick : sourceTick;
+        if (editRegion) {
+            const auto target = track.regionEdit->boundary.tick;
+            edgeTick = block.sampleAtTick(block.clock,target) == block.sample + boundary
+                ? target : atSample(block,block.sample + boundary);
+        }
         if (offsetAt(block,edgeTick) < boundary)
             edgeTick = atSample(block,block.sample + boundary);
         const auto nextTick = boundary < end ? edgeTick : atSample(block,block.sample + boundary);
@@ -491,10 +592,35 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             next->reset();
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            if (transition(track,block,view,sink,pending,cursor,edgeTick) && track.dueScene &&
-                track.dueScene->earliestSample <= block.sample + cursor)
-                track.dueScene.reset();
+            if (transition(track,block,view,sink,pending,cursor,edgeTick)) {
+                if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
+                    track.dueScene.reset();
+                if (pending.prepared) {
+                    for (auto* other : {&track.back,&track.user,&track.gateStop}) {
+                        if (*other && (*other)->earliestSample <= block.sample + cursor &&
+                            offsetAt(block,(*other)->tick) <= cursor) other->reset();
+                    }
+                }
+            }
             phaseChangedAtCursor = phaseChangedAtCursor || run != track.run.serial;
+        } else if (editRegion) {
+            const auto region = track.regionEdit->edit.region;
+            track.regionEdit.reset();
+            track.run.region = region;
+            auto revisedPosition = std::max(track.run.sourceTick,region.start);
+            if (region.loop && revisedPosition >= region.loop->end) {
+                revisedPosition = region.loop->begin + (revisedPosition - region.loop->end) %
+                    (region.loop->end - region.loop->begin);
+            } else if (revisedPosition >= region.end) {
+                revisedPosition = region.start;
+            }
+            if (revisedPosition != track.run.sourceTick) {
+                track.run.sourceTick = track.run.anchorSourceTick = revisedPosition;
+                track.run.anchorTick = edgeTick;
+                track.run.pcmAnchorTick = revisedPosition;
+                track.run.pcmAnchorFrame = track.run.frames;
+                phaseChangedAtCursor = true;
+            }
         } else if (occupied(slot) && loops(*slot)) {
             track.run.sourceTick = track.run.anchorSourceTick = slot->loopStartTick;
             track.run.anchorTick = nextTick;
@@ -606,6 +732,7 @@ bool Launcher::admitWhileStopped(const LaunchBlock& block, const LaunchView& vie
     if (!block.tickAtSample || !block.sampleAtTick || block.sample < 0 || view.tracks.size() > tracks_.size())
         return false;
     adopt(block,view,sink);
+    discardUnpublishedScene(block);
     const auto now = atSample(block,block.sample);
     drain(block,view,now);
     const auto active = std::span(activeTracks_,trackCount_);
@@ -640,6 +767,7 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
     if (!block.tickAtSample || !block.sampleAtTick || block.frames <= 0 || block.sample < 0 ||
         block.sample > lastTick - block.frames || view.tracks.size() > tracks_.size()) return false;
     adopt(block,view,sink);
+    discardUnpublishedScene(block);
     const auto now = atSample(block,block.sample);
     const auto active = std::span(activeTracks_,trackCount_);
     if (followPass_ != block.followPass) {
@@ -681,6 +809,17 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
                     (*pending)->earliestSample = block.sample;
                 }
             }
+            if (track.regionEdit) {
+                auto& pending = *track.regionEdit;
+                if (block.arrangementWrap) {
+                    pending.boundary.tick = add(now,std::max<std::int64_t>(0,pending.boundary.tick-nextTick_));
+                    pending.boundary.sample = block.sampleAtTick(block.clock,pending.boundary.tick);
+                } else if (const auto boundary = nextClipUpdateBoundary(block,block.sample,pending.edit.rate,true)) {
+                    pending.boundary = *boundary;
+                } else {
+                    track.regionEdit.reset();
+                }
+            }
         }
         if (userScene_ && !userScene_->preparedToken) {
             userScene_->tick = block.arrangementWrap && preserveQuantizedDeadlinesAcrossArrangementWrap
@@ -693,6 +832,7 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
         }
     }
     drain(block,view,now);
+    drainRegionEdits(block,view);
     if (block.preparedScene && block.preparedScene->token > lastPreparedScene_) {
         const auto& scene = *block.preparedScene;
         lastPreparedScene_ = scene.token;
@@ -745,6 +885,8 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         status.source = LaunchTrackSource::Session;
         const auto* slot = findSlot(view,track.id,run.scene);
         if (!slot || slot->clip != run.clip) slot = findClip(view,track.id,run.clip);
+        LaunchSlot regionGeometry;
+        slot = effectiveSlot(slot,run.region,regionGeometry);
         if (slot && loops(*slot)) {
             status.loopStartTick = slot->loopStartTick;
             status.loopLengthTicks = slot->loopEndTick - slot->loopStartTick;

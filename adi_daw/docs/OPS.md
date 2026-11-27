@@ -2259,6 +2259,10 @@ incarnation. The driver validates the whole gesture against its pinned
 generation. An owner can dispatch directly or deliver the committed audit batch
 as one gesture. A live Session with persisted slots subscribes to its Store's
 committed batches. The journal retains the commands outside the Undo head.
+For an enabled tempo or signature, the owner prepares the scene and its
+effective clock together for a Global boundary. A clock-bearing scene
+launch or cancellation is submitted on its own. While playback runs,
+the prepared generation needs one complete render buffer of lead.
 `session.setFollowActionsEnabled {on}` saves the global playback switch
 outside Undo. The default is enabled. The driver reads it from the pinned
 performance snapshot.
@@ -2267,8 +2271,10 @@ performance snapshot.
 in the Arrangement in one undo transaction. The preparation pins the exact
 slot material and checks the performed clock. The literal change images
 contain the copied clip rows and their dependent material, along with the
-Arrangement ranges displaced by launches and stops. The journal replay
-restores those rows without running the launcher again.
+Arrangement ranges displaced by launches and stops. Applied scene tempo and
+meter can be recorded in the same changeset. Authored clock values resume
+outside the capture interval. The journal restores the recorded rows without
+running the launcher again.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every

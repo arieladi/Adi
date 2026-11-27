@@ -66,6 +66,12 @@ struct LaunchRequest {
 /// A bounded single-owner to single-driver mailbox. An offer publishes every
 /// request in one release. A scene is one request for a captured scene
 /// identity. The driver resolves it against its own generation.
+// The two counters occupy separate cache lines on purpose; MSVC reports the
+// padding that alignas adds as C4324.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 class LaunchGestureQueue {
 public:
     static constexpr std::size_t capacity = 256;
@@ -117,5 +123,8 @@ private:
     alignas(64) std::atomic<std::uint64_t> written_{0};
     alignas(64) std::atomic<std::uint64_t> read_{0};
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace adi::engine

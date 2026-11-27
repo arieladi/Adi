@@ -27,10 +27,12 @@ struct ClipMediaSource {
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
+inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
 /// Owner-only. Empty when this project has no Session scene list.
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
-    std::uint64_t incarnation, std::vector<std::string>& problems);
+    std::uint64_t incarnation, std::vector<std::string>& problems,
+    std::uint64_t residentBudget = kSessionResidentPcmBudget);
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,

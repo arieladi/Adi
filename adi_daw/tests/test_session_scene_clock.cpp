@@ -4,6 +4,8 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_map.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
@@ -12,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -103,8 +106,24 @@ void exercise() {
     Render render{session};
     render.runThrough(0);
     require(!session.prepareSceneLaunch(*store, 10, 0), "already elapsed boundary refuses the whole command");
-    require(session.prepareSceneLaunch(*store, 10, 4 * quarter), "prepare exact tempo scene: " + session.error());
+    const auto audit = [&](std::int64_t scene, std::uint64_t stamp,
+                           const char* operation = "session.launchScene") {
+        OpRequest next;
+        next.opType = operation;
+        next.payload = {{"scene", scene}, {"incarnation", stamp}};
+        require(OpJournal(*store).commit(next).ok, "audit a scene launch through the live owner");
+    };
+    audit(10, incarnation + 1);
+    audit(10, incarnation);
     require(!session.prepareSceneLaunch(*store, 20, 8 * quarter), "an unperformed committed scene cannot be replaced");
+    require(!session.setExternalTempo(*store, 150) && !session.setExternalTempoAt(*store, 160, 6 * quarter),
+        "both external clock owners wait for the committed scene");
+    render.runThrough(400);
+    audit(10, incarnation, "session.cancelSceneLaunch");
+    render.runThrough(700);
+    require(render.count == 0 && device.count == 1 && device.changes[0].bpm == 120,
+        "cancel replaces the unperformed clock and driver action together");
+    audit(10, incarnation);
     render.runThrough(96'000);
     require(render.count == 1 && render.scenes[0].scene == 10 && render.scenes[0].sample == 96'000 &&
         render.scenes[0].preparedToken != 0 && render.scenes[0].offset != 0,
@@ -113,17 +132,14 @@ void exercise() {
         device.changes[1].sample == 96'000 && device.changes[1].numerator == 4,
         "device uses the shared 120-to-140 BPM clock at the exact scene boundary");
 
-    require(session.prepareSceneLaunch(*store, 20, 8 * quarter), "prepare independent 7/8 scene: " + session.error());
+    audit(20, incarnation);
     render.runThrough(178'286);
     require(render.count == 2 && render.scenes[1].scene == 20 && render.scenes[1].sample == 178'286 &&
         device.count == 3 && device.changes[2].sample == 178'286 && device.changes[2].bpm == 140 &&
         device.changes[2].numerator == 7 && device.changes[2].denominator == 8,
         "meter changes independently while disabled scene tempo stays dormant");
 
-    OpRequest next;
-    next.opType = "session.launchScene";
-    next.payload = {{"scene", 30}, {"incarnation", incarnation}};
-    require(OpJournal(*store).commit(next).ok, "audit a normal scene after the prepared meter change");
+    audit(30, incarnation);
     render.runThrough(250'286);
     require(render.count == 3 && render.scenes[2].scene == 30 && render.scenes[2].sample == 250'286 &&
         render.scenes[2].tick == 8 * quarter + 7 * quarter / 2,
@@ -136,10 +152,79 @@ void exercise() {
     require(allocations == 0 && audio::callbackFileIo == 0, "scene clock handling performs no allocation or file I/O on the driver");
     std::printf("PASS -- 120→140 at 96000, 7/8 at 178286, next scene at 250286, 0 callback allocations/file calls\n");
 }
+void audioHandover() {
+    test::TempDirectory folder{"scene_audio_clock", "project"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path() / "clock.adi", error);
+    require(static_cast<bool>(store), "create actual scene audio project");
+    test::applySessionSchema(store->db());
+    const auto media = [&](const char* name, std::uint32_t frames, float first, float late) {
+        std::vector<float> pcm(frames, first);
+        std::fill(pcm.begin() + frames / 2, pcm.end(), late);
+        audio::WavWriter wave(folder.path() / name, 48000, 1, audio::WavFormat::Float32);
+        wave.write(pcm.data(), frames);
+        wave.close();
+    };
+    media("before.wav", 144000, 0.25f, 0.25f);
+    media("warped.wav", 12000, -0.25f, 0.375f);
+    store->db().exec(
+        "INSERT INTO project(id,name,sample_rate) VALUES(1,'Scene audio',48000);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio slots',0),(9,'master','Main',1);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(10,0,120,0),(20,1,140,1),(30,2,145,1);"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'before','before.wav','wav'),(2,'warped','warped.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(101,1,'audio',0,69189120),(102,1,'audio',0,11531520);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(101,1,144000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,10,101,1),(1,20,102,1),(1,30,NULL,0);"
+        "INSERT INTO clip_launch(clip_id,clip_fade,ram_mode) VALUES(101,1,1),(102,1,1);");
+    const auto anchors = audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{12000,quarter}}, 12000);
+    require(static_cast<bool>(anchors), "encode scene Warp map");
+    SQLite::Statement warp(store->db(), "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers) "
+                                       "VALUES(102,2,12000,1,'re-pitch',?)");
+    warp.bind(1, anchors.bytes.data(), static_cast<int>(anchors.bytes.size()));
+    warp.exec();
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    LaunchRequest start;
+    start.kind = LaunchRequestKind::ScenePress;
+    start.scene = 10;
+    start.incarnation = session.launchIncarnation();
+    require(session.postLaunchGesture(std::array{start}), "queue initial resident sound");
+    Render render{session};
+    render.runThrough(0);
+    require(!session.prepareSceneLaunch(*store, 30, 4 * quarter), "retaining an old audio run needs a phase handover");
+    if (!session.prepareSceneLaunch(*store, 20, 4 * quarter)) throw std::runtime_error(session.error());
+
+    constexpr auto cut = 96'000;
+    constexpr std::array samples{cut - 1,cut,cut + 192,cut + 9000,cut + 11'000,cut + 22'000};
+    std::array<float, samples.size()> heard{};
+    bool rebuilt = false;
+    while (session.transport().position() <= samples.back()) {
+        const auto first = session.transport().position();
+        render.runThrough(first);
+        for (std::size_t index = 0; index < samples.size(); ++index) {
+            if (samples[index] >= first && samples[index] < first + blockSize)
+                heard[index] = render.left[static_cast<std::size_t>(samples[index] - first)];
+        }
+        if (!rebuilt && first <= cut && first + blockSize > cut) {
+            require(session.setDelayCompensation(false), "rebuild graph during outgoing old-tempo fade");
+            rebuilt = true;
+        }
+    }
+    const auto close = [](float actual, float expected) { return std::abs(actual - expected) < 0.0005f; };
+    require(render.count == 2 && render.scenes[1].sample == cut && render.scenes[1].tempoBpm == 140 &&
+        close(heard[0], 0.25f) && close(heard[1], 0.25f) && close(heard[2], -0.25f) &&
+        close(heard[3], -0.25f) && close(heard[4], 0.375f) && close(heard[5], 0.0f),
+        "old source/fade and new 140 BPM Warp bank agree with the performed scene boundary");
+    require(allocations == 0 && audio::callbackFileIo == 0, "paired media preparation keeps callback allocation and I/O at zero");
+    std::printf("PASS -- paired banks preserve the 192-frame fade at 96000, including graph rebuild, then play Warp at 140 BPM\n");
+}
 } // namespace
 
 int main() {
-    try { exercise(); }
+    try { exercise(); audioHandover(); }
     catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

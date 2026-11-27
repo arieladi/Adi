@@ -12,6 +12,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -28,6 +29,10 @@ constexpr std::int64_t readySample = 211, sixteenthSample = 6000;
 constexpr std::int64_t clipId = 100;
 constexpr std::uint64_t incarnation = 7;
 
+float signal(std::int64_t frame) {
+    return 0.125f + static_cast<float>(frame % 64) / 512.0f;
+}
+
 void require(bool good, const char* message) {
     if (!good)
         throw std::runtime_error(message);
@@ -41,7 +46,7 @@ struct Fixture {
     std::uint64_t run = 0;
     std::size_t transitions = 0;
 
-    Fixture() {
+    explicit Fixture(bool varying = false) {
         StoreError error{};
         store = Store::createEmpty(temp.path() / "gain.adi", error);
         require(static_cast<bool>(store), "create Session gain-edit project");
@@ -57,9 +62,13 @@ struct Fixture {
         spec.maxFrames = maximumFrames;
         spec.performanceState = true;
         spec.synchronousClipReads = true;
+        std::vector<float> media(10000, 0.25f);
+        if (varying)
+            for (std::size_t frame = 0; frame < media.size(); ++frame)
+                media[frame] = signal(static_cast<std::int64_t>(frame));
         spec.launchAudio = std::make_shared<const LaunchAudioProject>(incarnation, 120,
             std::vector<std::int64_t>{1}, std::vector{slot}, std::vector<std::int64_t>{10},
-            std::vector{LaunchAudioClip::fromSamples(clipId, 48000, 1, std::vector<float>(10000, 0.25f))},
+            std::vector{LaunchAudioClip::fromSamples(clipId, 48000, 1, std::move(media))},
             LaunchQuantization::None);
         session.graph().setFadeFrames(0);
         require(session.load(*store, {}, spec), "build Session gain-edit graph");
@@ -68,7 +77,7 @@ struct Fixture {
         require(session.postLaunchGesture(start), "run the original prepared clip");
     }
 
-    void block(std::int32_t size, std::int64_t gainBoundary) {
+    template<class Expected> void render(std::int32_t size, Expected expectedAt) {
         std::array<float, maximumFrames> left{}, right{};
         float* outputs[]{left.data(), right.data()};
         AudioIo io;
@@ -87,15 +96,19 @@ struct Fixture {
         });
         require(block.process(io), "render Session clip gain edit through the graph");
         for (std::int32_t i = 0; i < size; ++i) {
-            const auto expected = sample + i < gainBoundary ? 0.25f : 0.125f;
+            const auto expected = expectedAt(sample + i);
             if (left[static_cast<std::size_t>(i)] != expected || right[static_cast<std::size_t>(i)] != expected) {
                 std::fprintf(stderr, "frame %lld rendered [%g,%g], expected %g\n", static_cast<long long>(sample + i),
                     static_cast<double>(left[static_cast<std::size_t>(i)]),
                     static_cast<double>(right[static_cast<std::size_t>(i)]), static_cast<double>(expected));
-                throw std::runtime_error("gain update missed its expected sample");
+                throw std::runtime_error("clip update missed its expected sample");
             }
         }
         sample += size;
+    }
+
+    void block(std::int32_t size, std::int64_t gainBoundary) {
+        render(size, [&](auto frame) { return frame < gainBoundary ? 0.25f : 0.125f; });
     }
 };
 
@@ -114,14 +127,45 @@ void verify(ClipUpdateRate rate, std::int64_t boundary) {
     fixture.block(maximumFrames, boundary);
     require(fixture.transitions == 1, "gain delivery preserves run identity with no synthetic retrigger");
 }
+
+void verifyRegion(ClipUpdateRate rate, std::int64_t boundary) {
+    Fixture fixture(true);
+    fixture.render(static_cast<std::int32_t>(readySample), signal);
+    require(fixture.run != 0, "observe the region edit's live clip run");
+    const auto ticks = [](std::int64_t frame) {
+        return std::llround(static_cast<double>(frame) * static_cast<double>(textproj::kPPQ) / 24'000.0);
+    };
+    const auto first = boundary - 2;
+    const auto last = boundary + 4;
+    LaunchClipRegionEdit edit{1, clipId, incarnation, fixture.run,
+        {0, ticks(9000), LaunchClipLoopRegion{ticks(first), ticks(last)}}, rate};
+    auto wrong = edit;
+    wrong.region.end = ticks(10001);
+    require(!fixture.session.postLaunchClipRegionEdit(wrong), "refuse a region outside the prepared audio buffer");
+    require(fixture.session.postLaunchClipRegionEdit(edit), "queue a resident loop change on the live run");
+    const auto expected = [&](auto frame) {
+        return signal(frame < last ? frame : first + (frame - last) % (last - first));
+    };
+    while (fixture.sample <= last + maximumFrames) fixture.render(maximumFrames, expected);
+    require(fixture.session.setDelayCompensation(false), "keep a revised region through graph replacement");
+    fixture.render(maximumFrames, expected);
+    require(fixture.transitions == 1, "region revision emits no launch edge or new run");
+    std::array<LaunchTrackStatus, 2> rows{};
+    LaunchStatusHeader status;
+    require(fixture.session.readLaunchStatus(rows, status) && rows.front().run == fixture.run &&
+        rows.front().loopStartTick == ticks(first) && rows.front().loopLengthTicks == ticks(last) - ticks(first),
+        "published Track Status reports the applied loop on the original run");
+}
 } // namespace
 
 int main() {
     try {
         verify(ClipUpdateRate::Sixteenth, sixteenthSample);
         verify(ClipUpdateRate::None, readySample);
+        verifyRegion(ClipUpdateRate::Sixteenth, sixteenthSample);
+        verifyRegion(ClipUpdateRate::None, readySample);
         require(allocations == 0, "gain scheduling and playback allocate nothing inside callbacks");
-        std::printf("PASS -- running gain switches at frames %lld (1/16) and %lld (None), 0 sample error\n",
+        std::printf("PASS -- running gain and loop edits switch at frames %lld (1/16) and %lld (None), 0 sample error\n",
             static_cast<long long>(sixteenthSample), static_cast<long long>(readySample));
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());

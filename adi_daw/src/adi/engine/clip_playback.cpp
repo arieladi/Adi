@@ -966,7 +966,7 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
-    std::vector<std::string>& problems) {
+    std::vector<std::string>& problems, std::uint64_t residentBudget) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -999,8 +999,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     }
     std::ranges::sort(scenes);
 
-    constexpr std::uint64_t pcmBudget = std::uint64_t{256} << 20; // entire resident Session projection
-    std::uint64_t remaining = pcmBudget;
+    std::uint64_t remaining = residentBudget;
     std::vector<LaunchSlot> slots;
     std::vector<LaunchAudioClip> pcm;
     auto pagedProject = std::make_shared<ClipProject>();

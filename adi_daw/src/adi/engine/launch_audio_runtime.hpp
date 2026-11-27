@@ -38,6 +38,7 @@ public:
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept { return global_; }
     [[nodiscard]] LaunchView view() const noexcept { return {tracks_, slots_, scenes_}; }
     [[nodiscard]] bool supportsRate(double rate) const noexcept;
+    [[nodiscard]] std::uint64_t residentBytes() const noexcept;
     [[nodiscard]] const LaunchAudioClip* clip(std::int64_t id) const noexcept;
     [[nodiscard]] const LaunchFollowPlayer* followPlayer() const noexcept { return follow_.get(); }
     [[nodiscard]] std::uint64_t followSeed() const noexcept { return followSeed_; }
@@ -89,6 +90,7 @@ private:
     struct Tail {
         std::int64_t track, clip, sourceFrame, elapsed, fadeInAtExit;
         float velocity;
+        std::uint64_t media;
     };
     Launcher launcher_;
     LaunchClipGainEdits gains_;
@@ -108,7 +110,9 @@ private:
 class LaunchAudioRuntime {
 public:
     LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>, std::vector<std::int64_t> tracks,
-                       std::int32_t maxFrames);
+                       std::int32_t maxFrames,
+                       std::shared_ptr<const LaunchAudioProject> beforeClock = {},
+                       std::int64_t clockSample = 0);
 
     void startIfQueued(LaunchAudioDriver&, LaunchBlock, Transport&) const noexcept;
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
@@ -125,6 +129,8 @@ public:
     [[nodiscard]] const LaunchSceneClock* sceneClock(std::int64_t id) const noexcept { return project_->sceneClock(id); }
     [[nodiscard]] bool hasScene(std::int64_t scene) const noexcept;
     [[nodiscard]] bool postGainEdit(LaunchAudioDriver&, const LaunchClipGainEdit&) const noexcept;
+    [[nodiscard]] bool postRegionEdit(LaunchAudioDriver&, const LaunchClipRegionEdit&, std::int64_t sample) const noexcept;
+    [[nodiscard]] const std::shared_ptr<const LaunchAudioProject>& mediaAt(std::int64_t sample) const noexcept;
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 
@@ -149,11 +155,15 @@ private:
     };
     [[nodiscard]] bool addTail(LaunchAudioDriver::Tail&, std::int32_t offset,
                                std::int32_t frames) noexcept;
-    void fadeOut(LaunchAudioDriver&, const LaunchTransition&, std::int32_t offset,
+    void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
                  std::int32_t blockFrames) noexcept;
-    void add(LaunchClipGainEdits&, const LaunchSection&, const LaunchBlock&, std::int32_t blockOffset) noexcept;
+    void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
+             std::int32_t blockOffset) noexcept;
+    [[nodiscard]] std::uint64_t gainRevision() const noexcept;
 
     std::shared_ptr<const LaunchAudioProject> project_;
+    std::shared_ptr<const LaunchAudioProject> beforeClock_;
+    std::int64_t clockSample_;
     std::vector<std::int64_t> tracks_;
     std::vector<TrackRanges> ranges_;
     std::int32_t maxFrames_;

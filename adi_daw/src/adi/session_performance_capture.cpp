@@ -7,6 +7,8 @@
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/engine/launcher.hpp"
+#include "adi/engine/process.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/media/media_ops.hpp"
@@ -19,11 +21,20 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <utility>
 
 namespace adi {
+
+namespace {
+struct Meter {
+    std::int64_t numerator = 4, denominator = 4;
+    bool operator==(const Meter&) const = default;
+};
+using MeterMap = std::map<std::int64_t, Meter>;
+}
 
 struct SessionPerformanceSource::Data {
     struct SourceFile {
@@ -33,6 +44,7 @@ struct SessionPerformanceSource::Data {
     AppliedSource source;
     std::optional<std::int64_t> head;
     engine::TempoMap clock;
+    MeterMap meters;
     std::map<std::int64_t, Payload> clips;
     std::map<std::int64_t, SourceFile> mediaFiles;
 };
@@ -58,15 +70,26 @@ engine::TempoMap captureClock(SQLite::Database& db) {
         const auto tick = tempo.getColumn(0).getInt64();
         const auto bpm = tempo.getColumn(1).getDouble();
         if (clock.events.empty() && tick != 0) clock.events.push_back({0, 120, 0});
-        if (!std::isfinite(bpm) || bpm < 20 || bpm > 999 || tempo.getColumn(2).getInt() != 0 ||
-            (!clock.events.empty() && bpm != clock.events.front().bpm))
-            throw std::runtime_error("exact Session capture needs a constant authored tempo");
+        if (!std::isfinite(bpm) || bpm < 20 || bpm > 999 || tempo.getColumn(2).getInt() != 0)
+            throw std::runtime_error("exact Session capture needs an authored step-tempo map");
         clock.events.push_back({tick, bpm, 0});
     }
     if (clock.events.empty()) clock.events.push_back({0, 120, 0});
-    // Identical tempo nodes do not change musical time. Keep their authored
-    // timestamps, since the Arrangement renderer also uses their rounding.
     return clock;
+}
+
+MeterMap captureMeters(SQLite::Database& db) {
+    MeterMap result;
+    SQLite::Statement query(db, "SELECT pos_ticks,numerator,denominator FROM main.time_signature_map ORDER BY pos_ticks");
+    while (query.executeStep())
+        result.emplace(query.getColumn(0).getInt64(), Meter{query.getColumn(1).getInt64(), query.getColumn(2).getInt64()});
+    return result;
+}
+
+bool validMeter(Meter meter, std::int64_t maxNumerator, std::int64_t maxDenominator) {
+    return meter.numerator >= 1 && meter.numerator <= maxNumerator &&
+        meter.denominator >= 1 && meter.denominator <= maxDenominator &&
+        (meter.denominator & (meter.denominator - 1)) == 0;
 }
 
 std::int64_t sampleAt(const engine::TempoMap& clock, std::int64_t tick, std::uint32_t rate) {
@@ -76,6 +99,122 @@ std::int64_t sampleAt(const engine::TempoMap& clock, std::int64_t tick, std::uin
     if (!std::isfinite(sample) || sample < 0 || sample > static_cast<double>(clockLimit))
         throw std::runtime_error("Session capture exceeds sample clock precision");
     return std::llround(sample);
+}
+
+struct ClockPlan {
+    engine::TempoMap clock;
+    Payload changes = Payload::array();
+};
+
+template<typename Value, typename Fields>
+void replaceClockRows(SQLite::Database& db, const std::string& table, std::int64_t end,
+                      std::map<std::int64_t, Value> replacements, Fields fields,
+                      clip_edit::CopyIds& ids, edit::RowEdits& rows) {
+    if (replacements.empty()) return;
+    SQLite::Statement points(db, "SELECT id,pos_ticks FROM main." + table + " WHERE pos_ticks>=? AND pos_ticks<=? ORDER BY pos_ticks");
+    points.bind(1, replacements.begin()->first);
+    points.bind(2, end);
+    while (points.executeStep()) {
+        const auto id = points.getColumn(0).getInt64();
+        const auto tick = points.getColumn(1).getInt64();
+        const auto applied = replacements.find(tick);
+        if (applied == replacements.end()) {
+            if (tick < end) rows.set(table, id, std::nullopt);
+        } else {
+            auto row = *rows.current(table, id);
+            row.update(fields(applied->second));
+            rows.set(table, id, std::move(row));
+            replacements.erase(applied);
+        }
+    }
+    for (const auto& [tick, value] : replacements) {
+        const auto id = ids.next(table);
+        auto row = fields(value);
+        row["id"] = id;
+        row["pos_ticks"] = tick;
+        rows.set(table, id, edit::defaultRow(db, table, row));
+    }
+}
+
+ClockPlan planClock(Store& store, const engine::TempoMap& authored, const MeterMap& meters,
+                    const std::optional<SessionPerformanceClock>& performance, std::uint32_t rate,
+                    clip_edit::CopyIds& ids) {
+    ClockPlan result{authored};
+    if (!performance) {
+        if (std::any_of(authored.events.begin(), authored.events.end(), [&](const auto& e) {
+                return e.bpm != authored.events.front().bpm;
+            })) throw std::runtime_error("varying Session tempo needs the performed clock receipts");
+        return result;
+    }
+    const auto& performed = *performance;
+    if (performed.end.tick <= performed.begin.tick || performed.end.sample <= performed.begin.sample ||
+        !std::isfinite(performed.initialBpm) || performed.initialBpm < 20 || performed.initialBpm > 999 ||
+        performed.sceneEdges.size() > 4096 ||
+        sampleAt(authored, performed.begin.tick, rate) != performed.begin.sample)
+        throw std::runtime_error("Session performance needs exact clock bounds and an initial tempo");
+
+    std::map<std::int64_t, double> replacements;
+    MeterMap replacementMeters;
+    if (performed.initialBpm != authored.bpmAt(performed.begin.tick))
+        replacements.emplace(performed.begin.tick, performed.initialBpm);
+    auto previousTick = performed.begin.tick - 1;
+    auto previousSample = performed.begin.sample - 1;
+    for (const auto& edge : performed.sceneEdges) {
+        const bool tempo = edge.tempoBpm != 0;
+        const bool meter = edge.signatureNumerator != 0 || edge.signatureDenominator != 0;
+        if (!tempo && !meter) continue;
+        if (!edge.preparedToken || (tempo && (!std::isfinite(edge.tempoBpm) || edge.tempoBpm < 20 || edge.tempoBpm > 999)) ||
+            (meter && !validMeter({edge.signatureNumerator, edge.signatureDenominator}, 99, 16)) ||
+            edge.tick <= previousTick || edge.sample <= previousSample ||
+            edge.tick > performed.end.tick || edge.sample > performed.end.sample)
+            throw std::runtime_error("Session capture needs ordered applied scene clock receipts");
+        previousTick = edge.tick;
+        previousSample = edge.sample;
+        if (edge.tick == performed.end.tick) continue;
+        if (tempo) replacements[edge.tick] = edge.tempoBpm;
+        if (meter) replacementMeters[edge.tick] = {edge.signatureNumerator, edge.signatureDenominator};
+    }
+
+    edit::RowEdits rows(store.db());
+    const auto end = performed.end.tick;
+    if (!replacements.empty()) {
+        const auto first = replacements.begin()->first;
+        const auto resumedBpm = authored.bpmAt(end);
+        const auto storedStop = std::find_if(authored.events.begin(), authored.events.end(),
+            [end](const auto& event) { return event.posTicks == end; });
+        if (storedStop == authored.events.end() && replacements.rbegin()->second != resumedBpm)
+            replacements.emplace(end, resumedBpm);
+
+        // setExternalTempoAt holds each performed scene's BPM until the next
+        // receipt. Only the shadowed authored points inside that interval
+        // are replaced. The existing authored point at capture end wins.
+        std::map<std::int64_t, double> prospective = replacements;
+        for (const auto& point : authored.events)
+            if (point.posTicks < first || point.posTicks >= end)
+                prospective.try_emplace(point.posTicks, point.bpm);
+        result.clock.events.clear();
+        for (const auto& [tick, bpm] : prospective) result.clock.events.push_back({tick, bpm, 0});
+    }
+    replaceClockRows(store.db(), "tempo_map", end, std::move(replacements),
+        [](double bpm) { return Payload{{"bpm", bpm}}; }, ids, rows);
+
+    // A performed signature starts a new meter at the launch boundary,
+    // even when its numerator and denominator repeat an earlier signature.
+    if (!replacementMeters.empty() && !meters.contains(end)) {
+        const auto next = meters.upper_bound(end);
+        replacementMeters.emplace(end, next == meters.begin() ? Meter{} : std::prev(next)->second);
+    }
+    replaceClockRows(store.db(), "time_signature_map", end, std::move(replacementMeters), [](Meter meter) {
+        return Payload{{"numerator", meter.numerator}, {"denominator", meter.denominator}};
+    }, ids, rows);
+    result.changes = rows.changes();
+
+    for (const auto& edge : performed.sceneEdges)
+        if ((edge.tempoBpm != 0 || edge.signatureNumerator != 0) && sampleAt(result.clock, edge.tick, rate) != edge.sample)
+            throw std::runtime_error("performed scene receipt disagrees with the Arrangement clock");
+    if (sampleAt(result.clock, performed.end.tick, rate) != performed.end.sample)
+        throw std::runtime_error("performed Session end disagrees with the Arrangement clock");
+    return result;
 }
 
 std::int64_t addTicks(std::int64_t a, std::int64_t b) {
@@ -169,7 +308,8 @@ void checkAudioPhase(const engine::LaunchCapturedSpan& span, const SourceExtent&
 
 Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
                    const engine::TempoMap& authored, const engine::TempoMap& fixed,
-                   std::uint32_t rate, clip_edit::CopyIds& ids) {
+                   std::uint32_t rate, const std::optional<SessionPerformanceAudio>& audioCapture,
+                   clip_edit::CopyIds& ids) {
     const auto& source = image.at("row");
     if (!source.at("alias_of").is_null())
         throw std::runtime_error("Session capture needs an independent source clip image");
@@ -179,8 +319,17 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
     if (!midi && !audio) throw std::runtime_error("Session capture has no authored audio source window");
     if (!muted && (!std::isfinite(span.velocity) || span.velocity != 1.0f || (!midi && span.fade)))
         throw std::runtime_error("Session launch Fade or velocity needs an exact capture render contract");
-    if (!midi && !muted && source.at("gain_db") != 0)
-        throw std::runtime_error("authored Session audio gain needs an exact capture render contract");
+    if (!midi && !muted) {
+        if (audioCapture && !audioCapture->gainStayedAuthored)
+            throw std::runtime_error("transient Session audio gain requires a performed gain trace");
+        const auto gainDb = source.at("gain_db").get<double>();
+        if (!std::isfinite(gainDb) || std::abs(gainDb) > 120 ||
+            (gainDb != 0 && (!audioCapture || audioCapture->precision != engine::Precision::Float32)))
+            throw std::runtime_error("authored Session audio gain needs an exact Float32 render receipt");
+    }
+    if (!midi && !muted && std::any_of(authored.events.begin(), authored.events.end(), [&](const auto& point) {
+            return point.posTicks > span.begin.tick && point.posTicks < span.end.tick && point.bpm != fixed.bpmAt(0);
+        })) throw std::runtime_error("Session audio spanning a tempo change needs a performed source range trace");
     const auto& sourceChildren = image.at("children");
     if (!muted && (!sourceChildren.at("automation_data").empty() ||
                    !sourceChildren.at("automation_segment_ranges").empty()))
@@ -247,6 +396,25 @@ void validateCaptureRows(OpContext& context, const Payload& changes) {
     const bool hasSlots = context.db.tableExists("clip_slots");
     for (const auto& change : changes) {
         const auto table = change.at("table").get<std::string>();
+        if (table == "tempo_map") {
+            for (const auto* part : {"before", "after"}) {
+                const auto& row = change.at(part);
+                if (row.is_null()) continue;
+                const auto bpm = row.at("bpm").get<double>();
+                if (!std::isfinite(bpm) || bpm < 20 || bpm > 999 || row.at("curve") != 0)
+                    throw std::runtime_error("Session capture changes only exact step-tempo rows");
+            }
+            continue;
+        }
+        if (table == "time_signature_map") {
+            for (const auto* part : {"before", "after"}) {
+                const auto& row = change.at(part);
+                if (row.is_null()) continue;
+                if (!validMeter({detail::signedInteger(row.at("numerator")), detail::signedInteger(row.at("denominator"))}, 255, 128))
+                    throw std::runtime_error("Session capture changes only valid time-signature rows");
+            }
+            continue;
+        }
         const bool root = table == "clips";
         if (!root && std::none_of(children.begin(), children.end(), [&table](const auto& child) {
                 return table == child.table;
@@ -294,6 +462,7 @@ std::optional<SessionPerformanceSource> captureSessionPerformanceSource(Store& s
         source->source = appliedSource(store);
         source->head = OpJournal(store).headSeq();
         source->clock = captureClock(store.db());
+        source->meters = captureMeters(store.db());
         const auto folder = media::projectFolder(store);
         OpContext context{store, store.db()};
         SQLite::Statement slots(store.db(), "SELECT clip_id FROM main.clip_slots WHERE clip_id IS NOT NULL ORDER BY clip_id");
@@ -323,6 +492,18 @@ std::optional<SessionPerformanceSource> captureSessionPerformanceSource(Store& s
 
 clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPerformanceSource& source,
     const engine::LaunchCapturePlan& capture, std::uint32_t rate) {
+    return prepareSessionPerformance(store, source, capture, rate, std::nullopt);
+}
+
+clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPerformanceSource& source,
+    const engine::LaunchCapturePlan& capture, std::uint32_t rate,
+    std::optional<SessionPerformanceClock> performed) {
+    return prepareSessionPerformance(store, source, capture, rate, performed, std::nullopt);
+}
+
+clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPerformanceSource& source,
+    const engine::LaunchCapturePlan& capture, std::uint32_t rate, std::optional<SessionPerformanceClock> performed,
+    std::optional<SessionPerformanceAudio> audio) {
     clip_edit::PreparedEdit refused;
     try {
         if (audio::onAudioThread || store.readOnly() || !source.data_ ||
@@ -332,12 +513,13 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             throw std::runtime_error("Session performance trace is invalid at this rate");
         Read read(store.db());
         const auto& frozen = *source.data_;
-        if (OpJournal(store).headSeq() != frozen.head || captureClock(store.db()).events != frozen.clock.events)
-            throw std::runtime_error("project material or tempo changed during Session capture");
-        if (capture.spans.empty()) throw std::runtime_error("no Session material was performed in this capture");
-
-        const engine::TempoMap fixed{{{0, frozen.clock.bpmAt(0), 0}}};
+        if (OpJournal(store).headSeq() != frozen.head || captureClock(store.db()).events != frozen.clock.events ||
+            captureMeters(store.db()) != frozen.meters)
+            throw std::runtime_error("project material or clock changed during Session capture");
         clip_edit::CopyIds ids(store.db());
+        auto clock = planClock(store, frozen.clock, frozen.meters, performed, rate, ids);
+        if (capture.spans.empty() && clock.changes.empty())
+            throw std::runtime_error("no Session material or scene clock was performed in this capture");
         edit_plan::detail::PlacementBatch placement;
         std::map<std::int64_t, engine::LaunchCaptureTime> trackEnds;
         std::map<std::filesystem::path, media::FileRevision> mediaProofs;
@@ -345,8 +527,9 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         for (const auto& span : capture.spans) {
             if (span.track <= 0 || span.clip < 0 || span.begin.tick >= span.end.tick ||
                 span.begin.sample >= span.end.sample ||
-                sampleAt(frozen.clock, span.begin.tick, rate) != span.begin.sample ||
-                sampleAt(frozen.clock, span.end.tick, rate) != span.end.sample)
+                (performed && (span.begin.tick < performed->begin.tick || span.end.tick > performed->end.tick)) ||
+                sampleAt(clock.clock, span.begin.tick, rate) != span.begin.sample ||
+                sampleAt(clock.clock, span.end.tick, rate) != span.end.sample)
                 throw std::runtime_error("Session performance edge is not sample-exact on the Arrangement clock");
             const auto [entry, inserted] = trackEnds.try_emplace(span.track, span.end);
             if (!inserted) {
@@ -363,9 +546,10 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             const auto image = frozen.clips.find(span.clip);
             if (image == frozen.clips.end() || image->second.at("row").at("track_id") != span.track)
                 throw std::runtime_error("performed clip is absent from the frozen Session source");
-            placement.incoming.push_back(arrangeRun(store, image->second, span, frozen.clock, fixed, rate, ids));
-            if (const auto* audio = firstChild(image->second, "audio_clips"); audio && image->second.at("row").at("muted") == 0) {
-                const auto file = frozen.mediaFiles.find(detail::signedInteger(audio->at("media_id")));
+            const engine::TempoMap fixed{{{0, clock.clock.bpmAt(span.begin.tick), 0}}};
+            placement.incoming.push_back(arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids));
+            if (const auto* audioRow = firstChild(image->second, "audio_clips"); audioRow && image->second.at("row").at("muted") == 0) {
+                const auto file = frozen.mediaFiles.find(detail::signedInteger(audioRow->at("media_id")));
                 if (file == frozen.mediaFiles.end() || !file->second.revision)
                     throw std::runtime_error("performed audio has no verified source file");
                 if (mediaProofs.try_emplace(file->second.path, *file->second.revision).second) {
@@ -378,20 +562,38 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         std::vector<std::int64_t> tracks;
         tracks.reserve(trackEnds.size());
         for (const auto& [track, end] : trackEnds) { (void)end; tracks.push_back(track); }
-        auto scope = edit_plan::materialScope(tracks, PlacementClock::Ticks, {first, last});
-        scope.domains = edit_plan::Domains::Clips;
-        edit_plan::Options options{static_cast<double>(rate), {}};
-        options.policy.automationFollowsClips = false;
-        auto result = edit_plan::detail::prepareCaptured(store, scope, std::move(placement), options, ids,
-            "Capture Session Performance");
-        if (!result.ok || result.requests.empty()) return result;
-        if (result.requests.size() != 1 || result.requests.front().opType != "arranger.splice")
-            throw std::runtime_error("unexpected Arrangement capture packet");
-        auto& request = result.requests.front();
+        constexpr auto label = "Capture Session Performance";
+        clip_edit::PreparedEdit result;
+        if (!tracks.empty()) {
+            auto scope = edit_plan::materialScope(tracks, PlacementClock::Ticks, {first, last});
+            scope.domains = edit_plan::Domains::Clips;
+            edit_plan::Options options{static_cast<double>(rate), {}};
+            options.policy.automationFollowsClips = false;
+            const edit::TimeMap prospective(clock.clock);
+            result = edit_plan::detail::prepareCaptured(store, scope, std::move(placement), options, ids,
+                label, &prospective);
+            if (!result.ok) return result;
+        } else {
+            result.sourceFile = store.db().execAndGet("SELECT file FROM pragma_database_list WHERE name='main'").getString();
+            result.options.expectHead.emplace(frozen.head);
+            result.ok = true;
+        }
+        auto changes = std::move(clock.changes);
+        if (!result.requests.empty()) {
+            if (result.requests.size() != 1 || result.requests.front().opType != "arranger.splice")
+                throw std::runtime_error("unexpected Arrangement capture packet");
+            for (auto& change : result.requests.front().payload.at("changes"))
+                changes.push_back(std::move(change));
+        }
+        if (changes.empty()) return result;
         OpContext context{store, store.db()};
-        validateCaptureRows(context, request.payload.at("changes"));
+        validateCaptureRows(context, changes);
+        OpRequest request;
         request.opType = operationName;
-        request.payload.erase("id");
+        request.label = label;
+        request.payload = {{"changes", std::move(changes)}};
+        result.requests.clear();
+        result.requests.push_back(std::move(request));
         result.description.reset();
         if (!mediaProofs.empty()) {
             result.options.beforeCommit = [files = std::move(mediaProofs)](SQLite::Database&, std::int64_t, std::string& error) {
@@ -410,7 +612,7 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
 }
 
 std::span<const OpDescriptor> sessionPerformanceOps() noexcept {
-    static constexpr Field fields[]{{"changes", FieldType::Array, true, "Literal Arrangement clip row changes"}};
+    static constexpr Field fields[]{{"changes", FieldType::Array, true, "Literal Arrangement clip, tempo and meter row changes"}};
     static constexpr OpDescriptor descriptor[]{
         {operationName, "Capture a recorded Session performance into Arrangement", Scope::Edit,
          EngineImpact::GraphRebuild, fields, false, false, applyCapture, inverseCapture, ""},

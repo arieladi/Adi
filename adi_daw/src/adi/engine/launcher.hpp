@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_gestures.hpp"
 #include "adi/engine/launch_quantize.hpp"
 
@@ -31,6 +32,8 @@ struct PreparedSceneLaunch {
     float velocity = 1.0f;
     // The producer keeps a stable increasing token across repeated reads.
     std::uint64_t token = 0;
+    double tempoBpm = 0;
+    std::int32_t signatureNumerator = 0, signatureDenominator = 0;
 };
 
 /// One contiguous range on the rendered generation's transport clock. Split
@@ -50,6 +53,9 @@ struct LaunchBlock {
     // Set only for a natural Arrangement wrap, never for an explicit locate.
     bool arrangementWrap = false;
     std::optional<PreparedSceneLaunch> preparedScene{};
+    double sampleRate = 48000.0;
+    double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
+    bool preparedScenePinned = false; // an absent token then revokes the old published scene
 };
 
 struct LaunchSection {
@@ -90,6 +96,8 @@ struct LaunchSceneTransition {
     std::uint64_t ordinal = 0;
     bool fromFollow = false;
     std::uint64_t preparedToken = 0;
+    double tempoBpm = 0; // filled by the graph when the receipt applies tempo
+    std::int32_t signatureNumerator = 0, signatureDenominator = 0;
 };
 
 enum class LaunchTrackSource : std::uint8_t { Arrangement, Session, Silence };
@@ -134,12 +142,18 @@ struct LaunchSink {
 /// One owner posts gestures and one driver renders. Capacity and all scratch
 /// are established off the audio thread. Sections and transitions for each
 /// track are chronological, with tracks visited in ascending ID order.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324) // mailbox counters occupy separate cache lines
+#endif
 class Launcher {
 public:
     explicit Launcher(std::size_t maximumTracks);
     [[nodiscard]] bool post(std::span<const LaunchRequest> requests) noexcept {
         return gestures_.push(requests);
     }
+    /// Owner only. Queue playback bounds for a single active prepared run.
+    [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&) noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
@@ -167,6 +181,7 @@ private:
         std::int64_t earliestSample = 0;
         bool sceneGesture = false;
         std::uint64_t admission = 0;
+        bool prepared = false;
     };
     struct Run {
         std::int64_t scene = 0, clip = 0, sourceTick = 0, frames = 0;
@@ -177,18 +192,25 @@ private:
         std::int64_t pcmAnchorTick = 0, pcmAnchorFrame = 0;
         std::uint64_t completedLoops = 0;
         bool fade = false;
+        std::optional<LaunchClipRegion> region{};
+    };
+    struct RegionPending {
+        LaunchClipRegionEdit edit;
+        ClipUpdateBoundary boundary;
     };
     struct Track {
         std::int64_t id = 0;
         Run run;
         std::optional<Pending> user, back, gateStop, follow, repeat, sceneFollow, dueScene;
         std::uint64_t followOrdinal = 0;
+        std::optional<RegionPending> regionEdit{};
     };
     struct ScenePending {
         std::int64_t scene, tick, earliestSample = 0;
         LaunchQuantization grid = LaunchQuantization::None;
         std::uint64_t admission = 0;
         std::uint64_t preparedToken = 0;
+        float velocity = 1.0f;
     };
 
     [[nodiscard]] Track* findTrack(std::int64_t) noexcept;
@@ -197,12 +219,14 @@ private:
     [[nodiscard]] RetargetResult retarget(std::span<const LaunchRequest>, const LaunchBlock&,
                                           const LaunchView&) noexcept;
     void drain(const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
+    void drainRegionEdits(const LaunchBlock&, const LaunchView&) noexcept;
     void applyUser(const LaunchRequest&, const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
     void armUserScene(ScenePending, float velocity, const LaunchBlock&, const LaunchView&,
                       std::int64_t now) noexcept;
     void applyFollow(const LaunchFollowRequest&, const LaunchBlock&, const LaunchView&,
                      std::int64_t, std::int64_t earliestSample = 0) noexcept;
     void cancelSceneFollow() noexcept;
+    void discardUnpublishedScene(const LaunchBlock&) noexcept;
     void settleScene(const ScenePending&, bool fromFollow, bool rolling, const LaunchBlock&,
                      const LaunchView&, LaunchSink, std::int32_t offset) noexcept;
     void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t,
@@ -230,6 +254,9 @@ private:
     // an older pinned graph. Keep one literal transfer until that scene exists.
     std::array<LaunchRequest, LaunchGestureQueue::capacity> deferredRetarget_{};
     std::size_t deferredRetargetSize_ = 0;
+    std::array<LaunchClipRegionEdit, LaunchGestureQueue::capacity> regionMailbox_{};
+    alignas(64) std::atomic<std::uint64_t> regionWritten_{0};
+    alignas(64) std::atomic<std::uint64_t> regionRead_{0};
     std::vector<Track> tracks_, scratch_;
     Track* activeTracks_ = nullptr;
     Track* spareTracks_ = nullptr;
@@ -243,5 +270,8 @@ private:
     std::atomic<std::uint32_t> publishedStatus_{statusBufferCount};
     std::uint64_t statusSerial_ = 0;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace adi::engine

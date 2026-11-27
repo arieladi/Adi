@@ -2,6 +2,7 @@
 #include "adi/engine/launch_data.hpp"
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
+#include "adi/textproj.hpp"
 
 #include <algorithm>
 #include <array>
@@ -129,6 +130,201 @@ void chance() {
                 static_cast<unsigned long long>(launched), static_cast<unsigned long long>(runs), 100.0 * ratio,
                 static_cast<unsigned long long>(targetCounts[0]), static_cast<unsigned long long>(targetCounts[1]),
                 static_cast<unsigned long long>(targetCounts[2]));
+}
+
+void complementaryChoices() {
+    constexpr std::uint64_t trials = 8192;
+    constexpr std::array chances{0.0, 25.0, 75.0, 90.0, 100.0};
+    FollowSettings follow;
+    follow.enabled = true;
+    follow.first.action = FollowAction::None;
+    follow.second = {FollowAction::Jump, 12};
+    std::array<std::uint64_t, chances.size()> selections{};
+    bool exclusive = true, oneDraw = true;
+    for (std::uint64_t pass = 0; pass < trials; ++pass) {
+        const FollowDrawKey key{followPassSeed(11, pass), 7, 1};
+        bool selectedB = false;
+        for (std::size_t i = 0; i < chances.size(); ++i) {
+            follow.secondChancePercent = chances[i];
+            const auto decision = resolveFollowPlaybackTarget(follow, sceneIds, clips, 1, key);
+            const auto actionB = decision.result == FollowResult::Launch && decision.target == FollowTarget{2, 23};
+            const auto actionA = decision.result == FollowResult::Unchanged && !decision.target;
+            exclusive &= actionA != actionB;
+            oneDraw &= !selectedB || actionB;
+            selectedB = actionB;
+            selections[i] += actionB ? 1u : 0u;
+        }
+    }
+    const auto fractionA = 1.0 - static_cast<double>(selections[3]) / static_cast<double>(trials);
+    check(exclusive && selections.front() == 0 && selections.back() == trials,
+          "the two Chance choices are complementary, and selected No Action never falls through");
+    check(oneDraw && selections[1] < selections[2] && selections[2] < selections[3],
+          "raising B Chance moves the same pass draw toward B without independently drawing A");
+    check(std::abs(fractionA - 0.10) < 0.015,
+          "setting B Chance to 90 percent leaves roughly ten percent of passes for A");
+    std::printf("Complementary Chance A at 90%% B measured %.3f%% over %llu passes.\n",
+                fractionA * 100.0, static_cast<unsigned long long>(trials));
+}
+
+constexpr auto quarter = adi::textproj::kPPQ;
+constexpr std::int64_t beatSamples = 24000;
+constexpr std::int64_t dueSamples = beatSamples / 3;
+
+struct FollowFixture {
+    static constexpr std::array<std::int64_t, 1> tracks{1};
+    static constexpr std::array<std::int64_t, 4> ids{10,20,25,30};
+    static constexpr std::size_t clipCount = 3;
+    std::array<launch::Scene, ids.size()> scenes{};
+    std::array<adi::rows::Clip, clipCount> sources{};
+    std::array<launch::ClipLaunchSettings, clipCount> settings{};
+    std::array<LaunchSlot, clipCount> runtimeSlots{};
+    const std::array<launch::Slot, clipCount> slots{
+        launch::Slot{{1,10},50}, launch::Slot{{1,20},51}, launch::Slot{{1,30},52}};
+
+    FollowFixture() {
+        for (std::size_t i = 0; i < scenes.size(); ++i) {
+            scenes[i].id = ids[i];
+            scenes[i].order = static_cast<std::int64_t>(i);
+            scenes[i].follow.durationTicks = quarter / 3;
+        }
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto clip = *slots[i].clipId;
+            sources[i].id = clip;
+            sources[i].trackId = 1;
+            sources[i].kind = "audio";
+            sources[i].posTicks = 0;
+            settings[i].clipId = clip;
+            settings[i].follow.enabled = true;
+            settings[i].follow.linked = false;
+            settings[i].follow.durationTicks = quarter / 3;
+            runtimeSlots[i].track = 1;
+            runtimeSlots[i].scene = slots[i].key.sceneId;
+            runtimeSlots[i].clip = clip;
+            runtimeSlots[i].endTick = 4 * quarter;
+        }
+    }
+
+    [[nodiscard]] std::optional<LaunchFollowPlayer> player() const {
+        const auto data = launch::LaunchData::prepare(tracks, sources, scenes, slots, settings);
+        return data ? std::optional{LaunchFollowPlayer(*data)} : std::nullopt;
+    }
+
+    [[nodiscard]] LaunchView view() const noexcept { return {tracks, runtimeSlots, ids}; }
+};
+
+struct FollowTrace {
+    const LaunchFollowPlayer& player;
+    LaunchView view;
+    std::array<LaunchTransition, 8> clips{};
+    std::array<LaunchSceneTransition, 8> scenes{};
+    std::size_t clipCount = 0, sceneCount = 0;
+
+    bool process(Launcher& launcher, std::int64_t sample, std::int32_t frames,
+                 adi::LaunchQuantization global, bool enabled = true) {
+        LaunchBlock block{};
+        block.sample = sample;
+        block.frames = frames;
+        block.incarnation = 7;
+        block.global = global;
+        block.followActionsEnabled = enabled;
+        block.tickAtSample = [](const void*, std::int64_t frame) noexcept {
+            return (frame * quarter + beatSamples / 2) / beatSamples;
+        };
+        block.sampleAtTick = [](const void*, std::int64_t tick) noexcept {
+            return (tick * beatSamples + quarter / 2) / quarter;
+        };
+        LaunchSink sink{};
+        sink.context = this;
+        sink.transition = [](void* context, const LaunchTransition& edge) noexcept {
+            auto& trace = *static_cast<FollowTrace*>(context);
+            if (trace.clipCount < trace.clips.size()) trace.clips[trace.clipCount++] = edge;
+        };
+        sink.scenePerformed = [](void* context, const LaunchSceneTransition& edge) noexcept {
+            auto& trace = *static_cast<FollowTrace*>(context);
+            if (trace.sceneCount < trace.scenes.size()) trace.scenes[trace.sceneCount++] = edge;
+        };
+        sink.followOnLaunch = [](void* context, const LaunchTransition& edge) noexcept {
+            const auto& trace = *static_cast<const FollowTrace*>(context);
+            return trace.player.followOnLaunch(edge, trace.view, 7, true, 8);
+        };
+        sink.followOnSceneLaunch = [](void* context, const LaunchSceneTransition& edge) noexcept {
+            const auto& trace = *static_cast<const FollowTrace*>(context);
+            return trace.player.followOnSceneLaunch(edge.scene, edge.tick, edge.ordinal, 7, true, 8);
+        };
+        return launcher.process(block, view, sink);
+    }
+};
+
+bool launchScene(Launcher& launcher, std::int64_t id) {
+    const LaunchRequest request{LaunchRequestKind::ScenePress, {}, id, {}, 7};
+    return launcher.post({&request, 1});
+}
+
+void storedFollowQuantization() {
+    using adi::LaunchQuantization;
+    FollowFixture fixture;
+    fixture.settings[0].follow.first.action = FollowAction::Next;
+    const auto player = fixture.player();
+    check(player.has_value(), "prepare the authored, unlinked Follow Action settings");
+    if (!player)
+        return;
+    constexpr std::array quantization{std::optional<LaunchQuantization>{},
+        std::optional{LaunchQuantization::None}, std::optional{LaunchQuantization::Eighth}};
+    for (const auto target : quantization) {
+        fixture.runtimeSlots[1].quantization = target;
+        Launcher launcher(1);
+        FollowTrace trace{*player, fixture.view()};
+        const auto frame = target == LaunchQuantization::Eighth ? beatSamples / 2 : dueSamples;
+        check(launchScene(launcher, 10) && trace.process(launcher, 0, 12001, LaunchQuantization::Bar) &&
+              trace.clipCount == 2 && trace.clips[1].newClip == 51 && trace.clips[1].sample == frame,
+              "a stored Follow Action waits only for the destination's explicit grid");
+    }
+}
+
+void provisionalActionsAndGlobalEnable() {
+    using adi::LaunchQuantization;
+    FollowFixture fixture;
+    fixture.settings[0].follow.first.action = FollowAction::Previous;
+    fixture.settings[1].follow.first.action = FollowAction::Stop;
+    fixture.settings[2].follow.first.action = FollowAction::Other;
+    fixture.scenes[0].follow.enabled = fixture.scenes[1].follow.enabled = true;
+    fixture.scenes[0].follow.first.action = FollowAction::Stop;
+    fixture.scenes[1].follow.first = {FollowAction::Jump, 30};
+    const auto player = fixture.player();
+    check(player.has_value(), "prepare real scene and clip settings for unresolved Live readings");
+    if (!player)
+        return;
+    constexpr auto span = static_cast<std::int32_t>(dueSamples);
+    constexpr auto immediate = LaunchQuantization::None;
+    Launcher provisional(1);
+    FollowTrace unchanged{*player, fixture.view()};
+    check(launchScene(provisional, 10) && unchanged.process(provisional, 0, span + 1, immediate) &&
+          unchanged.sceneCount == 1 && unchanged.clipCount == 1 && unchanged.clips[0].newClip == 50,
+          "pass's provisional first Previous and scene Stop leave current playback running");
+    check(launchScene(provisional, 30) && unchanged.process(provisional, dueSamples + 1, span + 1, immediate) &&
+          unchanged.sceneCount == 2 && unchanged.clipCount == 2 && unchanged.clips[1].newClip == 52,
+          "provisional singleton Other leaves the current run playing in a sparse group");
+
+    Launcher withCancel(1);
+    FollowTrace canceled{*player, fixture.view()};
+    const LaunchRequest cancel{LaunchRequestKind::CancelScene, {}, 30, {}, 7};
+    check(launchScene(withCancel, 20) && canceled.process(withCancel, 0, 1, immediate) &&
+          withCancel.post({&cancel, 1}) && canceled.process(withCancel, 1, span, immediate) &&
+          canceled.sceneCount == 1 && canceled.clipCount == 2 && canceled.clips[1].newClip == 0 &&
+          canceled.clips[1].sample == dueSamples,
+          "Cancel Scene clears a prepared scene Jump and leaves its independent clip Stop due");
+
+    Launcher withSwitch(1);
+    FollowTrace switched{*player, fixture.view()};
+    check(launchScene(withSwitch, 20) && switched.process(withSwitch, 0, 1, immediate) &&
+          switched.process(withSwitch, 1, span - 1, immediate, false) &&
+          switched.process(withSwitch, dueSamples, 1, immediate) && switched.sceneCount == 1 &&
+          switched.clipCount == 1, "global disable clears both timers and enabling does not revive them");
+    check(launchScene(withSwitch, 20) && switched.process(withSwitch, dueSamples + 1, span + 1, immediate) &&
+          switched.sceneCount == 3 && switched.scenes[2].fromFollow &&
+          switched.scenes[2].sample == 2 * dueSamples + 1 && switched.clipCount == 3 &&
+          switched.clips[2].newClip == 52 && switched.clips[2].sample == switched.scenes[2].sample,
+          "a fresh scene schedules both timers after re-enable and wins the due clip Stop at the same frame");
 }
 
 void preparedPlayer() {
@@ -320,6 +516,9 @@ int main() {
     dueTicks();
     targets();
     chance();
+    complementaryChoices();
+    storedFollowQuantization();
+    provisionalActionsAndGlobalEnable();
     preparedPlayer();
     queuedSceneSurvivesReorder();
     std::printf("%d follow playback checks, %d failures\n", checks, failures);

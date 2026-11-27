@@ -156,8 +156,10 @@ public:
     bool canRetainPendingEvent(const Event& event)const noexcept override {
         if(!transport.playing() || state->revision!=transport.revision() || state->expected!=transport.sampleAt(0))return false;
         if(event.type==EventType::Controller) {
-            if((event.noteId>>32)!=state->controlPrefix || event.channel>15 || event.paramId>127 ||
-               state->controllerGeneration!=controllerGeneration)return false;
+            if((event.noteId>>32)!=state->controlPrefix || event.channel>15 || event.paramId>127)return false;
+            if (state->arrangement ? state->controllerGeneration != controllerGeneration
+                : !launched || !launched->canRetainControllers(launchClip(launched->activeClip()),launchRevision()))
+                return false;
             const auto& controlState=state->controls[event.channel*128+event.paramId];
             const auto serial=static_cast<std::uint32_t>(event.noteId);
             // Earlier curve samples can still be queued after a newer value
@@ -309,6 +311,34 @@ public:
             for (std::size_t i = 0; i < controls->size(); ++i)
                 state->controls[controls->address(i)].requestedValid = false;
     }
+    [[nodiscard]] LaunchMidiControllers launchControllers() noexcept {
+        return {this,
+            [](void* context, EventList& out, std::int32_t frame, std::uint16_t address, double value) noexcept {
+                auto& source = *static_cast<Source*>(context);
+                const auto& c = source.state->controls[address];
+                if (c.requestedValid && !c.retry && c.requestedValue == value) return true;
+                const auto reserve = std::max(3,std::min(out.capacity()/2,static_cast<std::int32_t>(maxActive*2)));
+                if (out.capacity()-out.size() <= reserve) {
+                    ++source.state->droppedControls;
+                    return false;
+                }
+                return source.control(out,frame,address,value);
+            },
+            [](void* context, EventList& out, std::int32_t frame) noexcept {
+                auto& source = *static_cast<Source*>(context);
+                if (!source.releasePedals(out,frame)) return false;
+                for (auto& control : source.state->controls) control.requestedValid = false;
+                return true;
+            }};
+    }
+    void reconsiderControllerDeliveries() noexcept {
+        for (auto& controlState : state->controls)
+            if (controlState.pending && (controlState.retainedGeneration != generation ||
+                controlState.retainedSerial != controlState.serial)) {
+                controlState.pending = false;
+                controlState.retry = true;
+            }
+    }
     void evaluateControls(EventList &out, std::int32_t frame, std::int64_t time) noexcept {
         if (!controls || !controls->size())
             return;
@@ -370,6 +400,15 @@ public:
             active.expressionAt[dimension]=next==begin+range.first?range.first:
                 static_cast<std::size_t>(next-begin-1);
         }
+    }
+    bool retryPedalReleases(EventList& out, std::int32_t frame) noexcept {
+        for (std::uint16_t channel = 0; channel < 16; ++channel)
+            for (auto cc : {64, 66, 69}) {
+                const auto address = static_cast<std::uint16_t>(channel * 128 + cc);
+                const auto& c = state->controls[address];
+                if (c.releaseDesired && c.retry && !control(out,frame,address,0)) return false;
+            }
+        return true;
     }
     std::int64_t nextExpression(std::int64_t first,std::int64_t limit) const noexcept {
         for(const auto& active:state->active)if(active.used && !active.releasing && active.generation==generation) {
@@ -492,11 +531,16 @@ public:
 
     bool leaveArrangement(EventList& out, std::int32_t frame) noexcept {
         const bool newGeneration = state->generation != generation;
-        if (newGeneration)
+        if (newGeneration) {
+            reconsiderControllerDeliveries();
             for (auto& active : state->active)
                 if (active.pending && active.retainedOff != generation)
                     active.pending = false;
-        if (!releasePedals(out, frame, newGeneration) || !flush(out, frame))
+        }
+        if (!retryPedalReleases(out,frame)) return false;
+        if (state->arrangement && !releasePedals(out, frame, newGeneration))
+            return false;
+        if (!flush(out, frame))
             return false;
         if (state->arrangement)
             invalidateControls();
@@ -511,14 +555,15 @@ public:
             return;
         if (launched)
             launched->adoptProgram(generation);
+        const auto midiControls = launchControllers();
         if (!transport.playing()) {
             if (launched)
-                (void)launched->release(out, 0);
+                (void)launched->release(out, 0, midiControls);
             (void)scheduleArrangement(out, 0, frames);
             return;
         }
         const auto arrangement = [&](std::int32_t first, std::int32_t end) {
-            return first == end || ((!launched || launched->release(out, first)) &&
+            return first == end || ((!launched || launched->release(out, first, midiControls)) &&
                                     scheduleArrangement(out, first, end));
         };
         std::int32_t frame = 0;
@@ -539,7 +584,7 @@ public:
                 const auto before = out.size();
                 const auto dropped = launched->droppedNotes();
                 if (!launched->render(range.block, range.section, range.baseOffset,
-                                      launchClip(range.section.clip), launchRevision(), ids, out)) {
+                                      launchClip(range.section.clip), launchRevision(), ids, out, midiControls)) {
                     state->expected = -1;
                     return;
                 }
@@ -563,13 +608,7 @@ public:
 
     bool scheduleArrangement(EventList& out, std::int32_t begin, std::int32_t frames) noexcept {
         // A rejected zero must remain owned even after its lane disappears.
-        for (std::uint16_t channel = 0; channel < 16; ++channel)
-            for (auto cc : {64, 66, 69}) {
-                const auto address = static_cast<std::uint16_t>(channel * 128 + cc);
-                const auto &c = state->controls[address];
-                if (c.releaseDesired && c.retry && !control(out, begin, address, 0))
-                    return false;
-            }
+        if (!retryPedalReleases(out,begin)) return false;
         const auto first=transport.sampleAt(begin);
         const bool newGeneration = state->generation != generation;
         const bool moved=!state->arrangement || state->revision!=transport.revision() || state->expected!=first;
@@ -599,9 +638,7 @@ public:
             state->revision = transport.revision();
             state->controllerGeneration=controllerGeneration;
             state->renderedControllerGeneration.store(controllerGeneration,std::memory_order_release);
-            if(newGeneration)for(auto& controlState:state->controls)
-                if(controlState.pending && (controlState.retainedGeneration!=generation ||
-                    controlState.retainedSerial!=controlState.serial)){controlState.pending=false;controlState.retry=true;}
+            if(newGeneration)reconsiderControllerDeliveries();
             for(const auto& controlState:state->controls)controlChase=controlChase || controlState.retry;
         }
         for (auto &a : state->active)
@@ -852,6 +889,12 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         std::map<std::int64_t, std::vector<rows::Note>> slotNotes;
         for (const auto& note : model.slotNotes)
             slotNotes[note.clipId].push_back(note);
+        std::map<std::int64_t, std::vector<const NoteExpressionCurve*>> slotExpression;
+        for (const auto& curve : expressions.curves)
+            slotExpression[curve.clipId].push_back(&curve);
+        std::map<std::int64_t, std::vector<const controllers::Lane*>> slotControllers;
+        for (const auto& lane : model.controllers)
+            slotControllers[lane.clipId].push_back(&lane);
         for (const auto& clip : model.slotClips) {
             if (clip.kind != "midi" || clip.muted)
                 continue;
@@ -861,18 +904,15 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                 continue;
             const auto& notes = slotNotes[clip.id];
             const auto label = "clip_slots#" + std::to_string(clip.id) + ": ";
-            auto prepared = LaunchMidiClip::prepare(clip.id, notes);
+            std::vector<std::string> midiProblems;
+            auto prepared = LaunchMidiClip::prepare(clip.id,notes,slotExpression[clip.id],slotControllers[clip.id],&midiProblems);
             if (!prepared) {
                 impl_->problems.push_back(label + "invalid MIDI intervals; slot silent");
                 continue;
             }
             found->second->launchClips.push_back(std::move(*prepared));
-            if (std::any_of(expressions.curves.begin(), expressions.curves.end(),
-                    [&](const auto& curve) { return curve.clipId == clip.id; }) ||
-                std::any_of(model.controllers.begin(), model.controllers.end(),
-                    [&](const auto& lane) { return lane.clipId == clip.id; }))
-                impl_->problems.push_back(label + "Session playback uses notes and static tuning; "
-                    "per-note expression curves and MIDI controller lanes are omitted");
+            for (const auto& problem : midiProblems)
+                impl_->problems.push_back(label + problem);
             if (std::any_of(notes.begin(), notes.end(), [](const auto& note) {
                     return note.probability != 10000 || (note.flags & NoteFlags::TiedToNext);
                 }))

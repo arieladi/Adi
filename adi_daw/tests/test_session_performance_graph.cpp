@@ -109,15 +109,20 @@ void performCommand(Store& project, const Session& session, std::int64_t sample)
     require(OpJournal(project).commit(command).ok, "commit a live launch or handover");
 }
 
+struct SceneReceipts {
+    std::array<LaunchSceneTransition, 8> edges{};
+    std::size_t size = 0;
+};
+
 Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int64_t* endTick = nullptr,
-               bool firstSceneOnly = false) {
+               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr) {
     Session session;
     session.graph().setFadeFrames(0);
     SessionSpec spec{1, sampleRate, blockFrames};
     spec.performanceState = capture != nullptr;
     spec.offline = !spec.performanceState;
     spec.synchronousClipReads = true;
-    require(session.load(project, {}, spec), session.error());
+    if (!session.load(project, {}, spec)) throw std::runtime_error(session.error());
     session.transport().play();
     Samples result{};
     for (std::int64_t sample = 0; sample < frames; sample += blockFrames) {
@@ -137,6 +142,12 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
                 block.observeLaunchTransitions(capture, [](void* context, const LaunchTransition& edge,
                                                            std::int64_t) noexcept {
                     (void)static_cast<LaunchCaptureBuffer*>(context)->append(edge);
+                });
+            if (scenes)
+                block.observeSceneLaunches(scenes, [](void* context, const LaunchSceneTransition& edge,
+                                                      std::int64_t) noexcept {
+                    auto& receipts = *static_cast<SceneReceipts*>(context);
+                    if (receipts.size < receipts.edges.size()) receipts.edges[receipts.size++] = edge;
                 });
             if (endTick)
                 *endTick = block.tickAtSample(frames);
@@ -178,8 +189,13 @@ void followThroughGraph() {
             "the pinned global switch suppresses both clip and scene follows");
 }
 
-void proof() {
+void proof(bool captureClock) {
     Project project;
+    if (captureClock) {
+        project.store->db().exec("UPDATE scenes SET tempo_bpm=180,tempo_enabled=1,signature_numerator=7,"
+            "signature_denominator=8,signature_enabled=1 WHERE id=21;"
+            "UPDATE clips SET gain_db=6.020599913279624 WHERE id=11;");
+    }
     const auto arrangementBefore = render(*project.store);
     std::string error;
     const auto source = captureSessionPerformanceSource(*project.store, error);
@@ -187,21 +203,39 @@ void proof() {
     std::array<LaunchTransition, 8> events{};
     LaunchCaptureBuffer buffer(events);
     std::int64_t endTick = 0;
-    const auto heard = render(*project.store, &buffer, &endTick);
+    SceneReceipts scenes;
+    const auto heard = render(*project.store, &buffer, &endTick, false, captureClock ? &scenes : nullptr);
+    const std::int64_t edge = captureClock ? 400 : 300;
+    const float firstLevel = captureClock ? 0.5f : 0.25f;
     for (std::size_t frame = 0; frame < heard.size(); ++frame) {
         const float expected = frame < 100 || frame >= 700 ? 0.125f
-            : frame < 300 ? 0.25f : frame < 500 ? -0.375f : 0.0f;
+            : frame < static_cast<std::size_t>(edge) ? firstLevel : frame < 500 ? -0.375f : 0.0f;
         require(heard[frame] == expected, "heard the literal Session performance at its sample boundaries");
     }
     const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
     require(plan.error == LaunchCaptureError::None && plan.spans.size() == 3, "fold the live capture edges");
-    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate);
+    std::optional<SessionPerformanceClock> clock;
+    if (captureClock) {
+        require(scenes.size == 2 && scenes.edges[1].sample == edge && scenes.edges[1].tempoBpm == 180 &&
+            scenes.edges[1].signatureNumerator == 7 && scenes.edges[1].signatureDenominator == 8,
+            "collect the actual tempo and meter receipt at the performed scene boundary");
+        clock.emplace(SessionPerformanceClock{{0, 0}, {frames, endTick}, 120, std::span(scenes.edges).first(scenes.size)});
+    }
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, clock,
+        SessionPerformanceAudio{Precision::Float32, true});
     require(prepared.ok, prepared.error);
     const auto committed = clip_edit::commitPrepared(*project.store, prepared);
     require(committed.ok, committed.error);
     require(render(*project.store) == heard, "Arrangement capture matches 1000 live frames bit-for-bit");
+    const auto wroteClock = [&] {
+        auto& db = project.store->db();
+        return db.execAndGet("SELECT count(*) FROM tempo_map WHERE bpm=180").getInt() == 1 &&
+            db.execAndGet("SELECT count(*) FROM time_signature_map WHERE numerator=7 AND denominator=8").getInt() == 1;
+    };
+    require(!captureClock || wroteClock(), "the arrangement contains both performed clock changes");
     require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore,
             "one undo restores the original Arrangement PCM");
+    require(!captureClock || !wroteClock(), "the same Undo restores the authored clock");
     require(History(*project.store).redo().ok && render(*project.store) == heard,
             "one redo restores the captured waveform");
     require(project.store->close(), "close the captured project");
@@ -209,14 +243,17 @@ void proof() {
     StoreError openError{};
     project.store = Store::open(project.file, openError, true);
     require(project.store && render(*project.store) == heard, "read-only reopen preserves the rendered take");
+    require(!captureClock || wroteClock(), "read-only reopen preserves the performed Arrangement clock");
     require(callbackAllocations == 0 && audio::callbackFileIo == 0, "capture processing stays callback-safe");
-    std::puts("PASS -- captured 1000 real graph frames bit-identically through commit, redo and reopen");
+    std::puts(captureClock ? "PASS -- captured actual tempo and meter with 1000 bit-identical graph frames" :
+        "PASS -- captured 1000 real graph frames bit-identically through commit, redo and reopen");
 }
 } // namespace
 
 int main() {
     try {
-        proof();
+        proof(false);
+        proof(true);
         followThroughGraph();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());

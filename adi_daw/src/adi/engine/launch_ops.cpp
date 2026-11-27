@@ -97,7 +97,7 @@ LaunchOperationResult dispatch(Session& session, std::span<const Operation> oper
     }
     if (count == 0)
         return {};
-    return {session.postLaunchGesture(std::span(requests).first(count)) ? Status::Queued : Status::MailboxUnavailable,
+    return {session.submitLaunchGesture(std::span(requests).first(count)) ? Status::Queued : Status::MailboxUnavailable,
         0, {}};
 }
 } // namespace

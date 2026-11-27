@@ -202,11 +202,19 @@ EditScope materialScope(std::span<const std::int64_t> tracks,PlacementClock cloc
 
 clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& scope,PlacementBatch batch,
     const Options& options,clip_edit::CopyIds& ids,const char* label) {
+    return prepareCaptured(store, scope, std::move(batch), options, ids, label, nullptr);
+}
+
+clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& scope,PlacementBatch batch,
+    const Options& options,clip_edit::CopyIds& ids,const char* label,const edit::TimeMap* prospectiveClock) {
     clip_edit::PreparedEdit result;
     try {
         Read read(store.db());validateScope(store,scope,options);const auto base=clockBase(scope.clock);
         result.sourceFile=filename(store);result.options.expectHead.emplace(OpJournal(store).headSeq());
-        edit::TimeMap time(store.db());OpContext context{store,store.db()};
+        std::optional<edit::TimeMap> storedClock;
+        if (!prospectiveClock) storedClock.emplace(store.db());
+        const auto& time=prospectiveClock?*prospectiveClock:*storedClock;
+        OpContext context{store,store.db()};
         // Physical nanoseconds are this resolver request's single declared
         // clock. Public literal scope and descriptions retain their explicit
         // input clock; rounded tick projections cannot hide physical overlap.

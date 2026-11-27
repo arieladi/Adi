@@ -1590,6 +1590,89 @@ void storedSessionSlots() {
           f.instrument->balance() == 0, "stopping at sample 24208 clears all source ownership");
 }
 
+void storedSessionMidiCurves() {
+    constexpr std::int64_t quarter = 5765760, knotTicks = 48048, knotSample = 200;
+    const std::array<controllers::Point,2> volume{{{0,0,0.25,0,1,0},{0,knotTicks,0.75,0,0,0}}};
+    const std::array<controllers::Point,1> pedal{{{0,0,1,0,0,0}}};
+    const std::array<ExpressionPoint,2> points{{{0,1.0f,0,1,0,{}},{knotTicks,3.0f,0,0,0,{}}}};
+    for (const auto width : {257,4096}) {
+        Fixture f(48000,width);
+        test::applySessionSchema(f.store->db());
+        f.clip(11,0,2*quarter,4*quarter,64);
+        auto& db = f.store->db();
+        db.exec("INSERT INTO scenes(id,ord,name) VALUES(100,0,'Native data');"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,100,11);"
+                "INSERT INTO clip_launch(clip_id,launch_quant) VALUES(11,1);");
+        test::seedSessionMarker(db);
+        for (const auto number : {7,64}) {
+            const auto values = number == 7 ? std::span<const controllers::Point>(volume)
+                                            : std::span<const controllers::Point>(pedal);
+            const auto prepared = controllers::prepareWrite(*f.store,11,3,number,values);
+            if (!prepared.ok || !controllers::commitPrepared(*f.store,prepared).ok)
+                throw std::runtime_error("write ACTL for stored Session clip");
+        }
+        const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression,points);
+        {
+            SQLite::Statement curve(db,"INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(11,42,0,?)");
+            curve.bind(1,bytes.data(),static_cast<int>(bytes.size()));
+            curve.exec();
+        }
+        f.load();
+        check(f.session.problems().empty(),"loaded Session accepts native ACTL and AEXP programs");
+        LaunchRequest press;
+        press.track = 1;
+        press.scene = 100;
+        press.clip = 11;
+        press.incarnation = f.session.launchIncarnation();
+        check(f.session.postLaunchGesture(std::array{press}),"post literal stored MIDI curve slot press");
+        f.render();
+        auto& heard = f.instrument->heard;
+        const auto find = [&](std::size_t from, EventType type, std::int64_t sample,
+                              std::uint32_t param, double value) {
+            for (auto i = from; i < f.instrument->count; ++i) {
+                const auto& item = heard[i];
+                if (item.clock == sample && item.e.type == type && item.e.paramId == param &&
+                    std::abs(item.e.value-value) < 1e-10)
+                    return i;
+            }
+            return f.instrument->count;
+        };
+        const auto note = find(0,EventType::NoteOn,0,0,93.0/127.0);
+        const auto firstCC = find(0,EventType::Controller,0,7,0.25);
+        const auto firstPedal = find(0,EventType::Controller,0,64,1);
+        const auto initialPitch = find(0,EventType::NoteExpression,0,kNativeNoteExpressionUnits,1.3125);
+        check(note < f.instrument->count && firstCC < note && firstPedal < note &&
+              initialPitch > note && initialPitch < f.instrument->count &&
+              heard[initialPitch].e.noteId == heard[note].e.noteId,
+              "native CC precedes note, and AEXP pitch follows it with tuning and the same runtime ID");
+        check(find(0,EventType::Controller,64,7,0.41) < f.instrument->count &&
+              find(0,EventType::Controller,knotSample,7,0.75) < f.instrument->count,
+              "CC interpolation grid and off-grid knot are exact in the rendered Session");
+        check(find(0,EventType::NoteExpression,96,kNativeNoteExpressionUnits,2.2725) < f.instrument->count &&
+              find(0,EventType::NoteExpression,knotSample,kNativeNoteExpressionUnits,3.3125) < f.instrument->count,
+              "AEXP grid and off-grid knot are exact in the rendered Session");
+        if (note >= f.instrument->count) continue;
+        const auto voice = heard[note].e.noteId;
+        const auto beforeRefresh = f.instrument->count;
+        db.exec("UPDATE clips SET name='Same controller and note image' WHERE id=11");
+        f.refresh();
+        f.render();
+        check(f.instrument->count == beforeRefresh && f.instrument->balance() == 1,
+              "refresh keeps the held voice, completed expression, and sustain without sending another onset");
+        LaunchRequest back;
+        back.kind = LaunchRequestKind::BackToArrangement;
+        back.track = 1;
+        back.incarnation = f.session.launchIncarnation();
+        check(f.session.postLaunchGesture(std::array{back}),"give the track back to Arrangement");
+        const auto boundary = f.clock;
+        f.render();
+        const auto release = find(beforeRefresh,EventType::NoteOff,boundary,0,37.0/127.0);
+        check(release < f.instrument->count && heard[release].e.noteId == voice &&
+              find(beforeRefresh,EventType::Controller,boundary,64,0) < f.instrument->count &&
+              f.instrument->balance() == 0,"handover releases both the original voice and its pedal at the exact boundary");
+    }
+}
+
 } // namespace
 
 int main(int argc,char** argv){
@@ -1615,6 +1698,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "session-slots") storedSessionSlots(); }
     catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "session-curves") storedSessionMidiCurves(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
     catch(const std::exception& e) { check(false,e.what()); }
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");

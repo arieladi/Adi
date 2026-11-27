@@ -30,6 +30,10 @@ struct LaunchClipGainRange {
 /// One owner publishes gain edits and one driver applies them. The state
 /// survives compatible graph rebuilds; a new incarnation uses its own
 /// prepared gain. Workers receive the resulting immutable range gains.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324) // mailbox counters occupy separate cache lines
+#endif
 class LaunchClipGainEdits {
 public:
     explicit LaunchClipGainEdits(std::size_t maximumTracks);
@@ -69,5 +73,8 @@ private:
     std::uint64_t pcmRevision_ = 0;
     std::int64_t nextSample_ = -1;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace adi::engine
