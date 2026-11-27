@@ -109,7 +109,7 @@ void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offset
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
-        a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef ||
+        a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef || a.audioOutput != b.audioOutput ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
         a.clips != b.clips || a.takeClips != b.takeClips || // pointer identity: already shared
@@ -500,6 +500,16 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception &) {
     }
+    std::map<std::int64_t, std::int64_t> audioOutputs;
+    try {
+        SQLite::Statement routes(db,
+            "SELECT src_id,dst_id FROM routing WHERE src_kind='track' AND dst_kind='track' "
+            "AND kind='main' AND enabled<>0 ORDER BY id");
+        while (routes.executeStep())
+            audioOutputs.try_emplace(routes.getColumn(0).getInt64(), routes.getColumn(1).getInt64());
+    } catch (const std::exception&) {
+    }
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -539,6 +549,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.monitorMode = st.getColumn(16).getInt64();
             if (!st.getColumn(17).isNull())
                 t.inputRef = st.getColumn(17).getString();
+            if (const auto output = audioOutputs.find(t.id); output != audioOutputs.end())
+                t.audioOutput = output->second;
             if (groupRoots.contains(t.id))
                 t.freezeMode = "group";
             if (groupOwners.contains(t.id)) {

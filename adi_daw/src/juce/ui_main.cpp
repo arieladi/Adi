@@ -1942,6 +1942,14 @@ class AdiApplication final : public juce::JUCEApplication,
         root->physicalOutputChannels = [this] {
             return bridge_ ? bridge_->physicalOutputChannels() : std::nullopt;
         };
+        root->externalAudioOutputs = [this] { return std::span<const std::pair<int, std::string>>(audioOutputs_); };
+        root->validateAudioRouting = [this](const rows::Model &model, std::string &error) {
+            return document_->session().validateRouting(model, error);
+        };
+        root->configureMidiRouting = [this] {
+            if (applicationCommand(AppCommands::Settings))
+                settingsWindow_->panel().showPage("Tempo & MIDI");
+        };
         root->externalAudioInputs = [this] { return document_->externalAudioInputs(); };
         root->externalInputMeter = document_->externalInputMeter();
         root->configureExternalInputs = [this] {
@@ -3219,6 +3227,11 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->setExternalAudioInputs(readExternalAudioInputs(manager_, *settings_));
+        const auto outputs = bridge_ ? bridge_->physicalOutputChannels() : std::nullopt;
+        if (outputs)
+            audioOutputs_ = readExternalAudioOutputs(manager_, *settings_, *outputs);
+        else
+            audioOutputs_.clear();
         if (root_) {
             root_->mixer.repaint();
             root_->mixerView.repaint();
@@ -3432,6 +3445,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<PluginCatalogueService> catalogue_;
     std::string pluginSourcesKey_;
     bool discoverWakePending_ = false;
+    std::vector<std::pair<int, std::string>> audioOutputs_;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
     // The ports' one consumer (N60), declared before the port host that publishes to it and the
     // processor and the bridge that pump it, so it outlives all three.

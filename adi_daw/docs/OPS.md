@@ -2063,6 +2063,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `cue.setVolume` | t | S | — | P1 |
 | `cue.setTrack` | t | G | — | P1 |
 | `cue.setReference` | t | G | — | P1 |
+| `mixer.setMainOutput` | t | S | — | P1 |
 | `mixer.setSoloInPlace` | t | G | — | P1 |
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
@@ -2085,6 +2086,7 @@ Cue controls are saved performance commands in Transport scope, not undo steps:
 `cue.setMode {on}` selects Solo/Cue; `cue.setTrack {id,on}` changes the Cue selection
 without editing a track's stored solo flag. `cue.setOutput {first}` selects a
 zero-based stereo pair (even 0..62); `cue.setVolume {db}` accepts -150..+6 dB.
+`mixer.setMainOutput {first}` selects Main's stereo pair using the same numbering.
 `cue.setReference {on,id?}` selects/engages exclusive reference audition. Omitted
 id retains the target (or the native reference role when present). Invalid or
 non-audio/Main targets fail. `mixer.setSoloInPlace {on}` controls return audibility

@@ -2479,6 +2479,8 @@ const OpDescriptor kHandWritten[] = {
      kFCueTrack,false,true,cueTrackApply,nullptr,""},
     {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
      kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setMainOutput", "Select the stereo Main Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,mainOutputApply,nullptr,""},
     {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
      kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
 

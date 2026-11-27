@@ -2177,7 +2177,7 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
     if(!prepared.ok){error_=prepared.error;return false;}
     // Removing edges cannot introduce feedback or an unavailable tap. Keep
     // recovery possible when another stored key is already unavailable.
-    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_)) {
+    if(source && !prepared.requests.empty() && !session_.validateRouting(prepared.candidate,error_)) {
         error_=error_.find("cycle")!=std::string::npos
             ? "That sidechain would feed back into its own source. Choose an earlier tap or another channel."
             : "That sidechain source or input is unavailable. Choose another source or remove the unavailable key.";

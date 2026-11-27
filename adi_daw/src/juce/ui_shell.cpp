@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/engine/plan.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/track_image.hpp"
 #include "adi/media/media_ops.hpp"
@@ -47,6 +48,24 @@ constexpr int kRecentProjectLimit = 12;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
+bool audioDestination(const rows::Track &track, const rows::Track &target) {
+    if (track.id == target.id || track.kind == "master" || track.kind == "vca")
+        return false;
+    if (track.kind == "return" && track.parentId)
+        return *track.parentId == target.id && target.kind == "group";
+    return target.kind == "master" || target.kind == "audio" || target.kind == "instrument" ||
+           target.kind == "group" || target.kind == "return";
+}
+
+std::int64_t defaultAudioDestination(const rows::Model &model, const rows::Track &track) {
+    if (track.parentId)
+        return *track.parentId;
+    std::int64_t main = 0;
+    for (const auto &target : model.tracks)
+        if (target.kind == "master" && (main == 0 || target.id < main))
+            main = target.id;
+    return main;
+}
 bool flag(const settings::AppSettings &s, const char *key, bool fallback) {
     const auto v = s.get(key);
     return v.is_boolean() ? v.get<bool>() : fallback;
@@ -4179,6 +4198,104 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+std::vector<std::int64_t> AdiRootComponent::audioOutputChoices(std::int64_t id) const {
+    const auto model = rows::readModel(submitter_.store());
+    const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+    if (source == model.tracks.end())
+        return {};
+    const auto plan = engine::planGraph(model);
+    const auto start = plan.indexOf(id);
+    if (!start)
+        return {};
+    // A destination already feeding this source would close a loop. A return
+    // may have a feedback send to itself, which is outside the graph order.
+    std::vector<std::vector<std::size_t>> upstream(plan.nodes.size());
+    for (const auto &edge : plan.edges)
+        if (!edge.feedback && edge.keyDevice == 0)
+            upstream[edge.to].push_back(edge.from);
+    std::vector<bool> feedsSource(plan.nodes.size(), false);
+    std::vector<std::size_t> visit{*start};
+    feedsSource[*start] = true;
+    while (!visit.empty()) {
+        const auto node = visit.back();
+        visit.pop_back();
+        for (const auto upstreamNode : upstream[node])
+            if (!feedsSource[upstreamNode]) {
+                feedsSource[upstreamNode] = true;
+                visit.push_back(upstreamNode);
+            }
+    }
+    std::vector<std::int64_t> choices;
+    for (const auto &target : model.tracks) {
+        const auto index = plan.indexOf(target.id);
+        if (index && !feedsSource[*index] && audioDestination(*source, target))
+            choices.push_back(target.id);
+    }
+    std::ranges::sort(choices);
+    return choices;
+}
+
+bool AdiRootComponent::setTrackAudioOutput(std::int64_t id, std::int64_t destination) {
+    struct Prepared {
+        std::vector<OpRequest> requests;
+        CommitOptions options;
+    } prepared;
+    auto &store = submitter_.store();
+    try {
+        const auto baseline = [&] {
+            SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+            prepared.options.expectHead.emplace(OpJournal(store).headSeq());
+            const auto model = rows::readModel(store);
+            const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+            const auto target = std::ranges::find(model.tracks, destination, &rows::Track::id);
+            if (source == model.tracks.end() || target == model.tracks.end() || !audioDestination(*source, *target))
+                throw std::runtime_error("That Audio To destination is unavailable.");
+            const auto defaultDestination = defaultAudioDestination(model, *source);
+            std::vector<const rows::Routing *> previous;
+            for (const auto &route : model.routing)
+                if (route.enabled && route.kind == "main" && route.srcKind == "track" &&
+                    route.srcId == id && route.dstKind == "track")
+                    previous.push_back(&route);
+
+            const bool unchanged = previous.empty() ? destination == defaultDestination
+                : previous.size() == 1 && previous.front()->dstId == destination;
+            if (unchanged)
+                return engine::planGraph(model);
+            for (const auto *route : previous)
+                prepared.requests.push_back(track_edits_detail::op("routing.disconnect", {{"id", route->id}}, "Audio To"));
+            if (destination != defaultDestination) {
+                RowIds ids(store.db());
+                prepared.requests.push_back(track_edits_detail::op("routing.connect",
+                    {{"id", ids.next("routing")}, {"srcKind", "track"}, {"src", id}, {"dstKind", "track"},
+                     {"dst", destination}, {"kind", "main"}}, "Audio To"));
+            }
+            return engine::planGraph(model);
+        }();
+        if (prepared.requests.empty())
+            return true;
+        prepared.requests.front().selBefore = session_.advisory();
+        prepared.options.beforeCommit = [&](SQLite::Database &, std::int64_t, std::string &error) {
+            const auto candidate = rows::readModel(store);
+            const auto plan = engine::planGraph(candidate);
+            if (plan.cycle) {
+                error = "That Audio To destination would create a routing loop.";
+                return false;
+            }
+            for (const auto &problem : plan.problems)
+                if (std::ranges::find(baseline.problems, problem) == baseline.problems.end()) {
+                    error = problem;
+                    return false;
+                }
+            return !validateAudioRouting || validateAudioRouting(candidate, error);
+        };
+        return edited(submitter_.commitPrepared(std::move(prepared), [](Store &target, Prepared &edit, Actor) {
+            return OpJournal(target).commit(edit.requests, edit.options);
+        }));
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+}
+
 bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
     const auto current = view_.current();
     const auto *track = current ? current->findTrack(id) : nullptr;
@@ -4652,6 +4769,10 @@ bool AdiRootComponent::cueTrack(std::int64_t track) {
 bool AdiRootComponent::setCueVolume(double db) {
     const auto current = view_.current();
     return submitCue(current ? cueVolumeEdit(*current, db) : TrackEdit{}, "Cue Volume needs an open project.");
+}
+bool AdiRootComponent::setMainOutput(int firstChannel) {
+    const auto current = view_.current();
+    return submitCue(current ? mainOutputEdit(*current, firstChannel) : TrackEdit{}, "Main Out needs an open project.");
 }
 bool AdiRootComponent::setCueOutput(int firstChannel) {
     const auto current = view_.current();

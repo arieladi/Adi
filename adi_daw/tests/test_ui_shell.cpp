@@ -1132,7 +1132,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         auto outputOf = [&root](std::int64_t id) -> std::string {
             for (const auto &strip : root.mixer.strips())
                 if (strip->isVisible() && strip->track() == id)
-                    return strip->outputLabel();
+                    return strip->outputLabel().toStdString();
             return {};
         };
         check(outputOf(10) == "Main" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
@@ -16713,6 +16713,114 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
     check(configured == 2, "SC-23: both input menus reach Audio Settings");
     document->release();
 }
+void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "routing-menus.adi", true, {}, error);
+    check(document != nullptr, "SC-261: a project for the routing menus");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "routing");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.validateAudioRouting = [&](const rows::Model &model, std::string &why) {
+        return document->session().validateRouting(model, why);
+    };
+    const std::array<std::pair<int, std::string>, 2> pairs{{{0, "Speakers"}, {6, "Headphones"}}};
+    root.externalAudioOutputs = [&] { return std::span<const std::pair<int, std::string>>(pairs); };
+    root.physicalOutputChannels = [] { return engine::OutputChannelMap{0b11000011}; };
+    int configureMidi = 0;
+    root.configureMidiRouting = [&] { ++configureMidi; };
+    const auto current = root.current();
+    const auto trackOfKind = [&](std::string_view kind) -> std::int64_t {
+        for (const auto &track : current->tracks)
+            if (track->kind == kind)
+                return track->id;
+        return 0;
+    };
+    const auto audioId = trackOfKind("audio"), returnId = trackOfKind("return");
+    const auto midiId = trackOfKind("midi"), mainId = trackOfKind("master");
+    check(audioId && returnId && midiId && mainId, "SC-261: the project has the four strip types");
+    if (!audioId || !returnId || !midiId || !mainId)
+        return;
+    root.setSize(1440, 900);
+    if (root.state().mixerView)
+        root.command(AppCommands::ToggleMixerView);
+    if (!root.mixer.isVisible())
+        root.command(AppCommands::ToggleMixer);
+    if (!root.state().inOut)
+        root.command(AppCommands::ToggleInOut);
+    root.arrangement.geometry.resizeTrack(audioId, 90);
+    root.mark(DirtySet::Layout);
+    root.frame();
+    if (root.arrangement.geometry.reveal(root.reader(), audioId)) {
+        root.mark(DirtySet::Layout);
+        root.frame();
+    }
+
+    using Chooser = MixerStrip::RoutingChooser;
+    const auto row = [](MixerPanel &panel, std::int64_t id) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->isVisible() && strip->track() == id)
+                return strip.get();
+        return nullptr;
+    };
+    const auto choose = [&](MixerStrip *strip, juce::Point<float> at, Chooser chooser, const juce::String &marked,
+                            const juce::String &pick, const juce::String &omitted = {}) {
+        check(strip != nullptr, "SC-261: that track's chooser is visible");
+        if (!strip)
+            return;
+        int menus = 0;
+        strip->onRoutingMenu = [&](Chooser actual, juce::PopupMenu menu) {
+            ++menus;
+            check(actual == chooser, "SC-261: each painted chooser opens the corresponding menu");
+            bool sawMark = false, selected = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();) {
+                const auto &item = it.getItem();
+                sawMark |= item.text == marked && item.isTicked;
+                check(omitted.isEmpty() || item.text != omitted, "SC-261: unavailable routes are omitted");
+                if (item.text == pick && item.isEnabled && item.action) {
+                    item.action();
+                    selected = true;
+                }
+            }
+            check(sawMark && selected, "SC-261: the current choice is checked and an available action works");
+        };
+        strip->mouseDown(pressAt(*strip, at, juce::ModifierKeys::leftButtonModifier));
+        strip->onRoutingMenu = {};
+        check(menus == 1, "SC-261: a click dispatches one menu without showing a peer");
+    };
+    const auto *returnTrack = current->findTrack(returnId);
+    const auto returnName = juce::String::fromUTF8(returnTrack->name.c_str());
+    choose(row(root.mixer, audioId), {12.f, 59.f}, Chooser::AudioTo, "Main", returnName);
+    check(root.current()->findTrack(audioId)->audioOutput == returnId, "SC-261: Arrangement Audio To writes the engine edge");
+    check(!root.setTrackAudioOutput(returnId, audioId) && !root.current()->findTrack(returnId)->audioOutput,
+          "SC-261: a destination which would close a loop leaves the existing routing intact");
+    check(root.command(AppCommands::Undo) && !root.current()->findTrack(audioId)->audioOutput &&
+              root.command(AppCommands::Redo) && root.current()->findTrack(audioId)->audioOutput == returnId,
+          "SC-261: changing Audio To is one undoable edit");
+
+    // The lower Mixer View takes space away from the Arrangement. Test the
+    // two layouts in turn so each is displaying the track being clicked.
+    root.command(AppCommands::ToggleMixerView);
+    if (!root.state().mixerInOut)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.resizeMixerView(360);
+    root.frame();
+    choose(row(root.mixerView, audioId), {12.f, 110.f}, Chooser::AudioTo, returnName, "Main");
+    check(!root.current()->findTrack(audioId)->audioOutput, "SC-261: Mixer Audio To returns to the default");
+    choose(row(root.mixer, midiId), {12.f, 8.f}, Chooser::MidiFrom, "All Ins", "Configure...");
+    choose(row(root.mixerView, midiId), {12.f, 54.f}, Chooser::MidiChannel, "All Channels", "Configure...");
+    choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "No Output", "Configure...");
+    check(configureMidi == 3, "SC-261: each MIDI chooser can open MIDI Settings");
+    const auto undo = root.undoTitle(false);
+    choose(row(root.mixerView, mainId), {12.f, 125.f}, Chooser::MainOut, "Speakers", "Headphones", "3/4");
+    check(root.current()->cue.firstMainOutputChannel == 6 && root.current()->cue.firstOutputChannel == 0 &&
+          root.undoTitle(false) == undo, "SC-261: Main Out changes independently of Cue and Undo");
+    choose(row(root.mixerView, mainId), {12.f, 96.f}, Chooser::CueOut, "Speakers", "Headphones");
+    check(root.current()->cue.firstOutputChannel == 6, "SC-261: Cue Out still uses the configured output names");
+    document->release();
+}
 // SC-257: deferred Arrangement Record is UI intent until playback begins.
 void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string why;
@@ -26279,6 +26387,7 @@ int main(int argc, char **argv) {
     trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
+    trace("routingChooserMenus", [&] { routingChooserMenus(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
     trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });

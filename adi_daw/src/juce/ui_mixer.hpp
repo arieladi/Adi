@@ -141,10 +141,8 @@ class MixerStrip final : public juce::Component,
     // only, in the Mixer View, where a track has its Activator. One transport op at release or when
     // typed, outside undo.
     PrimaryButtonSlider cueVolume;
-    // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
-    void cueOutMenu();
-    // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
-    bool onCueOut(juce::Point<int> at) const noexcept;
+    enum class RoutingChooser { MidiFrom, MidiChannel, MidiTo, AudioTo, MainOut, CueOut };
+    std::function<void(RoutingChooser, juce::PopupMenu)> onRoutingMenu;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
@@ -187,7 +185,7 @@ class MixerStrip final : public juce::Component,
     bool hasAudio() const noexcept { return audio_; }
     // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Main, its
     // group ("Group"), or No Output.
-    const char *outputLabel() const noexcept;
+    juce::String outputLabel() const;
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
     const std::vector<std::unique_ptr<juce::TextButton>> &returnSwitches() const noexcept { return returnSwitches_; }
     // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
@@ -232,6 +230,16 @@ class MixerStrip final : public juce::Component,
     void selectTitle(std::int64_t track);
     bool cancelTitleDrag();
     void setDropPreview(bool);
+    std::optional<RoutingChooser> routingChooserAt(juce::Point<int>) const noexcept;
+    void showRoutingMenu(RoutingChooser);
+    juce::PopupMenu midiInputMenu(RoutingChooser);
+    juce::String midiInputLabel(RoutingChooser) const;
+    juce::PopupMenu midiOutputMenu();
+    juce::String midiOutputLabel() const;
+    juce::String audioDestinationLabel(const engine::TrackNode &) const;
+    std::span<const std::pair<int, std::string>> stereoOutputs() const;
+    juce::String stereoOutputLabel(RoutingChooser) const;
+    int selectedStereoOutput(RoutingChooser) const;
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
     void showAudioInputMenu();

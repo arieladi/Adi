@@ -576,6 +576,10 @@ class AdiRootComponent final : public juce::Component,
     // The current audio device's granted physical output channels, read on the message thread.
     // Empty when no device is running, and Cue Out offers the default 1/2.
     std::function<std::optional<engine::OutputChannelMap>()> physicalOutputChannels;
+    // Physical stereo pairs actually available in the audio device, with their configured names.
+    std::function<std::span<const std::pair<int, std::string>>()> externalAudioOutputs;
+    std::function<void()> configureMidiRouting;
+    std::function<bool(const rows::Model &, std::string &)> validateAudioRouting;
     std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
     std::shared_ptr<ExternalInputMeter> externalInputMeter;
     std::function<void()> configureExternalInputs;
@@ -857,6 +861,8 @@ class AdiRootComponent final : public juce::Component,
     // one batch.
     bool armTrack(std::int64_t id, bool add);
     bool setMonitor(std::int64_t id, Monitor mode);
+    std::vector<std::int64_t> audioOutputChoices(std::int64_t track) const;
+    bool setTrackAudioOutput(std::int64_t track, std::int64_t destination);
     bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
@@ -916,6 +922,7 @@ class AdiRootComponent final : public juce::Component,
     bool setCueMode(bool cue);
     bool cueTrack(std::int64_t track);
     bool setCueVolume(double db);
+    bool setMainOutput(int firstChannel);
     bool setCueOutput(int firstChannel);
     bool submitCue(TrackEdit edit, const char *needs);
     // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio

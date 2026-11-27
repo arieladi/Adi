@@ -70,8 +70,8 @@ constexpr std::array<std::pair<double, double>, 7> kScale{
     {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
 // One of Live's In/Out choosers: the shared chooser (language.png part D), its label and its arrow.
 // A dimmed one keeps its label dim; an empty one has no arrow: the button's box alone.
-void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
-    if (*label == 0) {
+void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &label, bool enabled) {
+    if (label.isEmpty()) {
         controls::button(g, r, controls::ButtonState::Rest);
         return;
     }
@@ -1032,7 +1032,7 @@ void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) co
 void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // The track's input and monitoring go above its output.
     const int rows = std::max(1, (getHeight() - 1) / 17);
-    auto chooser = [&](int row, const char *label, bool enabled) {
+    auto chooser = [&](int row, const juce::String &label, bool enabled) {
         if (row < rows)
             drawChooser(g, {static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13}, label, enabled);
     };
@@ -1043,8 +1043,8 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         return;
     }
     // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
-    chooser(0, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(1, midi_ ? "All Channels" : audioInputLabel(),
+    chooser(0, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String("Ext. In"), true);
+    chooser(1, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(audioInputLabel()),
             midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
     if (rows > 2)
         drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
@@ -1121,30 +1121,165 @@ std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept
         return std::nullopt;
     return monitorCellAt(5.f, 37.f, 6, at);
 }
-bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
-    return kind_ == "master" && panel_.vertical() && io_ > 0 &&
-           juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
-}
-void MixerStrip::cueOutMenu() {
-    // The physical pairs enabled on the device, with the saved pair ticked (MX-08).
-    const auto &channels = panel_.root.physicalOutputChannels;
-    const auto outputs = channels ? channels() : std::nullopt;
-    const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
-    juce::PopupMenu m;
-    for (int pair = 0; pair < engine::OutputChannelMap::maximumChannels; pair += 2) {
-        if (outputs ? outputs->packedPair(pair) < 0 : pair != 0)
-            continue;
-        m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
-                  [safe = SafePointer<MixerStrip>(this), pair] {
-                      if (safe)
-                          safe->panel_.root.setCueOutput(pair);
-                  });
+std::optional<MixerStrip::RoutingChooser> MixerStrip::routingChooserAt(juce::Point<int> at) const noexcept {
+    const bool vertical = panel_.vertical();
+    if (vertical ? io_ == 0 : !showsInOut())
+        return std::nullopt;
+    const auto on = [&](int mixerY, int row) {
+        if (vertical)
+            return juce::Rectangle<int>(4, kMixerTop + mixerY, getWidth() - 10, 13).contains(at);
+        const int rows = std::max(1, (getHeight() - 1) / 17);
+        return row < rows && juce::Rectangle<int>(5, 3 + 17 * row, 70, 13).contains(at);
+    };
+    if (kind_ == "master") {
+        if (vertical && on(73, 0))
+            return RoutingChooser::CueOut;
+        if (on(103, 0))
+            return RoutingChooser::MainOut;
+        return std::nullopt;
     }
-    if (m.getNumItems() == 0) {
-        panel_.root.say("Enable a stereo output pair in Settings > Audio.");
+    if (kind_ == "group" || kind_ == "return")
+        return on(87, 0) ? std::optional{RoutingChooser::AudioTo} : std::nullopt;
+    if (midi_) {
+        if (on(15, 0))
+            return RoutingChooser::MidiFrom;
+        if (on(31, 1))
+            return RoutingChooser::MidiChannel;
+    }
+    if (on(87, 3))
+        return audio_ ? RoutingChooser::AudioTo : RoutingChooser::MidiTo;
+    return std::nullopt;
+}
+
+std::span<const std::pair<int, std::string>> MixerStrip::stereoOutputs() const {
+    if (panel_.root.externalAudioOutputs)
+        return panel_.root.externalAudioOutputs();
+    static const std::array<std::pair<int, std::string>, 1> defaultOutputs{{{0, "1/2"}}};
+    return defaultOutputs;
+}
+
+int MixerStrip::selectedStereoOutput(RoutingChooser chooser) const {
+    const auto *project = panel_.root.reader().get();
+    if (!project)
+        return 0;
+    return chooser == RoutingChooser::MainOut ? project->cue.firstMainOutputChannel : project->cue.firstOutputChannel;
+}
+
+juce::String MixerStrip::stereoOutputLabel(RoutingChooser chooser) const {
+    const int first = selectedStereoOutput(chooser);
+    if (first == 0 && !panel_.root.externalAudioOutputs)
+        return "1/2";
+    const auto pairs = stereoOutputs();
+    const auto selected = std::ranges::find(pairs, first, &std::pair<int, std::string>::first);
+    if (selected != pairs.end())
+        return juce::String::fromUTF8(selected->second.c_str());
+    const auto pairName = juce::String(first + 1) + "/" + juce::String(first + 2);
+    return chooser == RoutingChooser::CueOut ? pairName : pairName + " (Unavailable)";
+}
+
+juce::String MixerStrip::midiInputLabel(RoutingChooser chooser) const {
+    return chooser == RoutingChooser::MidiFrom ? "All Ins" : "All Channels";
+}
+juce::PopupMenu MixerStrip::midiInputMenu(RoutingChooser chooser) {
+    juce::PopupMenu menu;
+    menu.addItem(midiInputLabel(chooser), false, true, [] {});
+    return menu;
+}
+
+juce::String MixerStrip::midiOutputLabel() const { return "No Output"; }
+
+juce::PopupMenu MixerStrip::midiOutputMenu() {
+    juce::PopupMenu menu;
+    menu.addItem(midiOutputLabel(), false, true, [] {});
+    return menu;
+}
+
+void MixerStrip::showRoutingMenu(RoutingChooser chooser) {
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto configure = [&](juce::PopupMenu &menu, bool midi) {
+        const auto &handler = midi ? panel_.root.configureMidiRouting : panel_.root.configureExternalInputs;
+        menu.addSeparator();
+        menu.addItem("Configure...", static_cast<bool>(handler), false, [safe, midi] {
+            if (safe) {
+                const auto &action = midi ? safe->panel_.root.configureMidiRouting : safe->panel_.root.configureExternalInputs;
+                if (action)
+                    action();
+            }
+        });
+    };
+    juce::PopupMenu menu;
+    switch (chooser) {
+    case RoutingChooser::MidiFrom:
+    case RoutingChooser::MidiChannel:
+        menu = midiInputMenu(chooser);
+        configure(menu, true);
+        break;
+    case RoutingChooser::MidiTo:
+        menu = midiOutputMenu();
+        configure(menu, true);
+        break;
+    case RoutingChooser::MainOut:
+    case RoutingChooser::CueOut: {
+        const auto outputs = stereoOutputs();
+        const auto &physicalChannels = panel_.root.physicalOutputChannels;
+        const auto grant = physicalChannels ? physicalChannels() : std::nullopt;
+        const int first = selectedStereoOutput(chooser);
+        const auto addPair = [&](int pair, const juce::String &name) {
+            menu.addItem(name, true, pair == first, [safe, pair, chooser] {
+                if (safe) {
+                    if (chooser == RoutingChooser::MainOut)
+                        safe->panel_.root.setMainOutput(pair);
+                    else
+                        safe->panel_.root.setCueOutput(pair);
+                }
+            });
+        };
+        if (chooser == RoutingChooser::CueOut && physicalChannels) {
+            for (int pair = 0; pair < engine::OutputChannelMap::maximumChannels; pair += 2) {
+                if (grant ? grant->packedPair(pair) < 0 : pair != 0)
+                    continue;
+                const auto named = std::ranges::find(outputs, pair, &std::pair<int, std::string>::first);
+                addPair(pair, named == outputs.end() ? juce::String(pair + 1) + "/" + juce::String(pair + 2)
+                                                     : juce::String::fromUTF8(named->second.c_str()));
+            }
+            if (menu.getNumItems() == 0 && !onRoutingMenu) {
+                panel_.root.say("Enable a stereo output pair in Settings > Audio.");
+                return;
+            }
+        } else {
+            for (const auto &output : outputs)
+                if (!grant || grant->packedPair(output.first) >= 0)
+                    addPair(output.first, juce::String::fromUTF8(output.second.c_str()));
+        }
+        if (menu.getNumItems() == 0)
+            menu.addItem("No enabled stereo outputs", false, false, [] {});
+        configure(menu, false);
+        break;
+    }
+    case RoutingChooser::AudioTo: {
+        const auto *track = panel_.root.reader().findTrack(track_);
+        bool hasChoice = false;
+        for (const auto id : panel_.root.audioOutputChoices(track_))
+            if (const auto *destination = panel_.root.reader().findTrack(id)) {
+                const auto label = audioDestinationLabel(*destination);
+                const auto current = track && track->audioOutput ? *track->audioOutput : track ? track->parent : 0;
+                const bool selected = current == id || (current == 0 && destination->kind == "master");
+                menu.addItem(label, true, selected, [safe, source = track_, id] {
+                    if (safe)
+                        safe->panel_.root.setTrackAudioOutput(source, id);
+                });
+                hasChoice = true;
+            }
+        if (!hasChoice)
+            menu.addItem("No available destinations", false, false, [] {});
+        break;
+    }
+    }
+    if (onRoutingMenu) {
+        onRoutingMenu(chooser, std::move(menu));
         return;
     }
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
     // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
@@ -1168,38 +1303,42 @@ juce::PopupMenu MixerStrip::monitorMenu() {
                  [this, id = track_, on] { panel_.root.setKeepMonitoringLatency(id, !on); });
     return menu;
 }
-const char *MixerStrip::outputLabel() const noexcept {
-    // Main plays to the outputs; a MIDI track with no instrument to nothing (No Output); a track in a
-    // group to its group, as Live assigns a grouped track's Audio To (manual 18.3), shown as Live's
-    // "Group"; every other track to Main. ADI's fixed routing: the snapshot carries none yet
-    // (look-live11 row 5).
+juce::String MixerStrip::audioDestinationLabel(const engine::TrackNode &destination) const {
+    if (destination.kind == "master")
+        return "Main";
+    if (const auto *track = panel_.root.reader().findTrack(track_); track && track->parent == destination.id)
+        return "Group";
+    return juce::String::fromUTF8(destination.name.c_str());
+}
+juce::String MixerStrip::outputLabel() const {
     if (kind_ == "master")
-        return "1/2";
+        return stereoOutputLabel(RoutingChooser::MainOut);
     if (!audio_)
-        return "No Output";
+        return midiOutputLabel();
+    if (const auto *track = panel_.root.reader().findTrack(track_); track && track->audioOutput)
+        if (const auto *target = panel_.root.reader().findTrack(*track->audioOutput))
+            return audioDestinationLabel(*target);
     return inGroup_ ? "Group" : "Main";
 }
 void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
     // records from, its monitoring, where it plays to, each under its label; a return's output only,
-    // level with the tracks'; Main's Cue Out and Main Out. ADI's fixed routing, as the track
-    // controls' column shows it (the routing is not in the snapshot yet, look-live11 row 5).
+    // level with the tracks'; Main's Cue Out and Main Out.
     const int top = kMixerTop, w = getWidth() - 2;
     auto label = [&](int y, const char *text) {
         g.setColour(look::text);
         g.setFont(look::font(look::fontBody, true));
         g.drawText(text, 5, top + y, w - 10, 13, juce::Justification::centredLeft);
     };
-    auto chooser = [&](int y, const char *text, bool enabled) {
+    auto chooser = [&](int y, const juce::String &text, bool enabled) {
         drawChooser(g, {4.f, static_cast<float>(top + y), static_cast<float>(w - 8), 13.f}, text, enabled);
     };
     if (kind_ == "master") {
         // Live's Cue Out (manual 18.6; MX-08): the stereo pair the cued tracks play to, chosen here.
         label(60, "Cue Out");
-        const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
-        chooser(73, (std::to_string(first + 1) + "/" + std::to_string(first + 2)).c_str(), true);
+        chooser(73, stereoOutputLabel(RoutingChooser::CueOut), true);
         label(90, "Main Out");
-        chooser(103, "1/2", true);
+        chooser(103, stereoOutputLabel(RoutingChooser::MainOut), true);
         return;
     }
     if (kind_ == "return" || kind_ == "group") {
@@ -1209,8 +1348,8 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         return;
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
-    chooser(15, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(31, midi_ ? "All Channels" : audioInputLabel(),
+    chooser(15, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String("Ext. In"), true);
+    chooser(31, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(audioInputLabel()),
             midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
     label(46, "Monitor");
     drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
@@ -1415,14 +1554,15 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             panel_.root.say("This send is off. Right-click it for Enable Send.");
         return;
     }
-    // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
-    if (e.eventComponent == this && onCueOut(e.getPosition())) {
-        cueOutMenu();
-        return;
-    }
-    if (e.eventComponent == this && onAudioInput(e.getPosition())) {
-        showAudioInputMenu();
-        return;
+    if (e.eventComponent == this) {
+        if (onAudioInput(e.getPosition())) {
+            showAudioInputMenu();
+            return;
+        }
+        if (const auto chooser = routingChooserAt(e.getPosition())) {
+            showRoutingMenu(*chooser);
+            return;
+        }
     }
     // A click on a Mixer View strip's title bar selects its track, as a click on its header does
     // (Live 12 manual 18.1): Ctrl/Cmd+click picks it apart or lets it go, Shift+click reaches across

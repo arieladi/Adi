@@ -875,7 +875,7 @@ SourceFn Session::playbackSources(ClipPlayback* clipSource, MidiClips* midiSourc
     };
 }
 
-bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error) {
+bool Session::validateRouting(const rows::Model& candidate,std::string& error) {
     RealizeOptions options;options.channels=spec_.channels;
     options.devicesFor=[this](std::int64_t track){return trackChain(track);};
     options.keyTapFor=[this](std::int64_t track,Tap tap)->std::optional<Node*> {

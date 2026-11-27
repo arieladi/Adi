@@ -662,6 +662,32 @@ void filterListenLifecycle() {
     prepare(96000.);
     check(run(true), "96 kHz monitor follows its prepared weighting");
 }
+void hardwareMainOut() {
+    Fixture f;
+    f.main.rightFactor = -0.5;
+    check(f.op("mixer.setMainOutput", {{"first", 6}}) && f.load(Precision::Float64),
+          "SC-261: the physical Main Out pair is saved");
+    Block block;
+    block.io.outputChannels.enabled = 0b11000011; // physical 1/2 and 7/8, packed into four pointers
+    f.process(block);
+    check(near(block.narrow[2][511], .075) && near(block.wide[3][511], .0375) &&
+          block.wide[0][511] == 0 && block.narrow[1][511] == 0,
+          "SC-261: stereo Main follows the selected pair on a device with sparse physical outputs");
+    check(f.op("cue.setOutput", {{"first", 6}}) &&
+          f.op("cue.setReference", {{"on", true}, {"id", 2}}),
+          "SC-261: Cue and reference may share the remapped Main pair");
+    f.process(block);
+    check(near(block.wide[2][511], 0.5) && near(block.narrow[3][511], 0.5) && block.wide[0][511] == 0,
+          "SC-261: shared Main and Cue play the exclusive reference once");
+    Fixture offline;
+    offline.main.rightFactor = -0.5;
+    check(offline.op("mixer.setMainOutput", {{"first", 6}}) &&
+          offline.op("cue.setReference", {{"on", true}, {"id", 2}}) &&
+          offline.load(Precision::Float64, false, true), "SC-261: the project renders without performance settings");
+    offline.process(block);
+    check(near(block.wide[0][511], .075) && near(block.wide[1][511], .0375) && block.wide[2][511] == 0,
+          "SC-261: physical Main Out and reference never change the exported channels");
+}
 void inactiveBits() {
     CueMonitor monitor;CueSettings settings;monitor.publish(settings,48000,64,2,true);GraphHost graph;Block b(64);
     for(auto& channel:b.narrow)for(auto& sample:channel)sample=std::bit_cast<float>(std::uint32_t{0x80000000u});
@@ -680,11 +706,12 @@ void allocation() {
     Fixture f;f.effects(100);f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
     f.op("cue.setOutput",{{"first",2}});f.op("cue.setReference",{{"on",true},{"id",2}});f.op("transport.setMetronome",{{"on",true}});
     f.op("transport.setMetronomeOptions", {{"sound", 2}, {"eighthNotes", true}});
+    f.op("mixer.setMainOutput", {{"first", 2}});
     check(f.load(Precision::Float64),"allocation fixture loads off-thread");f.session.transport().play();Block b(128);
     allocations.store(0);countAllocations.store(true);for(int i=0;i<50;++i)f.process(b);countAllocations.store(false);
     check(allocations.load()==0,"Cue graph copy, reference ramp, volume and metronome allocate nothing");
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

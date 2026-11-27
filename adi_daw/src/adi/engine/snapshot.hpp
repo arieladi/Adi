@@ -158,6 +158,8 @@ struct TrackNode {
     std::optional<ReturnSendTap> returnSendTap{};
     bool recordArmed = false;
     std::int64_t monitorMode = 0;
+    // The enabled track-to-track main edge; absent follows the parent or Main.
+    std::optional<std::int64_t> audioOutput;
     std::optional<std::string> inputRef;
     std::vector<std::shared_ptr<const ClipNode>> takeClips; // same ordering; each node names its lane
 };
