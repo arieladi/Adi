@@ -26,7 +26,7 @@ The full run caught an obsolete placeholder diagnostic after plug-in recovery an
 
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
-The original Export tip and the first two verified Edit items are included. The Edit report at `4ec51be5437f930a7fdeaab773b39727a6e5a596` lists SC-175 and later implementation branches as local. Integrate the next verified, published tip when it appears.
+The original Export tip and the first two verified Edit items are included. The Edit report at `3a299853ca00e5b858a42376de1778c50b0b3b77` lists SC-175 and later implementation branches as local. Integrate the next verified, published tip when it appears.
 ## Follow-up fixes
 
 | Queue item | Integration head | Change and verification |
@@ -46,6 +46,7 @@ SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snaps
 |---|---|---|
 | Browser chain `0cb6389f161984b93807752ae09498d3639fe713` on `basics/integrate-2` | `57b10a95a4b4cf72cf45625de8db846c64d4bc2d` | Advanced the base to verified `a7d02bcf` in `b62ad77f`. Resolved four Browser and shell conflicts in favor of the owner’s SC-121, SC-120 and SC-122 code and tests. The earlier integration implementations of those same items are superseded. Kept the three landing portability edits and the owner’s startup references, label persistence, indexed search and independent Hot-Swap search text. Debug JUCE/Pd built with warnings as errors. The five validators, library-query and Settings suites, all 18 no-display window suites and all three acceptance suites passed. |
 | Browser chain `f2c761cd85dc60015503117ee41596134fb9f7c4` | `5956fe2fab7b7f659d19504e72a09d276632d442` | Merged the owner’s scrolling, Places, directory browsing, streaming Cue preview and first-selection preview. Seven conflicts combined Safety’s app and shell actions with Browser. Kept the two new Browser command numbers and assigned the new Manage Project Files command 29068. Updated the three exact PC keymaps and retained both sets of tests. App and player built with warnings as errors. The five validators, all five affected core suites, all 18 no-display window suites and all three acceptance suites passed. The shell passed again after the folder fixture’s shadowed variables were renamed. |
+| Browser chain `6286d5a3777fa8a82ddd9b53e91c3b192820d9b7` | `0ac90cf615d55599ecb939b0b156033d4b11a769` | Merged physical Cue mapping and unavailable-output notices, plus the working-label roster and saved Sounds presets. Two shell conflicts combined the new Cue warning with Safety’s Playback Issues button and layout. App and player built, all five validators passed, and the five affected library, Settings, Sample Preview and Cue suites and all 18 no-display window suites passed. |
 
 ## Safety on integrate-2
 
