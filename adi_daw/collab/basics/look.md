@@ -26,6 +26,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-63 | `basics/look-chain` at `107f1cec` | Publish MIDI note activity and draw it in Arrangement and Mixer meters. Engine and window seats. | Peerless short-note, held-note, stop and track isolation checks passed. The separate MIDI engine suite passed 586 checks. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-04 | `basics/look-chain` at `88b15ee2` | Compute selection duration between tempo-mapped endpoints. Window seat. | Peerless selections spanning and following a tempo change, backwards selection and marker time passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-109 | — | High DPI and second-monitor window walk. Window seat. | Requires a real second display and a window-driving session. | Blocked on the window environment |
+| SC-266 | `basics/look-chain` at `040e4116` | Identify frozen tracks in Arrangement and Mixer. Per-track load awaits a track-attributed timing publication. Window seat. | Focused red/green peerless freeze and thaw probes passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -194,6 +195,10 @@ The MIDI dots keep their bounds. In a Compact Arrangement strip with I/O enabled
 
 At 1440 × 900 Compact, the Status Bar's message well stays `(35, 870, 1021, 22)` and its text box `(43, 870, 1005, 22)`. A selection from bar 2 to bar 4, through the test's 120 to 60 BPM change at bar 3, changes `Duration: 0:04` to `Duration: 0:06`. A selection wholly after the change goes from `0:02` to `0:04`. The marker at bar 4 still reads absolute time `0:08`.
 
+### SC-266
+
+The focused 1440 × 1100 Compact fixture adds a frozen badge at Arrangement header-local `(81, 267, 11, 11)`. Its title box goes from `(25, 266, 68, 15)` to `(25, 266, 54, 15)`. The inline mixer adds a rail at `(191, 1, 2, 84)` in a 194 × 88 strip. In the 95 × 260 Mixer View strip the badge is `(79, 3, 11, 11)` and title width goes from 85 to 71. The three sampled colours go from `#eb4a41`, `#363636` and `#eb4a41` to the frozen colour `#4fc3ea`, then return to their original values on thaw. The approved sheet has no frozen-track example.
+
 ## For the director
 
 Confirm the Control Bar gesture rate and wheel feel in a real window when the window-driving session reaches the fields. Recommendation is to start with the implemented one step per wheel event and one per four logical px of drag.
@@ -203,3 +208,5 @@ Does a stock Live 12 Set start with Follow lit? Recommendation is to retain Off 
 The separate MIDI SC-71 candidate opens with a fixed 1/16 grid. Recommendation is to retain Adaptive Medium for automatic zoom following until the Live reading settles the initial setting, and to land one implementation of the Note Editor marks.
 
 SC-109 requires the window-driving session to exercise the second monitor, including the CLAP window path noted in the row. Recommendation is to carry the VST3 walk forward and add a two-monitor CLAP check there.
+
+SC-266’s per-track load remains blocked on the engine metric tracked by DEV-24 and MX-28. Recommendation is to use callback timing when that publication becomes available.
