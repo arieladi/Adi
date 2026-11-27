@@ -424,6 +424,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // background owner. Folder changes cancel any superseded request and queue the new list on the
     // same owner, so a walk never blocks Settings or races another writer of the same index. An
     // empty User Library setting uses the default folder.
+    static constexpr auto kLibraryRescanStatus = "Rescanning the library.";
     struct LibraryRequest {
         std::vector<LibraryFolder> folders;
         bool hashing = false;
@@ -493,13 +494,13 @@ class AdiApplication final : public juce::JUCEApplication,
             });
         });
     }
-    void startLibrary() {
+    void startLibrary(bool rescan = false) {
         const auto file = appdata::libraryIndexFile();
         const auto user = settings_->get("library.userLibrary");
         const auto added = settings_->get(kContentFolders);
         const auto background = settings_->get("library.backgroundIndexing");
         const auto preferences = settings::Value::array({user, added, background});
-        if (preferences == libraryPreferences_)
+        if (!rescan && preferences == libraryPreferences_)
             return;
         libraryPreferences_ = preferences;
         std::vector<LibraryFolder> folders;
@@ -531,15 +532,21 @@ class AdiApplication final : public juce::JUCEApplication,
                 }
         if (file.empty() || smokeOutput_ != juce::File{} || (folders.empty() && !libraryOwner_)) {
             libraryReady_ = true;
-            if (root_)
+            if (root_) {
                 root_->browser.setLibrarySnapshot(library_, true);
+                if (rescan)
+                    root_->say(file.empty() ? "The library index location is unavailable."
+                                            : "No sample folders are available to rescan.");
+            }
             return;
         }
         if (!libraryOwner_)
             startLibraryWorker(file);
         libraryReady_ = false;
-        if (root_)
+        if (root_) {
             root_->browser.setLibrarySnapshot(library_, false);
+            if (rescan) root_->say(kLibraryRescanStatus);
+        }
         {
             std::lock_guard lock(libraryOwner_->mutex);
             libraryOwner_->cancel.request_stop();
@@ -608,13 +615,15 @@ class AdiApplication final : public juce::JUCEApplication,
                                                     error = std::move(searchError)] {
                         if (stop.stop_requested() || juce::JUCEApplicationBase::getInstance() != this)
                             return;
-                        library_ = found;
+                        if (found) library_ = found;
                         libraryReady_ = true;
                         if (root_) {
                             root_->browser.setLibrarySnapshot(library_, true);
                             const auto &problem = found ? found->listing().error : error;
                             if (!problem.empty())
                                 root_->say(problem);
+                            else if (root_->error() == kLibraryRescanStatus)
+                                root_->say("Library rescan complete.");
                         }
                     });
             }
@@ -1446,6 +1455,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->browser.restoreLabel(*settings_);
         root->browser.setLibrarySnapshot(library_, libraryReady_);
+        root->browser.requestLibraryRescan = [this] { startLibrary(true); };
         root->browser.requestAddFolder = [this] { chooseBrowserFolder(); };
         root->browser.addFolders = [this](std::span<const std::filesystem::path> folders) {
             editBrowserFolders(folders, ContentFolderEdit::Add);

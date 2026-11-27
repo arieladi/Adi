@@ -283,6 +283,8 @@ int BrowserPanel::firstItem() const {
     return -1;
 }
 void BrowserPanel::selectedRowsChanged(int row) {
+    if (restoringListSelection_)
+        return;
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
         lastSelected_ = row;
         updatePreviewSelection();
@@ -366,11 +368,16 @@ void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     repaint();
 }
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
+    ready_ = ready;
+    if (library_ == library) {
+        if (ready_) pendingLabel_.clear();
+        return;
+    }
     const auto priorLabel = labelKey(selected_);
     const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
     const bool keepInView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
-    library_ = std::move(library);
-    ready_ = ready;
+    // The old rows still borrow these sample and folder identities until the refill finishes.
+    const auto priorLibrary = std::exchange(library_, std::move(library));
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
     auto addFolder = std::move(sidebar_.back());
@@ -398,8 +405,9 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     setSidebarScroll(sidebarScroll_);
     if (keepInView)
         revealSidebarSelection();
-    refill();
-    if (!hotSwap_ && labelKey(selected_) != priorLabel)
+    const bool sameLabel = labelKey(selected_) == priorLabel;
+    refill(-1, hotSwap_ || sameLabel);
+    if (!hotSwap_ && !sameLabel)
         setPreviewRowShown(false);
     repaint();
 }
@@ -457,7 +465,45 @@ void BrowserPanel::appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folde
         rows_.push_back({file, nullptr, {}, nullptr, depth});
     }
 }
-void BrowserPanel::refill(int selectRow) {
+namespace {
+const std::filesystem::path *browserRowPath(const BrowserPanel::Row &row) {
+    if (row.file) return &row.file->path;
+    if (row.folder) return &row.folder->path;
+    if (row.savedPreset) return &row.savedPreset->path;
+    return nullptr;
+}
+const void *browserCatalogueRow(const BrowserPanel::Row &row) {
+    return row.device ? static_cast<const void *>(row.device) : row.plugin;
+}
+struct BrowserListPosition {
+    std::unordered_set<std::filesystem::path> paths;
+    std::unordered_set<const void *> catalogue;
+    const std::filesystem::path *primaryPath = nullptr;
+    const void *primaryCatalogue = nullptr;
+    juce::Point<int> scroll;
+};
+} // namespace
+void BrowserPanel::refill(int selectRow, bool keepListPosition) {
+    std::optional<BrowserListPosition> previous;
+    if (keepListPosition) {
+        auto &position = previous.emplace();
+        position.scroll = list.getViewport()->getViewPosition();
+        const int primary = list.getLastRowSelected();
+        const auto selection = list.getSelectedRows();
+        for (int i = 0; i < selection.getNumRanges(); ++i) {
+            const auto range = selection.getRange(i);
+            for (int row = range.getStart(); row < range.getEnd(); ++row) {
+                const auto &item = rows_[static_cast<std::size_t>(row)];
+                if (const auto *path = browserRowPath(item)) {
+                    position.paths.insert(*path);
+                    if (row == primary) position.primaryPath = path;
+                } else if (const auto *catalogue = browserCatalogueRow(item)) {
+                    position.catalogue.insert(catalogue);
+                    if (row == primary) position.primaryCatalogue = catalogue;
+                }
+            }
+        }
+    }
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
@@ -608,11 +654,37 @@ void BrowserPanel::refill(int selectRow) {
             rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
-    list.updateContent();
-    list.deselectAllRows();
-    lastSelected_ = -1;
-    if (selectRow >= 0)
-        list.selectRow(selectRow);
+    if (previous) {
+        juce::SparseSet<int> selected;
+        int primary = -1;
+        if (!previous->paths.empty() || !previous->catalogue.empty())
+            for (int row = 0; row < static_cast<int>(rows_.size()); ++row) {
+                const auto &item = rows_[static_cast<std::size_t>(row)];
+                const auto *path = browserRowPath(item);
+                const auto *catalogue = browserCatalogueRow(item);
+                if ((path && previous->paths.contains(*path)) || (catalogue && previous->catalogue.contains(catalogue))) {
+                    selected.addRange({row, row + 1});
+                    if ((path && previous->primaryPath && *path == *previous->primaryPath) ||
+                        (catalogue && catalogue == previous->primaryCatalogue))
+                        primary = row;
+                }
+            }
+        {
+            const juce::ScopedValueSetter restoring(restoringListSelection_, true);
+            list.updateContent();
+            if (primary >= 0) list.selectRow(primary, true);
+            list.setSelectedRows(selected, juce::dontSendNotification);
+            lastSelected_ = list.getLastRowSelected();
+        }
+        updatePreviewSelection();
+        list.getViewport()->setViewPosition(previous->scroll);
+    } else {
+        list.updateContent();
+        list.deselectAllRows();
+        lastSelected_ = -1;
+        if (selectRow >= 0)
+            list.selectRow(selectRow);
+    }
     list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }

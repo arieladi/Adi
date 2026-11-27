@@ -213,7 +213,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::string labelKey(int) const;
     int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
-    void refill(int selectRow = -1);
+    void refill(int selectRow = -1, bool keepListPosition = false);
     void appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder>, std::size_t folder, int depth,
                          const std::set<std::filesystem::path> &open);
     bool folderArrow(int row, bool right);
@@ -237,6 +237,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool canRepeatPreview_ = false;
     int firstItem() const;
     int lastSelected_ = -1;
+    bool restoringListSelection_ = false;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
     std::optional<HotSwapFilter> hotSwap_;

@@ -7332,6 +7332,92 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
               syncedListing.places[1].volumeId != copy.id && syncedListing.samples.size() == 2,
           "SC-132: a synced marker keeps its portable identity and both local folders remain browsable");
 }
+void browserLibraryRescan(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto fixture = dir / "browser-rescan";
+    const auto place = fixture / "User Library";
+    const auto loops = place / "Loops";
+    std::filesystem::create_directories(loops);
+    for (int take = 100; take < 140; ++take)
+        std::ofstream(loops / ("Loop " + std::to_string(take) + ".wav")) << "sample";
+    std::string error;
+    auto index = library::Index::open(fixture / "library.sqlite", error, false);
+    auto document = ProjectDocument::open(fixture / "rescan.adi", true, {}, error);
+    check(index && document, "SC-131: create a project and library index for rescan");
+    if (!index || !document) return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "rescan");
+    root->setSize(1200, 720);
+    auto &browser = root->browser;
+    int previewSelections = 0;
+    root->selectSamplePreview = [&](std::filesystem::path) { ++previewSelections; };
+    root->playSamplePreview = [](std::filesystem::path, double) {};
+    const std::vector<LibraryFolder> folders{{"User Library", place, true}};
+    const auto scan = [&](std::stop_token stop = {}) {
+        library::MarkerVolumeProvider volumes;
+        return std::make_shared<const BrowserLibrarySnapshot>(scanLibrary(*index, folders, volumes, stop));
+    };
+    const auto initial = scan();
+    browser.setLibrarySnapshot(initial);
+    const auto user = std::ranges::find(browser.sidebar(), juce::String("User Library"), &BrowserPanel::Entry::name);
+    check(user != browser.sidebar().end(), "SC-131: locate the User Library Place");
+    if (user == browser.sidebar().end()) return;
+    const int userRow = static_cast<int>(user - browser.sidebar().begin());
+    browser.choose(userRow);
+    check(browser.load(0) && browser.shown().size() == 40, "SC-131: expand the Loops folder in the library");
+    browser.search.setText("loop", false);
+    browser.search.onTextChange();
+    const bool searchable = browser.rows().size() == 40 && browser.rows()[13].file && browser.rows()[14].file;
+    check(searchable, "SC-131: the query lists the existing samples in its Place");
+    if (!searchable) return;
+    browser.list.selectRow(13, false, true);
+    browser.list.selectRow(14, false, false);
+    const auto selected = browser.rows()[14].file->path;
+    const auto kept = browser.rows()[13].file->path;
+    browser.list.getViewport()->setViewPosition(0, 38);
+    const auto scroll = browser.list.getViewport()->getViewPosition();
+    check(scroll.y == 38, "SC-131: the result list starts scrolled before the refresh");
+    const int previewBefore = previewSelections;
+    const auto incoming = loops / "Loop 099.wav";
+    std::ofstream(incoming) << "new sample";
+    check(browser.shown().size() == 40, "SC-131: the published list stays put until rescan publishes again");
+
+    std::shared_ptr<const BrowserLibrarySnapshot> result;
+    std::jthread worker;
+    browser.requestLibraryRescan = [&] {
+        browser.setLibrarySnapshot(initial, false);
+        worker = std::jthread([&](std::stop_token stop) { result = scan(stop); });
+    };
+    std::function<void()> rescan;
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
+        for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+            if (item.getItem().text == "Rescan Library") rescan = item.getItem().action;
+    };
+    browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(userRow).getCentre().toFloat(),
+                              juce::ModifierKeys::rightButtonModifier));
+    check(static_cast<bool>(rescan), "SC-131: the User Library context menu offers Rescan Library");
+    if (!rescan) return;
+    rescan();
+    check(worker.joinable(), "SC-131: the menu action starts a new worker scan");
+    if (!worker.joinable()) return;
+    check(browser.list.getLastRowSelected() == 14 && browser.list.getNumSelectedRows() == 2 &&
+              previewSelections == previewBefore,
+          "SC-131: rescan keeps the existing selection and audition while indexing");
+    worker.join();
+    browser.setLibrarySnapshot(result);
+    check(result && result->listing().error.empty() && browser.selected() == userRow && browser.search.getText() == "loop" &&
+              browser.shown().size() == 41 && browser.shown().front()->path == std::filesystem::canonical(incoming),
+          "SC-131: rescanning adds the newly written file without restarting or changing the query");
+    const int active = browser.list.getLastRowSelected();
+    check(active == 15 && browser.rows()[15].file && browser.rows()[15].file->path == selected &&
+              browser.list.isRowSelected(14) && browser.rows()[14].file && browser.rows()[14].file->path == kept &&
+              browser.list.getNumSelectedRows() == 2 && browser.list.getViewport()->getViewPosition() == scroll &&
+              previewSelections == previewBefore,
+          "SC-131: rescan restores the selected files by path and keeps the scroll position and audition");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
+    check(!browser.rows().empty() && browser.rows().front().folderOpen && browser.shown().size() == 41,
+          "SC-131: the expanded folder remains expanded after the refreshed query is cleared");
+}
 void browserSampleFolders(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-folders.adi", true, {}, error);
@@ -26248,6 +26334,7 @@ int main(int argc, char **argv) {
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
+    trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
