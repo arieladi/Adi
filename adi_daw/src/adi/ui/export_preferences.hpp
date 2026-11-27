@@ -4,6 +4,10 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/export_choices.hpp"
+#include <array>
+#include <filesystem>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace adi::ui {
