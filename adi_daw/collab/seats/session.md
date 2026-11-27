@@ -10,6 +10,7 @@ Session engine seat taken on 27 November 2026.
 
 | Item | Change | Proof | State |
 | --- | --- | --- | --- |
+| TM-SV-02 | In-memory scenes, sparse slot rows and launch settings, with stable-ID lookup and zero-origin ownership checks (a1da1bd9b). Shared edit: CMake only. | 71 strict GCC checks. 20,000 lookup passes in 867 µs, zero allocations. The test failed to compile against main's missing data contract. | Engine rows built. Schema, older-reader warning and operation replay await reservations. |
 
 ## Readings owed
 
