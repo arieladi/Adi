@@ -527,15 +527,15 @@ void channelBendExtraction() {
           staticBends.data->events == expected,
           "static bend keeps initial and final rests centered and resets before an adjacent note attacks");
 
-    const auto point = [](std::int64_t tick, float value) {
+    const auto makePoint = [](std::int64_t tick, float value) {
         ExpressionPoint point{};
         point.time_ticks = tick;
         point.value = value;
         point.curve = static_cast<std::uint8_t>(Curve::Linear);
         return point;
     };
-    projected.pitchCurves = {{1, {point(0, -1), point(quarter, 2)}},
-                            {2, {point(0, 0), point(quarter / 4, 0)}}};
+    projected.pitchCurves = {{1, {makePoint(0, -1), makePoint(quarter, 2)}},
+                            {2, {makePoint(0, 0), makePoint(quarter / 4, 0)}}};
     const auto continuous = projectPitchMidiChannelBend(projected, PitchMidiBendMode::Continuous, 2);
     check(continuous && continuous.data->events.size() > expected.size() &&
           continuous.data->events[1] == PitchMidiBendEvent{quarter / 4, 1, 0, Kind::Attack} &&
