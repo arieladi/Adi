@@ -382,7 +382,7 @@ ClipPitchEditsRead readOne(SQLite::Statement& row) {
     try {
         return {decodeRecord(row), {}};
     } catch (const std::exception& exception) {
-        return {{}, exception.what()};
+        return {{}, exception.what(), row.getColumn(1).getString()};
     }
 }
 

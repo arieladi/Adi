@@ -690,9 +690,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const clip_edit::ClipPitchEdits* pitch = nullptr;
             if (const auto& pitches = project->pitchEdits.clips; pitches) {
                 if (const auto found = pitches->find(row.id); found != pitches->end()) {
-                    if (!found->second.error.empty()) throw std::runtime_error(found->second.error);
+                    if (found->second.blocksSource(media->hashBlake3)) throw std::runtime_error(found->second.error);
                     const auto& authored = found->second.edits;
-                    if (authored && authored->sourceHash == media->hashBlake3) pitch = &*authored;
+                    if (authored && authored->sourceHash == media->hashBlake3 && (!authored->rows.empty() || a->reverse))
+                        pitch = &*authored;
                 }
             }
             if(a->reverse && (!pitch || a->warpEnabled)) throw std::runtime_error("reverse unsupported; silent");

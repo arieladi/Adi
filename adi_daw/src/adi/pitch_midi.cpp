@@ -734,14 +734,7 @@ ClipPitchEditsResolve readEdits(Store& store, const media::ClipPitchAnalysis& an
                                const PitchMidiOptions& options) {
     if (options.content == PitchMidiContent::DetectedMelody) return {audio::PitchEditState{}, {}};
     auto stored = readClipPitchEdits(store, analysis.clipId);
-    if (!stored.error.empty()) {
-        // The authored payload may be broken but its typed source hash still
-        // identifies an edit dormant under a different attachment.
-        SQLite::Statement identity(store.db(), "SELECT source_hash FROM clip_pitch_edits WHERE clip_id=?");
-        identity.bind(1, analysis.clipId);
-        if (!identity.executeStep() || identity.getColumn(0).getString() == analysis.source.hash)
-            return {{}, std::move(stored.error)};
-    }
+    if (stored.blocksSource(analysis.source.hash)) return {{}, std::move(stored.error)};
     if (stored.edits && stored.edits->sourceHash == analysis.source.hash)
         return resolveClipPitchEdits(*stored.edits, analysis);
     return {audio::PitchEditState{}, {}};

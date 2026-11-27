@@ -196,6 +196,14 @@ void run() {
     check(deleteSession.clips()->waitForWarp() && render(deleteSession, 6000) == original,
           "deleting every segment restores the source PCM without silencing the clip");
 
+    database.exec("UPDATE clip_pitch_edits SET analysis_version=99 WHERE clip_id=7");
+    engine::Session geometryOnly;
+    load(geometryOnly, *store);
+    check(geometryOnly.clips()->waitForWarp() && render(geometryOnly, 6000) == original,
+          "geometry alone stays audible even after its analysis version becomes unavailable");
+    database.exec("UPDATE clip_pitch_edits SET analysis_version=" +
+                  std::to_string(analysis.data->analysisVersion) + " WHERE clip_id=7");
+    if (!history.undo().ok) throw std::runtime_error("restore active edits before source replacement");
     writeTone(file, 300);
     engine::Session changed;
     load(changed, *store);
@@ -203,6 +211,21 @@ void run() {
     const auto problems = changed.clips()->decodeProblems();
     check(!problems.empty() && problems.front().find("clips#7") != std::string::npos,
           "the preparation failure names the edited clip");
+
+    database.exec("UPDATE clip_pitch_edits SET edits=X'FF' WHERE clip_id=7");
+    engine::Session malformed;
+    load(malformed, *store);
+    check(!malformed.clips()->problems().empty() && malformed.clips()->externalSources().empty(),
+          "a malformed edit for the active source is reported");
+    const auto replacement = temp.path() / "replacement.wav";
+    writeTone(replacement, 300);
+    if (!media::importMedia(*store, replacement, 2, 0).ok)
+        throw std::runtime_error("import replacement source");
+    database.exec("UPDATE audio_clips SET media_id=2 WHERE clip_id=7");
+    engine::Session newSource;
+    load(newSource, *store);
+    check(newSource.clips()->problems().empty() && std::abs(frequency(render(newSource, 6000)) - 300) < 0.01,
+          "a malformed dormant edit cannot silence a replacement source");
 }
 } // namespace
 

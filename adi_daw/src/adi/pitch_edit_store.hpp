@@ -5,6 +5,7 @@
 #include "adi/ops.hpp"
 
 #include <map>
+#include <string_view>
 
 namespace adi {
 
@@ -33,6 +34,11 @@ struct ClipPitchEdits {
 struct ClipPitchEditsRead {
     std::optional<ClipPitchEdits> edits;
     std::string error;
+    // The typed source still identifies a dormant record if its payload is corrupt.
+    std::optional<std::string> failedSourceHash{};
+    [[nodiscard]] bool blocksSource(std::string_view hash) const noexcept {
+        return !error.empty() && (!failedSourceHash || *failedSourceHash == hash);
+    }
 };
 
 struct ProjectPitchEditsRead {
