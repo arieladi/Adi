@@ -1,4 +1,4 @@
-Ready for win: basics/integrate-1 at 33d91d39ca9c777da3cbc567d3f4f349005ab1ff
+Landing paused for the 18 Gemini review findings.
 
 # Basics integration
 
