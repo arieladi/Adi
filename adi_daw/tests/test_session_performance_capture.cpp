@@ -441,38 +441,40 @@ void prepareMidiProbe(Project& project, float tuningCents) {
             "store a native note crossing the capture exit");
 }
 
-void heldExpressionCapture() {
+void expressionCapture(Curve shape) {
     Project project;
     prepareMidiProbe(project, 31.25f);
-    std::array<ExpressionPoint, 3> points{{{0, 1.0f, 0, 0, 0, {}},
-        {tick(200), 3.0f, 0, 0, 0, {}}, {tick(500), -0.5f, 0, 0, 0, {}}}};
-    const auto writeExpression = [&] {
-        const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression, points);
-        SQLite::Statement upsert(project.db(), "INSERT INTO note_expression(clip_id,note_id,dimension,data) "
-            "VALUES(51,176,0,?) ON CONFLICT(clip_id,note_id,dimension) DO UPDATE SET data=excluded.data");
-        upsert.bind(1, bytes.data(), static_cast<int>(bytes.size()));
-        upsert.exec();
-    };
-    writeExpression();
+    const auto encoded = static_cast<std::uint8_t>(shape);
+    const std::array<ExpressionPoint, 3> points{{{0, 1.0f, 0.375f, encoded, 0, {}},
+        {tick(200), 3.0f, -0.625f, encoded, 0, {}}, {tick(500), -0.5f, 0, 0, 0, {}}}};
+    const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression, points);
+    {
+        SQLite::Statement insert(project.db(), "INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(51,176,0,?)");
+        insert.bind(1, bytes.data(), static_cast<int>(bytes.size()));
+        insert.exec();
+    }
+    const auto source = project.freeze();
     std::array<LaunchTransition, 8> edges{};
     LaunchCaptureBuffer tape(edges);
     const auto heard = renderMidi(*project.store, &tape);
-    require(heard.size() == 5 && heard[0].sample == 75 && heard[0].type == EventType::NoteOn &&
+    const bool held = shape == Curve::Hold;
+    require(heard.size() == (held ? 5u : 10u) && heard[0].sample == 75 && heard[0].type == EventType::NoteOn &&
             heard[1].sample == 75 && heard[1].value == 1.3125 &&
-            heard[2].sample == 275 && heard[2].value == 3.3125 &&
-            heard[3].sample == 575 && heard[3].value == -0.1875 &&
-            heard[4].sample == 730 && heard[4].type == EventType::NoteOff,
-            "the native Session graph emits the exact held pitch changes and release");
+            heard[held ? 2u : 4u].sample == 275 && heard[held ? 2u : 4u].value == 3.3125 &&
+            heard[held ? 3u : 8u].sample == 575 && heard[held ? 3u : 8u].value == -0.1875 &&
+            heard.back().sample == 730 && heard.back().type == EventType::NoteOff,
+            "the native Session graph emits exact pitch knots and release");
+    if (!held)
+        require(heard[5].sample == 288 && heard[5].type == EventType::NoteExpression &&
+            heard[5].value > -0.1875 && heard[5].value < 3.3125,
+            "the native graph evaluates a shaped value on the interior expression grid");
     const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
     require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1, "capture the run from its authored start");
-    points.front().curve = static_cast<std::uint8_t>(Curve::Linear);
-    writeExpression();
-    const auto unsafe = prepareSessionPerformance(*project.store, project.freeze(), plan, 48000);
-    require(!unsafe.ok && unsafe.error.find("held-value") != std::string::npos,
-            "a shaped AEXP segment remains outside sample-identical capture");
-    points.front().curve = 0;
-    writeExpression();
-    const auto source = project.freeze();
+    auto chased = plan;
+    chased.spans.front().sourceTick = tick(10);
+    const auto unsafe = prepareSessionPerformance(*project.store, source, chased, 48000);
+    require(!unsafe.ok && unsafe.error.find("authored start") != std::string::npos,
+            "an expression run entering at non-native source phase refuses exact capture");
     const auto before = digestProject(*project.store).text;
     const auto prepared = prepareSessionPerformance(*project.store, source, plan, 48000);
     if (!prepared.ok) throw std::runtime_error(prepared.error);
@@ -560,7 +562,9 @@ int main() {
         refusals();
         sourceMediaChanged();
         appliedSceneClock();
-        heldExpressionCapture();
+        for (const auto shape : {Curve::Hold, Curve::Linear, Curve::Exponential, Curve::Logarithmic,
+                                Curve::SCurve, Curve::Bezier})
+            expressionCapture(shape);
         heldControllerCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {

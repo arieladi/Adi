@@ -623,6 +623,50 @@ void stopSupersedesQueuedPlayback() {
     }
 }
 
+void queuedLegatoPredictsTakeoverPhase() {
+    constexpr int rate = 44100;
+    struct Case {
+        std::int64_t oldEnd, oldLoopBegin;
+        std::optional<std::int64_t> hint;
+        std::int64_t actual;
+    };
+    const std::array cases{
+        Case{quarter,0,3*quarter/8,3*quarter/8},
+        Case{quarter/2,0,3*quarter/8,3*quarter/8},
+        Case{quarter/2,3*quarter/8,quarter/4,quarter/4},
+        Case{3*quarter/8,0,std::nullopt,quarter/8}};
+    for (const auto& test : cases) {
+        auto old = slot(1,1,11);
+        old.startTick = quarter/4;
+        old.endTick = test.oldEnd;
+        if (test.oldLoopBegin) {
+            old.loopStartTick = test.oldLoopBegin;
+            old.loopEndTick = old.endTick;
+        }
+        auto target = slot(1,2,12);
+        target.startTick = quarter/8;
+        target.legato = true;
+        const std::array slots{old,target};
+        const LaunchView view{std::span(tracks).first(1),slots,scenes};
+        Launcher launcher(1);
+        Output out;
+        const auto grid = LaunchQuantization::Sixteenth;
+        check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)) &&
+              launcher.process(block(0,1,rate,grid),view,out.sink()) &&
+              post(launcher,request(LaunchRequestKind::SlotPress,1,2,12)) &&
+              launcher.process(block(1,1024,rate,grid),view,out.sink()),"arm a future Legato launch");
+        LaunchStatusHeader header;
+        std::array<LaunchTrackStatus,1> status{};
+        check(launcher.readStatus(status,header) && status[0].queued.clip == 12 &&
+              status[0].queued.legatoSourceTick == test.hint,
+              "the Legato hint projects the live phase, handles a rounded source-end tie and omits ended voices");
+        check(launcher.process(block(1025,4489,rate,grid),view,out.sink()) &&
+              out.edges[out.edgeCount-1].sample == 5513 && out.edges[out.edgeCount-1].newClip == 12 &&
+              out.edges[out.edgeCount-1].sourceTick == test.actual,
+              "the queued source prediction uses the same phase as the actual Legato transition");
+    }
+}
+
 void statusTapAndStoppedAdmission() {
     constexpr int rate = 48000;
     auto looping = slot(1,1,11);
@@ -1042,6 +1086,7 @@ int main() {
     roundedLoopAndWrap();
     cancelSceneAndStopAll();
     stopSupersedesQueuedPlayback();
+    queuedLegatoPredictsTakeoverPhase();
     statusTapAndStoppedAdmission();
     tapAcrossGenerations();
     simultaneousTapReaders();

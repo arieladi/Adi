@@ -10,6 +10,7 @@
 // mechanics. ADR-0122.
 
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_expression_clock.hpp"
 #include "adi/engine/project_view.hpp"
 
 #include "adi/applied_batches_detail.hpp"
@@ -2802,6 +2803,10 @@ LaunchBlock Session::TimingView::launchBlock(std::int32_t frames) const noexcept
     block.sampleRate = sampleRate;
     block.preciseTickAtSample = [](const void* state, std::int64_t sample) noexcept {
         return static_cast<const TimingView*>(state)->quartersAt(sample) * static_cast<double>(textproj::kPPQ);
+    };
+    block.notePositionAtSample = [](const void* state, std::int64_t sample) noexcept {
+        const auto& timing = *static_cast<const TimingView*>(state);
+        return midiNotePosition(timing.tempo, static_cast<double>(sample) / timing.sampleRate);
     };
     block.clock = this;
     block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {

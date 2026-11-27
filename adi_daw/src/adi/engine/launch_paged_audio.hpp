@@ -30,6 +30,9 @@ public:
     /// admission. No Store or future file callback survives into the driver.
     [[nodiscard]] bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
     [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
+    /// Driver only. Queue an idle clip's upcoming source phase while keeping
+    /// its ordinary start and loop head in the same bounded worker request.
+    void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader
     /// underrun count. Planar channels remain valid until the next read.
@@ -39,9 +42,13 @@ public:
     [[nodiscard]] std::uint32_t underrunSamples() const noexcept;
     [[nodiscard]] std::uint64_t pageBytesCeiling() const noexcept { return pages_.pageBytesCeiling(); }
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept;
+    void setRequestSnapshotProbeForTest(const ClipPlayback::RequestSnapshotProbeForTest* probe) noexcept {
+        pages_.setRequestSnapshotProbeForTest(probe);
+    }
 
 private:
     struct Entry { LaunchPagedSource source; Node* playback; };
+    [[nodiscard]] const Entry* find(std::int64_t clip) const noexcept;
     Transport clock_;
     ClipPlayback pages_;
     std::vector<Entry> sources_;

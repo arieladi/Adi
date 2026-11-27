@@ -15,9 +15,11 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <thread>
 
 namespace { std::atomic<unsigned> allocations{0}; }
 void adi::test::countReplacedNew() noexcept { if (adi::audio::onAudioThread) ++allocations; }
@@ -145,6 +147,121 @@ void persisted(Fixture& fixture) {
     std::printf("PASS -- persisted scenes switch at %lld, 44.1 kHz source converted and 2x Warp verified, "
                 "0 callback allocations/file calls\n", static_cast<long long>(render.edges[1].sample));
 }
+
+void pagedLegato(Fixture& fixture) {
+    constexpr std::uint32_t rate = 48'000;
+    constexpr std::int64_t targetId = 105;
+    constexpr std::int64_t sceneId = 50;
+    constexpr std::uint64_t incarnation = 88;
+    const auto valueAt = [](std::int64_t frame) { return 0.125f + static_cast<float>(frame % 4096) / 8192.0f; };
+    {
+        std::vector<float> waveform(static_cast<std::size_t>(barFrames * 2));
+        for (std::size_t frame = 0; frame < waveform.size(); ++frame)
+            waveform[frame] = valueAt(static_cast<std::int64_t>(frame));
+        audio::WavWriter wave(fixture.directory.path() / "legato.wav", rate, 1, audio::WavFormat::Float32);
+        wave.write(waveform.data(), static_cast<std::uint32_t>(waveform.size()));
+        wave.close();
+    }
+    fixture.store->db().exec(
+        "INSERT INTO scenes(id,ord,name) VALUES(50,9,'Far paged Legato');"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(5,'legato','legato.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(105,1,'audio',0,46126080);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(105,5,192000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,50,105);"
+        "INSERT INTO clip_launch(clip_id,legato,ram_mode) VALUES(105,1,0);");
+
+    struct WorkerProbe {
+        std::atomic<bool> requested{false}, served{false};
+    } worker;
+    // The page containing frame 96,000 lies well outside all original
+    // launch-start pages. Wait for the real disk worker while transport holds.
+    constexpr auto farPage = barFrames / 8192;
+    const ClipPlayback::RequestSnapshotProbeForTest probe{&worker,
+        [](void* context, std::int64_t first) noexcept {
+            static_cast<WorkerProbe*>(context)->requested.store(first == farPage, std::memory_order_relaxed);
+        }, [](void* context) noexcept {
+            auto& state = *static_cast<WorkerProbe*>(context);
+            if (state.requested.load(std::memory_order_relaxed)) state.served.store(true, std::memory_order_release);
+        }};
+    const auto model = rows::readModel(*fixture.store);
+    const auto source = readClipProject(*fixture.store, model, true);
+    std::vector<std::string> problems;
+    TempoMap clock;
+    clock.events.push_back({0, 120, 0});
+    const auto program = prepareStoredLaunchProject(*source, clock, rate, 2, blockSize, incarnation, problems);
+    const auto* target = program ? program->clip(targetId) : nullptr;
+    require(target && target->pageReader() && problems.empty(), "prepare Legato source with RAM Off");
+    auto& pages = *target->pageReader();
+    pages.setRequestSnapshotProbeForTest(&probe);
+    // Use the stored bank with exactly one driver, as Session does. Session
+    // intentionally rejects an injected bank that owns playback page state.
+    LaunchAudioRuntime runtime(program, {1}, blockSize);
+    LaunchAudioDriver driver(1);
+    Transport transport;
+    transport.play();
+    struct Output {
+        std::array<float, blockSize> left{}, right{};
+        std::array<LaunchTransition, 2> edges{};
+        std::size_t count = 0;
+    } output;
+    const auto render = [&] {
+        LaunchBlock block;
+        block.frames = blockSize;
+        block.clock = &clock;
+        block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {
+            return static_cast<const TempoMap*>(state)->secondsToTicks(static_cast<double>(sample) / rate);
+        };
+        block.sampleAtTick = [](const void* state, std::int64_t tick) noexcept -> std::int64_t {
+            return std::llround(static_cast<const TempoMap*>(state)->ticksToSeconds(tick) * rate);
+        };
+        float* channels[]{output.left.data(), output.right.data()};
+        NodeIo io;
+        io.out = channels;
+        io.channels = 2;
+        io.frames = blockSize;
+        io.sampleRate = rate;
+        output.left.fill(0.0f);
+        output.right.fill(0.0f);
+        {
+            audio::CallbackScope scope;
+            runtime.begin(driver, block, transport, transport.position(), &output,
+                [](void* data, const LaunchTransition& edge, std::int64_t) noexcept {
+                    auto& rendered = *static_cast<Output*>(data);
+                    if (rendered.count < rendered.edges.size()) rendered.edges[rendered.count++] = edge;
+                });
+            runtime.overlay(1, io);
+            runtime.finish();
+        }
+        transport.advance(blockSize);
+    };
+    const auto post = [&](std::int64_t id) {
+        const std::array requests{LaunchRequest{LaunchRequestKind::ScenePress, {}, id, {}, incarnation}};
+        require(driver.post(requests), "queue one literal Legato test scene");
+    };
+    post(10);
+    render();
+    post(sceneId);
+    render();
+    require(output.count == 1 && output.left.back() > 0.49f,
+        "the old run still plays before the Legato boundary");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!worker.served.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    require(worker.served.load(std::memory_order_acquire), "queue the future Legato source page before take-over");
+    while (transport.position() <= barFrames) render();
+    const auto offset = static_cast<std::size_t>(barFrames - (transport.position() - blockSize));
+    require(output.count == 2 && output.edges[1].newClip == targetId && output.edges[1].sample == barFrames &&
+        output.edges[1].sourceTick == 4 * textproj::kPPQ,
+        "Legato adopts the due source phase at exactly frame 96000");
+    for (std::size_t i = offset; i < output.left.size(); ++i)
+        require(output.left[i] == valueAt(barFrames + static_cast<std::int64_t>(i - offset)),
+            "the first far paged Legato samples match the prepared native source");
+    require(pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+        "Legato queues bounded pages without underrun or callback work");
+    std::printf("PASS -- far paged Legato takes over at frame %lld with zero underruns\n",
+        static_cast<long long>(barFrames));
+}
+
 void ramModes(Fixture& fixture) {
     constexpr std::uint32_t rate = 44'100, length = rate * 4;
     {
@@ -206,6 +323,8 @@ int main() {
         Fixture fixture;
         persisted(fixture);
         ramModes(fixture);
+        Fixture legato;
+        pagedLegato(legato);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

@@ -388,16 +388,19 @@ SourceExtent sourceExtent(const Payload& image, const engine::TempoMap& fixed, b
     return result;
 }
 
-void checkHeldExpression(Store& store, const engine::LaunchCapturedSpan& span, const SourceExtent& extent,
-                         const engine::TempoMap& clock, std::uint32_t rate) {
-    const auto refuse = [] { throw std::runtime_error("Session expression capture needs an exact, non-looping held-value run at its authored start"); };
+void checkNoteExpression(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
+                         const SourceExtent& extent, const engine::TempoMap& clock, std::uint32_t rate,
+                         bool authoredClock) {
+    const auto refuse = [] { throw std::runtime_error("Session expression capture needs an exact, non-looping run at its authored start"); };
     if (extent.loopEnd != 0 || span.sourceTick != extent.start) refuse();
+    OpContext context{store, store.db()};
+    if (clip_edit::captureImage(context, span.clip) != image)
+        throw std::runtime_error("Session note-expression source changed during the performance");
     const auto details = engine::readClipDetails(store, span.clip, true, true);
     if (!details.clip || !details.clip->notesProblem.empty() || !details.clip->noteExpressions.problems.empty()) refuse();
 
-    // Live Session and Arrangement use different floating point evaluation at
-    // interior samples. Hold values are invariant, but note and knot edges
-    // still have to land on the same side of sample rounding.
+    // The expression evaluators share one fractional note clock. The
+    // separate note and knot schedulers must also agree at rounding ties.
     const auto originSeconds = clock.ticksToSeconds(span.begin.tick);
     const auto frame = [&](std::int64_t tick) {
         const auto seconds = clock.ticksToSeconds(tick);
@@ -436,7 +439,9 @@ void checkHeldExpression(Store& store, const engine::LaunchCapturedSpan& span, c
         const auto [on, off] = note->second;
         std::int64_t previousSample = -1;
         for (const auto& point : curve.points) {
-            if (point.time_ticks < 0 || point.curve != static_cast<std::uint8_t>(Curve::Hold)) refuse();
+            if (point.time_ticks < 0 || point.time_ticks > clockLimit) refuse();
+            if (!authoredClock && point.curve != static_cast<std::uint8_t>(Curve::Hold))
+                throw std::runtime_error("interpolated Session expression needs the unchanged authored tempo clock");
             if (point.time_ticks >= off - on) continue;
             const auto sample = frame(on + point.time_ticks);
             if (sample <= previousSample) refuse();
@@ -489,7 +494,7 @@ void checkAudioPhase(const engine::LaunchCapturedSpan& span, const SourceExtent&
 Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
                    const engine::TempoMap& authored, const engine::TempoMap& fixed,
                    std::uint32_t rate, const std::optional<SessionPerformanceAudio>& audioCapture,
-                   clip_edit::CopyIds& ids) {
+                   clip_edit::CopyIds& ids, bool authoredClock) {
     const auto& source = image.at("row");
     if (!source.at("alias_of").is_null())
         throw std::runtime_error("Session capture needs an independent source clip image");
@@ -522,7 +527,7 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
         if (extent.loopEnd <= 0 && span.end.tick - span.begin.tick > extent.end - span.sourceTick)
             throw std::runtime_error("Session MIDI runs past its exactly representable source range");
         if (!muted && !sourceChildren.at("note_expression").empty())
-            checkHeldExpression(store, span, extent, authored, rate);
+            checkNoteExpression(store, image, span, extent, authored, rate, authoredClock);
     } else if (!muted) {
         checkAudioPhase(span, extent, authored, fixed, rate, warped ? audio : nullptr);
     }
@@ -699,6 +704,7 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             throw std::runtime_error("project material or clock changed during Session capture");
         clip_edit::CopyIds ids(store.db());
         auto clock = planClock(store, frozen.clock, frozen.meters, performed, rate, ids);
+        const bool authoredClock = clock.clock.events == frozen.clock.events;
         if (capture.spans.empty() && clock.changes.empty())
             throw std::runtime_error("no Session material or scene clock was performed in this capture");
         edit_plan::detail::PlacementBatch placement;
@@ -730,7 +736,7 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             if (image == frozen.clips.end() || image->second.at("row").at("track_id") != span.track)
                 throw std::runtime_error("performed clip is absent from the frozen Session source");
             const engine::TempoMap fixed{{{0, clock.clock.bpmAt(span.begin.tick), 0}}};
-            auto placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids);
+            auto placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids, authoredClock);
             const auto& row = image->second.at("row");
             if (const auto* stream = firstController(image->second); stream && row.at("kind") == "midi" && row.at("muted") == 0) {
                 if (controllerProofs.contains(span.track))

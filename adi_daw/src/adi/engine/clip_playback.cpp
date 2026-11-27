@@ -1398,6 +1398,31 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
 }
+
+void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candidates) noexcept {
+    auto* source = dynamic_cast<TrackSource*>(&node);
+    if (!source || candidates.empty()) return;
+    for (std::size_t index = 0; index < source->clips.size(); ++index) {
+        auto& clip = *source->clips.data()[index];
+        // Mandatory first-frame windows take priority over read-ahead. The
+        // launch, loop head and far Legato cue share the existing page cap.
+        std::array<std::int64_t, slots> requested;
+        requested.fill(-1);
+        auto count = std::size_t{0};
+        for (const auto lookahead : {false, true}) {
+            for (const auto& candidate : candidates) {
+                for (const auto page : clip.wanted(candidate, source->maxFrames, lookahead)) {
+                    if (page < 0 || count == requested.size() ||
+                        std::find(requested.data(), requested.data() + count, page) != requested.data() + count)
+                        continue;
+                    requested.data()[count++] = page;
+                }
+            }
+        }
+        clip.trimAdmission(requested);
+        clip.request(requested);
+    }
+}
 std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
     std::vector<SampleRange> ranges;
     for (const auto& clip : impl_->clips)

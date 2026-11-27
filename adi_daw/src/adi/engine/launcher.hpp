@@ -10,6 +10,8 @@
 
 namespace adi::engine {
 
+struct MidiNotePosition;
+
 /// Owner-prepared launch metadata. Source boundaries use clip-local ADI ticks.
 /// An empty slot can override the default Stop button with hasStop = false.
 struct LaunchSlot {
@@ -56,6 +58,8 @@ struct LaunchBlock {
     double sampleRate = 48000.0;
     double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
     bool preparedScenePinned = false; // an absent token then revokes the old published scene
+    // Preserve the fractional position separately for note-relative AEXP.
+    MidiNotePosition (*notePositionAtSample)(const void*, std::int64_t) noexcept = nullptr;
 };
 
 struct LaunchSection {
@@ -110,6 +114,7 @@ enum class LaunchQueuedAction : std::uint8_t { None, Start, Stop, BackToArrangem
 struct LaunchQueuedStatus {
     LaunchQueuedAction action = LaunchQueuedAction::None;
     std::int64_t clip = 0, scene = 0, tick = 0;
+    std::optional<std::int64_t> legatoSourceTick{};
     bool operator==(const LaunchQueuedStatus&) const = default;
 };
 
@@ -241,6 +246,8 @@ private:
                 std::int32_t begin, std::int32_t end) noexcept;
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
+    [[nodiscard]] std::optional<std::int64_t> queuedLegatoSourceTick(const Track&, const Pending&,
+        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;
     void publishStatus(const LaunchBlock&, const LaunchView&, LaunchSink, bool, std::int64_t) noexcept;
