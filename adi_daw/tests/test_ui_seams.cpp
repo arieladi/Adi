@@ -968,6 +968,8 @@ void groupAndUngroupAsBatches() {
               order() == Order{{2, 0}, {7, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}} &&
               sub.nextUndo()->label == "Insert Audio Track",
           "an audio track inserted with Kick selected: right after Kick, the group and Bass after it, one step");
+    const auto *insertedTrack = view.current()->findTrack(7);
+    check(insertedTrack && insertedTrack->monitorMode == 0, "SC-249: Insert Audio Track starts with Monitor Off");
     check(sub.undo().ok && order() == before, "undo removes it");
     auto inGroup = ui::insertTrack(view.current()->tracks, 3, true);
     check(inGroup.ops.front().payload["parent"] == 6 && sub.submit(std::move(inGroup.ops)).ok &&
@@ -1442,15 +1444,14 @@ void audioDropAsOneStep() {
 
     // The same file again, below the tracks: the pool row is reused, and a new audio track holds it.
     auto again = ui::dropAudio(*view.current(), 0, 0, "snare", capture(2));
-    check(again.refusal.empty() && again.ops.size() == 4 && again.ops[0].opType == "track.create" &&
+    check(again.refusal.empty() && again.ops.size() == 3 && again.ops[0].opType == "track.create" &&
               again.ops[0].payload["kind"] == "audio" && again.ops[0].payload["id"] == 5 &&
-              again.ops[1].opType == "track.setMonitorMode" && again.ops[1].payload["mode"] == 2 &&
-              again.ops[2].payload["track"] == 5 && again.ops[3].payload["media"] == 1 && again.select == 5 &&
+              again.ops[1].payload["track"] == 5 && again.ops[2].payload["media"] == 1 && again.select == 5 &&
               again.clip == 2,
-          "the drop area: a new audio track monitoring on Auto (N67), the pool's row reused");
+          "the drop area creates a new audio track and reuses the pool row");
     check(sub.submit(std::move(again.ops)).ok && view.current()->findTrack(5) != nullptr &&
-              view.current()->findTrack(5)->clips.size() == 1,
-          "and lands");
+              view.current()->findTrack(5)->clips.size() == 1 && view.current()->findTrack(5)->monitorMode == 0,
+          "SC-249: the drop lands on a new audio track with Monitor Off");
     check(sub.undo().ok && view.current()->findTrack(5) == nullptr, "undo takes the new track away with its clip");
     check(sub.undo().ok && view.current()->findTrack(1)->clips.empty(), "and the first drop");
     check(ui::dropAudio(*view.current(), 1, 0, "x", ui::AudioImport{}).refusal == "That file holds no audio ADI can play." &&

@@ -1351,6 +1351,16 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
                       offline ? "offline setup and process both supply the signed transport"
                               : "realtime setup and process both supply the signed transport");
             }
+            // SC-333: while ADI records a take, the plug-in's process context says it records.
+            clock.recording = true;
+            v3->setOffline(false);
+            v3->prepare(sr, io.frames);
+            v3->process(io);
+            readTransport(received.data());
+            check((static_cast<std::uint32_t>(received[0]) & ProcessContext::kRecording) != 0 &&
+                      (static_cast<std::uint32_t>(received[0]) & ProcessContext::kPlaying) != 0,
+                  "recording: the VST3's process context has kRecording, and kPlaying (SC-333)");
+            clock.recording = false;
         } else {
             check(false, "the transport fixture loaded through the raw VST3 processor");
         }

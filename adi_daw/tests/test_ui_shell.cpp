@@ -3804,6 +3804,56 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         late.poll();
         check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
         late.stop();
+        // SC-330: the scan's progress in the Status Bar while it runs; another message keeps the bar.
+        {
+            ScanStatusLine bar;
+            PluginScan scanning;
+            scanning.phase = PluginScan::Phase::Scanning;
+            scanning.candidates = 40;
+            scanning.completed = 7;
+            const auto shownFirst = bar.next(scanning, "");
+            check(shownFirst && *shownFirst == "Scanning plug-ins: 7 of 40 files…",
+                  "a running scan's count stands in an empty Status Bar (SC-330)");
+            scanning.completed = 8;
+            const auto second = bar.next(scanning, shownFirst.value_or(""));
+            check(second && *second == "Scanning plug-ins: 8 of 40 files…", "and follows the count");
+            check(!bar.next(scanning, "Snapshot taken: Verse"), "another message holds the bar: the scan leaves it");
+            PluginScan done;
+            done.phase = PluginScan::Phase::Done;
+            done.listing.complete = true;
+            done.listing.plugins.resize(1);
+            check(!bar.next(done, "Snapshot taken: Verse"), "the end leaves another message alone");
+            ScanStatusLine ending;
+            const auto line = ending.next(scanning, "");
+            const auto end = ending.next(done, line.value_or(""));
+            check(end && end->empty(), "at the end the scan's own line goes");
+            check(!ending.next(done, ""), "and nothing more is said");
+        }
+        // SC-327: Alt held as ADI starts skips the startup scan; the stored list shows and says why.
+        {
+            PluginCatalogueService skipping(port);
+            const auto before = started.size();
+            skipping.startup(true);
+            check(!skipping.running() && started.size() == before && skipping.state().skipped &&
+                      skipping.state().listing.plugins.size() == 2 &&
+                      pluginScanStatus(skipping.state()).find("Alt was held") != std::string::npos,
+                  "Alt at start: no scan runs, the stored list is shown, and the line says why (SC-327)");
+            skipping.request(DiscoveryMode::Refresh);
+            check(skipping.running() && started.size() == before + 1 && !skipping.state().skipped &&
+                      pluginScanStatus(skipping.state()).find("Alt") == std::string::npos,
+                  "a Rescan asked for later scans as usual");
+            finish(Outcome::Published);
+            skipping.poll();
+            skipping.stop();
+            PluginCatalogueService ordinary(port);
+            const auto startedFirst = started.size();
+            ordinary.startup(false);
+            check(ordinary.running() && started.size() == startedFirst + 1 && started.back() == DiscoveryMode::Incremental,
+                  "without Alt the startup lists the catalogue, then runs an Incremental discovery");
+            finish(Outcome::Published);
+            ordinary.poll();
+            ordinary.stop();
+        }
         // A count during a job changes no list: the Browser keeps its rows and selection.
         service.request(DiscoveryMode::Incremental);
         const auto listedDuring = service.state().listed;
@@ -11359,17 +11409,23 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
                         return slider;
         return nullptr;
     };
+    // JUCE snaps to a hundredth of a dB. Fused arithmetic can round the same
+    // step slightly differently, so compare well below the slider interval.
+    const auto sameLevel = [](double actual, double expected) { return std::abs(actual - expected) < 1e-9; };
     const auto volumeMenu = bar.metronomeMenu();
     auto *slider = volumeSlider(volumeMenu);
-    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+    check(slider && sameLevel(slider->getValue(), readCueSettings(document->store()).volumeDb),
           "SC-246: the menu slider shows the project's Cue Volume");
     if (slider) {
-        slider->setValue(-12.0, juce::sendNotificationSync);
+        constexpr double newVolumeDb = -12.0;
+        slider->setValue(newVolumeDb, juce::sendNotificationSync);
         root.frame();
         const auto updated = bar.metronomeMenu();
         const auto *updatedSlider = volumeSlider(updated);
-        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
-                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+        check(sameLevel(readCueSettings(document->store()).volumeDb, newVolumeDb) &&
+                  sameLevel(root.reader().get()->cue.volumeDb, newVolumeDb) &&
+                  updatedSlider && sameLevel(updatedSlider->getValue(), newVolumeDb) &&
+                  root.undoTitle(false) == undoTitle,
               "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
     }
 
@@ -12084,6 +12140,17 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     int opened = 0;
     std::string refuse, editorError;
     bool editorGone = false;
+    // SC-321: an editor whose teardown pumps messages, so the window's frame clock can fire inside it.
+    struct PumpingEditor final : juce::Component {
+        std::function<void()> onGone;
+        ~PumpingEditor() override {
+            if (onGone) onGone();
+        }
+    };
+    std::function<void()> editorClosing;
+    bool editorDestroyed = false;
+    int framesAfterDestroy = 0;
+    bool editorResizable = false; // SC-328
     check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
           "with no opener wired, the wrench says plug-in windows open in the application");
     root.pluginHost = &host;
@@ -12094,10 +12161,19 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
             return view;
         }
         ++opened;
-        auto editor = std::make_unique<juce::Component>();
+        auto editor = std::make_unique<PumpingEditor>();
         editor->setSize(320, 200);
+        editorDestroyed = false;
+        editor->onGone = [&] {
+            editorDestroyed = true;
+            if (editorClosing) editorClosing();
+        };
         view.view = std::move(editor);
-        view.frame = [&] { return editorError; };
+        view.frame = [&] {
+            if (editorDestroyed) ++framesAfterDestroy;
+            return editorError;
+        };
+        view.resizable = editorResizable;
         view.gone = [&] { return editorGone; };
         return view;
     };
@@ -12187,9 +12263,31 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
                   !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
               "its window is titled track/device, fits the plug-in, and does not resize");
     }
+    // SC-321: the frame clock firing while the editor is destroyed (a plug-in pumping messages as its
+    // editor closes) never reaches the freed editor.
+    editorClosing = [&] { host.frame(key3); };
     panels[0]->wrench.onClick();
     root.frame();
+    editorClosing = nullptr;
     check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
+    check(editorDestroyed && framesAfterDestroy == 0,
+          "a frame that fires while the editor is destroyed never calls into it (SC-321)");
+    // SC-328: a plug-in that can be resized has a window resized from its edges, the plug-in following.
+    editorResizable = true;
+    check(root.togglePluginWindow(3, false) && host.contains(key3), "a resizable plug-in's window opens");
+    if (auto *window = dynamic_cast<juce::ResizableWindow *>(host.window(key3))) {
+        check(window->isResizable(), "and it can be resized from its edges (SC-328)");
+        const auto border = window->getContentComponentBorder();
+        window->setSize(border.getLeftAndRight() + 480, border.getTopAndBottom() + 360);
+        check(host.content(key3) != nullptr && host.content(key3)->getWidth() == 480 &&
+                  host.content(key3)->getHeight() == 360,
+              "a size dragged to is the plug-in's view's size");
+    } else {
+        check(false, "a resizable plug-in's window is a window");
+    }
+    root.togglePluginWindow(3, false);
+    editorResizable = false;
+    check(!host.contains(key3), "and it closes again");
     // One at a time; Ctrl/Cmd keeps the others open.
     check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
               host.contains(key5),
@@ -12874,8 +12972,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     const auto states = [&] { return document->recordStates(); };
-    check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
-          "New's audio and MIDI tracks monitor on Auto, as Live's (N67) [P:recording#11]");
+    check(states().at(4).monitor == Monitor::Off && states().at(3).monitor == Monitor::Auto,
+          "SC-249: New shows Monitor Off for audio and Auto for MIDI [P:recording#11]");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
@@ -12909,14 +13007,14 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ToggleMixerView);
     check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
     frame();
-    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
               root.recordState(4).monitor == Monitor::In,
           "track.setMonitorMode In on 3 Audio alone [P:recording#9]");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto [P:recording#9]");
+    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off [P:recording#9]");
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
@@ -13107,7 +13205,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // With the loop on, Record says it waits for take lanes.
+    // CT-02: loop audio can record, while armed MIDI still needs pass placement.
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
@@ -13115,8 +13213,20 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
         frame();
         check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("loop") != std::string::npos,
-              "Record with the loop on is refused, saying why");
+                  root.error().find("MIDI") != std::string::npos,
+              "SC-27: loop recording explains why it cannot start with an armed MIDI track");
+        OpRequest disarm;
+        disarm.opType = "track.setArm";
+        disarm.payload = {{"id", 3}, {"armed", false}};
+        check(document->ops().submit(disarm).ok && document->synchronise(), "disarm MIDI for the loop take");
+        frame();
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "SC-27: the Record command starts audio recording with Loop on");
+        check(root.command(AppCommands::Stop), "stop the loop take");
+        block();
+        check(document->settleRecording() && !document->recording() && !document->landingTake(),
+              "SC-27: the Record command's loop take stops and settles");
+        (void)document->takeLanded();
     }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;
@@ -17040,9 +17150,12 @@ void launchIsolation(AppCommands &commands) {
 // hardware is opened. A type that refuses inputs stands for a default input that cannot open.
 struct ListedAudioType final : juce::AudioIODeviceType {
     struct Device final : juce::AudioIODevice {
-        Device(const juce::String &out, const juce::String &in, bool refused)
+        Device(const juce::String &out, const juce::String &in, bool refused, bool outputHeld = false)
             : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
-              outs(out.isNotEmpty() ? 2 : 0), error(refused && in.isNotEmpty() ? "The input will not open." : "") {}
+              outs(out.isNotEmpty() ? 2 : 0),
+              error(refused && in.isNotEmpty()       ? "The input will not open."
+                    : outputHeld && out.isNotEmpty() ? "The device is in use by another program."
+                                                     : "") {}
         int ins, outs;
         juce::String error;
         juce::BigInteger activeIns, activeOuts;
@@ -17082,11 +17195,12 @@ struct ListedAudioType final : juce::AudioIODeviceType {
         int getOutputLatencyInSamples() override { return 0; }
         int getInputLatencyInSamples() override { return 0; }
     };
-    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false)
-        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs) {}
+    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false, bool holdOutputs = false)
+        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs),
+          held(holdOutputs) {}
     juce::StringArray ins, outs{"Speakers"};
     int defaultIn;
-    bool refused;
+    bool refused, held; // held: every output is in use by another program (SC-375, the walk's A35)
     void scanForDevices() override {}
     juce::StringArray getDeviceNames(bool wantInputNames) const override { return wantInputNames ? ins : outs; }
     int getDefaultDeviceIndex(bool forInput) const override { return forInput ? defaultIn : 0; }
@@ -17095,7 +17209,7 @@ struct ListedAudioType final : juce::AudioIODeviceType {
     }
     bool hasSeparateInputsAndOutputs() const override { return true; }
     juce::AudioIODevice *createDevice(const juce::String &out, const juce::String &in) override {
-        return new Device(out, in, refused);
+        return new Device(out, in, refused, held);
     }
 };
 // A16 (walk-A): a first run (no device kept) on a machine with an input opened no input, so F9 had
@@ -17135,6 +17249,26 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
     check(why.isEmpty() && stuck.isEmpty() && stuckIns == 0 && out == "Speakers",
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
+}
+// SC-375 and the walk's A35: when the output cannot be opened at launch (unplugged, or held by another
+// program), the box names the device and the cause, and a free input is not dropped with it; a device
+// chosen afterwards in Settings then plays at once, which the application makes sure of by attaching its
+// callback whether or not the first open succeeded (ui_main's attachAudio).
+void heldOutputKeepsInput(const std::filesystem::path &dir) {
+    settings::AppSettings fresh(appdata::App::Daw, dir / "held-output-audio.json");
+    juce::AudioDeviceManager manager;
+    manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{"Cable Output"}, 0, false, true));
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    setup.outputDeviceName = "Speakers";
+    const auto why = openAudioDevice(manager, setup, fresh);
+    std::printf("held output: \"%s\"\n", why.toRawUTF8());
+    check(why.contains("Speakers") && why.contains("in use by another program"),
+          "the box names the device that would not open and the cause");
+    const auto *device = manager.getCurrentAudioDevice();
+    check(device != nullptr && manager.getAudioDeviceSetup().inputDeviceName == "Cable Output" &&
+              device->getActiveInputChannels().countNumberOfSetBits() == 2,
+          "the free input is open, inputs 1/2 on, though the output is not");
+    check(why.contains("Settings"), "and it says where to choose another output");
 }
 // Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
 // (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
@@ -19424,6 +19558,55 @@ int main(int argc, char **argv) {
             integrated.devices.fold(11);
             check(!first.beginRename() && !first.rename.isVisible(), "a folded device has no title to rename");
             integrated.devices.fold(11);
+            // SC-325: a plug-in's menu chooses how it receives per-note expression, as Live's MPE Mode.
+            {
+                auto plugged = std::make_shared<ParameterPublication>(*publication);
+                (*plugged)[1].plugin = true;
+                (*plugged)[1].format = "vst3";
+                (*plugged)[1].uid = "VST3-Synth-1-2";
+                (*plugged)[1].route = "mpe_midi";
+                integrated.devices.publication = [plugged] { return plugged; };
+                integrated.frame();
+                const auto routesOf = [&](const juce::PopupMenu &menu) {
+                    std::vector<juce::PopupMenu::Item> found;
+                    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                        if (it.getItem().text == "MPE" && it.getItem().subMenu)
+                            for (juce::PopupMenu::MenuItemIterator sub(*it.getItem().subMenu); sub.next();)
+                                found.push_back(sub.getItem());
+                    return found;
+                };
+                check(routesOf(integrated.devices.panels[0]->commands()).empty(),
+                      "ADI's own device has no MPE choice");
+                const auto routes = routesOf(integrated.devices.panels[1]->commands());
+                juce::StringArray labels;
+                for (const auto &item : routes) labels.add(item.text + (item.isTicked ? "*" : ""));
+                check(labels == juce::StringArray{"Auto", "VST3 Note Expression", "MIDI-MPE*", "Poly-AT (no MPE)"},
+                      "a plug-in's MPE choices, the project's one ticked (SC-325)");
+                std::vector<std::pair<std::string, Payload>> sent;
+                std::vector<std::pair<std::string, engine::RouteChoice>> remembered;
+                integrated.devices.submit = [&](const std::string &op, Payload p) {
+                    sent.emplace_back(op, std::move(p));
+                    return true;
+                };
+                integrated.devices.rememberRoute = [&](const DevicePanelData &d, engine::RouteChoice c) {
+                    remembered.emplace_back(d.uid, c);
+                };
+                if (routes.size() == 4) {
+                    routes[1].action();
+                    routes[0].action();
+                }
+                check(sent.size() == 2 && sent[0].first == "device.setExpressionRoute" &&
+                          sent[0].second.value("dev", 0) == 12 && sent[0].second["route"] == "note_expression" &&
+                          sent[1].second["route"].is_null(),
+                      "a choice is one op on the device row; Auto clears it");
+                check(remembered.size() == 2 && remembered[0].first == "VST3-Synth-1-2" &&
+                          remembered[0].second == engine::RouteChoice::NoteExpression &&
+                          remembered[1].second == engine::RouteChoice::Auto,
+                      "and it is remembered for the plug-in's next instance");
+                integrated.devices.rememberRoute = nullptr;
+                integrated.devices.publication = [publication] { return publication; };
+                integrated.frame();
+            }
             UiPeerRoot deviceHost;
             deviceHost.setSize(integrated.getWidth(), integrated.getHeight());
             deviceHost.addAndMakeVisible(integrated);
@@ -20764,6 +20947,7 @@ int main(int argc, char **argv) {
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
+    trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });

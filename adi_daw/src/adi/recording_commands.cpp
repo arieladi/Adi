@@ -3,6 +3,7 @@
 #include "adi/engine/audio_memory.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_projection.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -168,6 +169,43 @@ struct RecordedPiece {
     std::string name;
     std::optional<std::pair<std::int64_t,std::int64_t>> placementTicks{};
 };
+Payload binary(std::span<const std::byte> bytes) {
+    std::vector<std::uint8_t> data;
+    data.reserve(bytes.size());
+    for (const auto byte : bytes)
+        data.push_back(std::to_integer<std::uint8_t>(byte));
+    return Payload::binary(std::move(data));
+}
+
+std::vector<std::byte> recordingWarpMap(const engine::TempoMap& tempo, std::int64_t firstTick,
+                                         std::int64_t lastTick, std::int64_t frames, std::uint32_t rate) {
+    if (frames > std::numeric_limits<std::int32_t>::max())
+        return {}; // preserve long takes beyond the current Warp renderer's frame limit
+    std::vector<WarpMarker> markers{{0, 0}};
+    for (const auto& point : tempo.events) {
+        if (point.posTicks <= firstTick || point.posTicks >= lastTick)
+            continue;
+        const auto tick = point.posTicks - firstTick;
+        const auto source = engine::warpSourceSamples(tempo, firstTick, tick, rate);
+        if (source > markers.back().sourceFrame && source < frames)
+            markers.push_back({source, tick});
+    }
+    markers.push_back({frames, lastTick - firstTick});
+    // Compensated placement is already sample-exact. Keep the original PCM if the
+    // current clock cannot reproduce that exact interval through the Warp renderer.
+    try {
+        const auto projected = engine::projectWarpAnchors(markers, tempo, firstTick, rate);
+        if (!std::all_of(projected.begin(), projected.end(), [](const auto& anchor) {
+                return anchor.sourceFrame == anchor.outputFrame;
+            }))
+            return {};
+    } catch (const std::runtime_error&) {
+        return {};
+    }
+    auto encoded = audio::writeWarpMap(markers, static_cast<std::uint64_t>(frames));
+    return std::move(encoded.bytes);
+}
+
 Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedPiece& piece,
     std::int64_t track,std::int64_t media,std::uint32_t rate,std::optional<std::int64_t> lane={}) {
     const auto [first,last]=piece.placementTicks ? *piece.placementTicks
@@ -178,16 +216,13 @@ Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedP
     row["lane_id"]=lane?Payload(*lane):Payload{};
     auto audio=edit::defaultRow(store.db(),"audio_clips",{{"clip_id",piece.id},{"media_id",media},
         {"src_start_frames",static_cast<std::int64_t>(piece.source)},{"src_len_frames",piece.end-piece.begin}});
+    if (const auto markers = recordingWarpMap(tempo, first, last, piece.end - piece.begin, rate); !markers.empty()) {
+        audio["warp_enabled"] = 1;
+        audio["warp_mode"] = "beats";
+        audio["warp_markers"] = binary(markers);
+    }
     return {{"id",piece.id},{"row",std::move(row)},
         {"children",{{"audio_clips",Payload::array({std::move(audio)})}}},{"alias_links",Payload::array()}};
-}
-
-Payload binary(std::span<const std::byte> bytes) {
-    std::vector<std::uint8_t> data;
-    data.reserve(bytes.size());
-    for (const auto byte : bytes)
-        data.push_back(std::to_integer<std::uint8_t>(byte));
-    return Payload::binary(std::move(data));
 }
 
 bool validExpressionValue(ExpressionDim dimension, float value) {
@@ -617,7 +652,12 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
                 reusable[track].push_back(inspectReusableLane(store.db(),id,trackId));
             }
         }
-        const auto tempo=tempoOf(store);
+        // Legacy direct recorder callers use the playback convention even
+        // when the first authored tempo event occurs after song start.
+        const auto authoredTempo=tempoOf(store, false);
+        if(loop->tempo && loop->tempo->events!=authoredTempo.events)
+            throw std::runtime_error("the project tempo changed after the loop recording started");
+        const auto& tempo=loop->tempo ? *loop->tempo : authoredTempo;
         for(const auto& pass:passes) {
             (void)tickAt(tempo,pass.timelineStartSample,recorded.sampleRate);
             (void)tickAt(tempo,pass.timelineEndSample,recorded.sampleRate);
