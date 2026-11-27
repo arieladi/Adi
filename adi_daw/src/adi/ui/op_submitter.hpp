@@ -179,11 +179,27 @@ public:
     /// snapshots (#387). A read; nothing moves.
     [[nodiscard]] History::Timeline timeline() const { return History(store_).readTimeline(); }
 
+    [[nodiscard]] std::optional<std::int64_t> historyHead() const { return History(store_).head(); }
+
+    /// Return to the retained cursor captured when this window opened the project.
+    History::Result restoreOpenHistory(std::optional<std::int64_t> head) {
+        History history(store_);
+        if (history.head() == head) {
+            History::Result unchanged;
+            unchanged.ok = true;
+            return unchanged;
+        }
+        auto result = history.moveTo(head);
+        if (result.ok)
+            view_.refresh(store_, overrides());
+        return result;
+    }
+
     /// Back to the project as it stood just after the step `txnId`: undone or redone to it along the
     /// current line, and, for a step on another branch, that branch first (`switchToBranch`), then
     /// undone to it. The view is refreshed ONCE, at the end, when anything moved; a refusal part way
     /// refreshes for what did move and reports the refusal. Never undoes past the protected root.
-    /// `txnId` 0 is the history's root, the project as created or opened: every step on the current
+    /// `txnId` 0 is the history's structural root: every step on the current
     /// line undone, down to the protected root where there is one.
     History::Result restore(std::int64_t txnId) {
         History history(store_);

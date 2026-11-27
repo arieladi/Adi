@@ -12286,6 +12286,96 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
     root.afterEdit = nullptr;
     document->release();
 }
+void undoHistoryReopenedProject(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto file = dir / "history-reopened.adi";
+    std::string error;
+    auto document = ProjectDocument::open(file, true, {}, error);
+    check(document != nullptr, "SC-155: create a project with prior-session history");
+    if (!document)
+        return;
+    check(document->takeSnapshot("At creation", 1'699'999'999'999'999, 0).ok,
+          "SC-155: save a snapshot of the original project");
+    for (const auto &[id, name] : {std::pair{2, "Keys"}, std::pair{3, "Pads"}, std::pair{4, "Drums"}}) {
+        OpRequest rename;
+        rename.opType = "track.rename";
+        rename.payload = {{"id", id}, {"name", name}};
+        rename.label = std::string("Rename ") + name;
+        check(document->ops().submit(std::move(rename)).ok, "SC-155: commit a saved track rename");
+    }
+    check(document->takeSnapshot("With drums", 1'700'000'000'000'000, 0).ok,
+          "SC-155: save a snapshot on the later step");
+    check(document->ops().undo().ok, "SC-155: leave a later edit on the redo line before closing");
+    const auto savedHead = document->ops().historyHead();
+    check(savedHead.has_value() && document->ops().canRedo(), "SC-155: save a non-root cursor with redo");
+    document.reset();
+
+    document = ProjectDocument::open(file, false, {}, error);
+    check(document != nullptr, "SC-155: reopen the saved project");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "history-reopened");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    auto &history = root.undoHistory;
+    history.setSize(320, 420);
+    history.refresh();
+    check(history.rows().size() == 5, "SC-155: keep prior steps, the original snapshot and Open Project");
+    if (history.rows().size() != 5)
+        return;
+    constexpr int later = 0, openedStep = 1, older = 2, origin = 3, bottom = 4;
+    const auto tracksMatch = [&](bool pads, bool drums) {
+        const auto &reader = root.reader();
+        const auto *keysTrack = reader.findTrack(2);
+        const auto *padsTrack = reader.findTrack(3);
+        const auto *drumsTrack = reader.findTrack(4);
+        return keysTrack && padsTrack && drumsTrack && keysTrack->name == "Keys" &&
+               (padsTrack->name == "Pads") == pads && (drumsTrack->name == "Drums") == drums;
+    };
+    const auto openRowIsCurrent = [&] {
+        return history.rows()[bottom].root && history.rows()[bottom].current &&
+               !history.rows()[openedStep].current && history.list.getSelectedRow() == bottom &&
+               document->ops().historyHead() == savedHead;
+    };
+    check(history.openHead == savedHead && openRowIsCurrent() && tracksMatch(true, false) &&
+              history.rows()[openedStep].applied && !history.rows()[later].applied &&
+              history.rows()[later].detail.find("With drums") != std::string::npos,
+          "SC-155: the reopened state selects only Open Project, with the earlier edits and redo intact");
+    check(history.rows()[origin].label == "Project created" &&
+              history.rows()[origin].detail.find("At creation") != std::string::npos &&
+              history.rows()[bottom].detail.empty(),
+          "SC-155: keep the original snapshot on the state it names");
+
+    check(history.restoreRow(later), "SC-155: restore the later saved transaction");
+    root.frame();
+    check(history.rows()[later].current && !history.rows()[bottom].current && tracksMatch(true, true),
+          "SC-155: the actual transaction is current later in the saved history");
+    check(history.restoreRow(bottom), "SC-155: restore the open cursor from a later edit");
+    root.frame();
+    check(openRowIsCurrent() && tracksMatch(true, false),
+          "SC-155: Open Project undoes the later edit and preserves both earlier renames");
+
+    check(history.restoreRow(older), "SC-155: restore an older saved transaction");
+    root.frame();
+    check(history.rows()[older].current && !history.rows()[bottom].current && tracksMatch(false, false),
+          "SC-155: the older transaction is current before the open cursor");
+    check(history.restoreRow(bottom), "SC-155: restore the open cursor from an older edit");
+    root.frame();
+    check(openRowIsCurrent() && tracksMatch(true, false),
+          "SC-155: Open Project redoes to the exact saved cursor");
+
+    check(history.restoreRow(origin), "SC-155: restore the original snapshot independently");
+    root.frame();
+    const auto *originalKeysTrack = root.reader().findTrack(2);
+    check(history.rows()[origin].current && !history.rows()[bottom].current &&
+              !document->ops().historyHead() && originalKeysTrack && originalKeysTrack->name != "Keys",
+          "SC-155: Project created reaches the original project");
+    check(history.restoreRow(bottom), "SC-155: restore the opening state from project creation");
+    root.frame();
+    check(openRowIsCurrent() && tracksMatch(true, false),
+          "SC-155: Open Project still recovers both saved renames from the original project");
+}
 void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
@@ -25427,6 +25517,7 @@ int main(int argc, char **argv) {
     trace("agentSettingsAvailability", [&] { agentSettingsAvailability(temp.path()); });
     trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("undoHistoryReopenedProject", [&] { undoHistoryReopenedProject(commands, temp.path()); });
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });

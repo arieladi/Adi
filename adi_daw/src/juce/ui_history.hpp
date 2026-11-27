@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -19,10 +20,11 @@ class UndoHistoryPanel final : public juce::Component, private juce::ListBoxMode
     ~UndoHistoryPanel() override;
     // How the panel reads the history and restores a step; the window gives them.
     std::function<History::Timeline()> read;
-    std::function<bool(std::int64_t txnId)> restore;
-    // The last row, as Live lists "Open Live Set" first in its history ("Creating or opening a Set is
-    // treated as the first action in the Undo History and therefore cannot be undone"): the project as
-    // created or opened; restoring it undoes every step on the current line. The app names the file.
+    // Null selects Open Project. Zero selects an original-state snapshot, and other values select transactions.
+    std::function<bool(std::optional<std::int64_t> txnId)> restore;
+    // The last row restores the cursor captured when the project opened. A new project starts
+    // at the original state, with no history sequence. The app names the file.
+    std::optional<std::int64_t> openHead;
     std::string rootLabel = "Open Project";
     // Reads the history again; the current step selected.
     void refresh();

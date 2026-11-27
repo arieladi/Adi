@@ -667,9 +667,8 @@ class AdiRootComponent final : public juce::Component,
     // Live's Undo History (manual 5.4.2; A5): View › Undo History and Ctrl/Cmd+Alt+Z. Its own window
     // in the app (ui_main.cpp); not a child of this one.
     UndoHistoryPanel undoHistory;
-    // Puts the project back to just after the history's step `txnId` (`OpSubmitter::restore`): one
-    // refresh, Follow paused as by an undo, the session re-reading the project after it.
-    bool restoreStep(std::int64_t txnId);
+    // Restores the chosen transaction or the opening cursor. Follow pauses as on Undo.
+    bool restoreStep(std::optional<std::int64_t> txnId);
     // A plug-in's own window (Live 12 manual 23.3; N8, #391). The wrench in a plug-in device's
     // title bar opens it in a floating window at the plug-in's size, never scaled; a second click
     // closes it. Opening one closes the others unless Multiple Plug-In Windows is on or Ctrl/Cmd is

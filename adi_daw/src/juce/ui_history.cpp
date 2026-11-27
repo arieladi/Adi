@@ -30,6 +30,7 @@ void UndoHistoryPanel::refresh() {
     std::map<std::int64_t, std::string> branchNames;
     for (const auto &b : timeline.branches)
         branchNames[b.id] = b.name;
+    const bool atOpen = timeline.headSeq == openHead;
     int current = -1;
     for (const auto &s : timeline.steps) {
         Row row;
@@ -37,7 +38,7 @@ void UndoHistoryPanel::refresh() {
         row.label = s.step.label.empty() ? "Change" : s.step.label;
         row.applied = s.applied;
         row.otherBranch = !s.onCurrentLine;
-        row.current = timeline.headSeq && *timeline.headSeq == s.step.lastSeq;
+        row.current = !atOpen && timeline.headSeq == s.step.lastSeq;
         if (row.otherBranch && !s.branchIds.empty())
             row.detail = "on " + (branchNames[s.branchIds.front()].empty() ? std::string("another branch")
                                                                           : branchNames[s.branchIds.front()]);
@@ -49,20 +50,31 @@ void UndoHistoryPanel::refresh() {
             current = static_cast<int>(rows_.size());
         rows_.push_back(std::move(row));
     }
-    // The project as created or opened, last: current when nothing on the line is applied.
-    {
-        Row root;
-        root.label = rootLabel;
-        root.applied = true;
-        root.root = true;
-        root.current = !timeline.headSeq.has_value() || current < 0;
-        for (const auto &snap : timeline.snapshots)
-            if (!snap.opSeq)
-                root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
-        if (root.current)
+    std::string originSnapshots;
+    for (const auto &snap : timeline.snapshots)
+        if (!snap.opSeq)
+            originSnapshots += (originSnapshots.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
+    if (openHead && !originSnapshots.empty()) {
+        Row origin;
+        origin.label = "Project created";
+        origin.detail = std::move(originSnapshots);
+        origin.applied = true;
+        origin.current = !timeline.headSeq;
+        if (origin.current)
             current = static_cast<int>(rows_.size());
-        rows_.push_back(std::move(root));
+        rows_.push_back(std::move(origin));
     }
+    // Prefer the Open Project row when it and a saved step describe the same cursor.
+    Row root;
+    root.label = rootLabel;
+    if (!openHead)
+        root.detail = std::move(originSnapshots);
+    root.applied = true;
+    root.root = true;
+    root.current = atOpen;
+    if (root.current)
+        current = static_cast<int>(rows_.size());
+    rows_.push_back(std::move(root));
     list.updateContent();
     if (current >= 0)
         list.selectRow(current, true, true);
@@ -106,7 +118,7 @@ bool UndoHistoryPanel::restoreRow(int index) {
     if (index < 0 || index >= static_cast<int>(rows_.size()) || !restore)
         return false;
     const auto &row = rows_[static_cast<std::size_t>(index)];
-    const bool done = restore(row.root ? 0 : row.txnId);
+    const bool done = restore(row.root ? std::nullopt : std::optional{row.txnId});
     refresh();
     return done;
 }
