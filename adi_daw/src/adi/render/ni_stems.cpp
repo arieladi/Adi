@@ -119,7 +119,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         (void)validation.add(job);
         validateNiStems(job);
         tick(control);
-        if (!audio::aacCodecAvailable())
+        if (!audio::aacEncoderAvailable())
             throw std::runtime_error("NI Stems AAC codec is unavailable or cannot verify sample alignment on this system");
         Stage stage(job.directory, result);
         const auto project = captureProject(job, stage);

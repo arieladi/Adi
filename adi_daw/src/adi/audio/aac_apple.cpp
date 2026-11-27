@@ -62,6 +62,9 @@ void tick(const CodecCheckpoint &call) {
 bool aacCodecAvailable() noexcept {
     return true;
 }
+bool aacEncoderAvailable() noexcept { return true; }
+std::string aacUnavailableReason() { return {}; }
+bool aacPlatformDecoderPresent() noexcept { return true; }
 AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path &packets,
                    std::uint32_t bitRate, CodecCheckpoint call) {
     WavReader reader(wav);

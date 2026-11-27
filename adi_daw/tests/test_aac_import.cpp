@@ -81,7 +81,11 @@ void transport(){
     check(captured.ok && !captured.audio && request.payload.at("row").at("format")=="mp4","generic media capture retains an opaque non-audio MP4 without claiming video playback");
 }
 void decode(){
-    if(!aacCodecAvailable()){std::puts("native AAC unavailable; transport checks remain active");return;}
+    if(!aacCodecAvailable()){
+        // SC-376: a machine with the platform's AAC decoder must decode; "unavailable" there is a failure.
+        const auto why="the platform has an AAC decoder, yet ADI refuses AAC: "+aacUnavailableReason();
+        check(!aacPlatformDecoderPresent(),why.c_str());
+        std::printf("native AAC unavailable (%s); transport checks remain active\n",aacUnavailableReason().c_str());return;}
     test::TempDirectory temp{"aac_import","decode"};DecodeCache cache(temp.path()/"cache",roomy(),hooks());
     for(const std::string name:{"mono","stereo"})for(const bool adts:{false,true}){
         const auto source=fixture(name+(adts?".aac":".m4a"));const auto output=cache.playable(source);WavReader reader(output);

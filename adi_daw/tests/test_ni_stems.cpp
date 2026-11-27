@@ -312,7 +312,7 @@ void deliveryMediaVerification() {
 }
 
 void integration() {
-    if (!audio::aacCodecAvailable()) {
+    if (!audio::aacEncoderAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
         return;
     }

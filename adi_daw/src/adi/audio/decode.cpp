@@ -309,7 +309,7 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
             if(track.frames>(std::numeric_limits<std::uint64_t>::max()-4096)/(info.channels*4U))
                 throw DecodeError(DecodeProblem::Unsupported,"AAC decoded size overflow");
             reserve(track.frames*info.channels*4+4096);cancelled(stop);
-            if(!aacCodecAvailable())throw DecodeError(DecodeProblem::CodecUnavailable,display(source)+": native AAC codec unavailable on this system");
+            if(!aacCodecAvailable())throw DecodeError(DecodeProblem::CodecUnavailable,display(source)+": native AAC codec unavailable on this system ("+aacUnavailableReason()+")");
             decodeAac(track,out,service);service();return;
         } catch(const DecodeError&){throw;}
         catch(const AacTransportError& error) {
