@@ -100,7 +100,11 @@ if(ADI_WITH_JUCE)
     target_compile_definitions(adi_ui_shell_tests PRIVATE ADI_UI_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ui")
     # WTS-02: JUCE's assertions logged, so the suite's AssertionWatch counts them. On test targets only:
     # never on adi_app, where it would keep jassert live in the release ADI.exe.
-    target_compile_definitions(adi_ui_shell_tests PRIVATE JUCE_LOG_ASSERTIONS=1)
+    # In a Debug build only. There jassert is live in every unit, so the definition changes no layout. In
+    # an optimised build it would make this target's JUCE units and the adi_ui_shell library disagree about
+    # the size of classes that carry an assertion-only member (juce::Random), which overran the stack in
+    # the suite under ASan (the gemini seat's review of 27 November).
+    target_compile_definitions(adi_ui_shell_tests PRIVATE $<$<CONFIG:Debug>:JUCE_LOG_ASSERTIONS=1>)
     # The suite's fixtures keep whole root windows on the stack. Windows gives a program 1 MB of stack
     # where Linux and macOS give 8 MB, and a Debug build's frames are large: on 27 November the root grew
     # (the Info box's own analyser, the recording fixtures) and the suite overflowed on Windows only. The
