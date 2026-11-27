@@ -14,7 +14,6 @@
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
-#include "adi/ui/reference_audition.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tap_tempo.hpp"
 #include "ui_input_clock.hpp"
@@ -175,6 +174,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         DeleteAutomation,
         ArmSelected,
+        ToggleTrackMixer,
+        SwitchDetailView,
         ArrangementRecordAlternate, // Shift+F9: the other Start Playback with Record behavior
         LastId = ArrangementRecordAlternate
     };
@@ -335,19 +336,29 @@ class StatusBar final : public juce::Component {
     explicit StatusBar(AdiRootComponent &);
     void paint(juce::Graphics &) override;
     void resized() override;
-    juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // JUCE passes the activating gesture's modifiers to clicked().
+    class DetailButton final : public juce::TextButton {
+      public:
+        DetailButton(StatusBar &bar, bool clip) : bar_(bar), clip_(clip) {}
+        void clicked(const juce::ModifierKeys &) override;
+
+      private:
+        StatusBar &bar_;
+        bool clip_;
+    };
+    juce::TextButton infoToggle{""}, mixerToggle{"Mixer"};
+    DetailButton detailToggle{*this, false};
     juce::TextButton audioSettings{"Audio Settings"};
     void setAudioDeviceProblem(juce::String problem);
     const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
-    juce::TextButton clipToggle{""};
+    DetailButton clipToggle{*this, true};
     // A drag in the selector scrolls the Clip View's editor sideways, the whole field standing for
     // the whole clip, and zooms it up and down (manual 8.7); a press let go where it began is the
     // click that shows or hides the view. The part of the clip the editor shows is framed in it.
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
-    void clipClicked();
     juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
@@ -360,7 +371,9 @@ class StatusBar final : public juce::Component {
     bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
-class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
+class AdiRootComponent final : public juce::Component,
+                               public juce::DragAndDropContainer,
+                               private juce::FocusChangeListener {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
@@ -368,6 +381,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     ~AdiRootComponent() override;
     void frame() noexcept;
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -657,9 +671,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Device rows and native functions come from their real authored chains.
     const MixViewProvider &mixProvider() const noexcept { return *mixProvider_; }
     void setMixProvider(const MixViewProvider &);
-    // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
-    // tap latches, a hold auditions. True when the reference's state changed.
-    bool referenceKey(bool down, std::int64_t nowMs);
     // Live's momentary latching (§42.25) for S, F1…F8, Z and B: the key goes down and its command runs,
     // once, however long it is held; it comes up after 500 ms or more and the window goes back: the
     // solo or the activator's step is undone while it is still the latest, and zoom or Draw Mode goes back.
@@ -667,12 +678,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool latchKey(int command, int keyCode, bool down, std::int64_t nowMs);
     const MomentaryLatch &latch() const noexcept { return latch_; }
     void letGoUnseen() noexcept { latch_.letGo(); }
-    const ReferenceAudition &reference() const noexcept { return reference_; }
     // Where the window reads the time and the keys held (ADR-0231 d2; DF-W18): the system's unless a
     // test gives its own.
     InputClock input;
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
+    void addReferenceCommand(juce::PopupMenu &, int command);
+    static constexpr auto kNoReferenceTrack = "No Reference track is assigned.";
+    static constexpr auto kReferencePlaybackUnavailable = "Reference playback needs an audio engine connection in this window.";
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge: the view switches and the track height.
     SideStrip strip;
@@ -821,6 +834,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // step: Insert Time Signature Change at `pos` with the value typed, Edit Time Signature on the
     // marker there, Delete. The marker inserted or edited is selected; a refusal is said.
     bool insertMeter(std::int64_t pos, const std::string &text);
+    bool setTempoChange(std::int64_t pos, const std::string &text);
     bool editMeter(std::int64_t pos, const std::string &text);
     bool deleteMeter(std::int64_t pos);
     // The marker at `from` moved to `to`, its value kept, one step; it stays selected.
@@ -897,11 +911,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool showDeviceView();
     // Shows the Clip View if it is hidden: a double-click on a clip (manual 8).
     bool showClipView();
+    bool setDetailViews(bool showClip, bool showDevices);
     // Live's Insert Empty MIDI Clip(s) (Ctrl/Cmd+Shift+M): an empty MIDI clip from `start` to `end`
     // on each MIDI track of `tracks`, one undo step; the first is selected.
     bool insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end);
     // Hands this window's selection to the session, which every window presents.
-    void publishSelection();
+    enum class SelectionOrigin { Other, Arrangement, Mixer };
+    void publishSelection(SelectionOrigin origin = SelectionOrigin::Other);
     SessionState &session() noexcept { return session_; }
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
@@ -918,6 +934,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    void globalFocusChanged(juce::Component *) override;
+    std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);
     enum class TrackRenderAction { Freeze, Unfreeze, Flatten, BounceToNewTrack, BounceInPlace };
@@ -943,6 +961,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     ViewStateStore &persistence_;
     SessionState &session_;
     std::uint64_t selectionGeneration_ = 0;
+    std::int64_t revealInLanes_ = 0, revealInMixer_ = 0;
     std::string window_;
     WindowState state_;
     DirtySet dirty_;
@@ -1006,7 +1025,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void finishImport(const std::string &why);
     MixViewProvider defaultMixProvider_;
     const MixViewProvider *mixProvider_ = &defaultMixProvider_;
-    ReferenceAudition reference_;
     MomentaryLatch latch_;
     bool drawBeforeLatch_ = false, trimBeforeDrawLatch_ = false;
     TapTempo tap_;

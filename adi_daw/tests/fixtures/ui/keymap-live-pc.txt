@@ -128,4 +128,6 @@
 29055 Automation Mode: A
 29056 Delete Automation: Cmd+Backspace
 29057 Arm Selected Tracks: C
-29058 Arrangement Record (Alternate Start): Shift+F9
+29058 Volume, Pan and Meters: 
+29059 Switch Clip and Device Views: Shift+Tab, F12
+29060 Arrangement Record (Alternate Start): Shift+F9

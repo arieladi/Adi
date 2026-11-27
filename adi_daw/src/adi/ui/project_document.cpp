@@ -197,10 +197,11 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
 // at its first build and kept for the next (the worker is the only caller).
 // The worker's reader follows the document's file: after Save As the pool rows of anything imported
 // since are in the new file only, and a reader left on the old one finds none of them.
-WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
+WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
     auto reader = std::make_shared<std::unique_ptr<Store>>();
     auto opened = std::make_shared<std::filesystem::path>();
-    return [source = std::move(source), reader, opened](std::int64_t mediaId, std::stop_token stop) {
+    return [source = std::move(source), reader, opened](std::optional<std::int64_t> mediaId, const std::string &stateHash,
+                                                       std::stop_token stop) {
         std::filesystem::path path;
         {
             std::lock_guard lock(source->mutex);
@@ -218,7 +219,17 @@ WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
                 return refused;
             }
         }
-        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop));
+        if (mediaId) return media::buildMediaPeaks(**reader, *mediaId, 4096, stop);
+        try {
+            if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
+            const auto bytes = (*reader)->getStateBlob(stateHash);
+            if (!bytes || bytes->empty() || bytes->size() > 40u * 1024u * 1024u)
+                return media::PeakResult{media::PeakProblem::invalidSource, "The embedded sample state is unavailable.", {}};
+            const auto *data = reinterpret_cast<const std::uint8_t *>(bytes->data());
+            return device::buildBuiltinSamplePeaks(Payload::from_cbor(data, data + bytes->size()), stop);
+        } catch (const std::exception &e) {
+            return media::PeakResult{media::PeakProblem::invalidSource, e.what(), {}};
+        }
     };
 }
 } // namespace

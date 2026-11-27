@@ -106,7 +106,7 @@ juce::Rectangle<float> ArrangementOverview::outline() const noexcept {
 }
 void ArrangementOverview::paint(juce::Graphics &g) {
     // Live's Overview: a grey line per track on the dark band, its clips in the
-    // track's colour, and a black outline around what is on screen.
+    // clip's colour, and a black outline around what is on screen.
     g.fillAll(look::band);
     const auto rows = view.geometry.rows(view.reader());
     const double total = static_cast<double>(span()), w = getWidth();
@@ -124,11 +124,14 @@ void ArrangementOverview::paint(juce::Graphics &g) {
         const float line = std::max(1.f, row - 1);
         g.setColour(look::panel);
         g.fillRect(0.f, y, static_cast<float>(w), line);
-        g.setColour(view.colourFor(r.position));
-        for (const auto &c : r.track->clips)
+        const auto trackColour = view.colourFor(r.position);
+        for (const auto &c : r.track->clips) {
+            const auto colour = c->color ? look::paletteColour(*c->color) : trackColour;
+            g.setColour(r.track->muted || c->muted ? look::mutedClip : colour);
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
                        std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
                        line);
+        }
         y += row;
     }
     g.setColour(look::overviewFrame);
@@ -587,7 +590,17 @@ void ScrubArea::endMeterEdit() {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
-    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the selection.");
+    setTooltip("Drag sideways to scroll, up or down to zoom. Double-click to zoom to the selection. "
+               "Right-click to insert or edit a tempo change.");
+    addChildComponent(tempoEditor);
+    tempoEditor.setTitle("Tempo in BPM");
+    tempoEditor.onCommit = [this] {
+        if (view.root.setTempoChange(tempoEditing_, tempoEditor.getText().toStdString()))
+            tempoEditor.setVisible(false);
+        else
+            tempoEditor.selectAll();
+    };
+    tempoEditor.onCancel = [this] { tempoEditor.setVisible(false); };
 }
 bool RenameEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::returnKey) {
@@ -988,7 +1001,7 @@ NamesBar::NamesBar()
       inOut(juce::String::fromUTF8("I\xc2\xb7O"), "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
       sends("S", "Sends: show or hide the track controls' sends (Ctrl/Cmd+Alt+S).", true),
       returns("R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R).", true),
-      mixer("M", "Mixer: the track controls' mixer.", true),
+      mixer("M", "Mixer: show or hide volume, pan and meters in the track controls.", true),
       delay("D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options).", true),
       height("H", "Optimize Arrangement Height (H).", true), width("W", "Optimize Arrangement Width (W).", true),
       automation("Automation Mode", "Automation Mode", false, automationGlyph),
@@ -999,7 +1012,6 @@ NamesBar::NamesBar()
         addAndMakeVisible(c);
     for (auto *b : {&inOut, &sends, &returns, &mixer})
         b->setToggleState(true, juce::dontSendNotification);
-    mixer.setInterceptsMouseClicks(false, false);
 }
 void NamesBar::resized() {
     // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the
@@ -1236,7 +1248,8 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
         }
     // The ★ Reference track's toggle (ADR-0209 §4, d11), hidden by default.
     menu.addSeparator();
-    menu.addCommandItem(&root.commands().manager, AppCommands::ToggleReferenceTrack);
+    root.commands().activate(root);
+    root.addReferenceCommand(menu, AppCommands::ToggleReferenceTrack);
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
@@ -1427,7 +1440,7 @@ void ArrangementView::changed() {
     state.gridNarrow = geometry.grid.narrow;
     state.gridFixedQuarters = geometry.grid.fixedQuarters;
     root.persist();
-    root.publishSelection();
+    root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     // The mixer's rows follow these lanes: re-place them on the next frame.
     root.mark(DirtySet::Layout);
     frame(true);
@@ -1522,11 +1535,14 @@ bool ArrangementView::command(int id) {
     return true;
 }
 void ArrangementView::placeInsertMarker(std::int64_t tick, bool fromInsertMarker) {
+    root.locate(tick, fromInsertMarker);
+    showInsertMarkerAt(tick);
+}
+void ArrangementView::showInsertMarkerAt(std::int64_t tick) {
     auto &selection = geometry.selection;
     selection.insert = tick;
     selection.clearMaterial();
     selection.marked = true;
-    root.locate(tick, fromInsertMarker);
     follow(tick, true); // Reveal an explicit jump even when playback Follow is off.
     changed();
 }
@@ -1936,12 +1952,13 @@ void TimelineRuler::paint(juce::Graphics &g) {
     // are 56 points apart; else every bar, every second, every fourth and so on.
     const auto &first = meterAt(from, meters);
     const double beatPx = 4. / std::max<double>(1, first.denominator) * geo.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = getHeight();
     const auto ink = look::rulerLabel.interpolatedWith(look::band, .5f);
@@ -1980,20 +1997,88 @@ void TimelineRuler::paint(juce::Graphics &g) {
             tickMark(beatX, 5);
         }
     });
+    geo.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        const int x = static_cast<int>(geo.x(tick));
+        if (at)
+            label(x, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        tickMark(x, at ? 5 : 3);
+    });
+    paintTempos(g);
+}
+void TimelineRuler::paintTempos(juce::Graphics &g) const {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo || tempo->events.size() < 2 || getWidth() <= 0) return;
+    const auto &geometry = view.geometry;
+    const auto from = geometry.tick(0.), to = geometry.tick(getWidth());
+    const auto &events = tempo->events;
+    auto event = std::upper_bound(events.begin(), events.end(), from,
+                                  [](auto tick, const auto &e) { return tick < e.posTicks; });
+    if (event != events.begin()) --event;
+    const int top = getHeight() - kTempoRowHeight;
+    g.setFont(look::font(look::fontCaption));
+    for (; event != events.end() && event->posTicks <= to; ++event) {
+        const int x = juce::roundToInt(std::clamp(geometry.x(event->posTicks), 0., static_cast<double>(getWidth())));
+        const auto next = std::next(event);
+        const int right = next != events.end() && next->posTicks <= to
+            ? juce::roundToInt(geometry.x(next->posTicks)) : getWidth();
+        g.setColour(look::accent);
+        if (event->posTicks >= from) g.fillRect(x, top + 2, 1, 8);
+        g.drawText(juce::String(event->bpm, std::round(event->bpm) == event->bpm ? 0 : 2) + " BPM",
+                   x + 4, top, std::clamp(right - x - 4, 0, kTempoLabelWidth), kTempoRowHeight,
+                   juce::Justification::centredLeft, false);
+    }
+}
+std::int64_t TimelineRuler::tempoPosition(const juce::MouseEvent &e) const {
+    const auto &geometry = view.geometry;
+    if (e.getPosition().y >= getHeight() - kTempoRowHeight)
+        if (const auto *tempo = view.reader().tempo())
+            for (const auto &event : tempo->events)
+                if (std::abs(geometry.x(event.posTicks) - e.position.x) <= 3.) return event.posTicks;
+    const auto at = geometry.tick(e.position.x);
+    return std::max<std::int64_t>(0, view.snaps(e.mods) ? geometry.snap(at, false) : at);
+}
+void TimelineRuler::beginTempoEdit(std::int64_t at) {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo) return;
+    tempoEditing_ = at;
+    const int width = std::min(kTempoLabelWidth, getWidth());
+    const int x = juce::roundToInt(std::clamp(view.geometry.x(at), 0., static_cast<double>(getWidth() - width)));
+    tempoEditor.setBounds(x, 0, width, getHeight());
+    tempoEditor.setText(juce::String(tempo->bpmAt(at), 2), false);
+    tempoEditor.setVisible(true);
+    tempoEditor.selectAll();
+    focusIfShowing(tempoEditor);
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
+    tempoMenuPressed_ = e.mods.isPopupMenu();
+    if (tempoMenuPressed_) {
+        const auto *tempo = view.reader().tempo();
+        if (!tempo) return;
+        const auto at = tempoPosition(e);
+        const bool exists = std::ranges::any_of(tempo->events, [at](const auto &event) { return event.posTicks == at; });
+        juce::PopupMenu menu;
+        menu.addItem(exists ? "Edit Tempo Change" : "Insert Tempo Change", [safe = SafePointer<TimelineRuler>(this), at] {
+            if (safe) safe->beginTempoEdit(at);
+        });
+        if (onTempoMenu)
+            onTempoMenu(menu);
+        else
+            menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
     last = e.position;
     view.followPaused = true; // a click on the beat-time ruler pauses Follow (§6.2)
 }
 void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
+    if (tempoMenuPressed_) return;
     auto d = e.position - last;
     view.geometry.pan(-d.x);
     view.geometry.zoom(std::exp(-d.y * .02), e.position.x);
     last = e.position;
     view.changed();
 }
-void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
-    view.fit(view.geometry.selection.start != view.geometry.selection.end);
+void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu()) view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
 int TrackHeaderList::nameLeft(std::uint32_t depth) const noexcept {
     // One band per group the track sits in, as many as leave the name some room.
@@ -2063,8 +2148,11 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (t->id != renaming_) {
             g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
+            const int badgeSpace = t->frozen ? 14 : 0;
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()), x + 23, y + 2,
-                       getWidth() - x - 25, 15, juce::Justification::centredLeft);
+                       getWidth() - x - 25 - badgeSpace, 15, juce::Justification::centredLeft);
+            if (t->frozen)
+                controls::frozenTrackBadge(g, {static_cast<float>(getWidth() - 14), static_cast<float>(y + 3), 11, 11});
         }
         // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
         // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
@@ -2119,7 +2207,7 @@ bool TrackHeaderList::beginRename(std::int64_t track, bool selectTrack) {
     renaming_ = track;
     if (selectTrack) {
         view.geometry.selection.track = track;
-        view.root.publishSelection();
+        view.root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     }
     const int x = nameLeft(depth) + 2;
     editor.setBounds(x, y + 3, std::max(0, getWidth() - x - 4), 24);
@@ -2468,7 +2556,16 @@ bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
     return view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details) ||
            !BrowserPanel::droppedFiles(details.description).isEmpty();
 }
+void TrackHeaderList::itemDragMove(const SourceDetails &details) {
+    if (view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details)) {
+        view.canvas.previewDeviceDrop(details.localPosition.y, true);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void TrackHeaderList::itemDragExit(const SourceDetails &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::itemDropped(const SourceDetails &details) {
+    view.canvas.clearDropPreview();
     if (view.root.devices.isMovingDevice(details)) {
         view.dropMovedDevice(details);
         return;
@@ -2483,7 +2580,12 @@ void TrackHeaderList::itemDropped(const SourceDetails &details) {
 bool TrackHeaderList::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty();
 }
+void TrackHeaderList::fileDragMove(const juce::StringArray &files, int, int y) {
+    view.canvas.previewSampleDrop(y, view.geometry.selection.insert, files.size(), true);
+}
+void TrackHeaderList::fileDragExit(const juce::StringArray &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::filesDropped(const juce::StringArray &files, int, int y) {
+    view.canvas.clearDropPreview();
     if (const auto *target = view.geometry.trackAt(view.reader(), y))
         view.root.dropAudioPaths(files, target->id, view.geometry.selection.insert);
 }
@@ -2557,8 +2659,9 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const bool picked = geo.clipSelected(c->id);
             // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
             // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
-            // it. A deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? look::mutedClip : colour;
+            // it. A deactivated clip or a clip on a deactivated track is grey.
+            const auto ownColour = c->color ? look::paletteColour(*c->color) : colour;
+            const auto clipColour = c->muted || t->muted ? look::mutedClip : ownColour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
@@ -2598,8 +2701,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
         };
-        // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
-        // each of several selected clips dragged across tracks.
+        // A clip dragged across tracks is drawn on the destination lane, using that track's
+        // colour if the clip has no colour of its own.
         for (const auto &c : t->clips) {
             // A copy being dragged leaves its original drawn where it is.
             if (copying_ && moving_ != 0 &&
@@ -2726,6 +2829,23 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode())
         paintAutomation(g);
+    // The returns and Main stay pinned over the scrolled tracks. Mark the bottom of
+    // the scrolling band when another part of the arrangement continues underneath.
+    const int scrollBottom = foot < rows.size() ? std::min(getHeight(), geo.footTop(view.reader())) : getHeight();
+    if (scrollBottom >= 12 && geo.tracksHeight(view.reader()) - geo.scrollY > scrollBottom) {
+        const juce::Rectangle<int> badge{8, scrollBottom - 10, 16, 8};
+        g.setColour(look::frame);
+        g.fillRect(badge);
+        look::triangle(g, badge.toFloat().withSizeKeepingCentre(5.f, 8.f),
+                       juce::MathConstants<float>::halfPi, look::text);
+    }
+    if (!dropPreview_.bounds.isEmpty()) {
+        g.setColour(look::dropTarget);
+        if (dropPreview_.device)
+            g.drawRect(dropPreview_.bounds, 2);
+        else
+            g.fillRect(dropPreview_.bounds);
+    }
     // The grid spacing sits inside the lower right of the lanes, above the time ruler.
     auto corner = getLocalBounds().reduced(2);
     const auto spacing = corner.removeFromBottom(14).removeFromRight(46);
@@ -4261,6 +4381,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             sel.toTrack = far == sel.track ? 0 : far;
             sel.clip = 0;
             sel.pickedClips.clear();
+            view.geometry.reveal(view.reader(), far);
             view.changed();
             announce(view.root.selectionText());
             return true;
@@ -4270,6 +4391,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         sel.picked.clear();
         sel.clip = 0;
         sel.pickedClips.clear();
+        view.geometry.reveal(view.reader(), sel.track);
         view.changed();
         return true;
     }
@@ -4449,6 +4571,72 @@ bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
            !BrowserPanel::droppedFiles(details.description).isEmpty() ||
            view.root.browser.acceptsDeviceDrop(details);
 }
+void ArrangementCanvas::setDropPreview(DropPreview next) {
+    if (next == dropPreview_)
+        return;
+    repaint(dropPreview_.bounds);
+    dropPreview_ = next;
+    repaint(dropPreview_.bounds);
+}
+std::pair<const engine::TrackNode *, juce::Rectangle<int>> ArrangementCanvas::dropLane(int y) const {
+    const auto &geo = view.geometry;
+    const auto &reader = view.reader();
+    const auto rows = geo.rows(reader);
+    const auto foot = geo.footStart(rows);
+    const int footTop = foot < rows.size() ? geo.footTop(reader) : getHeight();
+    int top = 0;
+    const auto row = geo.rowAt(reader, y, &top);
+    const auto *track = row < rows.size() ? rows[row].track : nullptr;
+    if (!track)
+        top = std::max(0, geo.tracksHeight(reader) - geo.scrollY);
+    const int height = track ? geo.heightFor(track->id) : geo.height;
+    const int bottom = std::min(top + height, row >= foot && track ? getHeight() : footTop);
+    top = std::max(0, top);
+    return {track, {0, top, getWidth(), std::max(0, bottom - top)}};
+}
+std::int64_t ArrangementCanvas::audioDropTick(int x) const {
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
+    if (!view.snaps(juce::ModifierKeys::currentModifiers))
+        return raw;
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    return raw - down <= up - raw ? down : up;
+}
+void ArrangementCanvas::fileDragEnter(const juce::StringArray &files, int x, int y) { fileDragMove(files, x, y); }
+void ArrangementCanvas::fileDragMove(const juce::StringArray &files, int x, int y) {
+    previewSampleDrop(y, audioDropTick(x), files.size(), false);
+}
+void ArrangementCanvas::previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    if (files <= 0 || !view.reader().get() || (existingTrackOnly && !track)) {
+        clearDropPreview();
+        return;
+    }
+    if (track && track->kind != "audio") {
+        if (files == 1 && view.root.loadSampleInstrument && view.root.sampleInstrumentTarget(track->id))
+            setDropPreview({lane, true});
+        else
+            clearDropPreview();
+        return;
+    }
+    const int left = static_cast<int>(view.geometry.x(tick));
+    setDropPreview({lane.withX(left).withWidth(2).getIntersection(getLocalBounds())});
+}
+void ArrangementCanvas::previewDeviceDrop(int y, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    setDropPreview({!existingTrackOnly || track ? lane : juce::Rectangle<int>{}, true});
+}
+void ArrangementCanvas::clearDropPreview() { setDropPreview({}); }
+void ArrangementCanvas::fileDragExit(const juce::StringArray &) { clearDropPreview(); }
+void ArrangementCanvas::itemDragEnter(const SourceDetails &details) { itemDragMove(details); }
+void ArrangementCanvas::itemDragMove(const SourceDetails &details) {
+    const bool moving = view.root.devices.isMovingDevice(details);
+    if (moving || view.root.browser.acceptsDeviceDrop(details)) {
+        previewDeviceDrop(details.localPosition.y, moving);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void ArrangementCanvas::itemDragExit(const SourceDetails &) { clearDropPreview(); }
 void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &details) {
     if (const auto *track = geometry.trackAt(reader(), details.localPosition.y))
         root.devices.moveDroppedDevice(details, track->id);
@@ -4456,6 +4644,7 @@ void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetai
         root.say("Drop the device on a track to move it there.");
 }
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    clearDropPreview();
     if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
         view.dropMovedDevice(details);
         return;
@@ -4472,15 +4661,13 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
     // line while snapping; on a track's lane, that track; below the tracks, a new one. The clip is
     // named after the file, as Live names it.
+    clearDropPreview();
     if (files.isEmpty())
         return;
-    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
-    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
-    const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, at,
+    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, audioDropTick(x),
                             juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui

@@ -418,6 +418,15 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && calm->placeholder && crashy && crashy->placeholder &&
               calm->error.find("held off") != std::string::npos,
           "held off: both stand as placeholders, their reason said");
+    const auto loadIssueFor = [&document](std::int64_t id) {
+        const auto publication = document->parameterFeed().current();
+        const auto panel = std::find_if(publication->begin(), publication->end(),
+                                        [id](const auto &device) { return device.id == id; });
+        return panel == publication->end() ? std::string{} : panel->loadIssue;
+    };
+    check(loadIssueFor(3).find("this project's plug-ins") != std::string::npos &&
+              loadIssueFor(4).find("this project's plug-ins") != std::string::npos,
+          "SC-89: both device panels carry the project-wide hold-off reason");
     check(document->wakeMissingPlugins() == 0, "held off: a scan's wake leaves them held off");
     // "Load All but Crashy".
     holdOff->scope = ui::PluginHoldOff::Scope::One;
@@ -429,6 +438,9 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && !calm->placeholder && session.instanceFor(3) && session.instanceFor(3)->loaded(),
           "held off: Calm is loaded");
     check(crashy && crashy->placeholder, "held off: Crashy stays held off");
+    document->tick(0);
+    check(loadIssueFor(3).empty() && loadIssueFor(4).find("this plug-in") != std::string::npos,
+          "SC-89: loading clears the first warning and the second retains the current hold-off reason");
     // "Load All" (or the next ordinary open).
     holdOff->scope = ui::PluginHoldOff::Scope::None;
     check(document->wakeMissingPlugins() == 1 && session.entryFor(4) && !session.entryFor(4)->placeholder,
@@ -932,6 +944,22 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     };
     check(samePreset() && renderNote(*target) == expectedAudio,
           "the new project binds the authored preset and renders exactly the same note without its source file");
+    const auto snapshot = target->view().current();
+    const auto embedded = std::find_if(snapshot->sampleSlots.begin(), snapshot->sampleSlots.end(),
+                                       [&](const auto &slot) { return slot && slot->deviceId == loaded && slot->slot == 1; });
+    check(embedded != snapshot->sampleSlots.end() && !(*embedded)->mediaId && !(*embedded)->filePresent,
+          "SC-291: a portable preset's sample has no source file to reveal");
+    if (embedded != snapshot->sampleSlots.end()) {
+        auto &waveforms = target->waveforms();
+        waveforms.peaks(**embedded);
+        for (int i = 0; i < 5000 && waveforms.delivered() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto peaks = waveforms.peaks(**embedded);
+        const auto span = peaks ? ui::peakSpan(*peaks, 0., 1024., 0) : std::nullopt;
+        check(peaks && peaks->channels == 1 && peaks->frames == 1024 && peaks->sampleRate == 48000 &&
+                  span && span->minimum < -.45f && span->maximum > .45f,
+              "SC-291: the waveform worker draws the original audio embedded in the portable preset");
+    }
     const auto pendingUndo = target->ops().nextUndo();
     check(pendingUndo && pendingUndo->label == "Load Device Preset" && target->ops().undo().ok &&
               target->synchronise() && OpJournal(target->store()).headSeq() == before && !samePreset(),
@@ -2820,7 +2848,7 @@ void recordedWaveformHandoff() {
     clip->id = 21;
     clip->audio.emplace();
     auto &audio = *clip->audio;
-    audio.mediaId = 13;
+    audio.mediaId = 0;
     audio.mediaInfo = engine::AudioMediaIdentity{"recorded-hash", 48000, 2, 4};
     auto track = std::make_shared<engine::TrackNode>();
     track->id = 4;
@@ -2835,13 +2863,15 @@ void recordedWaveformHandoff() {
     const std::array clips{clip->id};
     const media::MediaPeaks filePeaks{"recorded-hash", 48000, 2, 4, 4, {{-.5f, .7f}, {-.4f, .6f}}};
     std::atomic<bool> allowBuild{false};
-    std::atomic<std::int64_t> requestedMedia{0};
-    ui::WaveformCache waves([&](std::int64_t mediaId, std::stop_token stop) -> media::PeakResult {
+    std::atomic<std::int64_t> requestedMedia{-1};
+    ui::WaveformCache waves([&](std::optional<std::int64_t> mediaId, const std::string &stateHash,
+                                std::stop_token stop) -> media::PeakResult {
         while (!allowBuild.load() && !stop.stop_requested())
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (stop.stop_requested())
             return {media::PeakProblem::cancelled, {}, {}};
-        requestedMedia.store(mediaId);
+        if (!mediaId || !stateHash.empty()) return {media::PeakProblem::invalidSource, {}, {}};
+        requestedMedia.store(*mediaId);
         return {media::PeakProblem::none, {}, filePeaks};
     });
     waves.seedRecording(snapshot, clips, preview);
@@ -2856,7 +2886,7 @@ void recordedWaveformHandoff() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     const auto built = waves.peaks(audio);
     check(requestedMedia.load() == audio.mediaId && waves.builds() == 1 && built && *built == filePeaks,
-          "the file's waveform replaces the provisional recording waveform");
+          "SC-291: media row 0 builds a file waveform to replace the provisional recording waveform");
     waves.seedRecording(snapshot, clips, preview);
     check(waves.peaks(audio) == built && waves.builds() == 1,
           "landing another reference preserves the decoded waveform");
