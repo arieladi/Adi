@@ -35,7 +35,7 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 ## What ADI adds (Master Reference)
 
 - ADI-Q and ADI-L, the channel slots (ADR-0204 d1): withdrawn on 17 November 2026 (ADR-0243 d2). No channel has a button for a Mix View function.
-- The AI tab at the foot of the browser's panes (Master Reference 3.1).
+- The AI tab at the foot of the browser's panes (Master Reference 3.1): removed by ADR-0257 d12 (#808). ADR-0261 puts an AI label in the Categories list, shown when the agent can answer.
 - Pd Devices in the sidebar where Live has Max for Live (Master Reference 9.3).
 - Configure on a device's title bar, for the DAW-drawn panel (ADR-0150).
 
