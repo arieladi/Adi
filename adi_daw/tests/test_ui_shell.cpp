@@ -23907,10 +23907,24 @@ int main(int argc, char **argv) {
                     sel.start = pos0;
                     sel.end = pos0 + step;
                     integrated.say({});
-                    check(step < length0 && press(juce::KeyPress::rightKey) && sel.start == pos0 &&
-                              sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
-                              integrated.error().find("split") != std::string::npos,
-                          "a selection holding part of a clip stays, and the Status Bar says it waits for split");
+                    const auto beforeRangeMove = integrated.undoTitle(false);
+                    const bool movedRange = press(juce::KeyPress::rightKey);
+                    integrated.frame();
+                    const auto snapshotAfterMove = integrated.current();
+                    const auto *trackAfterMove = snapshotAfterMove ? snapshotAfterMove->findTrack(clipTrack) : nullptr;
+                    const bool rangeMoveRecorded = integrated.undoTitle(false) == "Undo Move Material";
+                    check(step < length0 && movedRange && sel.start == pos0 + step && sel.end == pos0 + 2 * step &&
+                              trackAfterMove != nullptr &&
+                              std::any_of(trackAfterMove->clips.begin(), trackAfterMove->clips.end(), [&](const auto &clip) {
+                                  return clip->posTicks == pos0 + step && clip->lengthTicks == step;
+                              }) &&
+                              rangeMoveRecorded,
+                          "Right moves the selected slice by the grid in one undo step");
+                    const bool restoredRange = rangeMoveRecorded && integrated.command(AppCommands::Undo);
+                    integrated.frame();
+                    check(restoredRange && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
+                              clipAt()->lengthTicks == length0 && integrated.undoTitle(false) == beforeRangeMove,
+                          "one Undo restores the whole clip before the resize checks");
                     point(end0);
                     const auto undoBefore = integrated.undoTitle(false);
                     check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
