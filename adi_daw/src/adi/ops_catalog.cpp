@@ -1089,6 +1089,12 @@ bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
     set.exec();
     return true;
 }
+bool transportPunch(OpContext &c, const Payload &p, std::string &) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.punch',?)");
+    set.bind(1, p.dump());
+    set.exec();
+    return true;
+}
 bool transportSongStart(OpContext &c, const Payload &p, std::string &error) {
     if (!p.at("on").get<bool>()) {
         c.store.db().exec("DELETE FROM session_state WHERE key='transport.songStart'");
@@ -1273,6 +1279,7 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
@@ -2388,6 +2395,8 @@ const OpDescriptor kHandWritten[] = {
      kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setCountIn", "Set the recording count-in", Scope::Transport, EngineImpact::Snapshot,
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
+    {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
      kFTransportSongStart, false, true, transportSongStart, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
