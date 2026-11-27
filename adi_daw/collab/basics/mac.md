@@ -72,7 +72,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/recording-chain` | `d1f309b3830a677e5106b598834f3524a3890da8` | Yes | Passed 49/49, including 32 window and mixer, 3 acceptance, and 14 affected checks. The standalone VST3 host and editor probe passed. |
 | `origin/basics/speed-chain` | `ec76ee758c840d3bc47d614924b3932b06f45c47` | No | Apple libc++ rejected `std::atomic<std::shared_ptr<const WarpResult>>` at `src/adi/audio/warp.hpp:74` with a trivially-copyable requirement. The build stopped before the suites could start. The Warp source matches the earlier failing speed head and Mac fix `4679066f` is available. |
 | `origin/basics/clips-chain` | `84aeae3dc979e85acb60f613efee06cd54e94499` | Yes | Passed 47/47, including 32 window and mixer, 3 acceptance, and 12 affected and session checks. |
-| `origin/basics/tracks-chain` | `7bd59032cefacc0b7837a728e1c65b8afd5bf3b4` | No | The strict Ninja core compile stopped at `src/adi/audio/warp.hpp:74`. Apple libc++ reported the trivially-copyable requirement for `std::atomic<std::shared_ptr<const WarpResult>>`. The build error gates the runtime suites. Published Mac fix `4679066f` addresses this declaration. |
+| `origin/basics/tracks-chain` | `7bd59032cefacc0b7837a728e1c65b8afd5bf3b4` | No | The strict Ninja core compile stopped at `src/adi/audio/warp.hpp:74`. Apple libc++ reported the trivially-copyable requirement for `std::atomic<std::shared_ptr<const WarpResult>>`. The build error gates the runtime suites. Published Mac fix `4679066f` addresses this declaration. With `4679066f` applied in the scratch checkout, all 50 production targets built and 44/44 checks passed, including window and mixer 33/33, acceptance 3/3, and affected and session 8/8. |
 
 ## Nine-step window walk
 
