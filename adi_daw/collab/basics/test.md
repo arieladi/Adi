@@ -10,6 +10,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-439, SC-175 | `basics/test-chain` at `82af8bf4c` | Keep a held lane click as an insert marker and draw its flag. Arrangement seat. | Peerless replay covered stationary repeats, genuine drags, the status label and marker pixels. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-441, SC-445 | `basics/test-chain` at `f06b67887` | Play on from at or after Loop End. Ordinary stereo metronome playback was audible in the synthetic device fixture. Engine, recording and project seats. | The transport and document rehearsals reproduced the Loop fault and verified forward clip playback, click audio and a linear take. Debug Werror, 4 targeted suites, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-440, SC-176 | `basics/test-chain` at `f06b67887` | Loop Selection and the time-selection context menu are already integrated. Arrangement seat. | The actual command and peerless menu model passed for a selected range, including range retention, brace placement and Loop enabled. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
+| SC-425 | `basics/test-chain` at `d438ea3fd` | Publish usable plug-ins from readable folders and name the unreadable ones. Plug-in and Browser seats. | The same permission-denied VST3 fixture failed before and passed after for incremental and refresh scans on Linux. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -44,6 +45,12 @@ The existing SC-27 shell fixture now locates explicitly inside a one-bar brace. 
 The integration branch already contains Cmd/Ctrl+L from `a12f1cf75`, retention of a range when opening its menu from `493109bdc`, and the range actions and Loop Selection from `f19f5732f` and `a64c36e1f`, carried by merge `9d6bfb23d`. The window suite tests the native-independent command dispatch, persisted loop and corresponding brace fields, range retention and the enabled menu model. A headless measurement put the default four-bar brace at `(0,0,74,8)` in the scrub and the selected bars 3–5 at `(37,0,37,8)`.
 
 The broader clip-menu work still tracks Arrangement Crop and Consolidate separately.
+
+### SC-425 · Plug-in discovery with unreadable folders
+
+The candidate names each denied scope, continues through the readable folders, and publishes the successful scan. Incremental and refresh keep the existing cache records whose coverage cannot be verified in the denied scope. Cancellation and fatal discovery errors keep their previous behavior. The Browser exposes the incomplete-scan warning in its list and the Status Bar makes it available in the application.
+
+A Linux headless fixture puts readable VST3 bundles beside a mode-000 folder. The baseline exited with no usable publication. The fixed incremental and refresh paths returned three readable descriptors and one denied-path diagnostic, and retained both prior module cache rows. The host platform test used the repository’s VST3 fixture. Loading the director’s installed macOS plug-ins remains a native retest.
 
 ## For the director
 
