@@ -10,6 +10,11 @@
 
 namespace adi { class Store; }
 namespace adi::engine {
+namespace detail {
+/// Intrinsic validity for displaying a native ANOT record. Editing may also
+/// require a nonzero, unambiguous identity.
+[[nodiscard]] bool displayableNote(const NoteRecord&) noexcept;
+}
 
 struct ClipNote {
     std::uint64_t id = 0; // exact ANOT note_id, not a display index
