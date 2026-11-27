@@ -16,6 +16,7 @@
 #include "adi/settings/store.hpp"
 
 #include <string>
+#include <vector>
 
 namespace adi::settings {
 
@@ -32,6 +33,19 @@ struct DeviceGrant {
 [[nodiscard]] std::string driverSettingFor(const std::string& typeName);
 /// Whether JUCE's type `typeName` is the one the setting names.
 [[nodiscard]] bool driverSettingNames(const std::string& setting, const std::string& typeName);
+
+/// SC-378: what the app does when the open device changes and the user did not choose it (an interface
+/// unplugged, the system's default opened in its place, the interface plugged back). The user's choice is
+/// kept: `Hold` while the chosen device is missing (say so; save nothing over it), `Return` when it is
+/// there again but another is open (reopen it), `Keep` otherwise (save the grant, as before).
+enum class DeviceChange { Keep, Hold, Return };
+struct DeviceWatch {
+    bool userChose = false;                      ///< the Audio page made this change
+    std::string chosenOutput, chosenInput;       ///< the settings' devices; empty: the system's
+    std::string openOutput, openInput;           ///< what is open now
+    std::vector<std::string> outputs, inputs;    ///< the current driver's devices, present now
+};
+[[nodiscard]] DeviceChange deviceChange(const DeviceWatch&);
 
 /// Writes the grant back. False, with `why`, only for a value the store
 /// refuses that is not a granted rate or size. Does not save.

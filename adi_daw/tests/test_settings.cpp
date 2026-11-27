@@ -1251,6 +1251,41 @@ void testDriverModeKept() {
               std::string("the store keeps ") + mode + ": " + why);
 }
 
+void testDeviceUnpluggedAndBack() {
+    section("SC-378: an interface unplugged keeps the user's choice, and comes back when it does");
+    using adi::settings::DeviceChange;
+    using adi::settings::DeviceWatch;
+    using adi::settings::deviceChange;
+    DeviceWatch w;
+    w.chosenOutput = "Interface";
+    w.chosenInput = "Interface";
+    w.openOutput = "Interface";
+    w.openInput = "Interface";
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Keep, "the chosen device open: its grant is kept as before");
+    w.openOutput = "Speakers";
+    w.openInput = "Microphone";
+    w.outputs = {"Speakers"};
+    w.inputs = {"Microphone"};
+    check(deviceChange(w) == DeviceChange::Hold,
+          "unplugged, the system's device opened in its place: the choice is held, nothing saved over it");
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Return, "plugged back: it is reopened");
+    w.userChose = true;
+    check(deviceChange(w) == DeviceChange::Keep, "a device the user chose on the Audio page is saved, whatever was chosen before");
+    DeviceWatch system;
+    system.openOutput = "Speakers";
+    system.outputs = {"Speakers"};
+    check(deviceChange(system) == DeviceChange::Keep, "the system's default chosen (empty): nothing to hold");
+    DeviceWatch outputOnly = w;
+    outputOnly.userChose = false;
+    outputOnly.chosenInput.clear();
+    outputOnly.outputs = {"Speakers"};
+    check(deviceChange(outputOnly) == DeviceChange::Hold, "the output alone missing holds");
+}
+
 void testChannelConfig() {
     section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
     const Setting* c = find("audio.channelConfig");
@@ -1436,6 +1471,7 @@ int runAll() {
     testChannelConfig();
     testDeviceGrant();
     testDriverModeKept();
+    testDeviceUnpluggedAndBack();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

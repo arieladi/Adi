@@ -1721,6 +1721,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     devices = [this]() -> std::unique_ptr<juce::Component> {
                         auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
                         page->onSetupChanged = [this](bool applied) {
+                            userChoseDevice_ = true; // SC-378: the user's own choice, saved as made
                             if (applied) {
                                 if (bridge_)
                                     bridge_->acknowledgeDeviceSetup();
@@ -1819,6 +1820,56 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;
+        // SC-378: an interface unplugged opens the system's device in its place, and plugged back nothing
+        // returned to it, the system's device saved over the user's choice. The choice is kept: while its
+        // device is missing nothing is saved over it and the Status Bar says what plays; when it is back,
+        // it is reopened. A change made on the Audio page is the user's, and saved as before.
+        {
+            settings::DeviceWatch watch;
+            watch.userChose = std::exchange(userChoseDevice_, false);
+            watch.chosenOutput = settings_->get("audio.outputDevice").get<std::string>();
+            watch.chosenInput = settings_->get("audio.inputDevice").get<std::string>();
+            watch.openOutput = setup.outputDeviceName.toStdString();
+            watch.openInput = setup.inputDeviceName.toStdString();
+            if (auto *kind = manager_.getCurrentDeviceTypeObject()) {
+                for (const auto &n : kind->getDeviceNames(false)) watch.outputs.push_back(n.toStdString());
+                for (const auto &n : kind->getDeviceNames(true)) watch.inputs.push_back(n.toStdString());
+            }
+            const auto missing = [&watch] {
+                const bool out = !watch.chosenOutput.empty() && watch.chosenOutput != watch.openOutput;
+                return "“" + (out ? watch.chosenOutput : watch.chosenInput) + "”";
+            };
+            switch (settings::deviceChange(watch)) {
+            case settings::DeviceChange::Hold:
+                if (!holdingDevice_ && root_) {
+                    const auto playing = watch.openOutput.empty() ? std::string("no output")
+                                                                  : "“" + watch.openOutput + "”";
+                    root_->status.setAudioDeviceProblem(juce::String::fromUTF8(
+                        (missing() + " is not connected. ADI plays through " + playing + " until it is back.").c_str()));
+                }
+                holdingDevice_ = true;
+                if (settingsWindow_)
+                    settingsWindow_->panel().refreshValues();
+                return;
+            case settings::DeviceChange::Return: {
+                auto back = setup;
+                back.outputDeviceName = juce::String::fromUTF8(watch.chosenOutput.c_str());
+                back.inputDeviceName = juce::String::fromUTF8(watch.chosenInput.c_str());
+                const auto said = missing();
+                holdingDevice_ = false;
+                if (const auto error = manager_.setAudioDeviceSetup(back, true); error.isNotEmpty())
+                    report("The audio device " + said + " is back but did not open: " + error.toStdString());
+                else if (root_) {
+                    root_->status.setAudioDeviceProblem({});
+                    root_->say(said + " is back.");
+                }
+                return; // the reopen's own change message saves its grant
+            }
+            case settings::DeviceChange::Keep:
+                holdingDevice_ = false;
+                break;
+            }
+        }
         // A grant the setting does not offer (WASAPI's 480) keeps the request; the page shows the grant.
         // SC-379: Windows Audio's mode is kept, not folded into shared mode.
         const auto type = juce::String(settings::driverSettingFor(manager_.getCurrentAudioDeviceType().toStdString()));
@@ -1931,6 +1982,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<LoadingGuard> loadGuard_ = std::make_shared<LoadingGuard>(loadingMarkerFile());
     std::shared_ptr<PluginHoldOff> holdOff_;
     ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
+    bool userChoseDevice_ = false, holdingDevice_ = false; // SC-378
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).
