@@ -212,6 +212,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             for (juce::Component *c : std::initializer_list<juce::Component *>{
                      &strip->active, &strip->solo, &strip->volume, &strip->pan})
                 g.fillRect(root.getLocalArea(c, c->getLocalBounds()));
+            for (auto *child : strip->getChildren())
+                if (child->isVisible() && child->getTitle() == "Cue Out")
+                    g.fillRect(root.getLocalArea(child, child->getLocalBounds().reduced(3, 1)));
             // The In/Out column's choosers are words.
             if (strip->showsInOut())
                 g.fillRect(root.getLocalArea(strip.get(), strip->getLocalBounds())
