@@ -1016,6 +1016,7 @@ class AdiApplication final : public juce::JUCEApplication,
         releaseWindow(window_, root_);
         document_ = std::move(next);
         projectPlugins_ = std::move(plugins);
+        document_->devicePresetLibrary = [this] { return userLibraryPath(); };
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
             -> std::optional<engine::RouteChoice> {
             std::string why;
@@ -1184,6 +1185,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
         root->devices.savePreset = [this](const DevicePanelData &target) { promptDevicePreset(target); };
+        root->devices.saveDefaultPreset = [this](const DevicePanelData &target) { saveDefaultPreset(target); };
         root->devices.hotSwap = [this](const DevicePanelData &target, std::optional<std::int32_t> slot) {
             beginHotSwap(target, slot);
         };
@@ -1671,6 +1673,26 @@ class AdiApplication final : public juce::JUCEApplication,
                 refreshDevicePresets();
             }),
             true);
+    }
+    void saveDefaultPreset(const DevicePanelData &target) {
+        const auto owner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        auto *document = document_.get();
+        const auto current = [&] { return owner && root_ == owner.getComponent() && document_.get() == document; };
+        if (!document || !current()) return;
+        const auto library = userLibraryPath();
+        if (library.empty()) {
+            owner->say("Choose a User Library folder in Settings before saving a default preset.");
+            return;
+        }
+        const bool valid = document->deviceTargetCurrent(target.id, target.runtime, target.instance);
+        if (!current()) return;
+        if (!valid) {
+            owner->say("That device changed. Open its menu again.");
+            return;
+        }
+        const bool saved = document->saveDefaultDevicePreset(target, library);
+        if (current())
+            owner->say(saved ? "Saved default preset for " + target.name + "." : document->error());
     }
     static preset::Preset readBrowserPreset(const std::filesystem::path &path) {
         auto values = preset::read(path);

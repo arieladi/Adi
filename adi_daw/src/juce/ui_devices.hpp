@@ -419,6 +419,7 @@ class DeviceChainStrip final : public juce::Component,
     std::function<bool(const std::string &, Payload)> submit;
     // The application names and saves a preset for this exact loaded device.
     std::function<void(const DevicePanelData &)> savePreset;
+    std::function<void(const DevicePanelData &)> saveDefaultPreset;
     // A slot is present when the Browser should offer samples for this device slot.
     std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;

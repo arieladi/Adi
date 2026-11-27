@@ -2100,28 +2100,35 @@ juce::PopupMenu DevicePanelView::commands() {
         m.addSeparator();
         m.addItem(std::move(item));
     }
-    if (strip.savePreset) {
+    if (strip.savePreset || strip.saveDefaultPreset) {
         const auto current = strip.root.current();
         const auto *track = current && data ? current->findTrack(data->track) : nullptr;
         const bool supported = data && !data->uid.empty() && !nativeFunction() &&
                                (data->format == "internal" || data->format == "clap" || data->format == "vst3");
-        juce::PopupMenu::Item item(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"));
-        item.isEnabled = supported && data->available && track && !track->frozen && !track->frozenByGroup;
-        if (item.isEnabled) {
-            item.action = [safe, epoch, expected = *data] {
-                if (!safe || safe->menuEpoch_ != epoch)
-                    return;
-                safe->endInteraction(Interaction::Menu);
-                if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
-                    return;
-                if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
-                    return;
-                if (safe && safe->menuEpoch_ == epoch && safe->strip.savePreset)
-                    safe->strip.savePreset(expected);
-            };
-        }
+        const bool eligible = supported && data->available && track && !track->frozen && !track->frozenByGroup;
+        const auto addPresetItem = [&](juce::String label, decltype(&DeviceChainStrip::savePreset) handler) {
+            if (!(strip.*handler)) return;
+            juce::PopupMenu::Item item(std::move(label));
+            item.isEnabled = eligible;
+            if (eligible) {
+                item.action = [safe, epoch, expected = *data, handler] {
+                    if (!safe || safe->menuEpoch_ != epoch)
+                        return;
+                    safe->endInteraction(Interaction::Menu);
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
+                        return;
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
+                        return;
+                    if (safe && safe->menuEpoch_ == epoch)
+                        if (const auto callback = safe->strip.*handler)
+                            callback(expected);
+                };
+            }
+            m.addItem(std::move(item));
+        };
         m.addSeparator();
-        m.addItem(std::move(item));
+        addPresetItem(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"), &DeviceChainStrip::savePreset);
+        addPresetItem("Save as Default Preset", &DeviceChainStrip::saveDefaultPreset);
     }
     if (!mixCard_ && !configuring && data && data->pluginTouch) {
         const auto &paramId = data->pluginTouch->parameter;
