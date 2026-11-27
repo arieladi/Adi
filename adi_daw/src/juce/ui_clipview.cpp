@@ -3547,7 +3547,10 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     downTick_ = tickAt(last_.x, e.mods);
     if (markerRegionSelected_ && waveArea().contains(last_) && e.mods.isCommandDown() && !e.mods.isAltDown()) {
         using Field = ClipViewPanel::Field;
-        panel.setField(e.mods.isShiftDown() ? Field::End : Field::Start, downTick_);
+        // The key that makes this click the shortcut is also macOS' key for leaving the grid.
+        // Here it is the shortcut only, so the marker lands on the grid on every system.
+        const auto at = tickAt(last_.x, e.mods.withoutFlags(juce::ModifierKeys::commandModifier));
+        panel.setField(e.mods.isShiftDown() ? Field::End : Field::Start, at);
         return;
     }
     markerRegionSelected_ = false;
