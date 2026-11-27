@@ -21,6 +21,8 @@ namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
 struct LiveMidiTake;
+inline constexpr float kPlaybackProblemMarkSize = 9.f;
+void paintPlaybackProblemMark(juce::Graphics &, juce::Rectangle<float>);
 // The Overview (Live 12 manual 6.1, ADR-0129): the whole arrangement in miniature,
 // an outline around the part on screen. Drag sideways to scroll, vertically to zoom;
 // a double-click zooms out to the whole arrangement.
@@ -252,6 +254,10 @@ class ArrangementCanvas final : public juce::Component,
                                 public juce::SettableTooltipClient {
   public:
     explicit ArrangementCanvas(ArrangementView &);
+    // The engine projection supplies sorted, unique clip IDs.
+    void setPlaybackProblemIds(std::vector<std::int64_t> ids);
+    [[nodiscard]] bool hasPlaybackProblem(std::int64_t id) const noexcept;
+    juce::String getTooltip() override;
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
@@ -366,6 +372,7 @@ class ArrangementCanvas final : public juce::Component,
     std::pair<const engine::TrackNode *, juce::Rectangle<int>> dropLane(int y) const;
     std::int64_t audioDropTick(int x) const;
     DropPreview dropPreview_;
+    std::vector<std::int64_t> playbackProblemIds_;
     bool commitClipRename();
     void endClipRename();
     std::int64_t renamingClip_ = 0;

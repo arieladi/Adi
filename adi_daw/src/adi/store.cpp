@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/appdata.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
@@ -14,7 +15,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -41,22 +41,6 @@ std::string sqlitePath(const std::filesystem::path& path) {
 }
 
 namespace fs = std::filesystem;
-
-fs::path environmentFolder(const char* name) {
-#if defined(_WIN32)
-    const auto key = fs::path(name).wstring();
-    const auto capacity = GetEnvironmentVariableW(key.c_str(), nullptr, 0);
-    if (capacity == 0) return {};
-    std::wstring value(capacity, L'\0');
-    const auto length = GetEnvironmentVariableW(key.c_str(), value.data(), capacity);
-    if (length == 0 || length >= capacity) return {};
-    value.resize(length);
-    return fs::path(value);
-#else
-    if (const auto* value = std::getenv(name)) return fs::path(value);
-#endif
-    return {};
-}
 
 bool insideFolder(const fs::path& path, const fs::path& configuredRoot) {
     if (!configuredRoot.is_absolute()) return false;
@@ -116,13 +100,20 @@ bool synchronizedProject(const fs::path& path) {
     const auto canonical = fs::canonical(path, error);
     if (error) return false;
     for (const char* key : {"OneDrive", "OneDriveConsumer", "OneDriveCommercial", "ADI_SYNC_PROJECTS"})
-        if (insideFolder(canonical, environmentFolder(key))) return true;
+        if (insideFolder(canonical, appdata::environmentPath(key))) return true;
 #if defined(__APPLE__)
-    const auto library = environmentFolder("HOME") / "Library";
+    const auto library = appdata::environmentPath("HOME") / "Library";
     if (insideFolder(canonical, library / "Mobile Documents" / "com~apple~CloudDocs") ||
         insideFolder(canonical, library / "CloudStorage")) return true;
 #endif
     return networkFolder(canonical.parent_path());
+}
+
+void prepareSynchronizedJournal(SQLite::Database& db) {
+    // EXTRA also syncs the containing directory when DELETE unlinks the rollback journal.
+    db.exec("PRAGMA synchronous = EXTRA");
+    if (db.execAndGet("PRAGMA journal_mode = DELETE").getString() != "delete")
+        throw std::runtime_error("SQLite did not enter rollback journal mode");
 }
 
 std::int64_t nowUtcMicros() {
@@ -383,9 +374,7 @@ bool Store::applySessionPragmas() {
         synchronizedLocation_ = synchronizedProject(path_);
         db_->exec("PRAGMA busy_timeout = 5000");
         if (!readOnly_ && synchronizedLocation_) {
-            db_->exec("PRAGMA synchronous = FULL");
-            if (db_->execAndGet("PRAGMA journal_mode = DELETE").getString() != "delete")
-                throw std::runtime_error("SQLite did not enter rollback journal mode");
+            prepareSynchronizedJournal(*db_);
         } else {
             if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
             db_->exec("PRAGMA synchronous = NORMAL");
@@ -633,6 +622,16 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     int openedMinor = minor;
     if (major == kSchemaMajor && minor < kSchemaMinor) {
         if (!effectiveReadOnly) {
+            // Refuse a still-busy WAL before any schema writes can succeed and leave a
+            // newer on-disk project after the application reports a failed open.
+            if (synchronizedProject(path)) {
+                try {
+                    prepareSynchronizedJournal(*db);
+                } catch (const std::exception&) {
+                    err = StoreError::SyncJournalUnavailable;
+                    return nullptr;
+                }
+            }
             std::string why;
             bool copying = false;
             if (!migrateSchema(*db, minor, why, [&] {

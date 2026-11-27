@@ -2,6 +2,7 @@
 #include "ui_shell.hpp"
 #include "adi/engine/midi_input_route.hpp"
 #include "adi/engine/plan.hpp"
+#include "adi/ui/playback_problems.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/op_transaction_resources_detail.hpp"
 #include "adi/track_image.hpp"
@@ -413,6 +414,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"browser.toggle-collection-gray", "Browser"},
         {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
+        {"file.open-backup", "File"}, // OpenBackup
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -662,7 +664,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes"};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup..."};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -1399,8 +1401,12 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     playbackIssues.setColour(juce::TextButton::textColourOffId, look::error);
     playbackIssues.setTooltip("Shows what cannot play in this project.");
     playbackIssues.onClick = [this] {
-        if (onPlaybackProblems && !playbackProblems_.empty())
+        if (playbackProblems_.empty())
+            return;
+        if (onPlaybackProblems)
             onPlaybackProblems(playbackProblems_);
+        else
+            root_.showPlaybackProblems();
     };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
@@ -1413,7 +1419,12 @@ void StatusBar::setAudioDeviceProblem(juce::String problem) {
 bool StatusBar::setPlaybackProblems(const std::vector<std::string> &problems) {
     if (playbackProblems_ == problems)
         return false;
-    playbackProblems_ = problems;
+    auto projected = projectPlaybackProblems(problems);
+    playbackProblems_ = std::move(projected.reasons);
+    root_.arrangement.canvas.setPlaybackProblemIds(std::move(projected.clipIds));
+    root_.devices.setPlaybackProblemIds(std::move(projected.deviceIds));
+    root_.mixViewPanel.repaint();
+    root_.refreshPlaybackProblemList();
     playbackIssues.setVisible(!problems.empty());
     playbackIssueLabel_ = juce::String(problems.size()) + (problems.size() == 1 ? " playback issue" : " playback issues");
     playbackIssues.setTitle(playbackIssueLabel_);
@@ -1712,12 +1723,46 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    playbackProblemsWindow_.reset();
     juce::Desktop::getInstance().removeFocusChangeListener(this);
     releaseComputerMidiKeys();
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
+}
+void AdiRootComponent::refreshPlaybackProblemList() {
+    if (!playbackProblemsWindow_)
+        return;
+    auto *list = static_cast<juce::TextEditor *>(playbackProblemsWindow_->getContentComponent());
+    juce::StringArray reasons;
+    for (const auto &reason : status.playbackProblems_)
+        reasons.add(juce::String(reason));
+    list->setText(reasons.isEmpty() ? juce::String("No playback problems.") : reasons.joinIntoString("\n\n"), false);
+}
+void AdiRootComponent::showPlaybackProblems() {
+    if (!playbackProblemsWindow_) {
+        auto list = std::make_unique<juce::TextEditor>();
+        list->setTitle("Playback problem details");
+        list->setMultiLine(true, true);
+        list->setReadOnly(true);
+        list->setCaretVisible(false);
+        list->setScrollbarsShown(true);
+        list->setSize(540, 260);
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Playback issues";
+        options.content.setOwned(list.release());
+        options.componentToCentreAround = getTopLevelComponent();
+        options.associatedComponent = getTopLevelComponent();
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        playbackProblemsWindow_.reset(options.create());
+        playbackProblemsWindow_->setLookAndFeel(&look::liveLook());
+        refreshPlaybackProblemList();
+    }
+    playbackProblemsWindow_->setVisible(true);
+    playbackProblemsWindow_->toFront(true);
 }
 bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
     const auto *info = findBuiltin(uid);
@@ -6218,7 +6263,7 @@ bool AdiRootComponent::command(int id) {
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
         (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About ||
-        id == AppCommands::ManageProjectFiles)
+        id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -6772,19 +6817,17 @@ struct MenuEntries {
 };
 // Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
 constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2, kOpenRecentMenu = -3;
-constexpr int kOpenBackupMenu = -4;
 constexpr int kFirstRecentProject = 0x4000;
 constexpr int kClearRecentProjects = kFirstRecentProject + kRecentProjectLimit;
 constexpr int kRemoveUnavailableProjects = kClearRecentProjects + 1;
-constexpr int kOpenProjectBackup = kRemoveUnavailableProjects + 1;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, C::OpenBackup, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip}},
 #else
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, C::OpenBackup, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
@@ -6872,17 +6915,13 @@ class ShellMenu final : public juce::MenuBarModel {
                     else if (id == kOpenRecentMenu) {
                         auto recent = recentMenu();
                         menu.addSubMenu("Open Recent", std::move(recent), !recentItems_.empty());
-                    } else if (id == kOpenBackupMenu)
-                        menu.addItem(kOpenProjectBackup, "Open Project Backup...", static_cast<bool>(root.openProjectBackup));
-                    else
+                    } else
                         menu.addCommandItem(&commands.manager, id);
                 }
         return menu;
     }
     void menuItemSelected(int id, int) override {
-        if (id == kOpenProjectBackup) {
-            if (const auto open = root.openProjectBackup) open();
-        } else if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
+        if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
             commands.clearRecentProjects(id == kRemoveUnavailableProjects);
             menuItemsChanged();
         } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);

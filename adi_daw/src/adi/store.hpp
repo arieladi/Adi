@@ -16,6 +16,7 @@
 #pragma once
 
 #include "adi/blob.hpp"
+#include "adi/media/publish_file.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -75,7 +76,16 @@ struct StoreFileResult {
 struct ProjectBackup {
     std::filesystem::path path;
     std::int64_t createdUtc = 0; // microseconds
+    media::FileRevision revision{};
+    unsigned collisionIndex = 0;
+    [[nodiscard]] std::shared_ptr<media::ProjectFileLease> leaseForTrash() const;
 };
+
+namespace backup {
+struct Job;
+StoreFileResult prepare(Store&, std::int64_t, Job&);
+StoreFileResult recover(const std::filesystem::path&, const std::filesystem::path&, std::stop_token);
+}
 
 enum class StoreSaveKind { copy, saveAs, firstSave };
 /// Backups and relocation preserve identity. Shared copies always remove private audit data.
@@ -109,6 +119,8 @@ private:
     struct Data;
     std::unique_ptr<Data> data_;
     friend class Store;
+    friend StoreFileResult backup::prepare(Store&, std::int64_t, backup::Job&);
+    friend StoreFileResult backup::recover(const std::filesystem::path&, const std::filesystem::path&, std::stop_token);
 };
 
 /// An open `.adi`.
@@ -180,10 +192,12 @@ public:
     [[nodiscard]] static StoreFileResult writeProjectBackup(const std::filesystem::path& project,
                                                            std::int64_t createdUtc, std::stop_token = {});
     /// Managed copies for this project, newest first. Missing folders have no copies.
-    [[nodiscard]] static std::vector<ProjectBackup> projectBackups(const std::filesystem::path& project);
+    [[nodiscard]] static std::vector<ProjectBackup> projectBackups(const std::filesystem::path& project,
+                                                                   bool requireSourceIdentity = false);
     [[nodiscard]] static StoreFileResult restoreProjectBackup(const std::filesystem::path& project,
                                                              const std::filesystem::path& backup,
-                                                             std::filesystem::path& restored, std::stop_token = {});
+                                                             std::filesystem::path& restored, std::stop_token = {},
+                                                             const std::filesystem::path& recoveryFolder = {});
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after

@@ -341,6 +341,16 @@ struct ProjectDocument::TrackRenderWork {
     std::jthread worker;
 };
 namespace {
+void appendSharedStorageWarning(const Store &store, std::string &warning) {
+    if (!store.synchronizedLocation())
+        return;
+    if (!warning.empty())
+        warning += ' ';
+    warning += store.readOnly() ? "This read-only project is in a synced or network folder."
+                               : "This project is in a synced or network folder. Committed edits are kept in its .adi file. "
+                                 "Close it before copying it or opening it elsewhere.";
+}
+
 bool ordinaryTrack(const engine::TrackNode &track) {
     return track.kind == "audio" || track.kind == "midi" || track.kind == "instrument";
 }
@@ -717,6 +727,7 @@ void ProjectDocument::OpenJob::advance() {
         doc.parameterOps_.attachSession(doc.session_);
         doc.feed_.publish(doc.session_, doc.realisedGeneration_);
         doc.persistReportedLatencies();
+        appendSharedStorageWarning(*doc.store_, doc.warning_);
         phase_ = Phase::ready;
     } catch (const std::exception &error) {
         fail(error.what());
@@ -822,6 +833,7 @@ bool ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake)
             warning_ += ' ';
         warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
+    appendSharedStorageWarning(*store_, warning_);
     error_.clear();
     return refreshError.empty();
 }
