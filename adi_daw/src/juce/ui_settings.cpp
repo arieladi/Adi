@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_settings.hpp"
 #include "ui_look.hpp"
+#include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/settings_availability.hpp"
 #include <cmath>
 namespace adi::ui {
@@ -634,16 +635,12 @@ bool SettingsPanel::acceptLibraryFolder(const settings::Setting &setting, const 
     }
     if (setting.key == "library.userLibrary")
         return change(setting, folder.getFullPathName().toStdString());
-    if (setting.key != "library.contentFolders")
+    if (setting.key != kContentFolders)
         return false;
-    auto folders = store.get(setting.key);
-    const auto workingDirectory = juce::File::getCurrentWorkingDirectory();
-    for (const auto &path : folders)
-        if (path.is_string() && !path.get_ref<const std::string &>().empty() &&
-            workingDirectory.getChildFile(juce::String::fromUTF8(path.get_ref<const std::string &>().c_str())) == folder)
-            return true;
-    folders.push_back(folder.getFullPathName().toStdString());
-    return change(setting, folders);
+    const auto folders = store.get(setting.key);
+    const auto path = media::pathFromUtf8(folder.getFullPathName().toStdString());
+    const auto edited = editContentFolders(folders, std::span{&path, 1}, ContentFolderEdit::Add);
+    return edited == folders || change(setting, edited);
 }
 bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v) {
     // Applied at once and written at once: Live has no OK button (Master Reference V.1).

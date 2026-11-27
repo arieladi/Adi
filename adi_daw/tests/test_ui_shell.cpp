@@ -26,6 +26,7 @@
 #include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/export_preferences.hpp"
 #include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -6706,6 +6707,131 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     browser.setHotSwap(std::nullopt);
     check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
           "SC-120: the two modes keep separate text and results");
+}
+void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto base = dir / "places-test";
+    const auto user = base / "User Library", chosen = base / "picker" / "Drums", dropped = base / "drag" / "Drums";
+    for (const auto &folder : {user, chosen, dropped}) fs::create_directories(folder);
+    // Listing is based on media type and metadata. Nothing auditions these files.
+    std::ofstream(user / "Kick.wav") << "user";
+    std::ofstream(chosen / "Clap.wav") << "chooser";
+    std::ofstream(dropped / "Rim.wav") << "drag";
+    std::string error;
+    auto index = library::Index::open(base / "index.sqlite", error, false);
+    auto doc = ProjectDocument::open(base / "places.adi", true, {}, error);
+    check(index && doc, "SC-125: create a project and a library index for Places");
+    if (!index || !doc) return;
+    auto root = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                                                  doc->sessionState(), "places");
+    root->setSize(1200, 1000);
+    auto &browser = root->browser;
+    struct Volumes final : library::VolumeIdentityProvider {
+        fs::path readOnly;
+        library::MarkerVolumeProvider markers;
+        bool identify(const fs::path &path, library::Volume &volume, std::string &why) override {
+            if (path == readOnly) {
+                why = "The volume probe cannot be written.";
+                return false;
+            }
+            return markers.identify(path, volume, why);
+        }
+    } volumes;
+    volumes.readOnly = dropped;
+    settings::AppSettings prefs(appdata::App::Daw, base / "places-settings.json");
+    browser.restoreLabel(prefs);
+    const auto publish = [&] {
+        std::vector<LibraryFolder> folders{{"User Library", user, true}};
+        const auto configured = prefs.get(kContentFolders);
+        for (const auto &stored : configured) {
+            const auto path = media::pathFromUtf8(stored.get<std::string>());
+            folders.push_back({media::pathUtf8(path.filename()), path});
+        }
+        browser.setListing(scanLibrary(*index, folders, volumes));
+    };
+    const auto apply = [&](std::span<const fs::path> paths, ContentFolderEdit edit) {
+        const auto old = prefs.get(kContentFolders);
+        const auto changed = editContentFolders(old, paths, edit);
+        if (old == changed) return;
+        check(prefs.set(kContentFolders, changed, {settings::Actor::User, {}, 1}, error) && prefs.save(error),
+              "SC-125: a Places edit persists in Content folders");
+        publish();
+    };
+    int pickerRequests = 0;
+    browser.requestAddFolder = [&] {
+        ++pickerRequests;
+        apply(std::span{&chosen, 1}, ContentFolderEdit::Add);
+    };
+    browser.addFolders = [&](std::span<const fs::path> paths) { apply(paths, ContentFolderEdit::Add); };
+    browser.removeFolder = [&](const fs::path &path) { apply(std::span{&path, 1}, ContentFolderEdit::Remove); };
+    publish();
+    const auto pointFor = [&](int row) {
+        return browser.sidebarRowBounds(row).getCentre().toFloat();
+    };
+    const auto addon = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
+    const auto oldSelection = browser.selected();
+    const auto oldLabel = prefs.get("browser.lastLabel");
+    browser.mouseDown(pressAt(browser, pointFor(addon())));
+    check(pickerRequests == 1 && browser.listing().places.size() == 2 && browser.selected() == oldSelection &&
+              prefs.get("browser.lastLabel") == oldLabel,
+          "SC-125: the last Places row opens Add Folder and keeps the current category");
+    browser.choose(addon() - 1);
+    const auto chosenLabel = prefs.get("browser.lastLabel");
+    check(browser.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && pickerRequests == 1 &&
+              browser.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && pickerRequests == 2 &&
+              prefs.get(kContentFolders).size() == 1 && prefs.get("browser.lastLabel") == chosenLabel,
+          "SC-125: arrow keys focus Add Folder, Enter opens it, and choosing the same folder is a no-op");
+    const auto asText = [](const fs::path &path) { return juce::String::fromUTF8(media::pathUtf8(path).c_str()); };
+    const juce::StringArray mixed{asText(chosen / "Clap.wav"), asText(dropped), asText(chosen)};
+    check(!browser.isInterestedInFileDrag({asText(chosen / "Clap.wav")}) && browser.isInterestedInFileDrag(mixed),
+          "SC-125: browser drag accepts directories and leaves ordinary audio files alone");
+    browser.filesDropped(mixed, 12, 45);
+    check(prefs.get(kContentFolders).size() == 2 && browser.listing().places.size() == 3 &&
+              fs::exists(user / ".adi-volume-id") && fs::exists(chosen / ".adi-volume-id") &&
+              !fs::exists(dropped / ".adi-volume-id") && browser.listing().error.empty(),
+          "SC-132: a folder without marker-write permission joins Places without manufacturing a volume marker");
+    const auto &places = browser.listing().places;
+    const auto placeRow = [&](const std::string &key) {
+        const auto it = std::ranges::find(browser.sidebar(), key, &BrowserPanel::Entry::place);
+        return static_cast<int>(it - browser.sidebar().begin());
+    };
+    if (places.size() != 3) return;
+    const int userRow = placeRow(places[0].volumeId), dropRow = placeRow(places[2].volumeId);
+    check(browser.sidebarArea().contains(browser.sidebarRowBounds(addon())) &&
+              browser.sidebarRowBounds(dropRow).getWidth() == BrowserPanel::kSidebarWidth &&
+              browser.sidebarRowBounds(dropRow).getHeight() == BrowserPanel::kRowHeight,
+          "SC-125: Add Folder and the new Place use the existing sidebar row dimensions");
+    browser.choose(dropRow);
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "Rim.wav",
+          "SC-132: the read-only Place scopes ordinary sample search and listing");
+    browser.search.setText("rim", false);
+    browser.search.onTextChange();
+    check(browser.shown().size() == 1, "SC-132: the read-only sample is searchable");
+    int menuRequests = 0;
+    std::function<void()> remove;
+    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()> action) {
+        ++menuRequests;
+        remove = std::move(action);
+    };
+    const auto popup = juce::ModifierKeys::rightButtonModifier;
+    browser.mouseDown(pressAt(browser, pointFor(userRow), popup));
+    browser.mouseDown(pressAt(browser, pointFor(dropRow), popup));
+    check(menuRequests == 1 && remove, "SC-125: only configured extra Places offer Remove from Places");
+    if (remove) remove();
+    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({media::pathUtf8(chosen)}) &&
+              fs::is_regular_file(dropped / "Rim.wav"),
+          "SC-125: Remove uses the row’s identity even for equal names and leaves its media on disk");
+
+    const auto synced = base / "synced-copy";
+    fs::create_directory(synced);
+    fs::copy_file(user / ".adi-volume-id", synced / ".adi-volume-id");
+    std::ofstream(synced / "Synced.wav") << "synced";
+    const auto syncedListing = scanLibrary(*index, {{"User Library", user, true}, {"Synced", synced}}, volumes);
+    library::Volume original, copy;
+    check(volumes.identify(user, original, error) && volumes.identify(synced, copy, error) && original.id == copy.id &&
+              syncedListing.places.size() == 2 && syncedListing.places[0].volumeId == original.id &&
+              syncedListing.places[1].volumeId != copy.id && syncedListing.samples.size() == 2,
+          "SC-132: a synced marker keeps its portable identity and both local folders remain browsable");
 }
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -25422,6 +25548,7 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
+    trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });

@@ -755,12 +755,13 @@ void BrowserPanel::paint(juce::Graphics &g) {
         juce::Graphics::ScopedSaveState clip(g);
         g.reduceClipRegion(sidebarArea_);
         const int first = std::max(0, juce::roundToInt(sidebarScroll_) - 1) / kRowHeight;
+        const int highlighted = sidebarCursor();
         for (int i = first; i < static_cast<int>(sidebar_.size()); ++i) {
             const auto row = sidebarRowBounds(i);
             if (row.getY() >= sidebarArea_.getBottom())
                 break;
             const auto &e = sidebar_[static_cast<std::size_t>(i)];
-            if (!hotSwap_ && i == selected_) {
+            if (!hotSwap_ && i == highlighted) {
                 g.setColour(look::selection);
                 g.fillRect(row);
             }
@@ -822,10 +823,14 @@ void BrowserPanel::setSidebarScroll(double requested) {
         repaint(sidebarArea_);
     sidebarScroll_ = next;
 }
+int BrowserPanel::sidebarCursor() const noexcept {
+    return addFolderFocused_ ? static_cast<int>(sidebar_.size()) - 1 : selected_;
+}
 void BrowserPanel::revealSidebarSelection() {
-    if (selected_ < 0 || sidebarArea_.isEmpty())
+    const int cursor = sidebarCursor();
+    if (cursor < 0 || sidebarArea_.isEmpty())
         return;
-    const int top = 1 + selected_ * kRowHeight;
+    const int top = 1 + cursor * kRowHeight;
     const int height = sidebarArea_.getHeight();
     const double minimumScroll = top + std::min(height, kRowHeight) - height;
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
@@ -833,7 +838,7 @@ void BrowserPanel::revealSidebarSelection() {
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
     const int y = e.y - sidebarRowBounds(0).getY();
     if (sidebarArea_.contains(e.getPosition()) && y >= 0)
-        choose(y / kRowHeight);
+        sidebarClick(y / kRowHeight, e);
 }
 void BrowserPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) {
     if (sidebarArea_.contains(e.getPosition()) && wheel.deltaY != 0) {
@@ -842,6 +847,45 @@ void BrowserPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWh
         return;
     }
     juce::Component::mouseWheelMove(e, wheel);
+}
+void BrowserPanel::sidebarClick(int row, const juce::MouseEvent &e) {
+    if (hotSwap_ || row < 0 || row >= static_cast<int>(sidebar_.size())) return;
+    if (!e.mods.isPopupMenu()) {
+        choose(row);
+        return;
+    }
+    const auto &entry = sidebar_[static_cast<std::size_t>(row)];
+    if (!removeFolder || entry.place.empty()) return;
+    const auto &places = listing().places;
+    const auto place = std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
+    if (place == places.end() || place->userLibrary) return;
+    juce::Component::SafePointer<BrowserPanel> safe(this);
+    auto remove = [safe, path = place->root] {
+        if (safe && safe->removeFolder) safe->removeFolder(path);
+    };
+    const auto where = e.getScreenPosition();
+    if (onRemoveFolderMenu) {
+        onRemoveFolderMenu(where, std::move(remove));
+        return;
+    }
+    juce::PopupMenu menu;
+    menu.addItem("Remove from Places", std::move(remove));
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+namespace {
+bool droppedDirectory(const juce::String &file) {
+    return juce::File::isAbsolutePath(file) && juce::File(file).isDirectory();
+}
+} // namespace
+bool BrowserPanel::isInterestedInFileDrag(const juce::StringArray &files) {
+    return addFolders && std::ranges::any_of(files, droppedDirectory);
+}
+void BrowserPanel::filesDropped(const juce::StringArray &files, int, int) {
+    if (!addFolders) return;
+    std::vector<std::filesystem::path> folders;
+    for (const auto &file : files)
+        if (droppedDirectory(file)) folders.push_back(media::pathFromUtf8(file.toStdString()));
+    if (!folders.empty()) addFolders(folders);
 }
 void BrowserPanel::searchAll() {
     const SafePointer<BrowserPanel> alive(this);
@@ -858,10 +902,16 @@ void BrowserPanel::choose(int i) {
     if (hotSwap_)
         return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
+        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
+        if (entry.glyph == AddFolder) {
+            if (requestAddFolder) requestAddFolder();
+            else root_.say("Choose a sample folder in the application.");
+            return;
+        }
+        addFolderFocused_ = false;
         selected_ = i;
         pendingLabel_.clear();
         revealSidebarSelection();
-        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
         // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.
         const bool plugIns = entry.glyph == PlugIns;
@@ -878,8 +928,16 @@ void BrowserPanel::choose(int i) {
         }
         if (entry.glyph == All)
             return;
-        const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
-        if (entry.name == "Instruments" || entry.name == "Audio Effects" || entry.name == "Pd Devices") {
+        const bool library = entry.samples || entry.glyph == User;
+        if (!entry.place.empty()) {
+            const auto &places = listing().places;
+            const auto place = std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
+            if (place != places.end() && !place->problem.empty()) {
+                root_.say(place->problem);
+                return;
+            }
+        }
+        if (entry.glyph == Instruments || entry.glyph == AudioFx || entry.glyph == Pd) {
             // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
             if (!rows_.empty() && std::none_of(rows_.begin(), rows_.end(), [](const Row &r) {
                     return r.device != nullptr && unavailable(*r.device).empty();
@@ -900,13 +958,17 @@ void BrowserPanel::choose(int i) {
             root_.say("The library is still being indexed; its samples list when it is done.");
         else if (shown_.empty())
             root_.say(listing().places.empty() || (!entry.samples && entry.place.empty())
-                          ? "Set the User Library or add a folder in the Settings' Library page to list samples."
+                          ? "Choose Add Folder in the Browser to list samples."
                           : (entry.name + " holds no audio files.").toStdString());
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::escapeKey && cancelHotSwap())
         return true;
+    if (k == juce::KeyPress::returnKey && addFolderFocused_ && !hotSwap_) {
+        choose(static_cast<int>(sidebar_.size()) - 1);
+        return true;
+    }
     // Right goes from the sidebar into the list (§41.22), its first row selected.
     if (k == juce::KeyPress::rightKey) {
         enterList();
@@ -920,9 +982,15 @@ bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
     }
     // The next label up or down, past the headings; at either end the selection stays.
     const int step = k == juce::KeyPress::downKey ? 1 : -1;
-    for (int i = selected_ + step; i >= 0 && i < static_cast<int>(sidebar_.size()); i += step)
+    for (int i = sidebarCursor() + step; i >= 0 && i < static_cast<int>(sidebar_.size()); i += step)
         if (!sidebar_[static_cast<std::size_t>(i)].heading) {
-            choose(i);
+            if (sidebar_[static_cast<std::size_t>(i)].glyph == AddFolder) {
+                addFolderFocused_ = true;
+                revealSidebarSelection();
+                repaint();
+            } else {
+                choose(i);
+            }
             break;
         }
     return true;
@@ -933,6 +1001,7 @@ void BrowserPanel::focusGained(FocusChangeType cause) {
 }
 void BrowserPanel::focusLost(FocusChangeType) {
     ring_ = false;
+    addFolderFocused_ = false;
     repaint();
 }
 } // namespace adi::ui

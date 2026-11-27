@@ -13,6 +13,7 @@
 #include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/export_preferences.hpp"
 #include "adi/ui/export_interruption.hpp"
+#include "adi/ui/library_folder_settings.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -436,10 +437,50 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say(e.what());
         }
     }
+    void editBrowserFolders(std::span<const std::filesystem::path> folders, ContentFolderEdit edit) {
+        const auto current = settings_->get(kContentFolders);
+        const auto updated = editContentFolders(current, folders, edit);
+        if (current == updated) return;
+        std::string error;
+        if (!settings_->set(kContentFolders, updated, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, error)) {
+            report(error);
+            return;
+        }
+        startLibrary();
+        if (settingsWindow_) settingsWindow_->panel().refreshValues();
+        if (!settings_->save(error)) report(error);
+    }
+    void chooseBrowserFolder() {
+        if (chooser_) {
+            report("Close the current file chooser before adding a folder.");
+            return;
+        }
+        auto start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+        const auto folders = settings_->get(kContentFolders);
+        if (!folders.empty() && folders.back().is_string()) {
+            const auto last = juce::String::fromUTF8(folders.back().get_ref<const std::string &>().c_str());
+            if (last.isNotEmpty()) {
+                const auto previous = juce::File::getCurrentWorkingDirectory().getChildFile(last);
+                if (previous.isDirectory()) start = previous;
+            }
+        }
+        chooser_ = std::make_unique<juce::FileChooser>("Add a sample folder", start);
+        const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+        chooser_->launchAsync(flags, [this](const juce::FileChooser &chooser) {
+            const auto picked = chooser.getResult();
+            juce::MessageManager::callAsync([this, picked] {
+                if (juce::JUCEApplicationBase::getInstance() != this) return;
+                chooser_.reset();
+                if (!picked.isDirectory()) return;
+                const auto path = pathFromUtf8(picked.getFullPathName().toStdString());
+                editBrowserFolders(std::span{&path, 1}, ContentFolderEdit::Add);
+            });
+        });
+    }
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
         const auto user = settings_->get("library.userLibrary");
-        const auto added = settings_->get("library.contentFolders");
+        const auto added = settings_->get(kContentFolders);
         const auto background = settings_->get("library.backgroundIndexing");
         const auto preferences = settings::Value::array({user, added, background});
         if (preferences == libraryPreferences_)
@@ -1348,6 +1389,13 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
         root->browser.restoreLabel(*settings_);
         root->browser.setLibrarySnapshot(library_, libraryReady_);
+        root->browser.requestAddFolder = [this] { chooseBrowserFolder(); };
+        root->browser.addFolders = [this](std::span<const std::filesystem::path> folders) {
+            editBrowserFolders(folders, ContentFolderEdit::Add);
+        };
+        root->browser.removeFolder = [this](const std::filesystem::path &folder) {
+            editBrowserFolders(std::span{&folder, 1}, ContentFolderEdit::Remove);
+        };
         refreshDevicePresets();
         root->browser.loadDevicePreset = [this](const std::filesystem::path &path) {
             return loadDevicePreset(path);

@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -45,7 +46,8 @@ class BrowserList final : public juce::ListBox {
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
 // (DF-W34); double-click, Enter and drag load through the engine's insert (N57). The other categories say what they wait for.
-class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
+class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient,
+                           public juce::FileDragAndDropTarget, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
     ~BrowserPanel() override {
@@ -56,6 +58,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // With the focus, the up and down arrows move between the sidebar's labels (§41.4.1.6).
     bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override;
@@ -92,6 +96,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void restoreLabel(settings::AppSettings &);
     // Selects a label, as a click on it does.
     void choose(int);
+    std::function<void()> requestAddFolder;
+    std::function<void(std::span<const std::filesystem::path>)> addFolders;
+    std::function<void(const std::filesystem::path &)> removeFolder;
+    std::function<void(juce::Point<int>, std::function<void()>)> onRemoveFolderMenu;
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
@@ -152,6 +160,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
   private:
     void setSidebarScroll(double);
     void revealSidebarSelection();
+    int sidebarCursor() const noexcept;
+    void sidebarClick(int row, const juce::MouseEvent &);
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
@@ -194,6 +204,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     settings::AppSettings *labelSettings_ = nullptr;
     std::string pendingLabel_;
     double sidebarScroll_ = 0.;
+    bool addFolderFocused_ = false;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };
