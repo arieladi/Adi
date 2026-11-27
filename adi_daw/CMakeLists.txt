@@ -1832,6 +1832,11 @@ add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
 target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
 
+target_sources(adi_core PRIVATE src/adi/engine/launch_data.cpp)
+add_executable(adi_launch_data_tests tests/test_launch_data.cpp)
+target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
+
 add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
 target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)
 target_compile_definitions(adi_media_hash_tests PRIVATE
