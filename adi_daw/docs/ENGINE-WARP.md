@@ -54,13 +54,28 @@ detectTransients reader in audio/transients.hpp supplies source-relative onset
 frames to Beats and Auto-Warp analysis; it uses bounded windows,
 has no Store side effects and refuses on the callback.
 
+Engine owners can pass `WarpTimingSettings` to `requestWarp` to use shared
+AWTM timing for automatic Beats renders. The worker verifies the original
+source hash and looks up the exact settings before checking prepared PCM.
+It projects cached positions into the original source window before playback
+rate conversion. A matching empty window uses the slice origin and anchor
+positions. Missing or incompatible timing uses the incumbent detector.
+Current ClipPlayback uses `requestWarp(plan)` while the timing rollout is
+gated. The settings overload resolves AWTM for automatic Beats only.
+
+Prepared PCM keys for shared timing include the canonical onset positions.
+A new cache-aware request rechecks timing after the preceding request has
+started that lookup, so a later AWTM publication can refresh a prior fallback.
+Existing task holders retain their completed PCM.
+
 Auto-Warp (audio/auto_warp.hpp) fits an onset grid, optionally follows tempo
 changes and places bar anchors in the supplied meter. From First Beat trims
-the source window to the first detected attack; Sample Start retains its
-original offset. A supplied source BPM provides a straight clock for short
-or non-percussive material. Without enough reliable timing evidence the
-producer refuses with NoTempo. Grid confidence does not resolve half/double
-tempo ambiguity; the captured tempo hint selects between those candidates.
+the source window to the first detected attack on the incumbent path. A
+selected shared grid trims to its first measured downbeat. Sample Start
+retains the original offset. A supplied source BPM provides a straight clock
+for short or non-percussive material. Without enough reliable timing evidence
+the producer refuses with NoTempo. The captured tempo hint selects between
+half-time and double-time candidates when grid confidence leaves ambiguity.
 
 clip_edit::prepareImportAudio connects this analysis to a captured AWRP blob,
 source window and musical clip length. It performs no project writes until
