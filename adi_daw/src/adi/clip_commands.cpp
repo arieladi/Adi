@@ -506,7 +506,8 @@ PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t medi
             auto& stored=source.at("warp_markers");
             if(!sameDuration || oldRate!=sampleRate) {
                 const auto rescale=[&](std::int64_t frame) {
-                    return std::llround(static_cast<long double>(frame)*sampleRate/oldRate);
+                    return std::llround(static_cast<long double>(frame) * static_cast<long double>(sampleRate) /
+                                        static_cast<long double>(oldRate));
                 };
                 const auto first=sameDuration?rescale(oldStart):0;
                 const auto count=sameDuration?rescale(edit::addTime(oldStart,oldLength))-first:frames;
