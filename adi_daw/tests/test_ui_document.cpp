@@ -1456,9 +1456,16 @@ void deviceDefaultPresets(const std::filesystem::path &dir) {
                       source->parameterGesture(original->id, utilityGain, ParamEventKind::End, savedGain) &&
                       hasGain(*source, original->id, savedGain),
                   "SC-299: the source Utility has an edited gain in the store and the runtime");
+            // As in Device View, let the owner finish publishing the edit before
+            // reading the current device identity for its title menu.
+            source->setParameterDemand(source.get(), {original->id});
+            source->tick(0);
+            const auto edited = panelOn(*source, audioTrack, utilityUid);
             const auto sourceHead = head(*source);
-            check(source->saveDefaultDevicePreset(*original, library) && head(*source) == sourceHead,
-                  "SC-299: Save as Default Preset changes the library without a project edit");
+            const bool saved = edited && source->saveDefaultDevicePreset(*edited, library);
+            const auto saveMessage = "SC-299: Save as Default Preset changes the library without a project edit" +
+                                     (saved || source->error().empty() ? std::string{} : " (" + source->error() + ")");
+            check(saved && head(*source) == sourceHead, saveMessage.c_str());
 
             const auto beforeDrop = head(*target);
             const auto trackCount = [&] { return target->view().current()->tracks.size(); };
