@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/events.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -50,6 +51,10 @@ public:
     // Owner only; immutable bounded input history, not a phrase, MIDI file,
     // inferred tempo/loop or committed native clip. Failure leaves output empty.
     bool snapshot(MidiMemorySnapshot&,std::string& error) const;
+    // Owner-side availability hint. Snapshot still validates the boundary.
+    [[nodiscard]] bool hasEventsAfter(std::uint64_t serial) const noexcept {
+        return publishedNext_.load() > std::max(serial, publishedFirst_.load());
+    }
     struct Stats { std::uint64_t copied=0,dropped=0,ignored=0,invalid=0; };
     [[nodiscard]] Stats stats() const noexcept;
 private:

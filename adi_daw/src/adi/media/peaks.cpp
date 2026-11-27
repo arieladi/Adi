@@ -64,19 +64,13 @@ bool matches(const MediaPeaks& data,const Plan& source) {
 struct Cancelled {};
 void cancelled(std::stop_token stop){if(stop.stop_requested())throw Cancelled{};}
 std::filesystem::path locate(const Store& store,const Plan& source,std::stop_token stop) {
-    const auto folder=projectFolder(store);std::vector<std::filesystem::path> candidates;
-    if(source.relative){const auto path=pathFromUtf8(*source.relative);if(path.is_absolute())throw std::runtime_error("absolute relative media path");candidates.push_back(folder/path);}
-    const auto name=pathFromUtf8(source.name).filename();if(!name.empty())candidates.push_back(folder/"audio"/name);
-    if(source.hint){const auto path=pathFromUtf8(*source.hint);if(!path.is_absolute())throw std::runtime_error("non-absolute media hint");candidates.push_back(path);}
-    for(const auto& path:candidates) {
-        cancelled(stop);std::error_code error;const bool exists=std::filesystem::exists(path,error);
-        if(error)throw std::runtime_error("cannot inspect media path");
-        if(!exists)continue;
-        const auto hash=blake3File(path,stop);if(hash.error==HashError::cancelled)throw Cancelled{};
-        if(!hash || hash.hex!=source.hash)throw std::runtime_error("media content hash mismatch");
-        return path;
-    }
-    return {};
+    std::string error;
+    const auto path = resolveMedia(projectFolder(store), source.relative ? pathFromUtf8(*source.relative) : std::filesystem::path{},
+                                  source.hint ? pathFromUtf8(*source.hint) : std::filesystem::path{},
+                                  source.name, source.hash, error, stop);
+    cancelled(stop);
+    if (path.empty() && !error.empty()) throw std::runtime_error(error);
+    return path;
 }
 }
 std::vector<std::byte> encodePeaks(const MediaPeaks& data) {

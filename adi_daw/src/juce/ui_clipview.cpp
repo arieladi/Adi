@@ -29,6 +29,9 @@ const auto kWarpModeLabels = [] {
     return labels;
 }();
 
+// Pending the direct Live reading (R20): an editor click places its local cursor.
+constexpr bool kNoteEditorClickMovesArrangementInsertMarker = false;
+
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
 juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
     const bool before = tick < 0;
@@ -69,7 +72,7 @@ std::optional<std::int64_t> parseSourceClock(const juce::String &text) {
     return minutes * 60000 + seconds * 1000 + milliseconds;
 }
 // The time ruler both editors share: the song's bars along the foot of a dark band, as the
-// arrangement's beat-time ruler draws them, and beats when they have room.
+// arrangement's beat-time ruler draws them. The Note Editor also marks the finer editing grid.
 void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementGeometry &time,
                 const std::vector<textproj::Meter> &meters) {
     g.setColour(look::band);
@@ -148,6 +151,14 @@ void shadeOutside(juce::Graphics &g, juce::Rectangle<int> area, const Arrangemen
         g.fillRect(std::max(area.getX(), end), area.getY(), area.getRight() - std::max(area.getX(), end),
                    area.getHeight());
 }
+// Alt on Windows/Linux or Cmd on macOS bypasses snapping and starts note-velocity drags.
+bool alternateNoteGesture(const juce::ModifierKeys &mods) noexcept {
+#if JUCE_MAC
+    return mods.isCommandDown();
+#else
+    return mods.isAltDown();
+#endif
+}
 // The wheel in an editor: Ctrl/Cmd zooms time around the pointer, Shift (or a sideways wheel)
 // scrolls time, as in the arrangement (manual 10.2).
 bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce::MouseWheelDetails &w, int originX) {
@@ -170,21 +181,66 @@ NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
     setOpaque(true);
     setWantsKeyboardFocus(true);
     addChildComponent(playhead);
+    addAndMakeVisible(preview_);
+    preview_.setTitle("Preview MIDI Notes");
+    preview_.setTooltip("Hear notes when you select, draw or move them, or play the piano ruler.");
+    preview_.getProperties().set("live.font", 9.0);
+    preview_.setToggleState(true, juce::dontSendNotification);
+    preview_.onClick = [this] {
+        const bool on = !preview_.getToggleState();
+        preview_.setToggleState(on, juce::dontSendNotification);
+        if (!on) {
+            pianoPreviewHeld_ = false;
+            if (panel.root.stopMidiPreview)
+                panel.root.stopMidiPreview();
+        }
+    };
+}
+void NoteEditor::audition(std::int64_t track, int key, int velocity, bool held) {
+    if (!preview_.getToggleState() || !panel.root.previewMidiNote)
+        return;
+    const bool started = panel.root.previewMidiNote(track, key, velocity, held);
+    if (held)
+        pianoPreviewHeld_ = started;
+}
+void NoteEditor::auditionSelected() {
+    if (const auto *clip = panel.details(); clip != nullptr && !selected_.empty())
+        if (const auto *note = note_edits_detail::find(*clip, selected_.ids().front()))
+            audition(clip->trackId, note->key, note->velocity);
+}
+void NoteEditor::releasePianoPreview() {
+    if (std::exchange(pianoPreviewHeld_, false) && panel.root.stopMidiPreview)
+        panel.root.stopMidiPreview();
+}
+void NoteEditor::focusLost(FocusChangeType) { releasePianoPreview(); }
+bool NoteEditor::keySounding(int key) const noexcept {
+    return key >= 0 && key < kNoteKeys &&
+           (soundingKeys_[static_cast<std::size_t>(key / 64)] & (std::uint64_t{1} << (key % 64))) != 0;
 }
 void NoteEditor::frame() {
+    const auto *clip = panel.details();
+    if (pianoPreviewHeld_ && (clip == nullptr || clip->kind != "midi" || !panel.root.state().clipView))
+        releasePianoPreview();
+    const auto sounding = clip != nullptr && clip->kind == "midi" && panel.root.midiKeysSounding
+                              ? panel.root.midiKeysSounding(clip->trackId) : std::array<std::uint64_t, 2>{};
+    if (sounding != soundingKeys_) {
+        soundingKeys_ = sounding;
+        repaint(keysArea());
+    }
     // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
     const auto area = notesArea();
-    if (panel.details() != nullptr && panel.root.playing() && panel.root.state().follow && !panel.root.arrangement.followPaused &&
-        area.getWidth() > 0) {
+    const auto songTick = panel.root.timelineTick();
+    const auto tick = clip != nullptr ? noteEditorPlayheadTick(*clip, songTick) : songTick;
+    const bool playing = clip != nullptr && panel.root.playing();
+    if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused && area.getWidth() > 0) {
         // Follow (manual 8.7, 10.2.2): a page at a time, as the playhead leaves the editor.
-        const auto tick = panel.root.timelineTick();
         if (const double at = time.x(tick); at < 0 || at >= area.getWidth()) {
             time.left = std::max(0., static_cast<double>(tick) / textproj::kPPQ);
             repaint();
         }
     }
-    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    const int x = static_cast<int>(std::clamp(time.x(tick), -1e7, 1e7));
+    playhead.setVisible(playing && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
 }
 void NoteEditor::setLaneShape(LaneShape shape) {
@@ -254,7 +310,7 @@ void NoteEditor::setTrimMode(bool on) {
         setDrawMode(false);
         return;
     }
-    setMouseCursor(on || drawMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    updateCursor();
     panel.repaint();
 }
 void NoteEditor::trimStroke() {
@@ -358,7 +414,7 @@ void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
     if (on)
         trimMode_ = false;
-    setMouseCursor(on || trimMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    updateCursor();
     panel.repaint();
     panel.root.transport.draw.setToggleState(on, juce::dontSendNotification);
     panel.root.arrangement.canvas.repaint();
@@ -482,6 +538,7 @@ void NoteEditor::zoomToNotes() {
     const auto area = notesArea();
     const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
+    panel.repaint(panel.gridBox());
     keys.show(range->low, range->high, area.getHeight());
     panel.repaint(panel.gridBox());
     repaint();
@@ -1568,8 +1625,10 @@ std::optional<std::pair<std::int64_t, std::int64_t>> NoteEditor::stretchSpan() c
 }
 NoteEditor::StretchPart NoteEditor::stretchPartAt(juce::Point<int> at) const {
     const auto area = stretchArea();
+    if (!area.contains(at))
+        return StretchPart::None;
     const auto span = stretchSpan();
-    if (!span || !area.contains(at))
+    if (!span)
         return StretchPart::None;
     const int a = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
     const int b = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
@@ -1770,6 +1829,7 @@ void NoteEditor::select(std::vector<std::uint64_t> ids) {
     if (ids.empty())
         otherSelected_.clear();
     selected_.set(std::move(ids));
+    updateCursor();
     repaint();
 }
 void NoteEditor::prune() {
@@ -1787,18 +1847,14 @@ void NoteEditor::prune() {
         scaleFolded_ = false;
     if (folded_ || scaleFolded_ || keys.isFolded())
         refold();
+    updateCursor();
 }
 std::int64_t NoteEditor::gridTicks() const noexcept {
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
 }
 bool NoteEditor::snapping(const juce::ModifierKeys &mods) const noexcept {
     // Alt (Cmd on the Mac) bypasses snapping; with the grid off, it snaps while held (manual 10.2.1).
-#if JUCE_MAC
-    const bool bypass = mods.isCommandDown();
-#else
-    const bool bypass = mods.isAltDown();
-#endif
-    return time.grid.snap != bypass;
+    return time.grid.snap != alternateNoteGesture(mods);
 }
 const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) const noexcept {
     const auto *clip = panel.details();
@@ -1885,9 +1941,61 @@ bool NoteEditor::commit(NoteEdit edit) {
     panel.reread();
     return true;
 }
+juce::MouseCursor::StandardCursorType NoteEditor::cursorAt(juce::Point<int> at, const juce::ModifierKeys &mods) const {
+    using Cursor = juce::MouseCursor;
+    if (panel.details() == nullptr)
+        return Cursor::NormalCursor;
+    const auto rulerPart = rulerPartAt(at);
+    if (rulerPart != RulerPart::None)
+        return rulerPart == RulerPart::Loop ? Cursor::DraggingHandCursor : Cursor::LeftRightResizeCursor;
+    if (keysArea().contains(at))
+        return Cursor::NormalCursor; // piano keys take priority over the lane divider
+    if (laneDivider().contains(at))
+        return noteAt(at) == nullptr && otherClipAt(at) != 0 ? Cursor::NormalCursor : Cursor::UpDownResizeCursor;
+    if (stretchPartAt(at) != StretchPart::None)
+        return Cursor::LeftRightResizeCursor;
+    if (velocityArea().contains(at) && drawMode_ && shape_ == LaneShape::Pointer)
+        return Cursor::CrosshairCursor;
+    if (!notesArea().contains(at))
+        return Cursor::NormalCursor;
+
+    NotePart part = NotePart::None;
+    const auto *note = noteAt(at, &part);
+    if (drawMode_ || trimMode_) {
+        if (note == nullptr && otherClipAt(at) != 0)
+            return Cursor::NormalCursor;
+        return trimMode_ || note != nullptr || keys.keyAt(at.y - notesArea().getY())
+                   ? Cursor::CrosshairCursor : Cursor::NormalCursor;
+    }
+    if (note == nullptr || (mods.isShiftDown() ? isSelected(note->id) : alternateNoteGesture(mods)))
+        return Cursor::NormalCursor;
+    return part == NotePart::Start || part == NotePart::End ? Cursor::LeftRightResizeCursor : Cursor::NormalCursor;
+}
+void NoteEditor::updateCursor() {
+    if (drag_ == Drag::None)
+        setMouseCursor(hover_ ? cursorAt(*hover_, hoverMods_) : juce::MouseCursor::NormalCursor);
+}
+void NoteEditor::mouseEnter(const juce::MouseEvent &e) { mouseMove(e); }
+void NoteEditor::mouseMove(const juce::MouseEvent &e) {
+    const auto at = e.getPosition();
+    hover_ = getLocalBounds().contains(at) ? std::optional{at} : std::nullopt;
+    hoverMods_ = e.mods;
+    updateCursor();
+}
+void NoteEditor::mouseExit(const juce::MouseEvent &) {
+    hover_.reset();
+    updateCursor();
+}
+void NoteEditor::modifierKeysChanged(const juce::ModifierKeys &mods) {
+    hoverMods_ = mods;
+    updateCursor();
+    juce::Component::modifierKeysChanged(mods);
+}
 void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     focusIfShowing(*this);
+    releasePianoPreview();
     drag_ = Drag::None;
+    mouseMove(e);
     copying_ = false;
     dragTicks_ = 0;
     dragKeys_ = 0;
@@ -1920,14 +2028,21 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             auto &selection = otherSelection(other);
             if (selection.contains(picked))
                 selection.erase(picked);
-            else
+            else {
                 selection.add(picked);
+                for (const auto &layer : panel.others())
+                    if (layer.details.id == other)
+                        if (const auto *note = note_edits_detail::find(layer.details, picked))
+                            audition(layer.details.trackId, note->key, note->velocity);
+            }
             repaint();
             return;
         } else if (other != 0) {
             // Another clip's loop bar or note: that clip becomes the one being edited (manual 10.8).
-            if (panel.activate(other) && picked != 0)
+            if (panel.activate(other) && picked != 0) {
                 selected_.set({picked});
+                auditionSelected();
+            }
             repaint();
             return;
         }
@@ -1958,6 +2073,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         // A piano key selects its key track's notes; with Shift it adds them, or takes them out
         // when all of them are in (manual 10.5.2).
         if (const auto key = keys.keyAt(from_.y - piano.getY())) {
+            audition(clip->trackId, *key, 100, true);
             std::vector<std::uint64_t> track;
             for (const auto &n : clip->notes)
                 if (n.key == *key)
@@ -2079,6 +2195,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             drawKey_ = *key;
             selected_.clear();
             drag_ = Drag::Draw;
+            audition(clip->trackId, drawKey_);
         }
         repaint();
         return;
@@ -2096,15 +2213,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             selected_.set({n->id});
         }
         if (isSelected(n->id)) {
+            audition(clip->trackId, n->key, n->velocity);
             anchor_ = n->id;
             drag_ = part == NotePart::Start ? Drag::Start : part == NotePart::End ? Drag::End : Drag::Move;
-#if JUCE_MAC
-            const bool velocity = e.mods.isCommandDown();
-#else
-            const bool velocity = e.mods.isAltDown();
-#endif
             // Alt (Cmd on the Mac) held at the press: a vertical drag changes velocity (manual 10.5.12).
-            if (velocity && !e.mods.isShiftDown())
+            if (alternateNoteGesture(e.mods) && !e.mods.isShiftDown())
                 beginVelocityDrag(true);
         }
     } else if (notesArea().contains(from_)) {
@@ -2114,6 +2227,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             // The insert marker goes where the click is, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(from_.x - notesArea().getX()));
             insert_ = snapping(e.mods) ? time.snap(at, false) : at;
+            if constexpr (kNoteEditorClickMovesArrangementInsertMarker) {
+                panel.root.arrangement.geometry.selection.insert = *insert_;
+                panel.root.publishSelection();
+                panel.root.arrangement.changed();
+            }
             head_.reset();
         }
         bandBase_ = selected();
@@ -2132,12 +2250,31 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     copying_ = drag_ == Drag::Move && e.mods.isCtrlDown();
 #endif
     const auto area = notesArea();
-    if (drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End) {
-        // Notes keep their offset from the grid: the drag moves by whole grid steps (manual 10.2.1).
-        const double raw = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
-        const auto step = static_cast<double>(gridTicks());
-        dragTicks_ = snapping(e.mods) ? static_cast<std::int64_t>(std::llround(raw / step) * static_cast<long long>(step))
-                                      : static_cast<std::int64_t>(std::llround(raw));
+    const auto previousTicks = dragTicks_;
+    const bool draggingNotes = drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End;
+    const auto *anchor = draggingNotes ? note_edits_detail::find(*clip, anchor_) : nullptr;
+    if (draggingNotes) {
+        const int dx = to_.x - from_.x;
+        dragTicks_ = std::llround(static_cast<double>(dx) / time.scale * textproj::kPPQ);
+        if (dx != 0 && anchor != nullptr && snapping(e.mods)) {
+            // Follow the pointer until the first grid line approaches. Snap the grabbed note's moving
+            // edge from then on, and apply its delta to the whole selection (manual 10.2.1).
+            const auto origin = ClipWindow::of(*clip).toArrangement(
+                anchor->startTicks + (drag_ == Drag::End ? anchor->durationTicks : 0));
+            const auto target = origin + dragTicks_;
+            const auto firstLine = time.snap(origin, dx > 0);
+            constexpr double magneticPixels = 4.;
+            const auto remaining = dx > 0 ? firstLine - target : target - firstLine;
+            const auto distance = static_cast<double>(remaining) / textproj::kPPQ * time.scale;
+            if (distance <= std::min(magneticPixels, time.gridQuarters() * time.scale / 2.)) {
+                const auto below = time.snap(target, false), above = time.snap(target, true);
+                const auto distanceBelow = target - below, distanceAbove = above - target;
+                const bool nearerBelow = distanceBelow < distanceAbove || (distanceBelow == distanceAbove && dx < 0);
+                const auto nearest = nearerBelow ? below : above;
+                const auto line = dx > 0 ? std::max(nearest, firstLine) : std::min(nearest, firstLine);
+                dragTicks_ = line - origin;
+            }
+        }
     }
     if (drag_ == Drag::Move) {
         const auto a = keys.keyAt(from_.y - area.getY());
@@ -2157,7 +2294,10 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         if (!panel.focus())
             for (const auto &layer : panel.others())
                 widenRange(layer.details);
-        dragKeys_ = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
+        const int keyDelta = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
+        if (anchor != nullptr && (keyDelta != dragKeys_ || previousTicks != dragTicks_))
+            audition(clip->trackId, anchor->key + keyDelta, anchor->velocity);
+        dragKeys_ = keyDelta;
     } else if (drag_ == Drag::Velocity) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
@@ -2244,14 +2384,17 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     }
     repaint();
 }
-void NoteEditor::mouseUp(const juce::MouseEvent &) {
+void NoteEditor::mouseUp(const juce::MouseEvent &e) {
+    releasePianoPreview();
     const auto kind = std::exchange(drag_, Drag::None);
     const auto ticks = std::exchange(dragTicks_, 0);
     const int keysBy = std::exchange(dragKeys_, 0);
     const auto *clip = panel.details();
     repaint();
-    if (clip == nullptr)
+    if (clip == nullptr) {
+        mouseMove(e);
         return;
+    }
     const bool copy = std::exchange(copying_, false);
     if (kind == Drag::Move && copy && (ticks != 0 || keysBy != 0))
         commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
@@ -2317,6 +2460,7 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         drag_ = Drag::None;
         commit(drawNotes(*clip, steps, gridTicks(), drawKey_));
     }
+    mouseMove(e);
 }
 void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
@@ -2343,9 +2487,14 @@ void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
         return;
     const auto tick = time.tick(static_cast<double>(at.x - area.getX()));
     const auto start = snapping(e.mods) ? time.snap(tick, false) : tick;
-    commit(addNote(*clip, ClipWindow::of(*clip).toSource(start), gridTicks(), *key));
+    const auto track = clip->trackId;
+    if (commit(addNote(*clip, ClipWindow::of(*clip).toSource(start), gridTicks(), *key)))
+        audition(track, *key);
 }
-bool NoteEditor::keyPressed(const juce::KeyPress &k) {
+bool NoteEditor::keyPressed(const juce::KeyPress &key) {
+    if (panel.root.playComputerMidiKey(key))
+        return true;
+    const auto k = panel.root.computerMidiShortcut(key);
     const auto *clip = panel.details();
     if (clip == nullptr)
         return false;
@@ -2389,6 +2538,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
             return true;
         }
+    }
+    if (code == juce::KeyPress::spaceKey && !mods.isAnyModifierKeyDown() && insert_) {
+        const auto range = timeSelection();
+        panel.root.playOrStopFrom(range ? range->first : *insert_);
+        return true;
     }
     // The Main panel's Set buttons from the keyboard (manual 41.8): Ctrl/Cmd with F9 sets the Start
     // marker, F10 the loop's start, F11 the loop's end, F12 the End marker.
@@ -2601,24 +2755,28 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     if (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) {
         const auto by = code == juce::KeyPress::rightKey ? gridTicks() : -gridTicks();
         const bool lengthen = mods.isShiftDown();
-        commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        if (commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
             return lengthen ? resizeNotes(of, ids, by) : moveNotes(of, ids, by, 0);
-        }));
+        })) && !lengthen)
+            auditionSelected();
         return true;
     }
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
         const int by = (code == juce::KeyPress::upKey ? 1 : -1) * (mods.isShiftDown() ? 12 : 1);
-        commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return moveNotes(of, ids, 0, by); }));
+        if (commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return moveNotes(of, ids, 0, by); })))
+            auditionSelected();
         return true;
     }
     return false;
 }
 void NoteEditor::showClip() {
+    releasePianoPreview();
     fitPending_ = true;
     resized();
 }
 void NoteEditor::resized() {
     const auto area = notesArea();
+    preview_.setBounds(2, barsHeight() + 1, kKeysWidth - 4, kRulerHeight - 2);
     if (fitPending_ && area.getWidth() > 0 && area.getHeight() > 0) {
         if (const auto *clip = panel.details()) {
             fitPending_ = false;
@@ -2645,6 +2803,7 @@ void NoteEditor::resized() {
         }
     }
     keys.clampScroll(area.getHeight());
+    updateCursor();
 }
 void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     const auto area = notesArea();
@@ -2657,10 +2816,12 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
         panel.repaint(panel.gridBox());
     }
+    mouseMove(e);
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
     auto out = labels_;
+    out.push_back(preview_.getBounds().reduced(2, 0));
     out.push_back(rulerArea());
     return out;
 }
@@ -2868,6 +3029,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             if (y >= keyboard.getBottom())
                 break;
             const int key = *keys.keyOfRow(row);
+            const bool sounding = keySounding(key);
             if (blackKey(key)) {
                 g.setColour(look::pianoBlack);
                 g.fillRect(keyboard.getX(), y, keyboard.getWidth() * 3 / 5, keys.keyHeight);
@@ -2882,6 +3044,11 @@ void NoteEditor::paint(juce::Graphics &g) {
                 const bool tonic = (key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12 == 0;
                 g.setColour(look::accent.withAlpha(highlightScale && tonic ? 0.9f : 0.45f));
                 g.fillRect(keyboard.getX(), y + 1, highlightScale && tonic ? 6 : 4, std::max(1, keys.keyHeight - 2));
+            }
+            if (sounding) {
+                g.setColour(look::accent);
+                g.fillRect(keyboard.getX(), y + 1, blackKey(key) ? keyboard.getWidth() * 3 / 5 : keyboard.getWidth() - 1,
+                           std::max(1, keys.keyHeight - 2));
             }
             if ((key % 12 == 0 || keys.isFolded()) && keys.keyHeight >= 9) {
                 const juce::Rectangle<int> name(keyboard.getRight() - 26, y, 24, keys.keyHeight);
@@ -4276,14 +4443,15 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
         if (pressed_ == Field::Transpose) {
             out.transpose = (dragSteps_ > 0 ? juce::String("+") : juce::String()) + juce::String(dragSteps_) + " st";
         } else if (pressed_ == Field::Signature) {
-            const auto s = draggedSignature();
+            const auto s = adjustedSignature(pressPart_, dragSteps_);
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
-            out.length = lengthText(draggedTicks(), meter_);
+            out.length = lengthText(adjustedTicks(pressed_, pressPart_, dragSteps_), meter_);
         } else if (pressed_ != Field::Gain && pressed_ != Field::Pitch && pressed_ != Field::Detune) {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
-            shown = unwarpedTimeField(pressed_) ? sourceClockText(draggedMilliseconds())
-                                                : positionText(draggedTicks(), clipMeters_);
+            shown = unwarpedTimeField(pressed_)
+                ? sourceClockText(adjustedMilliseconds(pressed_, pressPart_, dragSteps_))
+                : positionText(adjustedTicks(pressed_, pressPart_, dragSteps_), clipMeters_);
         }
     }
     const auto &time = midi() ? notes.time : sample.time;
@@ -4969,7 +5137,7 @@ bool ClipViewPanel::setGain(double db) {
         return false;
     repaint(fieldBox(Field::Gain));
     db = std::clamp(db, -kClipGainLimitDb, kClipGainLimitDb);
-    if (db == details_->gainDb)
+    if (std::abs(db - details_->gainDb) < 1e-6)
         return true;
     if (!root.submitEdit("clip.setGain", {{"id", clip_}, {"gain", db}}, "Set Clip Gain"))
         return false;
@@ -5233,7 +5401,40 @@ bool ClipViewPanel::setWarp(bool enabled, std::optional<double> sourceBpm) {
         options.analysis.tempoHint = snapshot->tempo->bpmAt(node_->posTicks);
     return root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), node_->id, options, root.editRate()));
 }
-void ClipViewPanel::openEditor(Field field) {
+juce::String ClipViewPanel::fieldText(Field field) {
+    if (unwarpedTimeField(field))
+        return sourceClockText(fieldMilliseconds(field));
+    if (field == Field::Name)
+        return juce::String(details_->name);
+    if (const auto *value = plainField(field))
+        return juce::String(*value);
+    switch (field) {
+    case Field::Start:
+    case Field::End:
+    case Field::Position:
+        return positionText(fieldTicks(field), clipMeters_).removeCharacters(" ");
+    case Field::Length:
+        return lengthText(fieldTicks(field), meter_).removeCharacters(" ");
+    case Field::Signature:
+        return juce::String(meter_.numerator) + "/" + juce::String(meter_.denominator);
+    case Field::Transpose:
+        return "0";
+    case Field::Stretch:
+        return "100";
+    case Field::Gain:
+        return juce::String(details_->gainDb, 2);
+    case Field::Pitch:
+    case Field::Detune:
+        return juce::String(pitchPart(field));
+    case Field::SourceTempo: {
+        const auto bpm = sample.sourceBpm();
+        return bpm > 0 ? juce::String(bpm, 2) : juce::String();
+    }
+    default:
+        return {};
+    }
+}
+void ClipViewPanel::openEditor(Field field, int part) {
     // A field of a scrolled column comes whole into view before it opens.
     if (const auto view = columnArea(), box = fieldBox(field); !view.isEmpty() && field != Field::Name && !box.isEmpty() && box.getRight() <= view.getRight()) {
         if (box.getY() < view.getY() + 2)
@@ -5242,23 +5443,11 @@ void ClipViewPanel::openEditor(Field field) {
             scrollColumn(columnScroll() + box.getBottom() - (view.getBottom() - 2));
     }
     editing_ = field;
-    const auto r = readings();
-    const auto bpm = field == Field::SourceTempo ? sample.sourceBpm() : 0.;
-    const auto value = field == Field::Start       ? r.start
-                       : field == Field::End       ? r.end
-                       : field == Field::Position  ? r.position
-                       : field == Field::Length    ? r.length
-                       : field == Field::SourceTempo ? (bpm > 0 ? juce::String(bpm, 2) : juce::String())
-                       : field == Field::Gain      ? juce::String(details_->gainDb, 2)
-                       : field == Field::Pitch || field == Field::Detune ? juce::String(pitchPart(field))
-                       : field == Field::Transpose ? juce::String("0")
-                       : field == Field::Stretch   ? juce::String("100")
-                       : plainField(field) != nullptr ? juce::String(*plainField(field))
-                                                   : r.signature;
+    editPart_ = part;
+    editorReading_ = fieldText(field);
     editor_.setBounds(fieldBox(field));
     editor_.setJustification(field == Field::Name ? juce::Justification::centredLeft : juce::Justification::centredRight);
-    // A name keeps its spaces; the other fields are read without them.
-    editor_.setText(field == Field::Name ? juce::String(details_->name) : value.removeCharacters(" "), false);
+    editor_.setText(editorReading_, false);
     editor_.setVisible(true);
     editor_.selectAll();
     focusIfShowing(editor_);
@@ -5266,6 +5455,25 @@ void ClipViewPanel::openEditor(Field field) {
 void ClipViewPanel::closeEditor() {
     editing_ = Field::None;
     editor_.setVisible(false);
+}
+bool ClipViewPanel::FieldEditor::keyPressed(const juce::KeyPress &key) {
+    return owner_.stepEditedField(key) || juce::TextEditor::keyPressed(key);
+}
+bool ClipViewPanel::stepEditedField(const juce::KeyPress &key) {
+    if (key != juce::KeyPress::upKey && key != juce::KeyPress::downKey)
+        return false;
+    const auto field = editing_;
+    if (key.getModifiers().isAnyModifierKeyDown() || !details_ || field == Field::None || field == Field::Name ||
+        editor_.getText() != editorReading_)
+        return false;
+    adjustField(field, editPart_, key == juce::KeyPress::upKey ? 1 : -1);
+    // Leave the editor on the same part for repeated keys or subsequent typing.
+    if (editing_ == field && details_) {
+        editorReading_ = fieldText(field);
+        editor_.setText(editorReading_, false);
+        editor_.selectAll();
+    }
+    return true;
 }
 void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     pressed_ = Field::None;
@@ -5538,76 +5746,73 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
         repaint();
     }
 }
-std::int64_t ClipViewPanel::draggedTicks() const noexcept {
-    if (unwarpedTimeField(pressed_))
-        return sample.sourceSecondsToTicks(static_cast<double>(draggedMilliseconds()) * .001);
+std::int64_t ClipViewPanel::adjustedTicks(Field field, int part, int steps) const noexcept {
+    if (unwarpedTimeField(field))
+        return sample.sourceSecondsToTicks(static_cast<double>(adjustedMilliseconds(field, part, steps)) * .001);
     const std::int64_t beat = meter_.denominator == 0 ? 0 : textproj::kWhole / meter_.denominator;
-    const std::int64_t unit = pressPart_ == 0 ? meter_.barTicks() : pressPart_ == 1 ? beat : textproj::kPPQ / 4;
-    return fieldTicks(pressed_) + dragSteps_ * unit;
+    const std::int64_t unit = part == 0 ? meter_.barTicks() : part == 1 ? beat : textproj::kPPQ / 4;
+    const auto tick = fieldTicks(field), delta = steps * unit;
+    if (delta > 0 && tick > std::numeric_limits<std::int64_t>::max() - delta)
+        return std::numeric_limits<std::int64_t>::max();
+    if (delta < 0 && tick < std::numeric_limits<std::int64_t>::min() - delta)
+        return std::numeric_limits<std::int64_t>::min();
+    return tick + delta;
 }
-std::int64_t ClipViewPanel::draggedMilliseconds() const noexcept {
+std::int64_t ClipViewPanel::adjustedMilliseconds(Field field, int part, int steps) const noexcept {
     constexpr std::int64_t units[] = {60000, 1000, 1};
-    return std::max<std::int64_t>(0, fieldMilliseconds(pressed_) + dragSteps_ * units[pressPart_]);
+    return std::max<std::int64_t>(0, fieldMilliseconds(field) + steps * units[part]);
 }
-std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const noexcept {
+std::pair<std::int64_t, std::int64_t> ClipViewPanel::adjustedSignature(int part, int steps) const noexcept {
     std::int64_t numerator = meter_.numerator, denominator = meter_.denominator;
-    if (pressPart_ == 0)
-        numerator = std::clamp<std::int64_t>(numerator + dragSteps_, 1, 99);
+    if (part == 0)
+        numerator = std::clamp<std::int64_t>(numerator + steps, 1, 99);
     else {
         int at = 2;
         for (int i = 0; i < 5; ++i)
             if (kDenominators[i] == denominator)
                 at = i;
-        denominator = kDenominators[std::clamp(at + dragSteps_, 0, 4)];
+        denominator = kDenominators[std::clamp(at + steps, 0, 4)];
     }
     return {numerator, denominator};
 }
-void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
-    if (std::exchange(edgeDrag_, false) || std::exchange(thumbDrag_, false))
-        return;
-    // The drag's value, read before the state is cleared; one op, one undo step.
-    const auto field = pressed_;
-    const bool dragged = dragged_;
-    const auto ticks = draggedTicks();
-    const auto signature = draggedSignature();
-    const int steps = dragSteps_;
-    pressed_ = Field::None;
-    dragged_ = false;
-    dragSteps_ = 0;
-    if (field == Field::None || !details_)
-        return;
-    if (int low = 0, high = 0; plainField(field, &low, &high) != nullptr) {
-        // A field of the Functions tab holds a number: a drag changes it, a click opens it for typing.
-        if (dragged) {
-            auto *value = plainField(field);
-            *value = std::clamp(*value + steps, low, high);
-            repaint();
-            numberChanged(field, false);
-        } else {
-            openEditor(field);
-        }
-        return;
-    }
-    if (field == Field::Scale)
-        // The root's part of the field opens the root notes; the rest, the scales.
-        showScaleMenu(pressPart_ == 0);
-    else if (!dragged)
-        openEditor(field);
-    else if (field == Field::Transpose)
-        transpose(steps);
-    else if (field == Field::Gain)
+void ClipViewPanel::adjustField(Field field, int part, int steps) {
+    if (int low = 0, high = 0; auto *value = plainField(field, &low, &high)) {
+        *value = std::clamp(*value + steps, low, high);
+        repaint();
+        numberChanged(field, false);
+    } else if (field == Field::Gain) {
         setGain(details_->gainDb + steps);
-    else if (field == Field::Pitch || field == Field::Detune)
+    } else if (field == Field::Pitch || field == Field::Detune) {
         setPitch(field, steps, true);
-    else if (field == Field::Stretch)
+    } else if (field == Field::Transpose) {
+        transpose(steps);
+    } else if (field == Field::Stretch) {
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
-    else if (field == Field::Signature) {
+    } else if (field == Field::Signature) {
+        const auto signature = adjustedSignature(part, steps);
         if (audio())
             commit(setClipSignature(*details_, signature.first, signature.second));
         else
             commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
-    } else
-        setField(field, ticks);
+    } else {
+        setField(field, adjustedTicks(field, part, steps));
+    }
+}
+void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
+    if (std::exchange(edgeDrag_, false) || std::exchange(thumbDrag_, false))
+        return;
+    const auto field = std::exchange(pressed_, Field::None);
+    const bool dragged = std::exchange(dragged_, false);
+    const int steps = std::exchange(dragSteps_, 0);
+    if (field == Field::None || !details_)
+        return;
+    if (field == Field::Scale)
+        // The root's part of the field opens the root notes; the rest, the scales.
+        showScaleMenu(pressPart_ == 0);
+    else if (!dragged)
+        openEditor(field, pressPart_);
+    else
+        adjustField(field, pressPart_, steps);
 }
 std::vector<juce::Rectangle<int>> ClipViewPanel::textAreas() const {
     auto out = labels_;
