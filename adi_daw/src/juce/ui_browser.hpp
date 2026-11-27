@@ -212,9 +212,11 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // A static heading is never selected: the selection steps past it, the way it was moving.
     void selectedRowsChanged(int lastRowSelected) override;
     void updatePreviewSelection();
+    void setPreviewRowShown(bool);
     std::filesystem::path previewSelection_;
     std::shared_ptr<const PreviewPeaks> previewPeaks_;
     std::optional<double> previewPosition_;
+    bool previewRowShown_ = false;
     bool canRepeatPreview_ = false;
     int firstItem() const;
     int lastSelected_ = -1;

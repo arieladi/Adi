@@ -3648,7 +3648,7 @@ void browserPreview(const std::filesystem::path &dir) {
     std::filesystem::path inspected;
     int stopped = 0;
     root.selectSamplePreview = [&](std::filesystem::path path) { inspected = std::move(path); };
-    root.playSamplePreview = [&](std::filesystem::path path, double fraction) {
+    const auto playSample = [&](std::filesystem::path path, double fraction) {
         auditions.emplace_back(std::move(path), fraction);
     };
     root.stopSamplePreview = [&] { ++stopped; };
@@ -3667,9 +3667,30 @@ void browserPreview(const std::filesystem::path &dir) {
           "SC-123: both preview commands have stable identifiers");
     if (browser.rows().size() != 2)
         return;
+    const int expanded = browser.list.getHeight();
+    check(browser.previewArea().isEmpty() && !browser.previewToggle.isVisible(),
+          "SC-429: even the Samples label starts with the whole list visible");
+    browser.list.selectRow(0);
+    check(browser.previewArea().isEmpty() && browser.list.getHeight() == expanded,
+          "SC-429: a sample selection cannot show a preview row before a player exists");
+    browser.list.deselectAllRows();
+    root.playSamplePreview = playSample;
+    check(root.command(AppCommands::ToggleBrowserPreview) && commands.browserPreviewEnabled() &&
+              browser.previewArea().isEmpty() && root.command(AppCommands::ToggleBrowserPreview),
+          "SC-429: the Preview command works before the row is shown");
+    stopped = 0;
     browser.list.selectRow(0);
     check(inspected == kick && auditions.empty() && !browser.previewToggle.getToggleState(),
           "SC-123: selection requests peaks without auditioning while Preview is off");
+    const auto reserved = browser.previewArea();
+    check(!reserved.isEmpty() && browser.previewToggle.isVisible() &&
+              browser.list.getHeight() == expanded - BrowserPanel::kBarHeight,
+          "SC-429: the first eligible selection reserves the preview row");
+    browser.list.selectRow(1);
+    browser.list.deselectAllRows();
+    check(browser.previewArea() == reserved && browser.list.getHeight() == expanded - BrowserPanel::kBarHeight,
+          "SC-429: moving or clearing the selection keeps the current list's height");
+    browser.list.selectRow(0);
     const auto right = juce::KeyPress(juce::KeyPress::rightKey);
     const auto shiftedEnter = juce::KeyPress(juce::KeyPress::returnKey, juce::ModifierKeys::shiftModifier, 0);
     check(!commands.key(right, root) && !browser.list.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)) &&
@@ -3732,6 +3753,8 @@ void browserPreview(const std::filesystem::path &dir) {
         return;
     browser.choose(static_cast<int>(label - browser.sidebar().begin()));
     browser.list.selectRow(0);
+    check(browser.previewArea().isEmpty() && browser.list.getHeight() == expanded,
+          "SC-429: a new list starts expanded and selecting a folder keeps the preview hidden");
     check(browser.list.keyPressed(right) && browser.rows().size() == 2 && browser.rows()[0].folderOpen &&
               browser.list.getSelectedRow() == 0 && auditions.size() == 6 && !browser.list.keyPressed(shiftedEnter),
           "SC-123: Right opens a folder first and modified Return does not load it");

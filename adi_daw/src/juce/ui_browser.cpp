@@ -156,7 +156,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onPreviewKey = [this](const juce::KeyPress &k) { return previewKey(k); };
     addAndMakeVisible(list);
     previewToggle.onClick = [this] { root_.command(AppCommands::ToggleBrowserPreview); };
-    addAndMakeVisible(previewToggle);
+    addChildComponent(previewToggle);
     selected_ = findLabel(kFirstLabel);
     refill();
 }
@@ -203,6 +203,8 @@ bool BrowserPanel::previewSelected(double fraction) {
 }
 void BrowserPanel::updatePreviewSelection() {
     const auto *file = selectedSample();
+    if (file && root_.playSamplePreview)
+        setPreviewRowShown(true);
     const auto path = file ? file->path : std::filesystem::path{};
     if (path == previewSelection_)
         return;
@@ -213,6 +215,12 @@ void BrowserPanel::updatePreviewSelection() {
     if (file && root_.commands().browserPreviewEnabled())
         root_.command(AppCommands::PreviewSelected);
     root_.commands().manager.commandStatusChanged();
+}
+void BrowserPanel::setPreviewRowShown(bool show) {
+    if (std::exchange(previewRowShown_, show) != show) {
+        resized();
+        repaint();
+    }
 }
 void BrowserPanel::setPreviewDisplay(std::shared_ptr<const PreviewPeaks> peaks, std::optional<double> position,
                                      bool canRepeat) {
@@ -320,6 +328,7 @@ void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     repaint();
 }
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
+    const auto priorLabel = labelKey(selected_);
     const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
     const bool keepInView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
     library_ = std::move(library);
@@ -350,6 +359,8 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     if (keepInView)
         revealSidebarSelection();
     refill();
+    if (!hotSwap_ && labelKey(selected_) != priorLabel)
+        setPreviewRowShown(false);
     repaint();
 }
 void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
@@ -378,6 +389,7 @@ void BrowserPanel::setHotSwap(std::optional<HotSwapFilter> filter) {
     hotSwap_ = std::move(filter);
     list.setMultipleSelectionEnabled(!hotSwap_);
     refill();
+    setPreviewRowShown(false);
     repaint();
     if (hotSwap_ && !hotSwap_->samples && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
         scanPlugins();
@@ -901,7 +913,7 @@ void BrowserPanel::resized() {
     const auto r = getLocalBounds();
     const int edge = look::border;
     search.setBounds(kStripWidth + edge, edge, std::max(0, r.getWidth() - kStripWidth - 2 * edge), 21);
-    const int top = kBarHeight, bottom = r.getHeight() - kBarHeight - edge;
+    const int top = kBarHeight, bottom = r.getHeight() - (previewRowShown_ ? kBarHeight : 0) - edge;
     const bool keepInView = selected_ >= 0 &&
         (sidebarArea_.isEmpty() || sidebarArea_.intersects(sidebarRowBounds(selected_)));
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
@@ -912,9 +924,12 @@ void BrowserPanel::resized() {
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
     // The list fills the content pane below its header.
     list.setBounds(contentArea_.withTrimmedTop(19));
-    previewToggle.setBounds(previewArea().withWidth(26));
+    previewToggle.setVisible(previewRowShown_);
+    previewToggle.setBounds(previewRowShown_ ? previewArea().withWidth(26) : juce::Rectangle<int>{});
 }
 juce::Rectangle<int> BrowserPanel::previewArea() const noexcept {
+    if (!previewRowShown_)
+        return {};
     return {kStripWidth + look::border, getHeight() - kBarHeight + 2,
             std::max(0, getWidth() - kStripWidth - 2 * look::border), 21};
 }
@@ -928,8 +943,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
     // The dark edge: the search row, the panes, the preview row, as one block.
     g.setColour(look::browserEdge);
     g.fillRoundedRectangle(strip, 0, w - strip, bar + 4, look::radiusControl);
-    g.fillRoundedRectangle(0, bar - 4, w, h - 2 * bar + 8, look::radiusControl);
-    g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
+    const float footer = previewRowShown_ ? bar : 0.f;
+    g.fillRoundedRectangle(0, bar - 4, w, h - bar - footer + 8, look::radiusControl);
+    if (previewRowShown_)
+        g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
     // The round buttons: show/hide the browser at the top, the groove pool at the foot.
     // Round, in the shared button's colours at rest (language.png part B).
     for (const float y : {0.5f, h - 19.5f}) {
@@ -992,6 +1009,8 @@ void BrowserPanel::paint(juce::Graphics &g) {
     }
     // The preview row: Live's headphones switch at its left.
     const auto preview = previewArea();
+    if (preview.isEmpty())
+        return;
     g.setColour(look::panel);
     g.fillRect(preview);
     const auto wave = previewWaveformArea();
@@ -1126,6 +1145,7 @@ void BrowserPanel::choose(int i) {
             return;
         }
         addFolderFocused_ = false;
+        const bool differentList = selected_ != i;
         selected_ = i;
         pendingLabel_.clear();
         revealSidebarSelection();
@@ -1134,6 +1154,8 @@ void BrowserPanel::choose(int i) {
         const bool plugIns = entry.glyph == PlugIns;
         repaint();
         refill();
+        if (differentList)
+            setPreviewRowShown(false);
         startSearchPluginScan();
         const auto key = labelKey(i);
         if (labelSettings_ && !key.empty() && labelSettings_->get(kLastLabel) != key) {
