@@ -717,7 +717,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         try {
-            auto &open = projectOpen_.emplace();
+            auto &open = projectOpen_.emplace(PendingProjectOpen{});
             open.file = file;
             open.path = pathFromUtf8(file.getFullPathName().toStdString());
             if (!testLaunch()) {
@@ -1209,10 +1209,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
-        root->loadSampleInstrument = [this](std::int64_t track, const std::filesystem::path &file,
+        root->loadSampleInstrument = [this](std::int64_t track, const std::filesystem::path &samplePath,
                                             std::string &why) {
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            if (document_->loadSampleInstrument(track, file, now))
+            if (document_->loadSampleInstrument(track, samplePath, now))
                 return true;
             why = document_->error();
             return false;
@@ -1330,10 +1330,12 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             applyInputChannels();
             const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
-            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            const auto correction = engine::recordingLatencyCorrection(
+                device::reportedRoundTripLatency(*audioDevice), audioDevice->getCurrentSampleRate(),
+                settings_->get("audio.driverErrorCompensationMs").get<double>());
             const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
             const auto format = recordingWavFormat(settings_->get("record.bitDepth").get<int>());
-            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder, format)) {
+            if (!document_->startRecording(insertTick, inputs, playing, correction, recordFolder, format)) {
                 root_->say(document_->error());
                 return false;
             }
@@ -1345,6 +1347,7 @@ class AdiApplication final : public juce::JUCEApplication,
             refreshRecordingPreview();
         };
         root->recording = [this] { return document_->recording(); };
+        root->landingRecording = [this] { return document_->landingTake(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };

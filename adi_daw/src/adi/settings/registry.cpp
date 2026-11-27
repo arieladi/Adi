@@ -348,8 +348,9 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("audio.srcQuality", "Audio", "Default SR & Pitch Conversion",
                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));
     r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver Error Compensation",
-                       "Milliseconds added to what the driver reports; Measure round trip fills it in.",
-                       0.0, -100, 100));
+                       "Signed milliseconds added to the driver's correction for linear audio takes when Monitor "
+                       "is Off or Keep Monitoring Latency is disabled.",
+                       0.0, -150, 150));
     r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test Tone", "Play a sine tone to the output.", false));
     r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone Volume",
                        "The test tone's level, in dB.", -36.0, -70, 0));

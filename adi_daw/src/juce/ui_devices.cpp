@@ -2111,7 +2111,7 @@ juce::PopupMenu DevicePanelView::commands() {
         for (const auto &[choice, label] : choices) {
             juce::PopupMenu::Item item(label);
             item.isTicked = data->route == engine::routeChoiceName(choice);
-            item.action = [safe, epoch, expected, choice] {
+            item.action = [safe, epoch, expected, choice = choice] {
                 if (!safe || safe->menuEpoch_ != epoch) return;
                 safe->endInteraction(Interaction::Menu);
                 if (!safe || !safe->validTarget() || !safe->strip.validExpected(expected)) return;

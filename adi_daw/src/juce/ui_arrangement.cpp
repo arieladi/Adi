@@ -2731,11 +2731,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const auto *tempo = preview && preview->loop && preview->loop->tempo
                 ? preview->loop->tempo.get() : snapshot ? snapshot->tempo.get() : nullptr;
             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
+            const engine::AudioRecordingPreview::Track *mapping = nullptr;
             double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;
             if (havePreview) {
+                const auto track = std::find_if(preview->tracks.begin(), preview->tracks.end(),
+                    [&](const auto &item) { return item.trackId == t->id; });
+                if (track != preview->tracks.end())
+                    mapping = &*track;
+                const auto offset = mapping ? mapping->placementOffsetSamples : std::nullopt;
                 if (const auto &punch = preview->punchedPlacement; !preview->loop && punch) {
                     const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
-                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);
+                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo, offset);
                     if (range) {
                         start = range->startTicks;
                         end = range->endTicks;
@@ -2747,7 +2753,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     }
                 } else {
                     const auto rate = static_cast<double>(preview->peaks.sampleRate);
-                    const auto pass = preview->latestPass(live->capturedFrames);
+                    const auto pass = preview->latestPass(live->capturedFrames, offset);
                     startSeconds = static_cast<double>(pass.startSample) / rate;
                     sourceStartFrame = static_cast<double>(pass.sourceStartFrame);
                     sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, pass.sourceStartFrame + pass.frames));
@@ -2773,20 +2779,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     g.fillRect(left, top, width, static_cast<float>(h - 4));
                     g.setColour(look::record.darker(0.3f));
                     g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
-                    if (havePreview) {
-                        const auto mapping = std::find_if(preview->tracks.begin(), preview->tracks.end(),
-                            [&](const auto &track) { return track.trackId == t->id; });
-                        if (mapping != preview->tracks.end() && !mapping->channels.empty()) {
-                            g.setColour(look::ink.withAlpha(0.85f));
-                            const int from = std::max(0, static_cast<int>(std::floor(left)));
-                            const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
-                            paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
-                                             top + static_cast<float>(h - 4), mapping->channels,
-                                             [&](int x) -> std::optional<double> {
-                                const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
-                                return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
-                            }, sourceEndFrame);
-                        }
+                    if (mapping && !mapping->channels.empty()) {
+                        g.setColour(look::ink.withAlpha(0.85f));
+                        const int from = std::max(0, static_cast<int>(std::floor(left)));
+                        const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
+                        paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
+                                         top + static_cast<float>(h - 4), mapping->channels,
+                                         [&](int x) -> std::optional<double> {
+                            const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
+                            return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
+                        }, sourceEndFrame);
                     }
                     if (right - left > 6.f) {
                         g.setColour(look::ink);

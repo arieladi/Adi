@@ -12608,6 +12608,20 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};
     const auto freshMenu = bar.metronomeMenu();
     check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");
+    check(menuItem(freshMenu, "Classic").isTicked && menuItem(freshMenu, "Auto").isTicked &&
+              !menuItem(freshMenu, "Enable Only While Recording").isTicked,
+          "SC-256: a new project uses the Classic sound, signature beat, and ordinary playback");
+    for (const char *label : {"Enable Only While Recording", "Wood", "1/8"}) {
+        const auto item = menuItem(bar.metronomeMenu(), label);
+        check(item.isEnabled && item.action, "SC-256: an option in the metronome menu can be invoked");
+        if (item.action)
+            item.action();
+        root.frame();
+        check(menuItem(bar.metronomeMenu(), label).isTicked, "SC-256: the saved option is ticked on reopening the menu");
+    }
+    const auto options = stored().metronomeOptions;
+    check(options.recordingOnly && options.eighthNotes && options.sound == MetronomeSound::Wood,
+          "SC-256: menu selections persist in the project");
     for (const auto &[label, bars] : countIns) {
         const auto item = menuItem(bar.metronomeMenu(), label);
         check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");
@@ -12809,6 +12823,35 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.frame();
     check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");
     check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");
+
+    constexpr auto shortBar = 4 * textproj::kPPQ;
+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;
+    const auto insertMeter = [&](std::int64_t tick, int numerator, int denominator) {
+        OpRequest request;
+        request.opType = "project.insertTimeSignature";
+        request.payload = {{"pos", tick}, {"num", numerator}, {"den", denominator}};
+        return document->ops().submit(std::move(request)).ok;
+    };
+    check(insertMeter(shortBar, 3, 16) && insertMeter(regularBar, 4, 4) && document->synchronise(),
+          "SC-256: author a 3/16 bar between compatible bars");
+    document->prepare(48000, 64);
+    engine::AudioIo clockBlock;
+    clockBlock.frames = 64;
+    const auto menuAt = [&](std::int64_t tick) {
+        check(root.locate(tick), "SC-256: move the timeline to the requested meter");
+        document->process(clockBlock);
+        clockBlock.streamTimeSamples += clockBlock.frames;
+        root.frame();
+        return bar.metronomeMenu();
+    };
+    const auto shortBarMenu = menuAt(shortBar + q / 4);
+    check(!menuItem(shortBarMenu, "1/8").isEnabled && !menuItem(shortBarMenu, "1/8").isTicked &&
+              menuItem(shortBarMenu, "Auto").isTicked && stored().metronomeOptions.eighthNotes,
+          "SC-256: the menu shows effective Auto in 3/16 and retains the saved eighth-note rhythm");
+    const auto regularBarMenu = menuAt(regularBar + q / 4);
+    check(menuItem(regularBarMenu, "1/8").isEnabled && menuItem(regularBarMenu, "1/8").isTicked &&
+              !menuItem(regularBarMenu, "Auto").isTicked,
+          "SC-256: the menu resumes the saved rhythm in 4/4");
     root.afterEdit = nullptr;
     document->release();
 }
@@ -14140,6 +14183,184 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
     check(configured == 2, "SC-23: both input menus reach Audio Settings");
     document->release();
 }
+// SC-257: deferred Arrangement Record is UI intent until playback begins.
+void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string why;
+    auto document = ProjectDocument::open(dir / "record-waits.adi", true, {}, why);
+    check(document != nullptr, "a project for the deferred Arrange Record checks");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record-waits");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    int starts = 0;
+    root.startRecording = [&](std::int64_t insertTick, bool playing) {
+        ++starts;
+        const bool ok = document->startRecording(insertTick, 2, playing);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.stopRecording = [&] { document->stopRecording(); };
+    root.recording = [&] { return document->recording(); };
+    root.setSize(1440, 900);
+    root.frame();
+    check(root.armTrack(4, false) && root.setCountIn(1), "arm an audio track and set a one-bar Count-In");
+
+    std::array<float, 64> left{}, right{}, outL{}, outR{};
+    left.fill(.25f);
+    const float *inputs[]{left.data(), right.data()};
+    float *outputs[]{outL.data(), outR.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 2;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto block = [&] {
+        document->process(io);
+        io.streamTimeSamples += io.frames;
+        root.frame();
+    };
+    const juce::ModifierKeys shift(juce::ModifierKeys::shiftModifier);
+    const juce::KeyPress f9(juce::KeyPress::F9Key), shiftF9(juce::KeyPress::F9Key, shift, 0);
+    const auto oldPreference = settings.get("record.startPlaybackWithRecord");
+    const auto setPreference = [&](bool immediate) {
+        check(settings.set("record.startPlaybackWithRecord", immediate, {}, why), "change the Record setting");
+        commands.reload();
+    };
+    auto &record = root.transport.record;
+    auto &mailbox = document->mailbox();
+
+    setPreference(false);
+    check(root.keyPressed(f9), "F9 invokes Record");
+    block();
+    check(starts == 0 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),
+          "with the setting off, F9 only lights Record and doesn't prepare capture or play");
+    check(root.canUndo(false) && root.command(AppCommands::Undo) && !document->recordStates().at(4).armed,
+          "SC-258: Undo still takes back track Arm while Record is waiting for Play");
+    check(root.canUndo(true) && root.command(AppCommands::Redo) && document->recordStates().at(4).armed,
+          "SC-258: Redo still restores Arm while Record is waiting for Play");
+    block();
+    check(starts == 0 && record.getToggleState() && !mailbox.desiredPlaying(),
+          "SC-258: Undo and Redo preserve waiting Record without starting capture or playback");
+    check(root.keyPressed(f9), "press Record again without playing");
+    block();
+    check(starts == 0 && !record.getToggleState(), "Record again cancels the wait");
+    root.arrangement.placeInsertMarker(1920, true);
+    record.clicked({});
+    block();
+    check(mailbox.position() > 0 && root.arrangement.geometry.selection.insert == 1920 &&
+              record.getToggleState() && !mailbox.playing(),
+          "waiting Record leaves the transport and insert marker parked away from the start");
+    check(root.command(AppCommands::Stop), "Stop while Record is waiting");
+    block();
+    check(starts == 0 && !record.getToggleState() && !mailbox.desiredPlaying() &&
+              mailbox.position() == 0 && root.arrangement.geometry.selection.insert == 0,
+          "Stop cancels waiting Record and rewinds the stopped transport and insert marker");
+    check(root.command(AppCommands::PlayStop), "ordinary Play after cancelling");
+    block();
+    check(starts == 0 && mailbox.playing(), "Play after cancelling does not record");
+    check(root.command(AppCommands::Stop), "stop ordinary playback");
+    block();
+    const auto stopped = mailbox.position();
+
+    record.clicked({});
+    check(root.locate(1920, true), "move the insert marker while Record is waiting");
+    block();
+    check(mailbox.position() != stopped && starts == 0, "locating preserves the wait and the stopped sample");
+    check(root.command(AppCommands::ContinuePlay), "Continue consumes the waiting Record");
+    block();
+    check(starts == 1 && document->recording() && mailbox.position() == stopped + io.frames,
+          "Continue records from the exact driver-stopped sample after locating");
+    check(root.command(AppCommands::Stop), "stop recording from Continue");
+    block();
+    check(document->settleRecording(), "settle the take");
+
+    record.clicked({});
+    root.transport.play.onClick();
+    check(starts == 2 && document->recording() && mailbox.desiredPlaying(), "Play starts a waiting Record");
+    block();
+    check(document->session().transport().countInRemaining() > 0 &&
+              document->session().recording().acceptedFrames() == 0,
+          "starting a waiting Record through Play observes Count-In before capture");
+    check(root.command(AppCommands::Stop), "stop the Count-In");
+    block();
+    check(document->settleRecording() && !document->recording(), "settle the cancelled start");
+
+    check(root.keyPressed(shiftF9) && starts == 3 && document->recording() && mailbox.desiredPlaying(),
+          "Shift+F9 starts immediately when the setting is off");
+    check(root.command(AppCommands::Stop), "Stop before the callback consumes Record");
+    block();
+    check(document->settleRecording() && !document->recording() && !mailbox.desiredPlaying(),
+          "rapid Record and Stop leave no queued recording or playback");
+
+    setPreference(true);
+    record.clicked(shift);
+    block();
+    check(starts == 3 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),
+          "Shift+Record waits with the setting on");
+    check(root.command(AppCommands::Stop), "cancel the shifted Record");
+    check(root.keyPressed(f9) && starts == 4 && document->recording(),
+          "unshifted F9 starts immediately when the setting is on");
+    check(root.command(AppCommands::Stop), "stop the immediate Record");
+    block();
+    check(document->settleRecording(), "finish the immediate Record");
+
+    record.clicked(shift);
+    const auto tempo = document->view().current()->tempo;
+    const auto scrubSample = static_cast<std::int64_t>(tempo->ticksToSeconds(3840) * mailbox.sampleRate());
+    check(root.playFrom(3840), "scrub playback also consumes a waiting Record");
+    block();
+    check(starts == 5 && document->recording() && mailbox.position() == scrubSample + io.frames,
+          "scrub playback records from the requested position");
+    check(root.command(AppCommands::Stop), "stop recording from scrub playback");
+    block();
+    check(document->settleRecording(), "settle scrub playback's take");
+
+    record.clicked(shift);
+    while (mailbox.post(TransportMailbox::Command::LocateMarker, scrubSample)) {}
+    check(!root.command(AppCommands::Stop), "Stop reports a full transport mailbox");
+    block();
+    check(starts == 5 && !mailbox.desiredPlaying() && !record.getToggleState(),
+          "Stop cancels a waiting Record even when it cannot queue a transport command");
+
+    check(root.armTrack(4, false), "disarm the last audio track before testing refused Record starts");
+    const auto plays = [&] {
+        return document->store().db().execAndGet("SELECT count(*) FROM ops WHERE op_type='transport.play'").getInt64();
+    };
+    const auto head = OpJournal(document->store()).headSeq();
+    for (const bool scrub : {false, true}) {
+        record.clicked(shift);
+        const auto before = plays();
+        check(scrub ? root.playFrom(7680) : root.command(AppCommands::ContinuePlay),
+              "refused pending Record still starts the requested playback");
+        check(mailbox.desiredPlaying() && plays() == before + 1 && OpJournal(document->store()).headSeq() == head,
+              "a refused capture queues one Play without an undo step");
+        check(root.error() == "Arm a track to record into it.",
+              "the capture refusal is reported while playback is pending");
+        block();
+        check(!document->recording() && !document->landingTake() && !record.getToggleState(),
+              "a refused capture clears the Record button without creating a take");
+        // Scrub can land inside the WAV just recorded. The mailbox waits for its media page.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (mailbox.desiredPlaying() && !mailbox.playing() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            block();
+        }
+        check(mailbox.playing(), scrub ? "refused scrub capture plays once the sample is ready"
+                                       : "refused Continue capture resumes playback");
+        check(root.command(AppCommands::Stop), "stop ordinary playback after refusing capture");
+        block();
+    }
+    check(starts == 7, "Continue and scrub each attempted the waiting capture once");
+    check(settings.set("record.startPlaybackWithRecord", oldPreference, {}, why), "restore the prior preference");
+    commands.reload();
+    document->release();
+}
+
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
@@ -14174,6 +14395,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         refreshRecordingPreview();
     };
     root.recording = [&] { return document->recording(); };
+    root.landingRecording = [&] { return document->landingTake(); };
     root.arrangement.waveforms = &document->waveforms();
     root.setSize(1440, 900);
     // The application's frame: the timer's tick, the rows handed over, the window's frame.
@@ -14253,7 +14475,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
           "Arrangement Record is named as Live's and on F9 (manual 21.1) [P:recording#17]");
     auto &record = root.transport.record;
     check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");
-    record.onClick();
+    record.clicked({});
     frame();
     check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit [P:recording#17]");
     std::array<float, 64> left{}, right{}, outL{}, outR{};
@@ -14277,6 +14499,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
+    const auto armHistory = document->ops().nextUndo();
+    const auto undoActive = [&] {
+        juce::ApplicationCommandInfo info(AppCommands::Undo);
+        commands.getCommandInfo(AppCommands::Undo, info);
+        return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+    };
+    commands.activate(root);
+    check(!undoActive() && !root.canUndo(true), "SC-258: Edit Undo and Redo are held during a take");
+    check(root.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) &&
+              root.error().find("after the current take") != std::string::npos,
+          "SC-258: the mapped Undo key says why the current take holds history");
+    check(!root.command(AppCommands::Redo) && !root.restoreStep(0),
+          "SC-258: direct Redo and Undo History also respect the hold");
+    const auto currentHistory = document->ops().nextUndo();
+    check(document->recording() && states().at(4).armed && states().at(5).armed &&
+              armHistory && currentHistory && armHistory->txnId == currentHistory->txnId,
+          "SC-258: the take keeps recording and its track arm and history remain intact");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -14343,6 +14582,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(laneMenus == 1, "SC-02: the right press asks for the lanes' menu once");
     lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
+    check(document->landingTake() && !undoActive() && !root.command(AppCommands::Undo),
+          "SC-258: the hold lasts through writer settlement");
     frame();
     check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
           "SC-20: the waveform stays visible while the writer finishes");
@@ -14362,11 +14603,18 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
               root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
-    check(root.command(AppCommands::Undo), "one Undo");
+    check(undoActive() && root.command(AppCommands::Undo), "SC-258: one Undo is available after landing");
     frame();
     check(root.reader().findTrack(3)->clips.empty() && root.reader().findTrack(4)->clips.empty() &&
               root.reader().findTrack(5)->clips.empty(),
           "takes all three takes back [P:recording#23]");
+    check(root.command(AppCommands::Redo), "SC-258: Redo reapplies the landed take");
+    frame();
+    check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
+              root.reader().findTrack(5)->clips.size() == 1,
+          "SC-258: Redo restores the audio and MIDI clips together");
+    check(root.command(AppCommands::Undo), "clear the clips before the next capture");
+    frame();
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
           "Record while playing records; the transport keeps rolling [P:recording#22]");
@@ -19976,12 +20224,16 @@ int main(int argc, char **argv) {
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
                       C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&
-                      C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters",
+                      C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters" &&
+                      C::SwitchDetailView == C::ToggleTrackMixer + 1 &&
+                      C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
+                      C::LastId == C::ArrangementRecordAlternate,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks and Volume, Pan and Meters");
+                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
+                  "Volume, Pan and Meters, Switch Clip and Device Views, and Arrangement Record (Alternate Start)");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -22520,6 +22772,7 @@ int main(int argc, char **argv) {
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("recordWaitsForPlay", [&] { recordWaitsForPlay(commands, settings, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });

@@ -2277,7 +2277,11 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
     OpRequest arm;
     arm.opType = "track.setArm";
     arm.payload = {{"id", 4}, {"armed", true}};
-    check(doc->ops().submit(arm).ok && doc->synchronise(), "SC-22: arm the audio track");
+    OpRequest monitor;
+    monitor.opType = "track.setMonitorMode";
+    monitor.payload = {{"id", 4}, {"mode", 0}};
+    check(doc->ops().submit(arm).ok && doc->ops().submit(monitor).ok && doc->synchronise(),
+          "SC-22: arm the audio track with Monitor Off for loopback compensation");
 
     constexpr int rate = 48000, frames = 64;
     constexpr int startSample = rate, referenceClick = 256;
@@ -2339,6 +2343,91 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
               audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
 }
+void mixedRecordingLatency(const std::filesystem::path &dir) {
+    constexpr int rate = 48000, frames = 64, reportedSamples = 32;
+    constexpr const char *setting = "audio.driverErrorCompensationMs";
+    settings::AppSettings preferences(appdata::App::Daw, dir / "device-dec.json");
+    std::string error;
+    check(preferences.set(setting, 150.0, {}, error) && preferences.set(setting, -150.0, {}, error) &&
+              !preferences.set(setting, 150.01, {}, error),
+          "SC-255: Settings accepts both 150 ms bounds and refuses values outside them");
+    check(engine::recordingLatencyCorrection(reportedSamples, rate, 150.0) == 7232 &&
+              engine::recordingLatencyCorrection(reportedSamples, rate, -150.0) == -7168 &&
+              engine::recordingLatencyCorrection(reportedSamples, rate, 150.01) == reportedSamples,
+          "SC-255: the 48 kHz correction uses the same bounds as Settings");
+    struct Case { double milliseconds; int capturedAt; std::int64_t correctedStart; const char *file; };
+    const std::array examples{Case{1.25, 128, 36, "positive-dec.adi"},
+                              Case{-1.25, 128, 156, "negative-dec.adi"},
+                              Case{111.90, 8192, 2789, "calibrated-dec.adi"}};
+    for (const auto &example : examples) {
+        if (!preferences.set(setting, example.milliseconds, {}, error))
+            throw std::runtime_error(error);
+        auto doc = ui::ProjectDocument::open(dir / example.file, true, {}, error);
+        if (!doc)
+            throw std::runtime_error(error);
+        const auto set = [&](const char *type, Payload payload) {
+            OpRequest request;
+            request.opType = type;
+            request.payload = std::move(payload);
+            if (!doc->ops().submit(request).ok)
+                throw std::runtime_error("could not configure the latency fixture");
+        };
+        struct Target { int id, mode; bool keep; std::int64_t start; };
+        const std::array targets{Target{4, 0, true, example.correctedStart}, Target{5, 2, true, example.capturedAt},
+                                 Target{8, 1, false, example.correctedStart}};
+        set("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Monitored"}});
+        for (const auto &track : targets) {
+            set("track.setArm", {{"id", track.id}, {"armed", true}});
+            set("track.setMonitorMode", {{"id", track.id}, {"mode", track.mode}});
+            set("track.setKeepMonitoringLatency", {{"id", track.id}, {"on", track.keep}});
+        }
+        if (!doc->synchronise())
+            throw std::runtime_error(doc->error());
+        doc->prepare(rate, frames);
+        const auto tempo = doc->view().current()->tempo;
+        const auto tick = tempo->secondsToTicks(static_cast<double>(example.capturedAt) / rate);
+        const auto correction = engine::recordingLatencyCorrection(
+            reportedSamples, rate, preferences.get(setting).get<double>());
+        if (example.milliseconds == 111.90)
+            check(correction - reportedSamples == 5371, "SC-255: 111.90 ms adds 5371 samples at 48 kHz");
+        if (!doc->startRecording(tick, 1, false, correction))
+            throw std::runtime_error(doc->error());
+        // The job keeps the choices it read when Record was pressed.
+        set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", false}});
+        set("track.setKeepMonitoringLatency", {{"id", 8}, {"on", true}});
+        if (!doc->synchronise())
+            throw std::runtime_error(doc->error());
+        std::array<float, frames> input{}, left{}, right{};
+        input[7] = .5f;
+        const float *inputs[]{input.data()};
+        float *outputs[]{left.data(), right.data()};
+        doc->process({outputs, inputs, 2, 1, frames, 0});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto preview = doc->session().recording().preview();
+        while (!preview && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            preview = doc->session().recording().preview();
+        }
+        doc->release();
+        check(doc->settleRecording(), "SC-255: settle simultaneous takes with different monitoring timing");
+        const auto landed = doc->takeLanded();
+        check(landed && landed->ok && landed->clips.size() == targets.size(), "SC-255: the armed tracks all land");
+        if (!preview)
+            throw std::runtime_error("the recording preview did not arrive");
+        const auto snapshot = doc->view().current();
+        for (const auto &target : targets) {
+            const auto *track = snapshot->findTrack(target.id);
+            const auto item = std::find_if(preview->tracks.begin(), preview->tracks.end(),
+                                           [&](const auto &entry) { return entry.trackId == target.id; });
+            check(track && track->clips.size() == 1 && item != preview->tracks.end() &&
+                      preview->latestPass(preview->peaks.frames, item->placementOffsetSamples).startSample == target.start &&
+                      track->clips.front()->audio && track->clips.front()->audio->warpEnabled &&
+                      std::llround(tempo->ticksToSeconds(track->clips.front()->posTicks) * rate) == target.start,
+                  "SC-255: the per-track preview and warped clip share the start from its latched timing");
+        }
+    }
+}
+
 void countInPositionFeedback(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "count-in.adi", true, {}, error);
@@ -2919,7 +3008,7 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
 }
-void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
+void mixedPunchKeepsMidi(const std::filesystem::path &dir, bool keepSecondAudio = false) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "mixed-punch.adi", true, {}, error);
     check(doc != nullptr, "SC-26: a project for a mixed punch take");
@@ -2941,6 +3030,9 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
         !set("track.setArm", {{"id", 4}, {"armed", true}}) ||
         !set("track.setMonitorMode", {{"id", 2}, {"mode", 0}}) ||
         !set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) ||
+        (keepSecondAudio && (!set("track.setArm", {{"id", 5}, {"armed", true}}) ||
+                             !set("track.setMonitorMode", {{"id", 5}, {"mode", 1}}) ||
+                             !set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", true}}))) ||
         !set("transport.setLoop", {{"on", false}, {"start", start}, {"end", end}}) ||
         !set("transport.setPunch", {{"in", true}, {"out", true}}) || !doc->synchronise())
         throw std::runtime_error("could not configure the mixed punch take");
@@ -2983,25 +3075,41 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
         if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
             capture = entry.path();
     const auto landed = doc->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 1 &&
+    const int expectedClips = keepSecondAudio ? 2 : 1;
+    check(landed && landed->ok && landed->clips.size() == static_cast<std::size_t>(expectedClips) &&
               landed->message.find("compensated punch range") != std::string::npos && !capture.empty() &&
               landed->message.find(media::pathUtf8(capture)) != std::string::npos,
-          "SC-26: preserve the MIDI take and report the rejected audio's full directory");
-    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
-          "SC-26: the retained audio is not added to the project's media pool");
-    if (landed && landed->clips.size() == 1) {
-        const auto detail = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);
+          "preserve the placeable tracks and report the rejected audio's full directory");
+    auto &db = doc->store().db();
+    check(db.execAndGet("SELECT count(*) FROM media_files").getInt() == (keepSecondAudio ? 1 : 0) &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=4").getInt() == 0,
+          "the fully clipped track has no clip or imported audio");
+    if (landed && landed->clips.size() == static_cast<std::size_t>(expectedClips)) {
+        if (keepSecondAudio) {
+            SQLite::Statement kept(db, "SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames,a.warp_enabled "
+                                       "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=? AND c.track_id=5");
+            kept.bind(1, landed->clips.front());
+            check(kept.executeStep() && kept.getColumn(0).getInt64() == start &&
+                      kept.getColumn(1).getInt64() == end - start && kept.getColumn(2).getInt64() == 0 &&
+                      kept.getColumn(3).getInt64() == 2 * frames && kept.getColumn(4).getInt() == 1,
+                  "SC-255: the monitored track keeps its own authored, sample-exact Warp interval");
+            kept.reset();
+        }
+        const auto detail = engine::readClipDetails(doc->store(), landed->clips.back(), true, true);
         check(detail.clip && detail.clip->kind == "midi" && detail.clip->trackId == 2 &&
                   detail.clip->posTicks == start && detail.clip->lengthTicks == end - start &&
                   detail.clip->notes.size() == 1 && detail.clip->notes.front().key == 64,
               "SC-26: the MIDI clip lands at the authored brace without overwriting either side");
-        check(doc->ops().undo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
-                  doc->ops().redo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 1,
-              "SC-26: the MIDI take can be undone and redone as one edit");
+        check(doc->ops().undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+                  doc->ops().redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == expectedClips,
+              "the landed tracks are undone and redone as one edit");
     }
     const auto wav = capture / "take-0.wav";
     const bool retained = !capture.empty() && std::filesystem::is_regular_file(wav);
     check(retained, "SC-26: the private WAV remains available for recovery");
+    if (keepSecondAudio)
+        check(!capture.empty() && std::filesystem::is_regular_file(capture / "take-1.wav"),
+              "SC-255: partial publication retains the entire original recording directory");
     if (retained) {
         audio::WavReader reader(wav);
         std::array<float, 2 * frames> samples{};
@@ -3714,6 +3822,10 @@ void punchedWaveformBounds() {
           "SC-26: preview uses the exact authored Punch-Out tick and stops at the trimmed source end");
     punch.offsetSamples = 256;
     check(!ui::punchedPreviewRange(punch, 128, rate, tempo), "SC-26: a fully clipped preview draws no take");
+    const auto kept = ui::punchedPreviewRange(punch, 128, rate, tempo, 0);
+    check(kept && kept->startTicks == punch.window.in->tick && kept->endTicks == punch.window.out->tick &&
+              kept->sourceStartFrame == 0 && kept->sourceEndFrame == 128,
+          "SC-255: an armed monitored lane previews its own unshifted interval");
 }
 void recordedWaveformHandoff() {
     auto clip = std::make_shared<engine::ClipNode>();
@@ -4001,8 +4113,12 @@ int main(int argc, char **argv) {
         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
         mixedPunchKeepsMidi(punchRecoveryDir.path());
+        test::TempDirectory partialPunchDir("ui_document", "mixed-punch-partial");
+        mixedPunchKeepsMidi(partialPunchDir.path(), true);
         test::TempDirectory latencyDir("ui_document", "latency");
         recordWithDeviceLatency(latencyDir.path());
+        test::TempDirectory mixedLatencyDir("ui_document", "mixed-latency");
+        mixedRecordingLatency(mixedLatencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
         refusedRecordingKeepsAudio(refusedPublicationDir.path());
         test::TempDirectory loopClockDir("ui_document", "loop-clock-admission");

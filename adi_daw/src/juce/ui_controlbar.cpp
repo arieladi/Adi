@@ -184,6 +184,10 @@ void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {
         repaint();
     }
 }
+void BarItem::clicked(const juce::ModifierKeys &modifiers) {
+    if (onModifiedClick)
+        onModifiedClick(modifiers);
+}
 void BarItem::mouseDown(const juce::MouseEvent &event) {
     dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);
     if (dropdownPress_)
@@ -393,7 +397,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&nudgeUp, "Nudge Up", "Unavailable until playback supports temporary tempo changes.", false},
         {&signature, "Time Signature", "Drag, scroll or use Up and Down to adjust the numerator or denominator "
                                        "at the play location. Click to type a signature such as 3/4."},
-        {&metronome, "Metronome", "O toggles the metronome. Its menu sets count-in and the shared Cue Volume."},
+        {&metronome, "Metronome", "O toggles the metronome. Its menu sets the click, Count-In and shared Cue Volume."},
         {&quantize, "Launch Quantization", "Unavailable until Session View can launch clips.", false},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
@@ -507,7 +511,10 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         root_.reenableAutomation(); // a refusal says why; the snapshot unlights the switch
     };
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
-    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {
+        root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate
+                                              : AppCommands::ArrangementRecord);
+    };
     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };
     // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
     indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
@@ -572,11 +579,40 @@ void TransportBar::resized() {
 }
 juce::PopupMenu TransportBar::metronomeMenu() const {
     juce::PopupMenu menu;
-    menu.addSectionHeader("Count-In");
     const auto current = root_.current();
+    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);
+    const auto options = current ? current->transport.metronomeOptions : MetronomeOptions{};
+    const bool enabled = static_cast<bool>(current);
+    menu.addItem("Enable Only While Recording", enabled, enabled && options.recordingOnly, [safe] {
+        if (safe)
+            safe->toggleMetronomeWhileRecording();
+    });
+    juce::PopupMenu sounds;
+    constexpr std::array soundChoices{std::pair{MetronomeSound::Classic, "Classic"},
+                                      std::pair{MetronomeSound::Wood, "Wood"},
+                                      std::pair{MetronomeSound::Bell, "Bell"}};
+    for (const auto &[sound, label] : soundChoices)
+        sounds.addItem(label, enabled, enabled && options.sound == sound, [safe, value = sound] {
+            if (safe)
+                safe->setMetronomeSound(value);
+        });
+    menu.addSubMenu("Sound", sounds, enabled);
+    const bool eighthNotesFit = current && metronomeEighthNotesFit(meterAt(root_.timelineTick(), current->meters).barTicks());
+    const bool playsEighthNotes = options.eighthNotes && eighthNotesFit;
+    juce::PopupMenu rhythms;
+    rhythms.addItem("Auto", enabled, enabled && !playsEighthNotes, [safe] {
+        if (safe)
+            safe->setMetronomeEighthNotes(false);
+    });
+    rhythms.addItem("1/8", eighthNotesFit, playsEighthNotes, [safe] {
+        if (safe)
+            safe->setMetronomeEighthNotes(true);
+    });
+    menu.addSubMenu("Rhythm", rhythms, enabled);
+    menu.addSeparator();
+    menu.addSectionHeader("Count-In");
     constexpr std::array choices{std::pair{0, "None"}, std::pair{1, "1 Bar"},
                                  std::pair{2, "2 Bars"}, std::pair{4, "4 Bars"}};
-    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);
     for (const auto &[bars, label] : choices) {
         menu.addItem(label, static_cast<bool>(current), current && current->transport.countInBars == bars,
                      [safe, value = bars] {
@@ -632,7 +668,7 @@ void TransportBar::refresh() {
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
-    record.setToggleState(root_.isRecording(), juce::dontSendNotification);
+    record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4).

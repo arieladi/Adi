@@ -2540,7 +2540,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             return false;
         }
     }
-    spec.placementOffsetSamples = deviceLatencySamples;
+    spec.placementOffsetSamples = spec.loop ? 0 : deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     spec.format = format;
@@ -2557,7 +2557,10 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                      ". Choose an enabled input under Audio From.";
             return false;
         }
-        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end())});
+        const bool keep = !spec.loop && track->recording.keepMonitoringLatency &&
+                          recordState(states, id).monitor != Monitor::Off;
+        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end()),
+                                keep ? std::optional<std::int64_t>{0} : std::nullopt});
     }
     std::string why;
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
@@ -2890,8 +2893,6 @@ void ProjectDocument::pollTakePublication() {
         auto midi = take.midi ? take.midi->placements(rows, current) : MidiRecording::Placement{};
         take.outcome.clips.clear();
         take.outcome.clips.reserve(take.ids.size() + midi.takes.size());
-        for (const auto &ids : take.ids)
-            take.outcome.clips.push_back(ids.clip);
         for (const auto &placement : midi.takes)
             take.outcome.clips.push_back(placement.clip);
         return midi;
@@ -2951,8 +2952,16 @@ void ProjectDocument::pollTakePublication() {
                 refuse(edit.error);
             return;
         }
+        take.outcome.clips.insert(take.outcome.clips.begin(), edit.placedAudioClips.begin(), edit.placedAudioClips.end());
         take.outcome.message = recordedTakeMessage(take.outcome.clips.size(), recordingFailure(take.recorded),
                                                    take.midiProblem, true, take.midi != nullptr);
+        const auto skippedAudioTracks = take.ids.size() - edit.placedAudioClips.size();
+        if (skippedAudioTracks > 0) {
+            take.outcome.message += skippedAudioTracks == 1
+                ? " Audio on one track fell outside its compensated punch range."
+                : " Audio on " + std::to_string(skippedAudioTracks) + " tracks fell outside their compensated punch ranges.";
+            take.outcome.message += retainedCaptureLocation(take.recorded);
+        }
         const auto committed =
             ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) { return recording::commit(store, edit, actor); });
         if (!committed) {

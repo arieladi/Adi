@@ -42,9 +42,6 @@ inline audio::WavFormat recordingWavFormat(int bitDepth) noexcept {
 // recordings get ([1/16] or [Free]), and Play-Q, the live quantization of what is played, on a MIDI
 // track's header; Keep Monitoring Latency in Recorded Audio, from a right-click on the In or Auto
 // monitor button. Each change is one op, one undo step, from the snapshot the command lands on.
-//
-// Nothing follows a choice yet: Play-Q is not scheduled, nothing records MIDI, and the recorder
-// ignores Keep Monitoring Latency (#406). The window stores them and says nothing of the sound.
 inline constexpr std::array<const char *, 4> kQuantizeGrids{"1/4", "1/8", "1/16", "1/32"};
 // What Rec-Q shows: its grid, or Free when off. Play-Q: its grid, or Off.
 inline std::string recordQuantizeText(const TrackRecordingOptions &o) { return o.recordEnabled ? o.recordGrid : "Free"; }

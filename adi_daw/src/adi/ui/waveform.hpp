@@ -28,10 +28,12 @@ struct PunchedPreviewRange {
 
 inline std::optional<PunchedPreviewRange> punchedPreviewRange(
     const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,
-    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {
+    std::uint32_t sampleRate, const engine::TempoMap &tempo,
+    std::optional<std::int64_t> trackOffset = {}) noexcept {
     if (sampleRate == 0)
         return std::nullopt;
-    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);
+    const auto offset = trackOffset.value_or(punch.offsetSamples);
+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, offset, punch.window);
     if (!range)
         return std::nullopt;
     const auto rate = static_cast<double>(sampleRate);
