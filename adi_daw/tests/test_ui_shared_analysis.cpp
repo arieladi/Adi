@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
+#include "../src/juce/ui_colour_waveform.hpp"
+#include "../src/juce/ui_filled_spectrum.hpp"
+#include "../src/juce/ui_third_octave.hpp"
 #include "../src/juce/ui_look.hpp"
 #include "../src/juce/ui_mix_meter.hpp"
 #include "../src/juce/ui_mix_analysers.hpp"
@@ -25,6 +28,10 @@ struct SharedSpectrumViewTestAccess {
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
     static bool hasScaledPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.scaledSpectrum_); }
     static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
+    static void showFilled(SharedSpectrumView &view, std::shared_ptr<const SharedAnalysis::Result> result) {
+        view.shown_ = std::move(result);
+    }
+    static void pointFilled(SharedSpectrumView &view, juce::Point<int> pointer) { view.filledPointer_ = pointer; }
 };
 }
 namespace {
@@ -173,6 +180,117 @@ void parentDestruction() {
     parent.reset();
     check(!view.subscribed() && f.released == 1,
           "ancestor destruction safely releases the child without a later frame");
+}
+void phaseGoniometer() {
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 480, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView phase;
+    phase.setMode(SharedSpectrumView::Mode::Phase);
+    phase.setBounds(0, 0, 320, 240);
+    root.addAndMakeVisible(phase);
+    phase.present(fixture.broker, 1);
+
+    constexpr std::int32_t frameCount = 1024;
+    std::array<float, frameCount> signal{}, left{}, right{};
+    for (std::size_t i = 0; i < signal.size(); ++i)
+        signal[i] = static_cast<float>(std::sin(2. * std::numbers::pi * static_cast<double>(i % 64) / 64.));
+    const auto write = [&](float leftGain, float rightGain, bool advancing = true) {
+        for (std::size_t i = 0; i < signal.size(); ++i) {
+            left[i] = signal[i] * leftGain;
+            right[i] = signal[i] * rightGain;
+        }
+        fixture.tap->write(left.data(), right.data(), frameCount, advancing ? fixture.tap->written() : 0, advancing, 1);
+        fixture.broker->pump();
+        phase.frame();
+    };
+    const auto image = [&] {
+        juce::Image pixels(juce::Image::RGB, phase.getWidth(), phase.getHeight(), true);
+        juce::Graphics graphics(pixels);
+        phase.paint(graphics);
+        return pixels;
+    };
+    const auto greenTrace = [](const juce::Image &pixels, int atX, int atY) {
+        for (int y = atY - 1; y <= atY + 1; ++y)
+            for (int x = atX - 1; x <= atX + 1; ++x) {
+                const auto sample = pixels.getPixelAt(x, y);
+                if (sample.getGreen() >= 48 && sample.getGreen() - sample.getRed() >= 18 &&
+                    sample.getBlue() - sample.getRed() >= 9)
+                    return true;
+            }
+        return false;
+    };
+    constexpr int centreX = 151, centreY = 114;
+
+    write(1.f, 1.f);
+    const auto mono = phase.snapshot();
+    const auto monoImage = image();
+    int centreLinePixels = 0;
+    for (int y = centreY - 50; y <= centreY + 50; ++y)
+        centreLinePixels += greenTrace(monoImage, centreX, y) ? 1 : 0;
+    check(mono && mono->scopeLeft.size() == frameCount && mono->scopeLeft == mono->scopeRight &&
+              fixture.broker->stats().transforms == 0 && centreLinePixels >= 95 &&
+              !greenTrace(monoImage, centreX - 24, centreY - 24) && !greenTrace(monoImage, centreX + 24, centreY),
+          "same-sample mono draws a continuous vertical goniometer trace on the M axis without an FFT");
+
+    write(1.f, 0.f);
+    const auto leftImage = image();
+    check(greenTrace(leftImage, centreX - 24, centreY - 24) &&
+              !greenTrace(leftImage, centreX + 24, centreY - 24) && greenTrace(leftImage, centreX, centreY - 36),
+          "hard-left audio draws the upper-left diagonal while the previous mono frame persists");
+
+    write(1.f, -1.f);
+    const auto antiPhase = image();
+    check(greenTrace(antiPhase, centreX - 48, centreY) && greenTrace(antiPhase, centreX + 48, centreY),
+          "opposed channels draw along the horizontal side axis");
+    write(0.f, .3f);
+    write(0.f, .3f);
+    check(!greenTrace(image(), centreX, centreY - 36), "after four newer frames the old mono frame is retired");
+
+    const auto last = phase.snapshot();
+    const auto frozen = image();
+    phase.freeze(true);
+    write(1.f, 1.f);
+    check(phase.snapshot() == last && !phase.subscribed() && fixture.broker->stats().consumers == 0 &&
+              greenTrace(frozen, centreX - 48, centreY) == greenTrace(image(), centreX - 48, centreY),
+          "freezing retains the goniometer picture and releases live capture");
+    phase.clear();
+    check(!phase.snapshot() && !greenTrace(image(), centreX - 48, centreY), "clearing removes the frozen trace and afterglow");
+
+    phase.freeze(false);
+    write(.08f, .08f);
+    const auto seeded = image();
+    check(greenTrace(seeded, centreX, centreY - 22) && !greenTrace(seeded, centreX, centreY - 42),
+          "a quiet first frame uses the reference quarter-scale AGC seed");
+    constexpr std::int32_t decaySamples = 340800; // 7.1 s at the fixture's 48 kHz
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, decaySamples, fixture.tap->written(), true, 1);
+    constexpr std::int32_t samplesPerPass = 256 * static_cast<std::int32_t>(SharedAnalysis::kMaxWindowsPerFrame);
+    for (int remaining = decaySamples; remaining > 0; remaining -= samplesPerPass) fixture.broker->pump();
+    write(.08f, .08f);
+    const auto released = image();
+    check(greenTrace(released, centreX, centreY - 66) && !greenTrace(released, centreX, centreY - 78),
+          "one 7.1-second time constant expands a quiet trace regardless of how often the owner presents it");
+
+    write(1.f, 0.f, false);
+    write(1.f, -1.f, false);
+    const auto monitoring = image();
+    check(greenTrace(monitoring, centreX - 24, centreY - 24) && greenTrace(monitoring, centreX - 48, centreY),
+          "monitoring during stopped transport retains the recent left and antiphase traces");
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, frameCount, 0, false, 1);
+    fixture.broker->pump();
+    phase.frame();
+    const auto quiet = phase.snapshot();
+    const auto publications = fixture.broker->stats().publications;
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, frameCount, 0, false, 1);
+    fixture.broker->pump();
+    phase.frame();
+    const auto parked = image();
+    check(quiet && !quiet->advancing && quiet->peak == std::array<float, 2>{} && phase.snapshot() == quiet &&
+              fixture.broker->stats().publications == publications &&
+              !greenTrace(parked, centreX - 24, centreY - 24) && !greenTrace(parked, centreX - 48, centreY),
+          "the final parked-silence publication clears recent traces before the broker stops publishing");
 }
 void modesSourcesAndFreeze() {
     Fixture f;
@@ -479,13 +597,6 @@ void permanentMainMeter() {
     const auto initial = meter.reading();
     check(initial && std::abs(initial->reading.maximumPeak[0] - .5) < 1.e-6 && meter.loudness() && reads == 1,
           "Main meter publishes the stereo envelope and projects one existing loudness snapshot");
-    const auto beforeScale = f.broker->stats();
-    meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
-    meter.frame(f.broker, 1, source);
-    const auto afterScale = f.broker->stats();
-    check(meter.reading() == initial && afterScale.publications == beforeScale.publications &&
-              afterScale.spectralPlans == beforeScale.spectralPlans,
-          "K scale relabels the same reading without a new publication or plan");
     const auto releaseMouse = [&](juce::Point<float> down, juce::Point<float> up, juce::ModifierKeys buttons,
                                   bool dragged = false) {
         const auto now = juce::Time::getCurrentTime();
@@ -520,7 +631,7 @@ void permanentMainMeter() {
     meter.channelBox.setSelectedId(2, juce::sendNotificationSync);
     meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
     meter.frame(f.broker, 1, source);
-    check(!meter.reading() && meter.scaleBox.getSelectedId() == 3, "M/S and A weighting start a fresh measurement, retaining its scale");
+    check(!meter.reading() && meter.scaleBox.getSelectedId() == 1, "M/S and A weighting start a fresh measurement, retaining its scale");
     f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
     check(meter.reading() && meter.reading()->reading.maximumPeak[1] == 0.,
           "in-phase stereo shows no Side signal after changing the meter profile");
@@ -573,6 +684,48 @@ void permanentMainMeter() {
     check(!meter.subscribed() && f.broker->stats().consumers == 0,
           "moving the meter itself out of view also releases its lease immediately");
     meter.setAuditionSink({});
+    root.removeFromDesktop();
+}
+
+void referenceMainMeterScale() {
+    using namespace adi::ui;
+    Fixture f;
+    Root root;
+    MixOutputMeter meter;
+    root.setSize(152, 520);
+    meter.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(meter);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    f.write(); f.broker->pump(); meter.frame(f.broker, 1);
+    const auto weighted = meter.reading();
+    meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(weighted && !meter.reading() && !meter.weightingBox.isEnabled(),
+          "K-14 starts the fixed-time unweighted measurement");
+    f.write(1024); f.broker->pump(); meter.frame(f.broker, 1);
+    const auto k14 = meter.reading();
+    meter.scaleBox.setSelectedId(4, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(k14 && meter.reading() == k14 && !meter.weightingBox.isEnabled(),
+          "changing the K reference level keeps the same fixed-time interval");
+    const auto paintTop = [&] {
+        juce::Image raster(juce::Image::RGB, 152, 520, true, juce::SoftwareImageType{});
+        juce::Graphics g(raster);
+        meter.paintEntireComponent(g, true);
+        return raster.getPixelAt(35, 123);
+    };
+    check(paintTop() != juce::Colour(look::record), "K bias does not light the raw clip indicator");
+    constexpr std::array left{-1.f, 0.f}, right{0.f, 0.f};
+    f.tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 2048, true);
+    f.broker->pump(); meter.frame(f.broker, 1);
+    check(paintTop() == juce::Colour(look::record), "a negative full-scale sample lights the left clip strip");
+    meter.scaleBox.setSelectedId(1, juce::sendNotificationSync);
+    meter.frame(f.broker, 1);
+    check(meter.weightingBox.isEnabled() && meter.weightingBox.getSelectedId() == 2 && !meter.reading(),
+          "dBFS resumes the saved A-weighted profile at the next samples");
     root.removeFromDesktop();
 }
 
@@ -1222,6 +1375,198 @@ void spectrumSlopeProjection() {
     }
 }
 
+void filledSpectrumProjection() {
+    using namespace adi::ui;
+    using namespace filled_spectrum;
+    constexpr std::array bins{99.f, 2.f, 8.f, 3.f, 5.f};
+    check(std::abs(columnMagnitude(bins, 100., 90., 350.) - 8.f) < 1.e-5f,
+          "one display column keeps the strongest FFT bin it covers");
+    const auto fraction = (std::sqrt(110. * 140.) - 100.) / 100.;
+    check(std::abs(columnMagnitude(bins, 100., 110., 140.) - (2. + 6. * fraction)) < 1.e-5,
+          "a narrow column interpolates amplitudes at its log-frequency centre");
+    check(std::abs(columnMagnitude(bins, 100., 10., 30.) - 2.f) < 1.e-5f,
+          "the DC bin stays off the logarithmic display");
+    const auto at = [](double hz, double fractionY) { return cursorAt(std::log(hz / lowHz) / logWidth(), fractionY); };
+    const auto a = at(440., .5), b = at(1000., 0.), c = at(261.6255653, 1.);
+    check(std::abs(a.hz - 440.) < 1.e-7 && std::string_view(a.note) == "A" && a.octave == 3 && a.cents == 0 &&
+              std::abs(a.levelDb + 46.5) < 1.e-7, "cursor in the plot reads 440 Hz as A3 and its y coordinate as level");
+    check(std::string_view(b.note) == "B" && b.octave == 4 && b.cents == 21 && std::abs(b.levelDb + 13.) < 1.e-7 &&
+              std::string_view(c.note) == "C" && c.octave == 3 && c.cents == 0 && std::abs(c.levelDb + 80.) < 1.e-7,
+          "cursor matches the reference pitch convention and calibrated dB endpoints");
+
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 400, 200);
+    view.setMode(SharedSpectrumView::Mode::FilledSpectrum);
+    auto result = std::make_shared<SharedAnalysis::Result>();
+    result->sampleRate = 48000.;
+    result->request.fftSize = 4096;
+    auto spectra = std::make_shared<SharedAnalysis::FilledSpectrumResult>();
+    spectra->magnitudes[static_cast<std::size_t>(SharedAnalysis::FilledCurve::RealtimeMaximum)].assign(2049, .01f);
+    spectra->magnitudes[static_cast<std::size_t>(SharedAnalysis::FilledCurve::HeldMaximum)].assign(2049, .1f);
+    spectra->magnitudes[static_cast<std::size_t>(SharedAnalysis::FilledCurve::Average)].assign(2049, .03f);
+    result->filledSpectrum = spectra;
+    SharedSpectrumViewTestAccess::showFilled(view, result);
+    const auto picture = softwarePicture(view);
+    const auto held = picture.getPixelAt(225, 60), live = picture.getPixelAt(225, 110);
+    check(held.getGreen() > held.getRed() && live.getGreen() > held.getGreen(),
+          "the software plot draws a darker filled hold behind the brighter live trace");
+    view.setFilledSpectrumCurve(SharedAnalysis::FilledCurve::Average);
+    check(!samePixels(picture, softwarePicture(view)) && view.snapshot() == result,
+          "selecting another curve redraws the same immutable measurement");
+    SharedSpectrumViewTestAccess::pointFilled(view, {222, 100});
+    const auto withPointer = softwarePicture(view);
+    SharedSpectrumViewTestAccess::pointFilled(view, {-1, -1});
+    check(!samePixels(withPointer, softwarePicture(view)), "a pointer inside the software plot draws the readout overlay");
+}
+
+void thirdOctaveAndPeriodSurface() {
+    using namespace adi::ui;
+    using namespace third_octave;
+    check(centres.size() == 30 && centres.front() == 25. && centres[12] == 400. && centres.back() == 20000.,
+          "the display follows all thirty ISO centre frequencies from 25 Hz to 20 kHz");
+    constexpr std::array bins{-4.f, -30.f, -12.f, -44.f, -18.f, -22.f, -24.f, -34.f, -7.f, -35.f, -10.f, -13.f, -19.f};
+    check(std::abs(bandLevel(bins, 10., 100.) + 10.f) < .01f, "the band retains its highest calibrated bin");
+    constexpr std::array lowBins{0.f, -40.f, -20.f, -45.f};
+    const auto expected = 20. * std::log10(std::lerp(.01, .1, (31.5 - 25.) / 25.));
+    check(std::abs(bandLevel(lowBins, 25., 31.5) - expected) < .01 &&
+              bandLevel(lowBins, 25., 25.) < -39.f && bandLevel(lowBins, 25., 250.) < -100.f,
+          "narrow bands interpolate linear magnitude, skip DC and respect Nyquist");
+    check(std::abs(holdLevel(-24.f, -50.f, .25) + 30.f) < .01f &&
+              std::abs(holdLevel(-24.f, -50.f, 2.) + 50.f) < .01f,
+          "band hold falls 24 dB per second of source time and stops at the current level");
+
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 640, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setMode(SharedSpectrumView::Mode::ThirdOctaveBands);
+    view.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(view);
+    view.present(fixture.broker, 1);
+    std::array<float, 4096> tone{};
+    for (std::size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(.3 * std::sin(2. * std::numbers::pi * 440. * static_cast<double>(i) / 48000.));
+    fixture.tap->write(tone.data(), tone.data(), static_cast<std::int32_t>(tone.size()), 0, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto shot = view.snapshot();
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && shot && shot->periodScope &&
+              shot->request.fftSize == 4096 && shot->request.channel == SharedAnalysis::Channel::Mid &&
+              (shot->outputs & (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope)) ==
+                  (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope) &&
+              shot->periodScope->lag > 0. && std::abs(12800. / shot->periodScope->lag - 440.) < 3.,
+          "the fake-peer bands page uses the paired 4096-sample spectrum and a locked A3 scope");
+    const auto pixels = softwarePicture(view);
+    const auto cyan = pixels.getPixelAt(217, 102);
+    check(cyan.getBlue() > 175 && cyan.getGreen() > 200 && cyan.getRed() < 160,
+          "the 400 Hz column is measured and drawn in the left pane");
+    const auto scopePixel = [&pixels](int x, int y) {
+        for (int dy = -4; dy <= 4; ++dy) {
+            const auto colour = pixels.getPixelAt(x, y + dy);
+            if (colour.getGreen() > 115 && colour.getGreen() > colour.getRed() && colour.getRed() > colour.getBlue()) return true;
+        }
+        return false;
+    };
+    check(scopePixel(551, 146) && scopePixel(607, 230), "the right pane draws one rising, then falling period around its centre line");
+    view.clear();
+    check(!view.snapshot() && !samePixels(pixels, softwarePicture(view)), "clearing resets the bands, held markers and scope together");
+    root.setVisible(false);
+    view.frame();
+    check(!view.subscribed() && fixture.broker->stats().consumers == 0, "hidden bands release their passive analysis lease");
+
+    AnalysisPane standalone;
+    standalone.modeBox.setSelectedId(static_cast<int>(SharedSpectrumView::Mode::ThirdOctaveBands) + 1, juce::sendNotificationSync);
+    check(standalone.mode() == SharedSpectrumView::Mode::ThirdOctaveBands && standalone.modeBox.getText() == "Third-Octave Bands" &&
+              !standalone.channelBox.isVisible() && !standalone.slopeBox.isVisible() && !standalone.scaleBox.isVisible(),
+          "the detached selector offers the bands and hides controls for its fixed measurement");
+}
+
+void colourWaveformSurface() {
+    using namespace adi::ui;
+    using namespace colour_waveform;
+    const auto edges = bandEdges(.8f, {.25f, .5f, .25f});
+    check(std::abs(edges[0] - .2f) < 1.e-6f && std::abs(edges[1] - .6f) < 1.e-6f && std::abs(edges[2] - .8f) < 1.e-6f,
+          "three colour heights stack their energy shares inside the original peak envelope");
+    check(std::abs(columnX(128, 630.f) - 157.5f) < .01f && std::abs(columnX(512, 630.f) - 630.f) < .01f,
+          "a half-second occupies one fourth of the two-second canvas, ending at Now");
+    adi::dsp::ColourWaveformReading suffix;
+    suffix.firstSequence = 100;
+    suffix.serial = 3;
+    suffix.size = 2;
+    check(firstVisibleColumn(suffix, 288, 48000.) == 0 && firstVisibleColumn(suffix, 289, 48000.) == 1 &&
+              firstVisibleColumn(suffix, 476, 48000.) == 2,
+          "a local clear keeps only complete columns that start at or after the source fence");
+
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 640, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(root.getLocalBounds());
+    view.setMode(SharedSpectrumView::Mode::ColourWaveform);
+    root.addAndMakeVisible(view);
+    view.present(fixture.broker, 1);
+    const auto blank = softwarePicture(view);
+    constexpr int length = 4800;
+    std::array<float, length> tone{}, silence{};
+    for (std::size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(.65 * std::sin(2. * std::numbers::pi * 80. * static_cast<double>(i) / 48000.));
+    fixture.tap->write(tone.data(), tone.data(), length, 0, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto current = view.snapshot();
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && current && current->colourWaveform &&
+              current->colourWaveform->size >= 20 && current->colourWaveform->size < 30 &&
+              current->request.channel == SharedAnalysis::Channel::Mid && fixture.broker->stats().spectralPlans == 0,
+          "the fake-peer waveform consumes only timestamped paired-mono columns at the native source rate");
+    const auto hasBlue = [](const juce::Image &picture, int x, int y) {
+        const auto pixel = picture.getPixelAt(x, y);
+        return pixel.getBlue() > 170 && pixel.getBlue() > pixel.getGreen() && pixel.getGreen() > pixel.getRed();
+    };
+    const auto fresh = softwarePicture(view);
+    check(hasBlue(fresh, 624, 150) && hasBlue(fresh, 624, 212) &&
+              fresh.getPixelAt(490, 150) == blank.getPixelAt(490, 150) &&
+              fresh.getPixelAt(638, 150) == blank.getPixelAt(638, 150),
+          "the captured low band mirrors at the right edge, with empty past and no future trace");
+    fixture.tap->write(silence.data(), silence.data(), length, length, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto scrolled = softwarePicture(view);
+    check(hasBlue(scrolled, 592, 150) && !hasBlue(scrolled, 624, 150),
+          "another 100 ms shifts the earlier peak 32 px to the left and leaves the newest silence at the right");
+    const auto retained = view.snapshot();
+    view.freeze(true);
+    check(retained && view.snapshot() == retained && !view.subscribed() && hasBlue(softwarePicture(view), 592, 150),
+          "Freeze keeps the rendered two-second picture and releases its passive demand");
+    view.freeze(false);
+    SharedAnalysis::Request siblingRequest{1};
+    siblingRequest.outputs = SharedAnalysis::ColourWaveform;
+    auto sibling = fixture.broker->acquire(siblingRequest);
+    fixture.tap->write(tone.data(), tone.data(), length, 2 * length, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto siblingPicture = sibling.read();
+    view.clear();
+    check(!view.snapshot() && siblingPicture && sibling.read() == siblingPicture,
+          "Clear empties the local waveform while its sibling retains audio history");
+    fixture.tap->write(silence.data(), silence.data(), length, 3 * length, true);
+    fixture.broker->pump();
+    view.frame();
+    check(view.snapshot() && samePixels(blank, softwarePicture(view)), "post-Clear silence cannot reveal older colour columns");
+    root.setVisible(false);
+    view.frame();
+    check(!view.subscribed() && fixture.broker->stats().consumers == 1, "hiding the waveform releases its lease alone");
+
+    AnalysisPane standalone;
+    standalone.modeBox.setSelectedId(static_cast<int>(SharedSpectrumView::Mode::ColourWaveform) + 1, juce::sendNotificationSync);
+    check(standalone.mode() == SharedSpectrumView::Mode::ColourWaveform && standalone.modeBox.getText() == "Colour Waveform" &&
+              !standalone.channelBox.isVisible() && !standalone.historyBox.isVisible() && !standalone.paletteBox.isVisible(),
+          "the detached analyser offers the colour waveform with its fixed scroll and colour stack");
+}
+
 void spectrumDetailScale() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -1861,21 +2206,23 @@ void mixAnalyserPages() {
     pages.setMainMeterSource(meter);
     pages.frame(f.broker, reader, main->id, first->id);
     const auto all = f.broker->stats();
-    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::Compare) + 1 &&
+    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::ColourWaveform) + 1 &&
               pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
           "analysers default to All and Main and offer each non-Main channel once");
-    check(all.taps == 3 && all.domains == 3 && all.consumers == 8 && all.spectralPlans == 1,
-          "All shares one Main FFT across spectral views and leases readout rows without their own FFT");
+    check(all.taps == 3 && all.domains == 4 && all.consumers == 8 && all.spectralPlans == 2,
+          "All shares the Main tap across two FFT sizes and leases readout rows without their own FFT");
     f.write();
-    check(f.broker->pump() == 1, "All uses one transform for the compatible Main spectrum and spectrogram");
+    check(f.broker->pump() == 1, "All can publish a 1024-frame spectrogram while the filled spectrum waits for its block");
     pages.frame(f.broker, reader, main->id, first->id);
     check(loudnessReads > 0, "All reads Main loudness through the persistent measurement");
 
     for (const auto &[page, mode] : std::array{
          std::pair{Page::Spectrogram, SharedSpectrumView::Mode::Spectrogram},
-         std::pair{Page::Spectrum, SharedSpectrumView::Mode::Spectrum},
+         std::pair{Page::Spectrum, SharedSpectrumView::Mode::FilledSpectrum},
          std::pair{Page::Scope, SharedSpectrumView::Mode::ClassicScope},
          std::pair{Page::Phase, SharedSpectrumView::Mode::Phase},
+         std::pair{Page::ThirdOctaveBands, SharedSpectrumView::Mode::ThirdOctaveBands},
+         std::pair{Page::ColourWaveform, SharedSpectrumView::Mode::ColourWaveform},
          std::pair{Page::Loudness, SharedSpectrumView::Mode::Meters}}) {
         pages.pageBox.setSelectedId(static_cast<int>(page) + 1, juce::sendNotificationSync);
         pages.frame(f.broker, reader, main->id, first->id);
@@ -2188,91 +2535,72 @@ void compareAndAveragePages() {
 
     using Mode = SharedSpectrumView::Mode;
     pages.setPage(Page::Spectrum);
-    pages.spectrumTraceBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
+    using Curve = SharedAnalysis::FilledCurve;
+    const auto traceId = [](Curve curve) { return static_cast<int>(curve) + 1; };
     pages.frame(broker, original, main, guitar);
-    SharedAnalysis::Request maximumRequest{main};
-    maximumRequest.outputs = SharedAnalysis::RealtimeMaximum;
-    auto retainedMaximum = broker->acquire(maximumRequest);
-    const auto maximumStart = first->written();
-    write(*first, .8f, maximumStart, 4);
+    SharedAnalysis::Request filledRequest{main};
+    filledRequest.fftSize = 4096;
+    filledRequest.outputs = SharedAnalysis::FilledSpectrum;
+    auto sibling = broker->acquire(filledRequest);
+    const auto peakStart = first->written();
+    for (int block = 0; block < 4; ++block) write(*first, .8f, peakStart + block * 1024, 4);
     broker->pump();
     pages.frame(broker, original, main, guitar);
-    const auto peak = retainedMaximum.readMaximum();
+    const auto picture = pages.detail.view.snapshot();
+    const auto siblingPeak = sibling.read();
+    const auto beforeTrace = broker->stats();
     check(pages.page() == Page::Spectrum && pages.pageBox.getText() == "Spectrum" &&
-              pages.spectrumTraceBox.getText() == "Realtime Maximum" && pages.spectrumTraceBox.isShowing() &&
-              pages.detail.view.mode() == Mode::SpectrumMaximum &&
-              pages.detail.view.getTitle() == "Realtime Maximum" && pages.detail.scaleBox.isShowing(),
-          "Realtime Maximum is selectable with the existing Spectrum controls and an accessible label");
-    check(peak && pages.detail.view.snapshot() == peak->window &&
-              std::ranges::equal(pages.detail.view.spectrumBins(), peak->binsDbfs) &&
-              broker->stats().taps == 1 && broker->stats().spectralPlans == 1,
-          "the maximum page draws its immutable analysis bins on the shared tap and FFT");
-    pages.detail.view.clear();
+              pages.spectrumTraceBox.getSelectedId() == traceId(Curve::RealtimeMaximum) &&
+              pages.spectrumTraceBox.isShowing() && pages.spectrumTraceBox.getNumItems() == 4 &&
+              pages.detail.view.mode() == Mode::FilledSpectrum && pages.detail.view.getTitle() == "Filled Spectrum" &&
+              !pages.detail.scaleBox.isShowing(),
+          "Spectrum defaults to Realtime Maximum and offers four traces on its fixed grid");
+    const auto hasAllCurves = [](const auto &publication) {
+        return publication && publication->filledSpectrum && publication->request.fftSize == 4096 &&
+            std::ranges::all_of(publication->filledSpectrum->magnitudes, [](const auto &curve) { return curve.size() == 2049; });
+    };
+    check(hasAllCurves(picture) && hasAllCurves(siblingPeak) && beforeTrace.taps == 1 && beforeTrace.spectralPlans == 1,
+          "every display curve is published while both Filled views share the tap and FFT");
+    for (auto curve : {Curve::RealtimeAverage, Curve::Average, Curve::HeldMaximum}) {
+        pages.spectrumTraceBox.setSelectedId(traceId(curve), juce::sendNotificationSync);
+        pages.frame(broker, original, main, guitar);
+        const auto afterTrace = broker->stats();
+        check(pages.detail.view.filledSpectrumCurve() == curve && pages.detail.view.snapshot() == picture &&
+                  afterTrace.transforms == beforeTrace.transforms && afterTrace.consumers == beforeTrace.consumers,
+              "switching Filled curves keeps the lease, complete picture and transform count");
+    }
+    pages.detail.resetButton.onClick();
     pages.frame(broker, original, main, guitar);
-    check(pages.detail.view.spectrumBins().empty() && retainedMaximum.readMaximum() == peak,
-          "clearing the maximum display leaves a sibling's numerical history intact");
+    check(!pages.detail.view.snapshot() && sibling.read() == siblingPeak,
+          "Clear immediately removes only its own filled spectrum picture");
+    for (int block = 0; block < 4; ++block) write(*first, .1f, peakStart + (4 + block) * 1024, 4);
+    broker->pump();
+    pages.frame(broker, original, main, guitar);
+    const auto cleared = pages.detail.view.snapshot();
+    const auto siblingAfter = sibling.read();
+    const auto held = static_cast<std::size_t>(Curve::HeldMaximum);
+    check(hasAllCurves(cleared) && hasAllCurves(siblingAfter) &&
+              cleared->filledSpectrum->magnitudes[held][64] < .11f &&
+              siblingAfter->filledSpectrum->magnitudes[held][64] > .75f,
+          "a complete post-Clear window replaces the old held maximum only for the cleared view");
     pages.setPage(Page::Analysis);
-    check(!pages.spectrumTraceBox.isShowing() && broker->stats().consumers == 1 &&
-              retainedMaximum.readMaximum() == peak,
-          "leaving Spectrum hides its trace selector and releases the pane's maximum lease");
+    check(!pages.spectrumTraceBox.isShowing() && broker->stats().consumers == 1,
+          "leaving Spectrum hides the trace selector and releases only its lease");
     pages.setPage(Page::Spectrum);
     pages.frame(broker, original, main, guitar);
-    check(pages.detail.view.mode() == Mode::SpectrumMaximum && broker->stats().consumers == 2,
+    check(pages.detail.view.filledSpectrumCurve() == Curve::HeldMaximum && broker->stats().consumers == 2,
           "returning to Spectrum restores the chosen trace");
     pages.setVisible(false);
-    check(broker->stats().consumers == 1 && retainedMaximum.readMaximum() == peak,
-          "hiding the maximum page drops only its own lease");
-    retainedMaximum.reset();
+    check(broker->stats().consumers == 1 && sibling.read() == siblingAfter,
+          "hiding Spectrum leaves the sibling picture and lease intact");
+    sibling.reset();
     check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
-          "the final maximum view leaves no analysis demand");
+          "hiding the final Filled view releases its FFT demand");
 
     const auto cumulativeId = static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1;
-    pages.setVisible(true);
-    pages.spectrumTraceBox.setSelectedId(cumulativeId, juce::sendNotificationSync);
-    pages.frame(broker, original, main, guitar);
-    check(pages.page() == Page::Spectrum && pages.spectrumTraceBox.getText() == "Cumulative Maximum" &&
-              pages.spectrumTraceBox.isShowing() && pages.detail.view.getTitle() == "Cumulative Maximum" &&
-              pages.detail.scaleBox.isShowing(),
-          "Cumulative Maximum uses the Spectrum trace selector and the existing scale controls");
-    if (pages.spectrumTraceBox.getText() == "Cumulative Maximum") {
-        auto secondRequest = maximumRequest;
-        secondRequest.outputs = SharedAnalysis::CumulativeMaximum;
-        auto siblingMaximum = broker->acquire(secondRequest);
-        const auto start = first->written();
-        write(*first, .8f, start, 4);
-        broker->pump();
-        pages.frame(broker, original, main, guitar);
-        const auto high = pages.detail.view.spectrumBins();
-        const float highBin = high.size() > 16 ? high[16] : adi::dsp::kDbFloor;
-        write(*first, .1f, start + 1024, 4);
-        broker->pump();
-        pages.frame(broker, original, main, guitar);
-        const auto held = pages.detail.view.spectrumBins();
-        check(highBin > -20.f && held.size() > 16 && held[16] == highBin,
-              "the visible cumulative trace uses held bins even as the playing signal falls");
-        pages.detail.resetButton.onClick();
-        pages.frame(broker, original, main, guitar);
-        const auto siblingBefore = siblingMaximum.readMaximum();
-        check(pages.detail.view.spectrumBins().empty() && siblingBefore && siblingBefore->binsDbfs[16] == highBin,
-              "Clear immediately empties only the current cumulative picture");
-        write(*first, .1f, start + 2048, 4);
-        broker->pump();
-        pages.frame(broker, original, main, guitar);
-        const auto cleared = pages.detail.view.spectrumBins();
-        const auto siblingAfter = siblingMaximum.readMaximum();
-        check(cleared.size() > 16 && cleared[16] < highBin - 12.f &&
-                  siblingAfter && siblingAfter->binsDbfs[16] == highBin &&
-                  broker->stats().consumers == 2 && broker->stats().spectralPlans == 1,
-              "the first post-Clear cumulative window drops earlier peaks only in the cleared view");
-        pages.setVisible(false);
-        check(broker->stats().consumers == 1 && broker->stats().spectralPlans == 1,
-              "hiding the cumulative page releases only its own demand");
-        siblingMaximum.reset();
-        check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
-              "hiding the final cumulative view releases its FFT demand");
-    }
-
     AnalysisPane detached;
+    detached.setMode(Mode::FilledSpectrum);
+    check(detached.modeBox.getText() == "Filled Spectrum", "the detached picker names the Filled Spectrum mode");
     detached.modeBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
     check(detached.modeBox.getText() == "Realtime Maximum" && detached.view.mode() == Mode::SpectrumMaximum,
           "the detached analyser also exposes Realtime Maximum");
@@ -2361,10 +2689,11 @@ void compareHoldSurvivesInvalidA() {
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
+    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); phaseGoniometer(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
+          linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); colourWaveformSurface(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
