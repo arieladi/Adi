@@ -22,6 +22,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-74 | `basics/look-chain` at `43febaaf` | Insert or edit a step tempo change from the beat ruler and draw tempo changes along it. Window seat. | Peerless menu, inline editor, persistence of event fields and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-75 | `basics/look-chain` at `fac5ee51` | Return the stopped transport, marker and viewport to 1.1.1 on Stop while stopped. Engine view-state mailbox and window seat. | Focused mailbox red/green and peerless transport, count-in and Continue checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-89 | `basics/look-chain` at `1f31704b` | Show named scan failures and render load placeholders with the failure reason. Window and Mix View seats. | Peerless scan rows, blocked drag/load and the real document placeholder paint passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-91 | `basics/look-chain` at `a748800b` | Mark keyboard focus and show when more tracks extend below the lanes. Window seat. | Fake-peer keyboard focus and software overflow tests passed. Both refreshed structural fixtures changed exactly 128 pixels inside their new badge. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -177,6 +178,10 @@ At 1440 × 900 Compact the Stop button stays `(566, 9, 18, 17)` and Position sta
 ### SC-89
 
 At 1440 × 900 Compact the Browser's existing rows begin at `(127, 81)` and are 185 × 19 px. The test's newly visible scan-failure row is `(127, 252, 185, 19)`, with the failure reason in its hint. In the Device View's first 150 × 188 px placeholder, the new error border encloses `(0, 0, 150, 188)`, the status is `(8, 21, 134, 16)` and the reason is `(8, 39, 134, 24)`. The activator `(2, 1, 16, 15)` and wrench `(32, 1, 16, 15)` are disabled.
+
+### SC-91
+
+Previously neither indicator was drawn. At 1200 × 720 Compact the focused panel now gets a 2 px thick, 32 px wide leading marker. In the test it moves from Arrangement `(328, 36, 32, 2)` to Browser `(12, 36, 32, 2)`. In the tall track list the overflow badge is lane-local `(8, 71, 16, 8)` above the pinned foot, root `(336, 186, 16, 8)`. It contains an 8 × 5 px downward triangle and disappears at the scroll end.
 
 ## For the director
 
