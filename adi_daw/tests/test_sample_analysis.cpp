@@ -9,6 +9,7 @@
 #include "adi/material_commands.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/warp_commands.hpp"
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <fstream>
 #include <numbers>
+#include <string_view>
 
 namespace {
 using namespace adi;
@@ -196,6 +198,107 @@ void catalogAndRevision(Fixture& fixture) {
           "a stale published hash cannot receive another source's measurements");
 }
 
+void authoredMetadataRefresh(Fixture& fixture) {
+    const auto digest = media::blake3File(fixture.loop);
+    const auto hat = media::blake3File(fixture.hat);
+    std::string error;
+    const auto indexPath = fixture.temp.path() / "metadata-refresh.sqlite";
+    auto index = library::Index::open(indexPath, error, false);
+    if (!digest || !hat || !index) { check(false, "open the authored refresh fixture"); return; }
+    const nlohmann::json existing{{"version", 1}, {"media", {{hat.hex, {{"tags", {"saved hat"}}}}}}};
+    if (!index->importJson(existing.dump(), error)) { check(false, "seed an existing authored overlay"); return; }
+    library::SampleAnalysisCatalog catalog(fixture.cache, fixture.decode, index.get());
+    catalog.replaceFiles({{fixture.loop, digest.hex, "loop"}, {fixture.hat, hat.hex, "hat"}});
+    catalog.worker().resume();
+    if (!catalog.worker().waitIdle()) { check(false, "measure the unchanged source"); return; }
+    const auto decoded = fixture.decode.stats().passthrough;
+    const std::array lookup{library::SampleAnalysisLookup{"loop", digest.hex},
+                            library::SampleAnalysisLookup{"hat", hat.hex}};
+    std::vector<std::shared_ptr<const library::SampleAnalysis>> records;
+    catalog.read(lookup, records);
+    const auto original = records.front();
+    const auto unchangedHat = records.back();
+    check(original && original->tempoBpm == 120 && samplePreviewLoops(*original),
+          "catalog starts from the 120 BPM measured loop");
+    check(unchangedHat && unchangedHat->tags == std::vector<std::string>{"saved hat"},
+          "catalog retained the existing overlay on a different source");
+    if (!original || !unchangedHat) return;
+
+    using Source = audio::SampleKindSource;
+    const auto write = [&](const nlohmann::json& fields) {
+        const nlohmann::json document{{"version", 3}, {"media", {{digest.hex, fields}}}};
+        return index->importJson(document.dump(), error);
+    };
+    check(write({{"bpm", 126}, {"key", {{"tonic", 4}, {"minor", true}}}, {"tags", {"edited"}}}),
+          "commit authored tempo, key and tags for the measured hash");
+    catalog.read(lookup, records);
+    check(records.front() && records.front()->tempoBpm == 126 && records.front()->tempoSource == Source::User &&
+          records.front()->key == library::SampleKey{4, true} && records.front()->keySource == Source::User &&
+          records.front()->tags == std::vector<std::string>{"edited"},
+          "same published row reflects authored annotations without rescan");
+    check(original->tempoBpm == 120 && !original->key && original->tags.empty(),
+          "an earlier query's immutable measurement stays unchanged");
+    check(records.back() == unchangedHat, "a single edited hash does not republish unrelated overrides");
+
+    library::SampleSettings saved;
+    saved.sampleRate = rate;
+    saved.channels = 1;
+    saved.frames = saved.sourceLength = rate * 4;
+    check(index->saveSampleSettings(digest.hex, saved, error) == library::SampleSettingsProblem::None,
+          "save explicit unlooped defaults by content hash");
+    catalog.read(lookup, records);
+    const auto policy = library::sampleWarpPolicyFromSettings(nlohmann::json::object(), &fixture.analysis, index.get());
+    const auto warp = library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::WarpPress, {}, policy,
+        fixture.loop, digest.hex, rate * 4, rate, {}, {});
+    const std::array<const library::SampleAnalysis*, 1> candidate{records.front().get()};
+    library::SampleQuery filter;
+    filter.kind = audio::SampleKind::OneShot;
+    std::vector<library::SampleQueryMatch> matches;
+    library::querySamples(candidate, filter, matches);
+    check(records.front() && records.front()->classification.source == Source::User && !samplePreviewLoops(*records.front()) &&
+          matches.size() == 1 && warp.action == audio::ShortSampleWarpAction::KeepUnwarped,
+          "filter, preview and explicit Warp agree immediately after a saved kind override");
+    const auto savedView = records.front();
+    check(index->saveSampleSettings(digest.hex, saved, error) == library::SampleSettingsProblem::None,
+          "repeat the identical save");
+    catalog.read(lookup, records);
+    check(records.front() == savedView, "an identical save does not invalidate the current publication");
+
+    check(index->clearSampleSettings(digest.hex, error) == library::SampleSettingsProblem::None &&
+          write({{"bpm", nullptr}, {"key", nullptr}}), "clear authored classification, tempo and key");
+    catalog.read(lookup, records);
+    check(records.front() && records.front()->tempoBpm == 120 && records.front()->tempoSource == Source::Detection &&
+          !records.front()->key && samplePreviewLoops(*records.front()) && records.front()->tags == std::vector<std::string>{"edited"},
+          "cleared overrides restore the cached measurement and retain other author tags");
+
+    auto imported = nlohmann::json::object();
+    constexpr std::string_view digits = "0123456789abcdef";
+    for (std::size_t i = 0; i < 129; ++i) {
+        std::string hash(64, '0');
+        hash[62] = digits[i / 16];
+        hash[63] = digits[i % 16];
+        imported[hash] = {{"rating", 4}};
+    }
+    imported[digest.hex] = {{"bpm", 127}};
+    const nlohmann::json bulk{{"version", 3}, {"media", imported}};
+    check(index->importJson(bulk.dump(), error), "commit a bank whose authored updates exceed the journal window");
+    catalog.read(lookup, records);
+    check(records.front() && records.front()->tempoBpm == 127 && records.front()->tempoSource == Source::User &&
+          records.back() && records.back()->tags == unchangedHat->tags,
+          "bulk refresh applies the authored snapshot after journal overflow");
+    const auto latest = records.front();
+    SQLite::Database aborter(media::pathUtf8(indexPath), SQLite::OPEN_READWRITE);
+    aborter.exec("CREATE TRIGGER refuse_annotation_update BEFORE UPDATE ON annotations "
+                 "BEGIN SELECT RAISE(ABORT,'controlled annotation failure'); END");
+    check(!write({{"bpm", 129}}), "controlled SQLite failure rejects an authored update");
+    catalog.read(lookup, records);
+    check(records.front() == latest, "a rolled-back import does not invalidate the publication");
+
+    const auto raw = fixture.analysis.read(digest.hex);
+    check(fixture.decode.stats().passthrough == decoded && raw && raw.analysis->tags.empty(),
+          "author changes need no decode or rewrite of the derived cache");
+}
+
 void gatedLoudness(Fixture& fixture) {
     constexpr auto frames = rate;
     std::vector<float> mono(frames), surround(frames * 6);
@@ -347,6 +450,7 @@ int main() {
         Fixture fixture;
         measureAndRead(fixture);
         catalogAndRevision(fixture);
+        authoredMetadataRefresh(fixture);
         gatedLoudness(fixture);
         oneDecodePass(fixture);
         warpUsesPublishedAnswer(fixture);

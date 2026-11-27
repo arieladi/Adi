@@ -59,6 +59,16 @@ file value, then ACID, then detection. A local value wins when the sources
 have equal priority. ADIL stores the authored values and `sample_settings`.
 The owner can release observations alongside the rest of its library analysis.
 
+The catalog keeps an immutable measured record and overlays the current
+authored settings from its borrowed `Index`. The same listing reflects a
+completed save, clear, or authored JSON import on its next read. Previous query
+results retain the immutable values they received. The Index revision poll does
+no SQLite work while annotations are unchanged. Recent updates read only the
+changed hashes from a bounded journal. An import or an interval too large for
+the journal refreshes the authored annotations in one scan. Neither path
+decodes audio or writes ADIA. The in-process Index owner publishes revisions
+after committing the authored transaction.
+
 An owner can give `SampleAnalysisCatalog` a captured `WarpTimingSettings`.
 The worker passes each decoded block to both the descriptor analysis and the
 fixed-rate Warp analyser. ALIB and AWTM publish under the same verified

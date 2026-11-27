@@ -21,6 +21,15 @@ using Keys = std::unordered_set<std::string, TextHash, std::equal_to<>>;
 }
 
 struct SampleAnalysisCatalog::State {
+    struct Measurement {
+        std::shared_ptr<const SampleAnalysis> raw, effective;
+
+        void apply(const SampleAnalysisOverrides& overrides) {
+            effective = overrides.empty() ? raw :
+                std::make_shared<const SampleAnalysis>(applySampleOverrides(*raw, overrides));
+        }
+    };
+
     State(media::AnalysisCache& analysis, audio::DecodeCache& decode, const Index* annotations,
           std::optional<audio::WarpTimingSettings> analysisTiming)
         : service(analysis, decode), index(annotations), timing(analysisTiming) {}
@@ -28,15 +37,33 @@ struct SampleAnalysisCatalog::State {
     bool measure(const AnalysisJob& job, std::stop_token stop) {
         auto result = service.analyze(job.source, job.hash, stop, timing);
         if (!result || stop.stop_requested()) return false;
-        if (index) result.analysis = applySampleOverrides(std::move(*result.analysis), index->analysisOverrides(result.hash));
-
-        auto value = std::make_shared<const SampleAnalysis>(std::move(*result.analysis));
+        auto raw = std::make_shared<const SampleAnalysis>(std::move(*result.analysis));
         std::lock_guard lock(mutex);
         const bool activeHash = hashesWanted.contains(result.hash);
         const bool activeKey = job.hash.empty() && keysWanted.contains(job.key);
-        if (activeHash || activeKey) byHash.insert_or_assign(result.hash, std::move(value));
+        if (activeHash || activeKey) {
+            Measurement value{raw, raw};
+            if (index) value.apply(index->analysisOverrides(result.hash));
+            byHash.insert_or_assign(result.hash, std::move(value));
+        }
         if (activeKey) hashForKey.insert_or_assign(job.key, std::move(result.hash));
         return true;
+    }
+
+    // Call under the publication's mutex so a worker cannot insert a stale
+    // override after a query has advanced the annotation revision.
+    void refreshAnnotations() {
+        if (!index) return;
+        const auto changes = index->analysisOverridesSince(annotationRevision);
+        if (changes.revision == annotationRevision) return;
+        if (changes.fullSnapshot) {
+            for (auto& row : byHash) row.second.effective = row.second.raw;
+        }
+        for (const auto& [hash, overrides] : changes.entries) {
+            const auto found = byHash.find(hash);
+            if (found != byHash.end()) found->second.apply(overrides);
+        }
+        annotationRevision = changes.revision;
     }
 
     SampleAnalysisService service;
@@ -44,8 +71,9 @@ struct SampleAnalysisCatalog::State {
     std::optional<audio::WarpTimingSettings> timing;
     std::mutex publicationMutex;
     mutable std::mutex mutex;
+    std::uint64_t annotationRevision = 0;
     Keys hashesWanted, keysWanted;
-    Table<std::shared_ptr<const SampleAnalysis>> byHash;
+    Table<Measurement> byHash;
     Table<std::string> hashForKey;
 };
 
@@ -78,6 +106,7 @@ void SampleAnalysisCatalog::read(std::span<const SampleAnalysisLookup> files,
                                  std::vector<std::shared_ptr<const SampleAnalysis>>& output) const {
     if (audio::onAudioThread) return;
     std::lock_guard lock(state_->mutex);
+    state_->refreshAnnotations();
     output.clear();
     output.reserve(files.size());
     for (const auto& file : files) {
@@ -87,7 +116,7 @@ void SampleAnalysisCatalog::read(std::span<const SampleAnalysisLookup> files,
             if (found != state_->hashForKey.end()) hash = found->second;
         }
         const auto found = state_->byHash.find(hash);
-        output.push_back(found == state_->byHash.end() ? nullptr : found->second);
+        output.push_back(found == state_->byHash.end() ? nullptr : found->second.effective);
     }
 }
 } // namespace adi::library

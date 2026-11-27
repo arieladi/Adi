@@ -11,6 +11,7 @@
 #include <vector>
 namespace adi::library {
 struct SampleAnalysisOverrides;
+struct SampleAnalysisOverrideChanges;
 struct SampleAnalysisMetadata;
 struct Entry {
     std::string volumeId, relativePath, hash, error;
@@ -69,6 +70,10 @@ public:
     [[nodiscard]] SampleSettingsProblem saveSampleSettings(const std::string& hash,const SampleSettings&,std::string& error);
     [[nodiscard]] SampleSettingsProblem clearSampleSettings(const std::string& hash,std::string& error);
     [[nodiscard]] SampleAnalysisOverrides analysisOverrides(const std::string& hash) const;
+    // Committed mutations made through this Index. Polling an unchanged
+    // revision does no database work. A missed journal window supplies all
+    // authored overrides. Empty entries in a delta clear the named overlay.
+    [[nodiscard]] SampleAnalysisOverrideChanges analysisOverridesSince(std::uint64_t revision) const;
     // Version 3 can also carry read-only analysis observations. The caller
     // receives those observations only on success and can re-export them.
     // Analysis observations never turn into authored annotations.

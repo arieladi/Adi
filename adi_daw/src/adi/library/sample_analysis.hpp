@@ -9,6 +9,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adi::audio { class DecodeCache; }
@@ -36,6 +37,16 @@ struct SampleAnalysisOverrides {
     audio::SampleKindHint classification;
     std::optional<SampleKey> key;
     std::vector<std::string> tags;
+
+    [[nodiscard]] bool empty() const noexcept {
+        return classification.kind == audio::SampleKind::Unknown && !classification.bpm && !key && tags.empty();
+    }
+};
+
+struct SampleAnalysisOverrideChanges {
+    std::uint64_t revision = 0;
+    bool fullSnapshot = false;
+    std::vector<std::pair<std::string, SampleAnalysisOverrides>> entries;
 };
 
 // Rebuildable observations carried by library exchange. The content hash
