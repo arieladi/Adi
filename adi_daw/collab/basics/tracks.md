@@ -1,8 +1,8 @@
 # Basics tracks
 
-**Newest branch** `basics/sc-279-keyboard-track-reorder` at `e2fd2cf6fa34c8aae1171ecef917be7f80b3253b`. The consolidated `basics/tracks-chain` is at `e2fd2cf6`. All 25 item branches in the table are on `origin`. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-279-keyboard-track-reorder) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+**Newest branch** `basics/sc-297-browser-sampler-drop` at `7c7106df33a39ef129eb2563763ce415a4752a49`. The consolidated `basics/tracks-chain` is at `7c7106df`. All 26 item branches in the table are on `origin`. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-297-browser-sampler-drop) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
-The State column records Win’s requested handoff status for these 25 item heads. How it was proved retains the earlier Linux runs. The integrator verifies the merged Linux chain, and Win verifies Windows before landing.
+The State column records Win’s requested handoff status for the first 25 item heads. How it was proved retains the earlier Linux runs. The integrator verifies the merged Linux chain, and Win verifies Windows before landing.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -31,12 +31,15 @@ The State column records Win’s requested handoff status for these 25 item head
 | SC-275 | `basics/sc-275-assign-track-colour` `03da2ac8` | The shared track-title menu applies the clicked track’s colour to its clips. The group command applies it to all descendant tracks and clips, including take lanes. Each change uses one existing Undo transaction. Touched window and window-fn. | The headless baseline missed the ordinary action and left group clips unchanged. All 489 focused checks, 18 no-display UI tests, and three acceptance tests passed in Linux Debug with WERROR. In native Xvfb the ordinary action recoloured two clips, kept the other track’s colour, and one Undo restored the explicit and inherited colours. The shell also exercised a nested group and repeated assignment without another step. | pushed, not verified on Linux |
 | SC-278 | `basics/sc-278-monitor-controls` `57240034` | Delete on the focused Monitor switch restores the selected tracks’ creation defaults in one step. The lit Activator turns blue while monitoring In in both surfaces, including when Arrangement In/Out is hidden. Touched engine recording defaults, window and window-fn. | The headless baseline failed color and reset checks. Linux Debug with WERROR passed the focused fixture, all 18 no-display UI tests, three core recording and track suites, and three acceptance tests rebuilt against the updated core. In native Xvfb, the baseline Delete removed the track. The fixed app turned the Activator blue on In, kept both tracks on Delete, restored Off and its amber color, and one Undo restored In. | pushed, not verified on Linux |
 | SC-279 | `basics/sc-279-keyboard-track-reorder` `e2fd2cf6` | Ctrl/Cmd+Up and Down on Arrangement track titles move the selected tracks one sibling slot in one Undo step. Groups carry their descendants. Parent groups, returns and Main keep their boundaries, and plain arrows navigate as before. Touched window and window-fn. | The old headless fixture changed the selection instead of the order. The fixed Linux Debug WERROR build passed all 503 focused checks, 18 no-display UI tests and three acceptance tests. In native Xvfb, Ctrl+Up moved the second MIDI track above the first, kept it selected, and one Undo restored the order. | pushed, not verified on Linux |
+| SC-297 | `basics/sc-297-browser-sampler-drop` `7c7106df` | Browser samples can drop across a sampler panel. The existing sample loader handles the selected slot. Browser plug-ins and presets still use the chain target. Touched window and window-fn. | The baseline shell missed the panel target. The native baseline ignored the controls and accepted the tile. In the fixed native app, the same WAV loaded on OneShot’s controls, and one Undo cleared the sample and imported media. Headless checks loaded Sampler slot 2 and kept slot 1 empty. All 22 Linux Debug UI, sampler and analyser checks passed on the merged stack, along with three acceptance tests. | pushed, Linux checks passed |
 
 The tracks prompt and its wave-two follow-ups are through SC-317. A separate session claimed the second queue on [basics/edit-log](https://github.com/arieladi/Adi/blob/basics/edit-log/adi_daw/collab/basics/edit.md).
 
 The SC-289 and SC-317 integration resolves the conflicts with `land/basics-1127i` and main. SC-417 still reads hidden plug-in controls on demand. A headless regression shows that selecting a hidden device's last touch adds its panel control without retaining live parameter demand. All 24 targeted Linux Debug tests passed with DISPLAY unset, along with acceptance 3/3.
 
 SC-88 stays with DEV-22. The Browser dynamics still depend on the unmerged measured Compressor, Glue, Gate, and live Limiter branches.
+
+SC-293’s stock Compressor panel depends on DEV-22 and the MX-24 and DEV-05 routing work. SC-294 and SC-295 stay with DEV-19 and DEV-04. SC-300 awaits the R52 reading on Paste from a track title.
 
 Note grouping is tracked under MI-09. Native Mix View functions keep their dedicated Move controls.
 
@@ -57,3 +60,5 @@ SC-174 baseline for the edit owner. In the app on Xvfb, I dragged a time range i
 - SC-288 Group needs the rack playback and structural operations in DEV-01 and DEV-03. The current engine skips rack children. Both feature branches conflict with the landing stack, and DEV-01 still needs the ADR-0253 playback corrections. I recommend wiring Group after those revisions land so grouping an instrument or effect keeps it audible.
 
 - SC-281 needs a portable default track that carries devices, plug-in state, and media into another project. I recommend defining how it maps sends before applying it at track creation. Sample settings already save by content hash under TM-MD-04. I recommend wiring Clip View Save and both import paths there while keeping ordinary drops atomic.
+
+- SC-298 needs a ruling on whether a built-in’s inactive A/B bank survives reopening and which bank P should select after Undo. I recommend document-local banks initially, one Undo for a changed switch, and the existing automation override for changed values only.
