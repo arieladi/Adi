@@ -60,6 +60,10 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
         return "The plug-in scan stopped early: " + l.stopped + ". " +
                (l.plugins.empty() ? std::string("Nothing could be listed.") : std::string("The list may be incomplete.")) +
                " Rescan from the Settings' Plug-Ins page.";
+    const auto skipped = std::ranges::count(l.scanFailures, scan::State::UnreadablePath, &scan::Failure::state);
+    if (skipped > 0)
+        return std::to_string(skipped) + (skipped == 1 ? " unreadable search location was" : " unreadable search locations were") +
+               (l.plugins.empty() ? " skipped. No plug-ins were found." : " skipped. The readable plug-ins are listed.");
     if (l.plugins.empty())
         return l.failed > 0 ? std::to_string(l.failed) + (l.failed == 1 ? " plug-in file" : " plug-in files") +
                                   " could not be scanned, and no plug-in was found."

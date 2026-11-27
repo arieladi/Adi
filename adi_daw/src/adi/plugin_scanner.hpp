@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <system_error>
 
 namespace adi::scan {
 struct Plugin {
@@ -23,10 +24,6 @@ std::optional<std::string> encodeMetadata(const std::string& format,
     const std::string& path, const std::vector<Plugin>& plugins, std::string& error);
 
 std::filesystem::path defaultScannerExecutable(); // sibling of current executable
-/// Enumerate a plug-in format without loading its modules. Returns sorted,
-/// canonical UTF-8 paths, and follows native links without repeating folders.
-std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
-                                        std::string_view extension);
 std::int64_t systemUtcMicros() noexcept;
 struct BatchProgress {
     std::atomic<std::size_t> total{0};
@@ -46,7 +43,7 @@ struct Config {
     BatchProgress* progress = nullptr; // borrowed by one ordered batch through return
 };
 inline constexpr unsigned kMaximumProbeWorkers = 4;
-enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused, HelperCouldNotStart };
+enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused, HelperCouldNotStart, UnreadablePath };
 [[nodiscard]] constexpr bool stopsDiscovery(State state) noexcept {
     return state==State::Cancelled || state==State::Unavailable || state==State::Invalid ||
            state==State::HelperCouldNotStart;
@@ -61,6 +58,15 @@ struct Result {
     std::vector<Plugin> plugins;
 };
 struct Failure { std::string path, error; State state = State::Failed; };
+[[nodiscard]] inline bool isAccessDenied(const std::error_code& error) noexcept {
+    return error == std::errc::permission_denied || error == std::errc::operation_not_permitted;
+}
+/// Enumerate a plug-in format without loading its modules. Returns sorted,
+/// canonical UTF-8 paths, and follows native links without repeating folders.
+/// Optional diagnostics name locations skipped because access was denied.
+std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
+                                        std::string_view extension, std::vector<Failure>* unreadable = nullptr);
+
 struct Report {
     bool complete = true, cancelled = false;
     std::vector<Failure> failures;
