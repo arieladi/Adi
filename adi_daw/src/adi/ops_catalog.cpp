@@ -1162,6 +1162,27 @@ bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop
         set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
+bool transportMetronomeOptions(OpContext &c, const Payload &p, std::string &error) {
+    if (p.empty()) {
+        error = "Choose a metronome option to change";
+        return false;
+    }
+    const auto options = readTransportSettings(c.store).metronomeOptions;
+    const auto sound = p.value("sound", static_cast<std::int64_t>(options.sound));
+    if (sound < 0 || sound > static_cast<std::int64_t>(MetronomeSound::Bell)) {
+        error = "Choose a supported metronome sound";
+        return false;
+    }
+    const Payload value{{"recordingOnly", p.value("recordingOnly", options.recordingOnly)},
+                        {"eighthNotes", p.value("eighthNotes", options.eighthNotes)},
+                        {"sound", sound}};
+    SQLite::Statement set(
+        c.store.db(),
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.metronomeOptions',?)");
+    set.bind(1, value.dump());
+    set.exec();
+    return true;
+}
 bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
     const auto bars = p.at("bars").get<std::int64_t>();
     if (bars != 0 && bars != 1 && bars != 2 && bars != 4) {
@@ -1364,6 +1385,9 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
                                      {"resolved", FieldType::Bool, true}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
+constexpr Field kFMetronomeOptions[] = {{"recordingOnly", FieldType::Bool, false},
+                                        {"eighthNotes", FieldType::Bool, false},
+                                        {"sound", FieldType::Int, false}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
 constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
@@ -2491,6 +2515,8 @@ const OpDescriptor kHandWritten[] = {
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
      transportMetronome, nullptr, ""},
+    {"transport.setMetronomeOptions", "Set how the metronome clicks", Scope::Transport, EngineImpact::Snapshot,
+     kFMetronomeOptions, false, true, transportMetronomeOptions, nullptr, ""},
 };
 
 }  // namespace

@@ -534,7 +534,8 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::createShared(const fs::path&
 std::shared_ptr<ProjectFileLease> ProjectFileLease::openExclusive(const fs::path& path,std::error_code& error) noexcept {return open(path,false,true,error);}
 FileIdentity ProjectFileLease::identity()const noexcept{return impl_->id;}
 const fs::path& ProjectFileLease::path()const noexcept{return impl_->path;}
-bool ProjectFileLease::removeCreated(std::error_code& error) noexcept {
+bool ProjectFileLease::removeCreated(std::error_code& error,
+                                     const std::function<std::error_code()>& validate) noexcept {
     if(audio::onAudioThread || !impl_->created){error=std::make_error_code(std::errc::operation_not_permitted);return false;}
     try {
         // A second real reader can have opened the fully seeded file before a
@@ -550,6 +551,9 @@ bool ProjectFileLease::removeCreated(std::error_code& error) noexcept {
         if(removable.value==invalidFile){error=nativeError();return false;}
         unlockNative(impl_->file);
         if((error=lockNative(removable.value,true)))return false;
+#endif
+        if(validate && (error=validate()))return false;
+#if defined(_WIN32)
         closeNative(impl_->file);impl_->file=invalidFile;
 #endif
         const bool removed=fs::remove(impl_->path,error);return removed && !error;
@@ -676,6 +680,10 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
 
 std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) noexcept {
     return classicReplace(source, target);
+}
+std::error_code syncPublishedDirectory(const fs::path& path) noexcept {
+    if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
+    return syncFolder(path);
 }
 std::error_code removePublishedFile(const fs::path& path,const FileIdentity& expected) noexcept {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);

@@ -2,6 +2,7 @@
 #include "adi/track_recording.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <cmath>
@@ -9,7 +10,7 @@
 namespace adi {
 namespace {
 constexpr const char* table="track_recording_options";
-bool gridValid(std::string_view grid){return grid=="1/4"||grid=="1/8"||grid=="1/16"||grid=="1/32";}
+bool gridValid(std::string_view grid){return trackRecordingGridTicks(grid) != 0;}
 std::int64_t trackId(const Payload& payload){return detail::signedInteger(payload.at("id"));}
 void ensureTrack(SQLite::Database& db,std::int64_t id) {
     SQLite::Statement found(db,"SELECT 1 FROM tracks WHERE id=?");found.bind(1,id);
@@ -74,6 +75,13 @@ const std::array<OpDescriptor,4> ops={{
  {"track.setKeepMonitoringLatency","Keep monitoring latency in this track's recording",Scope::Edit,EngineImpact::Snapshot,monitorFields,false,false,monitor,inverse,"track.restoreRecording"},
  {"track.restoreRecording","Restore captured track recording options",Scope::Edit,EngineImpact::Snapshot,restoreFields,false,false,restore,inverse,{}}
 }};
+}
+std::int64_t trackRecordingGridTicks(std::string_view grid) noexcept {
+    constexpr std::array<std::string_view, 4> grids{"1/4", "1/8", "1/16", "1/32"};
+    for (std::size_t index = 0; index < grids.size(); ++index)
+        if (grid == grids[index])
+            return textproj::kPPQ >> index;
+    return 0;
 }
 std::span<const OpDescriptor> trackRecordingOps(){return ops;}
 std::map<std::int64_t,TrackRecordingOptions> readTrackRecordingOptions(const Store& store) {

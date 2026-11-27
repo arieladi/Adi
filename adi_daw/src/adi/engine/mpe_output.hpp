@@ -127,6 +127,9 @@ inline constexpr double kMpeNeutralTimbre = 64.0 / 127.0;
 struct ExpressionCaps {
     bool controllerReachable = false;
 
+    // A raw MIDI input can hear the source channel without a parameter mapping.
+    bool preservePitchWheelChannel = false;
+
     /// The plugin takes per-note expression: its `INoteExpressionController`
     /// lists Tuning, or its physical-UI mapping names a type for X.
     bool noteExpression = false;
