@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -402,6 +403,10 @@ class SampleEditor final : public juce::Component {
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
     bool command(int id);
+    bool canQuantize() const noexcept;
+    juce::PopupMenu warpContextMenu();
+    bool chooseWarpContextItem(int);
+    std::function<void(juce::Point<int>)> onWarpContextMenu;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
@@ -421,7 +426,7 @@ class SampleEditor final : public juce::Component {
 
   private:
     friend class ClipViewPanel;
-    enum class Drag { None, Ruler, Start, End, LoopStart, LoopEnd, Loop, WarpMarker };
+    enum class Drag { None, Ruler, Start, End, LoopStart, LoopEnd, Loop, WarpMarker, SourceRange };
     ClipViewPanel &panel;
     bool fitPending_ = false;
     std::int64_t sourceEnd_ = 0, downTick_ = 0, original_ = 0, preview_ = 0;
@@ -430,11 +435,17 @@ class SampleEditor final : public juce::Component {
     Drag drag_ = Drag::None;
     juce::Point<int> last_;
     std::optional<std::int64_t> insert_;
+    std::optional<std::pair<std::int64_t, std::int64_t>> sourceRange_;
     std::vector<WarpMarker> markers_;
-    std::optional<std::int64_t> selectedWarpFrame_;
+    std::optional<std::int64_t> selectedWarpFrame_, warpContextTick_;
     juce::Rectangle<int> warpMarkerArea() const noexcept;
     const WarpMarker *warpMarkerAt(int x) const noexcept;
     bool deleteWarpMarker();
+    std::shared_ptr<const std::vector<std::uint64_t>> transients();
+    double setTempo() const noexcept;
+    std::int64_t suggestedLoopBars(bool selection) const noexcept;
+    bool warpAsLoop(bool selection, std::int64_t bars);
+    void chooseLoopLength(bool selection);
     juce::Rectangle<int> scrubArea() const noexcept;
     bool playFromSource(std::int64_t tick);
     std::int64_t sourceSecondsToTicks(double seconds) const noexcept;

@@ -237,6 +237,97 @@ void changePlacedWarpMode() {
     check(history.undo().ok && digestProject(*f.store).text==project && history.redo().ok &&
           clip_edit::captureImage(context,11)==expected,"Undo and Redo restore the two algorithms without reanalysis");
 }
+void turnTransientsIntoMarkers() {
+    Fixture f(false);
+    auto options=f.options();
+    options.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,options,48000),"warp the source before promoting transients"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto map=[&] {
+        const auto image=clip_edit::captureImage(context,7);
+        const auto& bytes=image.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+        return audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100).markers;
+    };
+    const auto before=map();
+    const std::array<std::uint64_t,7> onsets{0,11025,11025,22050,44099,44100,99999};
+    const auto promotion=clip_edit::prepareWarpMarkersAtTransients(*f.store,7,onsets,48000);
+    check(promotion.ok && promotion.requests.size()==1,"one captured edit promotes all interior transients");
+    if(!apply(f,promotion,"promote cached file transients without reading PCM"))return;
+    const auto after=map();
+    check(after.size()==5 && after.front()==before.front() && after.back()==before.back() &&
+          after[1]==WarpMarker{11025,q/2} && after[2]==WarpMarker{22050,q} && after[3].sourceFrame==44099,
+          "transients become positions on the existing clock, with endpoints and duplicate frames deduplicated");
+    History history(*f.store);
+    check(history.undo().ok && map()==before && history.redo().ok && map()==after,
+          "promoting transients restores captured Warp map bytes on Undo and Redo");
+}
+void warpFromHere() {
+    Fixture f(false);
+    auto warp=f.options();
+    warp.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,warp,48000),"seed a Warp From Here source"))return;
+    for(const auto point:{WarpMarker{8820,q/2},WarpMarker{17640,3*q/2}})
+        if(!apply(f,clip_edit::prepareWarpMarkerEdit(*f.store,7,clip_edit::WarpMarkerChange::Add,point,48000),
+                  "seed an interior Warp marker"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto map=[&] {
+        const auto image=clip_edit::captureImage(context,7);
+        const auto& bytes=image.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+        return audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100).markers;
+    };
+    const auto before=map();
+    if(before.size()!=4){check(false,"Warp From Here fixture has both interior anchors");return;}
+    // The already-detected file onsets remain usable when the media goes offline.
+    f.store->db().exec("UPDATE media_files SET rel_path='unavailable.wav',abs_path_hint=NULL,missing=1 WHERE id=8");
+    const std::array<std::uint64_t,10> onsets{100,4410,14553,18963,23373,27783,32193,36603,41013,44100};
+    audio::AutoWarpOptions analysis;
+    const auto suffix=clip_edit::prepareWarpFromHere(*f.store,7,q,onsets,analysis,48000);
+    check(suffix.ok && suffix.requests.size()==1,"cached transients stage one Warp From Here edit without media access");
+    if(!apply(f,suffix,"commit the inferred right-side map"))return;
+    const auto after=map();
+    check(after.size()>=4 && after[0]==before[0] && after[1]==before[1] && after[2]==WarpMarker{13230,q} &&
+          after.back().sourceFrame==before.back().sourceFrame && after.back().tick!=before.back().tick &&
+          std::ranges::find(after,before[2].sourceFrame,&WarpMarker::sourceFrame)==after.end(),
+          "the left anchors and the new boundary survive, with the previous right anchor removed");
+    History history(*f.store);
+    check(history.undo().ok && map()==before && history.redo().ok && map()==after,
+          "Undo and Redo restore exact captured Warp From Here marker bytes");
+    if(!history.undo().ok){check(false,"restore the original map for the Set BPM case");return;}
+    check(!clip_edit::prepareWarpFromHere(*f.store,7,q,{},analysis,48000).ok && map()==before,
+          "an inferred Warp From Here without cached transients leaves the map intact");
+    analysis.sourceBpm=60;
+    if(!apply(f,clip_edit::prepareWarpFromHere(*f.store,7,q,{},analysis,48000),
+              "use the Set BPM with no detected transients"))return;
+    const std::vector<WarpMarker> expected{before[0],before[1],{13230,q},{44100,17*q/10}};
+    check(map()==expected,"the explicit BPM variant makes a straight suffix through the source endpoint");
+}
+void warpWholeSampleAsLoop() {
+    Fixture f(false);
+    auto warp=f.options();
+    warp.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,warp,48000),"seed a whole-sample loop source"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto before=clip_edit::captureImage(context,7);
+    f.store->db().exec("UPDATE media_files SET rel_path='unavailable.wav',abs_path_hint=NULL,missing=1 WHERE id=8");
+    constexpr auto length=6*q;
+    check(!clip_edit::prepareWarpAsLoop(*f.store,7,clip_edit::WarpLoopSelection{q,q},length,48000).ok &&
+          clip_edit::captureImage(context,7)==before,"an empty selection refuses without changing the clip");
+    const auto loop=clip_edit::prepareWarpAsLoop(*f.store,7,std::nullopt,length,48000);
+    check(loop.ok && loop.requests.size()==1,"the captured map alone prepares a two-bar loop in three-quarter time");
+    if(!apply(f,loop,"commit Warp Sample as Loop"))return;
+    const auto after=clip_edit::captureImage(context,7);
+    const auto& row=after.at("row");
+    const auto& bytes=after.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+    const auto map=audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100);
+    check(map && map.markers==std::vector<WarpMarker>{{0,0},{44100,length}} && row.at("loop_enabled")==1 &&
+          row.at("loop_start_ticks")==0 && row.at("loop_len_ticks")==length && row.at("content_offset_ticks")==0 &&
+          row.at("pos_ticks")==before.at("row").at("pos_ticks") && row.at("length_ticks")==before.at("row").at("length_ticks"),
+          "the full sample fits the requested loop while its Arrangement position and length are retained");
+    History history(*f.store);
+    check(history.undo().ok && clip_edit::captureImage(context,7)==before &&
+          history.redo().ok && clip_edit::captureImage(context,7)==after,
+          "Undo and Redo restore both captured map and loop state");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -266,4 +357,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();warpFromHere();warpWholeSampleAsLoop();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

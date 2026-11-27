@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 namespace adi::clip_edit {
@@ -289,8 +290,24 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
     } catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
-PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
-                                  WarpMarker marker,double referenceRate) {
+namespace {
+std::vector<std::uint64_t> sourceTransientFrames(const Payload& source,std::span<const std::uint64_t> fileFrames) {
+    const auto first=static_cast<std::uint64_t>(integer(source,"src_start_frames"));
+    const auto length=static_cast<std::uint64_t>(integer(source,"src_len_frames"));
+    const bool reverse=integer(source,"reverse")!=0;
+    std::vector<std::uint64_t> frames;
+    for(const auto frame:fileFrames) {
+        if(frame<first || frame-first>=length)continue;
+        const auto local=frame-first;
+        frames.push_back(reverse?length-1-local:local);
+    }
+    std::ranges::sort(frames);
+    frames.erase(std::unique(frames.begin(),frames.end()),frames.end());
+    return frames;
+}
+template<class Transform>
+PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenceRate,const char* label,
+                                Transform transform) {
     PreparedEdit result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -302,7 +319,7 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
         while(location.executeStep())
             if(location.getColumn(1).getString()=="main")result.sourceFile=location.getColumn(2).getString();
         OpContext context{store,store.db()};
-        const auto image=captureImage(context,clipId);
+        auto image=captureImage(context,clipId);
         const auto& root=image.at("row");
         const auto& sources=image.at("children").at("audio_clips");
         if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)
@@ -311,23 +328,13 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
         if(integer(source,"warp_enabled")==0 || !source.at("warp_markers").is_binary())
             throw std::runtime_error("Enable Warp before editing its markers.");
         const auto frames=integer(source,"src_len_frames");
-        if(marker.sourceFrame<=0 || marker.sourceFrame>=frames)
-            throw std::runtime_error("The Warp map's first and last anchors are fixed.");
         const auto& data=source.at("warp_markers").get_binary();
         auto map=audio::readWarpMap(
             std::span<const std::byte>(reinterpret_cast<const std::byte*>(data.data()),data.size()),
             static_cast<std::uint64_t>(frames));
         if(!map || map.futureLayout)throw std::runtime_error("Warp map is unreadable or in a newer format");
-        const auto it=std::ranges::lower_bound(map.markers,marker.sourceFrame,{},&WarpMarker::sourceFrame);
-        const bool exists=it!=map.markers.end() && it->sourceFrame==marker.sourceFrame;
-        if(change==WarpMarkerChange::Add) {
-            if(exists)throw std::runtime_error("There is already a Warp marker on this source frame.");
-            map.markers.insert(it,marker);
-        } else {
-            if(!exists)throw std::runtime_error("The Warp marker no longer exists.");
-            if(change==WarpMarkerChange::Move)it->tick=marker.tick;
-            else map.markers.erase(it);
-        }
+        edit::RowEdits plan(store.db());
+        transform(map.markers,source,image,plan);
         source["warp_markers"]=capturedWarpMap(map.markers,static_cast<std::uint64_t>(frames));
         engine::TempoMap tempo;
         SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
@@ -339,7 +346,6 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
         const auto offset=integer(root,"content_offset_ticks");
         if(offset<0 || engine::projectWarpAnchors(map.markers,tempo,origin-offset,referenceRate).back().outputFrame>0x7fffffffULL)
             throw std::runtime_error("warped clip exceeds supported duration");
-        edit::RowEdits plan(store.db());
         plan.set("audio_clips",clipId,std::move(source));
         auto changes=plan.changes();
         if(!changes.empty()) {
@@ -347,12 +353,164 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
             op.opType="arranger.splice";
             op.payload={{"id",clipId},{"changes",std::move(changes)}};
             op.targetKind="clip";op.targetId=clipId;
-            op.label=change==WarpMarkerChange::Add?"Add Warp Marker":
-                change==WarpMarkerChange::Move?"Move Warp Marker":"Delete Warp Marker";
+            op.label=label;
             result.requests.push_back(std::move(op));
         }
         result.ok=true;
     } catch(const std::exception& error) {result.error=error.what();}
     return result;
+}
+}
+PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
+                                  WarpMarker marker,double referenceRate) {
+    const auto* label=change==WarpMarkerChange::Add?"Add Warp Marker":
+        change==WarpMarkerChange::Move?"Move Warp Marker":"Delete Warp Marker";
+    return prepareWarpMapEdit(store,clipId,referenceRate,label,[&](auto& markers,const Payload&,Payload&,edit::RowEdits&) {
+        if(marker.sourceFrame<=0 || marker.sourceFrame>=markers.back().sourceFrame)
+            throw std::runtime_error("The Warp map's first and last anchors are fixed.");
+        const auto it=std::ranges::lower_bound(markers,marker.sourceFrame,{},&WarpMarker::sourceFrame);
+        const bool exists=it!=markers.end() && it->sourceFrame==marker.sourceFrame;
+        if(change==WarpMarkerChange::Add) {
+            if(exists)throw std::runtime_error("There is already a Warp marker on this source frame.");
+            markers.insert(it,marker);
+        } else {
+            if(!exists)throw std::runtime_error("The Warp marker no longer exists.");
+            if(change==WarpMarkerChange::Move)it->tick=marker.tick;
+            else markers.erase(it);
+        }
+    });
+}
+PreparedEdit prepareQuantizeWarpMarkers(Store& store,std::int64_t clipId,std::int64_t gridTicks,double referenceRate) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Quantize Audio",[&](auto& markers,const Payload&,Payload&,edit::RowEdits&) {
+        if(gridTicks<=0 || gridTicks>(std::int64_t{1}<<50))
+            throw std::runtime_error("The audio quantize grid is out of range.");
+        for(std::size_t i=1;i+1<markers.size();++i) {
+            const auto tick=markers[i].tick;
+            const auto within=tick%gridTicks;
+            const auto snapped=tick-within+(within>=(gridTicks+1)/2?gridTicks:0);
+            // Keep clips valid when close markers would otherwise land on the same grid point.
+            markers[i].tick=std::clamp(snapped,markers[i-1].tick+1,markers[i+1].tick-1);
+        }
+    });
+}
+PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std::span<const std::uint64_t> fileFrames,
+                                           double referenceRate) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Add Warp Markers at Transients",
+        [&](auto& markers,const Payload& source,Payload&,edit::RowEdits&) {
+            const auto interior=sourceTransientFrames(source,fileFrames);
+            std::vector<WarpMarker> expanded;
+            expanded.reserve(markers.size()+interior.size());
+            auto onset=interior.begin();
+            expanded.push_back(markers.front());
+            for(std::size_t i=1;i<markers.size();++i) {
+                const auto& right=markers[i];
+                const auto segment=std::span<const WarpMarker>(markers).subspan(i-1,2);
+                while(onset!=interior.end() && *onset<static_cast<std::uint64_t>(right.sourceFrame)) {
+                    const auto frame=static_cast<std::int64_t>(*onset++);
+                    if(frame<=expanded.back().sourceFrame)continue;
+                    const auto tick=mapPosition(segment,frame,&WarpMarker::sourceFrame,&WarpMarker::tick);
+                    if(tick>expanded.back().tick && tick<right.tick)expanded.push_back({frame,tick});
+                }
+                expanded.push_back(right);
+            }
+            markers=std::move(expanded);
+        });
+}
+PreparedEdit prepareWarpFromHere(Store& store,std::int64_t clipId,std::int64_t startTick,
+                                std::span<const std::uint64_t> fileFrames,audio::AutoWarpOptions options,
+                                double referenceRate) {
+    options.fromFirstBeat=false;
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Warp From Here",
+        [&](auto& markers,const Payload& source,Payload&,edit::RowEdits&) {
+            if(startTick<0 || startTick>=markers.back().tick)
+                throw std::runtime_error("Choose a point before the end of the sample.");
+            const auto startFrame=mapPosition(markers,startTick,&WarpMarker::tick,&WarpMarker::sourceFrame);
+            const auto sourceEnd=markers.back().sourceFrame;
+            const auto right=std::ranges::lower_bound(markers,startTick,{},&WarpMarker::tick);
+            if(right->tick!=startTick &&
+               (startFrame<=std::prev(right)->sourceFrame || startFrame>=right->sourceFrame))
+                throw std::runtime_error("The Warp anchor is too close to an existing marker.");
+            SQLite::Statement media(store.db(),"SELECT sample_rate FROM media_files WHERE id=?");
+            media.bind(1,integer(source,"media_id"));
+            const auto rate=media.executeStep()?media.getColumn(0).getInt64():0;
+            if(rate<8000 || rate>768000)
+                throw std::runtime_error("The Warp source has no supported sample rate.");
+            std::vector<std::uint64_t> suffixOnsets;
+            if(!options.sourceBpm) {
+                suffixOnsets=sourceTransientFrames(source,fileFrames);
+                const auto first=static_cast<std::uint64_t>(startFrame);
+                suffixOnsets.erase(suffixOnsets.begin(),std::ranges::lower_bound(suffixOnsets,first));
+                for(auto& frame:suffixOnsets)frame-=first;
+            }
+            const auto suffix=audio::autoWarpFromOnsets(suffixOnsets,static_cast<std::uint64_t>(sourceEnd-startFrame),
+                                                        static_cast<std::uint32_t>(rate),options);
+            if(suffix.error==audio::AutoWarpError::NoTempo)
+                throw std::runtime_error("No steady tempo was found after this point. Use the Set BPM Warp command.");
+            if(!suffix || suffix.markers.size()<2 || suffix.markers.back().tick>std::numeric_limits<std::int64_t>::max()-startTick)
+                throw std::runtime_error("The Warp suffix cannot be represented.");
+            markers.erase(right,markers.end());
+            markers.push_back({startFrame,startTick});
+            const bool straight=!options.detectTempoChanges || options.sourceBpm.has_value();
+            for(std::size_t i=straight?suffix.markers.size()-1:1;i<suffix.markers.size();++i) {
+                const auto& marker=suffix.markers[i];
+                markers.push_back({startFrame+marker.sourceFrame,startTick+marker.tick});
+            }
+        });
+}
+PreparedEdit prepareWarpAsLoop(Store& store,std::int64_t clipId,std::optional<WarpLoopSelection> selection,
+                              std::int64_t lengthTicks,double referenceRate) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,selection?"Warp Selection as Loop":"Warp Sample as Loop",
+        [&](auto& markers,const Payload&,Payload& image,edit::RowEdits& plan) {
+            const auto range=selection.value_or(WarpLoopSelection{0,markers.back().tick});
+            if(lengthTicks<=0 || range.from<0 || range.to<=range.from || range.to>markers.back().tick)
+                throw std::runtime_error("Choose a nonempty part of the warped source and a positive loop length.");
+            const auto fromFrame=mapPosition(markers,range.from,&WarpMarker::tick,&WarpMarker::sourceFrame);
+            const auto toFrame=mapPosition(markers,range.to,&WarpMarker::tick,&WarpMarker::sourceFrame);
+            if(toFrame<=fromFrame)throw std::runtime_error("The selection is shorter than one source frame.");
+            const auto insertAnchor=[&](std::int64_t tick,std::int64_t frame) {
+                const auto next=std::ranges::lower_bound(markers,tick,{},&WarpMarker::tick);
+                if(next->tick==tick)return;
+                if(frame<=std::prev(next)->sourceFrame || frame>=next->sourceFrame)
+                    throw std::runtime_error("The selection boundary is too close to an existing Warp marker.");
+                markers.insert(next,{frame,tick});
+            };
+            insertAnchor(range.from,fromFrame);
+            insertAnchor(range.to,toFrame);
+            const auto newEnd=edit::addTime(range.from,lengthTicks);
+            const auto oldLength=range.to-range.from;
+            const auto ratio=static_cast<long double>(lengthTicks)/static_cast<long double>(oldLength);
+            for(auto& marker:markers) {
+                if(marker.tick>=range.to)
+                    marker.tick=edit::addTime(marker.tick,lengthTicks-oldLength);
+                else if(marker.tick>range.from)
+                    marker.tick=edit::addTime(range.from,scaleWarpTicks(marker.tick-range.from,ratio));
+            }
+
+            auto& root=image.at("row");
+            const auto oldOffset=integer(root,"content_offset_ticks");
+            if(oldOffset<0)throw std::runtime_error("The clip has an invalid Warp source offset.");
+            const auto shift=range.from-oldOffset;
+            root["content_offset_ticks"]=range.from;
+            root["loop_enabled"]=1;
+            root["loop_start_ticks"]=range.from;
+            root["loop_len_ticks"]=lengthTicks;
+            plan.set("clips",clipId,root);
+            const auto& children=image.at("children");
+            const auto& properties=children.at("clip_properties");
+            auto property=properties.empty()?edit::defaultRow(store.db(),"clip_properties",{{"clip_id",clipId}}):properties.front();
+            property["end_marker_ticks"]=newEnd;
+            plan.set("clip_properties",clipId,std::move(property));
+            const auto& fades=children.at("clip_warp_fade_domains");
+            if(shift!=0 && !fades.empty()) {
+                auto row=fades.front();
+                for(const auto* field:{"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"})
+                    if(!row.at(field).is_null()) {
+                        const auto tick=edit::addTime(integer(row,field),shift);
+                        if(tick<0)throw std::runtime_error("The new loop would put a retained fade before the source start.");
+                        row[field]=tick;
+                    }
+                plan.set("clip_warp_fade_domains",clipId,std::move(row));
+            }
+        });
 }
 }
