@@ -11,12 +11,19 @@ std::uint32_t addGramByte(std::uint32_t key, char byte) {
     return (key << 8U) | static_cast<std::uint32_t>(static_cast<unsigned char>(byte));
 }
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
-             Samples, Grooves, Templates, Packs, User, Project, AddFolder };
+             Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
+constexpr auto kLastLabel = "browser.lastLabel";
+constexpr auto kAllLabel = "label:All";
+constexpr auto kFirstLabel = "label:Instruments";
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     g.setColour(look::text);
     const float x = r.getX(), y = r.getY(), w = r.getWidth(), h = r.getHeight();
     juce::Path p;
     switch (kind) {
+    case All:
+        g.drawEllipse(r.reduced(3.f).translated(-1.f, -1.f), 1.f);
+        g.drawLine(x + w - 5.f, y + h - 5.f, x + w - 2.f, y + h - 2.f, 1.f);
+        break;
     case Favorite:
         g.setColour(look::favourite);
         g.fillRect(r.reduced(3));
@@ -187,7 +194,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
     sidebar_ = {{"Collections", None, true}, {"Favorites", Favorite},  {{}, None, true},
-                {"Categories", None, true},  {"Sounds", Sounds},       {"Drums", Drums},
+                {"Categories", None, true},  {"All", All},             {"Sounds", Sounds},       {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx}, {"MIDI Effects", MidiFx},
                 {"Pd Devices", Pd},          {"Plug-Ins", PlugIns},    {"Clips", Clips},
                 {"Samples", Samples, false, true},        {"Grooves", Grooves},     {"Templates", Templates},
@@ -221,6 +228,8 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
     addAndMakeVisible(list);
+    selected_ = findLabel(kFirstLabel);
+    refill();
 }
 void BrowserPanel::enterList() {
     if (firstItem() >= 0) {
@@ -287,9 +296,37 @@ const LibraryListing &BrowserPanel::listing() const noexcept {
     static const LibraryListing empty;
     return library_ ? library_->listing() : empty;
 }
+std::string BrowserPanel::labelKey(int index) const {
+    if (index < 0 || index >= static_cast<int>(sidebar_.size()))
+        return {};
+    const auto i = static_cast<std::size_t>(index);
+    const auto &entry = sidebar_[i];
+    if (entry.heading || entry.glyph == AddFolder)
+        return {};
+    return i < baseEntries_ - 1 ? "label:" + entry.name.toStdString() : "place:" + entry.place;
+}
+int BrowserPanel::findLabel(std::string_view key) const {
+    if (!key.empty())
+        for (int i = 0; i < static_cast<int>(sidebar_.size()); ++i)
+            if (labelKey(i) == key)
+                return i;
+    return -1;
+}
+void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
+    labelSettings_ = &settings;
+    const auto saved = settings.get(kLastLabel).get<std::string>();
+    selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
+    pendingLabel_.clear();
+    if (selected_ < 0) {
+        if (!ready_ && saved.starts_with("place:"))
+            pendingLabel_ = saved;
+        selected_ = findLabel(kAllLabel);
+    }
+    refill();
+    repaint();
+}
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
-    // The label chosen stays chosen across a new listing, found again by its name and place.
-    const auto keep = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : Entry{};
+    const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
     library_ = std::move(library);
     ready_ = ready;
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
@@ -310,12 +347,11 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User, false, false, place.volumeId});
     }
     sidebar_.push_back(addFolder);
-    selected_ = -1;
-    // The User Library's label is Live's own, whatever folder it names now; any other by its place.
-    for (std::size_t i = 0; i < sidebar_.size() && keep.name.isNotEmpty() && selected_ < 0; ++i)
-        if (sidebar_[i].name == keep.name && sidebar_[i].heading == keep.heading &&
-            (sidebar_[i].place == keep.place || (keep.name == "User Library" && i < baseEntries_)))
-            selected_ = static_cast<int>(i);
+    selected_ = findLabel(keep);
+    if (ready_ || selected_ >= 0)
+        pendingLabel_.clear();
+    if (selected_ < 0)
+        selected_ = findLabel(kAllLabel);
     refill();
     repaint();
 }
@@ -361,22 +397,23 @@ void BrowserPanel::refill() {
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    const bool all = chosen.glyph == All;
     const bool swappingDevices = hotSwap_ && !hotSwap_->samples;
+    const bool showPlugins = swappingDevices || all || chosen.glyph == PlugIns;
     using Role = ::adi::detail::DeviceRole;
     const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
     const auto text = search.getText();
     // Samples, or a Place the listing holds, by its volume; the search alone looks through Samples.
-    const bool samples = hotSwap_ ? hotSwap_->samples
-                                  : chosen.samples || (selected_ < 0 && text.isNotEmpty());
+    const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
     const auto query = text.trim().toLowerCase();
     if (library_ && (samples || !chosen.place.empty()))
         library_->appendSamples(query.toRawUTF8(), samples ? nullptr : &chosen.place, shown_);
     rows_.clear();
     rows_.reserve(shown_.size());
+    if (showPlugins && pluginScan_.phase == PluginScan::Phase::Scanning)
+        rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str())});
     for (const auto *f : shown_)
         rows_.push_back({f, nullptr, {}});
-    if (swappingDevices && pluginScan_.phase == PluginScan::Phase::Scanning)
-        rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str())});
     // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
     const auto matches = [&query](std::string_view name) {
         return query.isEmpty() || juce::String::fromUTF8(name.data(), static_cast<int>(name.size())).containsIgnoreCase(query);
@@ -410,7 +447,7 @@ void BrowserPanel::refill() {
         addPresets(presets, depth + 1);
         return true;
     };
-    if (swappingDevices || (!chosen.heading && chosen.name == "Audio Effects")) {
+    if (swappingDevices || all || chosen.glyph == AudioFx) {
         for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
                                    "Reverb & Resonance", "Utilities"}) {
             std::vector<const BuiltinInfo *> in;
@@ -424,7 +461,7 @@ void BrowserPanel::refill() {
                     heading = nullptr;
         }
     }
-    if (swappingDevices || (!chosen.heading && chosen.name == "Instruments")) {
+    if (swappingDevices || all || chosen.glyph == Instruments) {
         // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
         std::vector<const BuiltinInfo *> in;
         for (const auto &d : builtinCatalog())
@@ -434,17 +471,14 @@ void BrowserPanel::refill() {
         for (const auto *d : in)
             addBuiltin(*d, 0);
     }
-    if (swappingDevices || (!chosen.heading && chosen.name == "Pd Devices")) {
+    if (swappingDevices || all || chosen.glyph == Pd) {
         for (const auto &d : builtinCatalog())
             if (d.category == "ADI")
                 addBuiltin(d, 0);
     }
-    if (swappingDevices || (!chosen.heading && chosen.name == "Plug-Ins")) {
+    if (showPlugins) {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
-        // While a scan runs its line heads the list, above what was listed before it.
-        if (!swappingDevices && pluginScan_.phase == PluginScan::Phase::Scanning)
-            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
         for (const auto &group : pluginGroups(pluginScan_.listing, {})) {
             bool showVendor = true;
             for (const auto *p : group.entries) {
@@ -612,9 +646,10 @@ std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
     return "Loading " + p.name + " needs the application's plug-in host.";
 }
 bool BrowserPanel::pluginsShown() const {
-    return selected_ >= 0 && selected_ < static_cast<int>(sidebar_.size()) &&
-           !sidebar_[static_cast<std::size_t>(selected_)].heading &&
-           sidebar_[static_cast<std::size_t>(selected_)].name == "Plug-Ins";
+    if (selected_ < 0 || selected_ >= static_cast<int>(sidebar_.size()))
+        return false;
+    const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
+    return glyph == PlugIns || glyph == All;
 }
 void BrowserPanel::setPluginScan(const PluginScan &scan) {
     const bool began = scan.phase == PluginScan::Phase::Scanning && pluginScan_.phase != PluginScan::Phase::Scanning;
@@ -834,14 +869,25 @@ void BrowserPanel::choose(int i) {
         return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
+        pendingLabel_.clear();
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
         // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.
-        const bool plugIns = entry.name == "Plug-Ins";
-        if (plugIns && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
+        const bool plugIns = entry.glyph == PlugIns;
+        if ((plugIns || entry.glyph == All) && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
             scanPlugins();
         repaint();
         refill();
+        const auto key = labelKey(i);
+        if (labelSettings_ && !key.empty() && labelSettings_->get(kLastLabel) != key) {
+            std::string why;
+            if (!labelSettings_->set(kLastLabel, key, {}, why) || !labelSettings_->save(why)) {
+                root_.say(std::move(why));
+                return;
+            }
+        }
+        if (entry.glyph == All)
+            return;
         const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
         if (entry.name == "Instruments" || entry.name == "Audio Effects" || entry.name == "Pd Devices") {
             // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.

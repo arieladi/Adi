@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+namespace adi::settings { class AppSettings; }
 namespace adi::ui {
 class AdiRootComponent;
 // A listing and its search data, prepared on the library worker and shared by the app and windows.
@@ -106,6 +107,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
     void setListing(LibraryListing, bool ready = true);
     const LibraryListing &listing() const noexcept;
+    void restoreLabel(settings::AppSettings &);
     // Selects a label, as a click on it does.
     void choose(int);
     // The files the list shows now, in its order.
@@ -169,6 +171,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
     bool loadHotSwap(const Row &);
+    std::string labelKey(int) const;
+    int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
     void refill();
     int getNumRows() override;
@@ -201,6 +205,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     AdiRootComponent &root_;
     std::vector<Entry> sidebar_;
     int selected_ = -1;
+    settings::AppSettings *labelSettings_ = nullptr;
+    std::string pendingLabel_;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };

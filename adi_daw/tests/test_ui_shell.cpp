@@ -11804,6 +11804,59 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
 // tracks then Main, and nothing to undo.
+void browserStartupLabel(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-startup.adi", true, {}, error);
+    check(document != nullptr, "SC-121: a project for Browser startup");
+    if (!document)
+        return;
+    const auto makeRoot = [&](const char *window) {
+        return std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), window);
+    };
+    const auto label = [](const BrowserPanel &browser) {
+        const int index = browser.selected();
+        return index >= 0 ? browser.sidebar()[static_cast<std::size_t>(index)].name : juce::String{};
+    };
+    const auto file = dir / "browser-label-settings.json";
+    const auto place = dir / "Samples";
+    LibraryListing listing;
+    listing.places = {{"Samples", place, "browser-startup-place"}};
+    listing.samples = {{"Kick.wav", place / "Kick.wav", "browser-startup-place"}};
+    {
+        settings::AppSettings prefs(appdata::App::Daw, file);
+        auto window = makeRoot("browser-new");
+        auto &browser = window->browser;
+        browser.restoreLabel(prefs);
+        check(label(browser) == "Instruments" && !browser.rows().empty(),
+              "SC-121: a first window has a selected, useful label before any scan");
+        browser.setListing(listing);
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
+            if (browser.sidebar()[i].place == "browser-startup-place")
+                browser.choose(static_cast<int>(i));
+        check(prefs.get("browser.lastLabel") == "place:browser-startup-place" && browser.shown().size() == 1,
+              "SC-121: the added folder is kept by its identity, distinct from the Samples category");
+    }
+    {
+        settings::AppSettings prefs(appdata::App::Daw, file);
+        auto window = makeRoot("browser-open");
+        auto &browser = window->browser;
+        browser.restoreLabel(prefs);
+        browser.setLibrarySnapshot(nullptr, false);
+        check(label(browser) == "All" && !browser.rows().empty(),
+              "SC-121: All is useful while a remembered folder is still being indexed");
+        browser.setListing(listing);
+        check(label(browser) == "Samples" && browser.shown().size() == 1 &&
+                  browser.sidebar()[static_cast<std::size_t>(browser.selected())].place == "browser-startup-place",
+              "SC-121: Open restores the remembered Place as soon as the listing contains it");
+        browser.setListing({});
+        check(label(browser) == "All" && !browser.rows().empty(),
+              "SC-121: a label that is no longer shown falls back to All");
+        check(prefs.set("browser.lastLabel", "label:AI", {}, error), "SC-121: simulate an unavailable saved label");
+        browser.restoreLabel(prefs);
+        check(label(browser) == "All", "SC-121: an unavailable saved label never puts the Browser in that mode");
+    }
+}
 void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "new.adi", true, {}, error);
@@ -11815,6 +11868,16 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     root.setSize(1440, 900);
     root.frame();
     root.frame();
+    const auto browserListsInstruments = [&] {
+        const auto &rows = root.browser.rows();
+        return std::any_of(rows.begin(), rows.end(), [](const auto &row) {
+            return row.device && row.device->name == "OneShot";
+        });
+    };
+    root.browser.setLibrarySnapshot(nullptr, false);
+    check(browserListsInstruments(), "SC-121: New lists instruments before the Browser library scan finishes");
+    root.browser.setListing({});
+    check(browserListsInstruments(), "SC-121: the first library publication retains the startup list");
     check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
               root.reader().findTrack(2)->name == "# MIDI" && root.reader().findTrack(5)->name == "# Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 2) == "1 MIDI" &&
@@ -23639,14 +23702,14 @@ int main(int argc, char **argv) {
                   "Alt/Option+5 moves the focus to the browser, ringed");
             juce::Component &browserKeys = browserPanel;
             const juce::KeyPress down(juce::KeyPress::downKey), up(juce::KeyPress::upKey);
-            browserKeys.keyPressed(down);
+            browserPanel.choose(1); // Favorites, before the Categories group.
             const int favorites = browserPanel.selected();
             browserKeys.keyPressed(down);
-            const int sounds = browserPanel.selected();
+            const auto nextCategory = browserPanel.sidebar()[static_cast<std::size_t>(browserPanel.selected())].name;
             browserKeys.keyPressed(up);
             const int back = browserPanel.selected();
             browserKeys.keyPressed(up);
-            check(favorites == 1 && sounds == 4 && back == 1 && browserPanel.selected() == 1 &&
+            check(favorites == 1 && nextCategory == "All" && back == 1 && browserPanel.selected() == 1 &&
                       integrated.error() == "Favorites is not listed yet.",
                   "the arrows move between the sidebar's labels, past the headings");
             integrated.command(AppCommands::ToggleDeviceView);
@@ -24952,6 +25015,7 @@ int main(int argc, char **argv) {
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
     trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
