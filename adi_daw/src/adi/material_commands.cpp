@@ -226,6 +226,51 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
+media::MediaResult stageRenderedAudio(Store& store,MaterialEdit& material,const fs::path& rendered,
+                                     std::int64_t mediaId,std::int64_t importedUtc,std::stop_token stop) {
+    if(audio::onAudioThread)return {};
+    try {
+        if(material.files || mediaId<=0 || stop.stop_requested())
+            throw std::runtime_error("invalid or cancelled rendered material capture");
+        auto files=stage(media::projectFolder(store));files->stop=stop;
+        files->staged=files->directory/"rendered.wav";
+        copyImport(rendered,files->staged,stop);
+        OpRequest request;
+        auto imported=media::prepareImport(store,files->staged,mediaId,importedUtc,request,nullptr,stop);
+        if(!imported.ok)return imported;
+        if(!imported.audio)throw std::runtime_error("rendered material is not audio");
+        if(imported.existing) {
+            if(!request.opType.empty())throw std::runtime_error("identical rendered media is unavailable; relink it first");
+            const auto row=media::mediaRow(store.db(),imported.mediaId);
+            files->hash=row.at("hash_blake3").get<std::string>();
+            std::string error;
+            const auto path=media::resolveMedia(media::projectFolder(store),row,error,stop);
+            if(path.empty())throw std::runtime_error(error.empty()?"identical rendered media is unavailable":error);
+            const auto previous=material.edit.options.beforeCommit;
+            material.edit.options.beforeCommit=[previous,row,path,hash=files->hash,id=imported.mediaId,stop]
+                (SQLite::Database& db,std::int64_t transaction,std::string& why) {
+                if(previous && !previous(db,transaction,why))return false;
+                if(media::mediaRow(db,id)!=row){why="identical rendered media changed after capture";return false;}
+                const auto actual=media::blake3File(path,stop);
+                if(!actual || actual.hex!=hash){why="identical rendered media changed after capture";return false;}
+                return true;
+            };
+        } else {
+            SQLite::Statement occupied(store.db(),"SELECT 1 FROM media_files WHERE id=?");
+            occupied.bind(1,imported.mediaId);
+            if(occupied.executeStep())throw std::runtime_error("rendered media id is already in use");
+            files->hash=request.payload.at("row").at("hash_blake3").get<std::string>();
+            const auto folder=media::projectFolder(store)/"audio";
+            if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("audio directory must not be a symlink");
+            fs::create_directories(folder);
+            files->target=folder/("render-"+std::to_string(imported.mediaId)+"-"+files->hash.substr(0,16)+".wav");
+            paths(request,store,files->target);
+            material.edit.requests.push_back(std::move(request));
+        }
+        material.files=std::move(files);
+        return imported;
+    } catch(const std::exception& error){return {false,error.what()};}
+}
 MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::DeviceLoader loader,render::Control control) {
     MaterialEdit result;
     try {

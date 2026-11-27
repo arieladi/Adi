@@ -5,6 +5,7 @@
 #include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
 namespace adi::library {class Index;}
+namespace adi::media {struct MediaResult;}
 namespace adi::clip_edit {
 struct MaterialFiles;
 struct MaterialEdit {
@@ -27,6 +28,12 @@ struct ImportOptions {
 // defaults use normal import; unsupported/mismatched authored data refuse. The
 // captured native request owns all values; no library survives into commit/play.
 [[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,library::Index*);
+/// Capture a closed rendered WAV as owned material without creating a clip.
+/// The caller owns the read snapshot and the remaining captured edit ops.
+/// A readable identical pool entry keeps its existing id and path.
+[[nodiscard]] media::MediaResult stageRenderedAudio(Store&,MaterialEdit&,const std::filesystem::path&,
+                                                   std::int64_t mediaId,std::int64_t importedUtc,
+                                                   std::stop_token={});
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;
