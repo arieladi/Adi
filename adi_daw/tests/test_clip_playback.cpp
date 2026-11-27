@@ -1630,8 +1630,12 @@ void segmentsAndCrop() {
     check(peak<1e-4,"converted cropped window keeps phase across page boundary");
     Transport t;t.loop(10,110);t.locate(100);t.play();
     check(t.sampleAt(250)==50,"multiple loop wraps inside one callback");
-    t.locate(std::numeric_limits<std::int64_t>::max());
     check(t.sampleAt(std::numeric_limits<std::int64_t>::max())>=10 && t.sampleAt(std::numeric_limits<std::int64_t>::max())<110,"large transport offsets avoid signed overflow");
+    // At or past the brace's End playback runs on and never loops, as Live's does: the largest
+    // offset then stops at the largest sample instead of folding back into the brace.
+    t.locate(std::numeric_limits<std::int64_t>::max());
+    check(!t.looping() && t.sampleAt(std::numeric_limits<std::int64_t>::max())==std::numeric_limits<std::int64_t>::max(),
+          "a transport past the loop runs on, and its large offsets avoid signed overflow");
 }
 // Tests set ADI_HOME, so a decoded clip's cache is a temporary folder and not
 // the user's (ADR-0149). The one place this suite writes an environment variable.
