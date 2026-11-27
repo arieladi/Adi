@@ -21,6 +21,8 @@ struct Preset {
     std::string name, deviceName;
     std::map<std::string, double> parameters;
     std::map<std::string, std::vector<std::byte>> state;
+    // The plug-in panel's control IDs in order. An empty list is an explicitly empty panel.
+    std::optional<std::vector<std::string>> panel;
 };
 
 struct Entry {
@@ -35,4 +37,9 @@ struct Entry {
 [[nodiscard]] Preset read(const std::filesystem::path &file);
 // Publish a new file, selecting a numbered name if the preferred name exists.
 [[nodiscard]] std::filesystem::path write(const std::filesystem::path &library, const Preset &);
+// A User Library has at most one default for an exact device identity. It is separate from the
+// Browser's list of named presets. A missing default returns nullopt, and an invalid file throws.
+[[nodiscard]] std::optional<Preset> readDefault(const std::filesystem::path &library, const Identity &);
+// Atomically create or replace the device's default.
+[[nodiscard]] std::filesystem::path writeDefault(const std::filesystem::path &library, const Preset &);
 } // namespace adi::preset
