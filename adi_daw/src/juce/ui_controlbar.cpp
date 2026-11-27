@@ -5,7 +5,9 @@
 #include "ui_shell.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <utility>
 namespace adi::ui {
 namespace {
@@ -230,9 +232,10 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.setFont(look::font(look::fontBody));
         g.drawText(value, content, juce::Justification::centred);
     }
-    if (automationLed) {
+    if (automationLed || overloadLed) {
         // Live 12's figure: a red dot with a dark rim in the corner (its size to be measured).
-        const juce::Rectangle<float> led(r.getX() + 2.f, r.getY() + 2.f, 5.f, 5.f);
+        const float y = overloadLed ? r.getCentreY() - 2.5f : r.getY() + 2.f;
+        const juce::Rectangle<float> led(r.getX() + 2.f, y, 5.f, 5.f);
         g.setColour(look::recordLed);
         g.fillEllipse(led);
         g.setColour(look::separator);
@@ -528,12 +531,19 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
             item != &punchIn && item != &loop && item != &punchOut &&
             item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
-            item != &indicators && item != &draw)
+            item != &indicators && item != &draw && item != &cpu)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
     // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
     indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
+    onCpuMenu = [this](juce::PopupMenu menu) {
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cpu));
+    };
+    cpu.onClick = [this] {
+        if (onCpuMenu)
+            onCpuMenu(cpuMenu());
+    };
     automationArm.setToggleState(true, juce::dontSendNotification); // on in Live's new Set
 }
 std::vector<BarItem *> TransportBar::items() {
@@ -664,6 +674,58 @@ void TransportBar::refresh() {
     // session, on without one as Live's new Set (manual 25.1).
     reEnable.setToggleState(root_.reader().automationOverridden(), juce::dontSendNotification);
     automationArm.setToggleState(!root_.automationArmed || root_.automationArmed(), juce::dontSendNotification);
+}
+void TransportBar::setCpuLoad(std::optional<CpuLoad> load) {
+    if (!load || load->deviceReset)
+        setCpuOverload(false);
+    if (load && load->missedDeadline)
+        setCpuOverload(true);
+    cpuLoad_ = load;
+    refreshCpuMeter();
+}
+void TransportBar::refreshCpuMeter() {
+    int percent = -1;
+    if (cpuLoad_ && cpuMode_ != CpuMode::Off) {
+        const double fraction = cpuMode_ == CpuMode::Current ? cpuLoad_->current : cpuLoad_->average;
+        if (std::isfinite(fraction) && fraction >= 0)
+            percent = static_cast<int>(std::min(std::round(100. * fraction),
+                                                static_cast<double>((std::numeric_limits<int>::max)())));
+    }
+    if (percent != shownCpuPercent_) {
+        shownCpuPercent_ = percent;
+        cpu.setText(percent < 0 ? juce::String{} : juce::String(percent) + " %");
+    }
+}
+void TransportBar::setCpuOverload(bool on) {
+    if (cpu.overloadLed == on)
+        return;
+    cpu.overloadLed = on;
+    cpu.setTooltip(on ? "CPU Load Meter. Audio processing missed a buffer deadline. Open the menu to clear the warning."
+                      : "CPU Load Meter. How much of the audio thread's time is used.");
+    cpu.repaint();
+}
+juce::PopupMenu TransportBar::cpuMenu() {
+    juce::PopupMenu menu;
+    const juce::Component::SafePointer<TransportBar> safe(this);
+    auto addMode = [&](const char *label, CpuMode mode) {
+        menu.addItem(label, true, cpuMode_ == mode, [safe, mode] {
+            if (safe) {
+                safe->cpuMode_ = mode;
+                safe->refreshCpuMeter();
+            }
+        });
+    };
+    addMode("Average", CpuMode::Average);
+    addMode("Current", CpuMode::Current);
+    addMode("Off", CpuMode::Off);
+    if (cpu.overloadLed) {
+        menu.addSeparator();
+        menu.addItem("Clear Overload Warning", [safe] {
+            if (safe)
+                safe->setCpuOverload(false);
+        });
+    }
+    return menu;
 }
 void TransportBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);

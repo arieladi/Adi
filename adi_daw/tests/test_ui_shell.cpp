@@ -17403,6 +17403,54 @@ int main(int argc, char **argv) {
     check(a.transport.play.getTitle() == "Play" && a.transport.stop.getTitle() == "Stop" &&
               a.transport.play.glyph == BarItem::Glyph::Play,
           "the transport's buttons are Live's glyphs, named for the Info View");
+    {
+        auto &bar = a.transport;
+        using Load = TransportBar::CpuLoad;
+        check(bar.cpu.text.isEmpty() && bar.cpu.getBounds() == juce::Rectangle<int>(851, 9, 58, 17),
+              "CPU meter keeps its place and shows no number before a callback reports load");
+        bar.setCpuLoad(Load{.68f, .42f, false});
+        check(bar.cpu.text == "42 %" && !bar.cpu.overloadLed, "CPU meter starts in Average mode");
+        juce::String chosen;
+        juce::String ticked;
+        int menus = 0;
+        bar.onCpuMenu = [&](const juce::PopupMenu &menu) {
+            ++menus;
+            ticked.clear();
+            for (juce::PopupMenu::MenuItemIterator entry(menu); entry.next();) {
+                const auto &item = entry.getItem();
+                if (item.isTicked)
+                    ticked = item.text;
+                if (item.text == chosen && item.action)
+                    item.action();
+            }
+        };
+        chosen = "Current";
+        bar.cpu.onClick();
+        check(menus == 1 && ticked == "Average" && bar.cpu.text == "68 %",
+              "the CPU field opens a menu with the current mode ticked, and Current shows the latest callback");
+        bar.setCpuLoad(Load{1.25f, 1.13f, true});
+        check(bar.cpu.text == "125 %" && bar.cpu.overloadLed,
+              "the latest callback can exceed 100 percent and lights the overload warning");
+        bar.setCpuLoad(Load{.54f, .60f, false});
+        check(bar.cpu.overloadLed, "the warning remains visible after the load drops");
+        chosen = "Clear Overload Warning";
+        bar.cpu.onClick();
+        check(ticked == "Current" && !bar.cpu.overloadLed, "the CPU menu clears an acknowledged overload");
+        chosen = "Off";
+        bar.cpu.onClick();
+        bar.setCpuLoad(Load{.71f, .64f, true});
+        check(bar.cpu.text.isEmpty() && bar.cpu.overloadLed,
+              "Off hides the number and an overrun between timer ticks still lights the warning");
+        bar.setCpuLoad(Load{.34f, .42f, false, true});
+        check(bar.cpu.text.isEmpty() && !bar.cpu.overloadLed, "a quick device restart clears the former device's warning");
+        chosen = "Average";
+        bar.setCpuLoad(Load{1.25f, 1.13f, true});
+        bar.cpu.onClick();
+        check(ticked == "Off" && bar.cpu.text == "113 %", "the average likewise preserves loads over 100 percent");
+        bar.setCpuLoad(std::nullopt);
+        check(bar.cpu.text.isEmpty() && !bar.cpu.overloadLed, "device loss clears the meter and overload warning");
+        bar.onCpuMenu = {};
+    }
     reference(a, "root-default", write);
     // The theme and density tables (DF-W24). Dark is the default; Mid grey keeps the colours of the
     // window as built before the sheets (step 1 matched that golden pixel for pixel; since the
