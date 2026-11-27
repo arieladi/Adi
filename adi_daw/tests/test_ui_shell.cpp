@@ -14301,9 +14301,17 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
         check(false, "place a sample on the audio track");
         return;
     }
+    WaveformCache waveforms(
+        [](std::optional<std::int64_t>, const std::string &, std::stop_token) -> media::PeakResult {
+            return {media::PeakProblem::invalidSource, {}, {}};
+        },
+        [](std::int64_t, const std::string &, std::stop_token) {
+            return std::vector<std::uint64_t>{0, 30000, 66000};
+        });
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "clip-warp-onsets");
     root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &waveforms;
     root.setSize(1440, 900);
     root.frame();
     commands.activate(root);
@@ -14328,6 +14336,33 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
     };
     const auto button = panel.warpBox();
     check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
+    if (warped()) {
+        const auto markers = [&] {
+            const auto &source = *panel.node()->audio;
+            return audio::readWarpMap(*source.warpMarkers, static_cast<std::uint64_t>(source.sourceLengthFrames)).markers;
+        };
+        const auto original = markers();
+        waveforms.transients(*panel.node()->audio);
+        for (int i = 0; i < 1000 && !waveforms.idle(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(original.size() == 2 && waveforms.transients(*panel.node()->audio),
+              "the warped clip has only its two fixed anchors and a cached onset map");
+        panel.sample.time.grid.fixed = true;
+        panel.sample.time.grid.fixedQuarters = 1.;
+        const bool quantized = panel.sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
+        root.frame();
+        constexpr auto beat = textproj::kPPQ;
+        const auto result = markers();
+        check(quantized && original.size() == 2 && result.size() == 4 && result.front() == original.front() &&
+                  result[1] == WarpMarker{30000, beat} && result[2] == WarpMarker{66000, 3 * beat} &&
+                  result.back() == original.back() && root.undoTitle(false) == "Undo Quantize Audio",
+              "Quantize Audio snaps cached transients while retaining the straight Warp map's fixed anchors");
+        if (quantized) {
+            check(root.command(AppCommands::Undo), "undo transient promotion and quantizing together");
+            root.frame();
+            check(markers() == original, "one Undo restores the original two anchors");
+        }
+    }
     if (!button.isEmpty()) {
         const auto click = [&] {
             panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
