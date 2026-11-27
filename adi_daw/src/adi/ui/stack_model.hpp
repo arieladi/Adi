@@ -623,6 +623,8 @@ class StackModel {
     // event that can reach an edit, and before any edit (an op may land between frames).
     bool stale(std::uint64_t currentGeneration) const noexcept { return currentGeneration != rowsGeneration_; }
     stack::Effects setViewport(double listWidth, double listHeight, stack::TimeMs now);
+    // Apply Mix View's density while preserving the existing rows and any explicit height.
+    stack::Effects setChannelDensity(DensityId, std::optional<int> customBase, stack::TimeMs now);
     stack::Effects setSelection(stack::TrackId, stack::TimeMs now);
     stack::Effects setKeyboardFocus(bool, stack::TimeMs now);
 

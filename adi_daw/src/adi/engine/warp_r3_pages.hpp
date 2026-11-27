@@ -7,7 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -35,8 +34,8 @@ public:
 
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
 
-    /// Consecutive pages share R3 history. A discontinuity primes from bounded
-    /// source history before that page. Source errors propagate to the worker.
+    /// Each tile primes from bounded source history before its fixed origin.
+    /// Source errors propagate to the worker.
     [[nodiscard]] bool render(std::int64_t firstArrangementFrame, std::uint32_t frameCount,
                               float* interleaved, const WarpR3Source&);
     /// Page worker only, after output pages have been reclaimed.
@@ -47,7 +46,7 @@ private:
         std::int64_t first = -1;
         std::vector<float> pcm;
     };
-    struct SteadyTile {
+    struct RenderTile {
         std::int64_t first = -1;
         std::vector<float> pcm;
         std::optional<std::int32_t> stitchLag;
@@ -62,9 +61,10 @@ private:
     [[nodiscard]] double timeRatioAt(std::int64_t arrangementFrame) const noexcept;
     [[nodiscard]] const float* sourceFrame(std::int64_t, const WarpR3Source&);
     [[nodiscard]] bool readFrame(std::int64_t, std::span<float>, const WarpR3Source&);
-    [[nodiscard]] bool renderSteady(std::int64_t first, std::int64_t begin, std::int64_t end,
-                                    float* output, const WarpR3Source&);
-    [[nodiscard]] SteadyTile* steadyTile(std::int64_t first, const WarpR3Source&);
+    [[nodiscard]] std::int64_t tileFrames() const noexcept;
+    [[nodiscard]] bool renderTiled(std::int64_t first, std::int64_t begin, std::int64_t end,
+                                   float* output, const WarpR3Source&);
+    [[nodiscard]] RenderTile* renderTile(std::int64_t first, const WarpR3Source&);
 
     const WarpArrangementClock& tempo_;
     std::vector<WarpMarker> markers_;
@@ -78,14 +78,12 @@ private:
     double originRounding_ = 0;
     std::int64_t firstOutputFrame_ = 0, endOutputFrame_ = 0;
     std::optional<double> terminalInputFrame_;
-    std::optional<std::int64_t> nextOutputFrame_;
     audio::WarpRenderPlan voicePlan_;
     std::int32_t latency_ = 0;
-    std::unique_ptr<audio::RealtimeWarpR3> voice_;
     std::array<InputPage, 2> inputPages_;
     std::size_t nextInputPage_ = 0;
-    std::array<SteadyTile, 2> steadyTiles_;
-    std::size_t lastSteadyTile_ = 0;
+    std::array<RenderTile, 2> renderTiles_;
+    std::size_t lastRenderTile_ = 0;
     std::int64_t steadyLoopStart_ = 0, steadyLoopLength_ = 0;
 };
 

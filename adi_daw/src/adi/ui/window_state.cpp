@@ -159,7 +159,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.clipView = j.value("clipView", false);
         state.clipViewHeight = std::clamp(j.value("clipViewHeight", 286), 0, 4000);
         state.noteGridSnap = j.value("noteGridSnap", true);
-        state.noteGridFixed = j.value("noteGridFixed", false);
+        state.noteGridFixed = j.value("noteGridFixed", state.noteGridFixed);
         state.noteGridTriplet = j.value("noteGridTriplet", false);
         state.noteGridNarrow = std::clamp(j.value("noteGridNarrow", 0), -2, 2);
         if (const double quarters = j.value("noteGridFixedQuarters", .25); std::isfinite(quarters))

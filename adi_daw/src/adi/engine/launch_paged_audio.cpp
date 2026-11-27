@@ -28,7 +28,8 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
     std::ranges::sort(sources_, {}, [](const Entry& entry) { return entry.source.clip; });
     if (std::ranges::adjacent_find(sources_, {}, [](const Entry& entry) { return entry.source.clip; }) != sources_.end())
         throw std::invalid_argument("duplicate Session paged source");
-    problems_ = pages_.problems();
+    const auto fatal = pages_.fatalProblems();
+    problems_.assign(fatal.begin(), fatal.end());
 }
 
 bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {

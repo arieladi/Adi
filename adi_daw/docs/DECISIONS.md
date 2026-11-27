@@ -20861,3 +20861,106 @@ ADR-0261 d6 stands under them.
 | `docs/DEFERRED.md` | DF-W61: the sheet is drawn; what waits is the building |
 | `collab/README.md` | ADR 0262 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0263 |
+
+## ADR-0263 — Working together at different times: Undo that reverses, presence that says where, tempo as mine or theirs, a shared folder studied beside the bucket, shared files locked with a project key, an optional helper in the owner's own account, each person's own agent, and eleven refinements of the collision design — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON EIGHT CHOICES AND ELEVEN ADDITIONS, AFTER AN OUTSIDE PANEL READ ADR-0182 IN TWO ROUNDS; ANSWERS Q-N; AMENDS ADR-0182 d5 AND d9; ADDS TO CO-01 TO CO-05 AND RE-02; P2, NOTHING BUILT NOW**
+
+**What this records.** The director put ADI's collaboration design to his outside panel: working on one
+song at different times, as Excel and Word allow, with notes as Word's comments (ADR-0182, ADR-0203 d17).
+Win gave the panel the decided design and eight open questions, and read its answers against the
+record. The panel confirmed the shape: nothing is applied without the user's Apply, no live cursors,
+ghosts that never play, no blending of clips or notes. It found real gaps, which are the additions below.
+Win put four choices to him. His words: "agreed on the rest", and for Undo he chose (a). He then asked whether
+a bucket is not already a central place, and whether a helper in the cloud could assist. Win corrected its
+own answer on presence, and a second round went to the panel. Four more choices followed; his words:
+"yes to all four", and, of ADI holding anyone's data: "oh no i wont hold data for anyone else that for sure".
+
+### Decisions
+
+1. **Undo keeps working after work is shared (his A; answers Q-N's first half).** Ctrl+Z on something
+   already uploaded sends its reversal as a new batch, leaving out whatever someone else has since built
+   on, and says that it did. Older shared work is reverted batch by batch from the History window, with a
+   preview. Nothing reaches a collaborator without their own Apply (ADR-0182 d5), so a reversal is one
+   more incoming change and rewrites nobody's song.
+2. **Presence says where, on a heartbeat (his B, revised the same day; answers Q-N's second half).**
+   - A bucket is a central place, only a passive one: it runs no rules and pushes nothing, but it stamps
+     every file with one clock. So a person's place can ride on the heartbeat and expire by itself.
+   - While someone works, their ADI renews about once a minute who they are and where (the track and the
+     bars). It starts when they arm a track or select a range and ends when they stop. It fades after
+     three minutes without renewal and is gone after ten.
+   - Drawn as a quiet band over that track and those bars with the person's initial, dimmer as it goes
+     stale. It never locks anything: two people in one place are handled by the collision design.
+   - It is renewed from the window's own loop, so a frozen ADI stops renewing. It is never an op and never
+     in the project's history. ADI never says "offline", which it cannot know: it says when someone was
+     last seen.
+   - No live cursors in the first version.
+3. **Tempo offers mine or theirs in the first version (his T; narrows ADR-0182 d9).** The other person's
+   tempo is still kept as a ghost, so both are kept. Combine is not offered for tempo: a blended tempo
+   moves every bar, every warped clip and every automation point after it.
+4. **A shared cloud folder is studied beside the bucket (his F; adds to ADR-0182 d2 and d3).** The reason
+   consumer drives were excluded is that they copy a live database mid-write. Finished batch files and
+   media that never change do not have that fault, and most musicians already have such a folder. The
+   builder of CO-01 works out whether changes can be ordered safely with no atomic claim on a bucket, and
+   reports. The live `.adi` still never lives in a synced folder.
+5. **Rights are what the storage enforces.** ADI shows no role it cannot keep. Comment-only is a place
+   in the storage that the person may write remarks to and nothing else.
+6. **A batch is one piece.** A collaborator's batch is applied, rejected or put off whole, never picked
+   apart: its edits depend on each other. (An agent's proposal is the same, ADR-0261 d7.)
+7. **Eleven refinements of the collision design (ADR-0182 d5, d9).**
+   - A tolerance for "different", per kind of value: curves that differ by less make no collision.
+   - A ghost records what it collided with. If the local curve in that region changes afterwards, the
+     region is measured again and marked as changed since.
+   - The shared starting point is shown with mine and theirs.
+   - Mine, theirs and the blend are heard at the same playhead. Letting go of the slider starts the
+     preview; Keep commits. (ADR-0182 d9 committed on release.)
+   - A region can be split at a bar line, so that parts of it take different weights.
+   - The other author is told what became of their version (kept, dropped, blended at a weight) in the
+     next summary they see.
+   - A count of waiting batches, and a prompt when the user exports or edits what a waiting batch
+     touches.
+   - The blend is taken on the scale the control uses: decibels for a level, pitch for a frequency.
+   - A collaborator's device arrives switched off beside the local one, so that nothing unchosen sounds.
+   - A missing effect is bypassed and a missing instrument is silent, each as a placeholder that keeps
+     its state, as Live's.
+   - Comments from people without ADI: a bounce goes out, comments with times come back as a file, and
+     ADI brings them in as remarks on the timeline. Later, with RE-02.
+8. **One song, one storage, one owner; ADI holds nothing for anybody.** Whoever starts a song and shares it
+   uses their own storage: a shared folder, a bucket, or their own cloud account. The people they invite
+   need none of their own: their ADI reads and writes the owner's storage for that song. The ADI project
+   runs no service and holds no user's data (ADR-0182 d2, his word again).
+9. **What is shared is locked with a project key before it leaves the computer.** Batches, media and
+   remarks are encrypted; the folder, the bucket and the helper hold only what they cannot read. ADI makes
+   the key when sharing is switched on and carries it inside the invitation; the user never types it.
+   Each person's own copy of the song is whole on their own disk, so a lost key loses nothing local.
+10. **An optional helper, in the owner's own account, built late.** It is an addition and not a third
+    level of setup: the folder and the bucket are the two levels. Its jobs, in this order: invitations
+    whose rights are enforced and can be taken back; a notice that something arrived, carrying no
+    content; a check that the setup works. Not its jobs: ordering changes, live presence, a page for
+    reviewers in the first version, an agent. It never holds the project key. Switched off or deleted,
+    nothing is lost and everything still works.
+11. **Agents in a shared song.** Each person's own agent, on their own machine or another of their own,
+    with their own key. Its proposals can be shared into everyone's waiting queue, labelled with whose
+    agent it is, which model, and the remark it answers; a person applies them, as any batch (d6). Two
+    proposals for one remark are shown together. Each collaborator's consent is recorded separately
+    (AGT-03): paying for an agent gives it no right to another person's material. Words only by default;
+    audio goes to a model only for a named task that is agreed. A warning that two people are in one
+    place needs no model. No agent service run by the ADI project.
+12. **Not taken:** a separate suggesting mode (the waiting queue already makes every incoming edit a
+    proposal); a role system drawn in the window; a web page for reviewers in the first version.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0182 d5 | Undo after an Apply is no longer open (d1); batches are whole (d6); a device arrives switched off (d7) |
+| ADR-0182 d9 | no Combine for tempo in the first version (d3); Keep commits, not the slider's release; the tolerance, the stale ghost, the base, the bar-line split, the scale of the blend (d7) |
+| ADR-0182 d2, d3 | a shared folder for finished batches and media is studied (d4) |
+| PLAN Q-N | answered: Undo (d1) and presence (d2) |
+| CO-01, CO-05 | the ordering without an atomic claim, and storage rights (d4, d5) |
+| CO-02 | as d1 |
+| CO-03 | d3, d6 and d7 |
+| CO-04 | as d2: presence with the place, expiring by itself |
+| CO-05; XC-40 | everything shared is encrypted with a project key (d9); one storage per song, the owner's (d8); the optional helper (d10) |
+| AGT-03, AGT-05 | consent per collaborator; shared proposals labelled with agent, model and remark (d11) |
+| RE-02 | comments brought in from a file (d7); a remark in place of a claim (d2) |
+| `collab/README.md` | ADR 0263 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0264 |

@@ -25,6 +25,12 @@ struct MidiLinearTake {
     std::string name;
     std::span<const notes::NoteValues> notes; // relative to the clip's start
     std::span<const MidiExpressionLane> expression;
+    bool overdub = false;
+};
+struct MidiLinearLanding {
+    std::int64_t clip = 0, sourceStart = 0;
+    std::vector<std::uint64_t> noteIds;
+    bool inTakeLane = false;
 };
 struct RecordingEdit;
 enum class StagedRefresh { ready, restage, refused };
@@ -69,9 +75,11 @@ struct MidiTakePass {
 struct RecordingEdit {
     bool ok=false;
     bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch
+    std::vector<std::int64_t> placedAudioClips; // linear clip IDs prepared from the placeable tracks
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;
+    std::vector<MidiLinearLanding> midiLandings;
     // Test support, off-callback: hooks for each project-side AtomicOnly
     // publication at commit. Null hooks use the real OS.
     media::PublishHooks publicationHooks{};
@@ -80,7 +88,8 @@ private:
     struct PreparedSource;
     std::vector<std::size_t> groupEnds_;
     static std::vector<PreparedSource> prepareSources(Store&,const engine::AudioRecordingResult&,
-        std::span<const ClipIds>,RecordingEdit&,const StagedTake* = nullptr);
+        std::span<const ClipIds>,RecordingEdit&,std::span<const std::size_t> sourceIndices = {},
+        const StagedTake* = nullptr);
     static RecordingEdit prepareLinear(Store&,const engine::AudioRecordingResult*,std::span<const ClipIds>,
         std::span<const MidiLinearTake>,double,std::int64_t,const StagedTake* = nullptr);
     static std::vector<std::int64_t> prepareSlotFiles(Store&, std::string_view sourceProject,
@@ -121,8 +130,8 @@ private:
 /// current musical clock exactly. Does not change project rows or publish files.
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
-/// Subtract the caller's signed latency offset from the timeline start. A
-/// correction past song zero places the first captured frame at zero.
+/// Subtract each track's captured signed latency offset from the timeline start,
+/// using the caller's offset for tracks without one. Clamp the start at song zero.
 [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
     std::int64_t placementOffsetSamples=0);
 /// Publish a linear audio and MIDI take together in one placement and Undo.
@@ -182,6 +191,14 @@ private:
 /// Prepare the recorder's explicit quantize diff after the captured take has
 /// committed. The caller commits it with notes::commitDiff as its own Undo.
 [[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::int64_t clip,const notes::Diff&);
+struct MidiRecordQuantize {
+    std::int64_t clip = 0;
+    std::int64_t sourceStart = 0, timelineStart = 0, length = 0;
+    std::int64_t grid = 0;
+    std::span<const std::uint64_t> noteIds;
+};
+// Quantize only the newly recorded identities, sharing one Undo across all armed tracks.
+[[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::span<const MidiRecordQuantize>);
 /// Linear captures have one Undo. Loop captures have one per pass. Failure rolls
 /// back project rows, cleans only identity-verified publications where supported,
 /// and leaves private takes for retry.

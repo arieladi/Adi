@@ -54,6 +54,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <optional>
@@ -737,8 +738,77 @@ bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- tempo and signature ------------------------------------------------------
 
+// A musical start follows the tempo map, while Warp-off material retains its
+// authored duration. Reproject its visible length rather than expanding it
+// to the source window: that window can contain audio beyond a split or trim.
+Payload captureUnwarpedTempoLengths(SQLite::Database& db, const Payload& p, bool insert) {
+    SQLite::Statement clips(db, "SELECT c.id,c.pos_ticks,c.length_ticks FROM clips c "
+        "JOIN audio_clips a ON a.clip_id=c.id "
+        "WHERE c.time_base=0 AND c.loop_enabled=0 AND a.warp_enabled=0 "
+        "AND c.pos_ticks>=0 AND c.length_ticks>0 ORDER BY c.id");
+    Payload lengths = Payload::array();
+    if (!clips.executeStep()) return lengths;
+
+    engine::TempoMap before, after;
+    const auto position = detail::signedInteger(p.at("pos"));
+    SQLite::Statement points(db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    while (points.executeStep()) {
+        const engine::TempoEvent event{points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                       points.getColumn(2).getInt()};
+        before.events.push_back(event);
+        if (event.posTicks != position) after.events.push_back(event);
+    }
+    if (insert) {
+        const auto at = std::ranges::lower_bound(after.events, position, {}, &engine::TempoEvent::posTicks);
+        after.events.insert(at, engine::TempoEvent{position, p.at("bpm").get<double>(), p.value("curve", 0)});
+    }
+    for (auto* map : {&before, &after})
+        if (map->events.empty() || map->events.front().posTicks > 0)
+            map->events.insert(map->events.begin(), {0,120,0});
+
+    do {
+        const auto start = clips.getColumn(1).getInt64();
+        const auto oldLength = clips.getColumn(2).getInt64();
+        const double duration = before.ticksToSeconds(edit::addTime(start, oldLength)) - before.ticksToSeconds(start);
+        const double target = after.ticksToSeconds(start) + duration;
+        if (!std::isfinite(target)) throw std::runtime_error("unwarped clip duration exceeds the tempo map");
+        auto end = after.secondsToTicks(target);
+        if (end < std::numeric_limits<std::int64_t>::max() &&
+            target - after.ticksToSeconds(end) > after.ticksToSeconds(end + 1) - target)
+            ++end;
+        const auto newLength = std::max<std::int64_t>(1, end - start);
+        if (newLength != oldLength)
+            lengths.push_back({{"id", clips.getColumn(0).getInt64()}, {"before", oldLength}, {"after", newLength}});
+    } while (clips.executeStep());
+    return lengths;
+}
+
+Payload unwarpedTempoLengths(OpContext& c, const Payload& p, bool insert) {
+    if (!c.replay) return captureUnwarpedTempoLengths(c.db, p, insert);
+    if (c.replay->asInverse) return p.value("_unwarpedLengths", Payload::array());
+    if (!c.replay->hasInverse) return Payload::array();
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode recorded tempo inverse: " + error);
+    // A historical tempo op did not change any clip rows.
+    return inverse->value("_unwarpedLengths", Payload::array());
+}
+
+void applyUnwarpedTempoLengths(OpContext& c, const Payload& lengths) {
+    if (lengths.empty()) return;
+    const char* key = c.replay && c.replay->asInverse ? "before" : "after";
+    SQLite::Statement update(c.db, "UPDATE clips SET length_ticks=? WHERE id=?");
+    for (const auto& length : lengths) {
+        update.bind(1, detail::signedInteger(length.at(key)));
+        update.bind(2, detail::signedInteger(length.at("id")));
+        if (update.exec() != 1) throw std::runtime_error("unwarped clip is missing from tempo edit");
+        update.reset();
+    }
+}
+
 bool tempoInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto unwarped = unwarpedTempoLengths(c, p, true);
         const bool explicitId = p.contains("id");
         const bool explicitTension = p.contains("tension");
         std::string columns = "pos_ticks,bpm,curve", slots = "?,?,?";
@@ -752,20 +822,25 @@ bool tempoInsertApply(OpContext& c, const Payload& p, std::string& err) {
         if (explicitId) st.bind(++parameter, p.at("id").get<std::int64_t>());
         if (explicitTension) st.bind(++parameter, p.at("tension").get<double>());
         st.exec();
+        applyUnwarpedTempoLengths(c, unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
-bool tempoInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
-    if (!p.contains("pos")) { err = "tempo event needs a position"; return false; }
-    inv = Payload::object();
-    inv["pos"] = p.at("pos");
-    return true;
+bool tempoInsertInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        inv = {{"pos", p.at("pos")}};
+        if (auto unwarped = captureUnwarpedTempoLengths(c.db, p, true); !unwarped.empty())
+            inv["_unwarpedLengths"] = std::move(unwarped);
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
 }
 bool tempoRemoveApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto unwarped = unwarpedTempoLengths(c, p, false);
         SQLite::Statement st(c.db, "DELETE FROM tempo_map WHERE pos_ticks = ?");
         st.bind(1, p.at("pos").get<std::int64_t>());
         if (st.exec() == 0) { err = "no tempo event at that position"; return false; }
+        applyUnwarpedTempoLengths(c, unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -780,6 +855,8 @@ bool tempoRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::strin
         inv["curve"] = st.getColumn(1).getInt64();
         inv["id"] = st.getColumn(2).getInt64();
         inv["tension"] = st.getColumn(3).getDouble();
+        if (auto unwarped = captureUnwarpedTempoLengths(c.db, p, false); !unwarped.empty())
+            inv["_unwarpedLengths"] = std::move(unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1089,6 +1166,27 @@ bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop
         set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
+bool transportMetronomeOptions(OpContext &c, const Payload &p, std::string &error) {
+    if (p.empty()) {
+        error = "Choose a metronome option to change";
+        return false;
+    }
+    const auto options = readTransportSettings(c.store).metronomeOptions;
+    const auto sound = p.value("sound", static_cast<std::int64_t>(options.sound));
+    if (sound < 0 || sound > static_cast<std::int64_t>(MetronomeSound::Bell)) {
+        error = "Choose a supported metronome sound";
+        return false;
+    }
+    const Payload value{{"recordingOnly", p.value("recordingOnly", options.recordingOnly)},
+                        {"eighthNotes", p.value("eighthNotes", options.eighthNotes)},
+                        {"sound", sound}};
+    SQLite::Statement set(
+        c.store.db(),
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.metronomeOptions',?)");
+    set.bind(1, value.dump());
+    set.exec();
+    return true;
+}
 bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
     const auto bars = p.at("bars").get<std::int64_t>();
     if (bars != 0 && bars != 1 && bars != 2 && bars != 4) {
@@ -1311,6 +1409,9 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
                                      {"resolved", FieldType::Bool, true}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
+constexpr Field kFMetronomeOptions[] = {{"recordingOnly", FieldType::Bool, false},
+                                        {"eighthNotes", FieldType::Bool, false},
+                                        {"sound", FieldType::Int, false}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
 constexpr Field kFTransportQuantization[] = {{"code", FieldType::Int, true}};
 constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
@@ -2443,6 +2544,8 @@ const OpDescriptor kHandWritten[] = {
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
      transportMetronome, nullptr, ""},
+    {"transport.setMetronomeOptions", "Set how the metronome clicks", Scope::Transport, EngineImpact::Snapshot,
+     kFMetronomeOptions, false, true, transportMetronomeOptions, nullptr, ""},
 };
 
 }  // namespace

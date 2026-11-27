@@ -112,14 +112,15 @@ callback.
 
 Supported Tones, Complex and Complex Pro clips use a bounded worker-side R3
 voice at steady tempo and through tempo changes. It supplies
-`getPreferredStartPad()` and discards `getStartDelay()` output frames. Variable
-tempo pages share a voice in order, with bounded preroll after a cold seek and
-zero padding after the placed end. Stereo R3 runs in mid/side to keep the stereo
-relationship through ratio changes. Steady tempo uses independently primed
-8,192-frame tiles on the clip's source clock. A 512-frame overlap aligns
-adjacent waveforms within a 64-frame search
-window. Two tiles and bounded source pages are enough for arbitrary seeks and
-exact repeat, trim and split behavior. The worker reclaims idle scratch.
+`getPreferredStartPad()` and discards `getStartDelay()` output frames. The
+worker primes each tile with bounded history. Steady tempo uses 8,192-frame
+tiles on the clip's source clock. Variable tempo uses 16,384-frame tiles on
+the arranged output clock and pads the source with zeros at the placed end.
+The fixed tile origins keep the output identical when a cold seek meets
+cached pages. Stereo R3 uses mid/side to preserve the stereo relationship
+through ratio changes. A 512-frame overlap aligns adjacent waveforms within
+a 64-frame search window. The worker keeps two tiles and bounded source
+pages and reclaims idle scratch.
 
 R3 reset can allocate, so the audio callback reads published PCM pages. The
 track source delays its clips by the declared R3 latency, and the graph

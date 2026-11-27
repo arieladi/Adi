@@ -11,6 +11,9 @@
 namespace adi::settings {
 namespace {
 
+// Keep the existing Track default for new inputs until Live reading R17.
+constexpr bool kDefaultTrackOnForNewMidiInputs = false;
+
 Setting make(std::string key, Type type, std::string page, std::string label, std::string help,
              Value dflt, bool agent = false) {
     Setting s;
@@ -175,6 +178,7 @@ void liveSections(std::vector<Setting>& r) {
         {"midi.autoAddControllers", "Control Surface"},
         {"midi.takeoverMode", "Control Surface"},
         {"midi.ports", "MIDI Ports"},
+        {kNewMidiInputTrackKey, "MIDI Ports"},
         // File & Folder
         {"files.sampleEditor", "Sample Editor"},
         {"files.sampleEditorOpens", "Sample Editor"},
@@ -348,8 +352,9 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("audio.srcQuality", "Audio", "Default SR & Pitch Conversion",
                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));
     r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver Error Compensation",
-                       "Milliseconds added to what the driver reports; Measure round trip fills it in.",
-                       0.0, -100, 100));
+                       "Signed milliseconds added to the driver's correction for linear audio takes when Monitor "
+                       "is Off or Keep Monitoring Latency is disabled.",
+                       0.0, -150, 150));
     r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test Tone", "Play a sine tone to the output.", false));
     r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone Volume",
                        "The test tone's level, in dB.", -36.0, -70, 0));
@@ -552,6 +557,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
                        "The port feeds tracks. Stored per port.", false));
+    r.push_back(make(kNewMidiInputTrackKey, Type::Bool, "Tempo & MIDI", "Track on for new MIDI inputs",
+                     "Set the initial Track switch when a new MIDI input is discovered.",
+                     kDefaultTrackOnForNewMidiInputs));
     r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
     r.push_back(device("midi.port.remote", Type::Bool, "Tempo & MIDI", "Remote",
                        "The port may be MIDI-mapped. Stored per port.", false));
@@ -701,7 +709,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("updates.channel", "Licenses & Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
                        {"stable", "beta"}, "stable"));
     r.push_back(make("privacy.diagnosticLog", Type::Bool, "Licenses & Updates", "Write a diagnostic log",
-                     "A local log for support; nothing is sent (R-20).", false));
+                     "Record the ADI version, project names and window messages in a local log for support. "
+                     "Nothing is sent (R-20).", false));
     r.push_back(make("settings.logChanges", Type::Bool, "Licenses & Updates", "Log settings changes",
                      "Settings changes are logged, with the time and the old and new value "
                      "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
@@ -948,7 +957,7 @@ std::vector<Setting> build() {
 
     // --- Library: paths are roles in a bundle (R-05) -------------------------------------
     r.push_back(make("library.userLibrary", Type::Path, "Library", "User Library",
-                     "Your own presets, samples and clips.", ""));
+                     "Your own presets, samples and clips. Leave empty to use the default User Library.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
     // The default record folder is files.recordFolder, on File & Folder (ADR-0203).

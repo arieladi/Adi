@@ -46,6 +46,8 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
 /// only actual incoming spans clear material in that destination lane.
 [[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,const EditScope&,
     std::span<const Move>,const Options&);
+/// Build a scope from exact native material extents for an interactive drag.
+[[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,std::span<const Move>,const Options&);
 /// Keeps the native start fixed; left trim and Crop are separate intents.
 [[nodiscard]] clip_edit::PreparedEdit prepareResizeEnd(Store&,const EditScope&,
     ResizeEnd,const Options&);
@@ -57,6 +59,7 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
 /// clips and other lanes untouched.
 [[nodiscard]] clip_edit::PreparedEdit prepareDelete(Store&,const EditScope&,
     std::span<const std::int64_t> clips,const Options&);
+[[nodiscard]] clip_edit::PreparedEdit prepareDelete(Store&,std::span<const std::int64_t> clips,const Options&);
 
 enum class EffectKind { Removed, Trimmed, Split, Created, Moved, Resized };
 struct MaterialState {
@@ -92,11 +95,17 @@ namespace detail {
 // Engine adapters only: complete owned images, already at their destination.
 // Caller holds the same read snapshot and reserves incoming child/root IDs in
 // the shared allocator. Media/track prefix ownership is a later integration.
+struct EnvelopePlacement {
+    std::int64_t track;
+    clip_edit::TimePoint begin,end;
+    Payload envelopes;
+};
 struct PlacementBatch {
     std::vector<Payload> incoming;
     std::vector<std::int64_t> relocated;
     std::vector<ClearInterval> clear;
     std::vector<std::int64_t> sourceTracks;
+    std::vector<EnvelopePlacement> envelopes;
     EffectKind incomingKind=EffectKind::Created;
 };
 [[nodiscard]] clip_edit::PreparedEdit prepareCaptured(Store&,const EditScope&,

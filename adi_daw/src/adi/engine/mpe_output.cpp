@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/mpe_output.hpp"
+#include "adi/engine/mpe_input.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -452,11 +453,18 @@ void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     // SC-312: an expression for the whole channel (note 0: the pitch wheel, channel pressure, CC74 as
     // ADI's MIDI input makes them) is the channel's own message on EVERY route, as Live sends it: a VST3
     // takes it through its MIDI map, a CLAP as MIDI. Note expression for note 0 is ignored by synths, and
-    // the MIDI routes knew no note 0 and dropped it. On channel 0, where ADR-0054 puts every note.
+    // the MIDI routes knew no note 0 and dropped it. Global controls use the master channel. A
+    // pitch wheel can use the input channel on a raw MIDI port or when mapped to a parameter there.
     if (e.noteId == 0) {
         switch (d) {
-            case ExpressionDim::Pitch:
-                control(0, kCtrlPitchBend, e.value, e.frame, 0, out, false, kChannelBendSemitones); return;
+            case ExpressionDim::Pitch: {
+                if (!std::isfinite(e.value)) { drop(); return; }
+                const bool preserveChannel = e.channel < caps_.bendParam.size() &&
+                    (caps_.preservePitchWheelChannel || caps_.bendParam[e.channel] != kNoParam);
+                const auto channel = preserveChannel ? e.channel : std::uint8_t{0};
+                control(channel, kCtrlPitchBend, e.value, e.frame, 0, out, true, kChannelBendSemitones);
+                return;
+            }
             case ExpressionDim::Pressure:
                 control(0, kCtrlAfterTouch, e.value, e.frame, 0, out); return;
             case ExpressionDim::Timbre:

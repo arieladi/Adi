@@ -256,6 +256,59 @@ void testDynamicStereoPlacementEnd() {
               << ", terminal peak " << terminalPeak << " FS\n";
 }
 
+void testDynamicPageHistory() {
+    using namespace adi;
+    using namespace adi::engine;
+    constexpr std::uint32_t pageFrames = 8192;
+    constexpr std::int64_t beatTicks = textproj::kPPQ;
+    constexpr std::uint32_t sourceFrames = 2 * sampleRate;
+    constexpr std::size_t pageCount = 24;
+    const std::array<rows::TempoEvent, 2> events{{{0, 140, 1}, {40 * beatTicks, 120, 0}}};
+    const WarpArrangementClock tempo(events, sampleRate);
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {sourceFrames, 4 * beatTicks}}};
+    const auto end = static_cast<std::int64_t>(std::llround(tempo.frameAtTick(40 * beatTicks)));
+    audio::WarpRenderPlan plan;
+    plan.mode = audio::WarpMode::Complex;
+    plan.sourceFrames = sourceFrames;
+    plan.outputRate = sampleRate;
+
+    std::vector<float> sine(sourceFrames);
+    for (std::size_t i = 0; i < sine.size(); ++i)
+        sine[i] = static_cast<float>(0.3 * std::sin(2 * std::numbers::pi * frequency *
+                                                   static_cast<double>(i) / sampleRate));
+    const WarpR3Source source{&sine, [](void* context, std::uint64_t first, float* target, std::uint32_t count) {
+        const auto& wave = *static_cast<const std::vector<float>*>(context);
+        check(first + count <= wave.size(), "history fixture stays inside source PCM");
+        std::copy_n(wave.data() + first, count, target);
+    }};
+    WarpR3Pages rolling(plan, sampleRate, 1, markers, tempo, 0, 4 * beatTicks, 0, 4 * beatTicks, end);
+    WarpR3Pages seeking(plan, sampleRate, 1, markers, tempo, 0, 4 * beatTicks, 0, 4 * beatTicks, end);
+    std::vector<float> baseline(pageCount * pageFrames);
+    std::array<float, pageFrames> sought{};
+    for (std::size_t i = 0; i < pageCount; ++i) {
+        const auto first = i * pageFrames;
+        check(rolling.render(static_cast<std::int64_t>(first), pageFrames, baseline.data() + first, source),
+              "dynamic R3 supplies rolling pages during a descending tempo ramp");
+    }
+
+    float maximumBoundaryStep = 0, rollingBoundaryStep = 0;
+    bool exact = true;
+    for (std::size_t i = pageCount - 2; i > 0; --i) {
+        const auto first = i * pageFrames;
+        check(seeking.render(static_cast<std::int64_t>(first), pageFrames, sought.data(), source),
+              "dynamic R3 supplies uncached pages in reverse request order");
+        exact = exact && std::equal(sought.begin(), sought.end(), baseline.data() + first);
+        maximumBoundaryStep = std::max({maximumBoundaryStep, std::abs(baseline[first-1]-sought.front()),
+                                      std::abs(sought.back()-baseline[first+pageFrames])});
+        rollingBoundaryStep = std::max({rollingBoundaryStep, std::abs(baseline[first-1]-baseline[first]),
+                                      std::abs(baseline[first+pageFrames-1]-baseline[first+pageFrames])});
+    }
+    std::cout << "Dynamic R3 140 to 120 BPM page boundary: mixed history " << maximumBoundaryStep
+              << " FS, rolling " << rollingBoundaryStep << " FS\n";
+    check(exact && maximumBoundaryStep <= 0.025f,
+          "a cold dynamic page reproduces rolling PCM and joins existing pages without a click");
+}
+
 void testSteadyPages() {
     using namespace adi;
     using namespace adi::engine;
@@ -375,5 +428,6 @@ int main() {
     testVoice();
     testRepeatedRampPages();
     testDynamicStereoPlacementEnd();
+    testDynamicPageHistory();
     testSteadyPages();
 }

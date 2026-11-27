@@ -25,6 +25,19 @@ std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
     return offsetSamples > startSample ? 0 : startSample - offsetSamples;
 }
 
+std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,
+                                        double errorMilliseconds) noexcept {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0 || sampleRate > 768000 ||
+        !std::isfinite(errorMilliseconds) || std::abs(errorMilliseconds) > 150)
+        return driverSamples;
+    const auto errorSamples = static_cast<std::int64_t>(std::llround(errorMilliseconds * sampleRate / 1000.0));
+    if (errorSamples > 0 && driverSamples > std::numeric_limits<std::int64_t>::max() - errorSamples)
+        return std::numeric_limits<std::int64_t>::max();
+    if (errorSamples < 0 && driverSamples < std::numeric_limits<std::int64_t>::min() - errorSamples)
+        return std::numeric_limits<std::int64_t>::min();
+    return driverSamples + errorSamples;
+}
+
 std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std::uint64_t frames,
     std::int64_t offsetSamples,const RecordingPunchWindow& punch) noexcept {
     constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
@@ -46,8 +59,13 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
                         keptStart,keptEnd};
 }
 
-AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames) const noexcept {
+AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames,
+    std::optional<std::int64_t> trackOffsetSamples) const noexcept {
     const auto frames = std::max(peaks.frames, acceptedFrames);
+    if (!loop && trackOffsetSamples) {
+        const auto placed = recordingPlacementRange(rawStartSample, frames, *trackOffsetSamples, {});
+        return placed ? Range{placed->timelineStartSample, 0, placed->frames} : Range{startSample, 0, 0};
+    }
     if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
         startSample < 0 || startSample >= loop->endSample)
         return {startSample, 0, frames};
@@ -194,6 +212,7 @@ struct Job {
             try {
                 const auto start = firstSample.load(std::memory_order_relaxed);
                 const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
+                accumulatingPreview.rawStartSample = start;
                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
                 if (punchWindow.active())
                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};
@@ -206,6 +225,8 @@ struct Job {
                 for (std::size_t target = 0; target < spec.targets.size(); ++target) {
                     AudioRecordingPreview::Track track;
                     track.trackId = spec.targets[target].trackId;
+                    if (!spec.loop)
+                        track.placementOffsetSamples = spec.targets[target].placementOffsetSamples;
                     track.channels.reserve(mappings[target].size());
                     for (const auto channel : mappings[target])
                         track.channels.push_back(static_cast<std::uint32_t>(channel));
@@ -424,7 +445,8 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
         for(std::size_t index=0;index<spec.targets.size();++index) {
             const auto& target=spec.targets[index];const auto file=owned/("take-"+std::to_string(index)+".wav");
             const auto width=static_cast<std::uint16_t>(target.channels.size());
-            job->tracks.push_back({target.trackId,width,file});std::vector<std::size_t> mapping;
+            job->tracks.push_back({target.trackId,width,file,spec.loop ? std::nullopt : target.placementOffsetSamples});
+            std::vector<std::size_t> mapping;
             for(const auto channel:target.channels)mapping.push_back(static_cast<std::size_t>(std::lower_bound(job->inputChannels.begin(),job->inputChannels.end(),channel)-job->inputChannels.begin()));
             job->mappings.push_back(std::move(mapping));job->output.emplace_back(4096*target.channels.size());
             auto writer=factory?factory(file,spec.sampleRate,width,spec.format):std::make_unique<WaveSink>(file,spec.sampleRate,width,spec.format);

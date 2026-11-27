@@ -279,6 +279,28 @@ void midiMonitoring() {
               controller(instrument, 0, 1, 0.25) == mode.arrange, mode.checkLabel);
     }
 
+    {
+        Fixture overdub;
+        overdub.clip();
+        overdub.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+        overdub.load();
+        const std::array<std::int64_t, 1> targets{1};
+        std::string error;
+        check(overdub.session.startMidiInputCapture(targets, error, true) &&
+                  key(overdub, 50, EventType::NoteOn, 98, 66) && key(overdub, 150, EventType::NoteOff, 98, 66),
+              "start an Auto-monitored overdub while an Arrangement clip plays");
+        overdub.render();
+        check(played(*overdub.instrument, EventType::NoteOn, 50, 66) &&
+                  played(*overdub.instrument, EventType::NoteOn, 100, 60) &&
+                  played(*overdub.instrument, EventType::NoteOff, 150, 66),
+              "an Auto-monitored overdub hears new input and the Arrangement together");
+        overdub.session.midiInputCapture().stop();
+        check(key(overdub, 550, EventType::NoteOn, 99, 67), "send live MIDI after the overdub stops");
+        overdub.render();
+        check(!played(*overdub.instrument, EventType::NoteOn, 550, 67),
+              "ending overdub restores Auto suppression over the playing Arrangement clip");
+    }
+
     Fixture f(48000, 64);
     f.clip(1, 0, 12012, 24024);
     f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
@@ -317,31 +339,125 @@ void midiMonitoring() {
           played(instrument, EventType::NoteOff, loopStart + 30, 67),
           "Auto follows the wrapped playhead and closes again where the clip restarts");
 
-    Fixture moved(48000, 64);
-    moved.clip(1, 0, 12012, 24024);
-    moved.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
-                           "UPDATE clips SET pos_ticks=24024 WHERE id=1");
-    moved.load();
-    ProjectView view;
-    view.refresh(*moved.store);
-    OpRequest request;
-    request.opType = "clip.move";
-    request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
-    const auto edit = view.prepareLocalEdit(*moved.store, request);
-    if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
-        throw std::runtime_error("move was not admitted by the scoped Arrangement view");
-    const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
-    check(!scoped, "moving a clip on an armed Auto track refreshes its monitoring ranges");
-    if (!scoped) moved.refresh();
-    check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
-          key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
-    for (int block = 0; block < 5; ++block) moved.render();
-    check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
-          played(*moved.instrument, EventType::NoteOff, 135, 61) &&
-          played(*moved.instrument, EventType::NoteOn, 300, 60) &&
-          !played(*moved.instrument, EventType::NoteOn, 311, 62),
-          "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    for (const bool followsSelection : {false, true}) {
+        Fixture moved(48000, 64);
+        moved.clip(1, 0, 12012, 24024);
+        moved.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1;"
+                               "UPDATE clips SET pos_ticks=24024 WHERE id=1");
+        if (!followsSelection) moved.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+        moved.load();
+        if (followsSelection)
+            check(moved.session.setSelectionArmedTrack(1), "selecting the Auto track arms it for MIDI monitoring");
+        ProjectView view;
+        view.refresh(*moved.store);
+        OpRequest request;
+        request.opType = "clip.move";
+        request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
+        const auto edit = view.prepareLocalEdit(*moved.store, request);
+        if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
+            throw std::runtime_error("move was not admitted by the scoped Arrangement view");
+        const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
+        check(!scoped, followsSelection ? "moving a clip on a selection-armed Auto track refreshes monitoring ranges"
+                                        : "moving a clip on an armed Auto track refreshes its monitoring ranges");
+        if (!scoped) moved.refresh();
+        check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
+              key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
+        for (int block = 0; block < 5; ++block) moved.render();
+        check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
+              played(*moved.instrument, EventType::NoteOff, 135, 61) &&
+              played(*moved.instrument, EventType::NoteOn, 300, 60) &&
+              !played(*moved.instrument, EventType::NoteOn, 311, 62),
+              "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    }
 }
+
+void noteEditorAudition() {
+    Fixture fixture(48000, 64);
+    auto& db = fixture.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name,index_in_parent,record_armed,monitor_mode) "
+            "VALUES(3,'midi','Other',2,1,2),(4,'midi','No instrument',3,0,0);"
+            "INSERT INTO device_chains(id,track_id) VALUES(3,3);"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,3,0,1,'Other')");
+    fixture.clip();
+    fixture.load();
+    auto& session = fixture.session;
+    auto& player = *fixture.instrument;
+    player.audible = true;
+    session.transport().play(false);
+    const auto keyOn = [&](std::int64_t track, unsigned key) {
+        return (session.midiKeysSounding(track)[key / 64] & (std::uint64_t{1} << (key % 64))) != 0;
+    };
+    check(!session.previewMidiNote(4, 65, 96, false) && !session.previewMidiNote(1, 128, 96, false) &&
+              !session.previewMidiNote(1, 65, 0, false) && !keyOn(4, 65),
+          "an audition needs an instrument, a valid key and a nonzero velocity");
+    check(session.previewMidiNote(1, 65, 96, true), "audition reaches the unarmed track with monitoring Off");
+    session.stopMidiPreview();
+    std::array<double,64> output{};
+    fixture.render(64, output);
+    check(player.count == 1 && player.heard[0].e.type == EventType::NoteOn &&
+              player.heard[0].e.value == 96.0 / 127 && output.front() > 0.2 &&
+              keyOn(1, 65) && !keyOn(3, 65),
+          "press and release in one callback still sounds and lights the requested key on that track");
+    for (int i = 0; i < 32 && player.balance() != 0; ++i)
+        fixture.render();
+    check(player.count == 2 && player.heard[1].e.noteId == player.heard[0].e.noteId &&
+              player.heard[1].clock >= 960 && player.balance() == 0 && !keyOn(1, 65),
+          "a quick release waits for the driver's minimum duration and clears the key");
+
+    check(session.previewMidiNote(1, 66, 81, false), "a drawn note starts a finite tap without a key-up");
+    fixture.render();
+    check(player.balance() == 1 && keyOn(1, 66), "a finite tap sounds before its deadline");
+    for (int i = 0; i < 128 && player.balance() != 0; ++i)
+        fixture.render();
+    check(player.balance() == 0 && !keyOn(1, 66), "the finite tap releases itself");
+
+    constexpr std::array<std::int64_t, 1> armed{3};
+    std::string error;
+    session.transport().locate(0);
+    session.transport().play();
+    check(session.startMidiInputCapture(armed, error), "start input capture on the other track");
+    const auto start = fixture.clock;
+    check(session.previewMidiNote(1, 72, 80, true) &&
+              session.enqueueMidiInput(start + 3, {0, EventType::NoteOn, 0, 72, 400, 0, .8}) &&
+              session.enqueueMidiInput(start + 8, {0, EventType::NoteOff, 0, 72, 400, 0, 0}),
+          "an audition can coincide with the same note from Track input");
+    fixture.render();
+    fixture.render();
+    auto& other = *fixture.otherInstrument;
+    check(keyOn(1, 60) && keyOn(1, 72) && !keyOn(3, 72) && player.count >= 5 && other.count == 2 &&
+              pluginNoteId(player.heard[4].e.noteId) != pluginNoteId(other.heard[0].e.noteId),
+          "the mask carries playback and the held audition, with distinct runtime IDs from Track input");
+    std::array<MidiCapturePacket, 16> packets{};
+    const auto count = session.midiInputCapture().drain(packets);
+    int captured = 0;
+    bool fromTrack = true;
+    for (const auto& packet : std::span(packets).first(count)) {
+        if (packet.kind == MidiCapturePacket::Kind::Event) {
+            ++captured;
+            fromTrack = fromTrack && packet.event.noteId == 400;
+        }
+    }
+    check(captured == 2 && fromTrack, "only the Track input's note and release enter the recording");
+    session.midiInputCapture().stop();
+    session.stopMidiPreview();
+    while (fixture.clock <= start + 960)
+        fixture.render();
+    check(keyOn(1, 60) && !keyOn(1, 72), "stopping audition leaves the Arrangement note audible and lit");
+
+    check(session.previewMidiNote(3, 76, 90, true), "hold an audition on an instrument about to leave the graph");
+    fixture.render();
+    check(keyOn(3, 76) && other.balance() == 1, "the other instrument owns its held audition");
+    db.exec("DELETE FROM devices WHERE id=3");
+    fixture.refresh();
+    fixture.render();
+    check(!keyOn(3, 76) && !session.previewMidiNote(3, 76, 90, true), "a removed instrument is no longer an audition target");
+    db.exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,3,0,1,'Other')");
+    fixture.refresh();
+    fixture.render();
+    check(fixture.otherInstrument == &other && other.balance() == 0 && !keyOn(3, 76),
+          "reviving the retained instrument first delivers any pending audition release");
+}
+
 void driverMidiCapture() {
     Fixture f(48000, 64);
     f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
@@ -1709,6 +1825,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "tempo-ramp") musicalRamp(); }
