@@ -36,10 +36,11 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/mac-chain` | `f308acf2852abaa4967780ce7bf95524e467e060` | App only | SC-194 `4679066f` publishes each immutable Warp result once with a release/acquire ready flag. The fixed speed head passed all 59 selected suites after a default-settings disk-headroom retry. The Mac integration preserved the MIDI reuse and monitoring behavior and passed all 40 app, window, session and affected checks. |
 | `origin/basics/recording-chain` | `73e75feb220e6ba339e8bdc1ded796372267d15e` | App only | Full build failed at the unconditional calls to removed `DeviceBridge::lastError` in `src/juce/play.cpp:832`, `:852` and `:853`. App and selected suites 41/43. The shell suite failed both SC-246 Cue Volume comparison checks. The tolerance fix is on the Mac chain. Clip playback reported `decode.no_space` when the local disk fell below the cache reserve. |
 | `origin/basics/recording-chain` | `e57cf44e72b88f37a118bf6333639039b7a13c37` | App only | Full build failed at the unconditional calls to removed `DeviceBridge::lastError` in `src/juce/play.cpp:832`, `:852` and `:853`. App and selected suites 45/46. Four window tests timed out while the Mac slept. Three passed when rerun awake. The shell reproduced both SC-246 Cue Volume comparison failures, fixed on the Mac chain. |
+| `origin/basics/recording-chain` | `2c16932dd3164d4477ede8c50b2f363e153e8f6a` | App only | Full build failed where `src/juce/play.cpp:832`, `:852` and `:853` call the removed `DeviceBridge::lastError`. Of 44 selected suites, 42 passed. The shell reproduced both SC-246 Cue Volume comparison failures. `tests/test_audio_recording.cpp:836` failed to compile with `loop variable invalidLoop creates a copy from type adi::engine::AudioRecordingLoop const [-Werror,-Wrange-loop-construct]`. Transport, Link session and Shaper session passed when built independently. |
 
 ## Nine-step window walk
 
-Step 9 recorded in [the walk report](https://github.com/arieladi/Adi/blob/walk/macos/adi_daw/collab/walk/2026-11-27-macos.md).
+All nine steps were exercised. Five findings and the recording and reopen retests are documented in [the walk report](https://github.com/arieladi/Adi/blob/walk/macos/adi_daw/collab/walk/2026-11-27-macos.md).
 
 ## Accessibility permission
 
