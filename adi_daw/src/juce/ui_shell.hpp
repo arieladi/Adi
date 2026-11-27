@@ -748,6 +748,8 @@ class AdiRootComponent final : public juce::Component,
     // The store an engine edit is prepared against, and the settings its policy is captured from.
     Store &editStore() noexcept { return submitter_.store(); }
     const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
+    // Launch the configured executable or application bundle with the selected source.
+    std::function<bool(const std::filesystem::path &editor, const std::filesystem::path &source, bool copy)> launchSampleEditor;
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);

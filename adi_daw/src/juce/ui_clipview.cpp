@@ -4842,11 +4842,44 @@ juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
         return {};
     return {header.getX() + 72, header.getY() + 2, 52, 13};
 }
+int ClipViewPanel::sampleToolsRight() const noexcept {
+    return std::max({headerArea().getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
+                     sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
+}
+juce::Rectangle<int> ClipViewPanel::sampleEditBox() const noexcept {
+    if (!others_.empty() || !node_ || !node_->audio || !node_->audio->mediaInfo)
+        return {};
+    auto area = headerArea().withTrimmedRight(84);
+    const auto edit = area.removeFromRight(36).reduced(0, 2);
+    return edit.getX() >= sampleToolsRight() + 4 ? edit : juce::Rectangle<int>{};
+}
 juce::Rectangle<int> ClipViewPanel::sampleMetadataArea() const noexcept {
     const auto header = headerArea();
-    const auto right = std::max({header.getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
-                                 sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
-    return header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84);
+    const int trimRight = sampleEditBox().isEmpty() ? 84 : 124;
+    return header.withTrimmedLeft(sampleToolsRight() + 4 - header.getX()).withTrimmedRight(trimRight);
+}
+void ClipViewPanel::editSample() {
+    if (!node_ || !node_->audio)
+        return;
+    const auto &settings = root.commandSettings();
+    const auto editor = media::pathFromUtf8(settings.get("files.sampleEditor").get<std::string>());
+    if (!editor.is_absolute()) {
+        root.say("Choose a Sample Editor in Settings > File & Folder.");
+        return;
+    }
+    if (root.transport.playing()) {
+        root.say("Stop playback before editing the sample.");
+        return;
+    }
+    std::string error;
+    const auto source = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
+    if (source.empty()) {
+        root.say("The sample could not be opened: " + error);
+        return;
+    }
+    const bool copy = settings.get("files.sampleEditorOpens") == "copy";
+    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, source, copy))
+        root.say("The configured Sample Editor could not be started.");
 }
 juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
     if (!audio() || (others_.empty() &&
@@ -5337,6 +5370,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (panelsEdge().contains(at)) {
         edgeDrag_ = true;
         edgeFrom_ = at.x;
+        return;
+    }
+    if (sampleEditBox().contains(at)) {
+        editSample();
         return;
     }
     if (others_.empty() && sampleNameBox().contains(at)) {
@@ -6013,6 +6050,10 @@ void ClipViewPanel::paint(juce::Graphics &g) {
              juce::Justification::centredLeft, look::text, look::fontBody, true);
     if (!name.isEmpty())
         text(r.sampleName, name, juce::Justification::centredLeft, look::textBright, look::fontLabel, true);
+    if (const auto edit = sampleEditBox(); !edit.isEmpty()) {
+        controls::button(g, edit.toFloat(), controls::ButtonState::Rest, "Edit", look::fontSmall);
+        labels_.push_back(edit);
+    }
     if (problem_.empty() && !r.sampleProperties.isEmpty() && !metadata.isEmpty()) {
         const auto properties = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
         text(r.sampleProperties, properties, juce::Justification::centredLeft, look::text, look::fontLabel);

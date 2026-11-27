@@ -12792,7 +12792,7 @@ void arrangementClipColour(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     check(hasColour(look::paletteColour(2)), "SC-37: undo restores the inherited track colour");
 }
-void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) {
+void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "sample-gestures.adi", true, {}, error);
     check(document != nullptr, "a project to exercise the Sample Editor");
@@ -12833,6 +12833,32 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     root.frame();
     auto &panel = root.clipView;
     auto &edit = panel.sample;
+    check(root.commandSettings().get("files.sampleEditorOpens") == "inPlace",
+          "the external editor opens the project sample in place by default");
+    const auto clickEdit = [&] {
+        panel.mouseDown(pressAt(panel, panel.sampleEditBox().getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+    };
+    clickEdit();
+    check(root.error().find("Sample Editor in Settings") != std::string::npos,
+          "the audio clip's Edit button identifies the missing editor setting");
+    const auto editor = dir / "External Sample Editor";
+    const auto oldEditor = settings.get("files.sampleEditor"), oldMode = settings.get("files.sampleEditorOpens");
+    std::string why;
+    check(settings.set("files.sampleEditor", media::pathUtf8(editor), {}, why), "configure an external editor path with spaces");
+    std::vector<bool> copied;
+    root.launchSampleEditor = [&](const auto &application, const auto &source, bool copy) {
+        if (application != editor || source != std::filesystem::weakly_canonical(wav))
+            return false;
+        copied.push_back(copy);
+        return true;
+    };
+    clickEdit();
+    check(settings.set("files.sampleEditorOpens", "copy", {}, why), "set the configured editor to open a copy");
+    clickEdit();
+    check(copied == std::vector<bool>{false, true}, "Edit routes the exact source through each of the configured editor modes");
+    root.launchSampleEditor = nullptr;
+    settings.set("files.sampleEditor", oldEditor, {}, why);
+    settings.set("files.sampleEditorOpens", oldMode, {}, why);
     const auto readings = panel.readings();
     check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
               readings.sampleProperties == "48000 Hz   16 bit   1 ch" &&
@@ -23407,7 +23433,7 @@ int main(int argc, char **argv) {
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
-    trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, temp.path()); });
+    trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, settings, temp.path()); });
     trace("reverseAudioSelection", [&] { reverseAudioSelection(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
