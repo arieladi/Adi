@@ -8,6 +8,7 @@
 #include "adi/store_rows.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/history.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -961,6 +962,72 @@ void rangeTimeLaneScope() {
     }
 }
 
+void consolidateMidi() {
+    Project project;
+    auto &store = *project.store;
+    auto &db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Keys');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(71,22,'midi',5765760,5765760),(72,22,'midi',17297280,5765760),"
+            "(73,22,'midi',23063040,5765760);");
+    constexpr auto beat = 5765760;
+    constexpr int pressure = static_cast<int>(ExpressionDim::Pressure);
+    const auto stream = [](std::int64_t at, std::uint64_t id, std::uint16_t flags) {
+        const std::array notes{NoteRecord{at,beat/4,id,60,100,64,1,flags,10000,12.f,0}};
+        return writeStream<NoteRecord>(FourCC::Notes, notes);
+    };
+    const auto first = stream(beat/4, 31, NoteFlags::HasExpression);
+    const auto second = stream(beat/2, 42, 0);
+    ExpressionPoint point{};
+    point.value = 0.375f;
+    const auto expression = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    check(store.putEventStream(71, "notes", first) && store.putEventStream(72, "notes", second) &&
+              store.putNoteExpression(71, 31, pressure, expression), "SC-178 MIDI fixture and exact expression curve");
+    const clip_edit::RangeSelection range{{22},{0,beat},{0,4*beat}};
+    const edit_plan::Options options{48000,{}};
+    const std::array<std::int64_t,2> picked{71,72};
+    const auto originalHead = OpJournal(store).headSeq();
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=2882880 WHERE id=72");
+    const auto repeated = clip_edit::prepareMidiConsolidation(store, range, picked, options);
+    check(!repeated.edit.ok && repeated.edit.error.find("repeated") != std::string::npos,
+          "SC-178 refuses a second occurrence of a note ID");
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=5765760 WHERE id=72");
+    check(store.putEventStream(72, "notes", stream(beat/2, 31, 0)), "SC-178 duplicate fixture");
+    const auto collision = clip_edit::prepareMidiConsolidation(store, range, picked, options);
+    check(!collision.edit.ok && collision.edit.error.find("duplicate") != std::string::npos &&
+              OpJournal(store).headSeq() == originalHead,
+          "SC-178 duplicate clip-local note IDs refuse without writing any operations");
+    check(store.putEventStream(72, "notes", second), "SC-178 restore distinct IDs");
+    const std::array<std::int64_t,2> skipMiddle{71,73};
+    check(!clip_edit::prepareMidiConsolidation(store, {{22},{0,beat},{0,5*beat}}, skipMiddle, options).edit.ok,
+          "SC-178 refuses replacing an unpicked clip in the gap");
+    const auto prepared = clip_edit::prepareMidiConsolidation(store, range, picked, options);
+    check(prepared.edit.ok && prepared.edit.requests.size() == 1 && prepared.edit.requests.front().label == "Consolidate",
+          "SC-178 stages one operation for two single-pass MIDI clips");
+    if (!prepared.edit.ok)
+        throw std::runtime_error(prepared.edit.error);
+    const auto committed = clip_edit::commitPrepared(store, prepared.edit);
+    check(committed.ok && db.execAndGet("SELECT count(*) FROM clips WHERE id IN (71,72,73)").getInt() == 1,
+          "SC-178 removes both sources and keeps the clip touching the right boundary");
+    if (!committed.ok)
+        throw std::runtime_error(committed.error);
+    const auto merged = notes::captureNotes(store, prepared.clip);
+    std::string error;
+    const auto records = merged.records();
+    const auto earlier = records.size() == 2 ? notes::values(records.front(), error) : std::nullopt;
+    const auto later = records.size() == 2 ? notes::values(records.back(), error) : std::nullopt;
+    check(merged.ok && earlier && later && earlier->id == 31 && earlier->start == beat/4 &&
+              later->id == 42 && later->start == 2*beat+beat/2 && earlier->cents == 12.f &&
+              store.getNoteExpression(prepared.clip, 31, pressure) == expression,
+          "SC-178 preserves IDs, the arrangement gap, note values and byte-identical expression");
+    const auto undone = History(store).undo();
+    check(undone.ok && undone.txnId == committed.txnId && store.getEventStream(71, "notes") == first &&
+              store.getEventStream(72, "notes") == second && !store.getEventStream(prepared.clip, "notes") &&
+              store.getNoteExpression(71, 31, pressure) == expression,
+          "SC-178 one Undo restores both original streams and expression");
+    check(History(store).redo().ok && notes::captureNotes(store, prepared.clip).records().size() == 2,
+          "SC-178 Redo restores the same consolidated clip identity");
+}
 } // namespace
 namespace {
 void twoPointSplitPayloadBounds() {
@@ -1156,4 +1223,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();consolidateMidi();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

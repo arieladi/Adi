@@ -5642,6 +5642,60 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
 }
 // E3: the …Time commands and Insert Silence (Live 12 manual 6.11, 41.5; N17): across every track,
 // locators and the loop moving with the time.
+void consolidateMidiCommand(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "consolidate-midi.adi", error);
+    check(store != nullptr, "SC-178 MIDI project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Consolidate MIDI')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    constexpr auto bar = textproj::kWhole;
+    std::vector<OpRequest> fixture(3);
+    fixture[0].opType = "track.create";
+    fixture[0].payload = {{"id",1},{"kind","midi"},{"name","Keys"}};
+    for (std::size_t i = 1; i < fixture.size(); ++i) {
+        fixture[i].opType = "clip.create";
+        fixture[i].payload = {{"id",10+i},{"track",1},{"kind","midi"},{"pos",static_cast<std::int64_t>(i*2)*bar},
+                              {"length",bar}};
+    }
+    if (!submitter.submit(std::move(fixture)).ok) {
+        check(false, "SC-178 two MIDI clips with a gap");
+        return;
+    }
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "consolidate-midi");
+    root.setSize(1200, 720);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &sel = arrangement.geometry.selection;
+    sel.track = 1;
+    sel.start = sel.insert = 2*bar;
+    sel.end = 5*bar;
+    sel.marked = true;
+    const auto menu = arrangement.contextMenuItems(false);
+    bool hasCommand = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        if (it.getItem().itemID == AppCommands::ConsolidateMidi)
+            hasCommand = it.getItem().isEnabled;
+    check(hasCommand, "SC-178 the eligible Arrangement range offers Consolidate");
+    check(root.keyPressed(juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)),
+          "SC-178 Ctrl/Cmd+J consolidates in the Arrangement");
+    root.frame();
+    const auto *track = root.reader().findTrack(1);
+    check(track != nullptr && track->clips.size() == 1 && track->clips.front()->id == sel.clip &&
+              track->clips.front()->posTicks == 2*bar && track->clips.front()->lengthTicks == 3*bar,
+          "SC-178 one selected clip spans the range including its gap");
+    check(root.command(AppCommands::Undo), "SC-178 one Undo reverses Consolidate");
+    root.frame();
+    track = root.reader().findTrack(1);
+    check(track != nullptr && track->clips.size() == 2 && track->clips[0]->id == 11 && track->clips[1]->id == 12,
+          "SC-178 one Undo restores the two source clips");
+}
 void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "time.adi", true, {}, error);
@@ -10460,15 +10514,15 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
           "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
 
     const auto popupInsert = pickClip(3);
-    int headerMenus = 0;
+    int retargetedHeaderMenus = 0;
     root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
         if (header)
-            ++headerMenus;
+            ++retargetedHeaderMenus;
     };
     headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
     headers.mouseUp(pressAt(headers, title(4)));
     root.arrangement.onContextMenu = nullptr;
-    check(headerMenus == 1 && trackOnly(4, popupInsert),
+    check(retargetedHeaderMenus == 1 && trackOnly(4, popupInsert),
           "SC-177: a popup on another title clears the earlier clip's time range");
 
     canvas.mouseDown(pressAt(canvas, rangeFrom));
@@ -19903,11 +19957,12 @@ int main(int argc, char **argv) {
                                                 C::DeleteTrack, C::DeleteAutomation, 0,
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
-                                                C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
+                                                C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split,
+                                                C::CropClip, C::ConsolidateMidi, 0,
                                                 C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Delete Automation, then the …Time commands and Insert Silence "
               "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
-              "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
+              "Split, Crop Clip and Consolidate, then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
               "Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -22407,6 +22462,7 @@ int main(int argc, char **argv) {
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("trackClipboard", [&] { trackClipboard(commands, temp.path()); });
+    trace("consolidateMidiCommand", [&] { consolidateMidiCommand(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });

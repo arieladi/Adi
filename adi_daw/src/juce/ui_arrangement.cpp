@@ -1860,6 +1860,7 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
                     addActive(Command::CreateFade);
                 }
             }
+            addActive(Command::ConsolidateMidi);
             addActive(Command::LoopSelection);
             menu.addSeparator();
             if (clips) {
