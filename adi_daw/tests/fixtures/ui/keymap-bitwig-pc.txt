@@ -139,3 +139,11 @@
 29066 Browser Preview: 
 29067 Preview Selected: Shift+Return, Right
 29068 Hot-Swap: Q
+29069 Toggle Favorite: 
+29070 Toggle Red Collection: 1
+29071 Toggle Orange Collection: 2
+29072 Toggle Yellow Collection: 3
+29073 Toggle Green Collection: 4
+29074 Toggle Blue Collection: 5
+29075 Toggle Purple Collection: 6
+29076 Toggle Gray Collection: 7

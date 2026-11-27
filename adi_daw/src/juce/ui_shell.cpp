@@ -378,6 +378,14 @@ const StableEntry *stableEntry(int id) noexcept {
         {"browser.toggle-preview", "Browser"}, // ToggleBrowserPreview
         {"browser.preview-selected", "Browser"}, // PreviewSelected
         {"browser.hot-swap", "Browser"}, // HotSwap
+        {"browser.toggle-favorite", "Browser"},
+        {"browser.toggle-collection-red", "Browser"},
+        {"browser.toggle-collection-orange", "Browser"},
+        {"browser.toggle-collection-yellow", "Browser"},
+        {"browser.toggle-collection-green", "Browser"},
+        {"browser.toggle-collection-blue", "Browser"},
+        {"browser.toggle-collection-purple", "Browser"},
+        {"browser.toggle-collection-gray", "Browser"},
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -613,9 +621,17 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
                                   "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File...",
-                                  "Browser Preview", "Preview Selected", "Hot-Swap"};
+                                  "Browser Preview", "Preview Selected", "Hot-Swap", "Toggle Favorite", "Toggle Red Collection",
+                                  "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
+                                  "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
+    if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
+        if (id != ToggleFavorite)
+            info.addDefaultKeypress('1' + id - ToggleCollectionRed, 0);
+        info.setActive(active_ && active_->browser.canMarkSelection());
+        return;
+    }
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
         info.setInfo("Save Project...", "Name this project", category(id), 0);
     if (id == Undo || id == Redo) {
@@ -1222,10 +1238,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 }
 bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, bool allowComputerMidi) {
     activate(root);
+    const auto *mappings = manager.getKeyMappings();
+    if (root.browser.list.hasKeyboardFocus(true)) {
+        const auto direct = mappings->findCommandForKeyPress(pressed);
+        if (direct >= ToggleFavorite && direct <= ToggleCollectionGray)
+            return root.command(direct);
+    }
     if (allowComputerMidi && root.playComputerMidiKey(pressed))
         return true;
     const auto key = allowComputerMidi ? root.computerMidiShortcut(pressed) : pressed;
-    const auto *mappings = manager.getKeyMappings();
     auto id = mappings->findCommandForKeyPress(key);
     const int physical = computerMidiKeyCode(pressed);
     if (allowComputerMidi && id == 0 && (physical == 'm' || physical == 'M') &&
@@ -1237,6 +1258,8 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
     if (id == HotSwap && (!root.devices.hasHotSwapContext() ||
                          (root.transport.keyboard.getToggleState() && key == juce::KeyPress('q'))))
+        return false;
+    if (id >= ToggleFavorite && id <= ToggleCollectionGray)
         return false;
     if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {
         // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.
@@ -5582,6 +5605,15 @@ bool AdiRootComponent::command(int id) {
         return browser.previewSelected();
     case AppCommands::HotSwap:
         return devices.hotSwapFocused();
+    case AppCommands::ToggleFavorite:
+    case AppCommands::ToggleCollectionRed:
+    case AppCommands::ToggleCollectionOrange:
+    case AppCommands::ToggleCollectionYellow:
+    case AppCommands::ToggleCollectionGreen:
+    case AppCommands::ToggleCollectionBlue:
+    case AppCommands::ToggleCollectionPurple:
+    case AppCommands::ToggleCollectionGray:
+        return browser.toggleSelectionMark(static_cast<unsigned>(id - AppCommands::ToggleFavorite));
     case AppCommands::TabMovesFocus: {
         std::string why;
         if (!commands_.setTabMovesFocus(!commands_.tabMovesFocus(), why))

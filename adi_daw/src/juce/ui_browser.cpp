@@ -4,6 +4,8 @@
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <unordered_set>
 namespace adi::ui {
 namespace {
@@ -14,6 +16,42 @@ enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, Pl
 constexpr auto kLastLabel = "browser.lastLabel";
 constexpr auto kAllLabel = "label:All";
 constexpr auto kFirstLabel = "label:Instruments";
+constexpr std::string_view kSampleMarkPrefix = "sample:";
+constexpr auto kFavoriteSlot = 0u;
+constexpr auto kFavoriteMarkSize = 5, kFavoriteMarkPitch = 7, kFavoriteMarkInset = 5;
+struct CollectionColour {
+    const char *name;
+    std::int64_t palette;
+};
+// Use ADI's existing palette until the Collections sheet is checked.
+constexpr std::array<CollectionColour, 7> kCollectionColours{{
+    CollectionColour{"Red", 2}, {"Orange", 4}, {"Yellow", 5}, {"Green", 7},
+    {"Blue", 11}, {"Purple", 13}, {"Gray", -1},
+}};
+juce::Colour collectionColour(std::size_t i) {
+    const auto palette = kCollectionColours[i].palette;
+    return palette >= 0 ? look::paletteColour(palette) : look::textDim;
+}
+int favoriteMarkWidth(unsigned marks) { return std::popcount(marks) * kFavoriteMarkPitch; }
+void paintFavoriteMarks(juce::Graphics &g, unsigned marks, int width, int height) {
+    if (marks == 0)
+        return;
+    int x = width - kFavoriteMarkInset;
+    const int y = (height - kFavoriteMarkSize) / 2;
+    if ((marks & (1u << kFavoriteSlot)) != 0) {
+        x -= kFavoriteMarkPitch;
+        g.setColour(look::favourite);
+        g.drawRect(x, y, kFavoriteMarkSize, kFavoriteMarkSize);
+    }
+    for (std::size_t i = 0; i < kCollectionColours.size(); ++i) {
+        if ((marks & (2u << i)) != 0) {
+            x -= kFavoriteMarkPitch;
+            g.setColour(collectionColour(i));
+            g.fillRect(x, y, kFavoriteMarkSize, kFavoriteMarkSize);
+        }
+    }
+}
+
 bool presetNameLess(const preset::Entry &a, const preset::Entry &b) {
     const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
     return order != 0 ? order < 0 : a.path < b.path;
@@ -120,7 +158,8 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
 BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
-    sidebar_ = {{"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
+    sidebar_ = {{"Collections", None, true}, {"Favorites", Favorite}, {{}, None, true},
+                {"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
                 {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx},
                 {"Pd Devices", Pd}, {"Plug-Ins", PlugIns}, {"Samples", Samples, false, true},
@@ -156,7 +195,14 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
     list.onPreviewKey = [this](const juce::KeyPress &k) { return previewKey(k); };
+    list.onFavoriteKey = [this](const juce::KeyPress &key) {
+        const auto command = root_.commands().manager.getKeyMappings()->findCommandForKeyPress(key);
+        return command >= AppCommands::ToggleFavorite && command <= AppCommands::ToggleCollectionGray &&
+               root_.command(command);
+    };
+
     addAndMakeVisible(list);
+    appendFavoritesToMenu = [this](juce::PopupMenu &menu, const Row &row) { appendContextFavorites(menu, row); };
     previewToggle.onClick = [this] { root_.command(AppCommands::ToggleBrowserPreview); };
     addChildComponent(previewToggle);
     selected_ = findLabel(kFirstLabel);
@@ -288,6 +334,8 @@ void BrowserPanel::selectedRowsChanged(int row) {
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
         lastSelected_ = row;
         updatePreviewSelection();
+        if (labelSettings_)
+            root_.commands().manager.commandStatusChanged();
         return;
     }
     // Past the heading, the way the selection moved; at the list's top, down to the first entry.
@@ -355,6 +403,7 @@ int BrowserPanel::findLabel(std::string_view key) const {
 }
 void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     labelSettings_ = &settings;
+    loadFavoriteMarks();
     const auto saved = settings.get(kLastLabel).get<std::string>();
     selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
     pendingLabel_.clear();
@@ -378,6 +427,7 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     const bool keepInView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
     // The old rows still borrow these sample and folder identities until the refill finishes.
     const auto priorLibrary = std::exchange(library_, std::move(library));
+    updateMarkedSamples();
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
     auto addFolder = std::move(sidebar_.back());
@@ -465,6 +515,139 @@ void BrowserPanel::appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folde
         rows_.push_back({file, nullptr, {}, nullptr, depth});
     }
 }
+bool BrowserPanel::favoritesShown() const noexcept {
+    return !hotSwap_ && selected_ >= 0 && sidebar_[static_cast<std::size_t>(selected_)].glyph == Favorite;
+}
+const BrowserPanel::Row *BrowserPanel::favoriteSelection() const noexcept {
+    const int index = list.getLastRowSelected();
+    if (!labelSettings_ || index < 0 || static_cast<std::size_t>(index) >= rows_.size())
+        return nullptr;
+    const auto &row = rows_[static_cast<std::size_t>(index)];
+    return row.file || row.device || row.plugin ? &row : nullptr;
+}
+bool BrowserPanel::canMarkSelection() const noexcept {
+    return favoriteSelection() != nullptr;
+}
+std::string BrowserPanel::favoriteKey(const Row &row) {
+    if (row.file)
+        return std::string(kSampleMarkPrefix) + media::pathUtf8(row.file->path);
+    if (row.device)
+        return "device:" + std::string(row.device->uid);
+    if (row.plugin) {
+        const auto &plugin = *row.plugin;
+        const auto shell = plugin.shellId ? settings::Value(*plugin.shellId) : settings::Value();
+        return "plugin:" + settings::Value::array({plugin.format, plugin.uid, shell}).dump();
+    }
+    return {};
+}
+unsigned BrowserPanel::favoriteMarks(const Row &row) const {
+    if (row.file) {
+        const auto found = sampleMarks_.find(row.file->path);
+        return found == sampleMarks_.end() ? 0u : found->second;
+    }
+    if (favoriteMarks_.empty())
+        return 0;
+    const auto found = favoriteMarks_.find(favoriteKey(row));
+    return found == favoriteMarks_.end() ? 0u : found->second;
+}
+void BrowserPanel::loadFavoriteMarks() {
+    favoriteMarks_.clear();
+    sampleMarks_.clear();
+    const auto snapshot = labelSettings_->get(settings::kBrowserFavoriteMarksKey);
+    for (const auto &[key, value] : snapshot.items()) {
+        const auto marks = value.get<unsigned>();
+        if (key.starts_with(kSampleMarkPrefix))
+            sampleMarks_.emplace(media::pathFromUtf8(key.substr(kSampleMarkPrefix.size())), marks);
+        else
+            favoriteMarks_.emplace(key, marks);
+    }
+    updateMarkedSamples();
+}
+void BrowserPanel::updateMarkedSamples() {
+    markedSamples_.clear();
+    if (sampleMarks_.empty())
+        return;
+    for (const auto &sample : listing().samples)
+        if (sampleMarks_.contains(sample.path))
+            markedSamples_.push_back(&sample);
+}
+bool BrowserPanel::toggleSelectionMark(unsigned slot) {
+    const auto *row = favoriteSelection();
+    return row && toggleFavoriteMark(favoriteKey(*row), slot);
+}
+bool BrowserPanel::toggleFavoriteMark(const std::string &identity, unsigned slot) {
+    if (!labelSettings_ || identity.empty() || slot > kCollectionColours.size())
+        return false;
+    auto snapshot = labelSettings_->get(settings::kBrowserFavoriteMarksKey);
+    const auto before = snapshot.value(identity, 0u);
+    const auto next = before ^ (1u << slot);
+    if (next == 0)
+        snapshot.erase(identity);
+    else
+        snapshot[identity] = next;
+    std::string error;
+    if (!labelSettings_->set(settings::kBrowserFavoriteMarksKey, snapshot, {}, error)) {
+        root_.say(std::move(error));
+        return true;
+    }
+    loadFavoriteMarks();
+    if (favoritesShown() && ((before == 0) != (next == 0)))
+        refill(-1, true);
+    else
+        list.repaint();
+    root_.commands().manager.commandStatusChanged();
+    if (!labelSettings_->save(error))
+        root_.say(std::move(error));
+    return true;
+}
+void BrowserPanel::appendContextFavorites(juce::PopupMenu &menu, const Row &row) {
+    if (!labelSettings_)
+        return;
+    const auto key = favoriteKey(row);
+    if (key.empty())
+        return;
+    const auto marks = favoriteMarks(row);
+    const auto toggle = [owner = SafePointer<BrowserPanel>(this), key](unsigned slot) {
+        if (owner)
+            owner->toggleFavoriteMark(key, slot);
+    };
+    const auto *keys = root_.commands().manager.getKeyMappings();
+    const auto add = [&](juce::PopupMenu &to, juce::PopupMenu::Item item, unsigned slot) {
+        const auto shortcuts = keys->getKeyPressesAssignedToCommand(AppCommands::ToggleFavorite + static_cast<int>(slot));
+        if (!shortcuts.isEmpty())
+            item.shortcutKeyDescription = shortcuts[0].getTextDescriptionWithIcons();
+        to.addItem(std::move(item).setAction([toggle, slot] { toggle(slot); }));
+    };
+    const bool favorite = (marks & (1u << kFavoriteSlot)) != 0;
+    add(menu, juce::PopupMenu::Item(favorite ? "Remove from Favorites" : "Add to Favorites"), kFavoriteSlot);
+    juce::PopupMenu colours;
+    for (std::size_t i = 0; i < kCollectionColours.size(); ++i) {
+        add(colours, juce::PopupMenu::Item(kCollectionColours[i].name)
+                         .setColour(collectionColour(i)).setTicked((marks & (2u << i)) != 0),
+            static_cast<unsigned>(i) + 1u);
+    }
+    menu.addSubMenu("Collection Colors", colours);
+}
+void BrowserPanel::refillFavorites(const LibraryQuery &query) {
+    rows_.clear();
+    for (const auto *sample : markedSamples_)
+        if (query.matches(sample->name)) {
+            shown_.push_back(sample);
+            rows_.push_back({sample, nullptr, {}});
+        }
+    if (favoriteMarks_.empty())
+        return;
+    for (const auto &device : builtinCatalog()) {
+        Row row{nullptr, &device, {}};
+        if (favoriteMarks(row) && query.matches(device.name))
+            rows_.push_back(row);
+    }
+    for (const auto &plugin : pluginScan_.listing.plugins) {
+        Row row{nullptr, nullptr, {}, &plugin};
+        if (favoriteMarks(row) && query.matches(plugin.name, plugin.vendor))
+            rows_.push_back(row);
+    }
+}
 namespace {
 const std::filesystem::path *browserRowPath(const BrowserPanel::Row &row) {
     if (row.file) return &row.file->path;
@@ -504,6 +687,41 @@ void BrowserPanel::refill(int selectRow, bool keepListPosition) {
             }
         }
     }
+    refillRows();
+    if (previous) {
+        juce::SparseSet<int> selected;
+        int primary = -1;
+        if (!previous->paths.empty() || !previous->catalogue.empty())
+            for (int row = 0; row < static_cast<int>(rows_.size()); ++row) {
+                const auto &item = rows_[static_cast<std::size_t>(row)];
+                const auto *path = browserRowPath(item);
+                const auto *catalogue = browserCatalogueRow(item);
+                if ((path && previous->paths.contains(*path)) || (catalogue && previous->catalogue.contains(catalogue))) {
+                    selected.addRange({row, row + 1});
+                    if ((path && previous->primaryPath && *path == *previous->primaryPath) ||
+                        (catalogue && catalogue == previous->primaryCatalogue))
+                        primary = row;
+                }
+            }
+        {
+            const juce::ScopedValueSetter restoring(restoringListSelection_, true);
+            list.updateContent();
+            if (primary >= 0) list.selectRow(primary, true);
+            list.setSelectedRows(selected, juce::dontSendNotification);
+            lastSelected_ = list.getLastRowSelected();
+        }
+        updatePreviewSelection();
+        list.getViewport()->setViewPosition(previous->scroll);
+    } else {
+        list.updateContent();
+        list.deselectAllRows();
+        lastSelected_ = -1;
+        if (selectRow >= 0)
+            list.selectRow(selectRow);
+    }
+    list.repaint();
+}
+void BrowserPanel::refillRows() {
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
@@ -514,6 +732,10 @@ void BrowserPanel::refill(int selectRow, bool keepListPosition) {
     using Role = ::adi::detail::DeviceRole;
     const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
     const LibraryQuery query{search.getText().toStdString()};
+    if (favoritesShown()) {
+        refillFavorites(query);
+        return;
+    }
     // Keep the typed results separate from how a panel groups them for display.
     const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
     const bool browsePlace = !samples && query.empty() && !chosen.place.empty();
@@ -654,38 +876,6 @@ void BrowserPanel::refill(int selectRow, bool keepListPosition) {
             rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
-    if (previous) {
-        juce::SparseSet<int> selected;
-        int primary = -1;
-        if (!previous->paths.empty() || !previous->catalogue.empty())
-            for (int row = 0; row < static_cast<int>(rows_.size()); ++row) {
-                const auto &item = rows_[static_cast<std::size_t>(row)];
-                const auto *path = browserRowPath(item);
-                const auto *catalogue = browserCatalogueRow(item);
-                if ((path && previous->paths.contains(*path)) || (catalogue && previous->catalogue.contains(catalogue))) {
-                    selected.addRange({row, row + 1});
-                    if ((path && previous->primaryPath && *path == *previous->primaryPath) ||
-                        (catalogue && catalogue == previous->primaryCatalogue))
-                        primary = row;
-                }
-            }
-        {
-            const juce::ScopedValueSetter restoring(restoringListSelection_, true);
-            list.updateContent();
-            if (primary >= 0) list.selectRow(primary, true);
-            list.setSelectedRows(selected, juce::dontSendNotification);
-            lastSelected_ = list.getLastRowSelected();
-        }
-        updatePreviewSelection();
-        list.getViewport()->setViewPosition(previous->scroll);
-    } else {
-        list.updateContent();
-        list.deselectAllRows();
-        lastSelected_ = -1;
-        if (selectRow >= 0)
-            list.selectRow(selectRow);
-    }
-    list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 juce::String BrowserPanel::getNameForRow(int row) {
@@ -756,8 +946,11 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         const bool canLoad = hotSwap_ ? bool(swapChoice) : bool(root_.loadPlugin);
         g.setColour(canLoad ? look::text : look::textDim);
         g.setFont(look::font(look::fontHeading));
-        g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0, width - 28 - in, height,
+        const auto marks = favoriteMarks(r);
+        g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0,
+                   std::max(0, width - 28 - in - favoriteMarkWidth(marks)), height,
                    juce::Justification::centredLeft, true);
+        paintFavoriteMarks(g, marks, width, height);
         return;
     }
     const bool device = r.device != nullptr;
@@ -768,7 +961,10 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
     g.setFont(look::font(look::fontHeading));
     const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
-    g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
+    const auto marks = favoriteMarks(r);
+    g.drawText(name, 24 + indent, 0, std::max(0, width - 28 - indent - favoriteMarkWidth(marks)), height,
+               juce::Justification::centredLeft, true);
+    paintFavoriteMarks(g, marks, width, height);
 }
 juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
     if (hotSwap_)
@@ -843,7 +1039,9 @@ bool BrowserPanel::pluginsShown() const {
     if (selected_ < 0 || selected_ >= static_cast<int>(sidebar_.size()))
         return false;
     const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
-    return glyph == PlugIns || glyph == All;
+    const auto firstPlugin = favoriteMarks_.lower_bound("plugin:");
+    return glyph == PlugIns || glyph == All ||
+           (glyph == Favorite && firstPlugin != favoriteMarks_.end() && firstPlugin->first.starts_with("plugin:"));
 }
 void BrowserPanel::startSearchPluginScan() {
     if (!hotSwap_ && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted && pluginsShown())
@@ -865,7 +1063,7 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     if (!(hotSwap_ ? !hotSwap_->samples : pluginsShown()))
         return;
     if (countOnly) {
-        if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
+        if (!favoritesShown() && !rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
             rows_.front().heading = juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str());
             list.repaint();
         }
@@ -1361,7 +1559,7 @@ void BrowserPanel::choose(int i) {
                 return;
             }
         }
-        if (entry.glyph == All || entry.glyph == Sounds)
+        if (entry.glyph == All || entry.glyph == Sounds || entry.glyph == Favorite)
             return;
         const bool library = entry.samples || entry.glyph == User || entry.glyph == Drums;
         if (!entry.place.empty()) {

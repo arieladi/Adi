@@ -189,7 +189,15 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleBrowserPreview,
         PreviewSelected,
         HotSwap,
-        LastId = HotSwap
+        ToggleFavorite,
+        ToggleCollectionRed,
+        ToggleCollectionOrange,
+        ToggleCollectionYellow,
+        ToggleCollectionGreen,
+        ToggleCollectionBlue,
+        ToggleCollectionPurple,
+        ToggleCollectionGray,
+        LastId = ToggleCollectionGray
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

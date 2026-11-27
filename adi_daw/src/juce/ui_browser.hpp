@@ -28,11 +28,14 @@ class BrowserList final : public juce::ListBox {
     std::function<void()> onLeft;
     std::function<bool()> onEscape;
     std::function<bool(const juce::KeyPress &)> onPreviewKey;
+    std::function<bool(const juce::KeyPress &)> onFavoriteKey;
     bool keyPressed(const juce::KeyPress &k) override {
         if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
             return true;
         if ((k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) && onFolderArrow &&
             onFolderArrow(getSelectedRow(), k == juce::KeyPress::rightKey))
+            return true;
+        if (onFavoriteKey && onFavoriteKey(k))
             return true;
         if (onPreviewKey && onPreviewKey(k))
             return true;
@@ -146,6 +149,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     };
     std::function<void(juce::PopupMenu &, const Row &)> appendFavoritesToMenu;
     const std::vector<Row> &rows() const noexcept { return rows_; }
+    bool canMarkSelection() const noexcept;
+    bool toggleSelectionMark(unsigned slot);
+
     // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
     bool load(int row);
     void setDevicePresets(std::vector<preset::Entry>);
@@ -214,6 +220,18 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
     void refill(int selectRow = -1, bool keepListPosition = false);
+    void refillRows();
+    // The rows are borrowed only while constructing a menu. Actions own the identity.
+    void appendContextFavorites(juce::PopupMenu &, const Row &);
+    void refillFavorites(const LibraryQuery &);
+    void loadFavoriteMarks();
+    void updateMarkedSamples();
+    bool favoritesShown() const noexcept;
+    const Row *favoriteSelection() const noexcept;
+    static std::string favoriteKey(const Row &);
+    unsigned favoriteMarks(const Row &) const;
+    bool toggleFavoriteMark(const std::string &identity, unsigned slot);
+
     void appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder>, std::size_t folder, int depth,
                          const std::set<std::filesystem::path> &open);
     bool folderArrow(int row, bool right);
@@ -240,6 +258,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool restoringListSelection_ = false;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
+    std::map<std::string, unsigned, std::less<>> favoriteMarks_;
+    std::map<std::filesystem::path, unsigned> sampleMarks_;
+    std::vector<const LibraryFile *> markedSamples_;
+
     std::optional<HotSwapFilter> hotSwap_;
     juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;

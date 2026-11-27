@@ -6772,9 +6772,10 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
             labels.add(entry.name);
         return labels;
     };
-    const juce::StringArray roster{"Categories", "All", "Sounds", "Drums", "Instruments", "Audio Effects", "Pd Devices",
-                                   "Plug-Ins", "Samples", "", "Places", "User Library", "Add Folder..."};
-    check(names() == roster, "SC-127: the empty Browser has the ordered built roster and no empty Collections group");
+    const juce::StringArray roster{"Collections", "Favorites", "", "Categories", "All", "Sounds", "Drums", "Instruments",
+                                   "Audio Effects", "Pd Devices", "Plug-Ins", "Samples", "", "Places", "User Library",
+                                   "Add Folder..."};
+    check(names() == roster, "SC-127: the empty Browser has the ordered roster of built labels");
     const juce::Rectangle<int> first(4, 28, 113, 19);
     const int lastRow = roster.size() - 1;
     check(browser.sidebarRowBounds(0) == first &&
@@ -6785,7 +6786,7 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
     const auto currentLabel = [&] {
         return browser.selected() < 0 ? juce::String{} : browser.sidebar()[static_cast<std::size_t>(browser.selected())].name;
     };
-    for (const auto *hidden : {"Favorites", "Current Project", "MIDI Effects", "Grooves", "AI"}) {
+    for (const auto *hidden : {"Current Project", "MIDI Effects", "Grooves", "AI"}) {
         check(prefs.set("browser.lastLabel", "label:" + std::string(hidden), {}, error),
               "SC-127: an old hidden label can still be read from settings");
         browser.restoreLabel(prefs);
@@ -6886,7 +6887,7 @@ void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir
     const auto &sidebar = browser.sidebar();
     const auto drumsRow = std::ranges::find(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name);
     const int drums = static_cast<int>(drumsRow - sidebar.begin());
-    check(drums == 3 && browser.sidebarRowBounds(drums) == juce::Rectangle<int>(4, 85, 113, 19) &&
+    check(drums == 6 && browser.sidebarRowBounds(drums) == juce::Rectangle<int>(4, 142, 113, 19) &&
               browser.list.getBounds() == juce::Rectangle<int>(119, 46, 185, 393) &&
               browser.list.getRowHeight() == 19 &&
               std::ranges::count(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name) == 2 &&
@@ -6921,6 +6922,139 @@ void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir
     const auto popup = juce::ModifierKeys::rightButtonModifier;
     browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(drums).getCentre().toFloat(), popup));
     check(removeMenus == 0, "SC-128: Drums never offers Remove from Places");
+}
+
+void browserFavorites(const std::filesystem::path &dir) {
+    const auto settingsFile = dir / "browser-favorites-settings.json";
+    settings::AppSettings prefs(appdata::App::Daw, settingsFile);
+    AppCommands commands(prefs);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-favorites.adi", true, {}, error);
+    check(document != nullptr, "SC-133: a project for Browser Favorites");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-favorites");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    browser.restoreLabel(prefs);
+    const auto a = dir / "Pack A" / "Pulse.wav", b = dir / "Pack B" / "Pulse.wav";
+    LibraryListing files;
+    files.samples = {{"Pulse.wav", a, "pack-a"}, {"Pulse.wav", b, "pack-b"}};
+    browser.setListing(files);
+    const auto choose = [](BrowserPanel &panel, const char *name) {
+        const auto found = std::ranges::find(panel.sidebar(), juce::String(name), &BrowserPanel::Entry::name);
+        if (found == panel.sidebar().end())
+            return false;
+        panel.choose(static_cast<int>(found - panel.sidebar().begin()));
+        return true;
+    };
+    const auto select = [](BrowserPanel &panel, auto match) {
+        const auto found = std::ranges::find_if(panel.rows(), match);
+        if (found == panel.rows().end())
+            return false;
+        panel.list.selectRow(static_cast<int>(found - panel.rows().begin()));
+        return true;
+    };
+    check(choose(browser, "Favorites") && browser.rows().empty() &&
+              browser.sidebarRowBounds(browser.selected()) == juce::Rectangle<int>(4, 47, 113, 19),
+          "SC-133: the built Favorites label is visible before any item is marked");
+    check(choose(browser, "Samples") && browser.rows().size() == 2,
+          "SC-133: two independent paths share the same display name");
+    if (browser.rows().size() != 2)
+        return;
+    juce::PopupMenu menu;
+    browser.onContextMenu = [&](juce::PopupMenu requested, juce::Point<int>) { menu = std::move(requested); };
+    browser.list.getListBoxModel()->listBoxItemClicked(0, pressAt(browser.list, {12.f, 9.f},
+                                                               juce::ModifierKeys::rightButtonModifier));
+    std::function<void()> addFavorite;
+    int colours = 0;
+    for (juce::PopupMenu::MenuItemIterator item(menu); item.next();) {
+        const auto &entry = item.getItem();
+        if (entry.text == "Add to Favorites")
+            addFavorite = entry.action;
+        if (entry.text == "Collection Colors" && entry.subMenu)
+            colours = entry.subMenu->getNumItems();
+    }
+    check(addFavorite && colours == 7, "SC-133: a result's menu offers Favorite and seven collection actions");
+    if (!addFavorite)
+        return;
+    // Replacing the library invalidates the borrowed Row, and reorders the names.
+    std::swap(files.samples[0], files.samples[1]);
+    browser.setListing(files);
+    browser.list.selectRow(0);
+    addFavorite();
+    check(choose(browser, "Favorites") && browser.rows().size() == 1 && browser.rows()[0].file &&
+              browser.rows()[0].file->path == a,
+          "SC-133: a delayed menu action marks the original path through a rescan");
+    if (browser.rows().size() != 1)
+        return;
+    browser.list.selectRow(0);
+    const auto one = juce::KeyPress('1');
+    check(!commands.key(one, root) && browser.list.keyPressed(one) && AppCommands::commandFor("browser.toggle-collection-red") ==
+              AppCommands::ToggleCollectionRed,
+          "SC-133: the list's numeric key toggles a collection, while the Arrangement's key does not");
+    juce::Image image(juce::Image::ARGB, 113, 19, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        browser.list.getListBoxModel()->paintListBoxItem(0, g, 113, 19, false);
+    }
+    check(image.getPixelAt(101, 7) == look::favourite && image.getPixelAt(94, 7) == look::paletteColour(2),
+          "SC-133: outlined Favorite and Red marks draw in separate 5 x 5 slots");
+    check(root.command(AppCommands::ToggleFavorite) && browser.rows().size() == 1,
+          "SC-133: removing Favorite leaves the independently marked collection row visible");
+
+    const auto command = AppCommands::ToggleCollectionPurple;
+    auto *keys = commands.manager.getKeyMappings();
+    const auto rebound = juce::KeyPress(juce::KeyPress::F10Key);
+    keys->clearAllKeyPresses(command);
+    keys->addKeyPress(command, rebound);
+    check(choose(browser, "Instruments") && select(browser, [](const auto &row) { return row.device != nullptr; }),
+          "SC-133: a built-in device can be selected");
+    const int selected = browser.list.getLastRowSelected();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= browser.rows().size() ||
+        !browser.rows()[static_cast<std::size_t>(selected)].device)
+        return;
+    const std::string deviceUid(browser.rows()[static_cast<std::size_t>(selected)].device->uid);
+    check(!browser.list.keyPressed(juce::KeyPress('6')) && browser.list.keyPressed(rebound),
+          "SC-133: a rebound collection shortcut marks the selected built-in");
+    PluginScan scan;
+    scan.phase = PluginScan::Phase::Done;
+    scan.listing.plugins = {{"clap", "sc133.plugin", "Original", "Test Vendor", "1", "original.clap",
+                            PluginEntry::Kind::Effect},
+                           {"vst3", "sc133.plugin", "Unmarked", "Test Vendor", "1", "other.vst3",
+                            PluginEntry::Kind::Effect}};
+    browser.setPluginScan(scan);
+    check(choose(browser, "Plug-Ins") && select(browser, [](const auto &row) {
+              return row.plugin && row.plugin->format == "clap";
+          }) && browser.list.keyPressed(juce::KeyPress('7')),
+          "SC-133: a plug-in can be marked independently of a matching UID in another format");
+    check(choose(browser, "Favorites") && browser.rows().size() == 3 && !History(document->store()).head(),
+          "SC-133: only marked sample, built-in and plug-in are listed, without project history edits");
+    browser.search.setText("test vendor", false);
+    browser.search.onTextChange();
+    check(browser.rows().size() == 1 && browser.rows()[0].plugin && browser.rows()[0].plugin->format == "clap",
+          "SC-133: Favorites search respects normal multiword plug-in matching");
+
+    settings::AppSettings reopened(appdata::App::Daw, settingsFile);
+    AppCommands reopenedCommands(reopened);
+    AdiRootComponent reopenedRoot(document->view(), document->ops(), document->mailbox(), reopenedCommands,
+                                  document->views(), document->sessionState(), "browser-favorites-reopened");
+    auto &restored = reopenedRoot.browser;
+    restored.restoreLabel(reopened);
+    restored.setListing(files);
+    scan.listing.plugins[0].name = "Renamed";
+    scan.listing.plugins[0].path = "moved.clap";
+    restored.setPluginScan(scan);
+    const auto &rows = restored.rows();
+    const bool restoredAll = rows.size() == 3 && rows[0].file && rows[0].file->path == a && rows[1].device &&
+                             rows[1].device->uid == deviceUid && rows[2].plugin && rows[2].plugin->name == "Renamed";
+    check(restoredAll, "SC-133: reopening retains the list and marks across scan metadata changes");
+    if (restoredAll) {
+        restored.list.selectRow(0);
+        check(restored.list.keyPressed(one) && restored.rows().size() == 2,
+              "SC-133: toggling the last color off removes that row from Favorites");
+    }
 }
 void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -24988,10 +25122,11 @@ int main(int argc, char **argv) {
             const auto nextPlace = labels[static_cast<std::size_t>(browserPanel.selected())].name;
             browserKeys.keyPressed(up);
             const int back = browserPanel.selected();
-            browserPanel.choose(1); // All, the first visible label below the Categories heading.
+            const auto all = std::ranges::find(labels, juce::String("All"), &BrowserPanel::Entry::name);
+            browserPanel.choose(static_cast<int>(all - labels.begin()));
             browserKeys.keyPressed(up);
-            check(samples != labels.end() && nextPlace == "User Library" &&
-                      back == sampleIndex && browserPanel.selected() == 1 && labels[1].name == "All",
+            check(samples != labels.end() && nextPlace == "User Library" && back == sampleIndex &&
+                      browserPanel.selected() >= 0 && labels[static_cast<std::size_t>(browserPanel.selected())].name == "Favorites",
                   "the arrows move between the sidebar's labels, past the headings");
             integrated.command(AppCommands::ToggleDeviceView);
             check(!integrated.state().docked && integrated.command(AppCommands::FocusDeviceView) &&
@@ -26330,6 +26465,7 @@ int main(int argc, char **argv) {
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
     trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
+    trace("browserFavorites", [&] { browserFavorites(temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
