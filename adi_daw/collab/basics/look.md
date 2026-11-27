@@ -19,6 +19,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-71 | `basics/look-chain` at `d8e80eed` | Follow zoom below a quarter note in the Arrangement and Note Editor. Window seat. | The independent Debug shell also passed all 3,536 checks. The test covers grid positions, ticks and Note Editor gestures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-12 | `basics/look-chain` at `9a1e6c59` | Dimming and specific Info reasons for eleven unavailable controls. Enabled controls retain their actual actions. Window seat. | Peerless checks covered disabled hit regions, help, active punch and metronome controls, and the Unicode quantization placeholder. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-38 | `basics/look-chain` at `458cc4a8` | Preview sample and device drop positions in Arrangement, Mixer and Device View. Window seat. | Software-pixel probes and the existing drop assertions verified the previews and final targets. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-74 | `basics/look-chain` at `43febaaf` | Insert or edit a step tempo change from the beat ruler and draw tempo changes along it. Window seat. | Peerless menu, inline editor, persistence of event fields and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -162,6 +163,10 @@ Draw Mode, CPU measurement, Punch In and Out, and both parts of the Metronome st
 ### SC-38
 
 Previously there was no position preview. In the 1200 × 720 Compact fixture at 48 px per quarter, a sample hovering at x=195 in the first audio lane now shows the bar-2 marker `(192, 0, 2, 88)` in canvas-local pixels. Over the track-name receiver the marker follows the existing insert, x=72 in the same fixture. Device drops in the Arrangement and Mixer outline the receiving lane or strip with a 2 px stroke. In Device View the chain insertion marker is 2 px wide, at x=3 in an empty strip or x=right edge of the neighbour + 4 at append, with y=4 and height=strip height minus 8. An existing OneShot slot up to 90 × 84 px takes a 2 px accent border.
+
+### SC-74
+
+At 60 px per quarter with left edge at bar 1, the beat ruler is 29 px high and bar 2 is local x=240. Before there was no tempo affordance at that position. A committed tempo change now places a `(240, 19, 1, 8)` marker and a label up to `(244, 17, 64, 12)`. The inline BPM editor is `(240, 0, 64, 29)`. The beat-ruler menu and undo test use an in-process menu seam. Replacing an existing event preserves the ID, curve and tension.
 
 ## For the director
 
