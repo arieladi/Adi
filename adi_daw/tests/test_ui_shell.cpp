@@ -13081,7 +13081,7 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(panel.details() && panel.details()->loopStartTicks == 4 * beat &&
               panel.details()->loopLengthTicks == beat,
           "moving the warped loop brace keeps its length");
-    const juce::Point<float> point{x(beat), static_cast<float>(y + 5)};
+    const juce::Point<float> point{x(beat), static_cast<float>(edit.waveArea().getY() + 5)};
     edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
     edit.mouseUp(pressAt(edit, point));
     check(panel.setFieldHere(Field::Start), "Set Start takes the point picked in the waveform");
