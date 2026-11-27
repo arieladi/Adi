@@ -10,6 +10,14 @@ SC-159 is ready for Win's Windows check. SC-157 is in progress.
 - Under software emulation the changeset preview exceeded 60 seconds with the original Store (103 s) and with the fix (109 s). The acceptance retry used a 90-minute local timeout for built-in realtime, which passed in 53 minutes.
 - The published revision was tested on `main` at `de2a5b99`. While validation ran, the landing stack at `9dc43173` changed the neighboring warning hooks in `project_document.cpp` and `ui_main.cpp`; a dry merge identified conflicts there.
 
+## Build storage
+
+The safety session's dedicated Linux VM runs from `D:\adi-basics-safety-linux\ubuntu.img`.
+It occupied 15,741,485,056 bytes (14.66 GiB) at the check. The original C: image
+path is clear and the verified pre-migration image is archived on D:. C: had
+17,119,453,184 bytes (15.94 GiB) free at 18:17 on 27 November. New build
+trees, caches and downloads use D:.
+
 ## For the director
 
 Should SC-157 replace the Take Snapshot trigger in ADR-0255 d6(e) and ADR-0213 d4?
