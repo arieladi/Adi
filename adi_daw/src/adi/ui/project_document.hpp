@@ -270,7 +270,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // the file switches. False when the recorder's worker did not finish in ten seconds.
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
-    bool capturingAudioTake() const noexcept { return recordingAudio_; }
+    bool capturingAudioTake() const noexcept { return recording_ && recordingAudio_; }
     bool landingTake() const noexcept { return landing_; }
     std::span<const LiveMidiTake> liveMidiTakes() const noexcept;
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and

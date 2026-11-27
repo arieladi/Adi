@@ -44,9 +44,17 @@
 #include <span>
 #include <type_traits>
 #include <variant>
+namespace adi::automation {
+struct NativeSpliceKnot;
+}
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
+
+struct AdditionalAutomationLane {
+    AutomationTarget target;
+    int height = 0;
+};
 class ProjectDocument;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
@@ -200,7 +208,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleCollectionPurple,
         ToggleCollectionGray,
         ReverseAudio,      // Reverse Clip(s) in the Arrangement, R (manual 6.9)
-        LastId = ReverseAudio
+        LockEnvelopes,
+        LastId = LockEnvelopes
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -242,6 +251,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Delay is unavailable, its stored values kept. An application setting, not an undo step.
     bool delayCompensation() const noexcept { return delayCompensation_; }
     bool setDelayCompensation(bool on, std::string &why);
+    // Lock Envelopes inverts the app's Automation follows clips setting.
+    bool envelopesLocked() const noexcept { return envelopesLocked_; }
+    bool setEnvelopesLocked(bool locked, std::string &why);
+    std::function<void()> onEnvelopeLockChanged;
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -334,6 +347,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
     bool delayCompensation_ = true;
+    bool envelopesLocked_ = false;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
@@ -916,6 +930,17 @@ class AdiRootComponent final : public juce::Component,
     bool drawMode() const noexcept { return clipView.notes.drawMode(); }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue = false);
+    bool addAutomationPoint(std::int64_t track, const AutomationTarget &, std::int64_t tick, double value,
+                            bool exactValue = false);
+    const std::vector<AdditionalAutomationLane> &additionalAutomationLanes(std::int64_t track) const;
+    bool automationLanesExpanded(std::int64_t track) const;
+    bool automationOverlayShown(std::int64_t track) const;
+    bool addAutomationLane(std::int64_t track, const AutomationTarget &);
+    bool addAutomatedLanes(std::int64_t track);
+    bool removeAutomationLane(std::int64_t track, const AutomationTarget &);
+    void toggleAutomationLanes(std::int64_t track);
+    void hideAutomationOverlay(std::int64_t track);
+    bool automationTargetShown(std::int64_t track, const AutomationTarget &) const;
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.
@@ -936,7 +961,15 @@ class AdiRootComponent final : public juce::Component,
     double automationCurrent(const AutomationTarget &target) const;
     // For a typed value, tick is the point's expected, unchanged native time.
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value, bool exactValue = false);
+    bool moveAutomationPoint(std::int64_t track, const AutomationTarget &, std::uint64_t point, std::int64_t tick,
+                             double value, bool exactValue = false);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
+    bool deleteAutomationPoint(std::int64_t track, const AutomationTarget &, std::uint64_t point);
+    bool submitAutomationMove(std::vector<OpRequest> requests, std::span<const TrackEnvelope> envelopes);
+    bool replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
+                                std::span<const automation::NativeSpliceKnot>, const char *label);
+    bool simplifyAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end, double tolerance);
+    bool transformAutomationRange(std::int64_t lane, const edit::AutomationTransform &, const char *label);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                               std::int64_t begin, std::int64_t end,
                               const std::map<std::int64_t, double> &points, bool stepped,
@@ -1127,7 +1160,13 @@ class AdiRootComponent final : public juce::Component,
     std::optional<int> computerMidiToggleKey_;
     void globalFocusChanged(juce::Component *) override;
     bool automationMode_ = false;
-    std::map<std::int64_t, AutomationTarget> automationTargets_;
+    // Descriptor metadata for a selection whose device panel is hidden.
+    mutable std::map<std::int64_t, AutomationTarget> automationTargets_;
+    std::map<std::int64_t, std::vector<AdditionalAutomationLane>> additionalAutomationLanes_;
+    std::shared_ptr<const engine::Snapshot> automationLaneSnapshot_;
+    std::shared_ptr<const ParameterPublication> automationLanePublication_;
+    void refreshAdditionalAutomationLanes();
+    void layoutAdditionalAutomationLanes();
     bool infoShown_ = true;
     bool infoPressed_ = false;
     DensityId appliedDensity_ = DensityId::Compact;

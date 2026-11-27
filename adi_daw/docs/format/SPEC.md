@@ -613,8 +613,12 @@ zero (`"0"` allowed), at most `4294967295`. Writers MUST write the canonical
 form; a reader plays a numeric non-canonical ref (such as `"001"`) as its
 numeric value and reports it. The reference runtime plays `normalized` device
 lanes today. A `real` device lane is kept and reported until the plug-in's
-mapping is available to the engine. A track lane's `param_ref` is a strip
-parameter (§6.9).
+mapping is available to the engine. The reserved device reference `enabled`
+names the host Device Activator in the `enum` domain (0 Off, 1 On). This
+reference belongs to the device row and has no native parameter ID. Playback
+holds the latest state, defaults to `devices.enabled` without authored data,
+and uses host bypass without changing the stored device row. A track lane's
+`param_ref` is a strip parameter (§6.9).
 
 ### 6.4 Audio clips and warping
 

@@ -1694,8 +1694,9 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
-    if(op=="device.remove" || op=="device.setEnabled") {
-        const auto id=r.payload.value("id",std::int64_t{});
+    const bool activator = op == "device.setEnabled";
+    const auto id = activator || op == "device.remove" ? r.payload.value("id", std::int64_t{}) : 0;
+    if (id != 0) {
         const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
             [id](const auto& device){return device.id==id;});
         const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
@@ -1705,8 +1706,15 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
+    // The requested played value can equal the saved switch. In that case the
+    // durable operation succeeds but refresh sees no manual baseline change.
+    const bool followed = !activator || session_.overrideDeviceActivator(id);
+    if (activator)
+        followOverrides();
     feed_.publish(session_, realisedGeneration_);
-    return true;
+    if (!followed)
+        error_ = session_.error();
+    return followed;
 }
 namespace {
 bool readClipboardDevice(Store &store, std::int64_t id, DeviceCopy &out, std::string &error) {
@@ -3301,7 +3309,8 @@ bool ProjectDocument::mixerDrag(double coordinate) {
     }
     if (realised && committed == view_.committedGeneration())
         realisedGeneration_ = view_.generation();
-    if(updated.preview)recordMixerValues(updated.preview->requests());
+    if (updated.preview)
+        recordMixerValues(updated.preview->requests());
     error_.clear();
     return true;
 }
@@ -3406,6 +3415,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             error_ = "Transport command queue is full";
             return false;
         }
+        captureReady_.store(false, std::memory_order_release);
         recording_ = true;
         session_.setAutomationWriteState(true, true);
         session_.setRecordingForDevices(true);
@@ -3431,7 +3441,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             error_ = "Loop recording supports audio tracks. Disarm MIDI tracks or turn off the loop.";
             return false;
         }
-        if (!session_.configureArrangementLoopRecording(spec, error_))
+        if (!armed.audio.empty() && !session_.configureArrangementLoopRecording(spec, error_))
             return false;
     }
     if (!playing && !mailbox_.hasRoom()) {
@@ -3550,10 +3560,10 @@ void ProjectDocument::stopRecording() {
         session_.recording().stop();
     if (midiRecording_)
         session_.midiInputCapture().stop();
+    landing_ = recordingAudio_ || static_cast<bool>(midiRecording_);
     recording_ = false;
-    session_.setRecordingForDevices(false);
-    landing_ = recordingAudio_ || midiRecording_ != nullptr;
     session_.setAutomationWriteState(automationArmed(), false);
+    session_.setRecordingForDevices(false);
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
     const auto *midi = midiRecording_.get();
@@ -3630,6 +3640,7 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
     if (midiDone && audioDone) {
         captureReady_.store(false, std::memory_order_release);
         recording_ = false;
+        session_.setAutomationWriteState(automationArmed(), false);
         session_.setRecordingForDevices(false);
         landTake();
     }

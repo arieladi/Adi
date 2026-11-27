@@ -149,3 +149,4 @@
 29076 Toggle Purple Collection: 6
 29077 Toggle Gray Collection: 7
 29078 Reverse Clip(s): R
+29079 Lock Envelopes: 

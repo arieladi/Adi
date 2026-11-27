@@ -13,6 +13,7 @@
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
@@ -22,6 +23,7 @@
 #include "adi/transport_settings.hpp"
 #include "adi/warp_commands.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/export_interruption.hpp"
 #include "adi/ui/plugin_state_quit.hpp"
@@ -967,13 +969,8 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0 && lanes.heightFor(1) == mainHeight,
               "Alt+U unfolds Main as well as every group");
     }
-    // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
-    // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
+    // On the bar over the names: Automation Mode switches on and off (AU-01).
     {
-        root.say({});
-        root.namesBar.lock.onClick();
-        check(root.error().rfind("Lock Envelopes waits for the engine's automation", 0) == 0,
-              "a click on Lock Envelopes says what it waits for");
         root.namesBar.automation.onClick();
         check(root.automationMode(), "a click on Automation Mode turns it on");
         root.namesBar.automation.onClick();
@@ -13414,6 +13411,32 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
           "SC-253: Insert Take Lane adds a visible empty row through the peerless header menu");
     check(headers.keyPressed(show) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
           "SC-253: Hide Take Lanes restores the normal track layout");
+
+    root.setAutomationMode(true);
+    const auto pan = panTarget(1);
+    const bool hasPanLane = root.addAutomationPoint(1, pan, bar / 4, .25, true) && root.addAutomationLane(1, pan);
+    geo.selection.track = 1;
+    const bool takesReopened = headers.keyPressed(show);
+    root.frame();
+    const auto trackTop = geo.rowTop(root.reader(), 1);
+    const auto automationHeight = geo.stackHeightFor(1) - geo.heightFor(1);
+    const auto automationY = trackTop + geo.heightFor(1) + 5;
+    const auto takeY = automationY + automationHeight;
+    const auto shiftedTake = geo.takeLaneAt(root.reader(), takeY);
+    const auto *takeTrack = root.reader().findTrack(1);
+    check(hasPanLane && takesReopened && automationHeight > 5 &&
+              !geo.takeLaneAt(root.reader(), automationY) &&
+              shiftedTake && takeTrack && !takeTrack->takeLanes.empty() &&
+              shiftedTake->track->id == 1 && shiftedTake->lane->id == takeTrack->takeLanes.front().id &&
+              geo.rowTop(root.reader(), 2) == rowWithoutTakes + automationHeight + 3 * ArrangementGeometry::takeLaneHeight,
+          "SC-339/253: separate automation shifts the takes and the following track without becoming a take hit");
+    if (shiftedTake) {
+        const auto lane = shiftedTake->lane->id;
+        const auto calls = auditions.size();
+        click(headers, 7, takeY);
+        check(auditions.size() == calls + 1 && auditions.back() == std::pair<std::int64_t, std::int64_t>{1, lane},
+              "SC-339/253: the shifted take header auditions the lane below automation");
+    }
 }
 
 void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
@@ -20886,9 +20909,8 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
           "the next Undo takes the return and its sends away together");
     document->release();
 }
-// AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
-// lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
-// Delete removes one; each one undo step.
+// AU-01: Automation Mode in the Arrangement. Click the line to add a breakpoint and click an existing
+// breakpoint to delete it. A drag moves the point, and Alt-click selects it at the insertion marker.
 void automationParameterDemand(AppCommands &commands, const std::filesystem::path &dir) {
     constexpr int firstTrack = 20, firstDevice = 100, count = 20;
     constexpr int lastTrack = firstTrack + count - 1;
@@ -21251,25 +21273,48 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
     check(root.command(AppCommands::Redo), "and Redo moves it again");
     root.frame();
-    // A double-click on it deletes it.
-    const auto moved = canvas.automationPointAt(
-        {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)});
-    check(moved.has_value(), "the moved breakpoint is found where it is drawn now");
-    if (moved) {
-        canvas.mouseDoubleClick(pressAt(canvas, {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)}));
+    const juce::Point<float> movedAt{twoBars, audio->bottom -
+        static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)};
+    if (const auto moved = canvas.automationPointAt(movedAt)) {
+        const auto beforeDelete = OpJournal(document->store()).headSeq();
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        const auto press = pressAt(canvas, movedAt, left);
+        canvas.mouseDown(press);
+        check(laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
+                  OpJournal(document->store()).headSeq() == beforeDelete,
+              "pressing a breakpoint waits to distinguish a click from a drag");
+        canvas.mouseUp(press);
         root.frame();
         check(laneOf().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation Point",
-              "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
-    }
-    // Chosen, Delete takes it away.
+              "one plain click deletes the last breakpoint and its lane");
+        const auto deleted = OpJournal(document->store()).headSeq();
+        const auto second = juce::MouseEvent{press.source, movedAt, left, 1.f, 0.f, 0.f, 0.f, 0.f, &canvas, &canvas,
+            press.eventTime, movedAt, press.eventTime, 2, false};
+        canvas.mouseDown(second);
+        canvas.mouseUp(second);
+        canvas.mouseDoubleClick(second);
+        root.frame();
+        check(deleted > beforeDelete && OpJournal(document->store()).headSeq() == deleted && laneOf().lane == nullptr,
+              "the second click in that JUCE sequence cannot add or remove a point");
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeDelete &&
+                  canvas.automationPointAt(movedAt).has_value(),
+              "one Undo restores the clicked breakpoint");
+        check(root.command(AppCommands::Redo) && laneOf().lane == nullptr, "Redo removes the breakpoint again");
+    } else
+        check(false, "the moved breakpoint is found where it is drawn now");
+
     canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, lineY}));
     root.frame();
-    canvas.mouseDown(pressAt(canvas, {barX, lineY}));
-    canvas.mouseUp(pressAt(canvas, {barX, lineY}));
-    check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
+    const auto beforeSelect = OpJournal(document->store()).headSeq();
+    const juce::ModifierKeys select(juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier);
+    canvas.mouseDown(pressAt(canvas, {barX, lineY}, select));
+    canvas.mouseUp(pressAt(canvas, {barX, lineY}, select));
+    check(canvas.chosenAutomationPoint().has_value() && root.arrangement.geometry.selection.insert == textproj::kWhole &&
+              OpJournal(document->store()).headSeq() == beforeSelect,
+          "Alt-click selects the point and locates its tick without writing history");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
-          "Delete takes the chosen breakpoint away");
+          "Delete takes the Alt-selected breakpoint away");
     // SC-344: the whole gesture adds the new point at its final location.
     const auto beforeAddDrag = OpJournal(document->store()).headSeq();
     const juce::Point<float> addAt{barX + 1, lineY}, finishAt{twoBars + 1, upper};
@@ -21304,7 +21349,8 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(laneOf().lane == nullptr, "the double-click's first press, off the line, adds nothing");
     canvas.mouseDoubleClick(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     root.frame();
-    check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
+    check(laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
+              std::abs(laneOf().data->points[0].value + 150.) < 1e-9,
           "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
     const auto activator = activatorTarget(4);
     const auto choices = root.automationChoices(4);
@@ -21419,6 +21465,1330 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+void automationChooserPersistence(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto project = dir / "automation-chooser.adi";
+    const auto selected = panTarget(2);
+    std::string error;
+    {
+        auto document = ProjectDocument::open(project, true, {}, error);
+        check(document != nullptr, "a project for the automation chooser");
+        if (!document)
+            return;
+        AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                              document->sessionState(), "automation-chooser");
+        root.showAutomation(2, selected);
+        check(root.automationTarget(2) == selected, "the selected MIDI track shows its Pan envelope");
+    }
+    {
+        auto document = ProjectDocument::open(project, false, {}, error);
+        check(document != nullptr, "reopen the project with its selected automation target");
+        if (!document)
+            return;
+        AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                              document->sessionState(), "automation-chooser");
+        root.setAutomationMode(true);
+        check(root.automationTarget(2) == selected, "the MIDI track still shows its Pan envelope after reopening");
+    }
+}
+void automationChooserControls(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-chooser-controls.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project for the automation controls");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(3);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    for (std::size_t i = 1; i < make.size(); ++i) {
+        make[i].opType = "device.insert";
+        make[i].payload = {{"id", i + 2}, {"chain", 3}, {"ord", i - 1}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    }
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "two devices with the same name on one track");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-chooser-controls");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.automationParameters = [&](std::int64_t track) { return document->automationParameters(track); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    root.setSize(1440, 900);
+    document->tick(0);
+    root.setAutomationMode(true);
+    document->tick(1);
+    root.frame();
+    check(root.showDeviceAutomation(3, "7") && root.addAutomationPoint(2, 0, .25),
+          "only the first device has authored Cutoff automation");
+    root.showAutomation(2, volumeTarget(2));
+
+    auto &headers = root.arrangement.headers;
+    const auto deviceBox = headers.automationChooserBox(0, 0, 72, true);
+    const auto parameterBox = headers.automationChooserBox(0, 0, 72, false);
+    check(!deviceBox.isEmpty() && !parameterBox.isEmpty() && !deviceBox.intersects(parameterBox),
+          "Device and Parameter have separate hit areas on the track header");
+
+    const auto groups = headers.automationChooserMenu(2, true);
+    std::vector<std::function<void()>> devices;
+    std::vector<bool> authored;
+    int mixerGroups = 0, noneChoices = 0;
+    for (juce::PopupMenu::MenuItemIterator it(groups); it.next();) {
+        const auto &item = it.getItem();
+        if (item.text == "UI knobs") {
+            devices.push_back(item.action);
+            authored.push_back(item.image != nullptr);
+        } else if (item.text == "Mixer") {
+            ++mixerGroups;
+        } else if (item.text == "None") {
+            ++noneChoices;
+        }
+    }
+    check(mixerGroups == 1 && noneChoices == 1 && devices.size() == 2 &&
+              authored == std::vector<bool>{true, false},
+          "Mixer and None each appear once and identically named devices keep separate authored marks");
+    const auto checkCutoff = [&](std::int64_t owner, bool expected) {
+        const auto menu = headers.automationChooserMenu(2, false);
+        juce::PopupMenu::MenuItemIterator it(menu);
+        const auto first = it.next();
+        check(menu.getNumItems() == 1 && first && it.getItem().text == "Cutoff" &&
+                  (it.getItem().image != nullptr) == expected && root.automationTarget(2).ownerId == owner,
+              "the Parameter chooser follows the chosen device and marks only its authored Cutoff");
+    };
+    if (devices.size() == 2 && devices[0] && devices[1]) {
+        devices[0]();
+        checkCutoff(3, true);
+        devices[1]();
+        checkCutoff(4, false);
+    }
+
+    root.frame();
+    const auto &strips = root.mixer.strips();
+    const auto strip = std::find_if(strips.begin(), strips.end(), [](const auto &row) { return row->track() == 2; });
+    check(strip != strips.end(), "the track's mixer strip is present");
+    if (strip != strips.end()) {
+        auto &row = **strip;
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        row.mouseDown(pressAt(row.pan, row.pan.getLocalBounds().getCentre().toFloat(), left));
+        check(root.automationTarget(2) == panTarget(2), "clicking the pan control shows its envelope in Automation Mode");
+        root.setAutomationMode(false);
+        row.mouseDown(pressAt(row.volume, row.volume.getLocalBounds().getCentre().toFloat(), left));
+        check(root.automationTarget(2) == panTarget(2), "clicking Volume with Automation Mode off leaves the choice alone");
+        root.setAutomationMode(true);
+        const auto &children = row.volume.getChildren();
+        const auto label = std::find_if(children.begin(), children.end(), [](const auto *child) {
+            return dynamic_cast<const juce::Label *>(child) != nullptr;
+        });
+        check(label != children.end(), "the inline Volume bar has its value label");
+        if (label != children.end()) {
+            row.mouseDown(pressAt(**label, (*label)->getLocalBounds().getCentre().toFloat(), left));
+            check(root.automationTarget(2) == volumeTarget(2),
+                  "clicking the inline Volume value label shows its envelope in Automation Mode");
+        }
+    }
+}
+void steppedDeviceAutomation(AppCommands &commands, const std::filesystem::path &dir) {
+    class DiscreteControls final : public device::DeviceInstance {
+      public:
+        DiscreteControls() {
+            identity_.format = "vst3";
+            descriptors_[0].id = "7";
+            descriptors_[0].name = "Switch";
+            descriptors_[0].shape = device::ParamShape::Switch;
+            descriptors_[0].stepCount = 2;
+            descriptors_[1].id = "8";
+            descriptors_[1].name = "Mode";
+            descriptors_[1].shape = device::ParamShape::Menu;
+            descriptors_[1].stepCount = 4;
+        }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+        std::int32_t paramCount() const noexcept override { return 2; }
+        const device::ParamDescriptor *paramAt(std::int32_t index) const noexcept override {
+            return index >= 0 && index < paramCount() ? &descriptors_[static_cast<std::size_t>(index)] : nullptr;
+        }
+        device::ParamValue getParam(const std::string &) const noexcept override {
+            return device::ParamValue::fromNormalized(0.0);
+        }
+        bool setParam(const std::string &, const device::ParamValue &) override { return true; }
+
+      private:
+        device::DeviceIdentity identity_;
+        std::array<device::ParamDescriptor, 2> descriptors_;
+    };
+
+    constexpr std::int64_t track = 2, deviceId = 3;
+    constexpr auto bar = textproj::kWhole;
+    const auto loader = [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == "test.discrete-controls")
+            return std::make_unique<DiscreteControls>();
+        return {};
+    };
+    std::string error;
+    auto document = ProjectDocument::open(dir / "stepped-device-automation.adi", true, loader, error);
+    check(document != nullptr, "a project with loaded discrete device descriptors");
+    if (!document)
+        return;
+    document->store().db().exec(
+        "INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','test.discrete-controls','Discrete controls')");
+    OpRequest chain, device;
+    chain.opType = "chain.create";
+    chain.payload = {{"id", 3}, {"track", track}, {"ord", 0}, {"name", "Devices"}};
+    device.opType = "device.insert";
+    device.payload = {{"id", deviceId}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "Discrete controls"}, {"latency", 0}};
+    const auto makeLane = [](std::int64_t id, const char *ref) {
+        automation::LaneSpec lane;
+        lane.id = id;
+        lane.ownerKind = "device";
+        lane.ownerId = deviceId;
+        lane.paramRef = ref;
+        lane.minValue = 0.;
+        lane.maxValue = 1.;
+        lane.visible = true;
+        return automation::createLane(lane);
+    };
+    const auto writeLegacy = [bar](std::int64_t data, std::int64_t lane, double first) {
+        return automation::writePoints(data, lane, nullptr,
+            Payload::array({{{"id", 11}, {"time", bar}, {"value", first}, {"curve", 1}, {"tension", 0.}},
+                            {{"id", 12}, {"time", 2 * bar}, {"value", .93}, {"curve", 1}, {"tension", 0.}}}));
+    };
+    const bool setUp = document->ops().submit({std::move(chain), std::move(device), makeLane(31, "7"), makeLane(32, "8"),
+                                              writeLegacy(41, 31, .1), writeLegacy(42, 32, .29)}).ok &&
+                       document->synchronise();
+    check(setUp, "a switch and four-state chooser have old linear automation streams");
+    if (!setUp)
+        return;
+    const auto originalSwitch = document->store().getAutomationData(31, {});
+    const auto originalMenu = document->store().getAutomationData(32, {});
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "stepped-device-automation");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    int catalogReads = 0;
+    root.automationParameters = [&](std::int64_t id) {
+        ++catalogReads;
+        return document->automationParameters(id);
+    };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    document->tick(0);
+    root.frame();
+    const auto identityOnly = root.devices.publication();
+    const bool unpublishedValues = identityOnly && std::any_of(identityOnly->begin(), identityOnly->end(), [](const auto &entry) {
+        return entry.id == deviceId && entry.declarations().empty() && entry.parameters().empty();
+    });
+    check(unpublishedValues, "the hidden device publishes identity without subscribing to parameter values");
+
+    auto &canvas = root.arrangement.canvas;
+    const auto laneAt = [&](const char *ref) -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target.ownerId == deviceId && body.target.paramRef == ref)
+                return body;
+        return std::nullopt;
+    };
+    const auto hitAt = [&](const ArrangementCanvas::LaneBody &body, double level) {
+        const auto x = static_cast<float>(geometry.x(3 * bar / 2));
+        const auto y = body.scaleBottom - static_cast<float>(level) * (body.scaleBottom - body.top);
+        const auto hit = canvas.automationLineAt({x, y});
+        return hit && hit->target == body.target;
+    };
+    root.setAutomationMode(true);
+    root.frame();
+    const auto auxiliarySwitch = laneAt("7");
+    const auto auxiliaryMenu = laneAt("8");
+    check(auxiliarySwitch && auxiliaryMenu && hitAt(*auxiliarySwitch, 0.) && hitAt(*auxiliaryMenu, 1. / 3.) &&
+              catalogReads == 1,
+          "hidden devices supply stepped geometry for both auxiliary lanes from one on-demand catalog");
+
+    if (auxiliaryMenu) {
+        const auto readsBeforePopup = catalogReads;
+        bool squareOnly = false;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Insert Shape" && item.getItem().subMenu) {
+                    juce::PopupMenu::MenuItemIterator shape(*item.getItem().subMenu);
+                    squareOnly = shape.next() && shape.getItem().text == "Square" && !shape.next();
+                }
+        };
+        const auto middle = (auxiliaryMenu->top + auxiliaryMenu->scaleBottom) / 2.f;
+        const auto popup = pressAt(canvas, {static_cast<float>(geometry.x(3 * bar / 2)), middle},
+                                   juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        check(squareOnly && catalogReads == readsBeforePopup,
+              "the stepped auxiliary menu uses its resolved type without reading the catalog again");
+    }
+
+    const auto showAndHit = [&](const char *ref, double level) {
+        if (!root.showDeviceAutomation(deviceId, ref))
+            return false;
+        root.frame();
+        const auto body = laneAt(ref);
+        return body && hitAt(*body, level);
+    };
+    check(showAndHit("7", 0.), "the switch holds its first state at the bottom between legacy points");
+    check(showAndHit("8", 1. / 3.), "the chooser holds its first discrete state rather than ramping");
+    check(originalSwitch && originalMenu && document->store().getAutomationData(31, {}) == originalSwitch &&
+              document->store().getAutomationData(32, {}) == originalMenu,
+          "displaying the stepped envelopes keeps the original streams untouched");
+
+    const auto add = [&](const char *ref, double value, double expected, bool exact) {
+        if (!root.showDeviceAutomation(deviceId, ref) ||
+            !root.addAutomationPoint(track, root.automationTarget(track), 3 * bar, value, exact))
+            return false;
+        const auto snapshot = root.current();
+        const auto envelope = envelopeOf(*snapshot, root.automationTarget(track));
+        return envelope.lane && envelope.lane->valueDomain == "normalized" && envelope.data &&
+               std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+                   return point.time == 3 * bar && std::abs(point.value - expected) < 1.e-9 && point.curve == 0;
+               });
+    };
+    check(add("7", .74, 1., false), "a new switch point writes the normalized on state with Hold");
+    check(add("8", .59, 2. / 3., true), "typed chooser values write the nearest of four normalized states with Hold");
+}
+
+void automationDeviceActivator(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    constexpr std::int64_t track = 1, device = 3;
+    const auto project = dir / "automation-device-activator.adi";
+    const auto loader = test::knobsLoader("7", "vst3");
+    {
+        auto doc = ProjectDocument::open(project, true, loader, error);
+        check(doc != nullptr, "a project for Device Activator automation");
+        if (!doc)
+            return;
+        doc->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(3,'vst3','") +
+                               test::kKnobsUid + "','UI knobs','effect')");
+        OpRequest chain, insert;
+        chain.opType = "chain.create";
+        chain.payload = {{"id", 3}, {"track", track}, {"ord", 0}, {"name", "Devices"}};
+        insert.opType = "device.insert";
+        insert.payload = {{"id", device}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+        const bool inserted = doc->ops().submit({std::move(chain), std::move(insert)}).ok && doc->synchronise();
+        check(inserted, "a loaded VST3 audio effect exposes its host switch");
+        if (!inserted)
+            return;
+
+        AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                              doc->sessionState(), "automation-device-activator");
+        root.afterEdit = [&] { doc->synchronise(); };
+        root.devices.publication = [&] { return doc->parameterFeed().current(); };
+        root.devices.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
+        root.reenableLane = [&](std::int64_t lane) { return doc->reenableAutomation(lane); };
+        int catalogReads = 0;
+        root.automationParameters = [&](std::int64_t id) { ++catalogReads; return doc->automationParameters(id); };
+        const auto choices = root.automationChoices(track);
+        const auto choice = std::find_if(choices.begin(), choices.end(), [](const auto &t) {
+            return t.ownerId == device && t.paramRef == kDeviceActivatorParamRef;
+        });
+        const auto findDevice = [id = device](const auto &publication) -> const DevicePanelData * {
+            if (!publication) return nullptr;
+            const auto found = std::find_if(publication->begin(), publication->end(),
+                [id](const auto &data) { return data.id == id; });
+            return found == publication->end() ? nullptr : &*found;
+        };
+        doc->tick(1);
+        const auto initialPublication = doc->parameterFeed().current();
+        const auto *data = findDevice(initialPublication);
+        check(choice != choices.end() && choice->paramName == "Device Activator" && choice->stepped &&
+              choice->valueDomain == "enum" && data && data->parameters().empty(),
+              "the stepped Device Activator is in the chooser without subscribing to plug-in values");
+        if (choice == choices.end() || !data)
+            return;
+
+        std::shared_ptr<const ParameterPublication> playedPublication;
+        DevicePanelView panel(root.devices, *data);
+        const auto initialMenu = panel.commands();
+        const auto item = [](const juce::PopupMenu &menu, const juce::String &name) -> const juce::PopupMenu::Item * {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == name)
+                    return &it.getItem();
+            return nullptr;
+        };
+        const auto *show = item(initialMenu, "Show Automation");
+        const auto reads = catalogReads;
+        if (show && show->action)
+            show->action();
+        check(root.automationMode() && root.automationTarget(track) == *choice && catalogReads == reads,
+              "the device menu shows this concrete envelope without fetching parameter descriptors");
+        if (root.automationTarget(track) != *choice)
+            return;
+        check(root.addAutomationPoint(track, 0, 0.0) && root.addAutomationLane(track, *choice),
+              "Device Activator can author Off and be promoted to an additional lane");
+
+        doc->prepare(48000, 64);
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 64;
+        doc->process(io);
+        check(doc->session().deviceActivatorPlaying(device) == false,
+              "the parked audio callback follows the authored Off point");
+        // The first tick can publish a replacement graph after learning the device latency.
+        doc->tick(2);
+        doc->process(io);
+        doc->tick(3);
+        playedPublication = doc->parameterFeed().current();
+        data = findDevice(playedPublication);
+        check(data && data->enabled && data->playingEnabled == false,
+              "the publication carries Off playback beside the saved On switch");
+        if (!data)
+            return;
+        panel.present(*data);
+        check(!panel.enabled.getToggleState(), "the device panel shows played Off");
+        panel.enabled.setToggleState(true, juce::dontSendNotification);
+        panel.enabled.onClick();
+        const auto overridden = envelopeOf(*root.current(), *choice);
+        check(overridden.lane && overridden.lane->overridden,
+              "clicking played Off overrides automation even though On was already saved");
+
+        const auto overrideMenu = panel.commands();
+        const auto *reenable = item(overrideMenu, "Re-Enable Automation");
+        check(reenable && reenable->isEnabled && reenable->action, "the device menu can re-enable its Activator envelope");
+        if (reenable && reenable->isEnabled && reenable->action)
+            reenable->action();
+        check(!doc->session().automationOverridden(), "the device menu returns the Activator to automation");
+    }
+    {
+        auto doc = ProjectDocument::open(project, false, loader, error);
+        check(doc != nullptr, "reopen the chosen Device Activator lane");
+        if (!doc)
+            return;
+        AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                              doc->sessionState(), "automation-device-activator");
+        root.devices.publication = [&] { return doc->parameterFeed().current(); };
+        doc->tick(1);
+        root.setAutomationMode(true);
+        const auto &lanes = root.additionalAutomationLanes(track);
+        check(root.automationTarget(track).paramRef == kDeviceActivatorParamRef &&
+              lanes.size() == 1 && lanes.front().target.paramRef == kDeviceActivatorParamRef &&
+              lanes.front().target.stepped,
+              "the saved choice and added Device Activator lane reopen without a parameter catalog");
+    }
+}
+void automationAdditionalLanes(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-additional-lanes.adi", true, {}, error);
+    check(document != nullptr, "a project for additional automation lanes");
+    if (!document)
+        return;
+    constexpr auto bar = textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 81}, {"track", 2}, {"kind", "midi"}, {"name", "Clip above automation"},
+                    {"pos", 0}, {"length", bar}};
+    automation::LaneSpec volume;
+    volume.id = 31;
+    volume.ownerId = 2;
+    volume.paramRef = "volume";
+    volume.paramName = "Volume";
+    volume.valueDomain = "real";
+    volume.unit = "dB";
+    volume.minValue = -150.;
+    volume.maxValue = 6.;
+    volume.height = 42;
+    auto pan = volume;
+    pan.id = 32;
+    pan.paramRef = "pan";
+    pan.paramName = "Pan";
+    pan.unit.clear();
+    pan.minValue = -1.;
+    pan.maxValue = 1.;
+    const auto write = [&](std::int64_t data, std::int64_t lane, double value) {
+        return automation::writePoints(data, lane, nullptr,
+            Payload::array({{{"id", 1}, {"time", bar / 2}, {"value", value}, {"curve", 1}, {"tension", 0.}}}));
+    };
+    check(document->ops().submit(std::vector<OpRequest>{std::move(clip), automation::createLane(volume),
+              automation::createLane(pan), write(41, volume.id, -32.), write(42, pan.id, 0.)}).ok &&
+              document->synchronise(), "a MIDI clip and Volume and Pan envelopes with the same point ID");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-additional-lanes");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    constexpr std::int64_t track = 2;
+    root.arrangement.geometry.resizeTrack(track, 112);
+    root.arrangement.geometry.scale = 48;
+    root.arrangement.geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.setAutomationMode(true);
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    const auto clickHeader = [&](const juce::Rectangle<int> &box) {
+        if (box.isEmpty())
+            return false;
+        const auto at = box.getCentre().toFloat();
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        headers.mouseDown(pressAt(headers, at, left));
+        headers.mouseUp(pressAt(headers, at, left));
+        root.frame();
+        return true;
+    };
+    const auto plus = [&] {
+        return clickHeader(headers.automationLaneButtonBox(track, 0, laneTop(root, track), true));
+    };
+    const auto choose = [](const juce::PopupMenu &menu, const char *label) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == label && it.getItem().isEnabled && it.getItem().action) {
+                it.getItem().action();
+                return true;
+            }
+        return false;
+    };
+    const auto visible = [&](const AutomationTarget &target) {
+        const auto &lanes = root.additionalAutomationLanes(track);
+        return std::any_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; });
+    };
+    const auto volumeTargetHere = volumeTarget(track);
+    const auto panTargetHere = panTarget(track);
+    check(plus() && !root.automationOverlayShown(track) && visible(volumeTargetHere),
+          "Plus promotes Volume below the clips and hides the main overlay");
+    const bool undone = root.command(AppCommands::Undo);
+    root.frame();
+    check(undone && root.automationOverlayShown(track) && root.automationTarget(track) == volumeTargetHere &&
+              !visible(volumeTargetHere), "Undo of promotion restores the Volume overlay");
+    const bool redone = root.command(AppCommands::Redo);
+    root.frame();
+    check(redone && !root.automationOverlayShown(track) && visible(volumeTargetHere),
+          "Redo shows the additional Volume lane again");
+    bool none = false;
+    const auto deviceMenu = headers.automationChooserMenu(track, true);
+    for (juce::PopupMenu::MenuItemIterator it(deviceMenu); it.next();)
+        if (it.getItem().text == "None")
+            none = it.getItem().isTicked;
+    check(none && headers.automationChooserMenu(track, false).getNumItems() == 0 &&
+              choose(deviceMenu, "Mixer") &&
+              choose(headers.automationChooserMenu(track, false), "Track Panning") &&
+              root.automationOverlayShown(track) && root.automationTarget(track) == panTargetHere,
+          "the track shows None after promotion, and Mixer then Track Panning restores a Pan overlay");
+    check(plus() && !root.automationOverlayShown(track) && visible(volumeTargetHere) && visible(panTargetHere),
+          "Plus adds Pan beneath Volume and hides the overlay again");
+
+    auto &canvas = root.arrangement.canvas;
+    const auto &clips = canvas.accessible();
+    const auto shown = std::find_if(clips.begin(), clips.end(), [](const auto &child) {
+        return child->isVisible() && child->clip == 81;
+    });
+    check(shown != clips.end(), "the parent track's MIDI clip is on screen");
+    if (shown == clips.end())
+        return;
+    const auto bottom = static_cast<float>((*shown)->getBottom());
+    const auto next = static_cast<float>(laneTop(root, 3));
+    std::vector<ArrangementCanvas::LaneBody> extra;
+    for (const auto &body : canvas.laneBodies())
+        if (body.track->id == 2 && body.top >= bottom)
+            extra.push_back(body);
+    std::sort(extra.begin(), extra.end(), [](const auto &a, const auto &b) { return a.top < b.top; });
+    check(extra.size() == 2 && extra[0].top < extra[0].bottom && extra[0].bottom <= extra[1].top &&
+              extra[1].top < extra[1].bottom && extra[1].bottom <= next,
+          "two separate automation bodies fit below track 2's clip and above track 3");
+    if (extra.size() != 2)
+        return;
+    check(extra[0].target == volumeTargetHere && extra[1].target == panTargetHere,
+          "the Volume and Pan rows retain their separate Volume and Pan targets");
+    const auto pixel = [&](std::int64_t tick) { return static_cast<float>(root.arrangement.geometry.x(tick)); };
+    const auto pointIn = [&](const auto &body) {
+        return juce::Point<float>{pixel(bar / 2), (body.top + body.scaleBottom) / 2};
+    };
+    for (const auto &body : extra) {
+        const auto hit = canvas.automationPointAt(pointIn(body));
+        check(hit && hit->track == track && hit->target == body.target && hit->point == 1,
+              "each visible lane hits its own breakpoint despite sharing the same point ID");
+    }
+    const auto hasOriginal = [&](const AutomationTarget &target) {
+        const auto envelope = envelopeOf(*root.current(), target);
+        return envelope.data && std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+            return point.id == 1 && point.time == bar / 2;
+        });
+    };
+    const auto clipIntact = [&] {
+        const auto *row = root.current()->findTrack(track);
+        return row && row->clips.size() == 1 && row->clips.front()->id == 81 &&
+               row->clips.front()->posTicks == 0 && row->clips.front()->lengthTicks == bar;
+    };
+    const auto point = pointIn(extra[0]);
+    canvas.mouseDown(pressAt(canvas, point));
+    canvas.mouseUp(pressAt(canvas, point));
+    const bool erased = canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(erased && !hasOriginal(volumeTargetHere) && hasOriginal(panTargetHere) && clipIntact() &&
+              visible(volumeTargetHere), "Delete on Volume removes only its point and leaves both rows and the clip");
+    if (erased && !hasOriginal(volumeTargetHere))
+        check(root.command(AppCommands::Undo) && hasOriginal(volumeTargetHere), "Undo restores the auxiliary Volume point");
+    root.frame();
+
+    const auto y = extra[1].bottom - 6.f;
+    const juce::Point<float> from(pixel(bar / 4) + 1.f, y), to(pixel(3 * bar / 4) - 1.f, y);
+    canvas.mouseDown(pressAt(canvas, from));
+    canvas.mouseDrag(dragAt(canvas, from, to));
+    canvas.mouseUp(dragAt(canvas, from, to));
+    const bool cut = root.command(AppCommands::Cut);
+    root.frame();
+    check(cut && hasOriginal(volumeTargetHere) && !hasOriginal(panTargetHere) && clipIntact(),
+          "Cut across the auxiliary Pan lane edits only its envelope");
+    if (cut && !hasOriginal(panTargetHere))
+        check(root.command(AppCommands::Undo) && hasOriginal(panTargetHere), "Undo restores the auxiliary Pan range");
+    commands.clipClipboard().held = std::monostate{};
+    root.frame();
+
+    const auto &lanes = root.additionalAutomationLanes(track);
+    if (!lanes.empty()) {
+        const auto top = laneTop(root, track) + root.arrangement.geometry.heightFor(track);
+        const auto minus = headers.automationLaneRemoveBox(0, top, lanes.front().height);
+        check(clickHeader(minus) && !visible(volumeTargetHere) && visible(panTargetHere) &&
+                  hasOriginal(volumeTargetHere) && hasOriginal(panTargetHere),
+              "Minus removes the Volume row without erasing its authored points or hiding Pan");
+    }
+}
+void groupAutomation(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "group-automation.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project for Arrangement group automation");
+    if (!document)
+        return;
+
+    constexpr std::int64_t group = 30, child = 2, device = 31;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(31,'vst3','") +
+                                test::kKnobsUid + "','Group knobs')");
+    OpRequest create, move, chain, insert;
+    create.opType = "track.create";
+    create.payload = {{"id", group}, {"kind", "group"}, {"name", "Group automation"}, {"index", 0}};
+    move.opType = "track.setParent";
+    move.payload = {{"id", child}, {"parent", group}};
+    chain.opType = "chain.create";
+    chain.payload = {{"id", 31}, {"track", group}, {"ord", 0}, {"name", "Devices"}};
+    insert.opType = "device.insert";
+    insert.payload = {{"id", device}, {"chain", 31}, {"ord", 0}, {"ref", 31}, {"name", "Group knobs"}, {"latency", 0}};
+    const bool grouped = document->ops().submit({std::move(create), std::move(move), std::move(chain),
+                                                 std::move(insert)}).ok && document->synchronise();
+    check(grouped, "a real Group Track contains a child and hosts a device");
+    if (!grouped)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "group-automation");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.automationParameters = [&](std::int64_t track) { return document->automationParameters(track); };
+    document->tick(0);
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(group, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto clickEnvelope = [&](const AutomationTarget &target, std::int64_t tick) {
+        root.frame();
+        const auto bodies = canvas.laneBodies();
+        const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &lane) {
+            return lane.track->id == group && lane.target == target;
+        });
+        if (body == bodies.end())
+            return false;
+        const auto value = root.automationCurrent(target);
+        const auto fraction = static_cast<float>((value - target.minimum) / (target.maximum - target.minimum));
+        const juce::Point<float> click{static_cast<float>(geometry.x(tick)),
+            body->scaleBottom - (body->scaleBottom - body->top) * fraction};
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        canvas.mouseDown(pressAt(canvas, click, left));
+        canvas.mouseUp(pressAt(canvas, click, left));
+        root.frame();
+        const auto current = root.current();
+        if (!current)
+            return false;
+        const auto authored = envelopeOf(*current, target);
+        const auto picked = canvas.automationPointAt(click);
+        return authored.lane && authored.lane->ownerKind == target.ownerKind && authored.lane->ownerId == target.ownerId &&
+               authored.lane->paramRef == target.paramRef && authored.lane->valueDomain == target.valueDomain &&
+               authored.data && authored.data->points.size() == 1 && authored.data->points[0].time == tick &&
+               std::abs(authored.data->points[0].value - value) < 1.e-6 &&
+               picked && picked->track == group && picked->point == authored.data->points[0].id;
+    };
+
+    const auto volume = volumeTarget(group);
+    root.showAutomation(group, volume);
+    check(geometry.shown(child) && clickEnvelope(volume, textproj::kWhole),
+          "clicking the open group's Volume line creates a drawable group breakpoint");
+    root.arrangement.toggleFold(group);
+    root.frame();
+    check(geometry.shown(group) && !geometry.shown(child), "folding hides the child while keeping its group row");
+    const auto pan = panTarget(group);
+    root.showAutomation(group, pan);
+    check(clickEnvelope(pan, 2 * textproj::kWhole),
+          "the folded group's Pan line still draws and accepts breakpoints");
+
+    const bool shown = root.showDeviceAutomation(device, "7");
+    const auto cutoff = root.automationTarget(group);
+    check(shown && cutoff.ownerKind == "device" && cutoff.ownerId == device &&
+              cutoff.nativeParamId == "7" && cutoff.paramRef == "7" && cutoff.valueDomain == "normalized" &&
+              std::abs(root.automationCurrent(cutoff) - .5) < 1.e-6 &&
+              clickEnvelope(cutoff, 3 * textproj::kWhole),
+          "the folded group's device Cutoff line writes its normalized breakpoint at the knob's default");
+}
+
+void automationBreakpointModifiers(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-breakpoint-modifiers.adi", true, {}, error);
+    check(document != nullptr, "a project for breakpoint drag modifiers");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, laneId = 31, dataId = 41;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    auto lane = automationLaneSpec(pan, 0., laneId);
+    auto write = automation::writePoints(dataId, laneId, nullptr, Payload::array({
+        {{"id", 7}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 11}, {"time", 3 * bar}, {"value", -.125}, {"curve", 1}, {"tension", 0.}}
+    }));
+    const bool authored = document->ops().submit({automation::createLane(lane), std::move(write)}).ok &&
+                          document->synchronise();
+    check(authored, "three Pan breakpoints establish an intervening neighbor and a later untouched point");
+    if (!authored)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-breakpoint-modifiers");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &candidate) {
+        return candidate.track->id == track && candidate.target == pan;
+    });
+    check(body != bodies.end(), "the Pan overlay is visible for single-point drags");
+    if (body == bodies.end())
+        return;
+
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto journalHead = [&] { return OpJournal(document->store()).headSeq(); };
+    const auto original = points();
+    check(original.size() == 3, "the fixture's three Pan points are readable");
+    if (original.size() != 3)
+        return;
+    const auto initialHead = journalHead();
+    const auto initialBytes = document->store().getAutomationData(laneId, {});
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto height = body->scaleBottom - body->top;
+    const auto travel = static_cast<float>((original.front().value - pan.minimum) / (pan.maximum - pan.minimum));
+    const juce::Point<float> origin{x(original.front().time), body->scaleBottom - height * travel};
+    const auto hit = canvas.automationPointAt(origin);
+    check(hit && hit->point == 7, "the drag starts at authored point 7");
+    if (!hit)
+        return;
+
+    const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+    const juce::ModifierKeys shiftLeft(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier);
+    const auto move = [&](juce::Point<float> destination, juce::ModifierKeys mods) {
+        canvas.mouseDown(pressAt(canvas, origin, mods));
+        const auto drag = dragAt(canvas, origin, destination, mods);
+        canvas.mouseDrag(drag);
+        check(journalHead() == initialHead && points() == original, "drag preview has not written points or history");
+        canvas.mouseUp(drag);
+        root.frame();
+        return points();
+    };
+    const auto undo = [&](const char *label) {
+        const bool restored = journalHead() != initialHead && root.command(AppCommands::Undo) &&
+                              journalHead() == initialHead && points() == original &&
+                              document->store().getAutomationData(laneId, {}) == initialBytes;
+        check(restored, label);
+        root.frame();
+        return restored;
+    };
+    const auto neighborsIntact = [&](const auto &edited) {
+        return edited.size() == original.size() && edited[0].id == 7 &&
+               edited[1] == original[1] && edited[2] == original[2];
+    };
+
+    const auto later = bar + bar / 4;
+    const auto horizontal = move({x(later), origin.y + 13.f}, shiftLeft);
+    check(neighborsIntact(horizontal) && horizontal[0].time == later && horizontal[0].value == original[0].value,
+          "horizontal Shift-drag moves in time and ignores vertical drift");
+    if (!undo("one Undo restores the horizontal Shift-drag"))
+        return;
+
+    constexpr float dy = 28.f;
+    const auto vertical = move(origin.translated(8.f, -dy), shiftLeft);
+    const auto ordinaryChange = static_cast<double>(dy / height) * (pan.maximum - pan.minimum);
+    const auto fineChange = neighborsIntact(vertical) ? vertical[0].value - original[0].value : 0.;
+    check(neighborsIntact(vertical) && vertical[0].time == original[0].time &&
+              fineChange > 0 && fineChange < ordinaryChange / 2,
+          "vertical Shift-drag stays at the original tick and raises the value at finer resolution");
+    if (!undo("one Undo restores the fine vertical Shift-drag"))
+        return;
+
+    const auto beyondNeighbor = 5 * bar / 2;
+    const auto shortOfNeighbor = bar + bar / 2;
+    const juce::Point<float> overshoot{x(beyondNeighbor), origin.y}, retreat{x(shortOfNeighbor), origin.y};
+    canvas.mouseDown(pressAt(canvas, origin, left));
+    canvas.mouseDrag(dragAt(canvas, origin, overshoot, left));
+    check(journalHead() == initialHead && points() == original, "passing a neighbor in preview writes nothing");
+    canvas.mouseDrag(dragAt(canvas, origin, retreat, left));
+    canvas.mouseUp(dragAt(canvas, origin, retreat, left));
+    root.frame();
+    const auto returned = points();
+    check(neighborsIntact(returned) && returned[0].time == shortOfNeighbor,
+          "retreating before release preserves the swept neighbor");
+    if (!undo("one Undo restores the drag that retreated"))
+        return;
+
+    const auto crossed = move({x(beyondNeighbor), origin.y}, left);
+    check(crossed.size() == 2 && crossed[0].id == 7 && crossed[0].time == beyondNeighbor &&
+              std::abs(crossed[0].value - original[0].value) < 1.e-6 && crossed[1] == original[2],
+          "dragging past a neighbor removes only that neighbor and preserves the moved point ID");
+    if (!undo("one Undo restores both the moved and the overwritten breakpoint"))
+        return;
+
+    canvas.mouseDown(pressAt(canvas, origin, left));
+    const auto crossedDrag = dragAt(canvas, origin, overshoot, left);
+    canvas.mouseDrag(crossedDrag);
+    auto external = automation::movePoints(dataId, laneId, nullptr, Payload::array({
+        {{"id", original[1].id}, {"time", 4 * bar}, {"value", original[1].value}}
+    }));
+    const auto changedOutsideView = OpJournal(document->store()).commit(external);
+    check(changedOutsideView.ok, "a journal edit changes the captured neighbor before release");
+    if (!changedOutsideView.ok)
+        return;
+    const auto freshHead = journalHead();
+    const auto freshBytes = document->store().getAutomationData(laneId, {});
+    canvas.mouseUp(crossedDrag);
+    check(journalHead() == freshHead && document->store().getAutomationData(laneId, {}) == freshBytes,
+          "releasing an out-of-date drag preserves the newer envelope and adds no edit");
+}
+
+void automationBreakpointDrags(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-breakpoint-drags.adi", true, {}, error);
+    check(document != nullptr, "a project for breakpoint drags");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    automation::LaneSpec lane;
+    lane.id = 31;
+    lane.ownerId = track;
+    lane.paramRef = pan.paramRef;
+    lane.paramName = pan.paramName;
+    lane.valueDomain = pan.valueDomain;
+    lane.minValue = pan.minimum;
+    lane.maxValue = pan.maximum;
+    auto write = automation::writePoints(41, lane.id, nullptr,
+        Payload::array({{{"id", 7}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+                        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}}}));
+    const bool authored = document->ops().submit({automation::createLane(lane), std::move(write)}).ok &&
+                          document->synchronise();
+    check(authored, "two authored Pan breakpoints on the same envelope");
+    if (!authored)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-breakpoint-drags");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == pan;
+    });
+    check(body != bodies.end(), "the Pan envelope body is on screen");
+    if (body == bodies.end())
+        return;
+
+    const auto readPoints = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto original = readPoints();
+    check(original.size() == 2, "the Pan envelope holds the two fixture points");
+    if (original.size() != 2)
+        return;
+    const auto baseline = undoStep();
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto pointAt = [&](const auto &point) {
+        const auto travel = static_cast<float>((point.value - pan.minimum) / (pan.maximum - pan.minimum));
+        return juce::Point<float>{x(point.time), body->scaleBottom - (body->scaleBottom - body->top) * travel};
+    };
+    const auto first = pointAt(original[0]);
+    const auto second = pointAt(original[1]);
+    const auto firstHit = canvas.automationPointAt(first);
+    const auto secondHit = canvas.automationPointAt(second);
+    const bool hit = firstHit && firstHit->point == 7 && secondHit && secondHit->point == 9;
+    check(hit, "both authored breakpoints are independently hittable");
+    if (!hit)
+        return;
+
+    const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+    const auto press = [&](juce::Point<float> at) { canvas.mouseDown(pressAt(canvas, at, left)); };
+    const auto drag = [&](juce::Point<float> from, juce::Point<float> to) {
+        canvas.mouseDrag(dragAt(canvas, from, to, left));
+    };
+    const auto release = [&](juce::Point<float> from, juce::Point<float> to) {
+        canvas.mouseUp(dragAt(canvas, from, to, left));
+        root.frame();
+    };
+    const auto undoGesture = [&](const char *message) {
+        if (undoStep() == baseline)
+            return true;
+        const bool restored = root.command(AppCommands::Undo) && undoStep() == baseline && readPoints() == original;
+        check(restored, message);
+        root.frame();
+        return restored;
+    };
+
+    const float background = body->bottom - 6.f;
+    const juce::Point<float> selectionStart{x(bar / 2), background}, selectionEnd{x(5 * bar / 2), background};
+    const auto select = [&] {
+        press(selectionStart);
+        drag(selectionStart, selectionEnd);
+        release(selectionStart, selectionEnd);
+    };
+    select();
+    press(first);
+    canvas.mouseUp(pressAt(canvas, first));
+    root.frame();
+    const auto survivor = readPoints();
+    check(survivor.size() == 1 && survivor.front().id == original[1].id &&
+              survivor.front().time == original[1].time && survivor.front().value == original[1].value &&
+              undoStep() != baseline && canvas.hasAutomationSelection() &&
+              geometry.selection.start == original[0].time && geometry.selection.end == original[0].time,
+          "a plain click deletes only the hit breakpoint and leaves its automation marker");
+    if (!undoGesture("one Undo restores the clicked point in the selected range"))
+        return;
+    select();
+    const bool selected = canvas.hasAutomationSelection() && geometry.selection.start == bar / 2 &&
+                          geometry.selection.end == 5 * bar / 2;
+    check(selected, "the background drag selects a time range containing both breakpoints");
+    if (!selected)
+        return;
+
+    const juce::Point<float> movedFirst{x(original[0].time + bar / 2), first.y};
+    press(first);
+    drag(first, movedFirst);
+    check(undoStep() == baseline && readPoints() == original, "a held breakpoint drag has not written history");
+    release(first, movedFirst);
+    const auto translated = readPoints();
+    const bool bothMoved = translated.size() == 2 &&
+        std::equal(translated.begin(), translated.end(), original.begin(), [&](const auto &after, const auto &before) {
+            return after.id == before.id && after.time == before.time + bar / 2 &&
+                   after.curve == before.curve && after.tension == before.tension &&
+                   std::abs(after.value - before.value) < 1.e-6;
+        });
+    check(bothMoved && undoStep() != baseline, "dragging one selected breakpoint moves both by the same time offset");
+    if (!undoGesture("one Undo restores both selected breakpoints"))
+        return;
+
+    canvas.clearAutomationSelection();
+    const juce::Point<float> middle{(first.x + second.x) / 2, (first.y + second.y) / 2};
+    // Start six pixels from the drawn segment, outside the point insertion hit area.
+    const auto segmentStart = middle.translated(0.f, 6.f);
+    const auto segmentEnd = segmentStart.translated(0.f, -18.f);
+    const bool segmentSetup = canvas.automationLineAt(middle).has_value() && !canvas.automationPointAt(segmentStart);
+    check(segmentSetup, "the drag starts near the visible segment and away from either breakpoint");
+    if (!segmentSetup)
+        return;
+    press(segmentStart);
+    drag(segmentStart, segmentEnd);
+    check(undoStep() == baseline && readPoints() == original, "a held segment drag has not written history");
+    release(segmentStart, segmentEnd);
+    const auto raised = readPoints();
+    const bool samePoints = raised.size() == 2 &&
+        std::equal(raised.begin(), raised.end(), original.begin(), [](const auto &after, const auto &before) {
+            return after.id == before.id && after.time == before.time &&
+                   after.curve == before.curve && after.tension == before.tension && after.value > before.value;
+        });
+    const bool sameRise = samePoints &&
+        std::abs((raised[0].value - original[0].value) - (raised[1].value - original[1].value)) < 1.e-6;
+    check(sameRise && undoStep() != baseline, "a near-line segment drag raises both endpoints at their original times");
+    if (!undoGesture("one Undo restores both segment endpoints"))
+        return;
+
+    constexpr auto begin = 5 * bar / 4, end = 7 * bar / 4;
+    const juce::Point<float> sliceStart{x(begin), background}, sliceEnd{x(end), background};
+    press(sliceStart);
+    drag(sliceStart, sliceEnd);
+    release(sliceStart, sliceEnd);
+    const bool sliceSelected = canvas.hasAutomationSelection() && geometry.selection.start == begin &&
+                               geometry.selection.end == end;
+    check(sliceSelected, "the selected Pan range lies strictly between the authored points");
+    if (!sliceSelected)
+        return;
+
+    press(segmentStart);
+    drag(segmentStart, segmentEnd);
+    release(segmentStart, segmentEnd);
+
+    const auto current = root.current();
+    const auto envelope = current ? envelopeOf(*current, pan) : TrackEnvelope{};
+    const auto originalValue = [&](std::int64_t tick) {
+        const auto fraction = static_cast<double>(tick - original[0].time) /
+                              static_cast<double>(original[1].time - original[0].time);
+        return original[0].value + (original[1].value - original[0].value) * fraction;
+    };
+    const bool originalsPreserved = envelope.data &&
+        std::all_of(original.begin(), original.end(), [&](const auto &before) {
+            return std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+                return point.id == before.id && point.time == before.time && point.value == before.value;
+            });
+        });
+    const auto hasRaisedBoundary = [&](std::int64_t tick) {
+        return envelope.data && std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+            [&](const auto &point) { return point.time == tick && point.value > originalValue(tick) + 1.e-6; });
+    };
+    const auto unchangedAt = [&](std::int64_t tick) {
+        const auto actual = envelope.data ? envelopeValue(*envelope.data, tick) : std::nullopt;
+        return actual && std::abs(*actual - originalValue(tick)) < 1.e-6;
+    };
+    check(originalsPreserved && hasRaisedBoundary(begin) && hasRaisedBoundary(end) &&
+              unchangedAt(begin - bar / 8) && unchangedAt(end + bar / 8) && undoStep() != baseline,
+          "dragging the selected segment raises both boundaries without changing the envelope outside");
+    if (!undoGesture("one Undo removes the inserted boundaries and restores the original Pan envelope"))
+        return;
+
+    select();
+    constexpr auto expandedEnd = 7 * bar / 2;
+    const auto handleY = (body->top + body->scaleBottom) / 2.f;
+    const juce::Point<float> rightHandle{x(5 * bar / 2), handleY}, stretched{x(expandedEnd), handleY};
+    press(rightHandle);
+    drag(rightHandle, stretched);
+    check(undoStep() == baseline && readPoints() == original, "the stretch outline leaves project data alone");
+    release(rightHandle, stretched);
+    const auto stretchedPoints = readPoints();
+    const auto checkKnot = [](const auto &points, std::int64_t tick, auto matches) {
+        return std::any_of(points.begin(), points.end(), [&](const auto &point) {
+            return point.time == tick && matches(point.value);
+        });
+    };
+    check(undoStep() != baseline && geometry.selection.end == expandedEnd &&
+              checkKnot(stretchedPoints, 5 * bar / 4, [&](double value) { return value == original[0].value; }) &&
+              checkKnot(stretchedPoints, 11 * bar / 4, [&](double value) { return value == original[1].value; }),
+          "the right handle stretches both Pan point times without changing their values");
+    if (!undoGesture("one Undo restores the stretched envelope"))
+        return;
+
+    select();
+    const juce::Point<float> corner{x(5 * bar / 2), body->top};
+    const auto skewedCorner = corner.translated(0.f, 20.f);
+    press(corner);
+    drag(corner, skewedCorner);
+    release(corner, skewedCorner);
+    const auto skewed = readPoints();
+    check(undoStep() != baseline && geometry.selection.end == 5 * bar / 2 &&
+              checkKnot(skewed, bar, [&](double value) { return value < original[0].value; }) &&
+              checkKnot(skewed, 2 * bar, [&](double value) { return value < original[1].value; }),
+          "the corner skews the Pan values while keeping the point times");
+    undoGesture("one Undo restores the skewed envelope");
+}
+void automationShapeMenu(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-shape-menu.adi", true, {}, error);
+    check(document != nullptr, "a project to insert arrangement automation shapes");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, lane = 31;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    auto points = automation::writePoints(41, lane, nullptr, Payload::array({
+        {{"id", 7}, {"time", bar}, {"value", -.5}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 11}, {"time", 3 * bar}, {"value", .75}, {"curve", 1}, {"tension", 0.}}
+    }));
+    const bool seeded = document->ops().submit({automation::createLane(automationLaneSpec(pan, 0, lane)),
+                                                std::move(points)}).ok && document->synchronise();
+    check(seeded, "a Pan envelope extends before and after the shape's time selection");
+    if (!seeded)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-shape-menu");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid = {false, true, false, 0, 1};
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&](auto tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto laneBody = [&](const AutomationTarget &target) -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == target)
+                return body;
+        return std::nullopt;
+    };
+    const auto envelope = [&](const AutomationTarget &target, const auto &snapshot) {
+        return snapshot ? envelopeOf(*snapshot, target) : TrackEnvelope{};
+    };
+    const auto panBody = laneBody(pan);
+    const auto initial = root.current();
+    const auto authored = envelope(pan, initial);
+    check(panBody && authored.data && authored.data->points.size() == 3, "all original Pan points are displayed");
+    if (!panBody || !authored.data || authored.data->points.size() != 3)
+        return;
+
+    const auto openShape = [&](juce::Point<float> at, const juce::String &name) {
+        std::set<std::string> names;
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator top(menu); top.next();)
+                if (top.getItem().text == "Insert Shape" && top.getItem().subMenu)
+                    for (juce::PopupMenu::MenuItemIterator shape(*top.getItem().subMenu); shape.next();) {
+                        const auto &item = shape.getItem();
+                        if (!item.isEnabled)
+                            continue;
+                        names.insert(item.text.toStdString());
+                        if (item.text == name)
+                            action = item.action;
+                    }
+        };
+        const auto popup = pressAt(canvas, at, juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        if (action)
+            action();
+        root.frame();
+        return names;
+    };
+    const auto beforeShape = OpJournal(document->store()).headSeq();
+    constexpr auto begin = 5 * bar / 4, end = 11 * bar / 4;
+    const float blank = panBody->bottom - 5.f;
+    const juce::Point<float> start{x(begin), blank}, finish{x(end), blank};
+    const auto selectShapeRange = [&] {
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, finish));
+        canvas.mouseUp(dragAt(canvas, start, finish));
+        root.frame();
+    };
+    selectShapeRange();
+    check(canvas.hasAutomationSelection() && geometry.selection.start == begin && geometry.selection.end == end,
+          "the pointer selected the exact time range in Pan");
+
+    const float middle = panBody->scaleBottom - .625f * (panBody->scaleBottom - panBody->top);
+    const auto shapes = openShape({x(2 * bar), middle}, "Triangle");
+    const auto changed = root.current();
+    const auto inserted = envelope(pan, changed);
+    const auto sameAt = [&](std::int64_t tick) {
+        return inserted.data && envelopeValue(*inserted.data, tick) == envelopeValue(*authored.data, tick);
+    };
+    check(shapes.size() == 10 && shapes.contains("ADSR") && shapes.contains("Square"),
+          "the continuous envelope's menu offers the ten built-in shapes");
+    check(inserted.data && std::any_of(inserted.data->points.begin(), inserted.data->points.end(), [](const auto &point) {
+              return point.time == 2 * textproj::kWhole && point.value == 1 && point.id != 9;
+          }) && sameAt(begin - bar / 8) && sameAt(end + bar / 8),
+          "Triangle uses the captured range and Pan travel while preserving both outside slopes");
+    if (OpJournal(document->store()).headSeq() != beforeShape)
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeShape,
+              "one Undo restores the envelope before inserting Triangle");
+
+    for (const auto *name : {"Exponential Rise", "Exponential Fall", "Logarithmic Rise", "Logarithmic Fall"}) {
+        selectShapeRange();
+        openShape({x(2 * bar), middle}, name);
+        const auto snapshot = root.current();
+        const auto shaped = envelope(pan, snapshot);
+        const auto rise = juce::String(name).endsWith("Rise");
+        const auto firstValue = shaped.data ? envelopeValue(*shaped.data, begin) : std::nullopt;
+        const auto towardsEnd = shaped.data ? envelopeValue(*shaped.data, end - bar / 64) : std::nullopt;
+        check(firstValue == (rise ? -1. : -.3125) && towardsEnd &&
+                  (rise ? *towardsEnd > *firstValue : *towardsEnd < *firstValue),
+              "the named ramp rises into the trailing value or falls from the leading value");
+        if (OpJournal(document->store()).headSeq() != beforeShape)
+            check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeShape,
+                  "one Undo restores a ramp insertion");
+    }
+
+    const auto activator = activatorTarget(track);
+    root.showAutomation(track, activator);
+    root.frame();
+    const auto switched = laneBody(activator);
+    if (!switched) {
+        check(false, "the Track Activator overlay is available");
+        return;
+    }
+    constexpr auto marker = 3 * bar / 2 + bar / 8;
+    const auto discrete = openShape({x(marker), switched->bottom - 7.f}, "Square");
+    const auto final = root.current();
+    const auto square = envelope(activator, final);
+    check(discrete == std::set<std::string>{"Square"}, "the discrete envelope offers only Square");
+    check(square.data && std::any_of(square.data->points.begin(), square.data->points.end(), [](const auto &point) {
+              return point.time == marker && point.value == 1 && point.curve == 0;
+          }) && std::any_of(square.data->points.begin(), square.data->points.end(), [](const auto &point) {
+              return point.time == marker + textproj::kPPQ;
+          }) && envelopeValue(*square.data, marker - 1) == 0 &&
+              envelopeValue(*square.data, marker + textproj::kPPQ) == 0,
+          "the fresh Square starts at the unsnapped marker, spans one full grid cell, and preserves the base");
+}
+
+void simplifyAutomationEnvelope(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-simplify.adi", true, {}, error);
+    check(document != nullptr, "a project for the Simplify Envelope menu");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, panLane = 31, activatorLane = 32;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto begin = 7 * bar / 8, end = 25 * bar / 8;
+    const auto pan = panTarget(track);
+    const auto activator = activatorTarget(track);
+    auto panPoints = automation::writePoints(41, panLane, nullptr, Payload::array({
+        {{"id", 1}, {"time", bar / 2}, {"value", -.5}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 2}, {"time", bar}, {"value", -.375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 3}, {"time", 3 * bar / 2}, {"value", -.125}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 4}, {"time", 2 * bar}, {"value", .125}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 5}, {"time", 5 * bar / 2}, {"value", .375}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 6}, {"time", 3 * bar}, {"value", .625}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 7}, {"time", 7 * bar / 2}, {"value", .5}, {"curve", 1}, {"tension", 0.}}
+    }));
+    auto heldPoints = automation::writePoints(42, activatorLane, nullptr, Payload::array({
+        {{"id", 1}, {"time", bar}, {"value", 0}, {"curve", 0}, {"tension", 0.}},
+        {{"id", 2}, {"time", 2 * bar}, {"value", 1}, {"curve", 0}, {"tension", 0.}},
+        {{"id", 3}, {"time", 3 * bar}, {"value", 0}, {"curve", 0}, {"tension", 0.}}
+    }));
+    const bool seeded = document->ops().submit({
+        automation::createLane(automationLaneSpec(pan, 0, panLane)),
+        automation::createLane(automationLaneSpec(activator, 0, activatorLane)),
+        std::move(panPoints), std::move(heldPoints)}).ok && document->synchronise();
+    check(seeded, "continuous Pan and discrete Track Activator automation are authored");
+    if (!seeded)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-simplify");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid = {false, true, false, 0, 1};
+    root.arrangement.changed();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&](auto tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto show = [&](const AutomationTarget &target) -> std::optional<ArrangementCanvas::LaneBody> {
+        root.showAutomation(track, target);
+        root.frame();
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == target)
+                return body;
+        return std::nullopt;
+    };
+    const auto select = [&](const ArrangementCanvas::LaneBody &body) {
+        const float y = body.bottom - 5.f;
+        const juce::Point<float> start{x(begin), y}, finish{x(end), y};
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, finish));
+        canvas.mouseUp(dragAt(canvas, start, finish));
+        root.frame();
+        return canvas.hasAutomationSelection() && geometry.selection.start == begin && geometry.selection.end == end;
+    };
+    const auto open = [&](const ArrangementCanvas::LaneBody &body) {
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Simplify Envelope" && item.getItem().isEnabled)
+                    action = item.getItem().action;
+        };
+        const auto popup = pressAt(canvas, {x(2 * bar), (body.top + body.scaleBottom) / 2.f},
+                                   juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        return action;
+    };
+
+    const auto panBody = show(pan);
+    const auto before = root.current();
+    check(panBody && before, "the Pan lane and source snapshot are available");
+    if (!panBody || !before)
+        return;
+    const auto original = envelopeOf(*before, pan);
+    const auto other = envelopeOf(*before, activator);
+    check(panBody && original.data && other.data, "the original envelopes are readable");
+    if (!panBody || !original.data || !other.data)
+        return;
+    check(!open(*panBody), "a marker alone does not offer Simplify Envelope");
+    check(select(*panBody), "the exact Pan time range is selected");
+    auto action = open(*panBody);
+    check(static_cast<bool>(action), "the selected continuous envelope offers Simplify Envelope");
+    if (action) {
+        const auto head = OpJournal(document->store()).headSeq();
+        action();
+        root.frame();
+        const auto applied = root.current();
+        const auto reduced = envelopeOf(*applied, pan);
+        const auto unchanged = envelopeOf(*applied, activator);
+        const auto &old = original.data->points;
+        check(reduced.data && reduced.data->points == std::vector<engine::AutomationPointNode>{
+                  old[0], old[1], old[5], old[6]} &&
+                  unchanged.data && unchanged.data->encoded == other.data->encoded,
+              "Simplify drops only the redundant selected Pan knots and preserves the exterior and other lane");
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == head,
+              "Simplify is one Undo step");
+        root.frame();
+        const auto undone = envelopeOf(*root.current(), pan);
+        check(undone.data && undone.data->encoded == original.data->encoded,
+              "Undo restores the exact original Pan stream");
+    }
+
+    const auto activatorBody = show(activator);
+    check(activatorBody && select(*activatorBody), "the exact Track Activator time range is selected");
+    if (activatorBody)
+        check(!open(*activatorBody), "the discrete Hold envelope does not offer Simplify Envelope");
+}
+
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;
     auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
@@ -21438,6 +22808,11 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     peer.addToDesktop(0);
     root.afterEdit=[&] {document->synchronise();};
     root.setSize(1440,900);
+    root.arrangement.geometry.resizeTrack(2, 112);
+    // Keep the automation range targets visible and the snapped test gestures stable.
+    root.arrangement.geometry.scale = 48;
+    root.arrangement.geometry.grid.snap = true;
+    root.arrangement.changed();
     root.setAutomationMode(true);
     root.frame();
     check(root.addAutomationPoint(2,3*bar/4,-6) && root.addAutomationPoint(2,5*bar/4,-3),
@@ -21604,6 +22979,527 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
               "a Mixer title popup clears the automation range before presenting track commands");
     }
     document->release();
+}
+
+void automationKeyboardEdits(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-keyboard.adi", true, {}, error);
+    check(document != nullptr, "a project for keyboard automation");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    const auto volume = volumeTarget(track);
+    const auto pan = panTarget(track);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-keyboard");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    root.setBounds(peer.getLocalBounds());
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    const bool madePan = root.addAutomationPoint(track, pan, 7 * bar / 4, .25, true);
+    root.showAutomation(track, volume);
+    const bool madeVolume = root.addAutomationPoint(track, volume, bar, -18., true) &&
+                            root.addAutomationPoint(track, volume, 2 * bar, -12., true);
+    root.frame();
+    check(madePan && madeVolume, "a Pan breakpoint between two exact Volume breakpoints");
+    if (!madePan || !madeVolume)
+        return;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == volume;
+    });
+    check(body != bodies.end(), "the track's Volume automation envelope is visible");
+    if (body == bodies.end())
+        return;
+    const auto points = [&](const AutomationTarget &target) -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, target) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points(volume);
+    const auto originalPan = points(pan);
+    if (original.size() != 2 || originalPan.size() != 1) {
+        check(false, "the exact keyboard fixture points are available");
+        return;
+    }
+
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto baseline = undoStep();
+    const auto click = [&](std::int64_t tick, float y, juce::ModifierKeys modifiers = {}) {
+        const juce::Point<float> position{static_cast<float>(geometry.x(tick)), y};
+        canvas.mouseDown(pressAt(canvas, position, modifiers));
+        canvas.mouseUp(pressAt(canvas, position, modifiers));
+    };
+    const auto mark = [&](std::int64_t tick) { click(tick, body->bottom - 6.f); };
+    const auto pick = [&](const engine::AutomationPointNode &point) {
+        const auto travel = static_cast<float>((point.value - volume.minimum) / (volume.maximum - volume.minimum));
+        click(point.time, body->scaleBottom - travel * (body->scaleBottom - body->top),
+              juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier);
+    };
+    const auto picked = [&](const engine::AutomationPointNode &point) {
+        const auto &selected = canvas.chosenAutomationPoint();
+        return selected && selected->track == track && selected->target == volume && selected->point == point.id;
+    };
+    const auto enter = juce::KeyPress(juce::KeyPress::returnKey);
+    const auto tab = juce::KeyPress(juce::KeyPress::tabKey);
+    const auto alt = juce::ModifierKeys::altModifier;
+
+    const auto insert = bar / 2;
+    mark(insert);
+    const bool atMarker = canvas.hasAutomationSelection() && geometry.selection.insert == insert;
+    check(atMarker, "the insert marker belongs to the Volume envelope");
+    if (!atMarker)
+        return;
+    const bool staged = canvas.keyPressed(enter);
+    check(staged && points(volume) == original && undoStep() == baseline,
+          "the first Enter stages the breakpoint without writing automation");
+    const bool confirmed = staged && canvas.keyPressed(enter);
+    const auto inserted = points(volume);
+    check(confirmed && inserted.size() == 3 && inserted.front().time == insert && undoStep() != baseline,
+          "the second Enter adds the breakpoint at the marker in one edit");
+    if (undoStep() != baseline)
+        check(root.command(AppCommands::Undo) && points(volume) == original && undoStep() == baseline,
+              "one Undo restores both original points after keyboard insertion");
+
+    const auto &first = original[0];
+    const auto &second = original[1];
+    mark(3 * bar / 2);
+    const bool previous = canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey, alt, 0));
+    check(previous && geometry.selection.insert == first.time && !canvas.chosenAutomationPoint(),
+          "Alt+Left moves focus to the previous Volume breakpoint without selecting it for editing");
+    if (!previous || geometry.selection.insert != first.time)
+        mark(first.time);
+    const bool next = canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, alt, 0));
+    check(next && geometry.selection.insert == second.time && !canvas.chosenAutomationPoint() &&
+              points(volume) == original && points(pan) == originalPan && undoStep() == baseline,
+          "Alt+Right skips the Pan breakpoint and changes only the Volume insert marker");
+
+    mark(first.time);
+    const bool pickedWithEnter = canvas.keyPressed(enter) && picked(first);
+    check(pickedWithEnter, "Enter selects the existing breakpoint at the insert marker for editing");
+    if (!pickedWithEnter)
+        pick(first);
+    const bool pickedWithTab = canvas.keyPressed(tab) && picked(second);
+    check(pickedWithTab, "Tab selects the next Volume breakpoint for editing");
+    if (!pickedWithTab)
+        pick(second);
+    if (!picked(second))
+        return;
+
+    auto &editor = canvas.automationValueEditor();
+    const bool opened = canvas.keyPressed(juce::KeyPress('-', {}, '-')) && editor.isVisible();
+    check(opened && points(volume) == original && undoStep() == baseline,
+          "typing the sign of a value opens the existing editor without writing the breakpoint");
+    if (!opened)
+        return;
+    editor.setText("-70", false);
+    const bool wroteValue = editor.keyPressed(enter);
+    root.frame();
+    auto expected = original;
+    expected[1].value = -70.;
+    check(wroteValue && !editor.isVisible() && points(volume) == expected && points(pan) == originalPan &&
+              undoStep() != baseline,
+          "Enter commits exactly -70 dB to the selected breakpoint and keeps its time and ID");
+    if (undoStep() != baseline)
+        check(root.command(AppCommands::Undo) && points(volume) == original && undoStep() == baseline,
+              "one Undo restores the exact original Volume value");
+    mark(first.time);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, alt, 0)) &&
+              root.automationTarget(track) == pan && geometry.selection.insert == first.time &&
+              !canvas.chosenAutomationPoint() && undoStep() == baseline,
+          "Alt+Down shows the next authored parameter without editing it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey, alt, 0)) &&
+              root.automationTarget(track) == volume && points(volume) == original && points(pan) == originalPan,
+          "Alt+Up returns to Volume while both envelopes remain unchanged");
+}
+
+void reenableArrangementEnvelope(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "reenable-arrangement-envelope.adi", true, {}, error);
+    check(document != nullptr, "a project for arrangement Re-Enable Automation");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "reenable-arrangement-envelope");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.reenableLane = [&](std::int64_t lane) { return document->reenableAutomation(lane); };
+    root.setSize(1440, 900);
+    constexpr std::int64_t track = 2;
+    constexpr auto tick = textproj::kWhole;
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.left = 0;
+    geometry.scale = 48;
+    root.arrangement.changed();
+    const auto volume = volumeTarget(track), pan = panTarget(track);
+    root.showAutomation(track, volume);
+    const bool madeVolume = root.addAutomationPoint(track, volume, tick, -32., true);
+    root.showAutomation(track, pan);
+    const bool madePan = root.addAutomationPoint(track, pan, tick, 1., true);
+    check(madeVolume && madePan, "a centered Volume breakpoint and a Pan breakpoint at the top of its envelope");
+    if (!madeVolume || !madePan)
+        return;
+
+    document->prepare(48000, 64);
+    OpRequest volumeOverride, panOverride;
+    volumeOverride.opType = "mixer.setVolume";
+    volumeOverride.payload = {{"id", track}, {"db", -3.}};
+    panOverride.opType = "mixer.setPan";
+    panOverride.payload = {{"id", track}, {"pan", -.5}};
+    const bool submitted = document->ops().submit({std::move(volumeOverride), std::move(panOverride)}).ok &&
+                           document->synchronise();
+    root.frame();
+    const auto current = root.current();
+    const auto volumeEnvelope = envelopeOf(*current, volume), panEnvelope = envelopeOf(*current, pan);
+    const bool overridden = submitted && volumeEnvelope.lane && volumeEnvelope.lane->overridden &&
+                            panEnvelope.lane && panEnvelope.lane->overridden;
+    check(overridden, "the session has overridden both Volume and Pan");
+    if (!overridden)
+        return;
+    const auto volumeId = volumeEnvelope.lane->id, panId = panEnvelope.lane->id;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto panBody = [&]() -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == pan)
+                return body;
+        return std::nullopt;
+    };
+    struct Context {
+        std::int64_t lane = 0;
+        bool editPoint = false;
+        std::function<void()> reenable;
+    };
+    const auto openMenu = [&](juce::Point<float> position) {
+        Context context;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *lane,
+                                             const juce::PopupMenu &menu) {
+            if (header)
+                return;
+            context.lane = lane ? lane->id : 0;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.isEnabled && item.text == "Re-Enable Automation")
+                    context.reenable = item.action;
+                if (item.isEnabled && item.text == juce::String::fromUTF8("Edit Value\xE2\x80\xA6"))
+                    context.editPoint = true;
+            }
+        };
+        const juce::ModifierKeys right(juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(pressAt(canvas, position, right));
+        canvas.mouseUp(pressAt(canvas, position, right));
+        root.arrangement.onContextMenu = {};
+        return context;
+    };
+
+    const auto overlay = panBody();
+    check(overlay.has_value(), "the Pan envelope is visible over the clips");
+    if (!overlay)
+        return;
+    const auto x = static_cast<float>(geometry.x(tick));
+    const auto mainMenu = openMenu({x, (overlay->top + overlay->bottom) / 2});
+    check(mainMenu.lane == panId && mainMenu.reenable,
+          "the main overlay menu offers Re-Enable for Pan while Volume is overridden too");
+
+    const bool promoted = root.addAutomationLane(track, pan);
+    root.showAutomation(track, volume);
+    root.frame();
+    const auto auxiliary = panBody();
+    check(promoted && auxiliary && auxiliary->top > overlay->bottom,
+          "Pan has its own row below the Volume overlay");
+    if (!promoted || !auxiliary)
+        return;
+
+    // The Pan point paints two pixels below its row's top. Hit testing can reach across the
+    // row boundary. Edit and Re-Enable should agree at that hit.
+    const juce::Point<float> edge{x, auxiliary->top - 3.f};
+    const auto hit = canvas.automationPointAt(edge);
+    const auto *rowLane = root.arrangement.automationLaneAt(juce::roundToInt(edge.y));
+    const bool atBoundary = hit && hit->lane == panId && hit->target == pan && rowLane && rowLane->id == volumeId;
+    check(atBoundary, "the point at the row boundary can be hit from a Volume row pixel");
+    if (!atBoundary)
+        return;
+
+    const auto step = document->ops().nextUndo();
+    const auto menu = openMenu(edge);
+    check(menu.editPoint && menu.lane == panId && menu.reenable,
+          "Edit Value and Re-Enable Automation address the same Pan breakpoint's envelope");
+    if (menu.reenable)
+        menu.reenable();
+    root.frame();
+    const auto after = document->ops().nextUndo();
+    const auto &overrides = document->session().overriddenLanes();
+    check(!overrides.contains(panId) && overrides.contains(volumeId) && step && after && after->txnId == step->txnId,
+          "choosing Re-Enable follows Pan, keeps Volume overridden, and adds no Undo step");
+    document->release();
+}
+
+void lockEnvelopes(const std::filesystem::path &parent) {
+    const auto dir = parent / "lock-envelopes";
+    std::filesystem::create_directories(dir);
+    settings::AppSettings settings(appdata::App::Daw, dir / "settings.json");
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation.adi", true, {}, error);
+    check(document != nullptr, "a project for Lock Envelopes");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, clipId = 81;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto start = bar, destination = 4 * bar, inside = bar / 2;
+    constexpr double breakpointValue = -23.;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", clipId}, {"track", track}, {"kind", "midi"}, {"pos", start},
+                    {"length", bar}, {"name", "Clip with Volume automation"}};
+    const bool madeClip = document->ops().submit(clip).ok && document->synchronise();
+    check(madeClip, "a MIDI clip occupies the original time range");
+    if (!madeClip)
+        return;
+
+    auto content = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(),
+        commands, document->views(), document->sessionState(), "lock-envelopes");
+    AdiWindow window(std::move(content), commands, false);
+    window.setSize(1440, 900);
+    auto &root = window.root();
+    root.afterEdit = [&] { document->synchronise(); };
+    const auto volume = volumeTarget(track);
+    const bool authored = root.addAutomationPoint(track, volume, start + inside, breakpointValue, true);
+    root.frame();
+    check(authored, "the Volume breakpoint lies inside the clip's time range");
+    if (!authored)
+        return;
+
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, volume) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points();
+    const auto clipAt = [&](std::int64_t tick) {
+        const auto *lane = root.reader().findTrack(track);
+        return lane && lane->clips.size() == 1 && lane->clips.front()->id == clipId &&
+               lane->clips.front()->posTicks == tick && lane->clips.front()->lengthTicks == bar;
+    };
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto baseline = undoStep();
+    const auto lockId = AppCommands::commandFor("options.lock-envelopes");
+    const auto menuMatches = [&](bool locked) {
+        auto *barMenu = window.menu();
+        if (lockId == 0 || barMenu == nullptr)
+            return false;
+        const auto index = barMenu->getMenuBarNames().indexOf("Options");
+        if (index < 0)
+            return false;
+        const auto menu = barMenu->getMenuForIndex(index, "Options");
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            const auto &item = it.getItem();
+            if (item.itemID == lockId)
+                return item.text == "Lock Envelopes" && item.isEnabled && item.isTicked == locked;
+        }
+        return false;
+    };
+    auto &button = root.namesBar.lock;
+    const auto follows = [&] { return settings.get("editing.automationFollowsClips") == true; };
+    check(clipAt(start) && original.size() == 1 && original.front().time == start + inside &&
+              original.front().value == breakpointValue && follows() && !button.getToggleState(),
+          "the MIDI clip and breakpoint start in place with envelopes unlocked");
+    check(menuMatches(false), "Options lists Lock Envelopes unchecked by default");
+
+    button.onClick();
+    root.frame();
+    const settings::AppSettings savedLock(appdata::App::Daw, settings.file());
+    check(!follows() && savedLock.get("editing.automationFollowsClips") == false &&
+              button.getToggleState() && menuMatches(true) && undoStep() == baseline,
+          "the padlock toggles and saves the setting, ticks Options, and adds no Undo step");
+    const auto move = [&] {
+        const bool moved = root.placeClips({{clipId, track, destination}}, "Move Clip");
+        root.frame();
+        return moved && clipAt(destination);
+    };
+    const bool movedLocked = move();
+    check(movedLocked && points() == original,
+          "moving a locked clip leaves the Volume breakpoint at its original time and ID");
+    if (undoStep() != baseline) {
+        const bool undone = root.command(AppCommands::Undo);
+        root.frame();
+        check(undone && clipAt(start) && points() == original && undoStep() == baseline,
+              "one Undo restores the clip before replaying the move");
+        if (!undone || !clipAt(start) || undoStep() != baseline)
+            return;
+    } else if (!clipAt(start)) {
+        return;
+    }
+
+    button.onClick();
+    root.frame();
+    check(follows() && !button.getToggleState() && menuMatches(false) && undoStep() == baseline,
+          "a second padlock click unlocks the envelopes and unticks Options");
+    const bool movedUnlocked = move();
+    const auto unlocked = points();
+    const auto hasPoint = [&](std::int64_t tick) {
+        return std::any_of(unlocked.begin(), unlocked.end(), [&](const auto &point) {
+            return point.time == tick && point.value == breakpointValue;
+        });
+    };
+    check(movedUnlocked && hasPoint(destination + inside) && !hasPoint(start + inside),
+          "replaying the move unlocked carries the Volume breakpoint with the MIDI clip");
+
+    if (lockId != 0) {
+        const auto beforeMenu = undoStep();
+        const bool invoked = root.command(lockId);
+        root.frame();
+        check(invoked && !follows() && button.getToggleState() && menuMatches(true) && undoStep() == beforeMenu,
+              "the Options command locks the same setting and updates the padlock without an edit");
+    }
+}
+
+void automationCurveGestures(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-curve-gestures.adi", true, {}, error);
+    check(document != nullptr, "a project for arrangement curve gestures");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    constexpr auto middle = 3 * bar / 2;
+    constexpr auto linear = static_cast<std::uint8_t>(engine::CurveShape::Linear);
+    constexpr auto bezier = static_cast<std::uint8_t>(engine::CurveShape::Bezier);
+    const auto pan = panTarget(track);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-curve-gestures");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.left = 0;
+    geometry.scale = 48;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    const bool authored = root.addAutomationPoint(track, pan, bar, -.75, true) &&
+                          root.addAutomationPoint(track, pan, 2 * bar, .75, true);
+    root.frame();
+    check(authored, "two exact Pan breakpoints define a diagonal segment");
+    if (!authored)
+        return;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == pan;
+    });
+    const auto load = [&] { return envelopeOf(*root.current(), pan); };
+    const auto points = [&]() -> std::vector<engine::AutomationPointNode> {
+        const auto envelope = load();
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points();
+    check(body != bodies.end() && original.size() == 2 && original.front().curve == linear,
+          "the two original, linear Pan points are visible");
+    if (body == bodies.end() || original.size() != 2)
+        return;
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto beforeDrag = undoStep();
+    const auto resetTo = [&](auto step) {
+        // The legacy Alt gesture can add a point and then move it, as two edits.
+        for (int edits = 0; undoStep() != step && edits < 2; ++edits)
+            if (!root.command(AppCommands::Undo))
+                break;
+        root.frame();
+        return undoStep() == step;
+    };
+    const auto position = [&](double value) {
+        const auto fraction = static_cast<float>((value - pan.minimum) / (pan.maximum - pan.minimum));
+        return juce::Point<float>{static_cast<float>(geometry.x(middle)),
+                                  body->scaleBottom - fraction * (body->scaleBottom - body->top)};
+    };
+    const juce::ModifierKeys bend(juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier);
+    const auto start = position(0.), dragged = start.translated(0.f, 24.f);
+    canvas.mouseDown(pressAt(canvas, start, bend));
+    canvas.mouseDrag(dragAt(canvas, start, dragged, bend));
+    check(points() == original && undoStep() == beforeDrag, "Alt-drag previews the curve without writing a point or step");
+    canvas.mouseUp(dragAt(canvas, start, dragged, bend));
+    root.frame();
+    const auto edited = points();
+    bool bent = edited.size() == 2 && edited.front().curve > linear && edited.front().tension != 0;
+    if (bent) {
+        auto expected = original;
+        expected.front().curve = edited.front().curve;
+        expected.front().tension = edited.front().tension;
+        bent = edited == expected;
+    }
+    check(bent && undoStep() != beforeDrag, "Alt-drag shapes the outgoing curve without moving or adding breakpoints");
+    if (bent)
+        check(root.command(AppCommands::Undo) && undoStep() == beforeDrag && points() == original,
+              "one Undo restores the original straight segment");
+    if (!resetTo(beforeDrag))
+        return;
+
+    const auto envelope = load();
+    constexpr double tension = .75;
+    auto curve = automation::setCurve(envelope.data->id, envelope.lane->id, nullptr,
+                                     Payload::array({original.front().id}), bezier, tension);
+    const bool seeded = root.submitEdits({std::move(curve)});
+    root.frame();
+    check(seeded, "the engine stores a Bezier segment for the existing breakpoints");
+    if (!seeded)
+        return;
+    const auto beforeInsert = undoStep();
+    const auto stored = points();
+    const auto value = engine::curveValue(stored.front().value, stored.back().value, .5, bezier, tension);
+    const auto curved = position(value);
+    const auto line = canvas.automationLineAt(curved);
+    check(line && line->target == pan && curved.getDistanceFrom(start) > 8.f,
+          "the visible line hits at the engine's curved midpoint, away from the straight chord");
+    canvas.mouseDown(pressAt(canvas, curved));
+    canvas.mouseUp(pressAt(canvas, curved));
+    root.frame();
+    const auto inserted = points();
+    check(inserted.size() == 3 && inserted[1].time == middle && std::abs(inserted[1].value - value) < 1.e-9,
+          "clicking the curved line inserts the evaluated value at that time");
+    if (!resetTo(beforeInsert))
+        return;
+
+    canvas.mouseDown(pressAt(canvas, curved, bend));
+    canvas.mouseUp(pressAt(canvas, curved, bend));
+    const auto now = juce::Time::getCurrentTime();
+    const juce::MouseEvent twice{juce::Desktop::getInstance().getMainMouseSource(), curved,
+        bend, 1.f, 0.f, 0.f, 0.f, 0.f, &canvas, &canvas, now, curved, now, 2, false};
+    canvas.mouseDown(twice);
+    canvas.mouseUp(twice);
+    canvas.mouseDoubleClick(twice);
+    root.frame();
+    check(points() == original && undoStep() != beforeInsert,
+          "Alt-double-click straightens just the segment and preserves the two endpoints");
+    if (points() == original && undoStep() != beforeInsert)
+        check(root.command(AppCommands::Undo) && points() == stored && undoStep() == beforeInsert,
+              "one Undo restores the curve after straightening");
 }
 
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
@@ -26067,10 +27963,11 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
+                                                   C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
-              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio,
@@ -26085,11 +27982,12 @@ int main(int argc, char **argv) {
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then audio/video and MIDI clip export. It ends with Quit [P:export#1]");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
+                                                   C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
-              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, Solo in "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, Solo in "
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
@@ -26194,7 +28092,8 @@ int main(int argc, char **argv) {
                       C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::HotSwap == C::PreviewSelected + 1 &&
                       C::ManageProjectFiles == C::HotSwap + 1 && C::ToggleFavorite == C::ManageProjectFiles + 1 &&
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
-                      C::ReverseAudio == C::ToggleCollectionGray + 1 && C::LastId == C::ReverseAudio,
+                      C::ReverseAudio == C::ToggleCollectionGray + 1 &&
+                      C::LockEnvelopes == C::ReverseAudio + 1 && C::LastId == C::LockEnvelopes,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -26202,7 +28101,7 @@ int main(int argc, char **argv) {
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
                   "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
-                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, and Reverse Clip(s)");
+                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), and Lock Envelopes");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -28819,7 +30718,21 @@ int main(int argc, char **argv) {
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
+    trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
+    trace("steppedDeviceAutomation", [&] { steppedDeviceAutomation(commands, temp.path()); });
+    trace("automationDeviceActivator", [&] { automationDeviceActivator(commands, temp.path()); });
+    trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
+    trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
+    trace("automationBreakpointModifiers", [&] { automationBreakpointModifiers(commands, temp.path()); });
+    trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
+    trace("automationCurveGestures", [&] { automationCurveGestures(commands, temp.path()); });
+    trace("automationShapeMenu", [&] { automationShapeMenu(commands, temp.path()); });
+    trace("simplifyAutomationEnvelope", [&] { simplifyAutomationEnvelope(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
+    trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
+    trace("reenableArrangementEnvelope", [&] { reenableArrangementEnvelope(commands, temp.path()); });
+    trace("lockEnvelopes", [&] { lockEnvelopes(temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });

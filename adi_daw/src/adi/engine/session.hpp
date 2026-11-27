@@ -264,6 +264,12 @@ public:
     /// reenableAutomation resumes it. True for an absent/already-overridden
     /// lane too; false if rebuilding the requested binding failed (error()).
     bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
+    /// Host bypass is automatable for loaded audio effects. The message
+    /// thread reads the published state and falls back to the stored bit
+    /// until an active binding has been sampled by the graph.
+    [[nodiscard]] bool deviceActivatorAvailable(std::int64_t deviceId) const noexcept;
+    [[nodiscard]] std::optional<bool> deviceActivatorPlaying(std::int64_t deviceId) const noexcept;
+    bool overrideDeviceActivator(std::int64_t deviceId);
 
     // Document-owner recording policy. Queue matching gate changes to each
     // recorder's producer separately; these methods never touch its SPSC ring.
@@ -579,6 +585,10 @@ private:
     // Every node a track's events reach, which is MIDI's controller route identity.
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&, const TimingView&);
     [[nodiscard]] std::vector<Node*> graphTrackChain(std::int64_t, const TimingView&);
+    [[nodiscard]] const device::DeviceInstance* resolvedAutomationDevice(
+        std::int64_t id, const rows::Model&, bool requireAudioEffect = false) const noexcept;
+    [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindResolvedDeviceAutomation(
+        std::shared_ptr<const AutomationProgram>, const std::set<std::int64_t>& suspended, const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row,

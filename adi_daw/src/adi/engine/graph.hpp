@@ -203,6 +203,11 @@ public:
     virtual void emitAtInput(EventList& out, std::int32_t frames, std::int32_t) noexcept {
         emit(out, frames);
     }
+    /// Sample an optional host bypass lane once per physical block.
+    /// Called on the audio thread before forwarding any events.
+    virtual bool selectBypassForBlock(bool manualBypass, std::int32_t /*arrival*/) noexcept {
+        return manualBypass;
+    }
 };
 
 /// One processing node.
@@ -246,6 +251,10 @@ public:
     /// history across rebuilds. Bypass never removes the declared latency.
     [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
     [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Graph-selected bypass state, sampled before forwarding for this block.
+    [[nodiscard]] virtual EventFlow eventFlowAfterBypass(bool) const noexcept { return eventFlow(); }
+    [[nodiscard]] virtual std::int64_t tailSamplesAfterBypass(bool) const noexcept { return tailSamples(); }
+    virtual void didSuspendAfterBypass(bool) noexcept { didSuspend(); }
     /// Called only after the graph sampled bypass for this block. Do not
     /// re-read the switch: a concurrent toggle must not select undelayed dry.
     virtual void processActive(const NodeIo& io) noexcept { process(io); }
@@ -1250,6 +1259,9 @@ private:
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
         bool hasBypass = false;
+        bool bypassForBlock = false;
+        EventFlow eventFlowForBlock = EventFlow::Through;
+        std::uint64_t bypassStateBlock = 0;
         std::uint64_t bypassTransitionBlock = 0;
         bool serviceBypassTransition = false;
         DelayLine dryDelay;

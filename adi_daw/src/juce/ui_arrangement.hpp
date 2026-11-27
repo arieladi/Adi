@@ -9,10 +9,14 @@
 #include "adi/ui/track_tree.hpp"
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <array>
 #include <functional>
+#include <map>
 #include <optional>
 #include <vector>
 namespace adi::engine { struct AudioRecordingPreview; }
+namespace adi::automation { enum class Shape; }
+
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -200,6 +204,12 @@ class TrackHeaderList final : public juce::Component,
     juce::Rectangle<int> quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept;
     // The box's menu: Free (Rec-Q) or Off (Play-Q), then the four grids, the track's ticked.
     juce::PopupMenu quantizeMenu(std::int64_t track, bool record);
+    juce::Rectangle<int> automationChooserBox(std::uint32_t depth, int top, int height,
+                                              bool device, bool midi = false) const noexcept;
+    juce::PopupMenu automationChooserMenu(std::int64_t track, bool device);
+    juce::Rectangle<int> automationLaneButtonBox(std::int64_t track, std::uint32_t depth, int top,
+                                                 bool add) const noexcept;
+    juce::Rectangle<int> automationLaneRemoveBox(std::uint32_t depth, int top, int height) const noexcept;
     // The bands drawn at most: deeper groups share the last one's place.
     static constexpr std::uint32_t kMaxBands = 16;
 
@@ -218,6 +228,7 @@ class TrackHeaderList final : public juce::Component,
     // Whether the press was on a fold switch, which does all it does on the press: its release keeps
     // what the Status Bar says.
     bool foldPressed_ = false;
+    bool automationLaneButtonPressed_ = false;
     Drop drop_;
 };
 // What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
@@ -255,20 +266,24 @@ class ArrangementCanvas final : public juce::Component,
         const engine::TrackNode *track = nullptr;
         float top = 0, bottom = 0; // the part drawn, cut at the foot
         float scaleBottom = 0;     // the lane's own foot, which the values scale to
+        AutomationTarget target;
     };
     std::vector<LaneBody> laneBodies() const;
     bool hasAutomationSelection() const;
     void clearAutomationSelection();
     std::optional<std::vector<automation::LaneSpec>> automationRangeLanes() const;
+    std::optional<AutomationTarget> automationCommandTarget() const;
     void selectAutomationSpan(std::int64_t begin, std::int64_t end);
     struct AutomationPick {
         std::int64_t track = 0;
         std::uint64_t point = 0;
+        AutomationTarget target;
+        std::int64_t lane = 0, data = 0;
     };
     std::optional<AutomationPick> automationPointAt(juce::Point<float>) const;
     // The lane whose envelope line, as drawn, passes within a few pixels of a point (A14).
     std::optional<LaneBody> automationLineAt(juce::Point<float>) const;
-    std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
+    const std::optional<AutomationPick> &chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
     void fileDragEnter(const juce::StringArray &, int, int) override;
@@ -385,9 +400,42 @@ class ArrangementCanvas final : public juce::Component,
     };
     std::optional<AutomationStroke> automationStroke_;
     bool automationSelectionDown(const juce::MouseEvent &);
-    void rememberAutomationSelection();
+    void rememberAutomationSelection(const std::vector<LaneBody> &, std::size_t destination, bool restart);
+    bool automationLaneSelected(const LaneBody &) const;
+    bool automationPickIsCurrent(const AutomationPick &) const;
     std::optional<Selection> automationSelection_;
-    std::vector<std::pair<std::int64_t, AutomationTarget>> automationSelectionTargets_;
+    using AutomationLaneKey = std::pair<std::int64_t, AutomationTarget>;
+    std::optional<AutomationLaneKey> automationSelectionAnchor_;
+    std::vector<AutomationLaneKey> automationSelectionTargets_;
+    enum class AutomationTransformHandle : std::uint8_t {
+        TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left
+    };
+    struct AutomationTransformBounds {
+        AutomationLaneKey target;
+        std::int64_t laneId, dataId, begin, end;
+        float top, bottom, visibleBottom;
+    };
+    struct AutomationTransformDrag {
+        AutomationTransformBounds bounds;
+        AutomationTransformHandle handle;
+        juce::Point<float> lastPosition;
+        juce::Point<float> distance;
+        std::int64_t begin, end;
+        std::array<double, 4> values{0.0, 1.0, 0.0, 1.0};
+        std::uint64_t generation = 0;
+        bool cancelled = false;
+    };
+    std::optional<AutomationTransformBounds> automationTransformBounds() const;
+    juce::Rectangle<float> automationTransformBox(const AutomationTransformBounds &) const;
+    std::array<juce::Point<float>, 8> automationTransformHandles(const AutomationTransformBounds &) const;
+    std::optional<AutomationTransformHandle> automationTransformHandleAt(const AutomationTransformBounds &,
+                                                                         juce::Point<float>) const;
+    bool beginAutomationTransform(const juce::MouseEvent &);
+    void updateAutomationTransform(const juce::MouseEvent &);
+    void finishAutomationTransform(const juce::MouseEvent &);
+    void paintAutomationTransform(juce::Graphics &) const;
+    std::optional<juce::Point<float>> automationTransformHover_;
+    std::optional<AutomationTransformDrag> automationTransformDrag_;
     struct AutomationValueAddress {
         AutomationTarget target;
         std::int64_t track=0,lane=0,data=0,tick=0;
@@ -400,6 +448,10 @@ class ArrangementCanvas final : public juce::Component,
     void automationContextMenu(const juce::MouseEvent &);
     bool draggingTakeSelection_ = false;
     std::int64_t takeAnchor_ = 0;
+    void simplifyAutomationEnvelope(const AutomationValueAddress &, std::int64_t begin,
+                                    std::int64_t end, std::uint64_t generation);
+    void insertAutomationShape(const AutomationValueAddress &, automation::Shape, std::int64_t begin,
+                               std::int64_t end, std::uint64_t generation);
     void beginAutomationValueEdit(const AutomationValueAddress &);
     void commitAutomationValue();
     void endAutomationValueEdit(bool refocus=true);
@@ -409,21 +461,97 @@ class ArrangementCanvas final : public juce::Component,
     void paintAutomationValueReadout(juce::Graphics &) const;
     RenameEditor automationValueEditor_;
     std::optional<AutomationValueAddress> automationValueAddress_;
+    struct KeyboardAutomationDraft {
+        AutomationValueAddress address;
+        std::int64_t tick;
+        double value;
+    };
+    std::optional<AutomationLaneKey> keyboardAutomationLane_;
+    std::optional<AutomationPick> keyboardAutomationFocus_;
+    std::optional<KeyboardAutomationDraft> keyboardAutomationDraft_;
+    bool keyboardValueEditing_ = false;
+    std::optional<AutomationLaneKey> automationKeyboardLane() const;
+    void focusAutomationKeyboardLane(const AutomationLaneKey &, std::int64_t tick,
+                                     std::optional<AutomationPick> focused = {});
+    bool navigateAutomationWithAlt(const juce::KeyPress &, const AutomationLaneKey &);
+    bool automationKeyPressed(const juce::KeyPress &);
     juce::String automationValueReadout_;
     juce::GlyphArrangement automationValueGlyphs_;
     juce::Rectangle<float> automationValueReadoutBounds_;
-    struct AutomationPointDrag {
+    struct AutomationAddDrag {
         AutomationTarget target;
         std::int64_t track, tick;
-        std::optional<std::uint64_t> point; // absent until a new point is committed
         double value;
         std::uint64_t generation;
         bool cancelled = false;
     };
-    bool automationPointDragIsCurrent() const;
-    void updateAutomationPointDrag(const juce::MouseEvent &);
-    std::optional<AutomationPointDrag> pointDrag_;
-    std::optional<AutomationPick> chosenPoint_;
+    struct AutomationDragPoint {
+        std::uint64_t id;
+        std::int64_t time;
+        double value;
+        std::uint8_t curve;
+        float tension;
+    };
+    struct AutomationDragLane {
+        std::int64_t track = 0, lane = 0, data = 0;
+        AutomationTarget target;
+        std::vector<AutomationDragPoint> points;
+        std::vector<std::int64_t> pointTimes;
+        std::vector<std::uint64_t> overwritten;
+    };
+    struct AutomationDrag {
+        enum class Axis { Undecided, Horizontal, Vertical };
+        std::vector<AutomationDragLane> lanes;
+        juce::Point<float> origin, lastPointer, pendingShift;
+        std::int64_t anchorTick = 0, anchorData = 0, timeDelta = 0;
+        double horizontalTravel = 0, valueDelta = 0;
+        Axis shiftAxis = Axis::Undecided;
+        float height = 1;
+        std::uint64_t generation = 0;
+        bool verticalOnly = false, movesSelection = false, cancelled = false;
+        std::optional<std::pair<std::int64_t, std::int64_t>> spliceBounds;
+    };
+    bool beginSingleAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
+    bool beginSelectedAutomationDrag(const AutomationPick &, const juce::MouseEvent &);
+    void updateOverwrittenAutomationPoints(AutomationDrag &, const engine::Snapshot &);
+    struct AutomationSegmentHit {
+        LaneBody body;
+        AutomationPick left, right;
+        double leftValue = 0.0, rightValue = 0.0;
+        std::uint8_t curve = 0;
+        float tension = 0.f, distance = 0.f;
+        std::size_t rightIndex = 0;
+        bool held = false, diagonal = false;
+    };
+    std::optional<AutomationSegmentHit> automationSegmentAt(juce::Point<float>, float maxDistance) const;
+    struct AutomationCurvePreview {
+        std::uint64_t point;
+        std::uint8_t curve;
+        float tension;
+    };
+    std::optional<AutomationCurvePreview> automationCurvePreview(const LaneBody &, const TrackEnvelope &) const;
+    bool beginAutomationSegmentDrag(const juce::MouseEvent &);
+    void updateAutomationDrag(const juce::MouseEvent &);
+    bool commitAutomationDrag(const AutomationDrag &);
+    std::optional<AutomationDrag> automationDrag_;
+    struct AutomationCurveDrag {
+        AutomationPick left;
+        std::uint64_t right = 0, generation = 0;
+        float originY = 0, initialTension = 0, tension = 0, direction = 1;
+        bool cancelled = false;
+    };
+    std::optional<AutomationCurveDrag> automationCurveDrag_;
+    void commitAutomationCurve(const AutomationPick &left, std::uint64_t right, std::uint8_t shape, float tension);
+    std::optional<AutomationPick> pointDrag_, chosenPoint_;
+    enum class AutomationPointClick { None, Delete, Select };
+    AutomationPointClick automationPointClick_ = AutomationPointClick::None;
+    bool suppressAutomationDoubleClick_ = false, ignoringAutomationClick_ = false;
+    void finishAutomationPointClick(const AutomationPick &);
+    std::int64_t pointTick_ = 0;
+    bool automationAddDragIsCurrent() const;
+    void updateAutomationAddDrag(const juce::MouseEvent &);
+    std::optional<AutomationAddDrag> automationAddDrag_;
+    double pointValue_ = 0;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;
     int fadeFromY_ = 0;
@@ -521,10 +649,6 @@ class NamesBar final : public juce::Component {
     BarButton automation, lock;
     // Show's least width: "Show" and a few letters of the view.
     static constexpr int kShowMin = 80;
-    // What Automation Mode and Lock Envelopes say while they wait.
-    static constexpr const char *kAutomationWaits =
-        "Automation Mode waits for the engine's automation lanes (window log, N26).";
-    static constexpr const char *kLockWaits = "Lock Envelopes waits for the engine's automation lanes (window log, N26).";
 
   private:
     // The two groups' boxes, drawn behind their cells.

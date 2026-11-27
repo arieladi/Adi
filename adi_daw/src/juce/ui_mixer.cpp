@@ -468,11 +468,16 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.getProperties().set(kHalfLit, false);
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
     arm.getProperties().set("adi.lit", "record");
-    pan.addMouseListener(this, false);
-    volume.addMouseListener(this, false); // its right-click: the fader's menu (AU-04)
+    pan.addMouseListener(this, true);
+    volume.addMouseListener(this, true); // the inline bar's value field is a child Label
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
-    active.onClick = [this] { panel_.root.activateTrack(track_); };
+    active.onClick = [this] {
+        auto &root = panel_.root;
+        if (root.automationMode() && kind_ != "master")
+            root.showAutomation(track_, activatorTarget(track_));
+        root.activateTrack(track_);
+    };
     active.onMenu = [this] {
         auto m = activatorMenuItems();
         if (m.getNumItems() > 0)
@@ -1614,16 +1619,27 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         dragging_ = true;
         return;
     }
+    auto &root = panel_.root;
+    const bool chooseEnvelope = root.automationMode() && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+    const auto onControl = [&](const juce::Component &control) {
+        return e.eventComponent == &control ||
+               (dynamic_cast<const juce::Label *>(e.eventComponent) != nullptr &&
+                e.eventComponent->getParentComponent() == &control);
+    };
     // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         auto &knob = *sends_[i];
-        const bool own = e.eventComponent == &knob;
+        const bool own = onControl(knob);
         if (!own && !(e.eventComponent == this && knob.isVisible() && knob.getBounds().contains(e.getPosition())))
             continue;
         if (e.mods.isPopupMenu())
             sendMenu(i);
         else if (!own)
-            panel_.root.say("This send is off. Right-click it for Enable Send.");
+            root.say("This send is off. Right-click it for Enable Send.");
+        else if (chooseEnvelope && i < returns_.size())
+            if (const auto snapshot = root.current())
+                if (const auto *send = findSend(snapshot->sends, track_, returns_[i]))
+                    root.showAutomation(track_, sendTarget(send->id, {}));
         return;
     }
     if (e.eventComponent == this) {
@@ -1678,6 +1694,12 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         panel_.root.arrangement.changed();
         return;
     }
+    if (chooseEnvelope) {
+        if (onControl(pan))
+            root.showAutomation(track_, panTarget(track_));
+        else if (onControl(volume))
+            root.showAutomation(track_, volumeTarget(track_));
+    }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
         // together when it is among them.
@@ -1690,9 +1712,9 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
     }
-    if (e.eventComponent == &pan)
+    if (onControl(pan))
         panMenu();
-    else if (e.eventComponent == &volume)
+    else if (onControl(volume))
         volumeMenu();
     else
         panel_.contextMenu(e.getScreenPosition());
@@ -1839,7 +1861,7 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
         else if (!dragging_)
             commitSend(index);
     };
-    knob->addMouseListener(this, false);
+    knob->addMouseListener(this, true);
     addAndMakeVisible(*knob);
     return knob;
 }

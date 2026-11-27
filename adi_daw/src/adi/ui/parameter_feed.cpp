@@ -7,11 +7,17 @@
 #include <unordered_set>
 namespace adi::ui {
 namespace {
+panel::Declared declarationOf(const device::ParamDescriptor &descriptor, bool modifiable) {
+    const auto shape = static_cast<panel::Shape>(descriptor.shape);
+    return {descriptor.id, descriptor.name, modifiable, descriptor.automatable, shape,
+            shape == panel::Shape::Switch ? 2 : descriptor.stepCount};
+}
 bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
+                        d.name, d.enabled, d.activatorAvailable, d.playingEnabled,
+                        d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels,
                         d.processingIssue, d.loadIssue,
                         d.pluginTouch, d.recentPluginTouches,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
@@ -25,8 +31,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
                       }) &&
            std::equal(a.declared.begin(), a.declared.end(), b.declared.begin(), b.declared.end(),
                       [](const panel::Declared &x, const panel::Declared &y) {
-                          return std::tie(x.id, x.name, x.modifiable, x.automatable) ==
-                                 std::tie(y.id, y.name, y.modifiable, y.automatable);
+                          return std::tie(x.id, x.name, x.modifiable, x.automatable, x.shape, x.stepCount) ==
+                                 std::tie(y.id, y.name, y.modifiable, y.automatable, y.shape, y.stepCount);
                       }) &&
            std::equal(a.records.begin(), a.records.end(), b.records.begin(), b.records.end(),
                       [](const panel::Record &x, const panel::Record &y) {
@@ -79,6 +85,8 @@ std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation
             data.id = row.id;
             data.chain = chain.id;
             data.name = row.name;
+            data.enabled = row.enabled;
+            data.activatorAvailable = session.deviceActivatorAvailable(row.id);
             data.format = entry->resolvedFormat;
             data.available = instance->loaded();
             // Reuse the published touch only while it still names this loaded instance.
@@ -102,7 +110,7 @@ std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation
                 if (descriptor && (descriptor->automatable || data.pluginTouch)) {
                     const bool modifiable = data.available && !descriptor->missing &&
                                             (descriptor->automatable || descriptor->configurable);
-                    data.declared.push_back({descriptor->id, descriptor->name, modifiable, descriptor->automatable});
+                    data.declared.push_back(declarationOf(*descriptor, modifiable));
                     data.defaults.emplace(descriptor->id, descriptor->defaultValue.normalized);
                 }
             }
@@ -150,6 +158,9 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
             const bool resolved = entry && !entry->retired && !entry->parked &&
                                   entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
             data.available = resolved && instance && instance->loaded();
+            data.activatorAvailable = session.deviceActivatorAvailable(row.id);
+            if (data.activatorAvailable)
+                data.playingEnabled = session.deviceActivatorPlaying(row.id);
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
             if (data.available)
@@ -233,9 +244,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         if (!descriptor) continue;
                         cache.descriptors.push_back(*descriptor);
                         cache.automationRefs.push_back(engine::automationParamRef(instance->identity().format, descriptor->id));
-                        metadata->declared.push_back({descriptor->id, descriptor->name,
-                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
-                            descriptor->automatable});
+                        metadata->declared.push_back(declarationOf(*descriptor,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available));
                         metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
                         if (!descriptor->groupId.empty())
                             metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
@@ -278,7 +288,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 // comparison, no allocation; a plug-in that renames or adds parameters rebuilds them.
                 const auto tableFields = [](const device::ParamDescriptor &d) {
                     return std::tie(d.id, d.name, d.defaultValue.normalized, d.automatable, d.configurable, d.missing,
-                                    d.groupId, d.groupName, d.groupEnableControl, d.bandIndex, d.sectionId,
+                                    d.shape, d.stepCount, d.groupId, d.groupName, d.groupEnableControl, d.bandIndex, d.sectionId,
                                     d.sectionName);
                 };
                 auto &tables = tables_[row.id];
@@ -299,9 +309,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         const auto *descriptor = instance->paramAt(i);
                         if (!descriptor) continue;
                         tables.descriptors.push_back(*descriptor);
-                        metadata->declared.push_back({descriptor->id, descriptor->name,
-                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
-                            descriptor->automatable});
+                        metadata->declared.push_back(declarationOf(*descriptor,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available));
                         metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
                         if (!descriptor->groupId.empty())
                             metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,

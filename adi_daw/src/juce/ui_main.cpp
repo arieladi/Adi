@@ -413,6 +413,10 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         commands_ = std::make_unique<AppCommands>(*settings_);
         refreshCacheLimits();
+        commands_->onEnvelopeLockChanged = [this] {
+            if (settingsWindow_)
+                settingsWindow_->panel().refreshValues();
+        };
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
         // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.

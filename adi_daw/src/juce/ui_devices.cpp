@@ -167,10 +167,14 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     }
 }
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider ||
-                                e.eventComponent == &toggle || e.eventComponent == &menu ||
-                                menu.isParentOf(e.eventComponent)))
-        showMenu();
+    if (e.mods.isPopupMenu()) {
+        if (e.eventComponent == this || e.eventComponent == &slider || e.eventComponent == &toggle ||
+            e.eventComponent == &menu || menu.isParentOf(e.eventComponent))
+            showMenu();
+    } else if (e.mods.isLeftButtonDown() && strip.root.automationMode() && record && !record->missing) {
+        if (const auto target = strip.root.deviceAutomationTarget(device, parameter))
+            strip.root.showAutomation(target->first, target->second);
+    }
 }
 void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
@@ -1110,7 +1114,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         if (!safe || !safe->validTarget() || !safe->data) return;
         const bool requested = safe->nativeFunction() ? !safe->data->enabled : safe->enabled.getToggleState();
         if (!safe->strip.setEnabledExpected(*safe->data, requested) && safe && safe->data)
-            safe->enabled.setToggleState(safe->data->enabled, juce::dontSendNotification);
+            safe->enabled.setToggleState(safe->data->enabledNow(), juce::dontSendNotification);
     };
     configureButton.onClick = [this] { configure(); };
     addChildComponent(rename);
@@ -1511,7 +1515,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
     presentFunctionSelection(d);
     updateEqPreview(d);
-    const bool bypassChanged = data != nullptr && data->enabled != d.enabled;
+    const bool bypassChanged = data != nullptr && data->enabledNow() != d.enabledNow();
     data = &d;
     if (configureSession_) {
         const auto safe = SafePointer<DevicePanelView>(this);
@@ -1545,7 +1549,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         title.setButtonText(caption);
     }
     enabled.setEnabled(!loadFailed);
-    enabled.setToggleState(d.enabled && !loadFailed, juce::dontSendNotification);
+    enabled.setToggleState(d.enabledNow() && !loadFailed, juce::dontSendNotification);
     wrench.setEnabled(!loadFailed);
     // The declarations ProjectDocument::assignSample checks also name the sample slots on the panel.
     // With Pd off Color Cab still keeps its Impulse tile so a drop can explain why it cannot load.
@@ -1864,7 +1868,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
 }
 void DevicePanelView::paintOverChildren(juce::Graphics &g) {
     // Wash the whole device, including its controls, while keeping them editable.
-    if (data != nullptr && !data->enabled)
+    if (data != nullptr && !data->enabledNow())
         g.fillAll(look::frame.withAlpha(0.55f));
 }
 bool DevicePanelView::canHotSwap() const {
@@ -2140,6 +2144,18 @@ juce::PopupMenu DevicePanelView::commands() {
         }
     }
     juce::PopupMenu automation;
+    if (data && data->activatorAvailable) {
+        DevicePanelData expected;
+        expected.id = data->id;
+        expected.runtime = data->runtime;
+        expected.instance = data->instance;
+        automation.addItem("Show Automation", [safe, expected] {
+            if (safe && safe->strip.validExpected(expected) && safe)
+                safe->strip.root.showDeviceAutomation(expected.id, std::string(kDeviceActivatorParamRef));
+        });
+        if (const auto current = strip.root.current())
+            strip.root.addReenableAutomation(automation, envelopeOf(*current, deviceActivatorTarget(*data)).lane);
+    }
     strip.root.addDeviceAutomationDeleteItem(automation, id);
     if (automation.getNumItems() > 0) {
         m.addSeparator();
