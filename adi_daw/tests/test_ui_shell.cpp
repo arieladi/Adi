@@ -12833,6 +12833,29 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     root.frame();
     auto &panel = root.clipView;
     auto &edit = panel.sample;
+    const auto scaleBox = panel.fieldBox(ClipViewPanel::Field::Scale);
+    const auto scaleMode = panel.scaleModeBox();
+    check(!scaleBox.isEmpty() && !scaleMode.isEmpty() &&
+              !panel.loopBox().intersects(scaleMode) && !scaleMode.intersects(scaleBox),
+          "an audio clip exposes Scale Mode and its chooser alongside Loop");
+    if (!scaleMode.isEmpty()) {
+        const auto clickScaleMode = [&] {
+            panel.mouseDown(pressAt(panel, scaleMode.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+        };
+        clickScaleMode();
+        check(panel.details() && panel.details()->scale.local && root.undoTitle(false) == "Undo Activate Scale",
+              "audio Scale Mode stores the inherited scale as a local clip property in one edit");
+        check(panel.chooseScale(true, 3) && panel.details() && panel.details()->scale.local &&
+                  panel.details()->scale.root == 2 && panel.readings().scale.startsWith("D "),
+              "the audio clip can choose and display its own root");
+        clickScaleMode();
+        check(panel.details() && !panel.details()->scale.local && root.undoTitle(false) == "Undo Deactivate Scale",
+              "turning the audio clip's Scale Mode off restores Set inheritance");
+        check(root.command(AppCommands::Undo), "undo deactivating the audio clip's scale");
+        root.frame();
+        check(panel.details() && panel.details()->scale.local && panel.details()->scale.root == 2,
+              "undo restores the audio clip's authored scale");
+    }
     const auto readings = panel.readings();
     check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
               readings.sampleProperties == "48000 Hz   16 bit   1 ch" &&
