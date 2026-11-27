@@ -34,6 +34,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-291 | `basics/look-chain` at `8a670768` | Show sample filenames and waveforms and reveal file-backed samples. Window, Mix View and engine seats. | Peerless waveform and folder request checks passed. Debug Werror, 17 UI suites without DISPLAY, 5 sample and snapshot suites and 3 acceptance suites passed. | Pushed |
 | SC-292 | `basics/look-chain` at `6fd1d48a` | Name the valid drops for MIDI tracks and Main in Device View. Window seat. | The peerless paint test distinguished the new instructions from the earlier text. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-355 | `basics/look-chain` at `5c3b9050` | Switch the detail panes with Shift+Tab or F12 and show both on Alt-click. Window seat. | Headless keyboard, focus navigation, mouse modifier, layout and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-356 | `basics/look-chain` at `fbd63040` | Remove the inactive Arrangement and Session faces from the side rail. Window seat. | Software raster and component checks verified the two faces are gone and the track height control still works. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -290,6 +291,12 @@ When the two panes are already visible, the shortcut shows Clip alone if a Devic
 The test sends keys to the root and Alt-click press and release events to the two JUCE buttons. It checks the pane bounds, the persisted both-visible state, backward focus compatibility, and the first switch with both panes hidden. Three PC keymap text fixtures add the new command beside the existing defaults. No software PNG fixture changed.
 
 Commit `18e7e955`. The modified shell and shell test translation units passed the configured Linux Debug warnings-as-errors syntax checks. `git diff --check` passed. Integrated CTest and acceptance runs remain with the chain gate.
+
+### SC-356
+
+At 1440 × 900 Compact the right rail is `(1405, 35, 27, 623)`. The painted Arrangement and Session faces occupied `(1409, 87, 19, 19)` and `(1409, 109, 19, 19)`. These regions now use the rail's background. The Use Large Track Height button remains `(1409, 131, 19, 14)` and still changes lane and strip heights. After Swap Sides the rail moves to x=8 and the height button to x=12. The approved sheet puts the view switch in the Control Bar.
+
+The software raster counts 305 face pixels per circle before and zero after. The track height glyph retains 72 painted pixels in its 13 × 7 px ink bounds. The same counts hold in the 960 × 540 default and swapped fixtures, where the face x coordinates are 929 and 12 respectively. The peerless test checks the complete area of both former faces and the absence of child hit targets.
 
 ## For the director
 
