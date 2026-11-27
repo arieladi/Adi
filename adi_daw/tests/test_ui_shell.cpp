@@ -16700,7 +16700,42 @@ void automationBreakpointDrags(AppCommands &commands, const std::filesystem::pat
     check(originalsPreserved && hasRaisedBoundary(begin) && hasRaisedBoundary(end) &&
               unchangedAt(begin - bar / 8) && unchangedAt(end + bar / 8) && undoStep() != baseline,
           "dragging the selected segment raises both boundaries without changing the envelope outside");
-    undoGesture("one Undo removes the inserted boundaries and restores the original Pan envelope");
+    if (!undoGesture("one Undo removes the inserted boundaries and restores the original Pan envelope"))
+        return;
+
+    select();
+    constexpr auto expandedEnd = 7 * bar / 2;
+    const auto handleY = (body->top + body->scaleBottom) / 2.f;
+    const juce::Point<float> rightHandle{x(5 * bar / 2), handleY}, stretched{x(expandedEnd), handleY};
+    press(rightHandle);
+    drag(rightHandle, stretched);
+    check(undoStep() == baseline && readPoints() == original, "the stretch outline leaves project data alone");
+    release(rightHandle, stretched);
+    const auto stretchedPoints = readPoints();
+    const auto checkKnot = [](const auto &points, std::int64_t tick, auto matches) {
+        return std::any_of(points.begin(), points.end(), [&](const auto &point) {
+            return point.time == tick && matches(point.value);
+        });
+    };
+    check(undoStep() != baseline && geometry.selection.end == expandedEnd &&
+              checkKnot(stretchedPoints, 5 * bar / 4, [&](double value) { return value == original[0].value; }) &&
+              checkKnot(stretchedPoints, 11 * bar / 4, [&](double value) { return value == original[1].value; }),
+          "the right handle stretches both Pan point times without changing their values");
+    if (!undoGesture("one Undo restores the stretched envelope"))
+        return;
+
+    select();
+    const juce::Point<float> corner{x(5 * bar / 2), body->top};
+    const auto skewedCorner = corner.translated(0.f, 20.f);
+    press(corner);
+    drag(corner, skewedCorner);
+    release(corner, skewedCorner);
+    const auto skewed = readPoints();
+    check(undoStep() != baseline && geometry.selection.end == 5 * bar / 2 &&
+              checkKnot(skewed, bar, [&](double value) { return value < original[0].value; }) &&
+              checkKnot(skewed, 2 * bar, [&](double value) { return value < original[1].value; }),
+          "the corner skews the Pan values while keeping the point times");
+    undoGesture("one Undo restores the skewed envelope");
 }
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;

@@ -4452,6 +4452,14 @@ bool AdiRootComponent::replaceAutomationRange(std::int64_t lane, std::int64_t be
         return fail(std::move(edit.error));
     return edited(submitter_.submit(std::move(edit.requests)));
 }
+bool AdiRootComponent::transformAutomationRange(std::int64_t lane, const edit::AutomationTransform &transform,
+                                                const char *label) {
+    auto prepared = edit::prepareAutomationTransform(submitter_.store(), lane, transform, editRate(), label,
+                                                     session_.advisory());
+    if (!prepared.ok)
+        return fail(std::move(prepared.error));
+    return !prepared.requests.empty() && edited(submitter_.submit(std::move(prepared.requests)));
+}
 bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                                            std::int64_t begin, std::int64_t end,
                                            const std::map<std::int64_t, double> &points, bool stepped,

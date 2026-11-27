@@ -9,6 +9,7 @@
 #include "adi/ui/track_tree.hpp"
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <array>
 #include <functional>
 #include <map>
 #include <optional>
@@ -391,6 +392,35 @@ class ArrangementCanvas final : public juce::Component,
     using AutomationLaneKey = std::pair<std::int64_t, AutomationTarget>;
     std::optional<AutomationLaneKey> automationSelectionAnchor_;
     std::vector<AutomationLaneKey> automationSelectionTargets_;
+    enum class AutomationTransformHandle : std::uint8_t {
+        TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left
+    };
+    struct AutomationTransformBounds {
+        AutomationLaneKey target;
+        std::int64_t laneId, dataId, begin, end;
+        float top, bottom, visibleBottom;
+    };
+    struct AutomationTransformDrag {
+        AutomationTransformBounds bounds;
+        AutomationTransformHandle handle;
+        juce::Point<float> lastPosition;
+        juce::Point<float> distance;
+        std::int64_t begin, end;
+        std::array<double, 4> values{0.0, 1.0, 0.0, 1.0};
+        std::uint64_t generation = 0;
+        bool cancelled = false;
+    };
+    std::optional<AutomationTransformBounds> automationTransformBounds() const;
+    juce::Rectangle<float> automationTransformBox(const AutomationTransformBounds &) const;
+    std::array<juce::Point<float>, 8> automationTransformHandles(const AutomationTransformBounds &) const;
+    std::optional<AutomationTransformHandle> automationTransformHandleAt(const AutomationTransformBounds &,
+                                                                         juce::Point<float>) const;
+    bool beginAutomationTransform(const juce::MouseEvent &);
+    void updateAutomationTransform(const juce::MouseEvent &);
+    void finishAutomationTransform(const juce::MouseEvent &);
+    void paintAutomationTransform(juce::Graphics &) const;
+    std::optional<juce::Point<float>> automationTransformHover_;
+    std::optional<AutomationTransformDrag> automationTransformDrag_;
     struct AutomationValueAddress {
         AutomationTarget target;
         std::int64_t track=0,lane=0,data=0,tick=0;

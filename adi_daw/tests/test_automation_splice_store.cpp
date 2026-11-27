@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/audio/io_audit.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/clip_image.hpp"
@@ -577,12 +578,95 @@ void layouts(const std::filesystem::path &directory) {
               "future malformed or conflicting AAUT layout refuses unchanged");
     }
 }
+void rangeTransforms(const std::filesystem::path &directory) {
+    constexpr std::int64_t quarter=5765760;
+    constexpr double rate=48000;
+    const auto old=std::vector{point(0,0.15,5,1),point(2*quarter,0.55,5,2),
+                              point(7*quarter/2,0.8,1,3),point(6*quarter,0.25,1,4)};
+    auto store=project(directory/"range-transform.adi");
+    auto &db=store->db();
+    db.exec("INSERT INTO tempo_map(id,pos_ticks,bpm,curve) "
+            "VALUES(1,0,120,0),(20,5765760,60,0)");
+    stream(*store,old,0,4,false,true);
+    const auto before=rows(*store);
+    const auto original=decoded(*store,0);
+    const auto originalProgram=program(original);
+    const edit::TimeMap time(db);
+    const auto at=[&](std::int64_t tick) {
+        return static_cast<std::int64_t>(std::llround(time.seconds(tick)*rate));
+    };
+    const auto close=[](double a,double b){return std::abs(a-b)<1e-10;};
+    const auto value=[&](const auto &compiled,std::int64_t tick) {
+        return engine::valueAt(compiled,at(tick));
+    };
+
+    const edit::AutomationTransform expansion{quarter,3*quarter,quarter,4*quarter,{}};
+    const auto stretched=edit::prepareAutomationTransform(*store,2,expansion,rate,"Stretch Automation");
+    check(stretched.ok && stretched.requests.size()==1,"horizontal stretch prepares one sealed edit");
+    check(rows(*store)==before,"transform preparation leaves every row untouched");
+    if(!stretched.ok || stretched.requests.empty())return;
+    const auto committed=OpJournal(*store).commit(stretched.requests);
+    check(committed.ok,"sample-aware horizontal stretch commits");
+    if(!committed.ok)return;
+    const auto expanded=decoded(*store,0);
+    const auto expandedProgram=program(expanded);
+    const auto sourceHalf=(at(quarter)+at(2*quarter))/2;
+    const auto destinationHalf=(at(quarter)+at(5*quarter/2))/2;
+    check(close(engine::valueAt(expandedProgram,destinationHalf),
+                engine::valueAt(originalProgram,sourceHalf)),
+          "stretch preserves the clipped non-linear bend at the same sample phase");
+    check(close(value(expandedProgram,quarter),value(originalProgram,quarter)) &&
+          close(value(expandedProgram,5*quarter/2),0.55),
+          "stretch uses the actual tempo-cut boundary and remaps the interior knot proportionally");
+    check(close(engine::valueAt(expandedProgram,at(quarter)-1),engine::valueAt(originalProgram,at(quarter)-1)) &&
+          close(engine::valueAt(expandedProgram,at(4*quarter)+1),engine::valueAt(originalProgram,at(4*quarter)+1)) &&
+          expanded.front().point.point_id==1 && expanded.back().point.point_id==4 &&
+          std::none_of(expanded.begin(),expanded.end(),[](const auto &k){return k.point.point_id==3;}),
+          "stretch overwrites a crossed point while preserving sampled outside curves and surviving IDs");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old transform rows");
+
+    const edit::AutomationTransform skew{quarter,3*quarter,quarter,3*quarter,
+        edit::AutomationValueTransform{0.,1.,0.1,0.9,0.3,0.9}};
+    const auto skewed=edit::prepareAutomationTransform(*store,2,skew,rate,"Skew Automation");
+    check(skewed.ok && skewed.requests.size()==1,"corner skew prepares one edit on the original time span");
+    if(!skewed.ok || skewed.requests.empty())return;
+    const auto angled=OpJournal(*store).commit(skewed.requests);
+    check(angled.ok,"corner skew commits");
+    if(!angled.ok)return;
+    const auto transformed=decoded(*store,0);
+    const auto skewedProgram=program(transformed);
+    const auto originalStart=value(originalProgram,quarter);
+    const auto phase=(engine::valueAt(originalProgram,sourceHalf)-originalStart)/(0.55-originalStart);
+    const auto expectedHalf=std::lerp(0.1+0.8*originalStart,0.2+0.7*0.55,phase);
+    check(close(engine::valueAt(skewedProgram,sourceHalf),expectedHalf),
+          "skew keeps the normalized clipped bend between transformed knot values");
+    check(close(value(skewedProgram,quarter),0.1+0.8*value(originalProgram,quarter)) &&
+          close(value(skewedProgram,2*quarter),0.2+0.7*0.55) &&
+          close(engine::valueAt(skewedProgram,at(3*quarter)+1),engine::valueAt(originalProgram,at(3*quarter)+1)),
+          "skew changes values across the selection without moving the interior knot or changing the outside");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old skew rows");
+
+    const edit::AutomationTransform shrink{quarter,3*quarter,quarter,2*quarter,{}};
+    const auto compressed=edit::prepareAutomationTransform(*store,2,shrink,rate);
+    check(compressed.ok && !compressed.requests.empty(),"horizontal compression prepares");
+    if(!compressed.ok || compressed.requests.empty())return;
+    const auto compact=OpJournal(*store).commit(compressed.requests);
+    check(compact.ok,"horizontal compression commits");
+    if(!compact.ok)return;
+    const auto contracted=decoded(*store,0);
+    const auto contractedProgram=program(contracted);
+    check(close(value(contractedProgram,5*quarter/2),value(originalProgram,3*quarter)) &&
+          close(engine::valueAt(contractedProgram,at(3*quarter)+1),engine::valueAt(originalProgram,at(3*quarter)+1)),
+          "compression fills vacated time from the transformed endpoint and preserves the curve after the old span");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old compression rows");
+}
 } // namespace
 int main() {
     try {
         adi::test::TempDirectory temp("automation", "splice-store");
         curves(temp.path());
         exactBoundaries(temp.path());
+        rangeTransforms(temp.path());
         stagedSplices(temp.path());
         guards(temp.path());
         failuresAndAbsence(temp.path());

@@ -3197,6 +3197,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode()) {
         paintAutomation(g);
+        paintAutomationTransform(g);
         paintAutomationValueReadout(g);
     }
     // The returns and Main stay pinned over the scrolled tracks. Mark the bottom of
@@ -3843,6 +3844,9 @@ bool ArrangementCanvas::hasAutomationSelection() const {
            (selection.marked || selection.start!=selection.end);
 }
 void ArrangementCanvas::clearAutomationSelection() {
+    automationTransformHover_.reset();
+    if (automationTransformDrag_)
+        automationTransformDrag_->cancelled = true;
     automationSelection_.reset();
     automationSelectionAnchor_.reset();
     automationSelectionTargets_.clear();
@@ -3850,6 +3854,232 @@ void ArrangementCanvas::clearAutomationSelection() {
     keyboardAutomationFocus_.reset();
     keyboardAutomationDraft_.reset();
 }
+namespace {
+constexpr float kAutomationTransformMinSize = 24.f;
+constexpr float kAutomationTransformHandleSize = 7.f;
+constexpr float kAutomationTransformHandleHit = 6.f;
+constexpr float kAutomationTransformFineScale = .1f;
+constexpr double kAutomationTransformMinSpanningValue = .01;
+} // namespace
+
+std::optional<ArrangementCanvas::AutomationTransformBounds> ArrangementCanvas::automationTransformBounds() const {
+    if (!hasAutomationSelection() || view.root.drawMode() || automationSelectionTargets_.size() != 1)
+        return std::nullopt;
+    const auto &selection = view.geometry.selection;
+    const auto [begin, end] = std::minmax(selection.start, selection.end);
+    if (begin < 0 || begin == end || end > view.geometry.tick(std::numeric_limits<double>::max()))
+        return std::nullopt;
+    const auto &key = automationSelectionTargets_.front();
+    const auto current = view.root.current();
+    if (!current || !view.root.automationTargetShown(key.first, key.second))
+        return std::nullopt;
+    const auto envelope = envelopeOf(*current, key.second);
+    if (!envelope.lane || !envelope.data || envelope.data->points.empty() || !editableEnvelope(envelope))
+        return std::nullopt;
+    for (const auto &body : laneBodies()) {
+        if (body.track->id != key.first || body.target != key.second)
+            continue;
+        const AutomationTransformBounds bounds{key, envelope.lane->id, envelope.data->id, begin, end,
+                                                body.top, body.scaleBottom, body.bottom};
+        const auto box = automationTransformBox(bounds);
+        if (box.getWidth() >= kAutomationTransformMinSize && box.getHeight() >= kAutomationTransformMinSize &&
+            box.intersects(getLocalBounds().toFloat()))
+            return bounds;
+    }
+    return std::nullopt;
+}
+
+juce::Rectangle<float> ArrangementCanvas::automationTransformBox(const AutomationTransformBounds &bounds) const {
+    const auto &geo = view.geometry;
+    const auto x = static_cast<float>(geo.x(bounds.begin));
+    return {x, bounds.top, static_cast<float>(geo.x(bounds.end)) - x, bounds.bottom - bounds.top};
+}
+
+std::array<juce::Point<float>, 8> ArrangementCanvas::automationTransformHandles(
+    const AutomationTransformBounds &bounds) const {
+    const auto box = automationTransformBox(bounds);
+    const auto centre = box.getCentre();
+    return {box.getTopLeft(), {centre.x, box.getY()}, box.getTopRight(), {box.getRight(), centre.y},
+            box.getBottomRight(), {centre.x, box.getBottom()}, box.getBottomLeft(), {box.getX(), centre.y}};
+}
+
+std::optional<ArrangementCanvas::AutomationTransformHandle> ArrangementCanvas::automationTransformHandleAt(
+    const AutomationTransformBounds &bounds, juce::Point<float> position) const {
+    if (position.y < bounds.top)
+        return std::nullopt;
+    const auto handles = automationTransformHandles(bounds);
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        const auto handle = static_cast<AutomationTransformHandle>(i);
+        if (bounds.target.second.stepped && handle != AutomationTransformHandle::Left &&
+            handle != AutomationTransformHandle::Right)
+            continue;
+        const auto point = handles[i];
+        if (point.y <= bounds.visibleBottom && position.y <= bounds.visibleBottom + kAutomationTransformHandleHit &&
+            point.getDistanceFrom(position) <= kAutomationTransformHandleHit)
+            return handle;
+    }
+    return std::nullopt;
+}
+
+bool ArrangementCanvas::beginAutomationTransform(const juce::MouseEvent &e) {
+    if (e.mods.isPopupMenu())
+        return false;
+    const auto bounds = automationTransformBounds();
+    const auto handle = bounds ? automationTransformHandleAt(*bounds, e.position) : std::nullopt;
+    if (!handle)
+        return false;
+    if (e.getNumberOfClicks() == 1) {
+        AutomationTransformDrag drag{*bounds, *handle, e.position, {}, bounds->begin, bounds->end};
+        drag.generation = view.root.committedGeneration();
+        automationTransformDrag_ = std::move(drag);
+        view.followPaused = true;
+        repaint();
+    }
+    return true;
+}
+
+void ArrangementCanvas::updateAutomationTransform(const juce::MouseEvent &e) {
+    auto &drag = *automationTransformDrag_;
+    if (drag.cancelled || drag.generation != view.root.committedGeneration())
+        return;
+    const auto motion = e.position - drag.lastPosition;
+    drag.lastPosition = e.position;
+    const auto handle = drag.handle;
+    const bool horizontal = handle == AutomationTransformHandle::Left || handle == AutomationTransformHandle::Right;
+    drag.distance += motion * (!horizontal && e.mods.isShiftDown() ? kAutomationTransformFineScale : 1.f);
+    const bool mirrored = e.mods.isAltDown();
+    const auto &source = drag.bounds;
+    if (horizontal) {
+        const auto &geo = view.geometry;
+        const auto maxTick = geo.tick(std::numeric_limits<double>::max());
+        const bool left = handle == AutomationTransformHandle::Left;
+        const auto edge = left ? source.begin : source.end;
+        const auto rawMotion = static_cast<double>(drag.distance.x) * textproj::kPPQ / geo.scale;
+        const auto motionTicks = std::llround(std::clamp(rawMotion, -static_cast<double>(maxTick),
+                                                        static_cast<double>(maxTick)));
+        auto requested = std::clamp<std::int64_t>(edge + motionTicks, 0, maxTick);
+        if (motionTicks != 0 && view.snaps(e.mods)) {
+            const auto earlier = geo.snap(requested, false), later = geo.snap(requested, true);
+            requested = requested - earlier <= later - requested ? earlier : later;
+        }
+        const auto half = (source.end - source.begin - 1) / 2;
+        if (left) {
+            const auto low = mirrored ? std::max(-source.begin, source.end - maxTick) : -source.begin;
+            const auto high = mirrored ? half : source.end - source.begin - 1;
+            const auto delta = std::clamp(requested - edge, low, high);
+            drag.begin = source.begin + delta;
+            drag.end = source.end - (mirrored ? delta : 0);
+        } else {
+            const auto low = mirrored ? -half : source.begin - source.end + 1;
+            const auto high = mirrored ? std::min(source.begin, maxTick - source.end) : maxTick - source.end;
+            const auto delta = std::clamp(requested - edge, low, high);
+            drag.end = source.end + delta;
+            drag.begin = source.begin - (mirrored ? delta : 0);
+        }
+    } else {
+        const bool upper = handle == AutomationTransformHandle::Top || handle == AutomationTransformHandle::TopLeft ||
+                           handle == AutomationTransformHandle::TopRight;
+        const bool centre = handle == AutomationTransformHandle::Top || handle == AutomationTransformHandle::Bottom;
+        const bool left = handle == AutomationTransformHandle::TopLeft || handle == AutomationTransformHandle::BottomLeft;
+        const auto maximumInward = (1.0 - kAutomationTransformMinSpanningValue) / (centre && mirrored ? 2.0 : 1.0);
+        const auto raw = -static_cast<double>(drag.distance.y) / (source.bottom - source.top);
+        const auto delta = upper ? std::clamp(raw, -maximumInward, 1.0) : std::clamp(raw, -1.0, maximumInward);
+        const std::size_t chosenEdge = upper ? 1u : 0u, oppositeEdge = 1u - chosenEdge;
+        drag.values = {0.0, 1.0, 0.0, 1.0};
+        if (centre || left)
+            drag.values[chosenEdge] += delta;
+        if (centre || !left)
+            drag.values[chosenEdge + 2] += delta;
+        if (mirrored) {
+            if (centre || !left)
+                drag.values[oppositeEdge] -= delta;
+            if (centre || left)
+                drag.values[oppositeEdge + 2] -= delta;
+        }
+    }
+    repaint();
+}
+
+void ArrangementCanvas::finishAutomationTransform(const juce::MouseEvent &e) {
+    updateAutomationTransform(e);
+    auto drag = std::move(*automationTransformDrag_);
+    automationTransformDrag_.reset();
+    repaint();
+    const auto bounds = automationTransformBounds();
+    if (!bounds || drag.cancelled || !e.mouseWasDraggedSinceMouseDown() ||
+        drag.generation != view.root.committedGeneration() || drag.bounds.target != bounds->target ||
+        drag.bounds.laneId != bounds->laneId || drag.bounds.dataId != bounds->dataId ||
+        drag.bounds.begin != bounds->begin || drag.bounds.end != bounds->end)
+        return;
+
+    edit::AutomationTransform transform{bounds->begin, bounds->end, drag.begin, drag.end, std::nullopt};
+    if (drag.values != std::array<double, 4>{0.0, 1.0, 0.0, 1.0}) {
+        const auto range = automationRange(bounds->target.second);
+        const auto value = [&](double fraction) { return std::lerp(range.minimum, range.maximum, fraction); };
+        transform.values = edit::AutomationValueTransform{range.minimum, range.maximum,
+            value(drag.values[0]), value(drag.values[1]), value(drag.values[2]), value(drag.values[3])};
+    } else if (drag.begin == bounds->begin && drag.end == bounds->end) {
+        return;
+    }
+    const auto label = drag.handle == AutomationTransformHandle::Left || drag.handle == AutomationTransformHandle::Right ||
+        drag.handle == AutomationTransformHandle::Top || drag.handle == AutomationTransformHandle::Bottom
+        ? "Stretch Automation" : "Skew Automation";
+    if (view.root.transformAutomationRange(bounds->laneId, transform, label))
+        selectAutomationSpan(drag.begin, drag.end);
+}
+
+void ArrangementCanvas::paintAutomationTransform(juce::Graphics &g) const {
+    if (!automationTransformDrag_ && !automationTransformHover_)
+        return;
+    const auto bounds = automationTransformBounds();
+    if (!bounds)
+        return;
+    g.setColour(look::handleChosen);
+    if (automationTransformDrag_) {
+        const auto &drag = *automationTransformDrag_;
+        if (drag.cancelled || drag.generation != view.root.committedGeneration() ||
+            drag.bounds.target != bounds->target || drag.bounds.laneId != bounds->laneId ||
+            drag.bounds.dataId != bounds->dataId)
+            return;
+        const auto &geo = view.geometry;
+        const float x0 = static_cast<float>(geo.x(drag.begin)), x1 = static_cast<float>(geo.x(drag.end));
+        const auto y = [&](std::size_t edge) {
+            return bounds->bottom - static_cast<float>(drag.values[edge]) * (bounds->bottom - bounds->top);
+        };
+        juce::Path outline;
+        outline.startNewSubPath(x0, y(1));
+        outline.lineTo(x1, y(3));
+        outline.lineTo(x1, y(2));
+        outline.lineTo(x0, y(0));
+        outline.closeSubPath();
+        g.strokePath(outline, juce::PathStrokeType(1.f));
+        return;
+    }
+    const auto box = automationTransformBox(*bounds);
+    if (!box.expanded(kAutomationTransformHandleHit).contains(*automationTransformHover_) ||
+        automationTransformHover_->y > bounds->visibleBottom + kAutomationTransformHandleHit)
+        return;
+    juce::Graphics::ScopedSaveState keep(g);
+    g.reduceClipRegion(0, 0, getWidth(), juce::roundToInt(bounds->visibleBottom + kAutomationTransformHandleSize));
+    g.drawRect(box, 1.f);
+    const auto handles = automationTransformHandles(*bounds);
+    const auto hovered = automationTransformHandleAt(*bounds, *automationTransformHover_);
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        const auto handle = static_cast<AutomationTransformHandle>(i);
+        if (bounds->target.second.stepped && handle != AutomationTransformHandle::Left &&
+            handle != AutomationTransformHandle::Right)
+            continue;
+        if (handles[i].y > bounds->visibleBottom)
+            continue;
+        const auto marker = juce::Rectangle<float>(kAutomationTransformHandleSize, kAutomationTransformHandleSize)
+                                .withCentre(handles[i]);
+        g.setColour(hovered == handle ? look::handleChosen : look::panel);
+        g.fillRect(marker);
+        g.setColour(look::handleChosen);
+        g.drawRect(marker, 1.f);
+    }
+}
+
 bool ArrangementCanvas::automationLaneSelected(const LaneBody &body) const {
     return std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(), [&](const auto &lane) {
         return lane.first == body.track->id && lane.second == body.target;
@@ -4695,6 +4925,10 @@ std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int
     return std::nullopt;
 }
 void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
+    if (automationTransformHover_) {
+        automationTransformHover_.reset();
+        repaint();
+    }
     if(!pointDrag_)clearAutomationValueReadout();
     if (hoverClip_ != 0) {
         hoverClip_ = 0;
@@ -4938,6 +5172,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     automationStroke_.reset();
     automationDrag_.reset();
     automationCurveDrag_.reset();
+    automationTransformDrag_.reset();
     pointDrag_.reset();
     automationPointClick_ = AutomationPointClick::None;
     ignoringAutomationClick_ = false;
@@ -4948,6 +5183,10 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     keyboardAutomationFocus_.reset();
     keyboardAutomationDraft_.reset();
     pointAdded_ = false;
+    if (!panning && beginAutomationTransform(e)) {
+        clearAutomationValueReadout();
+        return;
+    }
     if (!panning && e.mods.isPopupMenu() && view.root.automationMode() && automationPointAt(e.position)) {
         clearAutomationSelection();
         automationContextMenu(e);
@@ -5109,6 +5348,22 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     return nullptr;
 }
 void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
+    const auto bounds = automationTransformBounds();
+    const bool wasHovering = automationTransformHover_.has_value();
+    if (bounds && e.position.y <= bounds->visibleBottom + kAutomationTransformHandleHit &&
+        automationTransformBox(*bounds).expanded(kAutomationTransformHandleHit).contains(e.position))
+        automationTransformHover_ = e.position;
+    else
+        automationTransformHover_.reset();
+    if (wasHovering || automationTransformHover_)
+        repaint();
+    if (bounds)
+        if (const auto handle = automationTransformHandleAt(*bounds, e.position)) {
+            const bool horizontal = *handle == AutomationTransformHandle::Left || *handle == AutomationTransformHandle::Right;
+            clearAutomationValueReadout();
+            setMouseCursor(horizontal ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::UpDownResizeCursor);
+            return;
+        }
     if(const auto point=automationValueAt(e.position,false,false))
         showAutomationValue(point->target,point->value,e.position);
     else clearAutomationValueReadout();
@@ -5140,6 +5395,10 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (ignoringAutomationClick_ || e.mods.isPopupMenu())
         return;
+    if (automationTransformDrag_) {
+        updateAutomationTransform(e);
+        return;
+    }
     if (automationCurveDrag_) {
         auto &drag = *automationCurveDrag_;
         if (!drag.cancelled) {
@@ -5306,6 +5565,10 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
     if (ignoringAutomationClick_)
         return;
+    if (automationTransformDrag_) {
+        finishAutomationTransform(e);
+        return;
+    }
     if (automationCurveDrag_) {
         auto drag = std::move(*automationCurveDrag_);
         automationCurveDrag_.reset();
@@ -5646,6 +5909,8 @@ bool ArrangementCanvas::editMaterialSelection(bool deactivate) {
     return true;
 }
 void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (const auto bounds = automationTransformBounds(); bounds && automationTransformHandleAt(*bounds, e.position))
+        return;
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
     if (e.mods.isPopupMenu())
         return;
@@ -5653,7 +5918,9 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     std::int64_t titleTrack = 0;
     bool titleEdge = false;
     if (view.root.automationMode() && barAt(e.x, e.y, titleTrack, titleEdge) == nullptr) {
-        if (view.root.drawMode() || ignoringAutomationClick_ || automationPointAt(e.position))
+        const auto transform = automationTransformBounds();
+        if (view.root.drawMode() || ignoringAutomationClick_ || automationPointAt(e.position) ||
+            (transform && automationTransformHandleAt(*transform, e.position)))
             return;
         if (e.mods.withoutMouseButtons() == juce::ModifierKeys(juce::ModifierKeys::altModifier)) {
             if (const auto segment = automationSegmentAt(e.position, kAutomationCurveHitPixels);
@@ -6021,6 +6288,11 @@ bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
+    if (automationTransformDrag_ && code == juce::KeyPress::escapeKey) {
+        automationTransformDrag_->cancelled = true;
+        repaint();
+        return true;
+    }
     if (automationCurveDrag_ && code == juce::KeyPress::escapeKey) {
         automationCurveDrag_->cancelled = true;
         repaint();
