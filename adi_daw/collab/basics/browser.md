@@ -36,6 +36,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-131 | `basics/browser-chain` at `599e89c8d` | Rescan the Browser library in the background without reopening ADI. Browser and application seats. | A headless regression wrote and indexed a new sample through the rescan path and preserved selection, scroll, search, audition state and open folders. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-133 | `basics/browser-chain` at `01cf03a9b` | Persist Favorites and seven rebindable color marks for Browser items. Browser, window and Settings seats. | Headless key, popup, search and round-trip persistence checks passed. Debug Werror, all 18 no-display UI suites, Settings and all 3 acceptance suites passed. | Pushed |
 | SC-134 | `basics/browser-chain` at `66cdcb395` | List owned recordings and bounces under Current Project and in All. Project, library and Browser seats. | Headless fixtures committed recorded and bounced media, checked All deduplication, and measured the 200,000-file search. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-136 | `basics/browser-chain` at `bba910fb6` | Wire the existing Browser Hide and Name controls and hide Groove Pool until MI-05. Browser seat. | The peerless test exercised both sort directions, folder hierarchy, multi-selection and the Browser collapse. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -339,6 +340,14 @@ The final strict Debug test passed with DISPLAY unset. It covers two shared repl
 On the same 200,000-file fixture with one overlapping and one project-only path, the broad All median of three seven-trial medians went from 34.291 to 13.499 ms and returned the same 200,001 distinct files. The four narrow queries remained under 0.013 ms across all sources after the change. Place Q, QX and QXY stayed at 0.002 ms. The two-word Place query took 0.003 ms after the change.
 
 The path index stores 3,200,000 bytes of entries at 200,000 files on this build. Isolated fill and sort took 121.545 ms median across seven runs. Full snapshot timings overlapped with concurrent build load and are recorded separately at `/tmp/browser-sc134-order-final.log`.
+
+### SC-136 Browser controls
+
+At 1440 × 900 Compact with the Browser on the left, its top round button still draws at `(8,35.5,19,19)`. Its clickable bounds are `(8,35,19,20)`. Before, those pixels had no action. A click now invokes the existing collapse command, reducing the Browser and Info to empty bounds. The Name header remains `(127,62,185,19)` with a direction triangle at `(299,68,8,7)`. It previously left the authored order unchanged. A click sorts by name descending and a second click sorts ascending, using the same 19 px rows and keeping a folder or device together with its descendants. Selection follows the items.
+
+The Groove Pool button occupied `(8,638.5,19,19)` in that fixture and is now hidden. Its space stays part of the Browser background while MI-05 is pending. The peerless test clicks the existing controls, checks an expanded folder and a two-file selection through both sort directions, then checks the dock collapse.
+
+All nine updated software references changed exactly 93 pixels each, confined to the former Groove Pool button. The Hide and Name controls retain their prior default pixels.
 
 ## For the director
 
