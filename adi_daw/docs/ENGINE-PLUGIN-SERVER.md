@@ -217,6 +217,13 @@ voices. With a seven-sample fixture DSP delay, automation at frame 40
 changes its PCM at frame 47. The remote device reports 71 samples and
 matches 256 compensated samples exactly.
 
+Stock v13 reports JUCE parameter indices. A paired catalogue supplies an
+explicit index-to-project-ID map for the full VST3 class before the client
+exposes those controls. The worker reads each bound value and reads back
+after setting. These controls are configurable and have no
+sample-accurate automation capability. The official server returned
+0.625 for an acknowledged Drive set on the ADI Test Plain fixture.
+
 ### Surge XT acceptance
 
 The official Surge XT 1.3.4 Linux plug-in ran in two comparisons. Each

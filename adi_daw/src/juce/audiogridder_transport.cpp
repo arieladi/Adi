@@ -74,6 +74,8 @@ enum class Command : std::int32_t {
     SetPluginSettings = 71,
     PluginSettings = 72,
     Parameters = 100,
+    ParameterValue = 101,
+    GetParameterValue = 102,
     Presets = 110,
 };
 
@@ -171,6 +173,42 @@ bool readControl(const Socket& socket, Command command, std::vector<std::byte>& 
     return socket.read(payload, deadline, error);
 }
 
+bool sendParameter(const Socket& socket, std::int32_t index, std::optional<float> value,
+                   Deadline deadline, std::string& error) {
+    // The stock numeric payload contains no inner length. Plugin index and
+    // channel are zero for the single hosted instance.
+    std::array<std::byte, 24> message{};
+    const auto type = value ? Command::ParameterValue : Command::GetParameterValue;
+    const auto payload = value ? 16 : 12;
+    put(message, 0, static_cast<std::int32_t>(type));
+    put(message, 4, static_cast<std::int32_t>(payload));
+    put(message, 12, index);
+    if (value) put(message, 16, *value);
+    return socket.write(ReadOnlyBytes{message}.first(static_cast<std::size_t>(8 + payload)), deadline, error);
+}
+
+bool receiveParameter(const Socket& socket, std::int32_t index, float& value,
+                      Deadline deadline, std::string& error) {
+    std::array<std::byte, 8> header{};
+    std::array<std::byte, 16> payload{};
+    if (!socket.read(header, deadline, error)) return false;
+    if (get<std::int32_t>(header, 0) != static_cast<std::int32_t>(Command::ParameterValue) ||
+        get<std::int32_t>(header, 4) != static_cast<std::int32_t>(payload.size())) {
+        error = "invalid stock parameter reply header";
+        return false;
+    }
+    if (!socket.read(payload, deadline, error)) return false;
+    const auto normalized = get<float>(payload, 8);
+    if (get<std::int32_t>(payload, 0) != 0 || get<std::int32_t>(payload, 4) != index ||
+        get<std::int32_t>(payload, 12) != 0 || !std::isfinite(normalized) ||
+        normalized < 0.0f || normalized > 1.0f) {
+        error = "invalid stock parameter reply";
+        return false;
+    }
+    value = normalized;
+    return true;
+}
+
 bool validToken(std::string_view token) {
     constexpr auto prefix = std::string_view{"VST3-"};
     constexpr auto hex = std::string_view{"0123456789abcdefABCDEF"};
@@ -238,7 +276,7 @@ constexpr std::size_t maxCatalogueRows = 16384;
 
 // Check depth, element counts, and duplicate keys before building a JSON DOM
 // from the server's MessagePack. The control envelope already caps the bytes.
-class CatalogueGuard final : public nlohmann::json_sax<Json> {
+class MetadataGuard final : public nlohmann::json_sax<Json> {
 public:
     bool null() override { return token(); }
     bool boolean(bool) override { return token(); }
@@ -272,10 +310,19 @@ private:
     std::size_t tokens_ = 0;
 };
 
+Json decodeMetadata(ReadOnlyBytes bytes) {
+    MetadataGuard bounds;
+    if (!Json::sax_parse(bytes, &bounds, Json::input_format_t::msgpack)) return {};
+    return Json::from_msgpack(bytes, /*strict=*/true, /*allow_exceptions=*/false);
+}
+
+bool validText(std::string_view text) {
+    return text.size() <= 256 && !std::any_of(text.begin(), text.end(),
+        [](unsigned char ch) { return ch < 32 || ch == 127; });
+}
+
 bool decodeCatalogue(ReadOnlyBytes bytes, std::vector<AudioGridderCatalogueEntry>& entries) {
-    CatalogueGuard bounds;
-    if (!Json::sax_parse(bytes, &bounds, Json::input_format_t::msgpack)) return false;
-    const auto document = Json::from_msgpack(bytes, /*strict=*/true, /*allow_exceptions=*/false);
+    const auto document = decodeMetadata(bytes);
     const auto rows = document.find("plugins");
     if (rows == document.end() || !rows->is_array()) return false;
     std::map<std::string, std::size_t> tokenCounts;
@@ -291,11 +338,62 @@ bool decodeCatalogue(ReadOnlyBytes bytes, std::vector<AudioGridderCatalogueEntry
         if (label == row.end() || !label->is_string() ||
             instrument == row.end() || !instrument->is_boolean()) continue;
         const auto& name = label->get_ref<const std::string&>();
-        if (name.empty() || name.size() > 256 || std::any_of(name.begin(), name.end(),
-            [](unsigned char ch) { return ch < 32 || ch == 127; })) continue;
+        if (name.empty() || !validText(name)) continue;
         entries.push_back({token, name, "vst3", instrument->get<bool>()});
     }
     std::erase_if(entries, [&](const auto& entry) { return tokenCounts.at(entry.serverToken) > 1; });
+    return true;
+}
+
+bool validParameterBindings(std::span<const AudioGridderParameterBinding> bindings) {
+    if (bindings.size() > maxCatalogueRows) return false;
+    std::set<std::int32_t> indices;
+    std::set<std::string_view> ids;
+    for (const auto& binding : bindings) {
+        if (binding.serverIndex < 0 || binding.id.empty() || binding.id.starts_with("idx:") ||
+            !validText(binding.id) || !indices.insert(binding.serverIndex).second ||
+            !ids.insert(binding.id).second) return false;
+    }
+    return true;
+}
+
+bool decodeParameterBindings(ReadOnlyBytes bytes, std::span<const AudioGridderParameterBinding> bindings,
+                             std::vector<RemoteParameter>& parameters) {
+    const auto advertised = decodeMetadata(bytes);
+    if (!advertised.is_array()) return false;
+    std::vector<std::uint32_t> indexCounts(advertised.size());
+    for (const auto& row : advertised) {
+        const auto index = row.find("idx");
+        if (index != row.end() && index->is_number_integer() && *index >= 0 && *index < advertised.size())
+            ++indexCounts[index->get<std::size_t>()];
+    }
+    for (const auto& binding : bindings) {
+        // The stock setter uses an array position. GET and the descriptor
+        // name a parameter index, so require them to agree unambiguously.
+        const auto index = static_cast<std::size_t>(binding.serverIndex);
+        if (index >= advertised.size() || indexCounts[index] != 1) continue;
+        const auto& row = advertised[index];
+        const auto idx = row.find("idx");
+        const auto label = row.find("name");
+        const auto initial = row.find("defaultValue");
+        if (idx == row.end() || !idx->is_number_integer() || *idx != binding.serverIndex ||
+            label == row.end() || !label->is_string() ||
+            initial == row.end() || !initial->is_number()) continue;
+        const auto& name = label->get_ref<const std::string&>();
+        const auto defaultValue = initial->get<double>();
+        if (name.empty() || !validText(name) || !std::isfinite(defaultValue) ||
+            defaultValue < 0.0 || defaultValue > 1.0) continue;
+        ParamDescriptor descriptor;
+        descriptor.id = binding.id;
+        descriptor.name = name;
+        descriptor.defaultValue = ParamValue::fromNormalized(defaultValue);
+        descriptor.automatable = false;
+        descriptor.configurable = true;
+        const auto unit = row.find("label");
+        if (unit != row.end() && unit->is_string() && validText(unit->get_ref<const std::string&>()))
+            descriptor.unit = unit->get<std::string>();
+        parameters.push_back({static_cast<std::uint32_t>(binding.serverIndex), std::move(descriptor), {}});
+    }
     return true;
 }
 
@@ -382,6 +480,10 @@ public:
             error = "invalid VST3 server token, layout, or initial state";
             return fail(error);
         }
+        if (!validParameterBindings(plugin_.parameterBindings)) {
+            error = "invalid trusted stock parameter binding";
+            return fail(error);
+        }
         if (!std::isfinite(sampleRate) || sampleRate < 8000 || sampleRate > 768000 ||
             channels < 1 || channels > 2 || frames < 1 || frames > maxFrames ||
             static_cast<double>(frames) / sampleRate < 0.0005) {
@@ -397,7 +499,7 @@ public:
                         {&commands_, &notifications_, &audio_, &screen_}, error) ||
             !loadPlugin(deadline, error)) return fail(error);
         ready_ = true;
-        stateStreamUsable_ = true;
+        commandStreamUsable_ = true;
         if (!plugin_.encodedState.empty() && !settleState(deadline, error)) return false;
         pluginLatency = latency_;
         return true;
@@ -410,14 +512,14 @@ public:
     [[nodiscard]] bool supportsState() const noexcept override { return true; }
 
     bool fetchState(std::vector<std::uint8_t>& output, StateDeadline deadline, std::string& error) override {
-        if (!ready_ || !stateStreamUsable_) {
+        if (!ready_ || !commandStreamUsable_) {
             error = "the stock server state stream is unavailable";
             return false;
         }
         std::vector<std::byte> payload;
         if (!writePluginIndex(commands_, Command::GetPluginSettings, deadline, error) ||
             !readControl(commands_, Command::PluginSettings, payload, deadline, error)) {
-            stateStreamUsable_ = false; // A partial reply cannot frame the next control operation.
+            commandStreamUsable_ = false; // A partial reply cannot frame the next control operation.
             return false;
         }
         if (payload.empty() || !decodeState({reinterpret_cast<const char*>(payload.data()), payload.size()}, output)) {
@@ -428,13 +530,13 @@ public:
     }
 
     bool restoreState(std::span<const std::uint8_t> bytes, StateDeadline deadline, std::string& error) override {
-        if (!ready_ || !stateStreamUsable_ || bytes.empty() || bytes.size() > maxStateBytes) {
+        if (!ready_ || !commandStreamUsable_ || bytes.empty() || bytes.size() > maxStateBytes) {
             error = "the stock server cannot restore this plug-in state";
             return false;
         }
         if (!writePluginIndex(commands_, Command::SetPluginSettings, deadline, error) ||
             !writeControl(commands_, Command::PluginSettings, encodeState(bytes), deadline, error)) {
-            stateStreamUsable_ = false;
+            commandStreamUsable_ = false;
             return false;
         }
         // Stock SET has no receipt. A GET on the same command stream waits
@@ -444,9 +546,52 @@ public:
         return fetchState(settled, deadline, error) && settleState(deadline, error);
     }
 
+    bool readParameters(std::vector<RemoteParameter>& output, StateDeadline deadline,
+                        std::string& error) override {
+        error.clear();
+        if (!parameterMetadataUsable_) {
+            error = "invalid stock plug-in parameter catalogue";
+            return false;
+        }
+        auto parameters = parameters_;
+        for (auto& parameter : parameters) {
+            float value = 0.0f;
+            if (!getParameterValue(static_cast<std::int32_t>(parameter.selector), value, deadline, error))
+                return false;
+            parameter.current = ParamValue::fromNormalized(static_cast<double>(value));
+        }
+        output = std::move(parameters);
+        return true;
+    }
+
+    bool setParameter(std::uint32_t selector, double normalized, double& applied,
+                      StateDeadline deadline, std::string& error) override {
+        error.clear();
+        if (!ready_ || !commandStreamUsable_ || !std::isfinite(normalized) ||
+            normalized < 0.0 || normalized > 1.0 ||
+            std::none_of(parameters_.begin(), parameters_.end(),
+                         [&](const auto& parameter) { return parameter.selector == selector; })) {
+            error = "the stock server parameter is unavailable or the value is invalid";
+            return false;
+        }
+        const auto index = static_cast<std::int32_t>(selector);
+        if (!sendParameter(commands_, index, static_cast<float>(normalized), deadline, error)) {
+            commandStreamUsable_ = false;
+            return false;
+        }
+        // Stock SET has no acknowledgement. GET on the same connection
+        // gives the value the plug-in actually applied after dispatching SET.
+        float confirmed = 0.0f;
+        if (!getParameterValue(index, confirmed, deadline, error)) return false;
+        applied = static_cast<double>(confirmed);
+        return true;
+    }
+
     void release() noexcept override {
         ready_ = false;
-        stateStreamUsable_ = false;
+        commandStreamUsable_ = false;
+        parameterMetadataUsable_ = true;
+        parameters_.clear();
         commands_.reset();
         notifications_.reset();
         audio_.reset();
@@ -457,6 +602,17 @@ private:
     bool fail(std::string& error) {
         release();
         error = "server plug-in " + plugin_.serverToken + ": " + error;
+        return false;
+    }
+
+    bool getParameterValue(std::int32_t index, float& output, Deadline deadline, std::string& error) {
+        if (!ready_ || !commandStreamUsable_) {
+            error = "the stock server parameter stream is unavailable";
+            return false;
+        }
+        if (sendParameter(commands_, index, std::nullopt, deadline, error) &&
+            receiveParameter(commands_, index, output, deadline, error)) return true;
+        commandStreamUsable_ = false;
         return false;
     }
 
@@ -520,8 +676,8 @@ private:
     bool loadPlugin(Deadline deadline, std::string& error) {
         std::vector<std::byte> payload;
         if (!readControl(commands_, Command::PluginList, payload, deadline, error)) return false;
-        // The caller already selected a server token. Only frame the unsolicited
-        // catalogue and later presets/parameters. Their contents are not used.
+        // The caller already selected a server token. The unsolicited
+        // catalogue and presets are not needed to load it.
         const Json settings{{"id", plugin_.serverToken}, {"layout", plugin_.layout},
                             {"settings", plugin_.encodedState}, {"monoChannels", 0}};
         if (!writeControl(commands_, Command::AddPlugin, settings.dump(), deadline, error) ||
@@ -550,8 +706,11 @@ private:
             error = "invalid v13 plug-in load result";
             return false;
         }
-        return readControl(commands_, Command::Presets, payload, deadline, error) &&
-               readControl(commands_, Command::Parameters, payload, deadline, error);
+        if (!readControl(commands_, Command::Presets, payload, deadline, error) ||
+            !readControl(commands_, Command::Parameters, payload, deadline, error)) return false;
+        if (!plugin_.parameterBindings.empty())
+            parameterMetadataUsable_ = decodeParameterBindings(payload, plugin_.parameterBindings, parameters_);
+        return true;
     }
 
     bool discardMidi(std::int32_t events, Deadline deadline, std::string& error) const {
@@ -576,10 +735,12 @@ private:
     AudioGridderPlugin plugin_;
     Socket commands_, notifications_, audio_, screen_;
     std::vector<std::byte> request_;
+    std::vector<RemoteParameter> parameters_;
     double sampleRate_ = 0;
     std::int32_t channels_ = 0, frames_ = 0, latency_ = 0;
     bool ready_ = false;
-    bool stateStreamUsable_ = false;
+    bool commandStreamUsable_ = false;
+    bool parameterMetadataUsable_ = true;
 };
 
 } // namespace

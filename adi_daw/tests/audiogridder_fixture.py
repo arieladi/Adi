@@ -47,6 +47,18 @@ def catalogue():
             row("Second", "VST3-99ef"))
 
 
+def parameter_metadata():
+    def row(index, name):
+        return (b"\x85" + short_text("idx") + bytes([index]) +
+                short_text("name") + short_text(name) +
+                short_text("label") + short_text("dB") +
+                short_text("defaultValue") + b"\xca" + struct.pack(">f", 0.5) +
+                short_text("currentValue") + b"\xca" + struct.pack(">f", 0.125))
+
+    return (b"\x95" + row(0, "Unbound") + row(1, "Gain") + row(37, "Moved") +
+            row(4, "First") + row(4, "Second"))
+
+
 def encode_stock_state(payload):
     alphabet = b".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
     value = int.from_bytes(payload, "little")
@@ -151,7 +163,10 @@ class Fixture:
                           "hasEditor": False, "disabledSideChain": False, "supportsDoublePrecision": False}
                 send_control(commands, 21, json.dumps(result).encode())
                 send_control(commands, 110, b"")
-                send_control(commands, 100, b"\x90")
+                has_params = self.mode in ("params", "bad-param-reply", "params-unbound")
+                send_control(commands, 100, parameter_metadata() if has_params else b"\x90")
+                if self.mode in ("params", "bad-param-reply"):
+                    self.parameters(commands)
                 if self.mode == "initial-state":
                     self.warm(audio)
                 if self.mode in ("state", "bad-state", "state-deadline"):
@@ -159,6 +174,18 @@ class Fixture:
                 if self.mode in ("bad-state", "state-deadline"):
                     return
                 self.stream(audio)
+
+    def parameters(self, commands):
+        assert struct.unpack("<iiiii", read(commands, 20)) == (102, 12, 0, 1, 0)
+        index = 2 if self.mode == "bad-param-reply" else 1
+        commands.sendall(struct.pack("<iiiifi", 101, 16, 0, index, 0.25, 0))
+        if self.mode == "bad-param-reply":
+            return
+        command, size, plugin, selector, value, channel = struct.unpack("<iiiifi", read(commands, 24))
+        assert (command, size, plugin, selector, value, channel) == (
+            101, 16, 0, 1, struct.unpack("<f", struct.pack("<f", 0.6))[0], 0)
+        assert struct.unpack("<iiiii", read(commands, 20)) == (102, 12, 0, 1, 0)
+        commands.sendall(struct.pack("<iiiifi", 101, 16, 0, 1, 0.625, 0))
 
     def warm(self, audio):
         request = read(audio, 40)
@@ -243,8 +270,10 @@ class Fixture:
 
 
 def main():
+    subprocess.run([sys.argv[1], "1", "duplicate-binding"], check=True, timeout=2)
     for mode in ("pcm", "version", "control", "unknown", "shape", "latency", "nonfinite", "timeout", "disconnect",
-                 "state", "initial-state", "state-deadline", "bad-state", "catalogue", "bad-catalogue"):
+                 "state", "initial-state", "state-deadline", "bad-state", "catalogue", "bad-catalogue",
+                 "params", "bad-param-reply", "params-unbound"):
         with Fixture(mode=mode, fail_after=0 if mode == "disconnect" else None) as server:
             subprocess.run([sys.argv[1], str(server.port), mode], check=True, timeout=8)
         expected_blocks = 0 if mode in ("version", "control", "unknown", "disconnect", "bad-state", "state-deadline",

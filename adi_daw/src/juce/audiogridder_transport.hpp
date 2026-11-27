@@ -21,6 +21,13 @@ struct AudioGridderEndpoint {
     std::chrono::milliseconds blockTimeout{1000};
 };
 
+struct AudioGridderParameterBinding {
+    std::int32_t serverIndex = -1;
+    /// Stable ID established for this exact paired plug-in, never inferred
+    /// from the stock server's presentation index or display name.
+    std::string id;
+};
+
 struct AudioGridderPlugin {
     /// The stock server's VST3 id2 token. ADI's stable class ID remains separate.
     std::string serverToken;
@@ -28,6 +35,7 @@ struct AudioGridderPlugin {
     /// Optional stock wire state, using the server's JUCE MemoryBlock encoding.
     std::string encodedState{};
     bool instrument = false;
+    std::vector<AudioGridderParameterBinding> parameterBindings{};
 };
 
 struct AudioGridderCatalogueEntry {

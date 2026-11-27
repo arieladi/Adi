@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -49,11 +50,17 @@ int main(int argc, char** argv) {
     }
     const auto initialState = mode == "initial-state" ? "4..nx+G." : "";
     if (mode == "state-deadline") endpoint.blockTimeout = 1500ms;
-    auto processor = adi::device::makeAudioGridderProcessor(
-        endpoint, {mode == "unknown" ? "VST3-400" : "VST3-12ab", "Stereo", initialState});
+    adi::device::AudioGridderPlugin plugin{mode == "unknown" ? "VST3-400" : "VST3-12ab", "Stereo", initialState};
+    if (mode == "params" || mode == "bad-param-reply")
+        plugin.parameterBindings = {{1, "440"}, {2, "441"}, {4, "442"}};
+    if (mode == "duplicate-binding") plugin.parameterBindings = {{1, "440"}, {2, "440"}};
+    auto processor = adi::device::makeAudioGridderProcessor(endpoint, std::move(plugin));
     std::string error;
     std::int32_t latency = 0;
     const bool prepared = processor->prepare(48000, 2, 64, false, latency, error);
+    if (mode == "duplicate-binding")
+        return check(!prepared && error.find("invalid trusted stock parameter binding") != std::string::npos,
+                     error.c_str()) ? 0 : 1;
     if (mode == "version")
         return check(!prepared && error.find("protocol version") != std::string::npos, error.c_str()) ? 0 : 1;
     if (mode == "control")
@@ -62,6 +69,35 @@ int main(int argc, char** argv) {
         return check(!prepared && error.find("VST3-400") != std::string::npos, error.c_str()) ? 0 : 1;
     if (!check(prepared, error.c_str()) || !check(latency == 7, "initial plugin latency was not 7"))
         return 1;
+
+    if (mode == "params" || mode == "bad-param-reply" || mode == "params-unbound") {
+        const auto deadline = std::chrono::steady_clock::now() + 1s;
+        std::vector<adi::device::RemoteParameter> controls(1);
+        controls[0].descriptor.id = "cached";
+        const bool read = processor->readParameters(controls, deadline, error);
+        if (mode == "bad-param-reply") {
+            if (!check(!read && controls.size() == 1 && controls[0].descriptor.id == "cached",
+                       "mismatched stock parameter reply replaced retained controls")) return 1;
+        } else if (mode == "params-unbound") {
+            double unapplied = -1;
+            if (!check(read && controls.empty() && !processor->setParameter(1, 0.6, unapplied, deadline, error),
+                       "stock parameter was exposed without an explicit stable-ID binding")) return 1;
+        } else {
+            if (!check(read && controls.size() == 1 && controls[0].selector == 1 &&
+                       controls[0].descriptor.id == "440" && controls[0].descriptor.name == "Gain" &&
+                       controls[0].descriptor.configurable && !controls[0].descriptor.automatable &&
+                       controls[0].descriptor.defaultValue.normalized == 0.5 &&
+                       controls[0].current.normalized == 0.25,
+                       "trusted stock parameter did not use its stable ID and live normalized value")) return 1;
+            double applied = -1;
+            if (!check(!processor->setParameter(0, 0.6, applied, deadline, error) &&
+                       !processor->setParameter(2, 0.6, applied, deadline, error) &&
+                       !processor->setParameter(4, 0.6, applied, deadline, error) &&
+                       processor->setParameter(1, 0.6, applied, deadline, error) && applied == 0.625,
+                       "stock set did not read back the plug-in's canonical normalized value")) return 1;
+            std::puts("stock v13 loopback fixture: normalized value 0.6 applied as 0.625; unbound selector refused");
+        }
+    }
 
     if (mode == "state" || mode == "bad-state" || mode == "state-deadline") {
         const auto deadline = std::chrono::steady_clock::now() + 1s;

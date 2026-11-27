@@ -35,14 +35,18 @@ PluginServerResolve cataloguedPluginServerResolver(PluginServerCatalogue catalog
         if (entry == list->end()) return {};
 
         const auto flow = entry->instrument ? engine::EventFlow::Consume : engine::EventFlow::Through;
+        auto stockParameters = stock && pair->stockParameters ? pair->stockParameters(uid)
+                                                             : std::vector<device::AudioGridderParameterBinding>{};
         return PluginServerBinding{std::move(pair->connectionId), std::move(pair->serverFingerprint),
-            [stock, entry = *entry](const PluginServerAddress& address) -> std::unique_ptr<device::RemoteProcessor> {
+            [stock, entry = *entry, stockParameters = std::move(stockParameters)](
+                const PluginServerAddress& address) -> std::unique_ptr<device::RemoteProcessor> {
                 if (!stock)
                     return std::make_unique<device::NativePluginProcessor>(
                         device::NativePluginEndpoint{address}, device::NativePlugin{entry.uid, entry.instrument});
                 device::AudioGridderPlugin plug;
                 plug.serverToken = entry.serverToken;
                 plug.instrument = entry.instrument;
+                plug.parameterBindings = stockParameters;
                 return device::makeAudioGridderProcessor({address.host, address.port}, std::move(plug));
             }, flow};
     };

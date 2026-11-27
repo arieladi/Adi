@@ -29,8 +29,10 @@ void check(bool ok, const char* what) {
 struct Processor final : device::RemoteProcessor {
     std::atomic<int>& preparations;
     std::atomic<int>& packets;
+    std::atomic<int>& parameterWrites;
 
-    Processor(std::atomic<int>& setups, std::atomic<int>& blocks) : preparations(setups), packets(blocks) {}
+    Processor(std::atomic<int>& setups, std::atomic<int>& blocks, std::atomic<int>& writes)
+        : preparations(setups), packets(blocks), parameterWrites(writes) {}
     bool prepare(double, std::int32_t, std::int32_t, bool, std::int32_t& latency, std::string&) override {
         ++preparations;
         latency = 0;
@@ -39,6 +41,21 @@ struct Processor final : device::RemoteProcessor {
     bool exchange(const device::RemoteBlock&, std::span<float> output, std::string&) override {
         ++packets;
         std::fill(output.begin(), output.end(), 0.25f);
+        return true;
+    }
+    bool readParameters(std::vector<device::RemoteParameter>& parameters, StateDeadline, std::string&) override {
+        device::RemoteParameter gain;
+        gain.selector = 3;
+        gain.descriptor.id = "17";
+        gain.descriptor.name = "Gain";
+        parameters = {gain};
+        return true;
+    }
+    bool setParameter(std::uint32_t selector, double normalized, double& applied, StateDeadline,
+                      std::string&) override {
+        if (selector != 3) return false;
+        ++parameterWrites;
+        applied = normalized;
         return true;
     }
 };
@@ -76,7 +93,7 @@ void run() {
     request.offline = true;
 
     std::atomic<bool> valid{false};
-    std::atomic<int> preparations{0}, packets{0};
+    std::atomic<int> preparations{0}, packets{0}, parameterWrites{0};
     int factories = 0, authorizations = 0;
     bool matchId = false;
     const net::PluginServerAddress expected{"127.0.0.1", 55056};
@@ -90,7 +107,7 @@ void run() {
             return net::PluginServerBinding{"private-test", "paired-room", [&](const net::PluginServerAddress& address) {
                 check(address == expected, "the bound factory receives the authorized address");
                 ++factories;
-                return std::make_unique<Processor>(preparations, packets);
+                return std::make_unique<Processor>(preparations, packets, parameterWrites);
             }};
         },
         [&](const net::PluginHostingScope& scope) -> net::PluginHostingLease {
@@ -120,6 +137,8 @@ void run() {
     check(remote && remote->loaded() && preparations.load() == 1 && factories == 1,
           "a valid local grant admits the exact destination and starts the worker");
     if (!remote) return;
+    check(remote->paramCount() == 1 && remote->setParam("17", device::ParamValue::fromNormalized(.5)) &&
+          parameterWrites.load() == 1, "a granted owner can set a bound remote parameter");
     std::array<float,64> left{}, right{};
     std::array<float*,2> output{left.data(), right.data()};
     engine::NodeIo io;
@@ -131,6 +150,8 @@ void run() {
         remote->process(io);
         check(packets.load() == 1, "the worker sent a block while the grant was current");
         valid.store(false);
+        check(!remote->setParam("17", device::ParamValue::fromNormalized(.75)) && parameterWrites.load() == 1 &&
+              remote->getParam("17").normalized == .5, "revocation stops a parameter write before sending it");
         remote->process(io);
     }
     check(packets.load() == 1 && remote->processingIssue().find("permission") != std::string_view::npos,
@@ -168,22 +189,28 @@ void cataloguedBindings() {
                   return std::vector<net::ServerPlugin>{{"vst3", fullId, "Named plug-in", "VST3-12ab", true},
                                                        {"clap", "org.adi.test", "Named plug-in", "org.adi.test", false}};
               }, error), "the full identity and stock token can share a cache row");
+    int trustedMappings = 0;
     auto resolve = net::cataloguedPluginServerResolver(catalogue,
         [&](const net::PluginServerAddress& address, std::string_view)
             -> std::optional<net::PluginServerPairing> {
             if (address != endpoint) return {};
-            return net::PluginServerPairing{"fixture-connection", "paired-room"};
+            return net::PluginServerPairing{"fixture-connection", "paired-room", [&](std::string_view id) {
+                if (id != fullId) return std::vector<device::AudioGridderParameterBinding>{};
+                ++trustedMappings;
+                return std::vector<device::AudioGridderParameterBinding>{{3, "17"}};
+            }};
         });
     net::PluginServerLocation server{7, "Room", endpoint, "audiogridder"};
     const device::DeviceIdentity vst3{"vst3", "157c0f3844664a65b03c829f28b96435", "Other name", {}, {}};
     const device::DeviceIdentity clap{"clap", "org.adi.test", "Named plug-in", {}, {}};
     auto stock = resolve(server, vst3);
-    check(stock && stock->eventFlow == engine::EventFlow::Consume && stock->createProcessor(endpoint),
+    check(stock && stock->eventFlow == engine::EventFlow::Consume && stock->createProcessor(endpoint) && trustedMappings == 1,
           "stock backend uses full VST3 identity independent of display spelling");
     check(!resolve(server, clap), "stock catalogue cannot route a CLAP to a VST3 command");
     server.protocol = "adps-v1";
     auto native = resolve(server, clap);
-    check(native && native->eventFlow == engine::EventFlow::Through && native->createProcessor(endpoint),
+    check(native && native->eventFlow == engine::EventFlow::Through && native->createProcessor(endpoint) &&
+          trustedMappings == 1,
           "native backend uses the exact CLAP descriptor ID");
     server.address.port = 55057;
     check(!resolve(server, clap), "the cached server fingerprint grants no access to a remapped endpoint");

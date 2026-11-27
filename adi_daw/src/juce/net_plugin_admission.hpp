@@ -2,6 +2,7 @@
 #pragma once
 
 #include "adi/engine/session.hpp"
+#include "juce/audiogridder_transport.hpp"
 #include "juce/net_plugin_address.hpp"
 #include "juce/remote_device.hpp"
 
@@ -57,6 +58,9 @@ using PluginServerResolve = std::function<std::optional<PluginServerBinding>(
 struct PluginServerPairing {
     std::string connectionId;
     std::string serverFingerprint;
+    // The stock server reports JUCE indices. Only the local trusted mapping
+    // for this full class ID can connect an index to an ADI parameter ID.
+    std::function<std::vector<device::AudioGridderParameterBinding>(std::string_view)> stockParameters = {};
 };
 using PluginServerPairLookup = std::function<std::optional<PluginServerPairing>(
     const PluginServerAddress&, std::string_view protocol)>;
