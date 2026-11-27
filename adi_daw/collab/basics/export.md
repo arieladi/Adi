@@ -6,7 +6,7 @@ The basics-export session has claimed all nine Export and import rows assigned t
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
-| SC-394 | `basics/sc-394-export-range` `0670165d` (local) | The Loop-off fallback is a named choice, with a fixture that distinguishes the brace from the song. Window and window-fn. | The branch log at `80de70f8` has no R36 result. | blocked on the Live 12 observation |
+| SC-394 | `basics/sc-394-export-range` `0670165d` (local) | The Loop-off fallback is a named choice, with a fixture that distinguishes the brace from the song. Window and window-fn. | The Live log reached R8 at `4abccdcc`. | blocked on the Live 12 R36 observation |
 | SC-395 | `basics/sc-395-missing-assets` `d348169c` (pushed) | Offline export uses the playback fallbacks for missing clips and plug-ins. Engine and engine-win. | The regression produced six failures against the original code. Windows Debug passed four affected suites and both acceptance tests. | blocked pending Linux verification |
 | SC-396 | `basics/sc-396-export-settings` `d315609f` (pushed) | The export dialog uses Settings defaults, remembers session choices and refreshes the range. Window and window-fn. | Changed translation units compiled with MSVC Debug and warnings as errors before stacking. | blocked pending Linux verification |
 | SC-397 | `basics/sc-397-stem-export` `5a0495a5` (pushed) | The app queues post-fader files for all or selected audio-bearing tracks. Return and Main processing for isolated stems still needs the engine's ViaMain route. Window and window-fn. | Regression cases cover both modes and track selection. | blocked pending Linux verification |
