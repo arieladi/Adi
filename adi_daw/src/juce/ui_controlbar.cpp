@@ -426,7 +426,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&key, "Key Map Mode", "Unavailable until controls can be mapped to computer keys.", false},
         {&midi, "MIDI Map Mode", "Unavailable until the app can act on MIDI controller mappings.", false},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
-        {&indicators, "MIDI Indicators", "Light when MIDI comes in or goes out."},
+        {&indicators, "MIDI In", "Lights when MIDI arrives from a port."},
+        {&midiOutIndicator, "MIDI Out", "Lights when MIDI is sent to a port."},
         {&arrangementPage, "Arrangement", "Return to the Arrangement workspace (F4)."},
         {&mix, "Mix View", "Open the channel chains and analysers (F4)."}};
     for (const auto &info : infos) {
@@ -541,8 +542,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         root_.say(on ? "MIDI Arrangement Overdub on: a MIDI recording will add to the notes already there."
                      : "MIDI Arrangement Overdub off: a MIDI recording will replace the notes it records over.");
     };
-    // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
+    // The MIDI Indicators follow the app's input and output activity.
     indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
+    midiOutIndicator.onClick = [this] { midiOutIndicator.setToggleState(root_.midiOut(), juce::dontSendNotification); };
     onCpuMenu = [this](juce::PopupMenu menu) {
         menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cpu));
     };
@@ -600,7 +602,8 @@ void TransportBar::resized() {
     place(key, 26, 12);
     place(midi, 28, 2);
     place(cpu, 58, 2);
-    place(indicators, 30);
+    place(indicators, 13, 1);
+    place(midiOutIndicator, 18, 0);
 }
 juce::PopupMenu TransportBar::metronomeMenu() const {
     juce::PopupMenu menu;
@@ -701,6 +704,7 @@ void TransportBar::refresh() {
     automationArm.setAlpha(canArmAutomation ? 1.f : .45f);
     automationArm.setToggleState(canArmAutomation && root_.automationArmed(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
+    midiOutIndicator.setToggleState(root_.midiOut(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4).
     reEnable.setToggleState(root_.reader().automationOverridden(), juce::dontSendNotification);

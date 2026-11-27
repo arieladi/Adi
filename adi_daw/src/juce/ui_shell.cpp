@@ -4235,6 +4235,47 @@ std::vector<std::int64_t> AdiRootComponent::audioOutputChoices(std::int64_t id) 
     return choices;
 }
 
+bool AdiRootComponent::setTrackMidiOutput(std::int64_t id, std::optional<rows::MidiOutput> output) {
+    if (output) {
+        const auto ports = midiTrackOutputs ? midiTrackOutputs() : std::vector<MidiPortListing>{};
+        if (std::ranges::find(ports, output->port, &MidiPortListing::id) == ports.end())
+            return fail("That MIDI output is unavailable. Enable its Track switch in Tempo & MIDI Settings.");
+    }
+    auto& store = submitter_.store();
+    struct Prepared {
+        std::vector<OpRequest> requests;
+        CommitOptions options;
+    } prepared;
+    try {
+        SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+        prepared.options.expectHead.emplace(OpJournal(store).headSeq());
+        const auto model = rows::readModel(store);
+        const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+        if (source == model.tracks.end() || (source->kind != "midi" && source->kind != "instrument"))
+            return fail("Choose a MIDI track to route to hardware.");
+        for (const auto& route : model.routing) {
+            if (!route.enabled || route.srcId != id || !route.midiOutput) continue;
+            if (route.midiOutput == output) return true;
+            prepared.requests.push_back(track_edits_detail::op("routing.disconnect", {{"id", route.id}}, "MIDI To"));
+        }
+        if (output) {
+            RowIds ids(store.db());
+            prepared.requests.push_back(track_edits_detail::op("routing.connect",
+                {{"id", ids.next("routing")}, {"srcKind", "track"}, {"src", id},
+                 {"dstKind", "hw_out"}, {"dst", 0}, {"kind", "main"},
+                 {"midiPort", output->port}, {"midiChannel", output->channel}}, "MIDI To"));
+        }
+        read.commit();
+    } catch (const std::exception& error) {
+        return fail(error.what());
+    }
+    if (prepared.requests.empty()) return true;
+    prepared.requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(std::move(prepared), [](Store& target, Prepared& edit, Actor) {
+        return OpJournal(target).commit(edit.requests, edit.options);
+    }));
+}
+
 bool AdiRootComponent::setTrackAudioOutput(std::int64_t id, std::int64_t destination) {
     struct Prepared {
         std::vector<OpRequest> requests;

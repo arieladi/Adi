@@ -6,6 +6,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/midi_hardware.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
@@ -109,11 +110,13 @@ struct Fixture {
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
     void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();(request.device->id==3?otherInstrument:instrument)=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
-    void render(int n=0, std::span<double> capture={}){
+    void render(int n=0, std::span<double> capture={}, const MidiHardwareSink* hardware=nullptr,
+                bool exporting=false){
         if(!n)n=block;
         std::array<float,8192> out{};std::array<double,8192> out64{};
         float* channels[]={out.data(),out.data()+4096};double* wide[]={out64.data(),out64.data()+4096};
         AudioIo io;io.frames=n;io.numOut=2;io.streamTimeSamples=clock;
+        io.midiHardware=hardware;io.exporting=exporting;
         if(width==Precision::Float64)io.out64=wide;else io.out=channels;
         if(otherInstrument)otherInstrument->clock=clock;
         instrument->clock=clock;
@@ -140,6 +143,61 @@ void unavailableClip() {
     check(!f.session.clipPlaybackUnavailable(2) && f.session.problems().empty(),
           "a fresh playback generation clears the recovered MIDI clip's diagnostic");
 }
+
+void hardwareMidiOutput() {
+    Fixture f(48000, 64);
+    f.clip(1, 0, 24024);
+    const std::array<controllers::Point, 1> values{{{0, 0, 0.5, 0, 0, 0}}};
+    const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
+    if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+        throw std::runtime_error("hardware MIDI controller fixture");
+    OpRequest route;
+    route.opType = "routing.connect";
+    route.payload = {{"id", 1}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "hw_out"},
+                     {"dst", 0}, {"kind", "main"}, {"midiPort", "out:hardware"}, {"midiChannel", 7}};
+    if (!OpJournal(*f.store).commit(route).ok) throw std::runtime_error("hardware MIDI route fixture");
+    f.load();
+    struct Received {
+        struct Word { std::int64_t sample = 0; std::uint32_t value = 0; };
+        std::array<Word, 64> words{};
+        std::size_t size = 0;
+        int resets = 0;
+    } received;
+    MidiHardwareSink sink{&received,
+        [](void* context, std::uint64_t port, std::int64_t track, std::int64_t sample, std::uint32_t word) noexcept {
+            auto& out = *static_cast<Received*>(context);
+            if (port == midiPortKey("out:hardware") && track == 1 && out.size < out.words.size())
+                out.words[out.size++] = {sample, word};
+        },
+        [](void* context) noexcept { ++static_cast<Received*>(context)->resets; }};
+    f.render(64, {}, &sink);
+    f.render(64, {}, &sink);
+    const auto has = [&](std::int64_t sample, std::uint32_t word) {
+        return std::any_of(received.words.begin(), received.words.begin() + static_cast<std::ptrdiff_t>(received.size),
+                           [&](const Received::Word& item) { return item.sample == sample && item.value == word; });
+    };
+    check(has(0, 0x20963c5du) && has(0, 0x20b60140u) && has(100, 0x20863c25u),
+          "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
+    check(f.instrument->count == 0, "hardware routing takes MIDI before the local instrument");
+    const auto before = received.size;
+    f.session.transport().locate(0);
+    f.render(64, {}, &sink, true);
+    check(received.size == before, "export callbacks emit no hardware MIDI");
+    f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+    f.refresh();
+    f.session.transport().play(false);
+    check(f.session.enqueueMidiInput(f.clock + 5, Event{0, EventType::NoteOn, 0, 63, 7, 0, 1}),
+          "hardware MIDI fixture accepts a live note");
+    const auto liveAt = f.clock + 5;
+    f.render(64, {}, &sink);
+    check(has(liveAt, 0x20963f7fu), "MIDI To forwards monitored live input while stopped");
+    check(History(*f.store).undo().ok, "MIDI To can undo the hardware route");
+    f.refresh();
+    const auto resets = received.resets;
+    f.render(64, {}, &sink);
+    check(received.resets == resets + 1, "removing the hardware route releases the former output");
+}
+
 void liveInput() {
     for (const auto width : {Precision::Float32, Precision::Float64}) {
         Fixture f(48000, 64, width);
@@ -1644,6 +1702,8 @@ int main(int argc,char** argv){
     catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "hardware") hardwareMidiOutput(); }
+    catch (const std::exception& error) { check(false, error.what()); }
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }

@@ -563,7 +563,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(device("midi.port.name", Type::Text, "Tempo & MIDI", "Last known port name",
                        "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
-                       "The port feeds tracks. Stored per port.", false));
+                       "The port sends or receives track MIDI. Stored per port.", false));
     r.push_back(make(kNewMidiInputTrackKey, Type::Bool, "Tempo & MIDI", "Track on for new MIDI inputs",
                      "Set the initial Track switch when a new MIDI input is discovered.",
                      kDefaultTrackOnForNewMidiInputs));

@@ -133,7 +133,7 @@ Tables topology(Tables value, const std::set<std::int64_t>& trackDelayTargets = 
         {"mixer_strip",{"track_id","pan_law","width","phase_invert","delay_samples","vca_group_id"}},
         {"mixer_pan_settings",{"track_id","mode"}},
         {"group_summing",{"track_id","enabled","flavor"}},
-        {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin"}}};
+        {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin","channel_map"}}};
     const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state",
         "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps","routing_send_taps","routing_key_taps"};
     for(auto it=value.begin();it!=value.end();) {
@@ -537,8 +537,12 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         playback.tempo=owner->playbackTempo(image->model);
         const auto& previousGraph = owner->devices_.rebuildSpec();
         const auto* previousTiming = dynamic_cast<const Session::TimingView*>(previousGraph.transportState.get());
+        auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
+        timing->spec=owner->spec_;
+        owner->prepareMidiHardware(*timing, image->model, previousTiming);
         if (preserveReaders && previousTiming && previousTiming->spec.sampleRate == owner->spec_.sampleRate &&
-            previousTiming->spec.channels == owner->spec_.channels && previousTiming->spec.maxFrames == owner->spec_.maxFrames) {
+            previousTiming->spec.channels == owner->spec_.channels && previousTiming->spec.maxFrames == owner->spec_.maxFrames &&
+            previousTiming->midiHardware == timing->midiHardware) {
             out->clips = renderedGeneration ? renderedGeneration->clips : owner->clips_;
             out->midi = renderedGeneration ? renderedGeneration->midi : owner->midi_;
         }
@@ -549,7 +553,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
                 owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
             out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
-                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips),
+                                                 owner->eventPathFor(image->model, *timing),clipNoteExpressions(*image->clips),
                                                  owner->spec_.performanceState && !owner->spec_.exporting);
         }
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
@@ -557,11 +561,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->strips=bindStripAutomation(program,excluded);
         out->devices=bindDeviceAutomation(program,excluded,owner->transport_,owner->spec_.sampleRate);
         out->controls=controls(image->model,excluded);
-        auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
-        timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
+        timing->stripLanes=out->controls->lanes;
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
@@ -583,7 +586,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
-        options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
+        options.devicesFor=[owner,timing](std::int64_t id){return owner->graphTrackChain(id, *timing);};
         // The GUI publishes both preview and committed generations through here.
         // Keep auxiliary edges when an ordinary edit replaces the playing graph.
         options.keyTapFor=[owner](std::int64_t track,Tap tap)->std::optional<Node*> {

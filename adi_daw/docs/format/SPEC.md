@@ -665,6 +665,14 @@ plugins" — is what lets the AI agent reason about and build them.
 
 ### 6.7 Routing
 
+A hardware MIDI output uses a track-to-`hw_out` main row with destination
+`0`. Its `channel_map` is a CBOR map with `midiPort` set to the
+direction-qualified Settings identifier and `midiChannel` set to 1–16.
+The row receives the track's MIDI after its MIDI effects. The app sends it
+while that port's Track switch is enabled. The audio output route remains
+independent.
+
+
 One `routing` table for every signal connection: main outputs, sends, sidechains,
 external inputs, and VCA control links. A row is
 `(src_kind, src_id) → (dst_kind, dst_id)` with `kind ∈ {main, send, sidechain,

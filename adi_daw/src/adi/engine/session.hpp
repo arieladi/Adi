@@ -576,7 +576,8 @@ private:
     // authored resume), else the external tempo, else the model's map.
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
     // Every node a track's events reach, which is MIDI's controller route identity.
-    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
+    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&, const TimingView&);
+    [[nodiscard]] std::vector<Node*> graphTrackChain(std::int64_t, const TimingView&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row,
@@ -598,6 +599,11 @@ private:
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    struct MidiHardwareNode;
+    std::uint64_t midiHardwareNodeSerial_ = 0; // owner, identifies a prepared output node
+    const MidiHardwareSink* midiHardwareSink_ = nullptr; // driver, during graph processing
+    std::int64_t midiHardwareStreamSample_ = 0;
+    std::uint64_t midiHardwareRouting_ = 0;
     std::map<std::int64_t, std::shared_ptr<LiveMidiInput::History>> midiHistories_;
     std::int64_t lastMidiHistoryId_ = 0; // owner only
     // Device nodes persist across graph swaps and Undo. Their audition voices
@@ -629,6 +635,8 @@ private:
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
+        std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
+        std::uint64_t midiHardwareRouting = 0;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
@@ -647,6 +655,7 @@ private:
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
+    void prepareMidiHardware(TimingView&, const rows::Model&, const TimingView* previous);
     void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     void prepareMidiPreview(TimingView&, const rows::Model&);
     [[nodiscard]] const LiveMidiInput::PreviewRoute* midiPreviewRoute(std::int64_t track) const noexcept;

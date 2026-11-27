@@ -110,6 +110,7 @@ bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef || a.audioOutput != b.audioOutput ||
+        a.midiOutput != b.midiOutput ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
         a.clips != b.clips || a.takeClips != b.takeClips || a.takeLanes != b.takeLanes || // pointer identity: already shared
@@ -519,6 +520,22 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception &) {
         // A partially readable project can still show its main rows.
     }
+
+    std::map<std::int64_t, rows::MidiOutput> midiOutputs;
+    try {
+        SQLite::Statement routes(db, "SELECT src_id,channel_map FROM routing WHERE src_kind='track' "
+                                    "AND dst_kind='hw_out' AND dst_id=0 AND kind='main' "
+                                    "AND enabled<>0 AND channel_map IS NOT NULL ORDER BY id");
+        while (routes.executeStep()) {
+            const auto data = routes.getColumn(1);
+            if (data.getBytes() == 0) continue;
+            auto route = rows::decodeMidiOutput({static_cast<const std::byte*>(data.getBlob()),
+                                                 static_cast<std::size_t>(data.getBytes())});
+            if (route) midiOutputs.try_emplace(routes.getColumn(0).getInt64(), std::move(*route));
+        }
+    } catch (const std::exception&) {
+    }
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -560,6 +577,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 t.inputRef = st.getColumn(17).getString();
             if (const auto output = audioOutputs.find(t.id); output != audioOutputs.end())
                 t.audioOutput = output->second;
+            if (const auto output = midiOutputs.find(t.id); output != midiOutputs.end())
+                t.midiOutput = output->second;
             if (groupRoots.contains(t.id))
                 t.freezeMode = "group";
             if (groupOwners.contains(t.id)) {

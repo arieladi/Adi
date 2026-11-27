@@ -1798,6 +1798,11 @@ chooses Post first. A uniform return toggles its setting. The click clears
 individual tap overrides on every incoming send, including disabled sends,
 and captures their complete rows in the same Undo step.
 It persists with zero sends and changes the inherited tap in one undo step.
+`routing.connect` accepts optional `midiPort` and `midiChannel` together for
+an external MIDI destination on a MIDI or instrument track. Use `dstKind`
+`hw_out`, `dst` 0 and `kind` `main`. Disconnect and Undo preserve the
+port identifier and its selected channel.
+
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent

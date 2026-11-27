@@ -70,12 +70,15 @@ std::string withWarning(std::string message, const std::string &warning) {
 class LiveMidiProcessor final : public engine::BlockProcessor {
   public:
     LiveMidiProcessor(ProjectDocument *document, MidiInputFeed &feed, engine::SamplePreview &preview,
-                      float standalonePreviewGain)
-        : document_(document), feed_(feed), preview_(preview), standalonePreviewGain_(standalonePreviewGain) {}
+                      float standalonePreviewGain, MidiOutputFeed *output)
+        : document_(document), feed_(feed), preview_(preview), standalonePreviewGain_(standalonePreviewGain),
+          output_(output) {}
     void prepare(double sampleRate, std::int32_t maxFrames) override {
         rate_ = sampleRate;
         resetCpuLoad();
         feed_.restart();
+        if (output_)
+            output_->reset();
         if (document_) {
             document_->session().resetMidiInput();
             document_->prepare(sampleRate, maxFrames);
@@ -89,7 +92,14 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
                        [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
                            return session.enqueueMidiInput(sample, event, inputSample);
                        }, [&session]() noexcept { session.resetMidiInput(); });
-            document_->process(io);
+            if (output_) {
+                MidiOutputFeed::Block output(*output_, io.streamTimeSamples, started, rate_);
+                auto rendered = io;
+                rendered.midiHardware = &output.sink;
+                document_->process(rendered);
+            } else {
+                document_->process(io);
+            }
         } else {
             for (int channel = 0; io.out && channel < io.numOut; ++channel)
                 if (auto *samples = io.out[channel])
@@ -113,6 +123,8 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     }
     void release() override {
         resetCpuLoad();
+        if (output_)
+            output_->reset();
         if (document_)
             document_->release();
     }
@@ -136,6 +148,7 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     MidiInputFeed &feed_;
     engine::SamplePreview &preview_;
     const float standalonePreviewGain_;
+    MidiOutputFeed *output_;
     double rate_ = 0;
     static_assert(std::atomic<float>::is_always_lock_free && std::atomic<unsigned>::is_always_lock_free);
     std::atomic<float> currentCpuLoad_{-1.f}, averageCpuLoad_{-1.f};
@@ -424,6 +437,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                             return settings_->get(settings::kNewMidiInputTrackKey).get<bool>();
                                                         });
             midiPorts_->setFeed(&midiFeed_);
+            midiPorts_->setOutputFeed(&midiOutputFeed_);
             midiPorts_->onInputsChanged = [this] {
                 if (document_)
                     document_->session().resetMidiInput();
@@ -431,6 +445,8 @@ class AdiApplication final : public juce::JUCEApplication,
             // A port plugged in or out, or a switch thrown: the Settings' table follows.
             // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
             midiPorts_->onChange = [this] {
+                if (root_)
+                    root_->mark(DirtySet::Content);
                 juce::MessageManager::callAsync([this] {
                     if (juce::JUCEApplicationBase::getInstance() != this || !settingsWindow_)
                         return;
@@ -1946,6 +1962,14 @@ class AdiApplication final : public juce::JUCEApplication,
         root->validateAudioRouting = [this](const rows::Model &model, std::string &error) {
             return document_->session().validateRouting(model, error);
         };
+        root->midiTrackOutputs = [this] {
+            std::vector<MidiPortListing> ports;
+            if (midiPorts_)
+                for (const auto& port : midiPorts_->ports())
+                    if (port.output && port.open && port.switches.track)
+                        ports.push_back({port.id, port.name});
+            return ports;
+        };
         root->configureMidiRouting = [this] {
             if (applicationCommand(AppCommands::Settings))
                 settingsWindow_->panel().showPage("Tempo & MIDI");
@@ -2339,7 +2363,8 @@ class AdiApplication final : public juce::JUCEApplication,
         // front of the document's process.
         const auto levelDb = settings_->get(settings::kStandalonePreviewLevelKey).get<float>();
         live_ = std::make_unique<LiveMidiProcessor>(document_.get(), midiFeed_, samplePreview_,
-                                                   juce::Decibels::decibelsToGain(levelDb));
+                                                   juce::Decibels::decibelsToGain(levelDb),
+                                                   midiPorts_ ? &midiOutputFeed_ : nullptr);
         refreshTestTone();
         bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
@@ -3397,7 +3422,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 midiSeen_ = activity;
                 midiLitUntil_ = now + 150;
             }
-            root_->setMidiIn(now < midiLitUntil_);
+            root_->setMidiIn(midiSeen_ != 0 && static_cast<juce::int32>(midiLitUntil_ - now) > 0);
+            if (const auto activity = midiPorts_->outputActivity(); activity != midiOutSeen_) {
+                midiOutSeen_ = activity;
+                midiOutLitUntil_ = now + 150;
+            }
+            root_->setMidiOut(midiOutSeen_ != 0 && static_cast<juce::int32>(midiOutLitUntil_ - now) > 0);
         }
         if (floating_) {
             floating_->collect();
@@ -3453,9 +3483,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // The ports' one consumer (N60), declared before the port host that publishes to it and the
     // processor and the bridge that pump it, so it outlives all three.
     MidiInputFeed midiFeed_;
+    MidiOutputFeed midiOutputFeed_;
     std::unique_ptr<MidiPortHost> midiPorts_;
-    std::uint64_t midiSeen_ = 0;
-    juce::uint32 midiLitUntil_ = 0;
+    std::uint64_t midiSeen_ = 0, midiOutSeen_ = 0;
+    juce::uint32 midiLitUntil_ = 0, midiOutLitUntil_ = 0;
     struct PendingProjectOpen {
         juce::File file;
         std::filesystem::path path;

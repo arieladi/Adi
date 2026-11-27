@@ -21,6 +21,7 @@
 namespace adi::engine {
 
 struct TransportInfo;
+struct MidiHardwareSink;
 
 /// What the graph's buffers hold and its nodes process (ADR-0207 d2): the
 /// Processing Precision switch on the Audio page. 32 is Live's scheme, the
@@ -86,6 +87,7 @@ struct AudioIo {
 
     /// Physical output channels in the device's packed buffer order.
     OutputChannelMap outputChannels{};
+    const MidiHardwareSink* midiHardware = nullptr;
     [[nodiscard]] int packedOutputPair(int first) const noexcept {
         const auto packed = outputChannels.packedPair(first);
         return packed >= 0 && numOut >= 2 && packed <= numOut - 2 ? packed : -1;

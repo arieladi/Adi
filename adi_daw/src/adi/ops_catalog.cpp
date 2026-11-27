@@ -904,6 +904,19 @@ std::optional<Payload> recordedRoutingInverse(const OpContext& c, std::string_vi
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const bool midiOutput = p.contains("midiPort") || p.contains("midiChannel");
+        if (midiOutput) {
+            if (p.at("kind") != "main" || p.at("srcKind") != "track" || p.at("dstKind") != "hw_out" ||
+                p.at("dst") != 0 || p.contains("row"))
+                throw std::runtime_error("a MIDI hardware output needs a track-to-hardware route");
+            const auto port = p.at("midiPort").get<std::string>();
+            const auto channel = detail::signedInteger(p.at("midiChannel"));
+            if (!port.starts_with("out:") || port.size() <= 4 || port.size() > 4096 || channel < 1 || channel > 16)
+                throw std::runtime_error("a MIDI output needs a port and a channel from 1 to 16");
+            SQLite::Statement track(c.db, "SELECT 1 FROM tracks WHERE id=? AND kind IN ('midi','instrument')");
+            track.bind(1, p.at("src").get<std::int64_t>());
+            if (!track.executeStep()) throw std::runtime_error("track cannot route MIDI to hardware");
+        }
         const bool newTrackMain = !c.replay && p.at("kind") == "main" &&
                                   p.at("srcKind") == "track" && p.at("dstKind") == "track";
         if (!c.replay && p.at("kind") == "send" && p.at("srcKind") == "track")
@@ -962,8 +975,8 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
             if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;
 
         SQLite::Statement st(c.db,
-            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader) "
-            "VALUES (?,?,?,?,?,?,?)");
+            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader, channel_map) "
+            "VALUES (?,?,?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("srcKind").get<std::string>());
         st.bind(3, p.at("src").get<std::int64_t>());
@@ -971,6 +984,12 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
         st.bind(5, p.at("dst").get<std::int64_t>());
         st.bind(6, p.at("kind").get<std::string>());
         st.bind(7,pre?1:0);
+        if (midiOutput) {
+            const auto mapping = encodePayload({{"midiPort", p.at("midiPort")}, {"midiChannel", p.at("midiChannel")}});
+            st.bind(8, mapping.data(), static_cast<int>(mapping.size()));
+        } else {
+            st.bind(8);
+        }
         st.exec();
         if(p.at("kind")=="sidechain" && p.at("dstKind")=="device")
             writeRoutingKeyTap(c.db,p.at("id").get<std::int64_t>(),p.value("keyTap",Payload{}));
@@ -1299,7 +1318,9 @@ constexpr Field kFRouting[] = {
      "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
     {"row", FieldType::Object, false, "a captured row, as undo restores it"},
     {"sendTapRow", FieldType::Object, false, "a captured individual send tap restored by undo"},
-    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"}};
+    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"},
+    {"midiPort", FieldType::Text, false, "MIDI output identifier from Settings"},
+    {"midiChannel", FieldType::Int, false, "MIDI hardware output channel, 1 through 16"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},

@@ -27,6 +27,7 @@
 #include <array>
 
 #include "adi/controller_data.hpp"
+#include "adi/midi_output_route.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
@@ -167,6 +168,7 @@ struct TrackNode {
     std::int64_t monitorMode = 0;
     // The enabled track-to-track main edge; absent follows the parent or Main.
     std::optional<std::int64_t> audioOutput;
+    std::optional<rows::MidiOutput> midiOutput;
     std::optional<std::string> inputRef;
     std::vector<std::shared_ptr<const ClipNode>> takeClips; // same ordering; each node names its lane
     std::vector<TakeLaneNode> takeLanes; // visible order, including empty lanes

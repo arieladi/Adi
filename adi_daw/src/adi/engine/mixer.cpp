@@ -129,6 +129,17 @@ void StripNode::prepare(double sampleRate, std::int32_t) {
     rampFrames_.store(static_cast<std::int32_t>(std::max<long>(1, frames)), std::memory_order_relaxed);
 }
 
+bool StripNode::midiAudible(const NodeIo& io) const noexcept {
+    const auto gates = hearingGates_.load(std::memory_order_relaxed);
+    if ((gates & kAudible) == 0) return false;
+    const bool unmuted = (gates & kUnmuted) != 0;
+    const auto* lanes = lanesFor(io);
+    const auto* clock = transport_.load(std::memory_order_acquire);
+    if (!lanes || !lanes->mute || !clock) return unmuted;
+    const auto sample = clock->sampleAt(clock->playing() ? io.blockOffset : 0);
+    return heldValueAt(*lanes->mute, sample, unmuted ? 0.0 : 1.0) < 0.5;
+}
+
 StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {
     double vol = volumeDb_.load(std::memory_order_relaxed);
     double pan = pan_.load(std::memory_order_relaxed);

@@ -16915,12 +16915,52 @@ void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir
     choose(row(root.mixerView, midiId), {12.f, 54.f}, Chooser::MidiChannel, "All Channels", "Configure...");
     choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "No Output", "Configure...");
     check(configureMidi == 3, "SC-261: each MIDI chooser can open MIDI Settings");
+    root.midiTrackOutputs = [] { return std::vector<MidiPortListing>{{"out:fixture", "Hardware Synth"}}; };
+    choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "No Output", "Channel 7");
+    const auto midiRoute = rows::MidiOutput{"out:fixture", 7};
+    check(root.current()->findTrack(midiId)->midiOutput == midiRoute,
+          "SC-404: choosing a MIDI output channel updates the project");
+    check(root.command(AppCommands::Undo) && !root.current()->findTrack(midiId)->midiOutput &&
+          root.command(AppCommands::Redo) && root.current()->findTrack(midiId)->midiOutput == midiRoute,
+          "SC-404: the MIDI hardware route is one Undo step");
+    root.frame();
+    choose(row(root.mixerView, midiId), {12.f, 110.f}, Chooser::MidiTo, "Hardware Synth", "No Output");
+    check(!root.current()->findTrack(midiId)->midiOutput, "SC-404: No Output clears the hardware route");
     const auto undo = root.undoTitle(false);
     choose(row(root.mixerView, mainId), {12.f, 125.f}, Chooser::MainOut, "Speakers", "Headphones", "3/4");
     check(root.current()->cue.firstMainOutputChannel == 6 && root.current()->cue.firstOutputChannel == 0 &&
           root.undoTitle(false) == undo, "SC-261: Main Out changes independently of Cue and Undo");
     choose(row(root.mixerView, mainId), {12.f, 96.f}, Chooser::CueOut, "Speakers", "Headphones");
     check(root.current()->cue.firstOutputChannel == 6, "SC-261: Cue Out still uses the configured output names");
+    MidiOutputFeed hardwareFeed;
+    MidiPortHost::Port hardware;
+    hardware.id = "out:fixture";
+    hardware.name = "Hardware Synth";
+    hardware.output = true;
+    auto ports = withMidiPortSwitch(settings::Value::object(), hardware.id, "track", true, hardware.name);
+    std::atomic<std::uint32_t> noteOn{0}, noteOff{0};
+    MidiPortHost host([&] { return ports; }, {hardware}, {}, {}, [&](const auto&) {
+        return MidiPortHost::OutputConnection{
+            [&](std::uint32_t word) {
+                if (((word >> 20) & 0x0f) == 9) noteOn.store(word, std::memory_order_release);
+                if (((word >> 20) & 0x0f) == 8) noteOff.store(word, std::memory_order_release);
+                return true;
+            }, [] { return true; }};
+    });
+    host.setOutputFeed(&hardwareFeed);
+    check(host.ports().front().open, "SC-404: the output Track switch opens the fake hardware port");
+    {
+        MidiOutputFeed::Block driver(hardwareFeed, 0, juce::Time::getMillisecondCounterHiRes(), 48000);
+        driver.sink.send(driver.sink.context, engine::midiPortKey(hardware.id), midiId, 0, 0x20963c5du);
+    }
+    for (int attempt = 0; attempt < 500 && noteOn.load(std::memory_order_acquire) == 0; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(noteOn.load(std::memory_order_acquire) == 0x20963c5du,
+          "SC-404: the real worker delivers the routed note to the fake hardware");
+    ports = withMidiPortSwitch(ports, hardware.id, "track", false, hardware.name);
+    host.refresh();
+    check(!host.ports().front().open && noteOff.load(std::memory_order_acquire) == 0x20863c00u,
+          "SC-404: turning Track off releases sounding notes and closes the output");
     document->release();
 }
 // SC-257: deferred Arrangement Record is UI intent until playback begins.

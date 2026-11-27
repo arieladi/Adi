@@ -1186,11 +1186,37 @@ juce::PopupMenu MixerStrip::midiInputMenu(RoutingChooser chooser) {
     return menu;
 }
 
-juce::String MixerStrip::midiOutputLabel() const { return "No Output"; }
+juce::String MixerStrip::midiOutputLabel() const {
+    const auto* trackNode = panel_.root.reader().findTrack(track_);
+    if (!trackNode || !trackNode->midiOutput) return "No Output";
+    const auto ports = panel_.root.midiTrackOutputs ? panel_.root.midiTrackOutputs() : std::vector<MidiPortListing>{};
+    const auto port = std::ranges::find(ports, trackNode->midiOutput->port, &MidiPortListing::id);
+    const auto name = port == ports.end() ? juce::String("Unavailable") : juce::String::fromUTF8(port->name.c_str());
+    return name + " / " + juce::String(trackNode->midiOutput->channel);
+}
 
 juce::PopupMenu MixerStrip::midiOutputMenu() {
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto* trackNode = panel_.root.reader().findTrack(track_);
+    const auto current = trackNode ? trackNode->midiOutput : std::optional<rows::MidiOutput>{};
+    const auto ports = panel_.root.midiTrackOutputs ? panel_.root.midiTrackOutputs() : std::vector<MidiPortListing>{};
     juce::PopupMenu menu;
-    menu.addItem(midiOutputLabel(), false, true, [] {});
+    menu.addItem("No Output", current.has_value(), !current, [safe] {
+        if (safe)
+            safe->panel_.root.setTrackMidiOutput(safe->track_, {});
+    });
+    for (const auto& port : ports) {
+        juce::PopupMenu channels;
+        const bool selectedPort = current && current->port == port.id;
+        for (int channel = 1; channel <= 16; ++channel) {
+            channels.addItem("Channel " + juce::String(channel), true, selectedPort && current->channel == channel,
+                [safe, route = rows::MidiOutput{port.id, channel}] {
+                    if (safe)
+                        safe->panel_.root.setTrackMidiOutput(safe->track_, route);
+                });
+        }
+        menu.addSubMenu(juce::String::fromUTF8(port.name.c_str()), channels, true, nullptr, selectedPort);
+    }
     return menu;
 }
 

@@ -31,6 +31,7 @@
 #include "adi/return_send_tap.hpp"
 
 #include "adi/controller_data.hpp"
+#include "adi/midi_output_route.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -260,6 +261,7 @@ struct Routing {
     std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
     std::optional<IndividualSendTap> sendTap{};
     std::string keyTap = "post_mixer"; // routing_key_taps absent: ADR-0203 d3
+    std::optional<MidiOutput> midiOutput{};
 };
 
 // --- the whole readable project ---------------------------------------------

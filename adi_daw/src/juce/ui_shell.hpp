@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/ui/midi_ports.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
@@ -469,6 +470,13 @@ class AdiRootComponent final : public juce::Component,
         }
     }
     bool midiIn() const noexcept { return midiIn_; }
+    void setMidiOut(bool on) noexcept {
+        if (on != midiOut_) {
+            midiOut_ = on;
+            mark(DirtySet::Transport);
+        }
+    }
+    bool midiOut() const noexcept { return midiOut_; }
     bool computerMidiEnabled() const noexcept { return computerMidiEnabled_; }
     bool playComputerMidiKey(const juce::KeyPress &);
     juce::KeyPress computerMidiShortcut(const juce::KeyPress &) const;
@@ -579,6 +587,7 @@ class AdiRootComponent final : public juce::Component,
     // Physical stereo pairs actually available in the audio device, with their configured names.
     std::function<std::span<const std::pair<int, std::string>>()> externalAudioOutputs;
     std::function<void()> configureMidiRouting;
+    std::function<std::vector<MidiPortListing>()> midiTrackOutputs;
     std::function<bool(const rows::Model &, std::string &)> validateAudioRouting;
     std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
     std::shared_ptr<ExternalInputMeter> externalInputMeter;
@@ -864,6 +873,7 @@ class AdiRootComponent final : public juce::Component,
     bool setMonitor(std::int64_t id, Monitor mode);
     std::vector<std::int64_t> audioOutputChoices(std::int64_t track) const;
     bool setTrackAudioOutput(std::int64_t track, std::int64_t destination);
+    bool setTrackMidiOutput(std::int64_t track, std::optional<rows::MidiOutput>);
     bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
@@ -1093,7 +1103,7 @@ class AdiRootComponent final : public juce::Component,
     bool changeSelectionArming(std::int64_t track);
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool toggleArm(std::optional<std::int64_t> clicked, bool add);
-    bool midiIn_ = false;
+    bool midiIn_ = false, midiOut_ = false;
     bool computerMidiEnabled_ = false;
     ComputerMidiKeyboard computerMidi_;
     std::optional<int> computerMidiToggleKey_;
