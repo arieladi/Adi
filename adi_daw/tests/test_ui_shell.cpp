@@ -3379,7 +3379,7 @@ void deviceOutputMeters(AppCommands &commands, const std::filesystem::path &dir)
     peer.addAndMakeVisible(root);
     peer.setVisible(true);
     peer.addToDesktop(0);
-    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-290: a software-only peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "SC-290: the test uses the software peer");
     root.setBounds(peer.getLocalBounds());
     root.frame();
     root.sharedAnalysis = broker;
@@ -12182,7 +12182,7 @@ void panelFocusAndOverflow(AppCommands &commands, const std::filesystem::path &d
     peer.addAndMakeVisible(root);
     peer.setVisible(true);
     peer.addToDesktop(0);
-    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-91: the test uses a software-only peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "SC-91: the test uses the software peer");
     root.setBounds(peer.getLocalBounds());
     root.frame();
     const auto focusPoint = [](const juce::Component &panel) { return panel.getPosition() + juce::Point<int>{8, 1}; };
@@ -15527,8 +15527,7 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     root.setBounds(fake.getLocalBounds());
     fake.setVisible(true);
     fake.addToDesktop(0);
-    check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
-          "channel navigation uses the software peer");
+    check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "channel navigation uses the software peer");
     auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
     auto broker = std::make_shared<SharedAnalysis>(
         [&](std::int64_t, engine::ScopePoint) { return tap; },
@@ -15867,7 +15866,7 @@ void mixChannelToolSearch(AppCommands &commands, const std::filesystem::path &di
     root.setBounds(fake.getLocalBounds());
     fake.setVisible(true);
     fake.addToDesktop(0);
-    check(fake.getPeer() && !fake.getPeer()->getNativeHandle() && root.setMixView(true, false),
+    check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && root.setMixView(true, false),
           "tool search is exercised through the normal Mix View on a software peer");
     root.frame();
     auto &mix = root.mixViewPanel;
@@ -15942,7 +15941,7 @@ void mixStackViewReopen(AppCommands &commands, const std::filesystem::path &dir)
         fake.addAndMakeVisible(root);
         fake.setVisible(true);
         fake.addToDesktop(0);
-        check(fake.getPeer() && !fake.getPeer()->getNativeHandle(), "Stack persistence uses only a software peer");
+        check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "Stack persistence uses the software peer");
         check(root.setMixView(true, false), "open the Stack in this project");
         auto &surface = root.mixViewPanel.stack;
         surface.channelScope.setSelectedId(2, juce::sendNotificationSync);
@@ -16683,8 +16682,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             fake.addAndMakeVisible(actual);
             fake.setVisible(true);
             fake.addToDesktop(0);
-            check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
-                  "Mix View focus dispatch uses a fake peer with no native window");
+            check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "Mix View focus dispatch uses the software peer");
             actual.afterEdit = [&] { document->synchronise(); };
             actual.devices.publication = [&] { return document->parameterFeed().current(); };
             actual.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
@@ -17569,8 +17567,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mainPeer.setSize(1600, 1000);
                 mainPeer.addAndMakeVisible(window);
                 mainPeer.setVisible(true);mainPeer.addToDesktop(0);
-                check(dynamic_cast<UiFakePeer *>(mainPeer.getPeer()) && window.getPeer() &&
-                          window.getPeer()->getNativeHandle() == nullptr,
+                check(dynamic_cast<UiFakePeer *>(mainPeer.getPeer()) && window.getPeer() == mainPeer.getPeer(),
                       "parameter visibility fixture has only a software peer");
                 observed.frame();
                 check(observed.setMixView(true, false), "parameter demand opens the docked Stack");
@@ -20254,7 +20251,11 @@ int main(int argc, char **argv) {
             peerRoot.setVisible(true);
             peerRoot.addToDesktop(0);
             auto *peer = peerRoot.getPeer();
-            check(peer != nullptr, "fake peer created without OS window");
+            check(dynamic_cast<UiFakePeer *>(peer), "input dispatch uses the software peer");
+#if JUCE_LINUX || JUCE_BSD
+            check(peer != nullptr && (peer->getNativeHandle() == nullptr) == juce::Desktop::getInstance().isHeadless(),
+                  "the fake peer supplies a cursor target when X11 is available");
+#endif
             const auto origin =
                 peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
