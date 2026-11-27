@@ -4616,7 +4616,12 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
 }
 void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = false) {
     namespace fs = std::filesystem;
-    const auto staging = dir / "Untitled";
+    auto staging = dir / "Untitled";
+#if defined(_WIN32)
+    // SQLite keeps the spelling used to open the file. Windows canonical paths use the on-disk spelling.
+    fs::create_directory(dir / "First Save Path");
+    staging = dir / "first save path" / "Untitled";
+#endif
     fs::create_directory(staging);
     const auto source = staging / "Untitled.adi";
     std::string error;
@@ -4663,6 +4668,17 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = fals
     if (originalAudio.empty())
         return;
 
+    const auto nested = staging / "Nested";
+    fs::create_directory(nested);
+    const auto nestedProject = nested / "Nested.adi";
+    const bool acceptedNested = doc->saveAs(nestedProject, true);
+    check(!acceptedNested && doc->error().find("outside the temporary project folder") != std::string::npos &&
+              fs::exists(source) && fs::is_empty(nested),
+          "first save refuses a destination inside its temporary folder through an alias");
+    if (acceptedNested)
+        return;
+    fs::remove(nested);
+
     const auto occupied = dir / "Occupied.adi";
     fs::create_directory(occupied);
     check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
@@ -4672,7 +4688,11 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = fals
     const auto destination = dir / "Song";
     fs::create_directory(destination);
     const auto named = destination / "Song.adi";
-    const auto relativeAudio = originalAudio.lexically_relative(fs::canonical(staging));
+    const auto relativeAudio = fs::weakly_canonical(originalAudio).lexically_relative(fs::canonical(staging));
+    const bool relativeTake = !relativeAudio.empty() && !relativeAudio.is_absolute() && *relativeAudio.begin() != "..";
+    check(relativeTake, "the replacement fixture writes a separate destination take");
+    if (!relativeTake)
+        return;
     const auto existingAudio = destination / relativeAudio;
     std::optional<media::FileIdentity> replacementIdentity;
     if (replace) {
