@@ -266,7 +266,7 @@ void importClip() {
 // SC-387: a file of more than two channels is refused in plain words, not cut to its first two quietly.
 void moreThanTwoChannelsRefused() {
     Fixture f;auto& s=*f.store;
-    for(const std::uint16_t channels:{3,6}){
+    for(const std::uint16_t channels:std::initializer_list<std::uint16_t>{3,6}){
         const auto path=f.folder()/("surround-"+std::to_string(channels)+".wav");
         std::vector<float> frames(static_cast<std::size_t>(channels)*480,0.1f);
         {audio::WavWriter w(path,48000,channels,audio::WavFormat::Pcm24);w.write(frames.data(),480);}

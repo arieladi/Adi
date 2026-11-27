@@ -175,8 +175,9 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
         // device is closed and opened again, and the page shows what it grants now.
         if (device->showControlPanel()) {
             manager_.closeAudioDevice();
-            error_ = manager_.restartLastAudioDevice() == nullptr ? juce::String("The device did not reopen after its Hardware Setup.")
-                                                                 : juce::String();
+            manager_.restartLastAudioDevice();
+            error_ = manager_.getCurrentAudioDevice() == nullptr ? juce::String("The device did not reopen after its Hardware Setup.")
+                                                                : juce::String();
         }
         finishSetupChange();
     };

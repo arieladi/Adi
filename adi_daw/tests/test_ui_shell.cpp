@@ -21731,8 +21731,8 @@ int main(int argc, char **argv) {
                 }
                 check(inputBox != nullptr && kept == kNoInputDevice,
                       ("No Device chosen for the input is kept as \"No Device\", not as the system's: " + kept).c_str());
-                std::string why;
-                settings.set("audio.inputDevice", std::string(), {}, why);
+                std::string unset;
+                settings.set("audio.inputDevice", std::string(), {}, unset);
             }
             // SC-380: Live's Hardware Setup under the device's lines; with no device open, there is no panel.
             check(page != nullptr && y("Channel Configuration") < y("Hardware Setup") && y("Hardware Setup") < y("Sample Rate") &&
