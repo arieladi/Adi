@@ -6,6 +6,46 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-27, morning — six basics stacks on main (95 rows); the walk on macOS; what waits
+
+**Landed in the night:** #805 (the tracks chain, MIDI monitor, VST3 controllers, plug-in windows), #807 (the ruler and grid, the Info box, a take's waveform as it records, recording on macOS), #808 (the plug-ins chain, no AI tab, Monitor Off on a new audio track), #809 (the Info box in the Browser's column and 21 more of the look queue). With #797 and #801 that is 95 rows of `docs/SANITY-CHECK.md`, each marked "on main" with its pull request. A row closes when it has been seen in the real window.
+
+**The director's word on a picture of the window (27 November):** the ruler and the Info box are good; the Info box becomes part of the Browser's column (SC-424, on main).
+
+**A session on his Mac** built main on Apple Silicon (all 291 suites pass), checks each stack and chain before win pushes, and walked the nine steps on macOS. It found that recording was silent there, for want of the app's declaration of audio input (SC-392, on main), and M2 to M4 (SC-425 to SC-427).
+
+**What win's stacks needed beyond the sessions' work,** each a class to expect again:
+- MSVC only: a point type, locals that hide outer ones (C4456, C4458), and a 1 MB stack: the window suite keeps whole root windows on the stack, and its executable now has 8 MB on Windows as the other platforms give.
+- Apple's compiler only: an implicit conversion of a 64-bit count to `long double`; levels compared exactly.
+- Linux with no display: a test that showed a real menu. `ArrangementView::onContextMenu` is the seam.
+- Reached indirectly: a send test that read a flag SC-87 had split; the text projection's byte-for-byte expectations after SC-249; the settings catalogue's status word; a parity floor; `adi_play`, which only the JUCE-on legs build; a strict GCC warning in a test.
+- Win's own: it had run a chosen subset of suites, and not the validators, before pushing a stack. The local check is now everything: the five validators, the window suites on a hidden desktop, every headless suite, the app and `adi_play`. The sixth stack then passed CI at the first run.
+
+**Waiting, not on main:** about a hundred rows that sessions report finished. The speed and recording chains collide with what landed and wait for their authors' merge. The midi, project, clips, automation and export sessions still push one branch per row, which cannot be stacked. The edit session's branches were never pushed. The readings of Live stopped at 6 of 66: the machine that has Live is switched off.
+
+**Registered:** DF-E91 (five hosting cases and engine notes from a study of a vocal suite, put off by the director until the lead machine is quiet).
+
+**Next free:** DF-E92, SC-428. ADR-0261 and DF-W61 as before.
+
+---
+
+## 2026-11-27 — the Jam (ADR-0260); two basics stacks on main; one chain per queue
+
+**The Jam.** The director's outside panel proposed a guitar-first way of working. Most of it is decided already; four pieces are new. His words on win's five choices: "all as recommended". Three templates, not a screen of its own; a Mark command and a riff list with Keep, Maybe and Skip, built right after the recording basics; rule-made drum grooves; Make Session after the Foundry; backing to the Cue output, with a notice where the interface has none. DF-W60 holds the work. The same day he took three refinements from the panel into that row: a template never reroutes by itself on another interface; recovery of a take after a crash, past 4 GB too, joins the gate of long takes (PD-06 moves up); and a sixth acceptance test, a 60-minute take.
+
+**The basics, landed so far.**
+- #797: SC-02 and SC-03 (a lane press moves only the insert marker) and DF-E89 (the gemini seat's Release warnings).
+- #801: fifteen branches: SC-01, SC-05, SC-80, SC-82, SC-83, SC-84, SC-259, SC-220, SC-50, SC-310, SC-311, SC-407, SC-408, SC-148, and the recording session's later commits on SC-02.
+- Win's own fixes on the stacks: a point type MSVC refused; a seam for the lanes' context menu (`ArrangementView::onContextMenu`), because a test that showed a real menu crashed the Linux leg, which runs with no display; two exact comparisons of a level that Apple's compiler rounds differently; locals that hide outer ones (MSVC C4456, C4458).
+
+**How the sessions work now** (the howto of 27 November, changed three times that night): one session per queue; the window suites run with no display on Linux, as CI does; and **one chain branch per queue**, because 28 of 34 separate item branches collided with each other. Win merges chains into `land/basics-*` stacks, builds each in MSVC Debug and runs its suites on a hidden desktop before CI.
+
+**Seats, when you next run:** much has landed in your paths under the loan of ADR-0257 d2, and more is coming. Read `git log` on your files before your next item.
+
+**Next free:** ADR-0261, DF-W61. The others are unchanged.
+
+---
+
 ## 2026-11-26, night — surfaces, phones and the agent's stop (ADR-0259)
 
 The director's outside panel proposed a design for controllers, a Stream Deck and phones. Win read it against SRF-01 to SRF-16, AGT-01 to AGT-12, the log and the code: most of it is decided already. Five choices went to him (H1 to H5); the panel amended them and win corrected three points. His words: "as the panel, with win's corrections".

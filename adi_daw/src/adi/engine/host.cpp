@@ -135,6 +135,11 @@ Graph* GraphHost::currentGraph() const noexcept {
     return live_ != nullptr ? &live_->graph() : nullptr;
 }
 
+const GraphTransportState* GraphHost::currentTransportState() const noexcept {
+    const auto* published = pub_.peek();
+    return published ? published->transportState() : nullptr;
+}
+
 void GraphHost::fadeIn(const AudioIo& io) noexcept {
     if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || (io.out == nullptr && io.out64 == nullptr)) return;
 
