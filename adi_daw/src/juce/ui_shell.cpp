@@ -3858,7 +3858,7 @@ void AdiRootComponent::setAutomationMode(bool on) {
     refreshAdditionalAutomationLanes();
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Choose an automation device and parameter on the track header, or click the control itself. "
-             "Click the line to add a breakpoint, drag one to move it, or double-click one to delete it."
+             "Click the line to add a breakpoint. Click a breakpoint to delete it, or drag it to move it."
            : "");
     arrangement.repaint();
 }

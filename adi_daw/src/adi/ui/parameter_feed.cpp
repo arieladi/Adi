@@ -6,6 +6,11 @@
 #include <unordered_set>
 namespace adi::ui {
 namespace {
+panel::Declared declarationOf(const device::ParamDescriptor &descriptor, bool modifiable) {
+    const auto shape = static_cast<panel::Shape>(descriptor.shape);
+    return {descriptor.id, descriptor.name, modifiable, descriptor.automatable, shape,
+            shape == panel::Shape::Switch ? 2 : descriptor.stepCount};
+}
 bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
@@ -23,8 +28,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
                       }) &&
            std::equal(a.declared.begin(), a.declared.end(), b.declared.begin(), b.declared.end(),
                       [](const panel::Declared &x, const panel::Declared &y) {
-                          return std::tie(x.id, x.name, x.modifiable, x.automatable) ==
-                                 std::tie(y.id, y.name, y.modifiable, y.automatable);
+                          return std::tie(x.id, x.name, x.modifiable, x.automatable, x.shape, x.stepCount) ==
+                                 std::tie(y.id, y.name, y.modifiable, y.automatable, y.shape, y.stepCount);
                       }) &&
            std::equal(a.records.begin(), a.records.end(), b.records.begin(), b.records.end(),
                       [](const panel::Record &x, const panel::Record &y) {
@@ -82,7 +87,7 @@ std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation
             for (std::int32_t index = 0; index < count; ++index) {
                 const auto *descriptor = instance->paramAt(index);
                 if (descriptor && descriptor->automatable) {
-                    data.declared.push_back({descriptor->id, descriptor->name, available && !descriptor->missing, true});
+                    data.declared.push_back(declarationOf(*descriptor, available && !descriptor->missing));
                     data.defaults.emplace(descriptor->id, descriptor->defaultValue.normalized);
                 }
             }
@@ -183,9 +188,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         if (!descriptor) continue;
                         cache.descriptors.push_back(*descriptor);
                         cache.automationRefs.push_back(engine::automationParamRef(instance->identity().format, descriptor->id));
-                        metadata->declared.push_back({descriptor->id, descriptor->name,
-                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
-                            descriptor->automatable});
+                        metadata->declared.push_back(declarationOf(*descriptor,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available));
                         metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
                         if (!descriptor->groupId.empty())
                             metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
@@ -228,7 +232,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 // comparison, no allocation; a plug-in that renames or adds parameters rebuilds them.
                 const auto tableFields = [](const device::ParamDescriptor &d) {
                     return std::tie(d.id, d.name, d.defaultValue.normalized, d.automatable, d.configurable, d.missing,
-                                    d.groupId, d.groupName, d.groupEnableControl, d.bandIndex, d.sectionId,
+                                    d.shape, d.stepCount, d.groupId, d.groupName, d.groupEnableControl, d.bandIndex, d.sectionId,
                                     d.sectionName);
                 };
                 auto &tables = tables_[row.id];
@@ -249,9 +253,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         const auto *descriptor = instance->paramAt(i);
                         if (!descriptor) continue;
                         tables.descriptors.push_back(*descriptor);
-                        metadata->declared.push_back({descriptor->id, descriptor->name,
-                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
-                            descriptor->automatable});
+                        metadata->declared.push_back(declarationOf(*descriptor,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available));
                         metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
                         if (!descriptor->groupId.empty())
                             metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,

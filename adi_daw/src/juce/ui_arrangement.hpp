@@ -15,6 +15,8 @@
 #include <optional>
 #include <vector>
 namespace adi::engine { struct AudioRecordingPreview; }
+namespace adi::automation { enum class Shape; }
+
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -431,6 +433,8 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<AutomationValueAddress> automationValueAt(juce::Point<float>,bool snapToGrid,
                                                            bool allowAdd) const;
     void automationContextMenu(const juce::MouseEvent &);
+    void insertAutomationShape(const AutomationValueAddress &, automation::Shape, std::int64_t begin,
+                               std::int64_t end, std::uint64_t generation);
     void beginAutomationValueEdit(const AutomationValueAddress &);
     void commitAutomationValue();
     void endAutomationValueEdit(bool refocus=true);

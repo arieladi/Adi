@@ -16737,6 +16737,152 @@ void automationBreakpointDrags(AppCommands &commands, const std::filesystem::pat
           "the corner skews the Pan values while keeping the point times");
     undoGesture("one Undo restores the skewed envelope");
 }
+void automationShapeMenu(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-shape-menu.adi", true, {}, error);
+    check(document != nullptr, "a project to insert arrangement automation shapes");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2, lane = 31;
+    constexpr auto bar = textproj::kWhole;
+    const auto pan = panTarget(track);
+    auto points = automation::writePoints(41, lane, nullptr, Payload::array({
+        {{"id", 7}, {"time", bar}, {"value", -.5}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 9}, {"time", 2 * bar}, {"value", .25}, {"curve", 1}, {"tension", 0.}},
+        {{"id", 11}, {"time", 3 * bar}, {"value", .75}, {"curve", 1}, {"tension", 0.}}
+    }));
+    const bool seeded = document->ops().submit({automation::createLane(automationLaneSpec(pan, 0, lane)),
+                                                std::move(points)}).ok && document->synchronise();
+    check(seeded, "a Pan envelope extends before and after the shape's time selection");
+    if (!seeded)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-shape-menu");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid = {false, true, false, 0, 1};
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&](auto tick) { return static_cast<float>(geometry.x(tick)); };
+    const auto laneBody = [&](const AutomationTarget &target) -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == target)
+                return body;
+        return std::nullopt;
+    };
+    const auto envelope = [&](const AutomationTarget &target, const auto &snapshot) {
+        return snapshot ? envelopeOf(*snapshot, target) : TrackEnvelope{};
+    };
+    const auto panBody = laneBody(pan);
+    const auto initial = root.current();
+    const auto authored = envelope(pan, initial);
+    check(panBody && authored.data && authored.data->points.size() == 3, "all original Pan points are displayed");
+    if (!panBody || !authored.data || authored.data->points.size() != 3)
+        return;
+
+    const auto openShape = [&](juce::Point<float> at, const juce::String &name) {
+        std::set<std::string> names;
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator top(menu); top.next();)
+                if (top.getItem().text == "Insert Shape" && top.getItem().subMenu)
+                    for (juce::PopupMenu::MenuItemIterator shape(*top.getItem().subMenu); shape.next();) {
+                        const auto &item = shape.getItem();
+                        if (!item.isEnabled)
+                            continue;
+                        names.insert(item.text.toStdString());
+                        if (item.text == name)
+                            action = item.action;
+                    }
+        };
+        const auto popup = pressAt(canvas, at, juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        if (action)
+            action();
+        root.frame();
+        return names;
+    };
+    const auto beforeShape = OpJournal(document->store()).headSeq();
+    constexpr auto begin = 5 * bar / 4, end = 11 * bar / 4;
+    const float blank = panBody->bottom - 5.f;
+    const juce::Point<float> start{x(begin), blank}, finish{x(end), blank};
+    const auto selectShapeRange = [&] {
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, finish));
+        canvas.mouseUp(dragAt(canvas, start, finish));
+        root.frame();
+    };
+    selectShapeRange();
+    check(canvas.hasAutomationSelection() && geometry.selection.start == begin && geometry.selection.end == end,
+          "the pointer selected the exact time range in Pan");
+
+    const float middle = panBody->scaleBottom - .625f * (panBody->scaleBottom - panBody->top);
+    const auto shapes = openShape({x(2 * bar), middle}, "Triangle");
+    const auto changed = root.current();
+    const auto inserted = envelope(pan, changed);
+    const auto sameAt = [&](std::int64_t tick) {
+        return inserted.data && envelopeValue(*inserted.data, tick) == envelopeValue(*authored.data, tick);
+    };
+    check(shapes.size() == 10 && shapes.contains("ADSR") && shapes.contains("Square"),
+          "the continuous envelope's menu offers the ten built-in shapes");
+    check(inserted.data && std::any_of(inserted.data->points.begin(), inserted.data->points.end(), [](const auto &point) {
+              return point.time == 2 * textproj::kWhole && point.value == 1 && point.id != 9;
+          }) && sameAt(begin - bar / 8) && sameAt(end + bar / 8),
+          "Triangle uses the captured range and Pan travel while preserving both outside slopes");
+    if (OpJournal(document->store()).headSeq() != beforeShape)
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeShape,
+              "one Undo restores the envelope before inserting Triangle");
+
+    for (const auto *name : {"Exponential Rise", "Exponential Fall", "Logarithmic Rise", "Logarithmic Fall"}) {
+        selectShapeRange();
+        openShape({x(2 * bar), middle}, name);
+        const auto snapshot = root.current();
+        const auto shaped = envelope(pan, snapshot);
+        const auto rise = juce::String(name).endsWith("Rise");
+        const auto firstValue = shaped.data ? envelopeValue(*shaped.data, begin) : std::nullopt;
+        const auto towardsEnd = shaped.data ? envelopeValue(*shaped.data, end - bar / 64) : std::nullopt;
+        check(firstValue == (rise ? -1. : -.3125) && towardsEnd &&
+                  (rise ? *towardsEnd > *firstValue : *towardsEnd < *firstValue),
+              "the named ramp rises into the trailing value or falls from the leading value");
+        if (OpJournal(document->store()).headSeq() != beforeShape)
+            check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeShape,
+                  "one Undo restores a ramp insertion");
+    }
+
+    const auto activator = activatorTarget(track);
+    root.showAutomation(track, activator);
+    root.frame();
+    const auto switched = laneBody(activator);
+    if (!switched) {
+        check(false, "the Track Activator overlay is available");
+        return;
+    }
+    constexpr auto marker = 3 * bar / 2 + bar / 8;
+    const auto discrete = openShape({x(marker), switched->bottom - 7.f}, "Square");
+    const auto final = root.current();
+    const auto square = envelope(activator, final);
+    check(discrete == std::set<std::string>{"Square"}, "the discrete envelope offers only Square");
+    check(square.data && std::any_of(square.data->points.begin(), square.data->points.end(), [](const auto &point) {
+              return point.time == marker && point.value == 1 && point.curve == 0;
+          }) && std::any_of(square.data->points.begin(), square.data->points.end(), [](const auto &point) {
+              return point.time == marker + textproj::kPPQ;
+          }) && envelopeValue(*square.data, marker - 1) == 0 &&
+              envelopeValue(*square.data, marker + textproj::kPPQ) == 0,
+          "the fresh Square starts at the unsnapped marker, spans one full grid cell, and preserves the base");
+}
+
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;
     auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
@@ -24067,6 +24213,7 @@ int main(int argc, char **argv) {
     trace("automationBreakpointModifiers", [&] { automationBreakpointModifiers(commands, temp.path()); });
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationCurveGestures", [&] { automationCurveGestures(commands, temp.path()); });
+    trace("automationShapeMenu", [&] { automationShapeMenu(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
     trace("reenableArrangementEnvelope", [&] { reenableArrangementEnvelope(commands, temp.path()); });

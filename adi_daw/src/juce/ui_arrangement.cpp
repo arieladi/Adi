@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/automation_shapes.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
@@ -9,6 +10,7 @@
 #include "adi/engine/curves.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -3720,19 +3722,204 @@ bool ArrangementCanvas::resolveAutomationValue(const AutomationValueAddress &add
     });
 }
 
+namespace {
+constexpr std::pair<automation::Shape, const char *> kArrangementShapes[]{
+    {automation::Shape::Sine, "Sine"}, {automation::Shape::Triangle, "Triangle"},
+    {automation::Shape::Sawtooth, "Sawtooth"}, {automation::Shape::InverseSawtooth, "Inverse Sawtooth"},
+    {automation::Shape::Square, "Square"},
+    {automation::Shape::ExponentialRise, "Exponential Rise"}, {automation::Shape::ExponentialFall, "Exponential Fall"},
+    {automation::Shape::LogarithmicRise, "Logarithmic Rise"}, {automation::Shape::LogarithmicFall, "Logarithmic Fall"},
+    {automation::Shape::ADSR, "ADSR"},
+};
+
+bool discreteAutomationShape(const AdiRootComponent &root, std::int64_t track, const AutomationTarget &target,
+                             const engine::AutomationLaneNode *lane) {
+    if (target.stepped || (lane && lane->valueDomain == "enum"))
+        return true;
+    if (target.ownerKind != "device" || !root.automationParameters)
+        return false;
+    const auto catalog = root.automationParameters(track);
+    if (!catalog)
+        return false;
+    for (const auto &device : *catalog) {
+        if (device.id != target.ownerId)
+            continue;
+        return std::any_of(device.declarations().begin(), device.declarations().end(), [&](const auto &parameter) {
+            if (parameter.shape == panel::Shape::Continuous && parameter.stepCount < 2)
+                return false;
+            const auto reference = engine::automationParamRef(device.format, parameter.id);
+            return reference && automation_override_detail::sameParam(target.ownerKind, target.paramRef, *reference);
+        });
+    }
+    return false;
+}
+} // namespace
+
 void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
-    const auto edit=automationValueAt(e.position,view.snaps(e.mods),true);
+    const auto edit = automationValueAt(e.position, view.snaps(e.mods), true);
     const auto current = view.root.current();
     const auto *lane = edit && current ? envelopeOf(*current, edit->target).lane : view.automationLaneAt(e.y);
+    const auto &geometry = view.geometry;
+    const auto &selection = geometry.selection;
+    auto [begin, end] = std::minmax(selection.start, selection.end);
+    const auto at = geometry.tick(e.position.x);
+    const bool useSelection = edit && hasAutomationSelection() && begin < end && begin <= at && at < end &&
+        std::find(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
+                  AutomationLaneKey{edit->track, edit->target}) != automationSelectionTargets_.end();
+    std::int64_t rangeBegin = begin, rangeEnd = end;
+    if (edit && !useSelection) {
+        // For a point's menu, its tick is the local marker. Background
+        // clicks already located the insert marker in the clicked lane.
+        rangeBegin = edit->point ? edit->tick : selection.insert;
+        if (rangeBegin < std::numeric_limits<std::int64_t>::max()) {
+            const auto gridBegin = geometry.snap(rangeBegin, false);
+            const auto cell = geometry.nextGridLine(gridBegin, true) - gridBegin;
+            if (cell > 0 && cell <= std::numeric_limits<std::int64_t>::max() - rangeBegin)
+                rangeEnd = rangeBegin + cell;
+            else
+                rangeEnd = rangeBegin;
+        }
+    }
+
+    const auto generation = view.root.committedGeneration();
     const juce::Component::SafePointer<ArrangementCanvas> safe(this);
-    view.contextMenu(e.getScreenPosition(),false,lane,[safe,edit](juce::PopupMenu &menu) {
-        if(!edit)return;
+    view.contextMenu(e.getScreenPosition(), false, lane, [safe, edit, lane, rangeBegin, rangeEnd, generation](juce::PopupMenu &menu) {
+        if (safe == nullptr || !edit)
+            return;
         menu.addSeparator();
-        const auto name=juce::String::fromUTF8(edit->point?"Edit Value\xE2\x80\xA6":"Add Value\xE2\x80\xA6");
-        menu.addItem(name,[safe,address=*edit] {
-            if(safe!=nullptr)safe->beginAutomationValueEdit(address);
+        const auto name = juce::String::fromUTF8(edit->point ? "Edit Value\xE2\x80\xA6" : "Add Value\xE2\x80\xA6");
+        menu.addItem(name, [safe, address = *edit] {
+            if (safe != nullptr)
+                safe->beginAutomationValueEdit(address);
         });
+        if (rangeBegin < 0 || rangeEnd <= rangeBegin || (lane && lane->timeBase != 0))
+            return;
+        const bool discrete = discreteAutomationShape(safe->view.root, edit->track, edit->target, lane);
+        juce::PopupMenu shapes;
+        for (const auto &[shape, label] : kArrangementShapes) {
+            if (shape != automation::Shape::Square && discrete)
+                continue;
+            shapes.addItem(label, [safe, address = *edit, shape, rangeBegin, rangeEnd, generation] {
+                if (safe != nullptr)
+                    safe->insertAutomationShape(address, shape, rangeBegin, rangeEnd, generation);
+            });
+        }
+        menu.addSubMenu("Insert Shape", std::move(shapes));
     });
+}
+
+void ArrangementCanvas::insertAutomationShape(const AutomationValueAddress &address, automation::Shape shape,
+                                              std::int64_t begin, std::int64_t end, std::uint64_t generation) {
+    const auto current = view.root.current();
+    if (!current || view.root.committedGeneration() != generation) {
+        view.root.say("The envelope changed. Open Insert Shape again.");
+        return;
+    }
+    const auto &target = address.target;
+    const auto envelope = envelopeOf(*current, target);
+    if (!resolveAutomationValue(address, envelope) || !editableEnvelope(envelope)) {
+        view.root.say("That automation lane is no longer editable.");
+        return;
+    }
+    if (shape != automation::Shape::Square &&
+        discreteAutomationShape(view.root, address.track, target, envelope.lane))
+        return;
+
+    const auto rate = view.root.editRate();
+    const auto firstSample = automationCurveTime(begin, current->tempo.get(), rate);
+    const auto lastSample = automationCurveTime(end, current->tempo.get(), rate);
+    if (!std::isfinite(firstSample) || !std::isfinite(lastSample) || begin < 0 || end <= begin ||
+        lastSample <= firstSample || lastSample > 0x1p50) {
+        view.root.say("Select a time range that spans at least one audio sample.");
+        return;
+    }
+    const auto low = envelope.lane && envelope.lane->minValue
+        ? std::max(target.minimum, *envelope.lane->minValue) : target.minimum;
+    const auto high = envelope.lane && envelope.lane->maxValue
+        ? std::min(target.maximum, *envelope.lane->maxValue) : target.maximum;
+    if (high < low) {
+        view.root.say("The envelope has no values in the displayed range.");
+        return;
+    }
+
+    const auto base = envelope.lane ? envelope.lane->defaultValue : view.root.automationCurrent(target);
+    const auto valueAt = [&](std::int64_t tick) {
+        return envelope.data ? envelopeValue(*envelope.data, tick, target.stepped,
+                                             current->tempo.get(), rate).value_or(base) : base;
+    };
+    double before = valueAt(begin);
+    if (envelope.data) {
+        const auto &points = envelope.data->points;
+        const auto first = std::lower_bound(points.begin(), points.end(), begin, [](const auto &point, auto tick) {
+            return point.time < tick;
+        });
+        if (first != points.end() && first->time == begin)
+            before = first->value; // the incoming value at a coincident boundary
+    }
+    const auto after = valueAt(end);
+    using automation::Shape;
+    const bool risingRamp = shape == Shape::ExponentialRise || shape == Shape::LogarithmicRise;
+    const bool fallingRamp = shape == Shape::ExponentialFall || shape == Shape::LogarithmicFall;
+    const bool ramp = risingRamp || fallingRamp;
+    const bool adsr = shape == Shape::ADSR;
+    automation::ShapeSpec spec;
+    spec.shape = shape;
+    spec.start = begin;
+    spec.end = end;
+    if (!adsr && !ramp) {
+        spec.low = low;
+        spec.high = high;
+    }
+    spec.stepsPerCycle = static_cast<std::uint32_t>(std::clamp<std::int64_t>(end - begin, 2, spec.stepsPerCycle));
+
+    try {
+        auto points = automation::generateShape(spec);
+        if (ramp) {
+            // Join the adjoining value at the end that the ramp eases towards or away from.
+            points.front().value = risingRamp ? std::min(low, after) : before;
+            points.back().value = fallingRamp ? std::min(low, before) : after;
+        } else if (adsr) {
+            // Scale the ADSR from the line between its adjoining values to the
+            // top of the displayed range, using the generator's native phases.
+            for (auto &point : points) {
+                const auto fraction = static_cast<double>(point.time - begin) / static_cast<double>(end - begin);
+                point.value = std::lerp(std::lerp(before, after, fraction), high, point.value);
+            }
+        }
+
+        constexpr const char *label = "Insert Automation Shape";
+        if (envelope.lane) {
+            std::vector<automation::NativeSpliceKnot> knots;
+            knots.reserve(points.size());
+            for (const auto &point : points)
+                knots.push_back({point, {}});
+            if (view.root.replaceAutomationRange(envelope.lane->id, begin, end, knots, label))
+                focusIfShowing(*this);
+            return;
+        }
+
+        RowIds ids(view.root.editStore().db());
+        const auto lane = automationLaneSpec(target, base, ids.next("automation_lanes"), true);
+        auto knots = Payload::array();
+        std::uint64_t pointId = 1;
+        const auto add = [&](std::int64_t tick, double value, std::uint8_t curve, float tension) {
+            knots.push_back({{"id", pointId++}, {"time", tick}, {"value", value},
+                             {"curve", curve}, {"tension", tension}});
+        };
+        // Coincident knots preserve the control's original value on both sides.
+        if (begin > 0)
+            add(begin, lane.defaultValue, 0, 0.f);
+        for (const auto &point : points)
+            add(point.time, point.value, point.curve, point.tension);
+        add(end, lane.defaultValue, 0, 0.f);
+        auto create = automation::createLane(lane);
+        auto write = automation::writePoints(ids.next("automation_data"), lane.id, nullptr, std::move(knots));
+        create.label = write.label = label;
+        if (view.root.submitEdits({std::move(create), std::move(write)}))
+            focusIfShowing(*this);
+    } catch (const std::exception &error) {
+        view.root.say(error.what());
+    }
 }
 
 void ArrangementCanvas::beginAutomationValueEdit(const AutomationValueAddress &address) {
@@ -5187,10 +5374,18 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         clearAutomationValueReadout();
         return;
     }
-    if (!panning && e.mods.isPopupMenu() && view.root.automationMode() && automationPointAt(e.position)) {
-        clearAutomationSelection();
-        automationContextMenu(e);
-        return;
+    if (!panning && e.mods.isPopupMenu() && view.root.automationMode()) {
+        if (const auto hit = automationPointAt(e.position)) {
+            const auto &selection = view.geometry.selection;
+            const auto [begin, end] = std::minmax(selection.start, selection.end);
+            const auto at = view.geometry.tick(e.position.x);
+            if (!hasAutomationSelection() || at < begin || at >= end ||
+                std::find(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
+                          AutomationLaneKey{hit->track, hit->target}) == automationSelectionTargets_.end())
+                clearAutomationSelection();
+            automationContextMenu(e);
+            return;
+        }
     }
     if (!panning && automationDown(e)) {
         if (!automationDrag_)
