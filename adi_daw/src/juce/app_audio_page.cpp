@@ -187,9 +187,12 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
         finishSetupChange();
     };
     input_.onChange = [this] {
-        apply([this](auto &setup) {
-            setup.inputDeviceName = input_.getSelectedId() == 1 ? juce::String() : input_.getText();
-        });
+        // SC-383: No Device is kept as itself, apart from the empty name of the system's input.
+        std::string why;
+        const bool none = input_.getSelectedId() == 1;
+        if (none)
+            (void)settings_.set("audio.inputDevice", std::string(kNoInputDevice), {settings::Actor::User, {}, 0}, why);
+        apply([none, this](auto &setup) { setup.inputDeviceName = none ? juce::String() : input_.getText(); });
     };
     output_.onChange = [this] {
         apply([this](auto &setup) {

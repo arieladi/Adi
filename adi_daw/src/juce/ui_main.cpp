@@ -1346,6 +1346,9 @@ class AdiApplication final : public juce::JUCEApplication,
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
         setup.inputDeviceName = settings_->get("audio.inputDevice").get<std::string>();
+        const bool noInput = setup.inputDeviceName == kNoInputDevice; // SC-383: No Device, kept as itself
+        if (noInput)
+            setup.inputDeviceName = {};
         setup.outputDeviceName = settings_->get("audio.outputDevice").get<std::string>();
         setup.sampleRate = settings_->get("audio.sampleRate").get<double>();
         setup.bufferSize = settings_->get("audio.bufferSize").get<int>();
@@ -1371,7 +1374,7 @@ class AdiApplication final : public juce::JUCEApplication,
         else if (const auto error = openAudioDevice(manager_, setup, *settings_); error.isNotEmpty())
             report(error.toStdString());
         // SC-381: with the system's input kept (a first run), none is open until it is wanted; say so once.
-        else if (setup.inputDeviceName.isEmpty() && root_)
+        else if (setup.inputDeviceName.isEmpty() && !noInput && root_)
             root_->say("No audio input is open: arming an audio track opens the system's input, or choose one in "
                        "Settings > Audio.");
         document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
@@ -1883,6 +1886,8 @@ class AdiApplication final : public juce::JUCEApplication,
             watch.userChose = std::exchange(userChoseDevice_, false);
             watch.chosenOutput = settings_->get("audio.outputDevice").get<std::string>();
             watch.chosenInput = settings_->get("audio.inputDevice").get<std::string>();
+            if (watch.chosenInput == kNoInputDevice)
+                watch.chosenInput.clear(); // SC-383: No Device holds nothing to come back to
             watch.openOutput = setup.outputDeviceName.toStdString();
             watch.openInput = setup.inputDeviceName.toStdString();
             if (auto *kind = manager_.getCurrentDeviceTypeObject()) {
@@ -1929,9 +1934,14 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto type = juce::String(settings::driverSettingFor(manager_.getCurrentAudioDeviceType().toStdString()));
         std::string why;
         // SC-381: an input opened for an armed track is the system's, as the setting keeps it: not saved by name.
-        const bool systemInput = inputForArm_ && settings_->get("audio.inputDevice").get<std::string>().empty();
+        const auto keptInput = settings_->get("audio.inputDevice").get<std::string>();
+        const bool systemInput = inputForArm_ && keptInput.empty();
+        // SC-383: No Device stays No Device while no input is open; an empty name would be the system's.
+        const bool noInput = keptInput == kNoInputDevice && setup.inputDeviceName.isEmpty();
         if (!settings::keepGrant(*settings_,
-                                 {type.toStdString(), systemInput ? std::string() : setup.inputDeviceName.toStdString(),
+                                 {type.toStdString(), systemInput ? std::string()
+                                                      : noInput   ? keptInput
+                                                                  : setup.inputDeviceName.toStdString(),
                                   setup.outputDeviceName.toStdString(), static_cast<int>(setup.sampleRate),
                                   setup.bufferSize},
                                  {}, why))

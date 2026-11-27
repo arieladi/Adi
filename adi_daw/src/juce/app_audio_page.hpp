@@ -40,6 +40,9 @@ juce::String openAudioDevice(juce::AudioDeviceManager &, const juce::AudioDevice
 // armed when no input is open. Empty when it opened (or one was already open); else why not, the output
 // left as it was. `opened` names the input.
 juce::String openDefaultInput(juce::AudioDeviceManager &, const settings::AppSettings &, juce::String &opened);
+// SC-383: `audio.inputDevice` when the user chose No Device: no input, never the system's (which is the
+// empty name, what a first run keeps). Opened as no input, and never opened for an armed track.
+inline constexpr const char *kNoInputDevice = "No Device";
 // The head of the Settings window's Audio page, as Live 11's (measured 2026-10-27): Audio
 // Device (driver type, input and output devices, Channel Configuration), Sample Rate, and
 // Latency (buffer size, the input, output and overall latencies). It drives the application's

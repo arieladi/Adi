@@ -21698,6 +21698,23 @@ int main(int argc, char **argv) {
             });
             check(compensation != audio.rows().end() && (*compensation)->getY() == y("Driver Error Compensation"),
                   "a held row stands at its line");
+            // SC-383: No Device for the input is kept as itself, apart from the system's input (the empty name
+            // a first run keeps), so the next launch, or an armed track, does not open the microphone again.
+            if (page != nullptr) {
+                juce::ComboBox *inputBox = nullptr;
+                for (auto *child : page->getChildren())
+                    if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Audio Input Device")
+                        inputBox = box;
+                std::string kept;
+                if (inputBox != nullptr) {
+                    inputBox->setSelectedId(1, juce::sendNotificationSync);
+                    kept = settings.get("audio.inputDevice").get<std::string>();
+                }
+                check(inputBox != nullptr && kept == kNoInputDevice,
+                      ("No Device chosen for the input is kept as \"No Device\", not as the system's: " + kept).c_str());
+                std::string why;
+                settings.set("audio.inputDevice", std::string(), {}, why);
+            }
             // SC-380: Live's Hardware Setup under the device's lines; with no device open, there is no panel.
             check(page != nullptr && y("Channel Configuration") < y("Hardware Setup") && y("Hardware Setup") < y("Sample Rate") &&
                       page->hardware.isShowing() && !page->hardware.isEnabled() &&
