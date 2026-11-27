@@ -83,4 +83,4 @@ macOS granted the rebuilt app audio-input authorization. The live retest recorde
 
 A separate launch of the newer `1127e` bundle prompted for fresh audio-input approval before its window opened. The live SC-20 waveform retest remains pending.
 
-The host twice returned `No space left on device` during standing fetches. Clearing generated ADI binaries and JUCE build helpers restored ref polling. The second recovery left about 299 MiB free, below the space required for a fresh native build.
+The host returned `No space left on device` during standing fetches. Clearing generated ADI binaries and JUCE build helpers restored fetches, and a temporary RAM volume supplied space for the 1127h native build. After the drive filled again, I switched to read-only Git ref polling.
