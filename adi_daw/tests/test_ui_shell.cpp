@@ -16648,6 +16648,20 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.renderedTrack.setSelectedId(4, juce::sendNotificationSync);
     check(page.choices().track == 4 && page.exportButton.isEnabled(),
           "an individual track is ready to export on selection");
+    for (const int target : {2, 3, 4}) {
+        page.renderedTrack.setSelectedId(target, juce::sendNotificationSync);
+        page.includeReturnAndMain.setToggleState(true, juce::dontSendNotification);
+        page.includeReturnAndMain.onClick();
+        const auto refusals = page.refusals();
+        check(!page.exportButton.isEnabled() &&
+                  refusals == std::vector<std::string>{
+                                  "Turn Include Return and Main Effects off to export individual track signals."},
+              "individual and batch track exports name the unsupported Return and Main Effects setting");
+        page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
+        page.includeReturnAndMain.onClick();
+        check(page.exportButton.isEnabled() && page.refusals().empty(),
+              "turning Return and Main Effects off enables direct track export again");
+    }
     page.length.setText("one bar", false);
     page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
