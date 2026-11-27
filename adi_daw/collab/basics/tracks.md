@@ -1,5 +1,7 @@
 # Basics tracks
 
+Newest item branch is `basics/sc-317-plugin-parameter-touch` at `35b782d6`. The consolidated `basics/tracks-chain` points to the same commit and includes `land/basics-1127c` and main. All 20 item branches in the table are on `origin`. [Newest item](https://github.com/arieladi/Adi/tree/basics/sc-317-plugin-parameter-touch) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
 | SC-01 | `basics/sc-01-protect-main` `265fbe7f` | The shared track delete op refuses Main, including a cascading group deletion, and the window displays the refusal in the Status Bar. Touched the engine's track image and the window's shell tests. | Track-delete and changeset regressions failed before the fix and passed in Linux Debug with WERROR after it. Debug shell and window-state suites passed. All three acceptance tests passed. In the app on an isolated Xvfb display, Main's context-menu Delete showed the refusal and SQLite still held Main. | PR requested |
@@ -24,8 +26,6 @@
 | SC-317 | `basics/sc-317-plugin-parameter-touch` `35b782d6` | Configure opens the plug-in editor and appends new touches in their original order, including two controls reported in one update. The searchable Parameter List remains available. Outside Configure the latest touch is offered in Device View and first under that device in the Arrangement Automation chooser. Choosing it can pin the control and show its lane. Touched engine parameter capture, and window and window-fn Device View, Arrangement, publication and document. | On the native baseline the editor committed a control value but Device View offered no parameter. Linux Debug WERROR passed all 17 no-display UI suites, four parameter suites and acceptance 3/3. In Xvfb, a touch in Configure added exactly one control to a 65-parameter CLAP plug-in. Outside Configure, the same touch was temporary until chosen. Both the Device View and Arrangement menus selected its exact automation lane and pinned only that control. The headless shell also verified two touches in order and one Undo for their panel edit. | PR requested |
 
 The tracks prompt and its wave-two follow-ups are through SC-317. A separate session claimed the second queue on [basics/edit-log](https://github.com/arieladi/Adi/blob/basics/edit-log/adi_daw/collab/basics/edit.md).
-
-The consolidated landing branch is `35b782d6`, based on `land/basics-1127c` and main. [basics/tracks-chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
 Note grouping is tracked under MI-09. Native Mix View functions keep their dedicated Move controls.
 
