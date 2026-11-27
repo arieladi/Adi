@@ -2020,6 +2020,11 @@ void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
     }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
+    // SC-377: Esc stops a drop whose files are still being read.
+    if (capturing_ && key == juce::KeyPress(juce::KeyPress::escapeKey) && cancelCapture) {
+        cancelCapture();
+        return true;
+    }
     // With Use Tab Key to Move Focus off, Shift+Tab switches the Detail View.
     // Tab's Arrangement/Session switch waits for Session View.
     const auto mods = key.getModifiers();
@@ -3346,7 +3351,7 @@ bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
 bool AdiRootComponent::loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &path) {
     if (!sampleInstrumentTarget(track))
         return fail("Choose a MIDI track to load the sample as an instrument.");
-    if (importing_ || importPrompt_)
+    if (importing_ || importPrompt_ || capturing_)
         return fail("Finish the current import before loading another sample.");
     if (!loadSampleInstrument)
         return fail("Loading a sample as an instrument needs the application.");
@@ -3369,7 +3374,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     }
     if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
         return fail(std::move(refusal));
-    if (importing_)
+    if (importing_ || capturing_)
         return fail("The last drop is still being imported.");
     if (importPrompt_)
         return fail("Answer the import prompt first.");
@@ -3531,6 +3536,46 @@ void AdiRootComponent::importNext() {
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {
     // The batch is built from the CURRENT cell.
+    if (captureAudio) {
+        // SC-377: the files are read (hashed, decoded) on the app's worker; the window stays alive, says
+        // what it reads, and Esc cancels. The batch lands as before, one undo step, when they are read --
+        // unless the project changed meanwhile, when the ids captured may be another row's.
+        std::vector<std::string> unique;
+        for (const auto &[path, name] : files)
+            if (std::find(unique.begin(), unique.end(), path) == unique.end())
+                unique.push_back(path);
+        const auto generation = view_.generation();
+        const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
+        const bool started = captureAudio(unique, [safe, files, track, pos, separate, unique, generation](
+                                                      std::vector<AudioImport> captured, const std::string &why) {
+            if (!safe)
+                return;
+            safe->capturing_ = false;
+            if (!why.empty()) {
+                safe->say(why == "Cancelled." ? std::string("Nothing imported.") : why);
+                return;
+            }
+            if (safe->view_.generation() != generation || captured.size() != unique.size()) {
+                safe->fail("The project changed while the files were read: drop them again.");
+                return;
+            }
+            std::vector<DroppedAudio> dropped;
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                const auto at = static_cast<std::size_t>(
+                    std::find(unique.begin(), unique.end(), files[i].first) - unique.begin());
+                DroppedAudio file{files[i].second, captured[at]};
+                if (std::find_if(files.begin(), files.begin() + static_cast<std::ptrdiff_t>(i),
+                                 [&](const auto &f) { return f.first == files[i].first; }) != files.begin() + static_cast<std::ptrdiff_t>(i))
+                    file.import.media = {}; // a file dropped twice is captured, and imported, once
+                dropped.push_back(std::move(file));
+            }
+            (void)safe->landPlainDrop(files, track, pos, separate, std::move(dropped));
+        });
+        if (!started)
+            return fail("The last drop is still being read.");
+        capturing_ = true;
+        return true;
+    }
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
     // Each file captured before the batch lands: a new pool row takes an id past the ones the files
@@ -3556,6 +3601,14 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         }
         dropped.push_back(std::move(file));
     }
+    return landPlainDrop(files, track, pos, separate, std::move(dropped));
+}
+bool AdiRootComponent::landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files,
+                                     std::int64_t track, std::int64_t pos, bool separate,
+                                     std::vector<DroppedAudio> dropped) {
+    (void)files;
+    if (!view_.current())
+        return fail("Dropping audio needs an open project.");
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
                                    &commands_.recordingDefaults());
     if (!edit.refusal.empty())

@@ -304,6 +304,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    // SC-377: the same capture on a worker: a read-only connection of its own on `project`, and a stop.
+    // A 2 GB file is hashed and decoded here, never on the message thread. False, with `why`, when the
+    // file cannot be imported or the stop was asked.
+    static bool captureImport(const std::filesystem::path &project, const std::string &utf8Path, std::int64_t nowUtc,
+                              AudioImport &out, std::string &why, std::stop_token stop = {});
+    [[nodiscard]] std::filesystem::path projectPath() const { return store_->path(); }
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy

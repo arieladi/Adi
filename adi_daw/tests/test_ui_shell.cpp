@@ -5321,6 +5321,87 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+// SC-377: a plain drop's files are read off the window: the drop returns at once, the window says what it
+// reads, Esc cancels, and the batch lands as one step when they are read -- refused when the project
+// changed meanwhile.
+void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plain-drop-worker.adi", true, {}, error);
+    check(document != nullptr, "SC-377: a project to drop into");
+    if (!document)
+        return;
+    const auto wav = dir / "Long.wav";
+    {
+        std::vector<float> samples(24000, .2f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    std::string why;
+    const auto wasOptions = settings.get("editing.importOptions");
+    settings.set("editing.importOptions", std::string("never"), {}, why);
+    check(keepImportChoices(settings, ImportChoices{}, why), "SC-377: plain drops, no choices");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plain-drop-worker");
+    root.afterEdit = [&] { document->synchronise(); };
+    int inPlace = 0;
+    root.importAudio = [&](const std::string &, AudioImport &, std::string &) {
+        ++inPlace;
+        return false;
+    };
+    std::vector<std::vector<std::string>> asked;
+    AdiRootComponent::CaptureDone pending;
+    int cancels = 0;
+    root.captureAudio = [&](std::vector<std::string> paths, AdiRootComponent::CaptureDone done) {
+        asked.push_back(paths);
+        pending = std::move(done);
+        return true;
+    };
+    root.cancelCapture = [&] { ++cancels; };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto audioTrack = [&] {
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&] {
+        const auto *t = root.reader().findTrack(audioTrack);
+        return t != nullptr ? t->clips.size() : std::size_t{0};
+    };
+    const auto capture = [&] {
+        AudioImport out;
+        std::string reason;
+        const bool ok = ProjectDocument::captureImport(document->projectPath(), wav.string(), 1'700'000'000'000'000, out, reason);
+        check(ok, ("SC-377: the worker's capture reads the file: " + reason).c_str());
+        return out;
+    };
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && root.capturing() && asked.size() == 1 &&
+              inPlace == 0 && clipsOn() == 0,
+          "a drop returns at once: its file is read on the worker, never in the window (SC-377)");
+    check(!root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 1,
+          "a second drop waits for the first");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && cancels == 1, "Esc asks the read to stop");
+    if (pending) std::exchange(pending, nullptr)({}, "Cancelled.");
+    check(!root.capturing() && clipsOn() == 0 && root.error().find("Nothing imported") != std::string::npos,
+          "cancelled, nothing lands and the Status Bar says so");
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 2, "a new drop reads again");
+    if (pending) std::exchange(pending, nullptr)({capture()}, "");
+    check(!root.capturing() && clipsOn() == 1, "read, the clip lands as the plain drop always did");
+    const auto before = clipsOn();
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 3, "a third drop");
+    auto stale = capture();
+    check(root.submitEdit("track.rename", {{"id", audioTrack}, {"name", "Renamed meanwhile"}}, "Rename Track"),
+          "the project changes while the file is read");
+    root.frame();
+    if (pending) std::exchange(pending, nullptr)({stale}, "");
+    check(clipsOn() == before && root.error().find("changed while the files were read") != std::string::npos,
+          "a capture older than the project is refused, not landed with ids another row may hold");
+    settings.set("editing.importOptions", wasOptions, {}, why);
+    commands.detach(root);
+    document->release();
+}
 // E5: ADI's import prompt (Live 12 manual 9.2; ADR-0132 d6): a drop asks while
 // `editing.importOptions` is "ask", its choices all off by default and kept as the last ones.
 void importPrompt(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
@@ -21925,6 +22006,7 @@ int main(int argc, char **argv) {
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
+    trace("plainDropReadsOffTheWindow", [&] { plainDropReadsOffTheWindow(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });

@@ -1730,6 +1730,38 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+bool ProjectDocument::captureImport(const std::filesystem::path &project, const std::string &utf8Path,
+                                    std::int64_t nowUtc, AudioImport &out, std::string &why, std::stop_token stop) {
+    StoreError error{};
+    auto store = Store::open(project, error, true);
+    if (!store) {
+        why = "The project could not be read for the import: " + std::string(toString(error));
+        return false;
+    }
+    RowIds rows(store->db());
+    if (out.firstFreeId > 1)
+        rows.reserve("media_files", out.firstFreeId - 1);
+    const auto id = rows.next("media_files");
+    OpRequest captured;
+    const auto result = media::prepareImport(*store, pathFromUtf8(utf8Path), id, nowUtc, captured, nullptr, stop);
+    if (stop.stop_requested()) {
+        why = "Cancelled.";
+        return false;
+    }
+    if (!result.ok) {
+        why = result.error.empty() ? "The file could not be read." : result.error;
+        return false;
+    }
+    if (!result.audio || result.audio->frames <= 0 || result.audio->sampleRate <= 0) {
+        why = "That file holds no audio ADI can play.";
+        return false;
+    }
+    out.mediaId = result.mediaId;
+    out.sampleRate = result.audio->sampleRate;
+    out.frames = result.audio->frames;
+    out.media = std::move(captured);
+    return true;
+}
 ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
                                                           std::int64_t atTicks, const ImportChoices &choices,
                                                           std::int64_t nowUtc) const {

@@ -445,6 +445,15 @@ class AdiRootComponent final : public juce::Component,
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // SC-377: the plain drop's files read off the message thread (the document's `captureImport`, on the
+    // app's import worker): `done` comes on the message thread with each file's capture in order, or with
+    // why not ("Cancelled." after cancelCapture). False when it could not start. Set, a plain drop uses it
+    // and the window stays alive; unset, `importAudio` reads them in place.
+    using CaptureDone = std::function<void(std::vector<AudioImport> captured, const std::string &why)>;
+    std::function<bool(std::vector<std::string> utf8Paths, CaptureDone done)> captureAudio;
+    std::function<void()> cancelCapture;
+    // Whether a plain drop's files are still being read (Esc cancels).
+    bool capturing() const noexcept { return capturing_; }
     // ADI's import with choices (E5): the file prepared off the message thread with the prompt's
     // Warp, edge fades and copy (the document's `prepareMaterial`), then committed here as one undo
     // step; `done` comes on the message thread with the new clip's id, or 0 and why not. False when
@@ -1005,6 +1014,9 @@ class AdiRootComponent final : public juce::Component,
         std::string warning;
     };
     std::optional<PendingImport> importing_;
+    bool landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                       std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped);
+    bool capturing_ = false; // SC-377
     bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
                    bool separate);
     void importNext();
