@@ -3021,7 +3021,10 @@ bool ArrangementCanvas::beginAutomationStroke(const juce::MouseEvent &e) {
             selection.pickedClips.clear();
             view.changed();
         }
-        auto &stroke = automationStroke_.emplace();
+        // Assigned, not emplace(): Clang 14 refuses a nested struct with default member initializers
+        // there (CWG 1397), inside the class that declares it.
+        automationStroke_ = AutomationStroke{};
+        auto &stroke = *automationStroke_;
         stroke.track = body.track->id;
         stroke.generation = view.root.committedGeneration();
         stroke.target = std::move(target);

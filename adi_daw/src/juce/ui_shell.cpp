@@ -1973,7 +1973,7 @@ void AdiRootComponent::mouseDown(const juce::MouseEvent &e) {
         std::pair{InfoAnalyserMode::ClassicScope, "Classic Scope"}};
     const SafePointer<AdiRootComponent> safe(this);
     for (const auto &[mode, name] : choices)
-        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode] {
+        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode = mode] { // a named copy: Clang 14 captures no structured binding
             if (!safe || safe->state_.infoAnalyserMode == mode) return;
             const auto previous = std::exchange(safe->state_.infoAnalyserMode, mode);
             if (!safe->persist()) {
