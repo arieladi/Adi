@@ -81,3 +81,5 @@ macOS initially denied Accessibility and event posting to the shell session. Aft
 macOS granted the rebuilt app audio-input authorization. The live retest recorded and played the BlackHole tone at 440 Hz and about −29.03 dBFS RMS per channel.
 
 A separate launch of the newer `1127e` bundle prompted for fresh audio-input approval before its window opened. The live SC-20 waveform retest remains pending.
+
+The host twice returned `No space left on device` during standing fetches. Clearing generated ADI binaries and JUCE build helpers restored ref polling. The second recovery left about 299 MiB free, below the space required for a fresh native build.
