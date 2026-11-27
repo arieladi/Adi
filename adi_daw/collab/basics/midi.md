@@ -30,7 +30,7 @@ The automation queue already has its own report at `origin/basics/automation-log
 
 Main's newer howto names a single queue branch. The session assignment calls for one pushed branch per item, so this report records each head. Each successive item branch contains the previous item.
 
-The remaining item branches are verified on the Arrangement landing base `9322d7b4`. Win's newer landing report names `de2a5b99`, which includes our SC-220, SC-50 and SC-10 work and the plug-in seat's SC-312 fix. A separate MIDI landing tip is being reconciled against that base.
+The remaining item branches were verified on the Arrangement landing base `9322d7b4`. Main at `d38a216e` includes SC-220, SC-50 and SC-10 and the plug-in seat's SC-312 fix. The shared branch `basics/midi-chain` at `3d9ff5be` contains the full MIDI queue on that main. Its Windows Debug app built with warnings as errors. It passed 18 focused suites, all 3,994 private-desktop shell checks, and all three acceptance tests. The later speed landing `land/basics-1127i` is being checked separately before advancing that branch.
 
 ## SC-55 virtual MIDI
 
