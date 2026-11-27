@@ -558,6 +558,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
     e.deviceId = row.id;
     e.runtimeIdentity=std::make_shared<const int>(0);
     e.resolvedPluginRef = row.pluginRefId;
+    e.resolvedRemoteHost = row.remoteHostId;
     if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
     e.name = !row.name.empty() ? row.name
@@ -580,6 +581,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -591,6 +593,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         ++stats_.placeholders;
         sessionProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
     } else {
+        if (row.remoteHostId && !err.empty()) sessionProblems_.push_back(deviceRef(row) + ": " + err);
         inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
         ++stats_.loaded;
@@ -628,6 +631,7 @@ void Session::resolveNewRows(const Store& store) {
         }
         const auto compatible = [&](const Entry& candidate) {
             return candidate.deviceId == row.id && candidate.resolvedPluginRef == row.pluginRefId &&
+                candidate.resolvedRemoteHost == row.remoteHostId &&
                 (ref ? candidate.resolvedFormat == ref->format && candidate.resolvedUid == ref->uid
                      : candidate.resolvedFormat.empty() && candidate.resolvedUid.empty());
         };
@@ -695,6 +699,7 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
         std::string err;
         auto inst = loader_(rq, err);
         if (inst == nullptr) {

@@ -7,6 +7,7 @@
 #include "juce/mix_pipeline_host.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/appdata.hpp"
+#include "adi/engine/remote_devices.hpp"
 #include "adi/scan_catalogue.hpp"
 #include "adi/scan_prune.hpp"
 #include "adi/media/media_ops.hpp"
@@ -385,7 +386,8 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
 }
 
 engine::DeviceLoader JuceDeviceLoader::fn() {
-    return [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); };
+    return engine::withRemoteDevices(
+        [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); });
 }
 
 std::vector<std::string> JuceDeviceLoader::knownPlugins() const {

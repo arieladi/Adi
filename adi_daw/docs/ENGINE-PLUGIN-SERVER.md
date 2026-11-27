@@ -152,6 +152,40 @@ bytes and mark the device stale, as SC-430 specifies. [Device interface][device]
 [Project schema][schema] · [Delay compensation][pdc] · [Export engine][export] ·
 [DEV-27][plan]
 
+## Engine increment
+
+The session owner injects a granted server loader with `withRemoteDevices`.
+The project row selects a requested server. The grant resolver must also
+check the server and plug-in identity before creating a connection. The
+default loader tries the installed plug-in for live playback and reports
+the server reference. Offline playback requires the authored server.
+
+`RemoteDevice` uses two preallocated single-producer, single-consumer rings.
+The I/O worker owns connection setup, processing and teardown. The device
+gathers graph segments into the prepared quantum and reports one quantum
+plus plug-in latency. The callback checks for the previous sequence and
+counts a missed deadline when that reply is absent. A device that falls
+behind drops stale replies. When a variable-size device callback crosses a
+quantum boundary, it can leave less than one full period for the just-submitted
+request. The callback applies the same deadline rule in that case.
+
+WAV export, freeze and the diagnostic player's isolated renderer wait for
+bounded worker exchanges. A failed exchange names the plug-in and stops the
+render before publishing output. A saved state that the backend cannot
+restore also stops offline rendering, leaving the stored bytes available.
+Stock v13 can take initial state in its server encoding from an authorized
+loader. Project state capture and recall still need the backend round trip.
+
+The stock prototype covers explicit IPv4 endpoints, mono or stereo float32
+PCM, ordinary MIDI input and transport. The server-fork extension still
+needs typed note expression, outgoing events, state exchange, peer
+authentication and offline mode. The fixture TCP run exercises stock
+framing. A second loopback test serves an actual CLAP fixture from another
+process, using a fixture lookup token. ADI's compensated WAV export matched
+all 1,732 samples of the same local CLAP render exactly (peak 0.37109375).
+Disconnecting after seven replies failed export by device name and discarded
+the staged audio.
+
 ## Measuring the link and deciding when PTP is needed
 
 Measure RTT with a monotonic clock on the sending endpoint. Subtract measured
@@ -178,6 +212,38 @@ stamps and report clock offset uncertainty alongside directional jitter. For
 a future free-running audio peer, measure sample phase drift over a
 representative run and compare it with that mode's synchronization tolerance.
 [ADR-0107 d5][decisions] · [Server processing][audio-worker]
+
+### Stock server interoperability on Linux
+
+A same-machine trial used the official AudioGridder 1.2.0 Linux x86-64
+binary on IPv4 loopback in a private network namespace and Xvfb display.
+The release ZIP SHA-256 was
+`3b29d13d2a2bbb4e5ab8ac22832562f4410da17b64617844a18c038ca1253922`.
+The server scanned the owned ADI Test Plain VST3 fixture as `VST3-8a7afd7a`.
+The ADI native transport started it and sent an A4 note on followed by
+note off for the final four blocks. The output from 500 stereo blocks at
+48 kHz and 64 frames was bit-identical to all 64,000 float32 samples produced
+by the same VST3 bundle loaded locally. Peak was 0.0712499991 (−22.944 dBFS),
+with zero reported plug-in latency and a tail peak of zero. An ADI Session
+playing the project MIDI through the authorized server loader confirmed
+64 samples of reported pipeline delay and a silent first block. After
+compensation it produced the same 64,000 float32 samples, bit for bit.
+[Official Linux archive][linux-release] · [ADI test VST3][stock-fixture] ·
+[ADI v13 transport][wire-transport]
+
+The unprivileged container denies real-time scheduling. With the release
+executable alone, the 64-frame Plain trial and 128-frame MPE trial reached
+VST3 preparation and hit the 15 s setup deadline before the stock audio
+worker started. A scratch-only loader interposer retried the stock worker's
+rejected real-time `pthread_create` as `SCHED_OTHER` and logged `EPERM`
+followed by success. The PCM comparison and timing samples use that fallback.
+The direct transport trial bounded setup at 15 s and each exchange at 1 s.
+Two sequential runs measured p50/p95/p99/max RTTs of
+27.171/65.339/162.015/2,074.101 µs and 23.495/27.873/50.877/233.492 µs.
+The first run exceeded the 1,333.333 µs budget at least once. This measures
+TCP, scheduling and plug-in processing on one machine. A physical-link
+and two-host PTP measurement are still owed.
+[Stock worker launch][worker-accept] · [Stock audio worker][audio-worker]
 
 ### UDP loopback measurement
 
@@ -222,6 +288,7 @@ stock TCP as an explicitly selected trusted-LAN mode as well.
 
 [upstream]: https://github.com/apohl79/audiogridder/tree/76dd9a006a86110b9245bc44f7a6c78f3d6a5c9f
 [release]: https://github.com/apohl79/audiogridder/tree/22654e2b9d7d23548e3f65f8d363f662f6c20d0d
+[linux-release]: https://github.com/apohl79/audiogridder/releases/download/release_1_2_0/AudioGridder_1.2.0-Linux.zip
 [handshake]: https://github.com/apohl79/audiogridder/blob/76dd9a006a86110b9245bc44f7a6c78f3d6a5c9f/Common/Source/Message.hpp#L89-L155
 [defaults]: https://github.com/apohl79/audiogridder/blob/76dd9a006a86110b9245bc44f7a6c78f3d6a5c9f/Common/Source/Defaults.hpp#L15-L17
 [client-handshake]: https://github.com/apohl79/audiogridder/blob/76dd9a006a86110b9245bc44f7a6c78f3d6a5c9f/Plugin/Source/Client.cpp#L344-L389
@@ -260,3 +327,5 @@ stock TCP as an explicitly selected trusted-LAN mode as well.
 [export]: ENGINE-EXPORT-QUEUE.md
 [plan]: PLAN.md#dev-27-audiogridder-remote-devices
 [probe]: ../tools/plugin_server_latency.py
+[stock-fixture]: ../tests/fixtures/vst3_expression_synth.cpp
+[wire-transport]: ../src/juce/audiogridder_transport.cpp

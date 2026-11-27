@@ -445,7 +445,10 @@ int renderOffline(adi::engine::Session& session, int channels, double rate, int 
         io.numOut = channels;
         io.frames = frames;
         io.streamTimeSamples = stream;
-        session.process(io);
+        if (const auto error = session.renderOfflineBlock(io); !error.empty()) {
+            std::printf("FAILED -- %s\n", error.c_str());
+            return 1;
+        }
         if (capture != nullptr)
             for (int c = 0; c < channels; ++c)
                 capture->copyFrom(c, static_cast<int>(done), ptrs[static_cast<std::size_t>(c)], frames);

@@ -34,7 +34,7 @@ endif()
 #   build dir      the only files written to ctest's working directory are the
 #                  per-suite *-render.wav artifacts, one name per suite
 #                  (checked by listing the build dir before and after a run).
-#   ports          no test binds a socket; remote hosts are database rows.
+#   ports          server fixtures bind only loopback sockets on OS-assigned ports.
 #   scanner        child processes, registries and quarantine rows all live in
 #                  each suite's own TempDirectory; the CLAP fixtures are copied
 #                  there before a probe, so their .pids logs are private.
@@ -309,6 +309,8 @@ add_library(adi_core STATIC
     # missing-plugin placeholder and the node wrapper are tested on every ABI
     # rather than only where a plugin SDK exists. See src/juce/device_model.hpp.
     src/juce/device_model.cpp
+    src/juce/remote_device.cpp
+    src/juce/audiogridder_transport.cpp
     # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
     # with no dependencies, so the host side lives in adi_core and its tests
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
@@ -427,6 +429,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/remote_devices.cpp
     src/adi/engine/live_midi_input.cpp
     src/adi/engine/midi_input_capture.cpp
     src/adi/engine/session_runtime.cpp
@@ -1081,6 +1084,42 @@ add_test(NAME adi_mpe_output_tests COMMAND adi_mpe_output_tests)
 add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
+
+add_executable(adi_remote_device_tests tests/test_remote_device.cpp)
+target_link_libraries(adi_remote_device_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_remote_device_tests COMMAND adi_remote_device_tests)
+
+if(WIN32 AND NOT ADI_WITH_PD)
+    target_link_libraries(adi_core PRIVATE Ws2_32)
+endif()
+add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
+target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
+set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME adi_plugin_server_latency_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_plugin_server_latency.py")
+
+    add_executable(adi_audiogridder_transport_tests tests/test_audiogridder_transport.cpp)
+    target_link_libraries(adi_audiogridder_transport_tests PRIVATE adi_core adi_warnings)
+    # These binaries need the Python fixture. The standalone shell runner
+    # discovers only self-contained binaries in the build root.
+    set_target_properties(adi_audiogridder_transport_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_audiogridder_transport_tests COMMAND "${Python3_EXECUTABLE}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/audiogridder_fixture.py" "$<TARGET_FILE:adi_audiogridder_transport_tests>")
+
+    add_executable(adi_remote_session_tests tests/test_remote_session.cpp)
+    target_link_libraries(adi_remote_session_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_remote_session_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_dependencies(adi_remote_session_tests adi_catalogue_clap_fixture)
+    add_test(NAME adi_remote_session_tests COMMAND "${Python3_EXECUTABLE}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_remote_session.py"
+        "$<TARGET_FILE:adi_remote_session_tests>" "$<TARGET_FILE:adi_catalogue_clap_fixture>")
+endif()
 
 add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)
 target_link_libraries(adi_delay_compensation_tests PRIVATE adi_core adi_warnings)
@@ -1770,10 +1809,6 @@ if(ADI_WITH_JUCE)
             ADI_CATALOGUE_FIXTURE="${_adi_fixture}"
             ADI_DISCOVERY_TEST_HELPER="$<TARGET_FILE:adi_scan_cache_tests>"
             ADI_CATALOGUE_SCANNER="$<TARGET_FILE:adi_plugin_scanner>")
-        add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
-        target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
-        target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
-        set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
         add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
         target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
     endif()

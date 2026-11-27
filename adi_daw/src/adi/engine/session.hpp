@@ -128,6 +128,7 @@ struct DeviceRequest {
     std::int32_t maxFrames = 512;
     std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
     bool exporting = false; ///< known before prepare, so the first block uses the intended bank
+    bool offline = false; ///< an isolated render requires the device at its authored location
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
@@ -174,6 +175,7 @@ public:
         /// Identity used to resolve this instance, independent of newer rows
         /// reusing the same device ID. Runtime receipts must match this too.
         std::optional<std::int64_t> resolvedPluginRef;
+        std::optional<std::int64_t> resolvedRemoteHost;
         std::string resolvedFormat, resolvedUid;
         std::shared_ptr<const void> runtimeIdentity;
         std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
@@ -368,6 +370,8 @@ public:
     void prepareWithGraphWorkers(double sampleRate, std::int32_t maxFrames,
                                  std::uint32_t workers, std::int32_t minimumFrames);
     void process(const AudioIo& io) noexcept override;
+    /// Isolated render driver. May wait for remote DSP and returns a named failure.
+    [[nodiscard]] std::string renderOfflineBlock(const AudioIo&);
     void release() override;
 
     /// Track input from one serialized MIDI producer. Submit in ascending
@@ -526,6 +530,7 @@ private:
     struct TimingView;
     struct PendingLoad;
     bool prepareLoad(const Store&, DeviceLoader, SessionSpec, bool staged);
+    [[nodiscard]] std::string offlineRemoteIssue();
     bool checkLoadRevision(const Store&);
     SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;
