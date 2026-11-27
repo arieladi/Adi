@@ -1,4 +1,4 @@
-Ready for win: basics/integrate-1 at 012cc2f233db6cb973ac84ccad578ccdbe608735
+Readiness pending for basics/integrate-1. Linux verification passed at `012cc2f233db6cb973ac84ccad578ccdbe608735` before Win reported the macOS build failure and requested SC-430 and the agent Settings correction.
 
 # Basics integration
 
@@ -29,6 +29,8 @@ The original Export tip is included. The Edit report at `fd5eb152e8fd495fb7fa401
 |---|---|---|
 | SC-121 Browser on `basics/integrate-2` | `37ab62ec1f0f852f9c5d3cbcac6b430532bc0a70` | The shared app initialization shows the Instruments list at launch, New and Open, including while library indexing is pending. Keeps explicit label choices. The red peerless suite reproduced both empty-list assertions. Linux Debug JUCE/Pd Werror built the app, and all 18 no-display window suites and all three acceptance suites passed. |
 | SC-120, SC-122 Browser on `basics/integrate-2` | `f88c10b4bf0a262eb11288b29aacf6f38e53b5c1` | All and Ctrl/Cmd+F find samples, devices, presets and plug-ins. Each search word must match, including words split across a plug-in name and maker. Explicit Places and Hot-Swap keep their scope. The red peerless fixture reproduced seven failures. Linux Debug JUCE/Pd Werror built the app, passed all 18 no-display window suites and all three acceptance suites. The separate 200,000-file search test passed 37 checks. |
+
+Browser ownership moved to the session on `basics/browser-chain`. The published SC-121 and SC-120/122 results are recorded above. The in-progress SC-124 draft was archived locally at reassignment. The integration will use the original Browser chain.
 
 ## For the director
 
