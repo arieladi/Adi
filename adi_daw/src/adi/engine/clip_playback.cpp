@@ -820,20 +820,18 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     if (a->warpEnabled)
                         throw;
                     // Older projects could enable Loop with Warp off. If a tempo change
-                    // puts the loop outside the file, play the original material once.
-                    // An unrolled offset into a repeat can also be beyond the source.
-                    if (clip->offset >= clip->length)
-                        clip->offset = 0;
+                    // puts the loop outside the file, fall through to one pass.
                 }
             }
-            if (!row.loopEnabled) {
+            if (clip->loopLength == 0) {
+                const bool legacyLoopFallback = row.loopEnabled;
                 // A physical pin survives placement and tempo edits. Warp and
                 // unpinned clips derive End from the same clock as their offset.
                 if (!a->warpEnabled && row.sourceEndNs) {
                     clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
                 } else if (row.endMarkerTicks) {
                     const auto marker = *row.endMarkerTicks;
-                    if ((a->warpEnabled || !row.contentOffsetNs) && marker <= row.contentOffsetTicks)
+                    if (!legacyLoopFallback && (a->warpEnabled || !row.contentOffsetNs) && marker <= row.contentOffsetTicks)
                         throw std::runtime_error("invalid audio clip End marker");
                     std::int64_t end;
                     if (a->warpEnabled || row.timeBase == 0) {
@@ -846,10 +844,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                         const auto absolute = edit::addTime(beginNs, edit::nanosFromSeconds(tickSpanSeconds(marker)));
                         end = samplesAtNs(absolute, clip->rate) - clip->start;
                     }
-                    if (!a->warpEnabled && row.contentOffsetNs && end <= clip->offset)
+                    if (!legacyLoopFallback && !a->warpEnabled && row.contentOffsetNs && end <= clip->offset)
                         throw std::runtime_error("invalid audio clip End marker");
                     clip->length = std::min(clip->length, end);
                 }
+                // An unrolled repeat offset can be outside the playable interval
+                // even when it still falls within the untrimmed source window.
+                if (legacyLoopFallback && clip->offset >= clip->length)
+                    clip->offset = 0;
             }
             const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
             for(std::size_t i=0;i<4;i+=2) {
