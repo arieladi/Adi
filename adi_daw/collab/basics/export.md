@@ -1,6 +1,7 @@
 # Export basics report
 
-**Newest branch** asics/sc-402-export-sample-rates at 8a3fdca0`n
+**Newest branch** `basics/sc-402-export-sample-rates` at `8a3fdca0`
+
 The basics-export session has claimed all nine Export and import rows assigned to `export`. Work starts with wave 1, then proceeds through waves 2 and 3. Win handles Windows verification and landing.
 
 | SC | Branch and head | What changed | How it was proved | State |
@@ -15,7 +16,7 @@ The basics-export session has claimed all nine Export and import rows assigned t
 | SC-401 | `basics/sc-401-export-messages` `c5e311f3` (pushed) | Plain-language messages and the three Shaped names from ADR-0250. Window. | A Linux GCC probe of the production choices failed on the preceding head and passed on the fix. | blocked pending the Linux window and acceptance suites |
 | SC-402 | `basics/sc-402-export-sample-rates` `8a3fdca0` (pushed) | 176.4 and 192 kHz are offered for any project. Window. | A Linux GCC probe found the rates missing on the preceding head and present on the fix. | blocked pending the Linux window and acceptance suites |
 
-The eight implementation branches were pushed at Win's request while Linux verification is pending. They form one chain on main through de2a5b99, with one branch per item. SC-394 stays local pending R36. The Windows host rebooted during the initial Linux build. The Debian VM and completed objects were recovered and verification resumed on the merged source.
+The eight implementation branches were pushed at Win's request while Linux verification is pending. They form one chain on main through `de2a5b99`, with one branch per item. SC-394 stays local pending R36. The Windows host rebooted during the initial Linux build. The Debian VM and completed objects were recovered and verification resumed on the merged source.
 
 ## For the director
 
