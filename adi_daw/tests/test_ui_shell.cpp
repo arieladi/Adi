@@ -2720,6 +2720,94 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
           "taller, both sends come back under it, Main's Pre/Post switches with them");
     render("adi-mixer-inout.png");
+    {
+        auto &geometry = root.arrangement.geometry;
+        const auto originalHeights = geometry.heights;
+        const bool restoreInOut = root.state().inOut;
+        if (restoreInOut)
+            check(root.command(AppCommands::ToggleInOut), "SC-273: hide Arrangement In/Out");
+        geometry.resizeTrack(7, 24);
+        root.mark(DirtySet::All);
+        root.frame();
+
+        const auto undoHead = [&submitter] {
+            const auto next = submitter.nextUndo();
+            return next ? next->txnId : 0;
+        };
+        const auto beforeCue = undoHead();
+        auto *mainRow = rowOf(root.mixer, 7);
+        mainStrip = rowOf(root.mixerView, 7);
+        juce::TextButton *cueOut = nullptr;
+        if (mainRow)
+            for (auto *child : mainRow->getChildren())
+                if (child->getTitle() == "Cue Out") {
+                    cueOut = dynamic_cast<juce::TextButton *>(child);
+                    break;
+                }
+        const bool cueControls = cueOut && cueOut->isVisible() && cueOut->isEnabled() && cueOut->onClick &&
+                                 mainRow->cueVolume.isVisible();
+        check(cueControls && !root.state().inOut && !mainRow->showsInOut() && mainRow->getHeight() == 24 &&
+                  !cueOut->getBounds().isEmpty() && !mainRow->cueVolume.getBounds().isEmpty() &&
+                  mainRow->getLocalBounds().contains(cueOut->getBounds()) &&
+                  mainRow->getLocalBounds().contains(mainRow->cueVolume.getBounds()) &&
+                  !cueOut->getBounds().intersects(mainRow->cueVolume.getBounds()) &&
+                  mainRow->cueVolume.getTitle() == "Cue Volume",
+              "SC-273: Arrangement Main has both Cue controls within its 24px row with In/Out closed");
+        if (cueControls && mainStrip) {
+            root.outputChannels = [] { return 5; };
+            juce::PopupMenu cueMenu;
+            const auto capture = [&cueMenu](juce::PopupMenu menu) { cueMenu = std::move(menu); };
+            root.mixer.contextMenuPresenter = capture;
+            root.mixerView.contextMenuPresenter = capture;
+            const auto choose = [&cueMenu](const char *text) {
+                for (juce::PopupMenu::MenuItemIterator it(cueMenu); it.next();) {
+                    const auto &item = it.getItem();
+                    if (item.text == text && item.isEnabled && item.action) {
+                        item.action();
+                        return true;
+                    }
+                }
+                return false;
+            };
+            cueOut->onClick();
+            check(cueOut->getButtonText() == "3/4" && menuLine(cueMenu) == "1/2, 3/4 *" && choose("1/2"),
+                  "SC-273: Arrangement Cue Out ticks the current pair and can select the other full pair");
+            root.frame();
+            cueMenu.clear();
+            mainStrip->cueOutMenu();
+            check(readCueSettings(*store).firstOutputChannel == 0 && root.current()->cue.firstOutputChannel == 0 &&
+                      cueOut->getButtonText() == "1/2" && menuLine(cueMenu) == "1/2 *, 3/4" && choose("3/4"),
+                  "SC-273: Mixer Cue Out picks up the Arrangement pair and can change it back");
+            root.frame();
+            cueMenu.clear();
+            cueOut->onClick();
+            check(readCueSettings(*store).firstOutputChannel == 2 && cueOut->getButtonText() == "3/4" &&
+                      menuLine(cueMenu) == "1/2, 3/4 *",
+                  "SC-273: Arrangement Cue Out picks up the Mixer pair");
+
+            auto &rowVolume = mainRow->cueVolume;
+            auto &mixerVolume = mainStrip->cueVolume;
+            rowVolume.setValue(rowVolume.getValueFromText("-8.5 dB"), juce::sendNotificationSync);
+            root.frame();
+            check(std::abs(readCueSettings(*store).volumeDb + 8.5) < 1e-9 &&
+                      std::abs(mixerVolume.getValue() + 8.5) < 1e-9,
+                  "SC-273: Arrangement Cue Volume writes the project and updates the Mixer control");
+            mixerVolume.setValue(-12, juce::sendNotificationSync);
+            root.frame();
+            check(std::abs(readCueSettings(*store).volumeDb + 12) < 1e-9 &&
+                      std::abs(rowVolume.getValue() + 12) < 1e-9,
+                  "SC-273: Mixer Cue Volume updates the Arrangement control");
+            root.mixer.contextMenuPresenter = {};
+            root.mixerView.contextMenuPresenter = {};
+            root.outputChannels = {};
+        }
+        check(undoHead() == beforeCue, "SC-273: changing Cue Out and Cue Volume leaves Undo history intact");
+        geometry.heights = originalHeights;
+        if (restoreInOut)
+            check(root.command(AppCommands::ToggleInOut), "SC-273: restore Arrangement In/Out");
+        root.mark(DirtySet::All);
+        root.frame();
+    }
     root.resizeMixerView(200);
     root.mark(DirtySet::All);
     root.frame();

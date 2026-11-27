@@ -137,13 +137,12 @@ class MixerStrip final : public juce::Component,
     // Mixer View.
     PrimaryButtonSlider delay;
     void setDelayTooltip(const juce::String &tip);
-    // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
-    // only, in the Mixer View, where a track has its Activator. One transport op at release or when
-    // typed, outside undo.
+    // Cue Volume on Main in both views. One transport op at release or when typed, outside undo.
     PrimaryButtonSlider cueVolume;
-    // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
+    // The Arrangement's compact chooser. Mixer View paints its chooser in the In/Out section.
+    juce::TextButton cueOut{"1/2"};
     void cueOutMenu();
-    // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
+    // Whether `at` is on Main's Cue Out chooser in this panel.
     bool onCueOut(juce::Point<int> at) const noexcept;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
@@ -290,6 +289,7 @@ class MixerStrip final : public juce::Component,
     bool midi_ = false, audio_ = true, inGroup_ = false;
     const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
+    int cueFirstChannel_ = 0;
     // Throws a return's own Pre/Post switch (`TrackNode::returnSendTap`): one `return.setSendTap`,
     // one undo step, which the engine spreads over every send into the return.
     void throwPrePost(std::int64_t ret);

@@ -78,6 +78,9 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label,
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
 }
+juce::String cuePairLabel(int first) {
+    return juce::String(first + 1) + "/" + juce::String(first + 2);
+}
 class InputMenuReading {
   public:
     explicit InputMenuReading(std::shared_ptr<ExternalInputMeter> meter) : meter_(std::move(meter)) {
@@ -448,6 +451,11 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.root.setCueVolume(cueVolume.getValue());
     };
     addChildComponent(cueVolume);
+    cueOut.setTitle("Cue Out");
+    cueOut.setTooltip("Chooses the stereo output pair for cued tracks and the metronome.");
+    cueOut.getProperties().set("live.small", true);
+    cueOut.onClick = [this] { cueOutMenu(); };
+    addChildComponent(cueOut);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
@@ -589,6 +597,15 @@ void MixerStrip::frame(bool changed) noexcept {
         selected_ = selected;
         repaint();
     }
+    if (changed && kind_ == "master")
+        if (const auto *snapshot = panel_.root.reader().get()) {
+            if (!cueDragging_)
+                cueVolume.setValue(std::max(kCueFloorDb, snapshot->cue.volumeDb), juce::dontSendNotification);
+            if (!panel_.vertical() && cueFirstChannel_ != snapshot->cue.firstOutputChannel) {
+                cueFirstChannel_ = snapshot->cue.firstOutputChannel;
+                cueOut.setButtonText(cuePairLabel(cueFirstChannel_));
+            }
+        }
     if (changed && t && !dragging_) {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
@@ -597,9 +614,6 @@ void MixerStrip::frame(bool changed) noexcept {
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
-        if (kind_ == "master" && !cueDragging_)
-            if (const auto *snap = panel_.root.reader().get())
-                cueVolume.setValue(std::max(kCueFloorDb, snap->cue.volumeDb), juce::dontSendNotification);
         // Solo, or with Cue Switches the track's Cue (manual 18.6; MX-08): "C" until the window lane
         // draws Live's headphones.
         const bool cueMode = panel_.root.reader().get() && panel_.root.reader().get()->cue.cueMode;
@@ -832,7 +846,13 @@ void MixerStrip::resized() {
             c->setVisible(false);
         place(volume, 0, {x + 4, 3, 45, 13}, levels);
         place(pan, 1, {x + 54, 20, 45, 13}, levels);
+        // The 24-pixel Main row has room beside its volume and before the meter.
+        const bool room = getWidth() >= x + MixerPanel::kControlsWidth;
+        place(cueOut, 0, {x + 53, 3, 32, 13}, room);
+        place(cueVolume, 0, {x + 85, 1, 19, 19}, room && levels);
     } else {
+        cueOut.setVisible(false);
+        cueVolume.setVisible(false);
         place(active, 0, {x + 4, 3, 45, 13});
         place(solo, 0, {x + 54, 3, 20, 13});
         // A return's Pre/Post where a track has Arm, as Live's ("A", "S", "Post").
@@ -1143,21 +1163,34 @@ std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept
     return monitorCellAt(5.f, 37.f, 6, at);
 }
 bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
-    return kind_ == "master" && panel_.vertical() && io_ > 0 &&
-           juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
+    if (kind_ != "master")
+        return false;
+    if (!panel_.vertical())
+        return cueOut.isVisible() && cueOut.getBounds().contains(at);
+    return io_ > 0 && juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
 }
 void MixerStrip::cueOutMenu() {
+    if (kind_ != "master")
+        return;
     // The device's outputs in stereo pairs, 1/2 first (Main's); the one in use ticked (MX-08).
     const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
-    const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
+    const auto current = panel_.root.current();
+    const int first = current ? current->cue.firstOutputChannel : 0;
     juce::PopupMenu m;
     for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
-        m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
-                  [safe = SafePointer<MixerStrip>(this), pair] {
-                      if (safe)
+        m.addItem(cuePairLabel(pair), true, pair == first,
+                  [safe = SafePointer<MixerStrip>(this), track = track_, pair] {
+                      if (safe && safe->track_ == track && safe->kind_ == "master")
                           safe->panel_.root.setCueOutput(pair);
                   });
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+    if (panel_.contextMenuPresenter) {
+        panel_.contextMenuPresenter(std::move(m));
+        return;
+    }
+    if (panel_.vertical())
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+    else
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cueOut));
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
     // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
@@ -1210,7 +1243,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         // Live's Cue Out (manual 18.6; MX-08): the stereo pair the cued tracks play to, chosen here.
         label(60, "Cue Out");
         const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
-        chooser(73, (std::to_string(first + 1) + "/" + std::to_string(first + 2)).c_str(), true);
+        chooser(73, cuePairLabel(first).toRawUTF8(), true);
         label(90, "Main Out");
         chooser(103, "1/2", true);
         return;
