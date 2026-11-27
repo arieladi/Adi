@@ -5,6 +5,7 @@
 #include "adi/audio/warp_timing_cache.hpp"
 
 #include <memory>
+#include <string_view>
 
 namespace adi::audio {
 // Worker-owned timing analysis for callers that already stream source PCM.
@@ -24,6 +25,29 @@ private:
     struct State;
     std::unique_ptr<State> state_;
 };
+
+// Keeps one timing computation active for a given ADIA folder, file hash and
+// settings in this process. Owner workers recheck the cache after acquisition.
+// Release after publication, including failures. Disabled caches use a no-op
+// lease. Waiting is cancellable, and recursive acquisition on the same thread
+// fails immediately. Construct and release only off the audio callback.
+class WarpTimingFlight {
+public:
+    WarpTimingFlight(WarpTimingFlight&&) noexcept;
+    WarpTimingFlight& operator=(WarpTimingFlight&&) noexcept;
+    ~WarpTimingFlight();
+
+private:
+    struct State;
+    explicit WarpTimingFlight(std::unique_ptr<State> state) noexcept;
+    std::unique_ptr<State> state_;
+
+    friend std::optional<WarpTimingFlight> acquireWarpTimingFlight(const media::AnalysisCache&,
+        std::string_view, WarpTimingSettings, std::stop_token);
+};
+
+[[nodiscard]] std::optional<WarpTimingFlight> acquireWarpTimingFlight(const media::AnalysisCache&,
+    std::string_view contentHash, WarpTimingSettings, std::stop_token = {});
 
 // The hash identifies the original source bytes, even when the reader is a
 // decoded WAV. A complete derived grid can be reused by both Warp producers.

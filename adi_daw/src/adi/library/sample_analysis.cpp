@@ -337,14 +337,26 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         // Verify the bytes before decoding (including any decoder cache reuse)
         // and before publishing. Indexed cache hits already identify old bytes.
         bool needsTiming = timing.has_value();
+        std::optional<audio::WarpTimingFlight> timingFlight;
         const auto readPrevious = [&](const std::string& contentHash) {
-            if (timing && audio::readWarpTimingByHash(analysis_, contentHash, *timing, stop)) needsTiming = false;
+            if (timing) {
+                timingFlight = audio::acquireWarpTimingFlight(analysis_, contentHash, *timing, stop);
+                if (!timingFlight)
+                    return failure(stop.stop_requested() ? SampleAnalysisProblem::Cancelled : SampleAnalysisProblem::Read);
+                if (audio::readWarpTimingByHash(analysis_, contentHash, *timing, stop)) {
+                    needsTiming = false;
+                    timingFlight.reset();
+                }
+            }
             return read(contentHash, stop);
         };
         SampleAnalysisResult cached;
+        const auto needsMoreWork = [&] {
+            return (cached && needsTiming) || cached.problem == SampleAnalysisProblem::Missing;
+        };
         if (!expectedHash.empty()) {
             cached = readPrevious(expectedHash);
-            if ((cached && !needsTiming) || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
+            if (!needsMoreWork()) return cached;
         }
         const auto hash = media::blake3File(source, stop);
         if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
@@ -353,7 +365,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
             return failure(SampleAnalysisProblem::SourceChanged);
         if (expectedHash.empty()) {
             cached = readPrevious(hash.hex);
-            if ((cached && !needsTiming) || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
+            if (!needsMoreWork()) return cached;
         }
         const auto playable = decode_.playable(source, stop);
         struct Release {
@@ -367,6 +379,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         std::optional<audio::WarpTimingAnalyzer> timingAnalyzer;
         if (needsTiming && identity.sampleRate >= 8000)
             timingAnalyzer.emplace(identity.sampleRate, identity.channels, *timing);
+        if (!timingAnalyzer) timingFlight.reset();
         if (cached && !timingAnalyzer) return cached;
         const auto metadata = cached ? SampleFileTags{} : readSampleFileTags(source, stop);
         if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
@@ -415,6 +428,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         std::string error;
         if (timingAnalyzer) {
             const auto stored = audio::storeWarpTiming(analysis_, identity, *timing, *measuredTiming, error, stop);
+            timingFlight.reset();
             if (stored == media::AnalysisCacheProblem::Cancelled) return failure(SampleAnalysisProblem::Cancelled);
             if (stored != media::AnalysisCacheProblem::None) return failure(SampleAnalysisProblem::CacheWrite);
             if (cached) return cached;

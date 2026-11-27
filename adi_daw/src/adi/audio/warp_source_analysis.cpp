@@ -3,8 +3,13 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_beat_candidate.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <condition_variable>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <thread>
 #include <utility>
 
 namespace adi::audio {
@@ -13,7 +18,71 @@ bool validTimingInput(std::uint32_t rate, std::uint32_t channels, WarpTimingSett
     return rate >= 8000 && rate <= 768000 && channels > 0 && channels <= 64 &&
         settings.numerator >= 2 && settings.numerator <= 16 && settings.sensitivity <= 100;
 }
+
+struct TimingFlightKey {
+    std::filesystem::path folder;
+    std::string hash;
+    unsigned int numerator, denominator, sensitivity;
+    std::uint64_t quarterBpmBits;
+    auto operator<=>(const TimingFlightKey&) const = default;
+};
+
+struct TimingFlights {
+    std::mutex mutex;
+    std::condition_variable_any wake;
+    std::map<TimingFlightKey, std::thread::id> owners;
+};
+
+TimingFlights& timingFlights() {
+    static TimingFlights flights;
+    return flights;
+}
 } // namespace
+
+struct WarpTimingFlight::State {
+    explicit State(TimingFlightKey value) : key(std::move(value)) {}
+    ~State() {
+        if (!acquired) return;
+        auto& flights = timingFlights();
+        {
+            std::lock_guard lock(flights.mutex);
+            flights.owners.erase(key);
+        }
+        flights.wake.notify_all();
+    }
+
+    TimingFlightKey key;
+    bool acquired = false;
+};
+
+WarpTimingFlight::WarpTimingFlight(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+WarpTimingFlight::WarpTimingFlight(WarpTimingFlight&&) noexcept = default;
+WarpTimingFlight& WarpTimingFlight::operator=(WarpTimingFlight&&) noexcept = default;
+WarpTimingFlight::~WarpTimingFlight() = default;
+
+std::optional<WarpTimingFlight> acquireWarpTimingFlight(const media::AnalysisCache& cache,
+    std::string_view contentHash, WarpTimingSettings settings, std::stop_token stop) {
+    if (onAudioThread || stop.stop_requested()) return {};
+    if (!cache.folder().is_absolute() || contentHash.empty()) return WarpTimingFlight(nullptr);
+
+    auto folder = cache.folder().lexically_normal();
+    if (folder.has_relative_path() && !folder.has_filename()) folder = folder.parent_path();
+    auto state = std::make_unique<WarpTimingFlight::State>(TimingFlightKey{std::move(folder),
+        std::string(contentHash), settings.numerator, settings.denominator, settings.sensitivity,
+        std::bit_cast<std::uint64_t>(settings.quarterBpm.value_or(0.0))});
+    auto& flights = timingFlights();
+    const auto thread = std::this_thread::get_id();
+    std::unique_lock lock(flights.mutex);
+    if (!flights.wake.wait(lock, stop, [&] {
+        const auto holder = flights.owners.find(state->key);
+        return holder == flights.owners.end() || holder->second == thread;
+    }) || stop.stop_requested()) return {};
+    // A same-thread request satisfies the wait predicate instead of waiting
+    // for its own lease, but must leave that existing registration intact.
+    if (!flights.owners.emplace(state->key, thread).second) return {};
+    state->acquired = true;
+    return WarpTimingFlight(std::move(state));
+}
 
 struct WarpTimingAnalyzer::State {
     State(std::uint32_t rate, std::uint32_t channels, WarpTimingSettings settings)
@@ -71,6 +140,8 @@ std::optional<WarpTimingAnalysis> analyzeWarpTiming(WavReader& source,
         !validTimingInput(source.sampleRate(), source.channels(), settings)) return {};
     const media::AnalysisIdentity identity{contentHash, source.sampleRate(), source.channels(), source.frames()};
     auto& store = cache ? *cache : media::defaultAnalysisCache();
+    const auto flight = acquireWarpTimingFlight(store, contentHash, settings, stop);
+    if (!flight) return {};
     if (auto previous = readWarpTiming(store, identity, settings, stop)) return previous;
     if (stop.stop_requested()) return {};
 
