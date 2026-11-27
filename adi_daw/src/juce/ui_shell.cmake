@@ -120,6 +120,10 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_shared_analysis.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shared_spectrum_tests COMMAND adi_ui_shared_spectrum_tests)
+    if(APPLE)
+        set_tests_properties(adi_ui_shared_spectrum_tests PROPERTIES
+            FAIL_REGULAR_EXPRESSION "Leaked objects detected:.*ImagePixelData")
+    endif()
     juce_add_console_app(adi_ui_mix_functions_tests PRODUCT_NAME "adi_ui_mix_functions_tests")
     target_sources(adi_ui_mix_functions_tests PRIVATE tests/test_ui_mix_functions.cpp)
     target_link_libraries(adi_ui_mix_functions_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
@@ -146,6 +150,9 @@ if(ADI_WITH_JUCE)
     list(FILTER adi_ui_host_defs EXCLUDE REGEX "^(_CONSOLE|ADI_TEST_VST3)")
     target_compile_definitions(adi_app PRIVATE ${adi_ui_host_defs})
     target_link_libraries(adi_app PRIVATE adi_ui_shell adi_mix_pipeline_host juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
+    add_test(NAME adi_ui_quit_export_tests
+        COMMAND "${CMAKE_COMMAND}" "-DAPP=$<TARGET_FILE:adi_app>" "-DFIXTURE=$<TARGET_FILE:adi_ui_document_tests>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_quit_export_probe.cmake")
     if(_adi_proc_incs)
         target_include_directories(adi_app SYSTEM PRIVATE ${_adi_proc_incs})
     endif()

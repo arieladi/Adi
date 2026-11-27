@@ -9,6 +9,7 @@
 #include "ui_arrangement.hpp"
 #include "ui_controls.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <span>
@@ -89,6 +90,11 @@ class HotSwapButton final : public juce::Button {
     HotSwapButton() : juce::Button("Hot-Swap") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+class RevealSampleButton final : public juce::Button {
+  public:
+    RevealSampleButton() : juce::Button("Show Sample in Folder") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // A built-in's sample slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
@@ -103,20 +109,26 @@ class SampleTile final : public juce::Component,
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return !files.isEmpty(); }
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &files, int x, int y) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     // Refresh the selected slot from the project snapshot.
     void refresh();
-    // The slot as the snapshot holds it; none when it was never assigned (empty).
-    void show(const engine::SampleSlotNode *);
     // A file dropped: assigns the slot (one undo step), or says why not.
     bool drop(const juce::String &path);
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
+    const juce::String &fileName() const noexcept { return fileName_; }
+    juce::Rectangle<int> fileNameBounds() const noexcept;
+    juce::Rectangle<int> waveformBounds() const noexcept;
     juce::TextButton clear{"Clear"};
     juce::ComboBox slotChooser;
     HotSwapButton hotSwapButton;
+    RevealSampleButton reveal;
     std::function<bool()> targetValid;
     const std::int64_t device;
     std::int32_t slot;
@@ -124,10 +136,16 @@ class SampleTile final : public juce::Component,
 
   private:
     void choose(const DeclaredSlot &);
+    void setDropPreview(bool);
     DeviceChainStrip &strip_;
     std::vector<DeclaredSlot> slots_;
     State state_ = State::Empty;
-    std::string problem_;
+    bool dropPreview_ = false;
+    std::shared_ptr<const engine::SampleSlotNode> presented_;
+    juce::String fileName_;
+    WaveformCache *waveformsSeen_ = nullptr;
+    std::uint64_t peaksSeen_ = 0;
+    std::shared_ptr<const media::MediaPeaks> peaks_;
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
@@ -138,8 +156,12 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     // Samples are "dragged into Simpler" (Live 12 manual 30.11), not into one well: a file from the
     // desktop dropped off the tile, on the controls or the title, goes to the tile's slot.
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return sample && !files.isEmpty(); }
-    void filesDropped(const juce::StringArray &files, int, int) override {
-        if (sample && !files.isEmpty()) sample->drop(files[0]);
+    void fileDragEnter(const juce::StringArray &files, int x, int y) override {
+        if (sample) sample->fileDragEnter(files, x, y);
+    }
+    void fileDragExit(const juce::StringArray &files) override { if (sample) sample->fileDragExit(files); }
+    void filesDropped(const juce::StringArray &files, int x, int y) override {
+        if (sample) sample->filesDropped(files, x, y);
     }
     void present(const DevicePanelData &);
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
@@ -149,6 +171,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void releaseLimiterReduction();
     void resized() override;
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
@@ -294,6 +317,7 @@ class DeviceChainStrip final : public juce::Component,
     void frame(std::int64_t track);
     void resized() override;
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     void fold(std::int64_t);
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
@@ -334,10 +358,15 @@ class DeviceChainStrip final : public juce::Component,
     void chose(std::int64_t device) { chosen_ = device; }
     // A browser device loads here. An existing device moves to this position in the chain.
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &) override;
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     bool isMovingDevice(const SourceDetails &) const;
     bool moveDroppedDevice(const SourceDetails &, std::int64_t track, std::optional<std::int64_t> before = {});
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
@@ -392,9 +421,17 @@ class DeviceChainStrip final : public juce::Component,
     // each one undo step, its refusal said in the Status Bar.
     std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
     std::function<bool(std::int64_t device, std::int32_t slot)> clearSample;
+    std::function<void(const std::filesystem::path &)> revealSample;
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    struct OutputMeter;
+    juce::Rectangle<int> outputMeterBounds(std::size_t gap) const noexcept;
+    void frameOutputMeters();
+    void releaseOutputMeters();
+    std::vector<OutputMeter> outputMeters_;
+    std::weak_ptr<SharedAnalysis> outputMeterBroker_;
+    void setDropPreview(std::optional<int>);
     struct PickedDevice {
         std::int64_t id, track, chain;
         std::uint64_t instance;
@@ -419,6 +456,7 @@ class DeviceChainStrip final : public juce::Component,
     std::optional<PickedDevice> selectionAnchor_;
     std::uint64_t selectionEpoch_ = 0;
     int end_ = 0; // where the chain ends, in the content's pixels
+    std::optional<int> dropPreviewX_; // the cursor, in the strip's pixels
     juce::Viewport scroll;
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;

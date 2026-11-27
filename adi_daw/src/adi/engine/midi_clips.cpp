@@ -103,6 +103,8 @@ struct TrackState {
     std::uint64_t prefix=0;
     std::uint32_t serial=0;
     std::atomic<std::uint32_t> dropped{0};
+    std::uint32_t noteOnsets = 0;
+    std::atomic<std::uint64_t> noteActivity{0}; // onset count and held flag, published together
 };
 struct Scheduled { std::int64_t time; std::size_t note; bool on; };
 class Source final : public Node {
@@ -120,6 +122,7 @@ public:
     std::vector<ExpressionSample> expressionSamples;
     std::vector<MidiMonitorRange> monitorRanges;
     bool monitorInputOnly = false;
+    bool meterNotes = false;
     std::shared_ptr<const MidiControllerProgram> controls;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
@@ -381,6 +384,7 @@ public:
         for(auto& a:state->active)if(!a.used) {
             auto e=n.start;e.frame=frame;e.noteId=state->prefix | ++state->serial;
             if(!out.push(e))return;
+            if (meterNotes) ++state->noteOnsets;
             a.note=n;a.used=true;a.pending=false;a.releasing=false;a.sounding=false;a.retryOn=false;a.occurrence=n.start.noteId;
             a.retainedOn=0;a.retainedOff=0;
             a.generation=generation;
@@ -436,7 +440,21 @@ public:
         }
         return true;
     }
-    void sourceEvents(EventList& out,std::int32_t frames) noexcept override {
+    void publishNoteActivity(bool held) noexcept {
+        const auto reading = (std::uint64_t{state->noteOnsets} << 1) | static_cast<std::uint64_t>(held);
+        if (state->noteActivity.load(std::memory_order_relaxed) != reading)
+            state->noteActivity.store(reading, std::memory_order_relaxed);
+    }
+    void release() override {
+        if (meterNotes) publishNoteActivity(false);
+    }
+    void sourceEvents(EventList& out, std::int32_t frames) noexcept override {
+        scheduleEvents(out, frames);
+        if (meterNotes && frames > 0)
+            publishNoteActivity(!notes.empty() && transport.playing() && std::any_of(state->active.begin(), state->active.end(),
+                [](const Active& note) { return note.used && !note.releasing; }));
+    }
+    void scheduleEvents(EventList& out,std::int32_t frames) noexcept {
         if (frames <= 0)
             return;
         // A rejected zero must remain owned even after its lane disappears.
@@ -654,24 +672,60 @@ struct MidiClipState {
 };
 std::shared_ptr<MidiClipState> makeMidiClipState(){return std::make_shared<MidiClipState>();}
 struct MidiClips::Impl {
-    std::map<std::int64_t,std::unique_ptr<Source>> tracks;
+    std::map<std::int64_t,std::shared_ptr<Source>> tracks;
     std::vector<std::string> problems;
+    std::weak_ptr<MidiClipState> state;
+    const Transport* transport = nullptr;
+    double rate = 0;
+    bool honorMonitoring = false;
 };
 MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
                      const DeviceChainFn& eventPathFor)
     :MidiClips(model,transport,rate,std::move(state),eventPathFor,NoteExpressionsRead{}) {}
 MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
                      const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions,bool honorMonitoring)
+    :MidiClips(model,transport,rate,std::move(state),eventPathFor,expressions,honorMonitoring,nullptr,{}) {}
+MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
+                     const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions,
+                     const MidiClips* previous,const std::set<std::int64_t>& changedTracks)
+    :MidiClips(model,transport,rate,std::move(state),eventPathFor,expressions,
+               previous && previous->impl_->honorMonitoring,previous,changedTracks) {}
+MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
+                     const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions,bool honorMonitoring,
+                     const MidiClips* previous,const std::set<std::int64_t>& changedTracks)
     :impl_(std::make_shared<Impl>()) {
     if(!std::isfinite(rate)||rate<44100||rate>768000)throw std::runtime_error("MIDI session rate outside 44.1-768 kHz");
+    impl_->state=state;
+    impl_->transport=&transport;
+    impl_->rate=rate;
+    impl_->honorMonitoring=honorMonitoring;
+    // The controller compiler has a project-wide budget. Preserve its order
+    // and any old projection diagnostics by rebuilding the complete sources
+    // when either needs to be reconsidered.
+    const bool reuse = previous && previous->impl_->state.lock() == state &&
+                       previous->impl_->transport == &transport && previous->impl_->rate == rate &&
+                       previous->impl_->problems.empty() && model.controllers.empty();
     const auto generation=++state->generation;
     // Include empty tracks: deleting or muting the last clip must still flush
     // the notes owned by the preceding published source generation.
     for(const auto& track:model.tracks) {
+        const bool meterNotes = track.kind == "midi" || track.kind == "instrument";
+        const bool monitorInputOnly = honorMonitoring && track.monitorMode == 1 && meterNotes;
+        if (reuse && !changedTracks.contains(track.id)) {
+            const auto old = previous->impl_->tracks.find(track.id);
+            if (old != previous->impl_->tracks.end() && old->second->meterNotes == meterNotes &&
+                old->second->monitorInputOnly == monitorInputOnly) {
+                impl_->tracks.emplace(track.id, old->second);
+                continue;
+            }
+        }
         auto& s=state->tracks[track.id].audio;if(!s) {s=std::make_shared<TrackState>();s->prefix=(++state->trackIdentity)<<32;}
-        auto source = std::make_unique<Source>(transport, s, generation);
-        source->monitorInputOnly = honorMonitoring && track.monitorMode == 1 &&
-                                   (track.kind == "midi" || track.kind == "instrument");
+        auto source = std::make_shared<Source>(transport, s, generation);
+        // The realizer retains each source independently. A replacement graph
+        // can share an unchanged track without keeping old changed tracks alive.
+        source->owner = source;
+        source->meterNotes = meterNotes;
+        source->monitorInputOnly = monitorInputOnly;
         impl_->tracks.emplace(track.id, std::move(source));
     }
     MidiControllerPrograms controls(model, rate);
@@ -680,8 +734,10 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     // the authored streams. A clock-only rebuild retains each controller's
     // delivery/retry state, including sustain already held by the instrument.
     for(auto& [id,source]:impl_->tracks) {
+        if (source->generation != generation)
+            continue;
         ControllerIdentity identity;identity.rate=rate;
-        if (!source->monitorInputOnly) {
+        if (!source->monitorInputOnly && !model.controllers.empty()) {
             source->controls = controls.forTrack(id);
             for(const auto& clip:timelineClips(model)) {
                 if(clip.trackId!=id)continue;
@@ -726,8 +782,21 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     if(std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("MIDI tempo ramps unsupported; timing uses step tempos");
     std::uint64_t identity=1;
+    std::map<std::int64_t, std::vector<const rows::Note*>> notesByClip;
+    for (const auto& clip : timelineClips(model)) {
+        const auto source = impl_->tracks.find(clip.trackId);
+        if (clip.kind == "midi" && !clip.muted && source != impl_->tracks.end() && source->second->generation == generation)
+            notesByClip.try_emplace(clip.id);
+    }
     std::map<std::pair<std::int64_t,std::uint64_t>,std::size_t> identities;
-    for(const auto& note:model.notes)if(note.noteId)++identities[{note.clipId,note.noteId}];
+    for (const auto& note : model.notes) {
+        const auto notes = notesByClip.find(note.clipId);
+        if (notes == notesByClip.end())
+            continue;
+        notes->second.push_back(&note);
+        if (note.noteId)
+            ++identities[{note.clipId, note.noteId}];
+    }
     std::map<std::pair<std::int64_t,std::uint64_t>,ExpressionCurves> noteCurves;
     impl_->problems.insert(impl_->problems.end(),expressions.problems.begin(),expressions.problems.end());
     for(const auto& curve:expressions.curves) {
@@ -739,7 +808,11 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     }
     for(const auto& clip:timelineClips(model)) {
         if(clip.kind!="midi" || clip.muted)continue;
-        const auto found=impl_->tracks.find(clip.trackId);if(found==impl_->tracks.end())continue;
+        const auto found=impl_->tracks.find(clip.trackId);
+        if(found==impl_->tracks.end() || found->second->generation!=generation)continue;
+        const auto notes = notesByClip.find(clip.id);
+        if (notes == notesByClip.end())
+            continue;
         auto& source=*found->second;
         const auto before=source.notes.size();
         const auto expressionBefore=source.expressionSamples.size();
@@ -784,8 +857,9 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             bool unsupported=false;
             std::string expressionProblem;
             const double tempoOrigin=startSeconds-tempoAtOrigin;
-            for(const auto& note:model.notes) {
-                if(note.clipId!=clip.id || (note.flags&1u)!=0)continue;
+            for(const auto* record : notes->second) {
+                const auto& note = *record;
+                if((note.flags&1u)!=0)continue;
                 // ANOT starts are signed. A note crossing source zero is
                 // chased by add()'s visible-start clamp; an earlier finished
                 // note is skipped. Keep the same bounded arithmetic domain.
@@ -847,7 +921,9 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         }
     }
     for(auto& [id,source]:impl_->tracks) {
-        (void)id;source->owner=impl_;
+        (void)id;
+        if (source->generation != generation)
+            continue;
         auto& ranges = source->monitorRanges;
         std::sort(ranges.begin(), ranges.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
         auto merged = ranges.begin();
@@ -884,6 +960,13 @@ std::span<const MidiMonitorRange> MidiClips::monitorRanges(std::int64_t track) c
     if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
         return source->second->monitorRanges;
     return {};
+}
+MidiNoteActivity MidiClips::noteActivity(std::int64_t track) const noexcept {
+    const auto source = impl_->tracks.find(track);
+    if (source == impl_->tracks.end() || !source->second->meterNotes)
+        return {};
+    const auto reading = source->second->state->noteActivity.load(std::memory_order_relaxed);
+    return {static_cast<std::uint32_t>(reading >> 1), (reading & 1u) != 0};
 }
 const std::vector<std::string>& MidiClips::problems() const noexcept{return impl_->problems;}
 }

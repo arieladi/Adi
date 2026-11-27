@@ -147,6 +147,7 @@ class PluginCatalogueService {
         listing.complete = state_.listing.complete;
         listing.stopped = state_.listing.stopped;
         listing.failed = state_.listing.failed;
+        listing.scanFailures = std::move(state_.listing.scanFailures);
         state_.listing = std::move(listing);
         ++state_.listed;
         if (state_.phase == PluginScan::Phase::NotStarted)

@@ -33,12 +33,13 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
     const auto from = time.tick(0.), to = time.tick(static_cast<double>(area.getWidth()));
     const auto &first = meterAt(from, meters);
     const double beatPx = 4. / std::max<double>(1, first.denominator) * time.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = area.getBottom();
     g.setFont(look::font(look::fontLabel, true));
@@ -66,6 +67,14 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
             }
         for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+    });
+    time.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        if (at) {
+            label(tick, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        } else {
+            g.setColour(look::rulerLabel);
+            g.fillRect(area.getX() + static_cast<int>(time.x(tick)), foot - 5, 1, 3);
+        }
     });
 }
 // The editing grid's lines and the bar lines over them, across `area`.
@@ -248,7 +257,9 @@ juce::Rectangle<int> NoteEditor::selectedVelocityFrame() const noexcept {
     return any ? juce::Rectangle<int>(left, high, std::max(1, right - left), std::max(1, low - high)) : juce::Rectangle<int>();
 }
 juce::Rectangle<int> NoteEditor::handleBox(LaneHandle handle) const noexcept {
-    const auto frame = selectedVelocityFrame();
+    return handleBox(handle, selectedVelocityFrame());
+}
+juce::Rectangle<int> NoteEditor::handleBox(LaneHandle handle, juce::Rectangle<int> frame) const noexcept {
     if (frame.isEmpty() || handle == LaneHandle::None)
         return {};
     // Above the selection's frame: the tilt handles at its ends, Scale at its middle; Compress under Scale.
@@ -259,8 +270,9 @@ juce::Rectangle<int> NoteEditor::handleBox(LaneHandle handle) const noexcept {
     return {x, handle == LaneHandle::Compress ? y + 9 : y, 7, 7};
 }
 LaneHandle NoteEditor::handleAt(juce::Point<int> at) const noexcept {
+    const auto frame = selectedVelocityFrame();
     for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
-        if (const auto box = handleBox(handle); !box.isEmpty() && box.expanded(2).contains(at))
+        if (const auto box = handleBox(handle, frame); !box.isEmpty() && box.expanded(2).contains(at))
             return handle;
     return LaneHandle::None;
 }
@@ -404,6 +416,7 @@ void NoteEditor::zoomToNotes() {
         return;
     if (const auto span = timeSelection(); span && !anySelected()) {
         time.fit(span->first, span->second + std::max<std::int64_t>(1, (span->second - span->first) / 24), notesArea().getWidth());
+        panel.repaint(panel.gridBox());
         repaint();
         return;
     }
@@ -424,10 +437,12 @@ void NoteEditor::zoomToNotes() {
     const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
     keys.show(range->low, range->high, area.getHeight());
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::zoomBack() {
     time.back();
+    panel.repaint(panel.gridBox());
     repaint();
 }
 bool NoteEditor::quantize() {
@@ -469,18 +484,21 @@ bool NoteEditor::fitToRange() {
     auto range = timeSelection();
     if (!range) {
         std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
-        const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        const auto take = [&](const engine::ClipDetails &of) {
+            const auto *selection = selectionFor(of.id);
+            if (!selection || selection->empty())
+                return;
             const auto window = ClipWindow::of(of);
             for (const auto &n : of.notes)
-                if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                if (selection->contains(n.id)) {
                     from = std::min(from, window.toArrangement(n.startTicks));
                     to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
                 }
         };
-        take(*clip, selected_);
+        take(*clip);
         if (!panel.focus())
             for (const auto &layer : panel.others())
-                take(layer.details, selectedIn(layer.details.id));
+                take(layer.details);
         if (from >= to)
             return false;
         range = std::pair{from, to};
@@ -507,19 +525,22 @@ bool NoteEditor::copySelected() {
     // other; then counted from the earliest.
     std::vector<engine::ClipNote> copied;
     std::vector<std::int64_t> from;
-    const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+    const auto take = [&](const engine::ClipDetails &of) {
+        const auto *selection = selectionFor(of.id);
+        if (!selection || selection->empty())
+            return;
         const auto window = ClipWindow::of(of);
         for (const auto &n : of.notes)
-            if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+            if (selection->contains(n.id)) {
                 copied.push_back(n);
                 copied.back().startTicks = window.toArrangement(n.startTicks);
                 from.push_back(of.id);
             }
     };
-    take(*clip, selected_);
+    take(*clip);
     if (!panel.focus())
         for (const auto &layer : panel.others())
-            take(layer.details, selectedIn(layer.details.id));
+            take(layer.details);
     if (copied.empty())
         return false;
     auto first = copied.front().startTicks;
@@ -584,7 +605,7 @@ bool NoteEditor::paste() {
         // The pasted notes are the selection, in each clip.
         otherSelected_.clear();
         for (auto &entry : pasted)
-            otherIds(entry.first) = std::move(entry.second);
+            otherSelection(entry.first).set(std::move(entry.second));
         repaint();
         return true;
     }
@@ -594,7 +615,7 @@ bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
     if (clip == nullptr || selected_.empty())
         return false;
-    return commit(copyNotes(*clip, selected_, spanOf(*clip, selected_), 0,
+    return commit(copyNotes(*clip, selected(), spanOf(*clip, selected()), 0,
                             selected_.size() == 1 ? "Duplicate Note" : "Duplicate Notes"));
 }
 int NoteEditor::barsHeight() const noexcept {
@@ -689,21 +710,100 @@ std::optional<juce::Range<int>> NoteEditor::loopBrace() const noexcept {
         return juce::Range<int>(at(loopPreview_->first), at(loopPreview_->first + loopPreview_->second));
     return juce::Range<int>(at(clip->loopStartTicks), at(clip->loopStartTicks + loopLengthOf(*clip)));
 }
+void NoteEditor::Selection::set(std::vector<std::uint64_t> ids) {
+    if (ids.empty()) {
+        clear();
+        return;
+    }
+    std::unordered_map<std::uint64_t, bool> index;
+    index.reserve(ids.size());
+    for (const auto id : ids)
+        index.try_emplace(id, true);
+    ids_.swap(ids);
+    index_.swap(index);
+}
+void NoteEditor::Selection::replaceBand(const std::vector<std::uint64_t> &base, std::vector<std::uint64_t> &hits) {
+    if (base.empty() && hits.empty()) {
+        clear();
+        return;
+    }
+    const auto unmark = [this] {
+        for (auto &entry : index_)
+            entry.second = false;
+    };
+    const auto dropUnmarked = [this] {
+        std::erase_if(index_, [](const auto &entry) { return !entry.second; });
+    };
+    unmark();
+    try {
+        for (const auto id : base)
+            index_[id] = true;
+        // Leave the original anchor order in base, followed by the newly touched notes in clip order.
+        std::erase_if(hits, [this](std::uint64_t id) { return std::exchange(index_[id], true); });
+        ids_.resize(base.size() + hits.size());
+    } catch (...) {
+        // The previous ordered IDs still name the old selection if storage growth fails.
+        unmark();
+        for (const auto id : ids_)
+            index_.find(id)->second = true;
+        dropUnmarked();
+        throw;
+    }
+    dropUnmarked();
+    const auto afterBase = std::copy(base.begin(), base.end(), ids_.begin());
+    std::copy(hits.begin(), hits.end(), afterBase);
+}
+void NoteEditor::Selection::add(std::uint64_t id) {
+    if (const auto [at, added] = index_.try_emplace(id, true); added) {
+        try {
+            ids_.push_back(id);
+        } catch (...) {
+            index_.erase(at);
+            throw;
+        }
+    }
+}
+void NoteEditor::Selection::erase(std::uint64_t id) noexcept {
+    index_.erase(id);
+    std::erase(ids_, id);
+}
+void NoteEditor::Selection::erase(const std::vector<std::uint64_t> &ids) noexcept {
+    for (const auto id : ids)
+        index_.erase(id);
+    std::erase_if(ids_, [this](std::uint64_t id) { return !contains(id); });
+}
+void NoteEditor::Selection::clear() noexcept {
+    ids_.clear();
+    index_.clear();
+}
+void NoteEditor::Selection::prune(const engine::ClipDetails *clip) noexcept {
+    if (!clip) {
+        clear();
+        return;
+    }
+    if (empty())
+        return;
+    for (auto &entry : index_)
+        entry.second = false;
+    for (const auto &note : clip->notes)
+        if (const auto at = index_.find(note.id); at != index_.end())
+            at->second = true;
+    std::erase_if(ids_, [this](std::uint64_t id) { return !index_.find(id)->second; });
+    std::erase_if(index_, [](const auto &entry) { return !entry.second; });
+}
+const NoteEditor::Selection *NoteEditor::selectionFor(std::int64_t clip) const noexcept {
+    if (clip == panel.clip())
+        return &selected_;
+    const auto found = otherSelected_.find(clip);
+    return found == otherSelected_.end() ? nullptr : &found->second;
+}
 const std::vector<std::uint64_t> &NoteEditor::selectedIn(std::int64_t clip) const noexcept {
     static const std::vector<std::uint64_t> none;
-    if (clip == panel.clip())
-        return selected_;
-    for (const auto &entry : otherSelected_)
-        if (entry.first == clip)
-            return entry.second;
-    return none;
+    const auto *selection = selectionFor(clip);
+    return selection ? selection->ids() : none;
 }
-std::vector<std::uint64_t> &NoteEditor::otherIds(std::int64_t clip) {
-    for (auto &entry : otherSelected_)
-        if (entry.first == clip)
-            return entry.second;
-    otherSelected_.emplace_back(clip, std::vector<std::uint64_t>{});
-    return otherSelected_.back().second;
+NoteEditor::Selection &NoteEditor::otherSelection(std::int64_t clip) {
+    return otherSelected_.try_emplace(clip).first->second;
 }
 bool NoteEditor::anySelected() const noexcept {
     if (!selected_.empty())
@@ -714,10 +814,10 @@ bool NoteEditor::anySelected() const noexcept {
 }
 void NoteEditor::rehome(std::int64_t from, std::int64_t to) {
     auto mine = std::move(selected_);
-    selected_ = std::move(otherIds(to));
-    std::erase_if(otherSelected_, [to](const auto &entry) { return entry.first == to; });
+    selected_ = std::move(otherSelection(to));
+    otherSelected_.erase(to);
     if (!mine.empty())
-        otherIds(from) = std::move(mine);
+        otherSelection(from) = std::move(mine);
 }
 NoteEdit NoteEditor::across(const Build &build) const {
     NoteEdit all;
@@ -727,7 +827,7 @@ NoteEdit NoteEditor::across(const Build &build) const {
     // The edited clip first; then, with Focus off, every other shown clip that has notes selected.
     // One clip's refusal refuses the whole gesture.
     if (!selected_.empty() || !anySelected())
-        all = build(*clip, selected_);
+        all = build(*clip, selected());
     if (!all.refusal.empty() || panel.focus())
         return all;
     for (const auto &layer : panel.others()) {
@@ -783,19 +883,22 @@ bool NoteEditor::toggleTimeAndNotes() {
     if (anySelected()) {
         // The notes give way to the time they occupy; a time selection that already holds them stays.
         std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min(), last = to;
-        const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        const auto take = [&](const engine::ClipDetails &of) {
+            const auto *selection = selectionFor(of.id);
+            if (!selection || selection->empty())
+                return;
             const auto window = ClipWindow::of(of);
             for (const auto &n : of.notes)
-                if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                if (selection->contains(n.id)) {
                     from = std::min(from, window.toArrangement(n.startTicks));
                     last = std::max(last, window.toArrangement(n.startTicks));
                     to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
                 }
         };
-        take(*clip, selected_);
+        take(*clip);
         if (!panel.focus())
             for (const auto &layer : panel.others())
-                take(layer.details, selectedIn(layer.details.id));
+                take(layer.details);
         if (from >= to)
             return false;
         if (const auto span = timeSelection(); !span || span->first > from || span->second <= last) {
@@ -817,12 +920,12 @@ bool NoteEditor::toggleTimeAndNotes() {
     };
     for (const auto &n : clip->notes)
         if (inside(*clip, n))
-            selected_.push_back(n.id);
+            selected_.add(n.id);
     if (!panel.focus())
         for (const auto &layer : panel.others())
             for (const auto &n : layer.details.notes)
                 if (inside(layer.details, n))
-                    otherIds(layer.details.id).push_back(n.id);
+                    otherSelection(layer.details.id).add(n.id);
     repaint();
     return true;
 }
@@ -830,20 +933,17 @@ void NoteEditor::invertSelection() {
     const auto *clip = panel.details();
     if (clip == nullptr)
         return;
-    std::vector<std::uint64_t> inverted;
-    for (const auto &n : clip->notes)
-        if (!isSelected(n.id))
-            inverted.push_back(n.id);
+    const auto invert = [](Selection &selection, const engine::ClipDetails &of) {
+        std::vector<std::uint64_t> inverted;
+        for (const auto &n : of.notes)
+            if (!selection.contains(n.id))
+                inverted.push_back(n.id);
+        selection.set(std::move(inverted));
+    };
+    invert(selected_, *clip);
     if (!panel.focus())
-        for (const auto &layer : panel.others()) {
-            const auto was = selectedIn(layer.details.id);
-            auto &ids = otherIds(layer.details.id);
-            ids.clear();
-            for (const auto &n : layer.details.notes)
-                if (std::find(was.begin(), was.end(), n.id) == was.end())
-                    ids.push_back(n.id);
-        }
-    selected_ = std::move(inverted);
+        for (const auto &layer : panel.others())
+            invert(otherSelection(layer.details.id), layer.details);
     repaint();
 }
 bool NoteEditor::walk(bool sideways, bool forward, bool extend) {
@@ -875,14 +975,14 @@ bool NoteEditor::walk(bool sideways, bool forward, bool extend) {
                 std::abs(window.toArrangement(n.startTicks) - at) < std::abs(window.toArrangement(nearest->startTicks) - at))
                 nearest = &n;
         if (nearest != nullptr) {
-            selected_ = {nearest->id};
+            selected_.set({nearest->id});
             anchor_ = nearest->id;
         }
         repaint();
         return true;
     }
     // From the note last picked: the next or the previous in time, or on its own key.
-    const auto *from = note_edits_detail::find(*clip, isSelected(anchor_) ? anchor_ : selected_.back());
+    const auto *from = note_edits_detail::find(*clip, isSelected(anchor_) ? anchor_ : selected().back());
     if (from == nullptr)
         return true;
     const auto before = [](const engine::ClipNote &a, const engine::ClipNote &b) {
@@ -902,8 +1002,7 @@ bool NoteEditor::walk(bool sideways, bool forward, bool extend) {
             selected_.clear();
             otherSelected_.clear();
         }
-        if (!isSelected(next->id))
-            selected_.push_back(next->id);
+        selected_.add(next->id);
         anchor_ = next->id;
         head_.reset();
     }
@@ -1147,7 +1246,7 @@ std::uint64_t NoteEditor::statusStamp() const noexcept {
     // The selection, the time selection and whatever a held drag is previewing.
     std::uint64_t stamp = 1469598103934665603ull;
     const auto mix = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ull; };
-    for (const auto id : selected_)
+    for (const auto id : selected())
         mix(id);
     mix(selected_.size());
     mix(static_cast<std::uint64_t>(insert_.value_or(-1)));
@@ -1252,6 +1351,7 @@ void NoteEditor::fitWidth() {
     const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
     time.fit(from, from + length + length / 24, area.getWidth());
     panel.root.arrangement.followPaused = true;
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::fitHeight() {
@@ -1374,6 +1474,7 @@ bool NoteEditor::duplicateLoop() {
         const auto from = std::min(window.pos, window.toArrangement(start));
         const auto to = std::max(window.end(), end);
         time.fit(from, to + (to - from) / 24, area.getWidth());
+        panel.repaint(panel.gridBox());
     }
     repaint();
     return true;
@@ -1384,7 +1485,7 @@ std::vector<std::uint64_t> NoteEditor::stretchTargets() const {
     if (clip == nullptr)
         return {};
     if (selected_.size() >= 2)
-        return selected_;
+        return selected();
     std::vector<std::uint64_t> ids;
     if (const auto span = timeSelection(); span && selected_.empty()) {
         const auto window = ClipWindow::of(*clip);
@@ -1472,7 +1573,7 @@ bool NoteEditor::chooseSpelling(int item) {
 bool NoteEditor::hasContext() const { return contextOverride.value_or(isShowing() && hasKeyboardFocus(true)); }
 void NoteEditor::contextClick(juce::Point<int> at) {
     if (const auto *n = noteAt(at); n != nullptr && !isSelected(n->id)) {
-        selected_ = {n->id};
+        selected_.set({n->id});
         otherSelected_.clear();
         head_.reset();
     }
@@ -1616,27 +1717,24 @@ bool NoteEditor::chooseContextItem(int item) {
     }
 }
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
-    return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
+    return selected_.contains(id);
 }
 void NoteEditor::select(std::vector<std::uint64_t> ids) {
     typedVelocity_.clear();
     if (ids.empty())
         otherSelected_.clear();
-    selected_ = std::move(ids);
+    selected_.set(std::move(ids));
     repaint();
 }
 void NoteEditor::prune() {
-    const auto *clip = panel.details();
-    std::erase_if(selected_, [clip](std::uint64_t id) {
-        return clip == nullptr || note_edits_detail::find(*clip, id) == nullptr;
-    });
+    selected_.prune(panel.details());
     // The other clips' selected notes go with their notes and their clips.
     for (auto &entry : otherSelected_) {
         const engine::ClipDetails *of = nullptr;
         for (const auto &layer : panel.others())
             if (layer.details.id == entry.first)
                 of = &layer.details;
-        std::erase_if(entry.second, [of](std::uint64_t id) { return of == nullptr || note_edits_detail::find(*of, id) == nullptr; });
+        entry.second.prune(of);
     }
     std::erase_if(otherSelected_, [](const auto &entry) { return entry.second.empty(); });
     if (scaleFolded_ && !scaleOn())
@@ -1672,7 +1770,7 @@ const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) 
 engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
     auto out = note;
     if (drag_ == Drag::Stretch) {
-        if (std::find(stretchIds_.begin(), stretchIds_.end(), note.id) == stretchIds_.end())
+        if (!stretchNotes_.contains(note.id))
             return out;
         if (const auto *clip = panel.details()) {
             const auto window = ClipWindow::of(*clip);
@@ -1700,9 +1798,9 @@ engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept 
     return dragged(note);
 }
 engine::ClipNote NoteEditor::shownIn(const engine::ClipNote &note, std::int64_t clip) const noexcept {
-    const auto &ids = selectedIn(clip);
+    const auto *selection = selectionFor(clip);
     const bool moving = drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End;
-    if (!moving || panel.focus() || std::find(ids.begin(), ids.end(), note.id) == ids.end())
+    if (!moving || panel.focus() || !selection || !selection->contains(note.id))
         return note;
     return dragged(note);
 }
@@ -1737,7 +1835,7 @@ bool NoteEditor::commit(NoteEdit edit) {
     if (!panel.root.submitEdits(std::move(edit.ops)))
         return false;
     if (!edit.select.empty() || !selected_.empty())
-        selected_ = std::move(edit.select);
+        selected_.set(std::move(edit.select));
     panel.reread();
     return true;
 }
@@ -1773,17 +1871,17 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         return;
     if (std::uint64_t picked = 0; noteAt(from_) == nullptr) {
         if (const auto other = otherClipAt(from_, &picked); other != 0 && picked != 0 && e.mods.isShiftDown() && !panel.focus()) {
-            auto &ids = otherIds(other);
-            if (std::find(ids.begin(), ids.end(), picked) != ids.end())
-                std::erase(ids, picked);
+            auto &selection = otherSelection(other);
+            if (selection.contains(picked))
+                selection.erase(picked);
             else
-                ids.push_back(picked);
+                selection.add(picked);
             repaint();
             return;
         } else if (other != 0) {
             // Another clip's loop bar or note: that clip becomes the one being edited (manual 10.8).
             if (panel.activate(other) && picked != 0)
-                selected_ = {picked};
+                selected_.set({picked});
             repaint();
             return;
         }
@@ -1820,14 +1918,14 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
                     track.push_back(n.id);
             if (!e.mods.isShiftDown()) {
                 otherSelected_.clear();
-                selected_ = track;
+                selected_.set(std::move(track));
             } else {
                 const bool all = !track.empty() && std::all_of(track.begin(), track.end(), [this](std::uint64_t id) { return isSelected(id); });
-                for (const auto id : track)
-                    if (all)
-                        std::erase(selected_, id);
-                    else if (!isSelected(id))
-                        selected_.push_back(id);
+                if (all)
+                    selected_.erase(track);
+                else
+                    for (const auto id : track)
+                        selected_.add(id);
             }
             head_.reset();
         }
@@ -1891,12 +1989,12 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         if (best != nullptr && e.mods.isShiftDown()) {
             // Shift adds the marker to the selection, or takes it out (manual 10.5.12).
             if (isSelected(best->id))
-                std::erase(selected_, best->id);
+                selected_.erase(best->id);
             else
-                selected_.push_back(best->id);
+                selected_.add(best->id);
         } else if (best != nullptr) {
             if (!isSelected(best->id))
-                selected_ = {best->id};
+                selected_.set({best->id});
             anchor_ = best->id;
             beginVelocityDrag(false);
         }
@@ -1905,7 +2003,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     }
     if (const auto part = stretchPartAt(from_); part != StretchPart::None) {
         const auto span = *stretchSpan();
-        stretchIds_ = stretchTargets();
+        stretchNotes_.set(stretchTargets());
         stretchA_ = span.first;
         stretchB_ = span.second;
         // The place grabbed between the two, on the nearest grid line unless snapping is bypassed.
@@ -1945,11 +2043,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         head_.reset();
         if (e.mods.isShiftDown()) {
             if (isSelected(n->id))
-                std::erase(selected_, n->id);
+                selected_.erase(n->id);
             else
-                selected_.push_back(n->id);
+                selected_.add(n->id);
         } else if (!isSelected(n->id)) {
-            selected_ = {n->id};
+            selected_.set({n->id});
         }
         if (isSelected(n->id)) {
             anchor_ = n->id;
@@ -1972,7 +2070,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             insert_ = snapping(e.mods) ? time.snap(at, false) : at;
             head_.reset();
         }
-        bandBase_ = selected_;
+        bandBase_ = selected();
         drag_ = Drag::Band;
     }
     repaint();
@@ -1999,18 +2097,20 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         const auto a = keys.keyAt(from_.y - area.getY());
         const auto b = keys.keyAt(std::clamp(to_.y - area.getY(), 0, std::max(0, area.getHeight() - 1)));
         int low = kNoteKeys - 1, high = 0;
-        for (const auto &n : clip->notes)
-            if (isSelected(n.id)) {
-                low = std::min(low, static_cast<int>(n.key));
-                high = std::max(high, static_cast<int>(n.key));
-            }
+        const auto widenRange = [&](const engine::ClipDetails &of) {
+            const auto *selection = selectionFor(of.id);
+            if (!selection || selection->empty())
+                return;
+            for (const auto &n : of.notes)
+                if (selection->contains(n.id)) {
+                    low = std::min(low, static_cast<int>(n.key));
+                    high = std::max(high, static_cast<int>(n.key));
+                }
+        };
+        widenRange(*clip);
         if (!panel.focus())
             for (const auto &layer : panel.others())
-                for (const auto id : selectedIn(layer.details.id))
-                    if (const auto *n = note_edits_detail::find(layer.details, id)) {
-                        low = std::min(low, static_cast<int>(n->key));
-                        high = std::max(high, static_cast<int>(n->key));
-                    }
+                widenRange(layer.details);
         dragKeys_ = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
     } else if (drag_ == Drag::Velocity) {
         velocityDrag();
@@ -2053,33 +2153,48 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         handleDrag();
     } else if (drag_ == Drag::Band) {
         // The notes the rectangle touches, added to what Shift kept.
-        const juce::Rectangle<int> band(from_, to_);
-        if (!e.mods.isShiftDown() && insert_) {
+        const auto band = juce::Rectangle<int>(from_, to_).toDouble();
+        const bool extend = e.mods.isShiftDown();
+        if (!extend && insert_) {
             // And the time it spans, from the insert marker, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
             head_ = snapping(e.mods) ? time.snap(at, to_.x > from_.x) : at;
             if (*head_ == *insert_)
                 head_.reset();
         }
-        if (!e.mods.isShiftDown())
-            otherSelected_.clear();
-        if (!panel.focus())
-            for (const auto &layer : panel.others())
-                for (const auto &n : layer.details.notes)
-                    if (const auto box = boxOf(n, layer.details);
-                        box && band.toDouble().intersects(juce::Rectangle<double>(box->x, static_cast<double>(box->y), box->width,
-                                                                                 static_cast<double>(box->height)))) {
-                        auto &ids = otherIds(layer.details.id);
-                        if (std::find(ids.begin(), ids.end(), n.id) == ids.end())
-                            ids.push_back(n.id);
-                    }
-        selected_ = bandBase_;
-        for (const auto &n : clip->notes)
-            if (const auto box = boxOf(n); box && !isSelected(n.id) &&
-                                             band.toDouble().intersects(juce::Rectangle<double>(
-                                                 box->x, static_cast<double>(box->y), box->width,
-                                                 static_cast<double>(box->height))))
-                selected_.push_back(n.id);
+        const auto collect = [&](const engine::ClipDetails &of) {
+            bandHits_.clear();
+            for (const auto &note : of.notes)
+                if (const auto box = boxOf(note, of); box && band.intersects(juce::Rectangle<double>(
+                        box->x, static_cast<double>(box->y), box->width, static_cast<double>(box->height))))
+                    bandHits_.push_back(note.id);
+        };
+        const auto &others = panel.others();
+        const bool focus = panel.focus();
+        if (!extend)
+            std::erase_if(otherSelected_, [&](const auto &entry) {
+                return focus || std::none_of(others.begin(), others.end(), [&](const auto &layer) {
+                    return layer.details.id == entry.first;
+                });
+            });
+        if (!focus)
+            for (const auto &layer : others) {
+                const auto id = layer.details.id;
+                collect(layer.details);
+                if (bandHits_.empty()) {
+                    if (!extend)
+                        otherSelected_.erase(id);
+                    continue;
+                }
+                auto &selection = otherSelection(id);
+                if (extend)
+                    for (const auto hit : bandHits_)
+                        selection.add(hit);
+                else
+                    selection.replaceBand({}, bandHits_);
+            }
+        collect(*clip);
+        selected_.replaceBand(bandBase_, bandHits_);
     }
     repaint();
 }
@@ -2107,7 +2222,7 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         commit(drawVelocities(*clip, values, "Change Velocity"));
     } else if (kind == Drag::LaneDraw) {
         const auto values = std::exchange(shapePreview_, {});
-        const auto keep = selected_;
+        const auto keep = selected();
         if (commit(drawVelocities(*clip, values)))
             select(keep);
     } else if (kind == Drag::Shape) {
@@ -2122,20 +2237,20 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
                                                                : "Tilt Velocities"));
     } else if (kind == Drag::Trim) {
         const auto lengths = std::exchange(trimPreview_, {});
-        const auto keep = selected_;
+        const auto keep = selected();
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
     } else if (kind == Drag::LaneSize) {
         panel.keepSettings();
     } else if (kind == Drag::Stretch) {
         const auto window = ClipWindow::of(*clip);
-        const auto ids = std::exchange(stretchIds_, {});
         const auto timed = timeSelection().has_value() && selected_.empty();
         const auto part = stretchPart_;
-        auto stretched = remapNotes(*clip, ids, [&](std::int64_t source) { return window.toSource(stretchMap(window.toArrangement(source))); });
+        auto stretched = remapNotes(*clip, stretchNotes_.ids(), [&](std::int64_t source) { return window.toSource(stretchMap(window.toArrangement(source))); });
+        stretchNotes_.clear();
         const auto a = part == StretchPart::Start ? stretchNow_ : stretchA_, b = part == StretchPart::End ? stretchNow_ : stretchB_;
         stretchPart_ = StretchPart::None;
-        const auto keep = selected_;
+        const auto keep = selected();
         if (commit(std::move(stretched))) {
             // The selection it began from stays: the notes, or the time, now as long as the pair.
             select(keep);
@@ -2209,7 +2324,7 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             repaint();
             if (code == juce::KeyPress::returnKey) {
                 std::vector<std::pair<std::uint64_t, int>> values;
-                for (const auto id : selected_)
+                for (const auto id : selected())
                     values.emplace_back(id, typed.getIntValue());
                 commit(drawVelocities(*clip, values, "Set Velocity"));
                 return true;
@@ -2365,15 +2480,20 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         return true;
     }
     if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) {
-        selected_.clear();
-        for (const auto &n : clip->notes)
-            selected_.push_back(n.id);
+        const auto selectAll = [](Selection &selection, const engine::ClipDetails &of) {
+            std::vector<std::uint64_t> ids;
+            ids.reserve(of.notes.size());
+            for (const auto &n : of.notes)
+                ids.push_back(n.id);
+            selection.set(std::move(ids));
+        };
+        selectAll(selected_, *clip);
         // With several clips shown and Focus off, every clip's notes.
         otherSelected_.clear();
         if (!panel.focus())
             for (const auto &layer : panel.others())
-                for (const auto &n : layer.details.notes)
-                    otherIds(layer.details.id).push_back(n.id);
+                if (!layer.details.notes.empty())
+                    selectAll(otherSelection(layer.details.id), layer.details);
         repaint();
         return true;
     }
@@ -2487,8 +2607,10 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
-    else
+    else {
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
+        panel.repaint(panel.gridBox());
+    }
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -2582,7 +2704,8 @@ void NoteEditor::paint(juce::Graphics &g) {
         // (manual 10.5.7).
         // The other shown clips' notes, under the edited clip's: each in its own clip's colour, or
         // grey while Focus is on (manual 10.8).
-        for (const auto &layer : panel.others())
+        for (const auto &layer : panel.others()) {
+            const auto *selection = panel.focus() ? nullptr : selectionFor(layer.details.id);
             for (const auto &stored : layer.details.notes) {
                 const auto note = shownIn(stored, layer.details.id);
                 const auto box = boxOf(note, layer.details);
@@ -2595,25 +2718,18 @@ void NoteEditor::paint(juce::Graphics &g) {
                 g.fillRect(r);
                 g.setColour(look::outline.withAlpha(0.7f));
                 g.drawRect(r, 1.f);
-                const auto &ids = selectedIn(layer.details.id);
-                if (!panel.focus() && std::find(ids.begin(), ids.end(), note.id) != ids.end() && r.getWidth() > 4.f) {
+                if (selection && selection->contains(note.id) && r.getWidth() > 4.f) {
                     g.setColour(look::textBright);
                     g.drawRect(r.reduced(1.f), 1.f);
                 }
             }
-        const auto base = panel.colour();
-        std::vector<engine::ClipNote> drawn;
-        for (const auto &stored : clip->notes) {
-            // A drag that would copy shows the originals in their places and the copies under the pointer.
-            if (copying_ && drag_ == Drag::Move && isSelected(stored.id))
-                drawn.push_back(stored);
-            drawn.push_back(shown(stored));
         }
-        for (const auto &note : drawn) {
+        const auto base = panel.colour();
+        const auto draw = [&](const engine::ClipNote &note) {
             const auto box = boxOf(note);
             if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
                 box->y >= area.getBottom() || box->y + box->height <= area.getY())
-                continue;
+                return;
             const auto fill = noteFill(note);
             const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
                                            static_cast<float>(box->width), static_cast<float>(box->height));
@@ -2626,6 +2742,12 @@ void NoteEditor::paint(juce::Graphics &g) {
                 g.setColour(look::textBright);
                 g.drawRect(r.reduced(1.f), 1.f);
             }
+        };
+        for (const auto &stored : clip->notes) {
+            // A copy-drag shows the original before its preview.
+            if (copying_ && drag_ == Drag::Move && isSelected(stored.id))
+                draw(stored);
+            draw(shown(stored));
         }
         if (drag_ == Drag::Draw) {
             // The stroke held: the notes it would draw.
@@ -2770,8 +2892,9 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.setColour(typedVelocity_.isNotEmpty() ? look::textBright : look::text);
         g.setFont(look::font(look::fontTiny));
         g.drawText(velocityReadout(), readout, juce::Justification::centredLeft);
+        const auto frame = selectedVelocityFrame();
         for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
-            if (const auto box = handleBox(handle); !box.isEmpty()) {
+            if (const auto box = handleBox(handle, frame); !box.isEmpty()) {
                 g.setColour(look::textBright);
                 g.fillRect(box);
                 g.setColour(look::outline);
@@ -2815,8 +2938,10 @@ void SampleEditor::resized() {
     }
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
-    if (timeWheel(time, e, w, 0))
+    if (timeWheel(time, e, w, 0)) {
+        panel.repaint(panel.headerArea());
         repaint();
+    }
 }
 void SampleEditor::paint(juce::Graphics &g) {
     g.fillAll(look::laneAlt);

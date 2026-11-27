@@ -5,14 +5,38 @@
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
+// A listing and its search data, prepared on the library worker and shared by the app and windows.
+class BrowserLibrarySnapshot {
+  public:
+    explicit BrowserLibrarySnapshot(LibraryListing);
+    const LibraryListing &listing() const noexcept { return listing_; }
+
+  private:
+    friend class BrowserPanel;
+    using SampleIndices = std::vector<std::size_t>;
+    struct PlaceSamples {
+        SampleIndices ordered;
+        std::vector<bool> contains;
+    };
+    void appendSamples(std::string_view query, const std::string *volume,
+                       std::vector<const LibraryFile *> &results) const;
+    LibraryListing listing_;
+    std::vector<std::string> foldedNames_;
+    std::unordered_map<std::uint32_t, SampleIndices> postings_;
+    std::unordered_map<std::string, PlaceSamples> places_;
+};
 // The browser's content list (Live 12 manual 4.1): its rows take up and down, and left goes back to
 // the sidebar (41.22).
 class BrowserList final : public juce::ListBox {
@@ -79,8 +103,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // What the library index holds, from the app's indexing worker: the Places join the sidebar
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
+    void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
     void setListing(LibraryListing, bool ready = true);
-    const LibraryListing &listing() const noexcept { return listing_; }
+    const LibraryListing &listing() const noexcept;
     // Selects a label, as a click on it does.
     void choose(int);
     // The files the list shows now, in its order.
@@ -93,6 +118,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         const PluginEntry *plugin = nullptr;
         int depth = 0;
         const preset::Entry *savedPreset = nullptr;
+        juce::String tooltip{};
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads a row (double-click, Enter), or says why it cannot.
@@ -147,6 +173,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void refill();
     int getNumRows() override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
+    juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
     // A folder's heading is never selected: the selection steps past it, the way it was moving.
@@ -158,7 +185,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::optional<HotSwapFilter> hotSwap_;
     juce::String idleSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
-    LibraryListing listing_;
+    std::shared_ptr<const BrowserLibrarySnapshot> library_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
