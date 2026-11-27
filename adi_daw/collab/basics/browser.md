@@ -32,6 +32,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-432 | `basics/browser-chain` at `e073649db` | Register a stable Hot-Swap command for the active device or sample slot. Window seat. | Headless command ordering, focus, rebinding and menu-label checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-424 | `basics/browser-chain` at `d1ad41dcd` | Reopen a collapsed Browser from the Info shortcut, menu command or Status Bar button. Window seat. | Headless command and layout tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-129 | `basics/browser-chain` at `634911602` | Give Browser results and Places a context menu with an available file or folder action. Browser seat. | The headless popup seam covered files, built-ins, presets, plug-ins, nested and added folders, removal and immutable action targets. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-130 | `basics/browser-chain` at `766f8d607` | Clear the Browser search field with Escape or its x while retaining mode-specific text. Browser seat. | The headless suite verified both controls, immediate filtering, the text bounds and Hot-Swap mode restoration. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -253,6 +254,21 @@ In the 308 × 443 px Compact Browser, the sidebar is (4, 27, 113, 412) and the r
 The display-free JUCE LookAndFeel probe measured ideal menu item dimensions. Popup chrome, display-edge adjustment, and the operating system's file manager remain live-window checks. SC-131 can add a 105 × 16 px Rescan Library item to sample, folder and library menus. SC-133 supplies its own favorites actions. The shell fixture intercepts popup presentation and invokes actions against captured paths. It tests sample, preset, plug-in, built-in, nested directory and both kinds of Places, including an open popup whose source listing was replaced. No native menu or window is used.
 
 The first integrated run caught a nested folder being passed as a relative path. The menu now resolves that path against its selected Place before capturing it, so Reveal works for the clicked directory.
+
+# SC-130 Clear Browser search
+
+Logical pixel bounds from the Compact 1440 × 900 layout, with the Browser on the left and Info shown. The Browser is `(8,35,308,623)` in the root. The search field stays `(24,4,280,21)` in Browser coordinates, or `(32,39,280,21)` in the root.
+
+| Part | Before | After |
+|---|---|---|
+| Search field | `(32,39,280,21)` | `(32,39,280,21)` |
+| Text viewport with query | `(33,40,276,19)` | `(33,40,255,19)` |
+| Clear button with query | Absent | `(292,40,19,19)` |
+| Clear button with empty query | Absent | Hidden with zero bounds, full text width |
+
+The x stroke endpoints span 7 × 7 px from `(298,46)` in root coordinates. A 21 px right slot reserves space only when text is present. The mark uses the existing text colors. No key map or tracked image fixture changes are expected. The Browser parity fixtures clear their search text before rendering.
+
+Escape clears ordinary search with the search field focused. Existing Hot-Swap Escape exits and restores the ordinary query. The x clears the active field without switching modes or taking keyboard focus. The peerless shell fixture tests the button hit area, focus policy, immediate query results and independent modes.
 
 ## For the director
 
