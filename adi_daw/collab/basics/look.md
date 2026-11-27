@@ -21,6 +21,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-38 | `basics/look-chain` at `458cc4a8` | Preview sample and device drop positions in Arrangement, Mixer and Device View. Window seat. | Software-pixel probes and the existing drop assertions verified the previews and final targets. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-74 | `basics/look-chain` at `43febaaf` | Insert or edit a step tempo change from the beat ruler and draw tempo changes along it. Window seat. | Peerless menu, inline editor, persistence of event fields and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-75 | `basics/look-chain` at `fac5ee51` | Return the stopped transport, marker and viewport to 1.1.1 on Stop while stopped. Engine view-state mailbox and window seat. | Focused mailbox red/green and peerless transport, count-in and Continue checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-89 | `basics/look-chain` at `1f31704b` | Show named scan failures and render load placeholders with the failure reason. Window and Mix View seats. | Peerless scan rows, blocked drag/load and the real document placeholder paint passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -172,6 +173,10 @@ At 60 px per quarter with left edge at bar 1, the beat ruler is 29 px high and b
 ### SC-75
 
 At 1440 × 900 Compact the Stop button stays `(566, 9, 18, 17)` and Position stays `(446, 9, 82, 17)`. An idle Stop changes the position from `17.1.1` to `1.1.1`. With the fixture's 30 px per quarter, bar 1 moves from canvas x=−1920 to x=0. The selected lane's insert marker retains a 1 px stroke. A focused driver probe showed both stopped and continued sample positions at 96064 before and both at 0 afterward.
+
+### SC-89
+
+At 1440 × 900 Compact the Browser's existing rows begin at `(127, 81)` and are 185 × 19 px. The test's newly visible scan-failure row is `(127, 252, 185, 19)`, with the failure reason in its hint. In the Device View's first 150 × 188 px placeholder, the new error border encloses `(0, 0, 150, 188)`, the status is `(8, 21, 134, 16)` and the reason is `(8, 39, 134, 24)`. The activator `(2, 1, 16, 15)` and wrench `(32, 1, 16, 15)` are disabled.
 
 ## For the director
 
