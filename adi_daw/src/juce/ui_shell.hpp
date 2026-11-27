@@ -188,7 +188,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ImportAudioFile,
         ToggleBrowserPreview,
         PreviewSelected,
-        LastId = PreviewSelected
+        HotSwap,
+        LastId = HotSwap
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

@@ -15177,14 +15177,48 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         swapped.reset();
         device.grabKeyboardFocus();
         auto *peer = host.getPeer();
-        check(peer && peer->handleKeyPress(juce::KeyPress('q')) && swapped && swapped->id == device.id,
-              "plain Q on the focused title opens Hot-Swap");
+        const juce::KeyPress defaultKey('q'), rebound(juce::KeyPress::F3Key);
+        auto *mapping = commands.manager.getKeyMappings();
+        check(AppCommands::commandFor("browser.hot-swap") == AppCommands::HotSwap &&
+                  mapping->findCommandForKeyPress(defaultKey) == AppCommands::HotSwap &&
+                  peer && peer->handleKeyPress(defaultKey) && swapped && swapped->id == device.id,
+              "SC-432: Q invokes the registered Hot-Swap command on the focused title");
         swapped.reset();
         root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
-        check(!device.keyPressed(juce::KeyPress('q')) && !swapped, "the Computer MIDI Keyboard keeps plain Q");
+        check(!commands.key(defaultKey, root) && !swapped, "the Computer MIDI Keyboard keeps plain Q");
         root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
-        check(!device.keyPressed(juce::KeyPress('q', juce::ModifierKeys::commandModifier, 0)) && !swapped,
-              "Cmd/Ctrl+Q keeps its existing action");
+        const juce::KeyPress quitKey('q', juce::ModifierKeys::commandModifier, 0);
+#if !JUCE_MAC
+        check(mapping->findCommandForKeyPress(quitKey) == AppCommands::Quit, "Ctrl+Q remains assigned to Quit");
+#endif
+        check(!device.keyPressed(quitKey) && !swapped, "the device leaves the Quit shortcut alone");
+        mapping->clearAllKeyPresses(AppCommands::HotSwap);
+        mapping->addKeyPress(AppCommands::HotSwap, rebound);
+        const auto reboundItem = swapItem(device.commands());
+        check(reboundItem && reboundItem->shortcutKeyDescription == rebound.getTextDescriptionWithIcons() &&
+                  commands.userKeys().value("browser.hot-swap", settings::Value{}) == settings::Value::array({"F3"}),
+              "SC-432: the context menu and stable shortcut record show the rebound key");
+        check(peer && !peer->handleKeyPress(defaultKey) && !swapped && peer->handleKeyPress(rebound) &&
+                  swapped && swapped->id == device.id,
+              "SC-432: the rebound key opens Hot-Swap and the old key stops doing so");
+        if (const auto target = swapped) {
+            DevicePanelView retained(root.devices, *target);
+            host.addAndMakeVisible(retained);
+            retained.setBounds(0, 0, 220, 140);
+            retained.grabKeyboardFocus();
+            swapped.reset();
+            check(commands.key(rebound, root, false) && swapped && swapped->id == retained.id,
+                  "SC-432: a retained Stack card outside the root's tree uses its owning Browser command");
+            swapped.reset();
+            retained.targetValid = [] { return false; };
+            check(!root.command(AppCommands::HotSwap) && !swapped,
+                  "SC-432: the command respects the retained card's current target guard");
+        }
+        commands.reload();
+        root.arrangement.canvas.grabKeyboardFocus();
+        check(!commands.key(defaultKey, root) && !root.command(AppCommands::HotSwap),
+              "SC-432: Q has no Hot-Swap target outside the Device View or a retained card");
+        device.grabKeyboardFocus();
         check(device.beginRename(), "the title can enter inline rename");
         if (peer) peer->handleKeyPress(juce::KeyPress('q', 0, 'q'));
         check(device.rename.getText() == "q" && !swapped, "Q typed in the name editor stays in the editor");
@@ -23414,14 +23448,14 @@ int main(int argc, char **argv) {
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
                       C::About == C::ExportMidiClip + 1 && C::ImportAudioFile == C::About + 1 &&
                       C::ToggleBrowserPreview == C::ImportAudioFile + 1 &&
-                      C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::LastId == C::PreviewSelected,
+                      C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::HotSwap == C::PreviewSelected + 1,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
-                  "Computer MIDI Keyboard, MIDI import and MIDI export");
+                  "Computer MIDI Keyboard, MIDI import and export, Browser Preview controls, and Hot-Swap");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {

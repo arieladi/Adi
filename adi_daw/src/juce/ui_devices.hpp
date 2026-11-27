@@ -363,6 +363,8 @@ class DeviceChainStrip final : public juce::Component,
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
     std::optional<std::int64_t> focusedDevice() const;
+    bool hasHotSwapContext() const;
+    bool hotSwapFocused();
     bool deleteDevices(std::optional<std::int64_t> device = {});
     // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
     // last device.
@@ -458,6 +460,7 @@ class DeviceChainStrip final : public juce::Component,
     void clearSelection();
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
+    DevicePanelView *focusedHotSwapPanel() const;
     DevicePanelView *moveSource(const SourceDetails &) const;
     bool acceptsSample() const;
     const DevicePanelData *dataOf(std::int64_t device) const;
