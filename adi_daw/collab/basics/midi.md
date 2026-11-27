@@ -26,11 +26,13 @@ The first six published MIDI branches now form a chain under the revised howto. 
 
 SC-60 corrects the SC-50 and SC-10 timing overlap for statically routed takes. Auto-suppressed notes and tracks without a live instrument route use the played clock. An audible input uses the instrument's clock and keeps it through note release and expression. Mid-take route changes and driver event rejection still need driver-side timing provenance.
 
-The automation queue already has its own report at `origin/basics/automation-log` (`f6bbbd05`). This session proceeds with MIDI wave 2 as directed by the current howto.
+The automation queue has its own active report at `origin/basics/automation-log`. The assigned MIDI queue and its Wave 2 rows are complete. SC-62 was already closed by ADR-0258 d17. A MIDI track without an instrument stays silent.
 
 Main's newer howto names a single queue branch. The session assignment calls for one pushed branch per item, so this report records each head. Each successive item branch contains the previous item.
 
-The remaining item branches were verified on the Arrangement landing base `9322d7b4`. Main at `d38a216e` includes SC-220, SC-50 and SC-10 and the plug-in seat's SC-312 fix. The shared branch `basics/midi-chain` at `3d9ff5be` contains the full MIDI queue on that main. Its Windows Debug app built with warnings as errors. It passed 18 focused suites, all 3,994 private-desktop shell checks, and all three acceptance tests. The later speed landing `land/basics-1127i` is being checked separately before advancing that branch.
+The remaining item branches were verified on the Arrangement landing base `9322d7b4`. Main at `d38a216e` includes SC-220, SC-50 and SC-10 and the plug-in seat's SC-312 fix. The shared branch `basics/midi-chain` first passed 18 focused suites, 3,994 private-desktop shell checks, and all three acceptance tests on that main at `3d9ff5be`.
+
+The current `basics/midi-chain` head `2d12f83a` includes `land/basics-1127i` at `2c59ae00`. The merge preserves MIDI controller lanes and Rec-Q through background audio publication, and refreshes Monitor Auto routing and pitch-chase ownership when an incremental edit would leave them stale. The Windows Debug app built with warnings as errors. All 4,030 shell checks, 20 focused suites and three acceptance tests passed. The clip-playback suite passed 615 checks on D: after the C: test volume fell below the decoder's free-space minimum. The optional speed checks passed 19 Arrangement redraw checks and 10 Note Editor selection checks. The 30-minute, four-track stereo fixture landed all four clips and matched the captured PCM sample for sample.
 
 ## SC-55 virtual MIDI
 
