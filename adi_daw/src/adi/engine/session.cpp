@@ -712,7 +712,7 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         }
         // The open's "kept as a placeholder" line goes with the placeholder.
         const std::string said = deviceRef(row) + ": kept as a placeholder (ADR-0011): ";
-        std::erase_if(sessionProblems_, [&](const std::string& p) { return p.rfind(said, 0) == 0; });
+        std::erase_if(placeholderProblems_, [&](const std::string& p) { return p.rfind(said, 0) == 0; });
         resolveOne(store, row, std::move(inst));
         Entry& old = entries_[previous];  // resolveOne may have grown entries_
         old.retired = true;

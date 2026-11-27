@@ -1101,6 +1101,11 @@ bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
         const auto *entry = session_.entryFor(*deviceId);
         if (!entry || entry->placeholder || entry->parked || entry->retired)
             return true;
+        // Native mix controls already write their edits through the journal.
+        // Saving their derived stream here would put a second Undo step before
+        // Copy or Remove. A document-wide save still captures the full state.
+        if (mix::functionForReference(entry->resolvedFormat, entry->resolvedUid))
+            return true;
     }
     if (!deviceId && mixerDrag_ && !endMixerDrag())
         return false;
