@@ -392,7 +392,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("files.sampleEditor", Type::Path, ff, "Sample Editor",
                      "The external editor Edit opens a sample in.", ""));
     r.push_back(choice("files.sampleEditorOpens", ff, "Sample editor opens",
-                       "Open a copy of the sample, or the file in place.", {"copy", "inPlace"}, "copy"));
+                       "Open the file in place, or open a separate copy.", {"copy", "inPlace"}, "inPlace"));
     r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum Cache Size",
                        "Decoding cache: decoded audio, analysis and peaks. The least recently "
                        "used goes first, never a file in use (ADR-0156). In MB; default 20 GB "

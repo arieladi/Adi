@@ -722,6 +722,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> mainArea() const noexcept;
     juce::Rectangle<int> headerArea() const noexcept;
     juce::Rectangle<int> sampleNameBox() const noexcept;
+    juce::Rectangle<int> sampleEditBox() const noexcept;
     // The Note Editor's Fold switch, in the header (manual 10.2).
     juce::Rectangle<int> foldBox() const noexcept;
     // Its Draw Mode switch beside it (manual 10.4.1).
@@ -769,6 +770,8 @@ class ClipViewPanel final : public juce::Component {
     std::int64_t fieldMilliseconds(Field) const noexcept;
     std::int64_t draggedMilliseconds() const noexcept;
     juce::Rectangle<int> sampleMetadataArea() const noexcept;
+    int sampleToolsRight() const noexcept;
+    void editSample();
     bool setGain(double db);
     int pitchPart(Field, bool preview = false) const noexcept;
     bool setPitch(Field, int, bool relative);
