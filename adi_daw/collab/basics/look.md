@@ -18,6 +18,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-92 | `basics/look-chain` at `164c387b` | Label the main Audio To route Main. Window seat. | Headless tests covered Main, Group, instrumentless MIDI No Output and the Main pair. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-71 | `basics/look-chain` at `d8e80eed` | Follow zoom below a quarter note in the Arrangement and Note Editor. Window seat. | The independent Debug shell also passed all 3,536 checks. The test covers grid positions, ticks and Note Editor gestures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-12 | `basics/look-chain` at `9a1e6c59` | Dimming and specific Info reasons for eleven unavailable controls. Enabled controls retain their actual actions. Window seat. | Peerless checks covered disabled hit regions, help, active punch and metronome controls, and the Unicode quantization placeholder. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-38 | `basics/look-chain` at `458cc4a8` | Preview sample and device drop positions in Arrangement, Mixer and Device View. Window seat. | Software-pixel probes and the existing drop assertions verified the previews and final targets. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -157,6 +158,10 @@ At 1440 × 900 Compact these field hit rectangles retain their bounds. Eleven un
 | Active Metronome arrow | `(234, 9, 10, 17)` within the whole control at `(204, 9, 40, 17)` |
 
 Draw Mode, CPU measurement, Punch In and Out, and both parts of the Metronome stay operable at full opacity. The landing stack already supplies their behavior.
+
+### SC-38
+
+Previously there was no position preview. In the 1200 × 720 Compact fixture at 48 px per quarter, a sample hovering at x=195 in the first audio lane now shows the bar-2 marker `(192, 0, 2, 88)` in canvas-local pixels. Over the track-name receiver the marker follows the existing insert, x=72 in the same fixture. Device drops in the Arrangement and Mixer outline the receiving lane or strip with a 2 px stroke. In Device View the chain insertion marker is 2 px wide, at x=3 in an empty strip or x=right edge of the neighbour + 4 at append, with y=4 and height=strip height minus 8. An existing OneShot slot up to 90 × 84 px takes a 2 px accent border.
 
 ## For the director
 
