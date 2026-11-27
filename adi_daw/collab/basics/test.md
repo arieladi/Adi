@@ -9,7 +9,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-433 | `basics/test-chain` at `722582fc8` | Keep hover instructions and keys inside Info View. Window and Control Bar seats. | The peerless checks show only an icon title in the tooltip and full hover text in Info View. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-439, SC-175 | `basics/test-chain` at `82af8bf4c` | Keep a held lane click as an insert marker and draw its flag. Arrangement seat. | Peerless replay covered stationary repeats, genuine drags, the status label and marker pixels. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-441, SC-445 | `basics/test-chain` at `f06b67887` | Play on from at or after Loop End. Ordinary stereo metronome playback was audible in the synthetic device fixture. Engine, recording and project seats. | The transport and document rehearsals reproduced the Loop fault and verified forward clip playback, click audio and a linear take. Debug Werror, 4 targeted suites, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
-| SC-440, SC-176 | `basics/test-chain` at `f06b67887` | Loop Selection and the time-selection context menu are already integrated. Arrangement seat. | The actual command and peerless menu model passed for a selected range, including range retention, brace placement and Loop enabled. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
+| SC-440, SC-176 | `basics/test-chain` at `f06b67887` | Loop Selection and the normal Arrangement range menu are already integrated. Arrangement seat. | Peerless tests checked Cmd/Ctrl+L, saved brace placement, range retention and the edit and Time menu commands. The normal range menu dispatches the same Loop Selection command. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-425 | `basics/test-chain` at `d438ea3fd` | Publish usable plug-ins from readable folders and name the unreadable ones. Plug-in and Browser seats. | The same permission-denied VST3 fixture failed before and passed after for incremental and refresh scans on Linux. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-442 | `basics/test-chain` at `d438ea3fd` | Cmd/Ctrl+1 and +2 are already integrated in the Arrangement and key maps. Edit and window seats. | The headless command and grid fixture verified both directions, displayed spacing and persistence. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-444, SC-203 | `basics/test-chain` at `afceb2556` | Make the normal fade curve drag follow the pointer and keep Alt as the reversal. Clips and Arrangement seats. | An extracted source probe and the peerless fixture covered direction, the stored fade shape and one Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
@@ -53,7 +53,7 @@ The separately run transport suite still encoded the old wrap rule. Follow-up `d
 
 ### SC-440 and SC-176 · Loop Selection
 
-The integration branch already contains Cmd/Ctrl+L from `a12f1cf75`, retention of a range when opening its menu from `493109bdc`, and the range actions and Loop Selection from `f19f5732f` and `a64c36e1f`, carried by merge `9d6bfb23d`. The window suite tests the native-independent command dispatch, persisted loop and corresponding brace fields, range retention and the enabled menu model. A headless measurement put the default four-bar brace at `(0,0,74,8)` in the scrub and the selected bars 3–5 at `(37,0,37,8)`.
+The integration branch already contains Cmd/Ctrl+L from `a12f1cf75`, retention of a range when opening its menu from `493109bdc`, and the range actions and Loop Selection from `f19f5732f` and `a64c36e1f`, carried by merge `9d6bfb23d`. The window suite exercises Cmd/Ctrl+L, the persisted Loop switch and brace fields, range retention and the applicable edit and Time menu entries. The normal range menu routes Loop Selection to the same command. The fixture directly asserts its enabled state in the clip menu. A headless measurement put the default four-bar brace at `(0,0,74,8)` in the scrub and the selected bars 3–5 at `(37,0,37,8)`.
 
 The broader clip-menu work still tracks Arrangement Crop and Consolidate separately.
 
@@ -69,7 +69,7 @@ A Linux headless fixture puts readable VST3 bundles beside a mode-000 folder. Th
 
 ### SC-444 and SC-203
 
-Candidate f932abcc0 on f02bd171c fixes the vertical drag sign. The curve handle now follows a regular up or down drag. Option or Alt reverses the bend. The fade shape stored in the project uses the existing engine evaluator and the gesture still saves one undo step.
+Commit `afceb2556` fixes the vertical drag sign. The curve handle now follows a regular up or down drag. Option or Alt reverses the bend. The fade shape stored in the project uses the existing engine evaluator and the gesture still saves one undo step.
 
 The headless formula probe took the gesture bodies directly from the baseline and candidate Arrangement sources and ran them through the engine Bézier fade evaluator. At the neutral diamond midpoint, a 30 px up drag used to place the handle 23.6068% of the clip body height below its starting point. It now places it 23.6068% above. Downward is symmetric. Option or Alt keeps the reversed response. The diamond remains 8 × 8 px and its x is the midpoint between fade start and peak. The independent 7 × 7 px start and peak handles and dashed limit from a9c3a597f are already present on the starting branch.
 
@@ -87,7 +87,7 @@ The 1100 × 278 Clip View fixture measures Pitch `(6,164,69,16)`, Detune `(81,16
 
 ### SC-435 · Resize Main and Returns from the top
 
-Baseline `f02bd171c` has the five-pixel resize zone at the bottom of every Arrangement header and mixer strip. Commit `7edff82be` places that zone at the top of each row in the pinned foot. An upward drag increases the height using the existing bottom anchor. Returns inside a group follow the scrolling rows and use their lower edge.
+Baseline `f02bd171c` has the five-pixel resize zone at the bottom of every Arrangement header and mixer strip. Commit `a07084ccc` places that zone at the top of each row in the pinned foot. An upward drag increases the height using the existing bottom anchor. Returns inside a group follow the scrolling rows and use their lower edge.
 
 Coordinates are Compact logical pixels. The 1440×900 fixture has a 525 px lane body beginning at root y115. Rows use x328 and width 788 in the lane, x1116 and width 95 in the name header, and x1211 and width 194 in the Arrangement mixer. The values below are lane-local where specified. The peerless fixture asserts the painted cursor and these y/height changes through `rowTop` and `heightFor` during the drag.
 
@@ -101,7 +101,7 @@ Main’s bottom boundary is y525 throughout. The Return’s bottom boundary is y
 
 ### SC-436 · Keep lane, name and mixer geometry aligned during a drag
 
-The base redraws Arrangement graphics during a drag and reflows the actual mixer components on release. Commit `1753503dc` refreshes the three surfaces as one drag operation. The mixer keeps the component with the active pointer bound to its track while rows come into or leave view.
+The base redraws Arrangement graphics during a drag and reflows the actual mixer components on release. Commit `51d7e02c3` refreshes the three surfaces as one drag operation. The mixer keeps the component with the active pointer bound to its track while rows come into or leave view.
 
 In the 1440×900 group fixture, the dragged row begins at lane-local y80. The following row moves from y120 to y140 as the dragged row grows from 40 px to 60 px. The two-pixel painted separator moves from y118–119 to y138–139 in both the name header and the lane. The following mixer row moves from root y235 to y255 during the drag. Its column is x1211 and width 194. The test samples the separator pixels and the mixer bounds before issuing mouse-up.
 
@@ -134,6 +134,8 @@ The peerless before-and-after replay verified the shared JUCE cursor is distinct
 The new regression authors a child clip and an explicit route, deletes the child and other ordinary tracks, and saves and reopens the empty group. It checks cleanup of the clip and route, the group’s implicit route to Main, level-2 agent projection, export and freeze. The ordinary Freeze action gives the expected refusal for a group, and the whole-group engine operation can freeze and unfreeze the empty group safely.
 
 The test then deletes the group, saves and reopens the Main-only song, and checks its graph, agent read and clean Main Freeze refusal. Each of the three read-back WAVs contains 129 stereo frames of digital silence at 48 kHz. The production behavior passed without changes.
+
+The final chain at `70270208f` built ADI in Debug with JUCE, Pd and warnings as errors. With DISPLAY unset, all 18 UI suites, 3 acceptance suites and 6 targeted suites passed. The targeted suites cover control projection, project files, track recording, library queries, SMF and Return sends.
 
 ## For the director
 
