@@ -2158,9 +2158,8 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
     check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
           "loop length drag, arrows and wheel preserve the brace's start");
 
-    BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize, &bar.overdub,
-                                    &bar.automationArm, &bar.capture, &bar.sessionRecord, &bar.keyboard,
-                                    &bar.key, &bar.midi};
+    BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize,
+                                    &bar.automationArm, &bar.sessionRecord, &bar.key, &bar.midi};
     for (auto *item : unavailable)
         check(!item->isEnabled() && item->getAlpha() < 1.f && !item->onClick && !item->onDropdown &&
                   item->getTooltip().startsWith(item->getTitle() + ". Unavailable until "),
@@ -2169,6 +2168,11 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
               bar.metronome.isEnabled() && bar.metronome.onDropdown && bar.cpu.isEnabled() && bar.cpu.onClick &&
               bar.punchIn.isEnabled() && bar.punchIn.onClick && bar.punchOut.isEnabled() && bar.punchOut.onClick,
           "launch quantization shows no value while Draw Mode, Metronome, CPU and Punch remain available");
+    check(bar.overdub.isEnabled() && bar.overdub.onClick && bar.keyboard.isEnabled() && bar.keyboard.onClick,
+          "MIDI Arrangement Overdub and the Computer MIDI Keyboard are available");
+    check(!bar.capture.isEnabled() && bar.capture.onClick &&
+              bar.capture.getTooltip().contains("recently played MIDI notes"),
+          "Capture MIDI has an action and starts disabled until there is input to capture");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -15022,7 +15026,7 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
 // document whose callback the test drives with an input.
 void selectionArmsTrack(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "arm-selection.adi", true, {}, error);
+    auto document = ProjectDocument::open(dir / "selection-auto-arm.adi", true, {}, error);
     check(document != nullptr, "a project for selection arming");
     if (!document)
         return;
@@ -15387,9 +15391,17 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.startRecording = nullptr;
     check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,
           "outside the application Record says it records there");
-    check(!root.transport.overdub.isEnabled() && !root.midiOverdub() &&
-              root.transport.overdub.getTooltip().contains("Arrangement Record can overdub MIDI clips"),
-          "MIDI Arrangement Overdub is unavailable while the recorder has no overdub support");
+    auto &overdub = root.transport.overdub;
+    check(overdub.isEnabled() && overdub.onClick && !overdub.getToggleState() && !root.midiOverdub(),
+          "MIDI Arrangement Overdub is available and starts off");
+    if (overdub.onClick) {
+        const auto head = OpJournal(document->store()).headSeq();
+        overdub.onClick();
+        check(overdub.getToggleState() && root.midiOverdub(), "the Control Bar turns MIDI Arrangement Overdub on");
+        overdub.onClick();
+        check(!overdub.getToggleState() && !root.midiOverdub() && OpJournal(document->store()).headSeq() == head,
+              "the Control Bar turns MIDI Arrangement Overdub off without an undo step");
+    }
     document->release();
 }
 void captureMidiButton(AppCommands &commands, const std::filesystem::path &dir) {
