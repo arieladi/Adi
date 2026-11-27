@@ -33,9 +33,8 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
-// Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
-constexpr int kTabHeight = 20;
-constexpr int kInfoWidth = 200, kPreviewHeight = 27;
+// Live's measures, in points at 100 %: the AI tab and the browser's preview strip.
+constexpr int kTabHeight = 20, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -1169,6 +1168,17 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerOptions.onClick = [this] {
         root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
     };
+    addChildComponent(audioSettings);
+    audioSettings.onClick = [this] {
+        if (root_.openAudioSettings)
+            root_.openAudioSettings();
+    };
+}
+void StatusBar::setAudioDeviceProblem(juce::String problem) {
+    audioDeviceProblem_ = std::move(problem);
+    audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
+    audioSettings.setTooltip(audioDeviceProblem_);
+    repaint();
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -1179,6 +1189,9 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
+    const int messageWidth = std::max(0, w - 419);
+    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
+    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
 }
 void StatusBar::clipClicked() {
     // The end of a drag in the selector is not a click.
@@ -1282,8 +1295,12 @@ void StatusBar::paint(juce::Graphics &g) {
     const bool error = !root_.error().empty();
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
-    g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
-               juce::Justification::centredLeft);
+    const bool audioProblem = audioDeviceProblem_.isNotEmpty();
+    auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
+    if (audioProblem && error)
+        text << "  " << juce::String(root_.error());
+    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    g.drawText(text, message.reduced(8, 0).withTrimmedRight(actionWidth), juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
@@ -1318,6 +1335,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
+    applyInfoAnalyserMode();
     addAndMakeVisible(dockResizer);
     addChildComponent(clipView);
     addChildComponent(clipResizer);
@@ -1572,8 +1590,6 @@ void AdiRootComponent::frame() noexcept {
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
-        using AnalysisMode = SharedSpectrumView::Mode;
-        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
         infoSpectrum.setSource(settings.point());
         infoSpectrum.setChannel(settings.view.channel());
         infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
@@ -1608,6 +1624,7 @@ void AdiRootComponent::frame() noexcept {
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
+    transport.position.setCountInPosition(mailbox_.countInPosition());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -1723,13 +1740,6 @@ void AdiRootComponent::resized() {
     const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
     const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
     const int rowY = bottom - row;
-    // Live's Info View sits in the bottom-left corner beside the Device View.
-    const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
-    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
-                           : juce::Rectangle<int>();
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
@@ -1759,6 +1769,18 @@ void AdiRootComponent::resized() {
     }
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
+    const int bw = browserLeft ? left : right;
+    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
+                          : juce::Rectangle<int>();
+    // The Arrangement sheet makes the Info box as wide as the Browser column. With the Browser
+    // closed, use its stored width within the available detail space.
+    const int storedBrowserWidth = slots[browserLeft ? 0 : 1].width - gap;
+    const int infoW = bw > 0 ? browserArea_.getWidth() : std::clamp(storedBrowserWidth, 0, w / 2);
+    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
+    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
+                           : juce::Rectangle<int>();
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
     // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
     // then the track controls, then the clips, as Bitwig and Cubase have them (the
@@ -1780,9 +1802,6 @@ void AdiRootComponent::resized() {
     mixer.setBounds(mixerArea_);
     strip.setVisible(!stripArea_.isEmpty());
     strip.setBounds(stripArea_);
-    const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
-                          : juce::Rectangle<int>();
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
     // The AI chat is a tab at the browser's foot, collapsed by default, so the
@@ -1911,6 +1930,61 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(chatArea_);
     }
+}
+void AdiRootComponent::applyInfoAnalyserMode() {
+    using Mode = SharedSpectrumView::Mode;
+    using Scale = SharedSpectrumView::SpectrumScale;
+    switch (state_.infoAnalyserMode) {
+    case InfoAnalyserMode::Spectrogram:
+        infoSpectrum.setMode(Mode::Spectrogram);
+        break;
+    case InfoAnalyserMode::FilledSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Extended);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::LineSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Device);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::ClassicScope:
+        infoSpectrum.setMode(Mode::ClassicScope);
+        break;
+    }
+}
+void AdiRootComponent::mouseDown(const juce::MouseEvent &e) {
+    const bool inInfo = infoArea_.contains(e.getPosition());
+    infoPressed_ = inInfo && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+    if (!inInfo || !e.mods.isPopupMenu()) return;
+    juce::PopupMenu menu;
+    constexpr std::array choices{
+        std::pair{InfoAnalyserMode::Spectrogram, "Spectrogram"},
+        std::pair{InfoAnalyserMode::FilledSpectrum, "Filled Spectrum"},
+        std::pair{InfoAnalyserMode::LineSpectrum, "Line Spectrum"},
+        std::pair{InfoAnalyserMode::ClassicScope, "Classic Scope"}};
+    const SafePointer<AdiRootComponent> safe(this);
+    for (const auto &[mode, name] : choices)
+        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode] {
+            if (!safe || safe->state_.infoAnalyserMode == mode) return;
+            const auto previous = std::exchange(safe->state_.infoAnalyserMode, mode);
+            if (!safe->persist()) {
+                safe->state_.infoAnalyserMode = previous;
+                safe->fail(safe->error_);
+                return;
+            }
+            safe->applyInfoAnalyserMode();
+        });
+    if (onInfoMenu) {
+        onInfoMenu(menu);
+        return;
+    }
+    const auto where = e.getScreenPosition();
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+void AdiRootComponent::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(infoPressed_, false) && infoArea_.contains(e.getPosition()) &&
+        !e.mouseWasDraggedSinceMouseDown() && (state_.mixView || setMixView(true, state_.mixViewDetached)))
+        chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
@@ -3002,11 +3076,11 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
     if (track == nullptr || !canRenderTrack(action, *track))
         return fail("That track is no longer available for this command.");
     bool ok = false;
-    std::string progress;
+    std::string renderStatus;
     switch (action) {
     case TrackRenderAction::Freeze:
         ok = trackRenderDocument_->freezeTrack(id);
-        progress = "Freezing track...";
+        renderStatus = "Freezing track...";
         break;
     case TrackRenderAction::Unfreeze:
         ok = trackRenderDocument_->unfreezeTrack(id);
@@ -3016,17 +3090,17 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
         break;
     case TrackRenderAction::BounceToNewTrack:
         ok = trackRenderDocument_->bounceTrackToNewTrack(id);
-        progress = "Bouncing to a new track...";
+        renderStatus = "Bouncing to a new track...";
         break;
     case TrackRenderAction::BounceInPlace:
         ok = trackRenderDocument_->bounceTrackInPlace(id);
         if (!track->frozen)
-            progress = "Bouncing track in place...";
+            renderStatus = "Bouncing track in place...";
         break;
     }
     if (!ok)
         return fail(trackRenderDocument_->error());
-    say(std::move(progress));
+    say(std::move(renderStatus));
     return true;
 }
 void AdiRootComponent::sayStaleAddMenu() {
@@ -3580,6 +3654,18 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || track->kind != "audio")
+        return fail("External audio inputs are available on audio tracks.");
+    const auto choices = audioInputs();
+    if (std::none_of(choices.begin(), choices.end(), [&](const auto &input) { return input.ref == ref; }))
+        return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
+    if (track->inputRef && *track->inputRef == ref)
+        return true;
+    return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
 bool AdiRootComponent::toggleRecord() {
     if (!startRecording || !stopRecording || !recording)
         return fail("Recording runs in the application, with an audio device.");
@@ -4005,6 +4091,19 @@ bool AdiRootComponent::setMetronome(bool on) {
 bool AdiRootComponent::toggleMetronome() {
     const auto current = view_.current();
     return setMetronome(!(current && current->transport.metronome));
+}
+bool AdiRootComponent::setCountIn(int bars) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Count-in needs an open project.");
+    return submitTransport(::adi::ui::setCountIn(current->transport, bars));
+}
+bool AdiRootComponent::togglePunch(bool start) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Punch-In and Punch-Out need an open project.");
+    const auto &t = current->transport;
+    return submitTransport(setPunch(t, start ? !t.punchIn : t.punchIn, start ? t.punchOut : !t.punchOut));
 }
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();

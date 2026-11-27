@@ -1,10 +1,49 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_controlbar.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include <array>
+#include <cstdio>
 namespace adi::ui {
 namespace {
 using G = BarItem::Glyph;
+class MetronomeVolumeRow final : public juce::PopupMenu::CustomComponent {
+  public:
+    MetronomeVolumeRow(AdiRootComponent &root, double level) : CustomComponent(false) {
+        label_.setText("Metronome / Cue", juce::dontSendNotification);
+        label_.setColour(juce::Label::textColourId, look::text);
+        slider_.setTitle("Metronome and Cue Volume");
+        slider_.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 60, 22);
+        slider_.setRange(kCueFloorDb, kCueTopDb, .01);
+        slider_.setSkewFactor(2.27);
+        slider_.setChangeNotificationOnlyOnRelease(true);
+        slider_.textFromValueFunction = [](double db) {
+            return db <= kCueFloorDb ? juce::String("-inf") : juce::String(db, 1) + " dB";
+        };
+        slider_.setValue(std::max(kCueFloorDb, level), juce::dontSendNotification);
+        slider_.onValueChange = [this, safe = juce::Component::SafePointer<AdiRootComponent>(&root)] {
+            if (safe)
+                safe->setCueVolume(slider_.getValue());
+        };
+        addAndMakeVisible(label_);
+        addAndMakeVisible(slider_);
+    }
+    void getIdealSize(int &width, int &height) override {
+        width = 284;
+        height = 30;
+    }
+    void resized() override {
+        auto bounds = getLocalBounds().reduced(8, 2);
+        label_.setBounds(bounds.removeFromLeft(112));
+        slider_.setBounds(bounds);
+    }
+  private:
+    juce::Label label_;
+    juce::Slider slider_;
+};
+
 void paintGlyph(juce::Graphics &g, G kind, juce::Rectangle<float> r, juce::Colour c) {
     g.setColour(c);
     const float cx = r.getCentreX(), cy = r.getCentreY();
@@ -106,6 +145,26 @@ void BarItem::setText(const juce::String &t) {
         repaint();
     }
 }
+void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {
+    if (position != countIn_) {
+        countIn_ = position;
+        repaint();
+    }
+}
+void BarItem::mouseDown(const juce::MouseEvent &event) {
+    dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);
+    if (dropdownPress_)
+        onDropdown();
+    else
+        juce::Button::mouseDown(event);
+}
+void BarItem::mouseUp(const juce::MouseEvent &event) {
+    if (dropdownPress_) {
+        dropdownPress_ = false;
+        return;
+    }
+    juce::Button::mouseUp(event);
+}
 void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
     auto r = getLocalBounds().toFloat();
     if (boxed) {
@@ -129,7 +188,13 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
     if (glyph != Glyph::None)
         paintGlyph(g, glyph, content,
                    getToggleState() ? (boxed ? look::ink : look::accent) : look::text);
-    if (text.isNotEmpty()) {
+    if (countIn_.bar < 0) {
+        char position[48];
+        std::snprintf(position, sizeof(position), "%d.  %d.  %d", countIn_.bar, countIn_.beat, countIn_.sixteenth);
+        g.setColour(look::value);
+        g.setFont(look::font(look::fontBody));
+        g.drawText(juce::String(position), content, juce::Justification::centred);
+    } else if (text.isNotEmpty()) {
         g.setColour(boxed && getToggleState() ? look::ink : look::text);
         g.setFont(look::font(look::fontBody));
         g.drawText(text, content, juce::Justification::centred);
@@ -176,7 +241,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
         {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
                                        "such as 3/4."},
-        {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out. O."},
+        {&metronome, "Metronome", "O toggles the metronome. Its menu sets count-in and the shared Cue Volume."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
@@ -194,9 +259,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&capture, "Capture MIDI", "Turns what you just played into a clip."},
         {&sessionRecord, "Session Record", "Records into Session View (P2)."},
         {&loopStart, "Loop Start", "Where the arrangement loop starts. Click to type another, such as 5.1.1."},
-        {&punchIn, "Punch-In", "Records only after the loop's start."},
+        {&punchIn, "Punch-In", "Records from the loop brace's start."},
         {&loop, "Loop Switch", "Loops the arrangement between the loop brace's ends. Ctrl/Cmd+L loops the selection."},
-        {&punchOut, "Punch-Out", "Records only before the loop's end."},
+        {&punchOut, "Punch-Out", "Ends the recording at the loop brace's end."},
         {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
                                      "type another, such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
@@ -228,7 +293,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     // The metronome and the Arrangement Loop (manual 19.4.1, 6.6; #383, N19): outside undo, saved
     // with the project, lit from the snapshot.
     metronome.onClick = [this] { root_.command(AppCommands::Metronome); };
+    metronome.onDropdown = [this] {
+        metronomeMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&metronome));
+    };
+    punchIn.onClick = [this] { root_.togglePunch(true); };
     loop.onClick = [this] { root_.toggleLoop(); };
+    punchOut.onClick = [this] { root_.togglePunch(false); };
     loopStart.onClick = [this] { beginLoopStartEdit(); };
     loopLength.onClick = [this] { beginLoopLengthEdit(); };
     position.onClick = [this] { beginPositionEdit(); };
@@ -287,7 +357,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &arrangementPage &&
             item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
-            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
+            item != &punchIn && item != &loop && item != &punchOut &&
+            item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
             item != &indicators && item != &draw)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
@@ -354,6 +425,27 @@ void TransportBar::resized() {
     place(cpu, 58, 2);
     place(indicators, 30);
 }
+juce::PopupMenu TransportBar::metronomeMenu() const {
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Count-In");
+    const auto current = root_.current();
+    constexpr std::array choices{std::pair{0, "None"}, std::pair{1, "1 Bar"},
+                                 std::pair{2, "2 Bars"}, std::pair{4, "4 Bars"}};
+    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);
+    for (const auto &[bars, label] : choices) {
+        menu.addItem(label, static_cast<bool>(current), current && current->transport.countInBars == bars,
+                     [safe, value = bars] {
+                         if (safe)
+                             safe->setCountIn(value);
+                     });
+    }
+    if (current) {
+        menu.addSeparator();
+        menu.addCustomItem(100, std::make_unique<MetronomeVolumeRow>(root_, current->cue.volumeDb), nullptr,
+                           "Metronome and Cue Volume");
+    }
+    return menu;
+}
 void TransportBar::refresh() {
     if (const double bpm = root_.bpm(); bpm != shownBpm_) {
         shownBpm_ = bpm;
@@ -391,7 +483,9 @@ void TransportBar::refresh() {
         loopLength.setText(juce::String(length.bar) + ".  " + juce::String(length.beat) + ".  " + juce::String(length.sixteenth));
     }
     metronome.setToggleState(transport.metronome, juce::dontSendNotification);
+    punchIn.setToggleState(transport.punchIn, juce::dontSendNotification);
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
+    punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.isRecording(), juce::dontSendNotification);
     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);

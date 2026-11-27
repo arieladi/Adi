@@ -32,6 +32,9 @@
 namespace adi::engine {
 namespace {
 
+// Preserve playback with Monitor Off until the overlap behavior is measured (R45).
+constexpr bool kMonitorOffMutesPreviousTake = false;
+
 std::string deviceRef(const rows::Device& row) {
     std::string s = "devices#" + std::to_string(row.id);
     if (!row.name.empty()) s += " (" + row.name + ")";
@@ -106,8 +109,10 @@ struct Session::InputMonitors {
     class Source final : public Node {
     public:
         Source(const InputMonitors& owner, const Transport& transport,
+               const std::span<const std::int64_t>& recordingTracks, std::int64_t track,
                std::array<std::int32_t, 2> channels, std::vector<ClipPlayback::SampleRange> ranges)
-            : owner_(owner), transport_(transport), channels_(channels), ranges_(std::move(ranges)) {
+            : owner_(owner), transport_(transport), recordingTracks_(recordingTracks), track_(track),
+              channels_(channels), ranges_(std::move(ranges)) {
             std::sort(ranges_.begin(), ranges_.end());
             std::size_t count = 0;
             for (const auto& range : ranges_) {
@@ -127,6 +132,8 @@ struct Session::InputMonitors {
     private:
         const InputMonitors& owner_;
         const Transport& transport_;
+        const std::span<const std::int64_t>& recordingTracks_;
+        std::int64_t track_;
         std::array<std::int32_t, 2> channels_;
         std::vector<ClipPlayback::SampleRange> ranges_;
 
@@ -142,7 +149,13 @@ struct Session::InputMonitors {
                 if (source) std::copy_n(source + io.blockOffset, io.frames, out[c] + io.blockOffset);
                 else std::fill_n(out[c] + io.blockOffset, io.frames, Sample{});
             }
-            if (ranges_.empty() || !transport_.playing()) return;
+            if (ranges_.empty() || !transport_.playing())
+                return;
+            if (!recordingTracks_.empty()) {
+                const auto* first = recordingTracks_.data();
+                if (std::binary_search(first, first + recordingTracks_.size(), track_))
+                    return;
+            }
             const auto* begin = ranges_.data();
             const auto* end = begin + ranges_.size();
             for (std::int32_t i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
@@ -795,20 +808,23 @@ Node* Session::TimingView::inputMonitorSource(std::int64_t track) const noexcept
 }
 
 void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model, ClipPlayback& clips) {
-    if (!timing.spec.performanceState || timing.spec.exporting || monitorInputs_.empty()) return;
+    if (!timing.spec.performanceState || timing.spec.exporting) return;
     for (const auto& track : model.tracks) {
         if (track.kind != "audio" || track.frozen || frozenSources_.contains(track.id) ||
             frozenGroupChildren_.contains(track.id))
             continue;
         const bool inputOnly = track.monitorMode == 1;
         const bool armedAuto = track.monitorMode == 2 && track.recordArmed;
+        const bool armedOff = track.monitorMode == 0 && track.recordArmed;
+        if (armedAuto || (armedOff && kMonitorOffMutesPreviousTake))
+            clips.muteWhileRecording(track.id, recordingAudioTracks_);
         if (!inputOnly && !armedAuto) continue;
         const auto binding = monitorInputs_.find(track.id);
         if (binding == monitorInputs_.end()) continue;
         if (!timing.inputMonitors) timing.inputMonitors = std::make_shared<InputMonitors>();
         auto ranges = armedAuto ? clips.arrangementRanges(track.id) : std::vector<ClipPlayback::SampleRange>{};
         timing.inputMonitors->tracks.emplace(track.id, std::make_unique<InputMonitors::Source>(
-            *timing.inputMonitors, transport_, binding->second, std::move(ranges)));
+            *timing.inputMonitors, transport_, recordingAudioTracks_, track.id, binding->second, std::move(ranges)));
         if (inputOnly) clips.useMonitoredInput(track.id);
     }
 }
@@ -1032,10 +1048,7 @@ bool Session::rebuild() {
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
     const auto loopSample = [&](std::int64_t ticks) { return timing->sampleForTick(ticks); };
-    timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
-    timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
-    if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
-        timing->loopEnd=timing->loopBegin+1; // a valid sub-sample tick window plays one frame
+    timing->setBraceSamples(loopSample(transportSettings_.loopStartTicks), loopSample(transportSettings_.loopEndTicks));
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
@@ -2160,6 +2173,13 @@ std::int64_t Session::TimingView::sampleForTick(std::int64_t tick) const noexcep
     return static_cast<std::int64_t>(std::llround(sample));
 }
 
+void Session::TimingView::setBraceSamples(std::int64_t begin, std::int64_t end) noexcept {
+    loopBegin = begin;
+    punchOutSample = end;
+    // A sub-sample loop plays one frame. Linear capture uses the original boundary.
+    loopEnd = end <= begin && begin < std::numeric_limits<std::int64_t>::max() ? begin + 1 : end;
+}
+
 void Session::TimingView::prepareDeviceClockChanges() {
     lastTickSeconds = tempo.ticksToSeconds(std::numeric_limits<std::int64_t>::max());
     deviceClockChanges.clear();
@@ -2412,6 +2432,8 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     if (recording && timing->settings.countInBars > 0) {
         session_.countInBeatSamples_ = beatSamples;
         session_.countInBeatsPerBar_ = numerator;
+        session_.countInBars_ = timing->settings.countInBars;
+        session_.countInDivisionsPerBeat_ = static_cast<std::int32_t>(std::max<std::int64_t>(1, 16 / denominator));
         session_.clickEnvelope_ = 0;
         session_.clickWasPlaying_ = false;
         session_.transport_.countIn(
@@ -2420,6 +2442,28 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
         session_.transport_.play();
     session_.publishDriverClock();
     return true;
+}
+CountInPosition Session::RenderBlock::countInPosition() const noexcept {
+    if (session_.transport_.countInRemaining() == 0 || session_.countInBars_ == 0)
+        return {};
+    const auto divisions = session_.countInDivisionsPerBeat_;
+    const auto perBar = session_.countInBeatsPerBar_ * divisions;
+    const auto elapsed = session_.transport_.countInElapsed();
+    // Find the last display boundary reached on the sample clock. At a beat
+    // boundary the rounding is the same as for the click's unshifted grid.
+    std::int64_t step = 0;
+    auto end = perBar * session_.countInBars_;
+    while (step + 1 < end) {
+        const auto middle = step + (end - step) / 2;
+        const auto boundary = std::llround(static_cast<double>(middle) / divisions * session_.countInBeatSamples_);
+        if (boundary <= elapsed)
+            step = middle;
+        else
+            end = middle;
+    }
+    return {static_cast<int>(step / perBar) - session_.countInBars_,
+            static_cast<int>((step % perBar) / divisions) + 1,
+            static_cast<int>(step % divisions) + 1};
 }
 bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
@@ -2435,7 +2479,28 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         return false;
     }
     const auto remaining = session_.transport_.countInRemaining();
-    if (remaining > 0 && timing &&
+    auto prefix = io.frames;
+    auto punch = RecordingPunch::Within;
+    RecordingPunchWindow punchWindow;
+    if (remaining > 0 && remaining < prefix && timing)
+        prefix = static_cast<std::int32_t>(remaining);
+    if (timing && captureRecording && !session_.transport_.looping() && !timing->settings.loopEnabled) {
+        if (timing->settings.punchIn)
+            punchWindow.in = RecordingPunchWindow::Boundary{timing->loopBegin, timing->settings.loopStartTicks};
+        if (timing->settings.punchOut)
+            punchWindow.out = RecordingPunchWindow::Boundary{timing->punchOutSample, timing->settings.loopEndTicks};
+        if (session_.transport_.playing() && punchWindow.active()) {
+            const auto position = session_.transport_.position();
+            if (punchWindow.out && position >= punchWindow.out->sample)
+                punch = RecordingPunch::After;
+            else if (punchWindow.in && position < punchWindow.in->sample)
+                punch = RecordingPunch::Before;
+            const auto &boundary = punch == RecordingPunch::Before ? punchWindow.in : punchWindow.out;
+            if (boundary && boundary->sample > position && boundary->sample - position < prefix)
+                prefix = static_cast<std::int32_t>(boundary->sample - position);
+        }
+    }
+    if ((remaining > 0 || prefix < io.frames) && timing &&
         (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
          static_cast<std::size_t>(io.numOut) > timing->outputSlice.size() ||
          io.streamTimeSamples < 0 ||
@@ -2444,10 +2509,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         silence.process(io);
         return false;
     }
-    if (remaining > 0 && remaining < io.frames && timing) {
+    if (prefix < io.frames && timing) {
         // Bounds and the whole physical stream interval were validated before
         // rendering either half. No heap work or new graph acquisition.
-        const auto prefix = static_cast<std::int32_t>(remaining);
         AudioIo lead = io;
         lead.frames = prefix;
         if (!process(lead, captureRecording))
@@ -2469,7 +2533,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
         return process(tail, captureRecording);
     }
-    if (captureRecording) session_.recording_->capture(io, session_.transport_);
+    session_.recordingAudioTracks_ = captureRecording
+        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow)
+        : std::span<const std::int64_t>{};
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
     if (timing) {
@@ -2477,7 +2543,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
-        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture, punch, punchWindow);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
     if (inputMonitors) {
@@ -2485,6 +2551,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         inputMonitors->channels = io.numIn;
     }
     const bool rendered = graph_.process(block);
+    session_.recordingAudioTracks_ = {};
     if (inputMonitors) {
         inputMonitors->input = nullptr;
         inputMonitors->channels = 0;
