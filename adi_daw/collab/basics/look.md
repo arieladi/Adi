@@ -12,6 +12,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-73 | `basics/look-chain` at `4080cd3a` | Drag, wheel and per-part arrow input on the five Control Bar fields. Window seat. | The baseline fine-tempo wheel probe reproduced the failure. Peerless gesture and editing checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-76 | `basics/look-chain` at `c5f204b8` | Source the new-window Follow default and legacy fallback from one named constant. Window seat. | Tests checked fresh and legacy view states and explicit saved on and off. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-424 | `basics/look-chain` at `842c8114` | Docked Info at the foot of the full-height Browser column. Clip and Device View use the space beside the Browser and fill the width when it is hidden. Window seat. | The baseline run reproduced the earlier layout failures. Measured peerless before and after through swaps, collapse, width and Info toggles. Menu seam exercised all four modes and the Analysers click. Debug Werror, 17 UI suites without DISPLAY and all 3 acceptance suites passed. | Pushed |
+| SC-06 | `basics/look-chain` at `1d04ccd5` | Display measured callback utilization and deadline misses, with Average, Current and Off. Window seat. | The focused headless callback probe passed eight checks including overrun and restart. The shell exercised the three modes and overload. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -109,6 +110,10 @@ Measured before and after in peerless Compact roots. Rectangles are root-relativ
 At 960 × 540, Info starts at `(8, 306, 308, 196)` in both versions. Turning it off now expands the list from `(127, 81, 185, 186)` to `(127, 81, 185, 390)`. The approved 1920 × 1080 sheet aligns both panes at x=6 with a width of 326 px and a 6 px split. The Compact implementation uses its standard 8 px gap. In a short window Info shrinks to leave the Browser's search and preview bars usable.
 
 The View menu still exposes Info View. After swapping, the regression uses the new Info rectangle for the four analyser menu choices and for the click that opens Analysers. It also checks that the earlier location does not request a menu. The menu request is intercepted in process.
+
+### SC-06
+
+At 1920 × 1080 Compact the CPU field stays `(1811, 9, 58, 17)` and its arrow stays `(1860, 15.5, 4, 6)`. The new overload dot is `(1813, 15, 5, 5)`. At 960 × 540 the field stays `(851, 9, 58, 17)`. The initial value changes from the fixed `0 %` to blank until a callback has been measured. Average and Current display measured utilization, including values over 100%. Off hides the number. The callback publishes brief deadline misses to the timer, which latches the overload indicator. A device restart clears the previous stream's warning even when the next callback arrives between timer reads. The approved sheet groups the CPU cell with the MIDI indicators, with a CPU rectangle of `(1870, 32, 38, 28)` including the menu bar.
 
 ## For the director
 
