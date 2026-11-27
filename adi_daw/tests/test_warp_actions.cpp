@@ -5,8 +5,10 @@
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/digest.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -37,6 +39,28 @@ struct Fixture {
 bool apply(Fixture& f,const clip_edit::PreparedEdit& edit,const char* label) {
     if(!edit.ok){std::printf("%s: %s\n",label,edit.error.c_str());check(false,label);return false;}
     const auto committed=clip_edit::commitPrepared(*f.store,edit);if(!committed.ok)std::printf("%s: %s\n",label,committed.error.c_str());check(committed.ok,label);return committed.ok;
+}
+void replaceClipSource() {
+    Fixture fixture;
+    auto& db=fixture.store->db();
+    db.exec("INSERT INTO media_files(id,hash_blake3,frames,sample_rate,channels,format) VALUES(18,'replacement',45334,44100,1,'wav')");
+    const auto before=digestProject(*fixture.store).text;
+    auto source=adi::detail::captureRow(db,"audio_clips","clip_id",7);
+    if(!source)throw std::runtime_error("capture original audio clip source");
+    (*source)["media_id"]=18;
+    edit::RowEdits rows(db);
+    rows.set("audio_clips",7,*source);
+    OpRequest replacement;
+    replacement.opType="audioClip.setSource";
+    replacement.payload={{"id",7},{"changes",rows.changes()}};
+    const auto result=OpJournal(*fixture.store).commit(replacement);
+    check(result.ok && db.execAndGet("SELECT media_id FROM audio_clips WHERE clip_id=7").getInt64()==18,
+          "a captured replacement changes only the chosen audio clip's media identity");
+    if(result.ok) {
+        History history(*fixture.store);
+        check(history.undo().ok && digestProject(*fixture.store).text==before,
+              "source replacement undo restores the original project exactly");
+    }
 }
 std::vector<float> render(Fixture& f) {
     Session session;SessionSpec spec{2,48000,1024};session.graph().setFadeFrames(0);
@@ -266,4 +290,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();replaceClipSource();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
