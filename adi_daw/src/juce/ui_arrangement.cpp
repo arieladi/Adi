@@ -14,9 +14,9 @@
 #include "adi/ui/recording_edits.hpp"
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
+#include "ui_decimal.hpp"
 #include "ui_shell.hpp"
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -3022,10 +3022,8 @@ juce::String automationValueText(const AutomationTarget &target,double value,boo
     if(target.footIsSilence && value==kAutomationSilenceDb)number="-inf";
     else if(forEditing) {
         // Enter on the initial text must round-trip the stored breakpoint.
-        std::array<char,64> buffer{};
-        const auto converted=std::to_chars(buffer.data(),buffer.data()+buffer.size(),value,std::chars_format::general);
-        if(converted.ec==std::errc{})
-            number=juce::String::fromUTF8(buffer.data(),static_cast<int>(converted.ptr-buffer.data()));
+        const auto formatted = decimal::format(value);
+        number = juce::String::fromUTF8(formatted.c_str());
     } else number=juce::String(value,6).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
     if(!target.unit.empty())number+=" "+juce::String::fromUTF8(target.unit.c_str());
     return number;
@@ -3039,11 +3037,7 @@ std::optional<double> parseAutomationValue(juce::String text,const AutomationTar
     const auto bytes=text.toStdString();
     std::string_view input(bytes);
     if(!input.empty() && input.front()=='+')input.remove_prefix(1);
-    if(input.empty())return std::nullopt;
-    double value=0;
-    const auto parsed=std::from_chars(input.data(),input.data()+input.size(),value,std::chars_format::general);
-    if(parsed.ec!=std::errc{} || parsed.ptr!=input.data()+input.size() || !std::isfinite(value))return std::nullopt;
-    return value;
+    return decimal::parse(input);
 }
 } // namespace
 std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPointAt(juce::Point<float> at) const {
