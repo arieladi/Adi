@@ -85,6 +85,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/clips-chain` | `3983e95868b7de4015e2139786cf6a5f5b9e5530` | Yes | All 50 production targets built. Passed 43/43, including window and mixer 32/32, acceptance 3/3, and affected and session 8/8. Checks cover manual source BPM, Warp without detected onsets, and half and double retiming. |
 | `origin/basics/midi-chain` | `3d9ff5be41dfe430992febf226827c67e9752b27` | Yes | All 50 production targets built. Passed 54/54, including window and mixer 32/32, acceptance 3/3, and affected and session 19/19. The standalone VST3 probe also passed. |
 | `origin/basics/tracks-chain` | `e2fd2cf6fa34c8aae1171ecef917be7f80b3253b` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The shell suite covers the Cmd-arrow reorder shortcut, nested group boundaries, and one Undo with synthetic JUCE keys. |
+| `origin/basics/analysers-chain` | `43c4a5bee93149715a683a0b3ebd3cd49abb5055` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The window suites cover Filled Spectrum traces, local reset, and Mix View and Info rendering. |
 
 ## Nine-step window walk
 
