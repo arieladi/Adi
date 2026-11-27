@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159 and SC-157 are ready for Win's Windows check. SC-151 is next.
+SC-159 and SC-157 are ready for Win's Windows check. SC-151 is in progress.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -16,7 +16,7 @@ SC-159 and SC-157 are ready for Win's Windows check. SC-151 is next.
 ### SC-157 verification
 
 - The Debug shell ran with DISPLAY unset. Its one failure in 3,848 checks was SC-421's 40 ms browser search benchmark. The first keystroke took 171 ms, or 273 ms on the focused rerun. The browser implementation and benchmark fixture match the tested main base.
-- The Debug document suite reported 700 of 702 checks passing. The two failures were the five-second recording settlement check after device loss and SC-415's slow plug-in open timing ratio. The new backup schedule checks passed. An unmodified-main comparison is running.
+- The Debug document suite reported 700 of 702 checks passing. The new backup schedule checks passed. The same two failures reproduced on a fresh, unmodified Linux Debug build of main `f1e28dd5`, which passed 685 of 687 checks. The failures were the five-second recording settlement check after device loss and SC-415's slow plug-in open timing ratio. The focused SC-415 run on main also failed, with 888 ms for the longest turn out of 2,109 ms total.
 - The built-in realtime acceptance test passed in 3,668 seconds with a local 5,400-second timeout for emulation. The full Linux proof used the code tree at `e763004c` on main `f1e28dd5`. Merging main `6f96847b` before publication added two collaboration documents.
 - The Windows recycling helper passed an isolated MSVC compilation and a Recycle Bin probe while an exclusive project lease was held. Win still checks the integrated Windows build.
 
