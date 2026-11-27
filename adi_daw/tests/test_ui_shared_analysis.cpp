@@ -1452,7 +1452,7 @@ void thirdOctaveAndPeriodSurface() {
     fixture.broker->pump();
     view.frame();
     const auto shot = view.snapshot();
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && shot && shot->periodScope &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && shot && shot->periodScope &&
               shot->request.fftSize == 4096 && shot->request.channel == SharedAnalysis::Channel::Mid &&
               (shot->outputs & (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope)) ==
                   (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope) &&
@@ -1518,7 +1518,7 @@ void colourWaveformSurface() {
     fixture.broker->pump();
     view.frame();
     const auto current = view.snapshot();
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && current && current->colourWaveform &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && current && current->colourWaveform &&
               current->colourWaveform->size >= 20 && current->colourWaveform->size < 30 &&
               current->request.channel == SharedAnalysis::Channel::Mid && fixture.broker->stats().spectralPlans == 0,
           "the fake-peer waveform consumes only timestamped paired-mono columns at the native source rate");
