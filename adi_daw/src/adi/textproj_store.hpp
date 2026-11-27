@@ -79,7 +79,7 @@ struct TableCoverage {
 /// turns into a stack overflow on a corrupt file.
 [[nodiscard]] Tree buildTree(const rows::Model&);
 
-/// Read and project one SQLite snapshot, including clip-owned authored pitch.
+/// Read and project one SQLite snapshot, including clip-owned pitch edits and extraction markers.
 [[nodiscard]] Projection projectStore(const Store&);
 
 }  // namespace adi::textproj

@@ -32,11 +32,17 @@ Undo. Only an attachment and analysis matching the recorded source identity
 and note boundaries can use the row for rendering. Project digests and history
 checkpoints capture the table automatically.
 
+`clip_pitch_extractions` marks a MIDI clip created by pitch extraction. The
+row is owned by the output clip and remains valid after the audio source is
+deleted or replaced. Extraction to an existing track uses these rows to
+find earlier main-lane outputs. Undo restores the removed clips and markers
+together. Manual copies are independent MIDI clips.
+
 To activate, fold the DDL into `schema.sql` after the reserved predecessors.
-Freeze the actual predecessor, add the new object to `Store::migrationSteps`,
+Freeze the actual predecessor, add the new tables to `Store::migrationSteps`,
 and update the schema minor, `SPEC.md` and schema validator version together.
 Check fresh creation, migration, read-only older files and replay with the
-native format gates. Add the table to the text projection coverage manifest
-when the native schema includes it. The staged fixtures already check the
+native format gates. Add both tables to the text projection coverage manifest
+when the native schema includes them. The staged fixtures already check the
 clip-owned projection, including dormant edits and the pre-pitch read-only
 case. [Projection contract](../TEXT-PROJECTION.md#81-authored-audio-pitch)

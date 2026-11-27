@@ -27,6 +27,7 @@
 #include "adi/textproj_store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <array>
 #include <cstdio>
@@ -870,6 +871,68 @@ void testPitchEdits() {
           "corrupt authored data leaves a deterministic marker on the owning clip");
 }
 
+void testPitchExtractionMarker() {
+    section("staged pitch extraction provenance belongs to the MIDI output");
+    const adi::test::TempDirectory scratch("textproj_store", "pitchExtraction");
+    const auto path = scratch.path() / "pitch-extraction.adi";
+    std::ifstream ddl(ADI_PITCH_SCHEMA_PATH);
+    if (!ddl) throw std::runtime_error("could not open staged pitch SQL");
+    const std::string schema{std::istreambuf_iterator<char>(ddl), std::istreambuf_iterator<char>()};
+    StoreError error{};
+    auto store = Store::createEmpty(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(19,'audio','Voice',0),(57,'midi','Notes',1);"
+        "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES"
+        "(71,19,'audio','Source',0,1441440),(84,57,'midi','Extracted',0,1441440),"
+        "(92,57,'midi','Independent',1441440,1441440)");
+    const auto oldText = projectStore(*store).text;
+    store.reset();
+    store = Store::open(path, error, true);
+    check(store && store->readOnly() && !store->db().tableExists("clip_pitch_extractions") &&
+              projectStore(*store).text == oldText && !contains(oldText, "pitchExtraction"),
+          "a read-only project without staged provenance keeps its exact text");
+    store.reset();
+    store = Store::open(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    auto& db = store->db();
+    db.exec(schema);
+    eq(projectStore(*store).text, oldText, "an empty staged extraction table changes no text");
+    db.exec("INSERT INTO clip_pitch_extractions(clip_id) VALUES(84)");
+    const std::string clipHeader = "  clip Extracted\n    at 1|1|0\n    len 1/16\n    kind midi\n";
+    const auto clip = oldText.find(clipHeader);
+    if (clip == std::string::npos) throw std::runtime_error("missing canonical extraction fixture clip");
+    auto marked = oldText;
+    marked.insert(clip + clipHeader.size(), "    pitchExtraction\n");
+    eq(projectStore(*store).text, marked, "only the extracted clip gains the canonical marker");
+    unsigned markerReads = 0;
+    sqlite3_trace_v2(db.getHandle(), SQLITE_TRACE_STMT, [](unsigned, void* state, void* statement, void*) -> int {
+        const auto* sql = sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+        if (sql && std::string_view(sql).find("clip_pitch_extractions") != std::string_view::npos)
+            ++*static_cast<unsigned*>(state);
+        return 0;
+    }, &markerReads);
+    const auto ordinary = render(rows::readModel(*store));
+    sqlite3_trace_v2(db.getHandle(), 0, nullptr, nullptr);
+    check(ordinary == oldText && markerReads == 0, "the ordinary model read skips extraction provenance");
+    store.reset();
+    store = Store::open(path, error, true);
+    check(store && store->readOnly() && projectStore(*store).text == marked,
+          "staged marker survives reopen for canonical read-only projection");
+    store.reset();
+    store = Store::open(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    store->db().exec("DELETE FROM clips WHERE id=71");
+    check(contains(projectStore(*store).text, clipHeader + "    pitchExtraction\n"),
+          "the output marker remains renderable after the source clip is deleted");
+    store->db().exec("DELETE FROM clips WHERE id=84");
+    check(store->db().execAndGet("SELECT COUNT(*) FROM clip_pitch_extractions").getInt() == 0 &&
+              !contains(projectStore(*store).text, "pitchExtraction"),
+          "deleting the output cascades the marker and leaves no extraction text");
+    store->db().exec("DROP TABLE clip_pitch_extractions; CREATE TABLE clip_pitch_extractions(incomplete INTEGER)");
+    check(contains(projectStore(*store).text, "  pitchExtractionUnreadable\n"),
+          "unreadable provenance leaves a deterministic marker on the project");
+}
+
 int main() {
     // Unbuffered, so the last line before a crash survives. On Windows a
     // crashing test binary loses its whole block-buffered stdout, and the
@@ -890,6 +953,7 @@ int main() {
         testRemarksModel();
         testRemarksEndToEnd();
         testPitchEdits();
+        testPitchExtractionMarker();
     } catch (const std::exception& ex) {
         // A modal abort dialog on Windows is a worse failure than the failure.
         std::printf("\nFAILED -- exception escaped: %s\n", ex.what());
