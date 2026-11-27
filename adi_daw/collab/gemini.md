@@ -4,6 +4,26 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-27 — `basics/integrate-1` Round 2 (`a7d02bcf` — GCC 12 + Clang 14 full JUCE/headless/acceptance/validators PASS; ASan+UBSan `RelWithDebInfo` `adi_ui_shell_tests` still hits `ui_shell.cmake:103` stack-buffer-overflow)
+
+### Finding (TOP — still open on `a7d02bcf`)
+
+- **`src/juce/ui_shell.cmake:103` + `src/juce/smexoscope/widgets/WaveDisplay.cpp:31:18` — AddressSanitizer `stack-buffer-overflow` (1-byte write past stack variable `juce::Random rng`) in `env -u DISPLAY adi_ui_shell_tests` (Clang 14.0.6 + libstdc++ 12, `RelWithDebInfo`, `-O1 -g1 -fsanitize=address,undefined`):**
+  - Unchanged from Round 1 (`df420228`): `adi_ui_shell_tests` defines `JUCE_LOG_ASSERTIONS=1` privately while `libadi_ui_shell.a` does not, creating an 8-byte vs 16-byte `juce::Random` ODR layout mismatch in every `-DNDEBUG` build. Still aborts at `WaveDisplay.cpp:31:18` <- `ui_scope_classic.cpp:141` <- `ui_analysis.cpp:300` <- `ui_shell.cpp:2134` <- `tests/test_ui_shell.cpp:22167` (`SC-112` Info box analyser menu).
+  - **Owner:** integrator (`basics/integrate-1`; build-definition mismatch in `src/juce/ui_shell.cmake:103` exposed by `look-chain` `SC-112`, also present on `main`).
+
+### Round 2 Table (`basics/integrate-1` `a7d02bcf` — full GCC 12.4.0 + Clang 14.0.6 matrix)
+
+| Branch | SHA | Compiler / Tool | Warnings (`-DADI_WERROR=ON`) | JUCE Targets (`adi_app`/`ADI`, `adi_play`, VST3/CLAP, `adi_ui_*`) | Window Suites (`env -u DISPLAY ctest -R '^adi_ui_'`) | JUCE VST3 / Play / Editor Suites (`env -u DISPLAY`) | Full Headless `ctest -LE performance` | Acceptance (`ctest -L acceptance`) | 5 Validators | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `basics/integrate-1` | `a7d02bcf` | GCC 12.4.0 (Debug `-g0`) | 0 | **PASS** (all built incl. `ADI`, `adi_play`, VST3/CLAP, `adi_ui_*`) | **PASS** (18/18, 83.67 s; `adi_ui_shell_tests` 83.66 s, `adi_ui_document_tests` 39.94 s) | **PASS** (5/5, 42.83 s: `adi_play_render_tests` 42.82 s, `adi_acceptance_wts01_vst3` 5.19 s, `adi_vst3_key_tests` 1.40 s, `adi_vst3_scanner_tests` 0.70 s, `adi_plugin_editor_tests` 0.01 s) | **PASS** (279/280 PASS, 1 SKIP `adi_loudness_ffmpeg_tests`, 0 FAIL; 329.20 s + 529.31 s) | **PASS** (3/3: `adi_acceptance_wts01` 39.40 s, `adi_builtin_realtime_tests` 200.06 s, `adi_acceptance_wts01_vst3` 5.19 s) | **PASS** (5/5) | **PASS** (Debug) |
+| `basics/integrate-1` | `a7d02bcf` | Clang 14.0.6 + libstdc++ 12 (Debug `-g0`) | 0 | **PASS** (all built incl. `ADI`, `adi_play`, VST3/CLAP, `adi_ui_*`) | **PASS** (18/18, 88.06 s; `adi_ui_shell_tests` 74.17 s, `adi_ui_document_tests` 37.51 s) | **PASS** (5/5, 41.18 s: `adi_play_render_tests` 40.34 s, `adi_acceptance_wts01_vst3` 5.11 s, `adi_vst3_key_tests` 1.42 s, `adi_vst3_scanner_tests` 0.80 s, `adi_plugin_editor_tests` 0.03 s) | **PASS** (279/280 PASS, 1 SKIP `adi_loudness_ffmpeg_tests`, 0 FAIL; 328.00 s + 507.20 s) | **PASS** (3/3: `adi_acceptance_wts01` 34.25 s, `adi_builtin_realtime_tests` 192.81 s, `adi_acceptance_wts01_vst3` 5.11 s) | **PASS** (5/5) | **PASS** (Debug) |
+| `basics/integrate-1` | `a7d02bcf` | Clang 14.0.6 + libstdc++ 12 ASan + UBSan (`RelWithDebInfo`) | 0 | `adi_ui_shell_tests` built clean | **FAIL** (`adi_ui_shell_tests` aborts: ASan `stack-buffer-overflow` at `WaveDisplay.cpp:31:18` via `src/juce/ui_shell.cmake:103` / `test_ui_shell.cpp:22167`) | — | — | — | — | **FAIL** (`RelWithDebInfo` ASan) |
+
+Note on Item 3 (`origin/land/basics-1127i` `cb7273acd` & `origin/basics/sc-402-export-sample-rates` `8a3fdca0`): `basics/sc-402-export-sample-rates` (`8a3fdca0`) is already merged into `basics/integrate-1` (`a7d02bcf`), and `land/basics-1127i` (`cb7273acd`) has landed on `main` (`#817`, `9dc431732`) and is merged into `basics/integrate-1` (`33d91d39c`). Moving immediately to the new `origin/basics/integrate-1` head `33d91d39c` (which adds `SC-175`, `SC-430`, and `land/basics-1127i`).
+
+---
+
 ## 2026-11-27 — `basics/integrate-1` Round 1 (`df420228` — FAIL under Clang 14 ASan+UBSan: real stack-buffer-overflow / ODR layout mismatch in `adi_ui_shell_tests`)
 
 ### Finding (TOP — real stack-buffer-overflow in Release / RelWithDebInfo `adi_ui_shell_tests`)
