@@ -278,6 +278,28 @@ rows, pass `unsynchronized` or `tai` to both processes.
   --deadline-us 1333.333 --clock shared-system
 ```
 
+### Isolated link between two endpoints
+
+A second set of 1,000-echo runs used two network namespaces with a veth pair,
+IPv4 addresses `198.18.0.1/30` and `198.18.0.2/30`, and no default routes.
+Both endpoints ran on one Linux kernel. Each run sent 512 payload bytes per
+echo and measured against the 1,333.333 µs block budget.
+
+| Clock | RTT p50 / p95 / p99 (µs) | Lost / budget misses | Forward / return p50 (µs) |
+| --- | ---: | ---: | ---: |
+| Monotonic RTT | 24.697 / 47.011 / 104.578 | 0 / 1 | — |
+| Shared system clock | 85.312 / 148.775 / 375.382 | 0 / 6 | 43.382 / 36.871 |
+| Shared kernel TAI | 82.919 / 139.106 / 279.754 | 0 / 4 | 43.398 / 35.795 |
+
+The shared-clock directional jitter p95 was 48.775 / 50.737 µs on the
+system clock and 37.488 / 40.743 µs on TAI. These are application timestamps
+including scheduling. The VM exposes a KVM virtual PTP clock in sysfs.
+A physical PTP trial needs independently clocked machines, PHC access
+and a measured bound on clock offset. For a free-running audio peer, a
+relative clock error of `ppm` over `seconds` at 48 kHz drifts
+`48000 * seconds * ppm / 1e6` samples. Compare this against the mode's phase
+tolerance. [Probe source][probe]
+
 ## For the director
 
 **A. Stock server support in the release.** Keep stock compatibility for the
