@@ -50,7 +50,7 @@ struct Fixture {
     media::AnalysisCache analysis{directory.path() / "analysis"};
     std::unique_ptr<Store> store;
 
-    explicit Fixture(bool warp = false) {
+    Fixture(bool warp, bool reverse) {
         writeSource(220);
         StoreError error{};
         store = Store::create(project, error);
@@ -64,7 +64,7 @@ struct Fixture {
                 "(7,1,'audio',1,0,500000000,'Lead',57657),(8,1,'audio',1,1000000000,500000000,'Sibling',57657);");
         const auto imported = media::importMedia(*store, source, 1, 0);
         if (!imported.ok) throw std::runtime_error(imported.error);
-        const std::array markers{WarpMarker{0, 0}, WarpMarker{frames, quarter}};
+        const std::array markers{WarpMarker{0, 0}, WarpMarker{frames / 4, 3 * quarter / 8}, WarpMarker{frames, quarter}};
         const auto map = audio::writeWarpMap(markers, frames);
         if (!map) throw std::runtime_error("write Warp fixture");
         SQLite::Statement insert(db, "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,"
@@ -77,7 +77,7 @@ struct Fixture {
             insert.bind(5, warp ? "re-pitch" : "none");
             if (warp) insert.bind(6, map.bytes.data(), static_cast<int>(map.bytes.size()));
             else insert.bind(6);
-            insert.bind(7, warp ? 0 : 1);
+            insert.bind(7, reverse ? 1 : 0);
             insert.exec();
             insert.reset();
             insert.clearBindings();
@@ -175,14 +175,15 @@ double frequency(std::span<const float> pcm) {
 }
 
 void wholeEventAndReuse() {
-    Fixture fixture(true);
+    Fixture fixture(true, true);
+    constexpr std::int64_t body = 14000;
     const auto pitchBefore = fixture.row("clip_pitch_edits", 7);
     const auto siblingPitch = fixture.row("clip_pitch_edits", 8);
     const auto sourceBefore = fixture.row("audio_clips", 7);
     const auto siblingSource = fixture.row("audio_clips", 8);
     const auto placement = fixture.row("clips", 7);
     const auto originalHash = media::blake3File(fixture.source).hex;
-    const auto audibleBefore = renderClip(*fixture.store);
+    const auto audibleBefore = renderClip(*fixture.store, body);
     auto flattened = fixture.prepare(7, 2);
     check(flattened && flattened.material->edit.requests.size() == 2 && fixture.stages() == 1 &&
           fixture.row("clip_pitch_edits", 7) == pitchBefore && !fixture.mediaExists(2),
@@ -194,8 +195,9 @@ void wholeEventAndReuse() {
     const auto sourceAfter = fixture.row("audio_clips", 7);
     check(sourceAfter && sourceAfter->at("media_id") == 2 && sourceAfter->at("src_start_frames") == 0 &&
           sourceAfter->at("src_len_frames") == frames && sourceAfter->at("warp_markers") == sourceBefore->at("warp_markers") &&
-          sourceAfter->at("warp_mode") == sourceBefore->at("warp_mode") && fixture.row("clips", 7) == placement &&
-          !fixture.row("clip_pitch_edits", 7), "whole event swaps only its rendered aperture and pitch rows, retaining Warp and placement");
+          sourceAfter->at("warp_mode") == sourceBefore->at("warp_mode") && sourceBefore->at("reverse") == 1 &&
+          sourceAfter->at("reverse") == 0 && fixture.row("clips", 7) == placement && !fixture.row("clip_pitch_edits", 7),
+          "whole event bakes reverse into its rendered aperture and retains project Warp and placement");
     check(fixture.row("audio_clips", 8) == siblingSource && fixture.row("clip_pitch_edits", 8) == siblingPitch &&
           media::blake3File(fixture.source).hex == originalHash,
           "sibling sharing the old source and original file remain identical");
@@ -207,14 +209,14 @@ void wholeEventAndReuse() {
         check(reader.sampleRate() == rate && reader.frames() == frames && reader.channels() == 2,
               "published durable render keeps the native-rate stereo trim exactly");
     }
-    const auto audibleAfter = renderClip(*fixture.store);
+    const auto audibleAfter = renderClip(*fixture.store, body);
     float maximumError = 0;
     for (std::size_t sample = 0; sample < audibleBefore.size(); ++sample)
         maximumError = std::max(maximumError, std::abs(audibleAfter[sample] - audibleBefore[sample]));
-    std::printf("Warped whole event flatten: %.5f Hz before and %.5f Hz after, %zu samples compared, maximum PCM error %.9f\n",
+    std::printf("Reversed, Warped whole event flatten: %.5f Hz before and %.5f Hz after, %zu samples compared, maximum PCM error %.9f\n",
                 frequency(audibleBefore), frequency(audibleAfter), audibleBefore.size(), maximumError);
-    check(audibleAfter == audibleBefore && frequency(audibleAfter) > 225,
-          "normal Session output under retained project Warp is bit-identical");
+    check(audibleAfter == audibleBefore && frequency(audibleAfter) > 270,
+          "normal Session playback stays bit-identical after flattening reversed pitch with nonlinear Warp");
 
     flattened.material.reset();
     check(fixture.stages() == 0, "release after commit removes only the private material staging directory");
@@ -223,7 +225,8 @@ void wholeEventAndReuse() {
           "one Undo restores exact source and pitch payload and retains render bytes for redo");
     fixture.reopen();
     check(History(*fixture.store).redo().ok && fixture.row("audio_clips", 7) == sourceAfter &&
-          !fixture.row("clip_pitch_edits", 7) && media::blake3File(newFile).hex == newHash && renderClip(*fixture.store) == audibleAfter,
+          !fixture.row("clip_pitch_edits", 7) && media::blake3File(newFile).hex == newHash &&
+          renderClip(*fixture.store, body) == audibleAfter,
           "Redo after reopen restores exact baked bytes and playback from durable media");
 
     auto reuse = fixture.prepare(8, 3);
@@ -252,10 +255,29 @@ void wholeEventAndReuse() {
     check(!refused.ok && refused.error.find("identical rendered media changed") != std::string::npos &&
           fixture.row("audio_clips", 8) == siblingSource && media::blake3File(newFile).hex == newHash,
           "removed or changed reused bytes refuse the whole transaction without relinking");
+
+    const auto detected = media::buildClipPitchAnalysis(*fixture.store, 8, {}, &fixture.decode, &fixture.analysis);
+    if (!detected) throw std::runtime_error("analyze sibling before clearing pitch edits");
+    const auto clear = prepareClipPitchEdits(*detected.data, {});
+    if (!clear.request) throw std::runtime_error(clear.error);
+    const auto isGenericReverseRefused = [&] {
+        engine::Session session;
+        if (!session.load(*fixture.store, {}, {2, graphRate, block})) throw std::runtime_error(session.error());
+        return std::any_of(session.clips()->problems().begin(), session.clips()->problems().end(), [](const auto& problem) {
+            return problem.starts_with("clips#8: reverse unsupported");
+        });
+    };
+    const auto cleared = OpJournal(*fixture.store).commit(*clear.request);
+    check(cleared.ok && isGenericReverseRefused(), "clearing authored pitch keeps ordinary reversed Warp named silent");
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.row("clip_pitch_edits", 8) == siblingPitch &&
+          frequency(renderClip(*fixture.store, graphRate + body)) > 270,
+          "Undo restores reversed Warp audio with the original authored pitch row");
+    check(history.redo().ok && isGenericReverseRefused(), "Redo restores the unchanged generic reverse refusal");
 }
 
 void refusalsAndReverse() {
-    Fixture fixture;
+    Fixture fixture(false, true);
     const auto sourceBefore = fixture.row("audio_clips", 7);
     const auto pitchBefore = fixture.row("clip_pitch_edits", 7);
     const auto originalHash = media::blake3File(fixture.source).hex;

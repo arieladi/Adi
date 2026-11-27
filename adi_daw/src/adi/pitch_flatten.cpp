@@ -68,7 +68,7 @@ CapturedClip captureClip(Store& store, std::int64_t clipId) {
     if (first < 0 || frames <= 0) throw std::runtime_error("invalid pitch flatten source window");
     const bool reverse = source->at("reverse") != 0;
     const bool warp = source->at("warp_enabled") != 0;
-    if ((warp && reverse) || (!warp && (source->at("transpose_semis") != 0 || source->at("formant_shift") != 0)))
+    if (!warp && (source->at("transpose_semis") != 0 || source->at("formant_shift") != 0))
         throw std::runtime_error("current clip source playback combination is unsupported");
     read.commit();
     return {head, std::move(file), std::move(*root), std::move(*source), std::move(*pitch), std::move(media),
@@ -151,7 +151,7 @@ PitchFlattenResult preparePitchFlatten(Store& store, const PitchFlattenOptions& 
         auto after = std::move(captured.source);
         after["media_id"] = imported.mediaId;
         after["src_start_frames"] = 0;
-        after["reverse"] = 0; // already applied by the unwarped producer when needed
+        after["reverse"] = 0; // baked into the native aperture before any project Warp
         edit::RowEdits changes(db);
         changes.set("audio_clips", options.clipId, std::move(after));
         changes.set("clip_pitch_edits", options.clipId, std::nullopt);

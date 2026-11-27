@@ -220,6 +220,8 @@ ClipPitchRenderResult prepareWindow(const ClipPitchRenderPlan& plan, std::span<c
     }
     checkCancelled(stop);
     if (warp) {
+        // MIDI extraction uses the same directed window clock. The staged
+        // frames already follow reverse, so the supplied Warp map stays intact.
         auto recipe = *warp;
         recipe.source = stage.file;
         recipe.workFolder = stage.directory;
@@ -321,8 +323,6 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
     if (plan.source.empty() || plan.sourceFrames == 0 || plan.sourceStart > saved.sourceFrames ||
         plan.sourceFrames > saved.sourceFrames - plan.sourceStart)
         return fail(ClipPitchRenderProblem::Source, "Pitch Editor playback window exceeds source");
-    if (plan.reverse && plan.warp)
-        return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor playback cannot combine reverse and Warp");
     if ((outputRate && (outputRate < 44100 || outputRate > 768000)) ||
         (outputRate && plan.warp && outputRate != plan.warp->outputRate))
         return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison rate differs from the Warp clock or device range");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_compare.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/clip_pitch.hpp"
@@ -89,6 +90,11 @@ void run() {
     }
     stereo[2 * start] = 0.11f;
     stereo[2 * start + 1] = -0.11f;
+    stereo[2 * (start + 800)] = 0.17f;
+    stereo[2 * (start + 800) + 1] = -0.17f;
+    constexpr std::uint32_t landmark = 1600;
+    stereo[2 * (start + length - 1 - landmark)] = -0.5f;
+    stereo[2 * (start + length - 1 - landmark) + 1] = 0.5f;
     stereo[2 * (start + length - 1)] = -0.22f;
     stereo[2 * (start + length - 1) + 1] = 0.22f;
     write(path, stereo.data());
@@ -177,9 +183,58 @@ void run() {
     check(!warpedFile.empty() && !fs::exists(warpedFile.parent_path().parent_path()),
           "prepared Warp and intermediate stages retire with their owners");
     warp.reverse = true;
+    // The first quarter stretches 3x, the rest plays at unity. Mirroring
+    // these Warp anchors or reversing the already-warped output would move
+    // the asymmetric stereo landmarks to a different output address.
+    warpPlan.anchors = {{0, 0}, {length / 4, 3 * length / 4}, {length, 3 * length / 2}};
     const auto reverseWarp = prepareClipPitchRender(warp, {}, &decoded, &cache);
-    check(reverseWarp.problem == ClipPitchRenderProblem::Unsupported && !reverseWarp.prepared,
-          "reversed Warp refuses without publishing PCM");
+    check(reverseWarp && reverseWarp.prepared->frames == 3 * length / 2,
+          "pitch and reverse compose with Warp on its declared timeline");
+    if (reverseWarp && reversed) {
+        auto referencePlan = warpPlan;
+        referencePlan.source = reversed.prepared->file;
+        referencePlan.workFolder = work;
+        referencePlan.sourceStart = 0;
+        referencePlan.sourceFrames = length;
+        const auto corrected = audio::prepareWarp(referencePlan);
+        const auto expected = corrected ? read(corrected.prepared->file) : std::vector<float>{};
+        check(corrected && read(reverseWarp.prepared->file) == expected,
+              "corrected waveform equals independently applying unchanged Warp to reversed pitch PCM");
+
+        std::vector<float> raw(static_cast<std::size_t>(length) * channels);
+        for (std::size_t frame = 0; frame < length; ++frame)
+            std::copy_n(stereo.data() + (start + length - 1 - frame) * channels,
+                        channels, raw.data() + frame * channels);
+        referencePlan.source = temporary.path() / "original-reverse.wav";
+        {
+            audio::WavWriter writer(referencePlan.source, rate, channels, audio::WavFormat::Float32);
+            writer.write(raw.data(), length);
+            writer.close();
+        }
+        const auto original = audio::prepareWarp(referencePlan);
+        const auto comparison = prepareClipPitchCompare(warp, {}, &decoded, &cache);
+        check(comparison && original && comparison.prepared->frames() == 3 * length / 2,
+              "same-clock comparison prepares both reversed Warp lanes");
+        if (comparison && corrected && original) {
+            const auto originalPcm = read(original.prepared->file);
+            audio::PitchComparePlayback playback(comparison.prepared);
+            std::vector<float> samples(expected.size());
+            const bool editedMatch = playback.readAt(0, samples) && samples == expected;
+            playback.select(audio::PitchCompareSide::Original);
+            check(editedMatch && playback.readAt(0, samples) && samples == originalPcm && samples != expected,
+                  "both comparison lanes are bit-identical to their independent reverse-then-Warp references");
+            constexpr auto peak = 3 * landmark;
+            const bool atExpectedFrame = samples[2 * peak + 1] > 0.4f && samples[2 * peak] == -samples[2 * peak + 1] &&
+                samples[2 * peak + 1] > samples[2 * (peak - 1) + 1] && samples[2 * peak + 1] > samples[2 * (peak + 1) + 1];
+            std::printf("reversed Warp landmark: frame %u, channels %.6f / %.6f\n", peak, samples[2 * peak], samples[2 * peak + 1]);
+            check(atExpectedFrame, "asymmetric stereo landmark reverses to frame 1600 and Warps to frame 4800");
+        }
+    }
+    auto invalidMap = warp;
+    invalidMap.warp->anchors[1].sourceFrame = invalidMap.warp->anchors[0].sourceFrame;
+    const auto failedWarp = prepareClipPitchRender(invalidMap, {}, &decoded, &cache);
+    check(failedWarp.problem == ClipPitchRenderProblem::Dsp && !failedWarp.prepared,
+          "malformed reversed Warp still refuses publication");
 
     // The optional analysis cache may be swept at any time. The saved note
     // address must work from freshly computed notes, with no project Store.

@@ -771,7 +771,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                         pitch = &*authored;
                 }
             }
-            if(a->reverse && (!pitch || a->warpEnabled)) {
+            if(a->reverse && !pitch) {
                 checkSkippedMedia(row.id, a->mediaId);
                 throw std::runtime_error("reverse unsupported; silent");
             }
