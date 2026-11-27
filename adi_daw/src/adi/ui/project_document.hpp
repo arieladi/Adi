@@ -361,6 +361,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // stale when the project changed meanwhile, leaving nothing behind.
     struct MaterialJob {
         std::filesystem::path project, source;
+        std::filesystem::path defaultsIndex;
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;

@@ -5,8 +5,10 @@
 #include "adi/clip_commands.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/library/index.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/sample_defaults.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_document.hpp"
@@ -1676,6 +1678,28 @@ void importWithChoices(const std::filesystem::path &dir) {
               doc->view().current()->findTrack(audioTrack)->clips.front()->id == original &&
               doc->view().current()->findTrack(audioTrack)->clips.front()->lengthTicks == 4 * halfBeat,
           "one undo removes the imported copy's rows and restores the uncut audio");
+
+    OpRequest gain;
+    gain.opType = "clip.setGain";
+    gain.payload = {{"id", original}, {"gain", -7.0}};
+    check(doc->ops().submit(std::move(gain)).ok, "set the sample's own gain before saving defaults");
+    doc->synchronise();
+    const auto defaultsPath = dir / "import-sample-defaults.sqlite";
+    auto defaults = library::Index::open(defaultsPath, error, false);
+    check(defaults && clip_edit::saveSampleDefaults(doc->store(), original, 48000.0, *defaults, error) ==
+                          library::SampleSettingsProblem::None,
+          "save the source's authored defaults to the library");
+    defaults.reset();
+    job = doc->materialJob(wav.string(), audioTrack, 8 * halfBeat, warp, 1'700'000'000'000'006);
+    job.defaultsIndex = defaultsPath;
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto recalled = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto *recalledTrack = doc->view().current()->findTrack(audioTrack);
+    check(recalled != 0 && recalledTrack && recalledTrack->clips.size() == 2 &&
+              recalledTrack->clips.back()->id == recalled && recalledTrack->clips.back()->gainDb == -7.0 &&
+              recalledTrack->clips.back()->posTicks == 8 * halfBeat,
+          "a prompted drop recalls authored gain and Warp off before trying to find a beat");
     doc->release();
 }
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.
