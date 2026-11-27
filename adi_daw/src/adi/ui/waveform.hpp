@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/snapshot.hpp"
@@ -380,7 +381,8 @@ class ClipSourceMap {
     };
 
     ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate)
-        : pos_(clip.posTicks), offsetTicks_(clip.contentOffsetTicks), rate_(sampleRate), tempo_(tempo),
+        : pos_(clip.posTicks), offsetTicks_(clip.contentOffsetTicks),
+          rate_(clip.audio->warpEnabled ? sampleRate : audio::pitchedSampleRate(sampleRate, clip.audio->transposeSemis)), tempo_(tempo),
           audio_(*clip.audio) {
         if (audio_.warpEnabled && audio_.warpMarkers)
             if (auto read = audio::readWarpMap(*audio_.warpMarkers, static_cast<std::uint64_t>(audio_.sourceLengthFrames)))

@@ -590,7 +590,8 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain, SourceTempo
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain,
+        SourceTempo, Pitch, Detune
     };
     // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
@@ -754,6 +755,8 @@ class ClipViewPanel final : public juce::Component {
     bool fieldEnabled(Field) const noexcept;
     juce::Rectangle<int> sampleMetadataArea() const noexcept;
     bool setGain(double db);
+    int pitchPart(Field, bool preview = false) const noexcept;
+    bool setPitch(Field, int, bool relative);
     bool setWarp(bool enabled, std::optional<double> sourceBpm = {});
     double draggedGain() const noexcept;
     std::int64_t fieldTicks(Field) const noexcept;
