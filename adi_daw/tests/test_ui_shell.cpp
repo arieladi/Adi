@@ -14000,14 +14000,23 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
               root.undoTitle(false) == undoBefore,
           "the Sample Editor consumes Insert Silence without inserting song time");
 
+    root.setSize(root.getWidth(), 1200);
+    root.frame();
     if (const auto *clip = panel.node()) {
         auto &arrangement = root.arrangement;
         auto &lane = arrangement.geometry;
+        lane.reveal(root.reader(), track);
         auto &canvas = arrangement.canvas;
         lane.grid.snap = false;
         lane.scale = 120.;
         lane.left = 0.;
         const auto bodyY = static_cast<float>(laneTop(root, track) + ArrangementCanvas::kClipBarHeight + 9);
+        const auto *hitTrack = lane.trackAt(root.reader(), static_cast<int>(bodyY));
+        check(hitTrack && hitTrack->id == track, "the range gesture starts on the visible audio lane");
+        if (!hitTrack || hitTrack->id != track) {
+            commands.detach(root);
+            return;
+        }
         const juce::Point<float> from{static_cast<float>(lane.x(clip->posTicks + beat / 4)), bodyY};
         const juce::Point<float> until{static_cast<float>(lane.x(clip->posTicks + beat / 2)), bodyY};
         canvas.mouseDown(pressAt(canvas, from, juce::ModifierKeys::leftButtonModifier));
