@@ -105,7 +105,12 @@ std::int64_t stepTick(const TempoEvent& left, double elapsed, double seconds) no
 TempoMap TempoMap::fromRows(std::span<const rows::TempoEvent> rows) {
     TempoMap result;
     result.events.reserve(rows.size() + 1);
-    if (rows.empty() || rows.front().posTicks != 0) result.events.push_back({});
+    if (rows.empty()) result.events.push_back({});
+    else if (rows.front().posTicks != 0) {
+        // Keep the playback lead-in for old projects without a tick-zero row.
+        // The first event's outgoing curve still begins at its authored tick.
+        result.events.push_back({0, rows.front().bpm, 0, 0});
+    }
     for (const auto& row : rows) {
         result.events.push_back({row.posTicks, row.bpm, static_cast<int>(row.curve), row.tension, row.rampSpan});
     }

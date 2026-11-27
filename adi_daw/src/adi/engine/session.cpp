@@ -323,11 +323,7 @@ bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std
         return false;
     }
 
-    TempoMap authored;
-    for (const auto& point : model_.tempo)
-        authored.events.push_back({point.posTicks, point.bpm, static_cast<int>(point.curve)});
-    if (authored.events.empty())
-        authored.events.push_back({0, 120.0, 0});
+    auto authored = TempoMap::fromRows(model_.tempo);
     if (timing->spec.externalTempoBpm || timing->tempo.events != authored.events) {
         error = "Loop recording needs playback to follow the project's authored tempo.";
         return false;

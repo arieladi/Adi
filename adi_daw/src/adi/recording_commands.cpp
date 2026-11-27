@@ -11,6 +11,7 @@
 #include "adi/media/published_rollback.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/store.hpp"
+#include "adi/store_rows.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_time.hpp"
@@ -242,15 +243,16 @@ fs::path reservePublication(const fs::path& parent) {
     throw std::runtime_error("cannot reserve recording publication staging");
 }
 engine::TempoMap tempoOf(Store& store, bool addDefaultLeadIn = true) {
-    engine::TempoMap result;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+    std::vector<rows::TempoEvent> events;
+    SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
     while(points.executeStep()) {
         const auto at=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
         if(at<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000)throw std::runtime_error("recording placement needs a valid tempo map");
-        result.events.push_back({at,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
+        events.push_back({at,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
     }
-    if(result.events.empty() || (addDefaultLeadIn && result.events.front().posTicks!=0))
-        result.events.insert(result.events.begin(),{0,120,0});
-    return result;
+    if(addDefaultLeadIn && !events.empty() && events.front().posTicks!=0)
+        events.insert(events.begin(),{0,120,0,0});
+    return engine::TempoMap::fromRows(events);
 }
 std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint32_t rate) {
     if(sample<0 || sample>(std::int64_t{1}<<50))throw std::runtime_error("recording exceeds supported timeline sample precision");
