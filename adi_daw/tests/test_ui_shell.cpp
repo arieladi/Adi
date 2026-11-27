@@ -125,6 +125,28 @@ juce::Colour renderedPixel(juce::Component &component, juce::Point<int> at) {
     component.paintEntireComponent(g, true);
     return image.getPixelAt(at.x, at.y);
 }
+void maskBrowserDeviceLabels(AdiRootComponent &root, juce::Image &image) {
+    if (!root.browser.isVisible())
+        return;
+    const auto &list = root.browser.list;
+    const auto visible = root.getLocalArea(&list, list.getViewport()->getBounds());
+    const auto &rows = root.browser.rows();
+    juce::Graphics graphics(image);
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        const auto &row = rows[index];
+        if (row.device == nullptr)
+            continue;
+        const auto bounds = root.getLocalArea(&list, list.getRowPosition(static_cast<int>(index), true));
+        // The leading icon, row edges and right-hand collection marks stay in the comparison.
+        const auto label = bounds.withTrimmedLeft(24 + 12 * row.depth)
+                               .withTrimmedRight(16).reduced(0, 1).getIntersection(visible);
+        const juce::Point<int> background(bounds.getX() + 1, label.getCentreY());
+        if (label.isEmpty() || !visible.contains(background))
+            continue;
+        graphics.setColour(image.getPixelAt(background.x, background.y));
+        graphics.fillRect(label);
+    }
+}
 void reference(AdiRootComponent &root, const char *name, bool write) {
     // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
     juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true,
@@ -267,6 +289,8 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(root.devices.getBounds().withTrimmedLeft(
                 std::max(0, chainEnd - root.devices.getX())));
     }
+    // The Browser uses the platform font for device names. Apply the same mask to old and new goldens.
+    maskBrowserDeviceLabels(root, image);
     const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
     if (write) {
         file.getParentDirectory().createDirectory();
@@ -286,11 +310,13 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
     bool equal =
         expected.getWidth() == image.getWidth() && expected.getHeight() == image.getHeight();
     int differences = 0;
-    if (equal)
+    if (equal) {
+        maskBrowserDeviceLabels(root, expected);
         for (int y = 0; y < image.getHeight(); ++y)
             for (int x = 0; x < image.getWidth(); ++x)
                 if (image.getPixelAt(x, y) != expected.getPixelAt(x, y))
                     ++differences;
+    }
     check(equal && differences == 0, name);
     if (differences) {
         std::printf("%s: %d differing pixels\n", name, differences);
