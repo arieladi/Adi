@@ -115,6 +115,7 @@ class ParameterFeed {
         std::uint64_t stamp = 0;
         std::uint64_t seen = 0;
         std::uint64_t touchSequence = 0;
+        std::optional<PluginParameterTouch> latestTouch;
         std::shared_ptr<const std::vector<PluginParameterTouch>> recentTouches;
     };
     std::map<std::int64_t, Identity> identities_;

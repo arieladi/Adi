@@ -149,12 +149,13 @@ class SampleTile final : public juce::Component,
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
-class DevicePanelView final : public juce::Component, public juce::FileDragAndDropTarget {
+class DevicePanelView final : public juce::Component,
+                              public juce::FileDragAndDropTarget,
+                              public juce::DragAndDropTarget {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
-    // Samples are "dragged into Simpler" (Live 12 manual 30.11), not into one well: a file from the
-    // desktop dropped off the tile, on the controls or the title, goes to the tile's slot.
+    // A sample dropped on the tile, controls or title goes to the tile's selected slot.
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return sample && !files.isEmpty(); }
     void fileDragEnter(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->fileDragEnter(files, x, y);
@@ -162,6 +163,19 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void fileDragExit(const juce::StringArray &files) override { if (sample) sample->fileDragExit(files); }
     void filesDropped(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->filesDropped(files, x, y);
+    }
+    bool isInterestedInDragSource(const SourceDetails &details) override {
+        auto *tile = samplerTile();
+        return tile && tile->isInterestedInDragSource(details);
+    }
+    void itemDragEnter(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDragEnter(details);
+    }
+    void itemDragExit(const SourceDetails &details) override {
+        if (sample) sample->itemDragExit(details);
+    }
+    void itemDropped(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDropped(details);
     }
     void present(const DevicePanelData &);
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
@@ -254,6 +268,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void cancelInteractions();
 
   private:
+    SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
     void showParameterList();
     void closeConfigure();
@@ -353,11 +368,11 @@ class DeviceChainStrip final : public juce::Component,
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     juce::TextButton addTab{"+"};
-    // Moves the focus from a device to its neighbour; at either end it stays.
+    // Moves focus to a neighbour or past the last device to the insertion point.
     bool focusNext(std::int64_t from, bool forward);
     // Live's device clipboard (manual 23.2.1; N18): Cut, Copy, Paste and Duplicate on `device`, or
     // on the device with the focus. Paste goes in front of that device, or at the chain's end after
-    // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
+    // choosing the strip's empty space; Duplicate goes in front of the next device in its chain
     // and leaves the clipboard as it was. False when there is nothing to act on.
     enum class Clip { Cut, Copy, Paste, Duplicate };
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
@@ -366,12 +381,11 @@ class DeviceChainStrip final : public juce::Component,
     bool hasHotSwapContext() const;
     bool hotSwapFocused();
     bool deleteDevices(std::optional<std::int64_t> device = {});
-    // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
-    // last device.
+    // The strip itself has focus when the insertion point after the last device is chosen.
     bool endChosen() const { return hasKeyboardFocus(false); }
     // Where a device loaded from the browser goes (manual 4.10): in front of the device chosen
-    // last in the strip, though the browser now has the focus; at the chain's end after a click
-    // past the last device, or when none is chosen.
+    // last in the strip, though the browser now has the focus; at the chain's end when no device
+    // is chosen.
     std::optional<std::int64_t> insertPoint() const;
     void chose(std::int64_t device) { chosen_ = device; }
     // A browser device loads here. An existing device moves to this position in the chain.
@@ -389,9 +403,12 @@ class DeviceChainStrip final : public juce::Component,
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override { repaint(); }
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
+    // Optional presenter for the empty-space context menu.
+    std::function<void(juce::PopupMenu)> onEndMenu;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     // Publish native gestures already waiting when a Configure session opens.
     std::function<void()> pollParameterEdits;
@@ -406,6 +423,7 @@ class DeviceChainStrip final : public juce::Component,
     std::function<bool(const std::string &, Payload)> submit;
     // The application names and saves a preset for this exact loaded device.
     std::function<void(const DevicePanelData &)> savePreset;
+    std::function<void(const DevicePanelData &)> saveDefaultPreset;
     // A slot is present when the Browser should offer samples for this device slot.
     std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
@@ -458,6 +476,8 @@ class DeviceChainStrip final : public juce::Component,
     bool selectionActsOn(std::int64_t) const;
     void selectTitle(const DevicePanelView &, bool extend);
     void clearSelection();
+    void chooseEnd();
+    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
     DevicePanelView *focusedHotSwapPanel() const;

@@ -344,6 +344,9 @@ class ProjectDocument final : public engine::BlockProcessor {
                     const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
                           const std::string &name, std::filesystem::path &saved);
+    bool saveDefaultDevicePreset(const DevicePanelData &, const std::filesystem::path &library);
+    // The current User Library, read when a new device is loaded. An empty path has no defaults.
+    std::function<std::filesystem::path()> devicePresetLibrary;
     std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
                                   const std::optional<rows::PluginRef> &installed = {});
     struct HotSwapTargetInfo {
@@ -439,8 +442,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startTrackRender(TrackRenderKind, std::int64_t track);
     void pollTrackRender();
     void stopTrackRender();
-    bool finishInsert(PreparedBuiltinInsert);
-    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    enum class PresetLoad { Insert, InPlace, Default };
+    std::optional<preset::Preset> captureDevicePreset(const DevicePanelData &);
+    bool finishInsert(PreparedBuiltinInsert, const preset::Identity &);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, PresetLoad = PresetLoad::Insert);
+    void publishDeviceEdit(std::optional<std::int64_t> newTrack);
     std::optional<HotSwapTargetInfo> hotSwapTargetAfterCapture(const DevicePanelData &);
     std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
     bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);

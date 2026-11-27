@@ -137,12 +137,13 @@ class MixerStrip final : public juce::Component,
     // Mixer View.
     PrimaryButtonSlider delay;
     void setDelayTooltip(const juce::String &tip);
-    // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
-    // only, in the Mixer View, where a track has its Activator. One transport op at release or when
-    // typed, outside undo.
+    // Cue Volume on Main in both views. One transport op at release or when typed, outside undo.
     PrimaryButtonSlider cueVolume;
     enum class RoutingChooser { MidiFrom, MidiChannel, MidiTo, AudioTo, MainOut, CueOut };
     std::function<void(RoutingChooser, juce::PopupMenu)> onRoutingMenu;
+    // The Arrangement's compact Cue Out chooser shares the Mixer View's routing menu.
+    juce::TextButton cueOut{"1/2"};
+    void cueOutMenu();
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
@@ -244,6 +245,22 @@ class MixerStrip final : public juce::Component,
     const char *audioInputLabel() const;
     bool audioInputIsResampling() const;
     void showAudioInputMenu();
+    juce::Rectangle<int> monitorBounds() const noexcept;
+    void layoutMonitor();
+    class MonitorSwitch final : public juce::Component, public juce::SettableTooltipClient {
+      public:
+        explicit MonitorSwitch(MixerStrip &);
+        bool hitTest(int, int) override;
+        void paint(juce::Graphics &) override;
+        void mouseDown(const juce::MouseEvent &) override;
+        bool keyPressed(const juce::KeyPress &) override;
+        void focusGained(FocusChangeType) override { repaint(); }
+        void focusLost(FocusChangeType) override { repaint(); }
+
+      private:
+        MixerStrip &strip_;
+    };
+    MonitorSwitch monitor_{*this};
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
@@ -275,10 +292,13 @@ class MixerStrip final : public juce::Component,
     // The sends' rows in the track controls: three to a row, from the row under volume and pan.
     int sendRows() const noexcept { return static_cast<int>((sends_.size() + 2) / 3); }
     // A Mixer View strip's sends: Live's two columns, each knob 22 pt under the one before.
-    int sendsHeight(std::size_t count) const noexcept {
-        return count == 0 ? 0 : 28 + 22 * static_cast<int>(count);
+    static constexpr int kSendPitch = 22, kSendPadding = 28;
+    static int sendsHeight(std::size_t count) noexcept {
+        return count == 0 ? 0 : kSendPadding + kSendPitch * static_cast<int>(count);
     }
+    void layoutSends();
     juce::Rectangle<int> sendBounds(std::size_t index) const noexcept;
+    juce::Rectangle<int> sendArrowBounds(bool down) const noexcept;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
     // Where a Mixer View strip's sections begin, under the name and its rule.
@@ -316,7 +336,7 @@ class MixerStrip final : public juce::Component,
     // While a lane is followed its control shows the envelope at the playhead, moving as the engine
     // plays it; shown only, no op and no gesture. `volumeDb` and `pan` are the track's own values.
     void followAutomation(double volumeDb, double pan);
-    std::size_t shown_ = 0, returnCount_ = 0;
+    std::size_t shown_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden
     std::size_t position_ = 0; // the track's place, 1-based: its colour by place
@@ -428,10 +448,22 @@ class MixerPanel final : public juce::Component {
     void previewTrackDrop(std::optional<TitleDrop> drop);
     void place();
     void placeColumns();
+    struct ColumnSections {
+        int inOut = 0, trackDelay = 0;
+        std::size_t sends = 0;
+    };
+    ColumnSections columnSections(int height) const noexcept;
+    std::size_t firstSend(std::size_t shown) const noexcept;
+    void scrollSendsBy(int rows, std::size_t shown);
+    bool scrollSends(const juce::MouseEvent &, const juce::MouseWheelDetails &);
     // Live's frame above the rows: the band, and H and W beside the Overview's end.
     void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
+    // The columns share one window into Main's return order. Each track has its own eligible returns.
+    std::vector<std::int64_t> sendReturns_, nextSendReturns_;
+    std::size_t sendOffset_ = 0;
+    float sendWheelFraction_ = 0.f;
     std::optional<TitleDrop> trackDrop_;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
 };

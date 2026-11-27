@@ -2102,28 +2102,35 @@ juce::PopupMenu DevicePanelView::commands() {
         m.addSeparator();
         m.addItem(std::move(item));
     }
-    if (strip.savePreset) {
+    if (strip.savePreset || strip.saveDefaultPreset) {
         const auto current = strip.root.current();
         const auto *track = current && data ? current->findTrack(data->track) : nullptr;
         const bool supported = data && !data->uid.empty() && !nativeFunction() &&
                                (data->format == "internal" || data->format == "clap" || data->format == "vst3");
-        juce::PopupMenu::Item item(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"));
-        item.isEnabled = supported && data->available && track && !track->frozen && !track->frozenByGroup;
-        if (item.isEnabled) {
-            item.action = [safe, epoch, expected = *data] {
-                if (!safe || safe->menuEpoch_ != epoch)
-                    return;
-                safe->endInteraction(Interaction::Menu);
-                if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
-                    return;
-                if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
-                    return;
-                if (safe && safe->menuEpoch_ == epoch && safe->strip.savePreset)
-                    safe->strip.savePreset(expected);
-            };
-        }
+        const bool eligible = supported && data->available && track && !track->frozen && !track->frozenByGroup;
+        const auto addPresetItem = [&](juce::String label, decltype(&DeviceChainStrip::savePreset) handler) {
+            if (!(strip.*handler)) return;
+            juce::PopupMenu::Item item(std::move(label));
+            item.isEnabled = eligible;
+            if (eligible) {
+                item.action = [safe, epoch, expected = *data, handler] {
+                    if (!safe || safe->menuEpoch_ != epoch)
+                        return;
+                    safe->endInteraction(Interaction::Menu);
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
+                        return;
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
+                        return;
+                    if (safe && safe->menuEpoch_ == epoch)
+                        if (const auto callback = safe->strip.*handler)
+                            callback(expected);
+                };
+            }
+            m.addItem(std::move(item));
+        };
         m.addSeparator();
-        m.addItem(std::move(item));
+        addPresetItem(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"), &DeviceChainStrip::savePreset);
+        addPresetItem("Save as Default Preset", &DeviceChainStrip::saveDefaultPreset);
     }
     if (!mixCard_ && !configuring && data && data->pluginTouch) {
         const auto &paramId = data->pluginTouch->parameter;
@@ -2441,7 +2448,7 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     // Devices run left to right; the strip scrolls sideways, never down, and shows no
     // scroll bar (Live's Device View).
     scroll.setScrollBarsShown(false, false, false, true);
-    // A click past the last device chooses the chain's end, where a paste goes (manual 23.2.1).
+    // The strip takes focus at the chain's end, where a paste goes (manual 23.2.1).
     setWantsKeyboardFocus(true);
     content.addMouseListener(this, false);
     content.addChildComponent(addTab);
@@ -2452,11 +2459,46 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     };
 }
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
-    if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
-        chosen_.reset();
-        clearSelection();
-        focusIfShowing(*this);
-    }
+    if (e.eventComponent != &content || e.x < end_ - 11)
+        return;
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto track = selectedTrack;
+    const auto epoch = addMenuEpoch_;
+    const bool popup = e.mods.isPopupMenu();
+    const auto where = e.getScreenPosition();
+    chooseEnd();
+    if (!safe || !popup)
+        return;
+
+    juce::PopupMenu menu;
+    juce::PopupMenu::Item item("Paste");
+    item.isEnabled = track > 0 && paste && holdsCopy && holdsCopy();
+    item.shortcutKeyDescription =
+        juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
+    item.action = [safe, track, epoch] {
+        if (safe && track > 0 && safe->selectedTrack == track && safe->addMenuEpoch_ == epoch &&
+            safe->root.arrangement.geometry.selection.track == track)
+            safe->pasteAt(track, std::nullopt);
+    };
+    menu.addItem(std::move(item));
+    if (onEndMenu)
+        onEndMenu(std::move(menu));
+    else
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+bool DeviceChainStrip::keyPressed(const juce::KeyPress &key) {
+    if (key != juce::KeyPress::leftKey || !endChosen() || panels.empty())
+        return false;
+    focusIfShowing(*panels.back());
+    return true;
+}
+void DeviceChainStrip::chooseEnd() {
+    chosen_.reset();
+    clearSelection();
+    const auto view = scroll.getViewArea();
+    if (end_ > view.getRight())
+        scroll.setViewPosition(end_ - view.getWidth(), view.getY());
+    focusIfShowing(*this);
 }
 std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
     if (const auto focused = focusedDevice())
@@ -2653,23 +2695,38 @@ std::shared_ptr<const ParameterPublication> DeviceChainStrip::latestPublication(
     return publication ? publication() : presented;
 }
 bool DeviceChainStrip::addLastTouchedParameter(const DevicePanelData &expected) {
+    if (!expected.pluginTouch) return false;
+    DevicePanelData identity;
+    identity.id = expected.id;
+    identity.track = expected.track;
+    identity.chain = expected.chain;
+    identity.instance = expected.instance;
+    identity.runtime = expected.runtime;
+    identity.pluginTouch = expected.pluginTouch;
+
     const auto safe = SafePointer<DeviceChainStrip>(this);
-    if (!expected.pluginTouch || !validExpected(expected) || !safe)
-        return false;
+    if (!validExpected(identity) || !safe) return false;
+    const auto touchedDevice = [&](const auto &feed) -> const DevicePanelData * {
+        const auto *row = findPanelDevice(feed, identity);
+        return row && row->available && row->plugin && row->pluginTouch == identity.pluginTouch ? row : nullptr;
+    };
+    const auto &paramId = identity.pluginTouch->parameter;
     const auto feed = latestPublication();
     if (!safe) return false;
-    const auto *current = findPanelDevice(feed, expected);
-    if (!current || !current->available || !current->plugin || current->pluginTouch != expected.pluginTouch)
-        return false;
+    const auto *current = touchedDevice(feed);
+    if (!current) return false;
     std::shared_ptr<const ParameterPublication> described;
-    if (!current->metadata && current->declarations().empty() && root.automationParameters) {
-        described = root.automationParameters(expected.track);
-        if (!safe) return false;
-        current = findPanelDevice(described, expected);
-        if (!current || current->pluginTouch != expected.pluginTouch)
-            return false;
+    if (!declaredParameter(*current, paramId) && root.automationParameters) {
+        // Read descriptors without opening a live parameter subscription.
+        const auto describe = root.automationParameters;
+        const auto generation = root.projectViewGeneration();
+        described = describe(identity.track);
+        if (!safe || !safe->validExpected(identity) || !safe) return false;
+        const auto latest = safe->latestPublication();
+        if (!safe || generation != safe->root.projectViewGeneration() || !touchedDevice(latest)) return false;
+        current = touchedDevice(described);
+        if (!current) return false;
     }
-    const auto &paramId = expected.pluginTouch->parameter;
     const auto *parameter = declaredParameter(*current, paramId);
     if (!parameter) return false;
     if (!parameter->modifiable) return deviceTarget(*current, *parameter).has_value();
@@ -2845,6 +2902,14 @@ bool DeviceChainStrip::clipboardSelection(Clip c) {
         }
     return duplicateSelection(targets, last.track, before);
 }
+bool DeviceChainStrip::pasteAt(std::int64_t track, std::optional<std::int64_t> before) {
+    if (!paste || !holdsCopy || !holdsCopy())
+        return false;
+    const SafePointer<DeviceChainStrip> alive(this);
+    const bool pasted = paste(track, before);
+    if (pasted && alive) root.say({});
+    return pasted;
+}
 bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, bool includeSelection) {
     includeSelection = includeSelection || !device;
     if (!device)
@@ -2856,15 +2921,9 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, boo
     case Clip::Cut:
     case Clip::Copy:
         return data != nullptr && copy && copy(*device, c == Clip::Cut);
-    case Clip::Paste: {
-        if (!paste || !holdsCopy || !holdsCopy())
-            return false;
-        const SafePointer<DeviceChainStrip> alive(this);
-        const bool pasted = data ? paste(data->track, *device)
-                                 : endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
-        if (pasted && alive) root.say({});
-        return pasted;
-    }
+    case Clip::Paste:
+        return data ? pasteAt(data->track, *device)
+                    : endChosen() && selectedTrack >= 0 && pasteAt(selectedTrack, std::nullopt);
     case Clip::Duplicate: {
         if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;
@@ -3216,7 +3275,9 @@ bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
         if (panels[i]->id == from) {
             if (forward && i + 1 < panels.size())
                 focusIfShowing(*panels[i + 1]);
-            else if (!forward && i > 0)
+            else if (forward)
+                chooseEnd();
+            else if (i > 0)
                 focusIfShowing(*panels[i - 1]);
             return true;
         }

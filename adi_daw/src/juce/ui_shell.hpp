@@ -901,7 +901,8 @@ class AdiRootComponent final : public juce::Component,
     // and the selected tracks together; and its monitoring switch In, Auto, Off (manual 21.4). Each
     // one batch.
     bool armTrack(std::int64_t id, bool add);
-    bool setMonitor(std::int64_t id, Monitor mode);
+    // An empty mode restores each affected track's own default.
+    bool setMonitor(std::int64_t id, std::optional<Monitor> mode);
     std::vector<std::int64_t> audioOutputChoices(std::int64_t track) const;
     bool setTrackAudioOutput(std::int64_t track, std::int64_t destination);
     bool setTrackMidiOutput(std::int64_t track, std::optional<rows::MidiOutput>);
@@ -1071,6 +1072,7 @@ class AdiRootComponent final : public juce::Component,
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
+    bool nudgeSelectedTracks(bool down);
     // Group the selected tracks, or ungroup an explicit group from its title menu.
     bool groupTracks(bool ungroup, std::int64_t group = 0);
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live

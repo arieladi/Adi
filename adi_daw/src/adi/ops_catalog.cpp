@@ -428,9 +428,7 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
 }
 
 std::int64_t newTrackMonitorMode(const Payload& p) {
-    const auto& kind=p.at("kind").get_ref<const std::string&>();
-    if (kind == "audio") return kNewAudioTrackMonitorMode;
-    return kind == "midi" || kind == "instrument" ? 2 : 0;
+    return initialTrackMonitorMode(p.at("kind").get_ref<const std::string&>());
 }
 std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
     if (!context.replay) return newTrackMonitorMode(p);

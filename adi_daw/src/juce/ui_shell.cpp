@@ -4316,7 +4316,7 @@ bool AdiRootComponent::toggleArm(std::optional<std::int64_t> clicked, bool add) 
     }
     return true;
 }
-bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+bool AdiRootComponent::setMonitor(std::int64_t id, std::optional<Monitor> mode) {
     const auto current = view_.current();
     if (!current)
         return fail("Monitoring needs an open project.");
@@ -5905,6 +5905,36 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::nudgeSelectedTracks(bool down) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Moving tracks needs an open project.");
+    auto ids = arrangement.geometry.selectedTracks(reader());
+    auto edit = ::adi::ui::nudgeTracks(current->tracks, ids, down);
+    if (edit.ops.empty())
+        return true;
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+
+    auto &selection = arrangement.geometry.selection;
+    if (selection.toTrack != 0) {
+        const SnapshotReader updated(view_.current());
+        std::vector<TrackRow> rows;
+        rowsFromSnapshot(updated, rows);
+        ArrangementGeometry check;
+        check.selection = selection;
+        check.order.build(updated, rows);
+        const auto ranged = check.selectedTracks(updated);
+        if (!std::is_permutation(ids.begin(), ids.end(), ranged.begin(), ranged.end())) {
+            // When a range would reach different tracks after the move, keep the original IDs.
+            selection.toTrack = 0;
+            std::erase(ids, selection.track);
+            selection.picked = std::move(ids);
+            publishSelection(SelectionOrigin::Arrangement);
+        }
+    }
+    return true;
 }
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }

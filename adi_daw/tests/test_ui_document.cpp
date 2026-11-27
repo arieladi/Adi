@@ -1036,14 +1036,20 @@ void pluginTouchPublication(const std::filesystem::path &file) {
     document->tick(2);
     check(document->parameterFeed().current() == repeated,
           "SC-317: an idle tick reuses the shared touch publication");
+    const auto offersTouchedParameter = [&](const ui::ParameterPublication *available) {
+        const auto targets = ui::automationChoices(*document->view().current(), 2, available);
+        const auto first = std::find_if(targets.begin(), targets.end(), [&](const auto &target) {
+            return target.ownerKind == "device" && target.ownerId == id;
+        });
+        return first != targets.end() && first->lastTouched && first->paramRef == "31" &&
+               std::count_if(targets.begin(), targets.end(), [](const auto &target) { return target.lastTouched; }) == 1;
+    };
+    const auto catalogue = document->automationParameters(2);
+    check(offersTouchedParameter(catalogue.get()) && document->parameterFeed().current() == repeated,
+          "SC-317: the explicit Automation catalogue offers the touched parameter without adding panel demand");
     document->setParameterDemand(document.get(), {id, initial.back()->id});
     const auto available = document->parameterFeed().current();
-    const auto targets = ui::automationChoices(*document->view().current(), 2, available.get());
-    const auto first = std::find_if(targets.begin(), targets.end(), [&](const auto &target) {
-        return target.ownerKind == "device" && target.ownerId == id;
-    });
-    check(first != targets.end() && first->lastTouched && first->paramRef == "31" &&
-              std::count_if(targets.begin(), targets.end(), [](const auto &target) { return target.lastTouched; }) == 1,
+    check(offersTouchedParameter(available.get()),
           "SC-317: Automation offers the touched parameter first for its exact device");
 
     knobs->windowGesture(1, .625);
@@ -1703,6 +1709,147 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime && renderNote(*recall) == expectedAudio,
           "SC-285: Redo restores the same instrument's recalled sound");
     recall->release();
+}
+
+void deviceDefaultPresets(const std::filesystem::path &dir) {
+    constexpr auto utilityUid = "org.adidaw.builtin.utility";
+    constexpr auto utilityGain = "11";
+    constexpr double savedGain = .8125, explicitGain = .375;
+    constexpr std::int64_t audioTrack = 4, otherAudioTrack = 5;
+    using engine::ParamEventKind;
+
+    const auto library = dir / "Device Defaults Library";
+    const auto loader = device::withBuiltinDevices(test::knobsLoader("cutoff", "clap"));
+    std::string error;
+    auto source = ui::ProjectDocument::open(dir / "default-preset-source.adi", true, loader, error);
+    auto target = ui::ProjectDocument::open(dir / "default-preset-target.adi", true, loader, error);
+    check(source && target, "SC-299: two projects for defaults shared through the User Library");
+    if (!source || !target)
+        return;
+    target->devicePresetLibrary = [library] { return library; };
+
+    const auto panelOn = [](ui::ProjectDocument &document, std::int64_t track, std::string_view uid) {
+        const auto feed = document.parameterFeed().current();
+        if (feed)
+            for (const auto &data : *feed)
+                if (data.track == track && data.uid == uid)
+                    return std::optional{data};
+        return std::optional<ui::DevicePanelData>{};
+    };
+    const auto head = [](ui::ProjectDocument &document) { return OpJournal(document.store()).headSeq(); };
+    const auto hasGain = [](ui::ProjectDocument &document, std::int64_t id, double expected) {
+        SQLite::Statement value(document.store().db(),
+                                "SELECT normalized_value FROM plugin_params WHERE device_id=? AND param_id=?");
+        value.bind(1, id);
+        value.bind(2, utilityGain);
+        const auto *instance = document.session().instanceFor(id);
+        return value.executeStep() && std::abs(value.getColumn(0).getDouble() - expected) < 1e-7 &&
+               instance && instance->loaded() && std::abs(instance->getParam(utilityGain).normalized - expected) < 1e-7;
+    };
+
+    if (const auto *utility = findBuiltin(utilityUid); utility && utility->available) {
+        const bool inserted = source->insertBuiltin(utilityUid, audioTrack, {});
+        const auto original = panelOn(*source, audioTrack, utilityUid);
+        const auto *runtime = original ? source->session().instanceFor(original->id) : nullptr;
+        if (!inserted || !original || !runtime) {
+            check(false, "SC-299: load the real Utility in the source project");
+        } else {
+            check(source->parameterGesture(original->id, utilityGain, ParamEventKind::Begin,
+                                           runtime->getParam(utilityGain).normalized) &&
+                      source->parameterGesture(original->id, utilityGain, ParamEventKind::Value, savedGain) &&
+                      source->parameterGesture(original->id, utilityGain, ParamEventKind::End, savedGain) &&
+                      hasGain(*source, original->id, savedGain),
+                  "SC-299: the source Utility has an edited gain in the store and the runtime");
+            // As in Device View, let the owner finish publishing the edit before
+            // reading the current device identity for its title menu.
+            source->setParameterDemand(source.get(), {original->id});
+            source->tick(0);
+            const auto edited = panelOn(*source, audioTrack, utilityUid);
+            const auto sourceHead = head(*source);
+            const bool saved = edited && source->saveDefaultDevicePreset(*edited, library);
+            const auto saveMessage = "SC-299: Save as Default Preset changes the library without a project edit" +
+                                     (saved || source->error().empty() ? std::string{} : " (" + source->error() + ")");
+            check(saved && head(*source) == sourceHead, saveMessage.c_str());
+
+            const auto beforeDrop = head(*target);
+            const auto trackCount = [&] { return target->view().current()->tracks.size(); };
+            const auto beforeCount = trackCount();
+            const bool dropped = target->insertBuiltin(utilityUid, 0, {});
+            const auto newTrack = target->sessionState().selection().track;
+            const auto *track = target->view().current()->findTrack(newTrack);
+            const auto recalled = panelOn(*target, newTrack, utilityUid);
+            check(dropped && trackCount() == beforeCount + 1 && track && track->kind == "audio" && recalled &&
+                      hasGain(*target, recalled->id, savedGain),
+                  "SC-299: a drop below the tracks creates and selects an audio track with the stored Utility gain");
+            if (dropped) {
+                check(target->ops().undo().ok && target->synchronise() && head(*target) == beforeDrop &&
+                          trackCount() == beforeCount && !target->view().current()->findTrack(newTrack),
+                      "SC-299: one Undo removes the new track, device and its default preset values");
+            }
+
+            preset::Preset choice;
+            choice.device = {"internal", utilityUid, {}};
+            choice.name = "Explicit Utility Preset";
+            choice.parameters.emplace(utilityGain, explicitGain);
+            const auto explicitDevice = target->loadDevicePreset(choice, audioTrack, {});
+            check(explicitDevice != 0 && hasGain(*target, explicitDevice, explicitGain),
+                  "SC-299: loading an explicit Utility preset applies its gain over the saved default");
+        }
+    }
+
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI Knobs";
+    plugin.subtype = "effect";
+    const bool added = source->loadPlugin(plugin, audioTrack);
+    const auto original = panelOn(*source, audioTrack, plugin.uid);
+    check(added && original && original->available, "SC-299: load a CLAP plug-in with two available controls");
+    if (!added || !original || !original->available)
+        return;
+
+    const auto shownPanel = [&](std::int64_t track) {
+        const auto device = panelOn(*target, track, plugin.uid);
+        if (!device)
+            return std::optional<panel::Resolved>{};
+        target->setParameterDemand(target.get(), {device->id});
+        target->tick(0);
+        const auto withParameters = panelOn(*target, track, plugin.uid);
+        return withParameters ? std::optional{withParameters->resolved} : std::nullopt;
+    };
+    const auto savePanel = [&](Payload ids) {
+        if (!source->deviceAction("device.setPanel", {{"dev", original->id}, {"params", std::move(ids)}}))
+            return false;
+        source->tick(0);
+        const auto configured = panelOn(*source, audioTrack, plugin.uid);
+        return configured && source->saveDefaultDevicePreset(*configured, library);
+    };
+    const auto hasControls = [](const panel::Resolved &resolved, std::string_view first, std::string_view second) {
+        return resolved.entries.size() == 2 && resolved.entries[0].id == first && !resolved.entries[0].missing &&
+               resolved.entries[1].id == second && !resolved.entries[1].missing;
+    };
+
+    const auto beforePlugIn = head(*target);
+    const bool loaded = savePanel(Payload::array({"gain", "cutoff"})) && target->loadPlugin(plugin, audioTrack);
+    const auto configured = shownPanel(audioTrack);
+    check(loaded && configured && configured->configured && hasControls(*configured, "gain", "cutoff"),
+          "SC-299: a new plug-in shows the saved controls in the authored order");
+    if (loaded) {
+        const bool undone = target->ops().undo().ok && target->synchronise();
+        target->tick(0);
+        check(undone && head(*target) == beforePlugIn && !panelOn(*target, audioTrack, plugin.uid),
+              "SC-299: one Undo removes the plug-in and its custom panel");
+    }
+
+    const bool hidden = savePanel(Payload::array()) && target->loadPlugin(plugin, audioTrack);
+    const auto empty = shownPanel(audioTrack);
+    check(hidden && empty && empty->configured && empty->entries.empty(),
+          "SC-299: saving an explicitly empty default keeps the next plug-in panel empty");
+
+    const bool reset = savePanel(nullptr) && target->loadPlugin(plugin, otherAudioTrack);
+    const auto automatic = shownPanel(otherAudioTrack);
+    check(reset && automatic && !automatic->configured && hasControls(*automatic, "cutoff", "gain"),
+          "SC-299: saving an unconfigured panel restores the automatic controls in plug-in order");
 }
 
 void mixSurfacePublication(const std::filesystem::path &file) {
@@ -6556,6 +6703,7 @@ int main(int argc, char **argv) {
         test::TempDirectory hotSwapStateDir("ui_document", "hot-swap-state");
         hotSwapLiveState(hotSwapStateDir.path());
     }
+    deviceDefaultPresets(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());
