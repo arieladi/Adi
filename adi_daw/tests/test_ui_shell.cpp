@@ -14777,6 +14777,98 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
     check(configured == 2, "SC-23: both input menus reach Audio Settings");
     document->release();
 }
+void mixerMonitorControls(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "monitor-controls.adi", true, {}, error);
+    check(document != nullptr, "SC-278: a project with audio and MIDI tracks");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "monitor-controls");
+    UiPeerRoot host;
+    host.setSize(1600, 1400);
+    host.addAndMakeVisible(root);
+    host.setVisible(true);
+    host.addToDesktop(0);
+    root.setSize(1440, 1300);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.state().mixerInOut = true;
+    root.state().inOut = false;
+    root.command(AppCommands::ToggleMixerView);
+    root.resizeMixerView(360);
+    const auto frame = [&] {
+        root.setRecordStates(document->recordStates());
+        root.frame();
+    };
+    frame();
+    auto *peer = host.getPeer();
+    const auto stripOf = [](MixerPanel &panel, std::int64_t track) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->isVisible() && strip->track() == track)
+                return strip.get();
+        return nullptr;
+    };
+    constexpr std::int64_t midi = 3, audio = 4, other = 5;
+    auto *strip = stripOf(root.mixerView, audio);
+    auto *row = stripOf(root.mixer, audio);
+    auto *otherStrip = stripOf(root.mixerView, other);
+    check(peer && strip && row && otherStrip, "the monitor and both forms of the Track Activator are visible");
+    if (!peer || !strip || !row || !otherStrip)
+        return;
+    const auto drawActivator = [](juce::TextButton &button) {
+        juce::Image image(juce::Image::ARGB, button.getWidth(), button.getHeight(), true);
+        juce::Graphics graphics(image);
+        button.getLookAndFeel().drawButtonBackground(graphics, button, button.findColour(juce::TextButton::buttonColourId),
+                                                     false, false);
+        return image.getPixelAt(image.getWidth() / 2, image.getHeight() / 2);
+    };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = midi;
+    selection.toTrack = audio;
+    const juce::Point<int> in{10, 19 + 65};
+    auto *target = strip->getComponentAt(in);
+    check(target != nullptr && strip->monitorAt(in) == Monitor::In, "the click lands on Monitor In");
+    if (!target)
+        return;
+    target->mouseDown(pressAt(*target, target->getLocalPoint(strip, in).toFloat(), juce::ModifierKeys::leftButtonModifier));
+    frame();
+    check(root.recordState(audio).monitor == Monitor::In && root.recordState(midi).monitor == Monitor::In &&
+              root.recordState(other).monitor == Monitor::Off,
+          "Monitor In acts on the selected audio and MIDI tracks");
+    check(drawActivator(strip->active) == look::value && drawActivator(row->active) == look::value && !row->showsInOut() &&
+              strip->active.getToggleState() && row->active.getToggleState(),
+          "Monitor In paints both Track Activators blue, including where In/Out is hidden");
+
+    const juce::KeyPress remove(juce::KeyPress::deleteKey);
+    const auto before = OpJournal(document->store()).headSeq();
+    const bool handled = peer->handleKeyPress(remove);
+    frame();
+    const auto step = document->ops().nextUndo();
+    const bool reset = handled && root.reader().findTrack(audio) && root.reader().findTrack(midi) &&
+                       root.recordState(audio).monitor == Monitor::Off && root.recordState(midi).monitor == Monitor::Auto &&
+                       step && step->opCount == 2 && OpJournal(document->store()).headSeq() != before;
+    check(reset, "Delete on Monitor puts each selected track back to its own default in one step");
+    if (!reset)
+        return;
+    check(drawActivator(strip->active) == look::accent && drawActivator(row->active) == look::accent,
+          "resetting an enabled audio track restores its ordinary Activator colour");
+    const auto afterReset = OpJournal(document->store()).headSeq();
+    check(peer->handleKeyPress(remove) && OpJournal(document->store()).headSeq() == afterReset,
+          "Delete on an already default Monitor does not edit the project");
+    const bool undone = root.command(AppCommands::Undo);
+    frame();
+    check(undone && root.recordState(audio).monitor == Monitor::In && root.recordState(midi).monitor == Monitor::In &&
+              drawActivator(strip->active) == look::value,
+          "one Undo restores both Monitor switches and the In colour");
+
+    otherStrip->mouseDown(pressAt(*otherStrip, {4.f, 7.f}, juce::ModifierKeys::leftButtonModifier));
+    otherStrip->mouseUp(pressAt(*otherStrip, {4.f, 7.f}));
+    const bool titleHandled = peer->handleKeyPress(remove);
+    frame();
+    check(titleHandled && !root.reader().findTrack(other) && root.reader().findTrack(audio) && root.reader().findTrack(midi),
+          "Delete still deletes the selected track after a Mixer title click");
+}
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
@@ -19485,6 +19577,11 @@ int main(int argc, char **argv) {
         std::printf("%d checks, %d failures (Arrangement MIDI redraw)\n", checks, failures);
         return failures ? 1 : 0;
     }
+    if (argc == 2 && std::string(argv[1]) == "--mixer-monitor-only") {
+        trace("mixerMonitorControls", [&] { mixerMonitorControls(commands, temp.path()); });
+        std::printf("%d checks, %d failures (Mixer monitoring)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--note-selection-speed-only") {
         noteSelectionSpeed(commands, temp.path());
         std::printf("%d checks, %d failures (Note Editor selection)\n", checks, failures);
@@ -23158,6 +23255,7 @@ int main(int argc, char **argv) {
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
+    trace("mixerMonitorControls", [&] { mixerMonitorControls(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
