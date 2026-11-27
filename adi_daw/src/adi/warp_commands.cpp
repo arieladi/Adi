@@ -347,6 +347,27 @@ std::vector<std::uint64_t> sourceTransientFrames(const Payload& source,std::span
     frames.erase(std::unique(frames.begin(),frames.end()),frames.end());
     return frames;
 }
+void promoteTransients(std::vector<WarpMarker>& markers,const Payload& source,
+                       std::span<const std::uint64_t> fileFrames) {
+    const auto interior=sourceTransientFrames(source,fileFrames);
+    if(interior.empty())return;
+    std::vector<WarpMarker> expanded;
+    expanded.reserve(markers.size()+interior.size());
+    auto onset=interior.begin();
+    expanded.push_back(markers.front());
+    for(std::size_t i=1;i<markers.size();++i) {
+        const auto& right=markers[i];
+        const auto segment=std::span<const WarpMarker>(markers).subspan(i-1,2);
+        while(onset!=interior.end() && *onset<static_cast<std::uint64_t>(right.sourceFrame)) {
+            const auto frame=static_cast<std::int64_t>(*onset++);
+            if(frame<=expanded.back().sourceFrame)continue;
+            const auto tick=mapPosition(segment,frame,&WarpMarker::sourceFrame,&WarpMarker::tick);
+            if(tick>expanded.back().tick && tick<right.tick)expanded.push_back({frame,tick});
+        }
+        expanded.push_back(right);
+    }
+    markers=std::move(expanded);
+}
 template<class Transform>
 PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenceRate,const char* label,
                                 Transform transform) {
@@ -422,10 +443,12 @@ PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerCh
         }
     });
 }
-PreparedEdit prepareQuantizeWarpMarkers(Store& store,std::int64_t clipId,std::int64_t gridTicks,double referenceRate) {
-    return prepareWarpMapEdit(store,clipId,referenceRate,"Quantize Audio",[&](auto& markers,const Payload&,Payload&,edit::RowEdits&) {
+PreparedEdit prepareQuantizeWarpMarkers(Store& store,std::int64_t clipId,std::int64_t gridTicks,double referenceRate,
+                                        std::span<const std::uint64_t> fileFrames) {
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Quantize Audio",[&](auto& markers,const Payload& source,Payload&,edit::RowEdits&) {
         if(gridTicks<=0 || gridTicks>(std::int64_t{1}<<50))
             throw std::runtime_error("The audio quantize grid is out of range.");
+        if(markers.size()==2 && !fileFrames.empty())promoteTransients(markers,source,fileFrames);
         for(std::size_t i=1;i+1<markers.size();++i) {
             const auto tick=markers[i].tick;
             const auto within=tick%gridTicks;
@@ -439,23 +462,7 @@ PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std
                                            double referenceRate) {
     return prepareWarpMapEdit(store,clipId,referenceRate,"Add Warp Markers at Transients",
         [&](auto& markers,const Payload& source,Payload&,edit::RowEdits&) {
-            const auto interior=sourceTransientFrames(source,fileFrames);
-            std::vector<WarpMarker> expanded;
-            expanded.reserve(markers.size()+interior.size());
-            auto onset=interior.begin();
-            expanded.push_back(markers.front());
-            for(std::size_t i=1;i<markers.size();++i) {
-                const auto& right=markers[i];
-                const auto segment=std::span<const WarpMarker>(markers).subspan(i-1,2);
-                while(onset!=interior.end() && *onset<static_cast<std::uint64_t>(right.sourceFrame)) {
-                    const auto frame=static_cast<std::int64_t>(*onset++);
-                    if(frame<=expanded.back().sourceFrame)continue;
-                    const auto tick=mapPosition(segment,frame,&WarpMarker::sourceFrame,&WarpMarker::tick);
-                    if(tick>expanded.back().tick && tick<right.tick)expanded.push_back({frame,tick});
-                }
-                expanded.push_back(right);
-            }
-            markers=std::move(expanded);
+            promoteTransients(markers,source,fileFrames);
         });
 }
 PreparedEdit prepareWarpFromHere(Store& store,std::int64_t clipId,std::int64_t startTick,
