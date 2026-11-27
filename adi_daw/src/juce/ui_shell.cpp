@@ -2082,12 +2082,12 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
-    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Volume (always shown)").setTicked(true).setEnabled(false));
     if (viewMenu)
         menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerTrackOptions, "Track Options");
-    menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
-    menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Crossfader (requires Session View)").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Performance Impact (requires per-track CPU timings)").setEnabled(false));
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
     return menu;

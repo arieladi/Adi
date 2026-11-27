@@ -2667,8 +2667,25 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
     // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
     auto mixerOptions = [&root] { return menuLine(root.mixerOptionsMenu()); };
-    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact - | Return Tracks *",
+    check(mixerOptions() == "In/Out, Sends *, Volume (always shown) * -, Track Options, "
+                            "Crossfader (requires Session View) -, Performance Impact (requires per-track CPU timings) -"
+                            " | Return Tracks *",
           "the Mixer View's options in Live's order and groups (manual 18.1, its figure), In/Out and Track Options off");
+    // Read the View submenu and the arrow's popup models without opening either menu.
+    for (const bool viewMenu : {false, true}) {
+        const auto menu = root.mixerOptionsMenu(viewMenu);
+        juce::StringArray reasons;
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            const auto &item = it.getItem();
+            if (!item.isEnabled && !item.isSeparator) {
+                reasons.add(item.text);
+                check(!item.action && item.commandManager == nullptr, "an unavailable mixer section has no action");
+            }
+        }
+        check(reasons == juce::StringArray{"Volume (always shown)", "Crossfader (requires Session View)",
+                                          "Performance Impact (requires per-track CPU timings)"},
+              "the Mixer arrow and View submenu each explain their three disabled rows");
+    }
     // Its In/Out: Live 12's section under the name and over the sends; as many sends as still
     // leave the mixer its room, then the rest when the strip is taller.
     check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
@@ -2711,7 +2728,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
     root.publishSelection();
     check(root.command(AppCommands::ToggleMixerTrackOptions) && root.state().mixerTrackOptions && !root.state().trackOptions &&
-              mixerOptions() == "In/Out, Sends *, Volume * -, Track Options *, Crossfader -, Performance Impact - | Return Tracks *" &&
+              mixerOptions() == "In/Out, Sends *, Volume (always shown) * -, Track Options *, "
+                                "Crossfader (requires Session View) -, Performance Impact (requires per-track CPU timings) -"
+                                " | Return Tracks *" &&
               trackControls().endsWith("Track Options"),
           "the Mixer Controls' Track Options shows the Mixer View's Track Delay, ticked; the track controls' stays off");
     column = rowOf(root.mixerView, 3);
@@ -19515,7 +19534,8 @@ int main(int argc, char **argv) {
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
                       trackControls == "Hide/Show Track Controls | In/Out, Sends, Volume, Track Options" &&
                       mixerControls ==
-                          "In/Out, Sends, Volume - | Track Options, Crossfader -, Performance Impact - | Return Tracks" &&
+                          "In/Out, Sends, Volume (always shown) - | Track Options, Crossfader (requires Session View) -, "
+                          "Performance Impact (requires per-track CPU timings) - | Return Tracks" &&
                       !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),
                   "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus in Live's "
                   "groups, their toggles no longer loose in it");
