@@ -1043,6 +1043,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->setPlaybackProblems(document_->session().problems());
         root->attachTrackRendering(*document_);
         document_->configureTrackRenderDispatch([](std::function<void()> action) {
             juce::MessageManager::callAsync(std::move(action));
@@ -2418,6 +2419,7 @@ class AdiApplication final : public juce::JUCEApplication,
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
+            root_->setPlaybackProblems(document_->session().problems());
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
                     root_->status.setAudioDeviceProblem(std::move(problem));

@@ -18728,6 +18728,43 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
 // program), the box names the device and the cause, and a free input is not dropped with it; a device
 // chosen afterwards in Settings then plays at once, which the application makes sure of by attaching its
 // callback whether or not the first open succeeded (ui_main's attachAudio).
+void playbackProblemNotices(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "playback-problems.adi", true, {}, error);
+    check(document != nullptr, "Playback problems: open a project document");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "playback-problems");
+    root.setSize(1000, 650);
+    check(!root.status.playbackProblems.isVisible(), "a healthy project has no playback problems action");
+
+    const std::vector<std::string> reasons{
+        "clips#17: the source file is missing",
+        "devices#21 (Plug-in): unavailable",
+        "tempo_map: clip timing uses step tempos",
+    };
+    root.setPlaybackProblems(reasons);
+    check(root.arrangement.canvas.hasPlaybackProblem(17) && !root.arrangement.canvas.hasPlaybackProblem(21) &&
+              root.devices.hasPlaybackProblem(21) && !root.devices.hasPlaybackProblem(17),
+          "the Arrangement and Device View mark the affected items");
+    check(root.status.playbackProblems.isVisible() &&
+              root.status.playbackProblems.getButtonText() == "3 playback problems",
+          "the Status Bar offers one action with the problem count");
+    root.status.setAudioDeviceProblem("Audio device unavailable");
+    check(root.status.audioSettings.isVisible() &&
+              !root.status.playbackProblems.getBounds().intersects(root.status.audioSettings.getBounds()),
+          "the playback problem action leaves Audio Settings available");
+    std::vector<std::string> shown;
+    root.onPlaybackProblemList = [&](const auto &list) { shown = list; };
+    root.status.playbackProblems.onClick();
+    check(shown == reasons, "the Status Bar action opens the complete reasons in engine order");
+
+    root.setPlaybackProblems({});
+    check(!root.status.playbackProblems.isVisible() && !root.arrangement.canvas.hasPlaybackProblem(17) &&
+              !root.devices.hasPlaybackProblem(21) && root.status.audioSettings.isVisible(),
+          "when playback problems clear, their marks and action go away and Audio Settings remains available");
+}
 void heldOutputKeepsInput(const std::filesystem::path &dir) {
     settings::AppSettings fresh(appdata::App::Daw, dir / "held-output-audio.json");
     juce::AudioDeviceManager manager;
@@ -22530,6 +22567,7 @@ int main(int argc, char **argv) {
         }
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
+    trace("playbackProblemNotices", [&] { playbackProblemNotices(commands, temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });

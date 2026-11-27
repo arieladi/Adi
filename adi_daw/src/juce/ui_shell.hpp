@@ -349,6 +349,8 @@ class StatusBar final : public juce::Component {
     juce::TextButton audioSettings{"Audio Settings"};
     void setAudioDeviceProblem(juce::String problem);
     const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
+    juce::TextButton playbackProblems;
+    void setPlaybackProblemCount(std::size_t count);
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     DetailButton clipToggle{*this, true};
@@ -420,6 +422,9 @@ class AdiRootComponent final : public juce::Component,
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
     void sayStaleAddMenu();
+    void setPlaybackProblems(std::span<const std::string> reasons);
+    void showPlaybackProblems();
+    std::function<void(const std::vector<std::string> &)> onPlaybackProblemList;
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
     juce::String selectionText() const;
@@ -987,6 +992,9 @@ class AdiRootComponent final : public juce::Component,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
+    std::vector<std::string> playbackProblemReasons_;
+    std::unique_ptr<juce::DialogWindow> playbackProblemsWindow_;
+    void refreshPlaybackProblemList();
     // E5: the prompt while open, and a drop with choices landing one file at a time.
     std::unique_ptr<ImportPrompt> importPrompt_;
     struct PendingImport {

@@ -7,6 +7,7 @@
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/playback_problems.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_backup_schedule.hpp"
 #include "adi/ui/project_document.hpp"
@@ -639,6 +640,39 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
     }
 }
 
+void playbackProblemProjection() {
+    const std::vector<std::string> messages{
+        "clips#9: missing media",
+        "devices#12 (Synth (Stereo)): kept as a placeholder",
+        "routing#4: a key source is unavailable",
+        "clips#2: the requested pitch shift needs Warp",
+        "devices#3: key input is unavailable",
+        "clips#9: cannot open the media",
+        "devices#12 (Synth (Stereo)): state could not be read",
+        "clips#-3: missing media",
+        "devices#9223372036854775807 (): missing",
+        "automation: clips#15: unsupported",
+        " clips#7: this is not a leading clip tag",
+        "clips#7 (not a clip tag): unsupported",
+        "clips#07: padded IDs are not engine tags",
+        "clips#7a: malformed ID",
+        "clips#9223372036854775808: out of range",
+        "devices#+11: malformed ID",
+        "devices#-0: malformed ID",
+        "devices#11 (open name: missing delimiter",
+        "devices#11 (end name) : malformed delimiter",
+        "devices#11",
+    };
+    const auto projected = ui::projectPlaybackProblems(messages);
+    check(projected.reasons == messages, "SC-151: every complete reason stays in engine order");
+    check(projected.clipIds == std::vector<std::int64_t>{-3, 2, 9} &&
+              projected.deviceIds == std::vector<std::int64_t>{3, 12, INT64_MAX},
+          "SC-151: only exact clip and device tags mark IDs, once each in sorted order");
+    const auto empty = ui::projectPlaybackProblems({});
+    check(empty.reasons.empty() && empty.clipIds.empty() && empty.deviceIds.empty(),
+          "SC-151: clearing engine warnings clears all lists and markers");
+}
+
 // SC-320 (ADR-0258 d16): a plug-in that brought ADI down as the project loaded leaves the marker naming it;
 // the next open holds the plug-ins off, and the user then loads all but that one, or all.
 void heldOffAfterACrash(const std::filesystem::path &dir) {
@@ -712,6 +746,11 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && calm->placeholder && crashy && crashy->placeholder &&
               calm->error.find("held off") != std::string::npos,
           "held off: both stand as placeholders, their reason said");
+    const auto playback = ui::projectPlaybackProblems(session.problems());
+    check(std::binary_search(playback.deviceIds.begin(), playback.deviceIds.end(), 3) &&
+              std::binary_search(playback.deviceIds.begin(), playback.deviceIds.end(), 4) &&
+              playback.reasons == session.problems(),
+          "SC-151: actual engine placeholder reasons are listed and mark both devices");
     const auto loadIssueFor = [&document](std::int64_t id) {
         const auto publication = document->parameterFeed().current();
         const auto panel = std::find_if(publication->begin(), publication->end(),
@@ -5075,6 +5114,7 @@ int main(int argc, char **argv) {
     }
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
+    playbackProblemProjection();
     heldOffAfterACrash(temp.path());
     rememberedRouteStartsANewInstance(temp.path());
     importWithChoices(temp.path());

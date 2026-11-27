@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/playback_problems.hpp"
 #include "adi/automation_splice_store.hpp"
 #include "adi/track_image.hpp"
 #include "adi/media/media_ops.hpp"
@@ -1191,11 +1192,25 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
         if (root_.openAudioSettings)
             root_.openAudioSettings();
     };
+    addChildComponent(playbackProblems);
+    playbackProblems.setTitle("Playback problems");
+    playbackProblems.setTooltip("Show playback problems in this project.");
+    playbackProblems.onClick = [this] { root_.showPlaybackProblems(); };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
     audioDeviceProblem_ = std::move(problem);
     audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
     audioSettings.setTooltip(audioDeviceProblem_);
+    resized();
+    repaint();
+}
+void StatusBar::setPlaybackProblemCount(std::size_t count) {
+    playbackProblems.setVisible(count > 0);
+    if (count > 0) {
+        const auto label = std::to_string(count) + (count == 1 ? " playback problem" : " playback problems");
+        playbackProblems.setButtonText(juce::String(label));
+    }
+    resized();
     repaint();
 }
 void StatusBar::resized() {
@@ -1208,8 +1223,15 @@ void StatusBar::resized() {
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
     const int messageWidth = std::max(0, w - 419);
-    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
-    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
+    const int available = std::max(0, messageWidth - 8);
+    const int audioWidth = audioSettings.isVisible()
+        ? std::min(98, playbackProblems.isVisible() ? available / 2 : available) : 0;
+    const int playbackWidth = playbackProblems.isVisible()
+        ? std::min(136, std::max(0, available - audioWidth - (audioWidth > 0 ? 4 : 0))) : 0;
+    const int right = 35 + messageWidth - 4;
+    audioSettings.setBounds(right - audioWidth, 11, audioWidth, 16);
+    const int playbackRight = right - audioWidth - (audioWidth > 0 ? 4 : 0);
+    playbackProblems.setBounds(playbackRight - playbackWidth, 11, playbackWidth, 16);
 }
 void StatusBar::DetailButton::clicked(const juce::ModifierKeys &mods) {
     // Letting go after a drag in the Clip View selector only finishes the drag.
@@ -1320,7 +1342,8 @@ void StatusBar::paint(juce::Graphics &g) {
     auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
     if (audioProblem && error)
         text << "  " << juce::String(root_.error());
-    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
+                             (playbackProblems.isVisible() ? playbackProblems.getWidth() + 4 : 0);
     g.drawText(text, message.reduced(8, 0).withTrimmedRight(actionWidth), juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
@@ -1397,11 +1420,61 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    playbackProblemsWindow_.reset();
     juce::Desktop::getInstance().removeFocusChangeListener(this);
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
+}
+void AdiRootComponent::setPlaybackProblems(std::span<const std::string> reasons) {
+    if (std::ranges::equal(reasons, playbackProblemReasons_))
+        return;
+    auto problems = projectPlaybackProblems(reasons);
+    playbackProblemReasons_ = std::move(problems.reasons);
+    arrangement.canvas.setPlaybackProblemIds(std::move(problems.clipIds));
+    devices.setPlaybackProblemIds(std::move(problems.deviceIds));
+    mixViewPanel.repaint();
+    status.setPlaybackProblemCount(playbackProblemReasons_.size());
+    refreshPlaybackProblemList();
+}
+void AdiRootComponent::refreshPlaybackProblemList() {
+    if (!playbackProblemsWindow_)
+        return;
+    auto *list = static_cast<juce::TextEditor *>(playbackProblemsWindow_->getContentComponent());
+    juce::StringArray reasons;
+    for (const auto &reason : playbackProblemReasons_)
+        reasons.add(juce::String(reason));
+    list->setText(reasons.isEmpty() ? juce::String("No playback problems.") : reasons.joinIntoString("\n\n"), false);
+}
+void AdiRootComponent::showPlaybackProblems() {
+    if (playbackProblemReasons_.empty())
+        return;
+    if (onPlaybackProblemList) {
+        onPlaybackProblemList(playbackProblemReasons_);
+        return;
+    }
+    if (!playbackProblemsWindow_) {
+        auto list = std::make_unique<juce::TextEditor>();
+        list->setTitle("Playback problem details");
+        list->setMultiLine(true, true);
+        list->setReadOnly(true);
+        list->setCaretVisible(false);
+        list->setScrollbarsShown(true);
+        list->setSize(540, 260);
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Playback problems";
+        options.content.setOwned(list.release());
+        options.componentToCentreAround = this;
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        playbackProblemsWindow_.reset(options.create());
+        playbackProblemsWindow_->setLookAndFeel(&look::liveLook());
+        refreshPlaybackProblemList();
+    }
+    playbackProblemsWindow_->setVisible(true);
+    playbackProblemsWindow_->toFront(true);
 }
 bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
     const auto *info = findBuiltin(uid);
