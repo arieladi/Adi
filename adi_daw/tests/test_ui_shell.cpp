@@ -18206,18 +18206,33 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
           "Delete takes the chosen breakpoint away");
-    // A14: the press that adds a breakpoint on the line goes on to move it while it drags.
-    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
-    canvas.mouseDrag(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
-    canvas.mouseUp(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
+    // SC-344: the whole gesture adds the new point at its final location.
+    const auto beforeAddDrag = OpJournal(document->store()).headSeq();
+    const juce::Point<float> addAt{barX + 1, lineY}, finishAt{twoBars + 1, upper};
+    canvas.mouseDown(pressAt(canvas, addAt));
+    check(laneOf().lane == nullptr && OpJournal(document->store()).headSeq() == beforeAddDrag,
+          "SC-344: pressing the line drafts a point without writing a lane");
+    canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+    check(laneOf().lane == nullptr && OpJournal(document->store()).headSeq() == beforeAddDrag,
+          "SC-344: moving the draft does not write any edits");
+    canvas.mouseUp(dragAt(canvas, addAt, finishAt));
     root.frame();
     env = laneOf();
     check(env.data != nullptr && env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
-              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Move Automation Point",
-          "a press on the line and a drag: the new breakpoint follows the mouse and lands where it is let go");
-    check(root.command(AppCommands::Undo) && laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
-              laneOf().data->points[0].time == textproj::kWhole && root.command(AppCommands::Undo) && laneOf().lane == nullptr,
-          "Undo puts it where the press added it, and again takes it away");
+              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Add Automation Point" &&
+              canvas.chosenAutomationPoint() && canvas.chosenAutomationPoint()->point == env.data->points[0].id,
+          "SC-344: releasing adds and selects the point at its final time and value");
+    check(root.command(AppCommands::Undo) && laneOf().lane == nullptr,
+          "SC-344: one Undo removes the whole new breakpoint gesture");
+    check(root.command(AppCommands::Redo) && laneOf().data && laneOf().data->points.size() == 1 &&
+              laneOf().data->points[0].time == 2 * textproj::kWhole,
+          "SC-344: Redo restores only the final breakpoint");
+    check(root.command(AppCommands::Undo) && laneOf().lane == nullptr, "clear the lane for the next gesture");
+    canvas.mouseDown(pressAt(canvas, addAt));
+    canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), "Escape cancels a held breakpoint draft");
+    canvas.mouseUp(dragAt(canvas, addAt, finishAt));
+    check(laneOf().lane == nullptr, "a cancelled draft adds no breakpoint");
     root.frame();
     // Off the line a double-click adds a breakpoint where it is (manual 25.5.2): at the foot, silence.
     canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));

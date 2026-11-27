@@ -410,10 +410,18 @@ class ArrangementCanvas final : public juce::Component,
     juce::String automationValueReadout_;
     juce::GlyphArrangement automationValueGlyphs_;
     juce::Rectangle<float> automationValueReadoutBounds_;
-    std::optional<AutomationPick> pointDrag_, chosenPoint_;
-    std::int64_t pointTick_ = 0;
-    bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
-    double pointValue_ = 0;
+    struct AutomationPointDrag {
+        AutomationTarget target;
+        std::int64_t track, tick;
+        std::optional<std::uint64_t> point; // absent until a new point is committed
+        double value;
+        std::uint64_t generation;
+        bool cancelled = false;
+    };
+    bool automationPointDragIsCurrent() const;
+    void updateAutomationPointDrag(const juce::MouseEvent &);
+    std::optional<AutomationPointDrag> pointDrag_;
+    std::optional<AutomationPick> chosenPoint_;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;
     int fadeFromY_ = 0;
