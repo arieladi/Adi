@@ -1889,8 +1889,22 @@ std::optional<ProjectDocument::HotSwapTargetInfo> ProjectDocument::hotSwapTarget
     }
 }
 
+std::optional<ProjectDocument::HotSwapTargetInfo> ProjectDocument::hotSwapTargetAfterCapture(
+    const DevicePanelData &target) {
+    const auto current = hotSwapTarget(target);
+    // Built-in edits already own their state in the journal. Preset recall
+    // keeps their inverse in the same transaction, including unauthored rows.
+    if (!current || current->device.format == "internal")
+        return current;
+    if (!capturePluginState(target.id))
+        return std::nullopt;
+    // The plug-in's capture runs on the owner and may yield to UI changes.
+    // Prepare the swap against the committed state and the same live target.
+    return hotSwapTarget(target);
+}
+
 std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, const std::string &uid) {
-    if (!hotSwapTarget(target))
+    if (!hotSwapTargetAfterCapture(target))
         return 0;
     auto prepared = prepareBuiltinReplacement(*store_, uid, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
@@ -1898,7 +1912,7 @@ std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, cons
 }
 
 std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const rows::PluginRef &ref) {
-    if (!hotSwapTarget(target))
+    if (!hotSwapTargetAfterCapture(target))
         return 0;
     auto prepared = preparePluginReplacement(*store_, ref, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
@@ -1912,7 +1926,7 @@ bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t 
 
 std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, preset::Preset presetValue,
                                           const std::optional<rows::PluginRef> &installed) {
-    const auto identity = hotSwapTarget(target);
+    const auto identity = hotSwapTargetAfterCapture(target);
     if (!identity)
         return 0;
     PreparedBuiltinInsert prepared;

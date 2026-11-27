@@ -405,6 +405,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
     std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    std::optional<HotSwapTargetInfo> hotSwapTargetAfterCapture(const DevicePanelData &);
     std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
     bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);

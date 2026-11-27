@@ -25,6 +25,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <chrono>
 #include <cmath>
@@ -36,6 +37,7 @@
 #include <optional>
 #include <string_view>
 #include <thread>
+#include <utility>
 #if !defined(_WIN32)
 #include <sys/stat.h>
 #include <unistd.h>
@@ -190,6 +192,8 @@ class SilentStateKnobs final : public SurfaceKnobs {
     std::vector<std::uint8_t> saveState(const std::string &role) const override {
         if (role != "chunk" || refuseSave)
             return {};
+        if (auto notify = std::exchange(onSave, {}))
+            notify();
         return {patch};
     }
     bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
@@ -209,6 +213,7 @@ class SilentStateKnobs final : public SurfaceKnobs {
     }
     std::uint8_t patch = 1;
     bool refuseSave = false;
+    mutable std::function<void()> onSave;
   private:
     std::uint64_t epoch_ = 0;
 };
@@ -1371,6 +1376,95 @@ void dropSampleInstrument(const std::filesystem::path &dir) {
     check(document->ops().redo().ok && document->synchronise() && deviceOnTrack() == instrument && hasSample() && play() > .05f,
           "SC-283: Redo restores the same loaded instrument and its sound");
     document->release();
+}
+
+void hotSwapLiveState(const std::filesystem::path &dir) {
+    enum class Kind { Plugin, Preset, Refused, Changed };
+    struct Case { const char *file; Kind kind; };
+    constexpr std::array<Case, 4> cases{{
+        {"swap-plugin.adi", Kind::Plugin}, {"swap-preset.adi", Kind::Preset},
+        {"swap-refused.adi", Kind::Refused}, {"swap-changed.adi", Kind::Changed}}};
+    for (const auto &item : cases) {
+        const auto loader = device::withBuiltinDevices(
+            [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+                return request.ref && (request.ref->uid == "test.hot-swap" || request.ref->uid == "test.replacement")
+                    ? std::make_unique<SilentStateKnobs>() : nullptr;
+            });
+        std::string error;
+        auto doc = ui::ProjectDocument::open(dir / item.file, true, loader, error);
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = "test.hot-swap";
+        plugin.name = "Hot-Swap source";
+        plugin.subtype = "effect";
+        const bool inserted = doc && doc->insertPlugin(plugin, 4) && doc->capturePluginState();
+        check(inserted, "Hot-Swap capture: store a hosted device baseline");
+        if (!inserted)
+            continue;
+        const auto &devices = doc->session().model().devices;
+        const auto source = std::find_if(devices.begin(), devices.end(), [&](const auto &entry) {
+            return entry.name == plugin.name;
+        });
+        if (source == devices.end())
+            continue;
+        const auto id = source->id;
+        auto *knobs = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        const auto published = doc->parameterFeed().current();
+        check(published != nullptr, "Hot-Swap capture: publish the device panel data");
+        if (!published)
+            continue;
+        const auto panel = std::find_if(published->begin(), published->end(),
+                                        [id](const auto &entry) { return entry.id == id; });
+        check(knobs && panel != published->end(), "Hot-Swap capture: identify the selected exact runtime");
+        if (!knobs || panel == published->end())
+            continue;
+        const auto target = *panel;
+        auto replacement = plugin;
+        replacement.uid = "test.replacement";
+        replacement.name = "Replacement";
+        if (item.kind == Kind::Refused) {
+            const auto head = OpJournal(doc->store()).headSeq();
+            knobs->refuseSave = true;
+            check(doc->hotSwapPlugin(target, replacement) == 0 &&
+                      doc->session().instanceFor(id) == knobs && OpJournal(doc->store()).headSeq() == head &&
+                      doc->error().find("Hot-Swap source") != std::string::npos,
+                  "Hot-Swap capture: an unreadable live target refuses replacement");
+            continue;
+        }
+        if (item.kind == Kind::Changed) {
+            bool locked = false;
+            knobs->onSave = [&] {
+                OpRequest request;
+                request.opType = "track.setLocked";
+                request.payload = {{"id", 4}, {"locked", true}};
+                locked = doc->ops().submit(request).ok && doc->synchronise();
+            };
+            check(doc->hotSwapBuiltin(target, "org.adidaw.builtin.utility") == 0 && locked &&
+                      doc->session().instanceFor(id) == knobs &&
+                      doc->error().find("locked track") != std::string::npos,
+                  "Hot-Swap capture: a target locked during capture is revalidated before replacement");
+            continue;
+        }
+        // This opaque state is live only. The device does not issue a change notification.
+        knobs->patch = 9;
+        std::int64_t swapped = 0;
+        if (item.kind == Kind::Preset) {
+            preset::Preset presetValue;
+            presetValue.device = {plugin.format, plugin.uid, {}};
+            presetValue.name = "Hot-Swap test preset";
+            presetValue.state["chunk"] = {std::byte{23}};
+            swapped = doc->hotSwapPreset(target, std::move(presetValue));
+            check(swapped == id && knobs->patch == 23, "Hot-Swap capture: recall an in-place preset");
+        } else {
+            swapped = doc->hotSwapPlugin(target, replacement);
+            check(swapped != 0 && swapped != id, "Hot-Swap capture: replace the device with another plug-in");
+        }
+        const bool undone = swapped && doc->ops().undo().ok && doc->synchronise();
+        doc->tick(1);
+        auto *restored = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        check(undone && restored && restored->patch == 9,
+              "Hot-Swap capture: one Undo restores the latest live opaque state");
+    }
 }
 
 void devicePresetRoundTrip(const std::filesystem::path &dir) {
@@ -6040,6 +6134,10 @@ int main(int argc, char **argv) {
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
     devicePresetRoundTrip(temp.path());
+    {
+        test::TempDirectory hotSwapStateDir("ui_document", "hot-swap-state");
+        hotSwapLiveState(hotSwapStateDir.path());
+    }
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());
