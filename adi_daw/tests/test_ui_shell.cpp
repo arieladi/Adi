@@ -15995,6 +15995,7 @@ void automationChooserControls(AppCommands &commands, const std::filesystem::pat
                           document->sessionState(), "automation-chooser-controls");
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.automationParameters = [&](std::int64_t track) { return document->automationParameters(track); };
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
@@ -16082,6 +16083,11 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     peer.addToDesktop(0);
     root.afterEdit=[&] {document->synchronise();};
     root.setSize(1440,900);
+    root.arrangement.geometry.resizeTrack(2, 112);
+    // Use exact gesture coordinates regardless of the default zoom or adaptive grid.
+    root.arrangement.geometry.scale = 48;
+    root.arrangement.geometry.grid.snap = false;
+    root.arrangement.changed();
     root.setAutomationMode(true);
     root.frame();
     check(root.addAutomationPoint(2,3*bar/4,-6) && root.addAutomationPoint(2,5*bar/4,-3),
@@ -16092,7 +16098,7 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     const auto body=std::find_if(bodies.begin(),bodies.end(),[](const auto &item) {return item.track->id==2;});
     if(body==bodies.end()) {check(false,"the MIDI automation body is visible");return;}
     const float y=body->bottom-4;
-    const auto at=[&](std::int64_t tick) {return juce::Point<float>(static_cast<float>(root.arrangement.geometry.x(tick))+1,y);};
+    const auto at=[&](std::int64_t tick) {return juce::Point<float>(static_cast<float>(root.arrangement.geometry.x(tick)),y);};
     const auto choose=[&](std::int64_t first,std::int64_t last) {
         canvas.mouseDown(pressAt(canvas,at(first)));
         canvas.mouseDrag(dragAt(canvas,at(first),at(last)));
@@ -16111,6 +16117,7 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     };
     const auto volume=volumeTarget(2);
     choose(bar/2,bar);
+    check(canvas.hasAutomationSelection(), "the drag selects the envelope body");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),"Delete is handled in the automation time range");
     root.frame();
     check(clipIntact() && !point(volume,3*bar/4,-6) && point(volume,5*bar/4,-3),
