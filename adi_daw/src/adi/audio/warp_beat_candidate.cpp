@@ -64,6 +64,50 @@ struct MeterPulse {
     bool compound;
 };
 
+struct PulseSignature {
+    float energy = 0;
+    float difference = 0;
+};
+
+PulseSignature pulseSignature(std::span<const float> samples, float precedingSample) {
+    PulseSignature result;
+    for (const auto sample : samples) {
+        result.energy += sample * sample;
+        const auto difference = sample - precedingSample;
+        result.difference += difference * difference;
+        precedingSample = sample;
+    }
+    return result;
+}
+
+bool uniformPulse(std::span<const PulseSignature> hops, std::span<const std::uint64_t> beats,
+                  std::size_t pulsesPerBar, std::stop_token stop) {
+    constexpr std::size_t minimumCompleteBars = 3;
+    if (beats.size() < minimumCompleteBars * pulsesPerBar + 2) return false;
+    PulseSignature minimum{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    PulseSignature maximum;
+    for (std::size_t i = 1; i + 1 < beats.size(); ++i) {
+        if (stop.stop_requested()) return false;
+        // Compare complete beat interiors. Fixed windows near the tracked
+        // beat can mistake hop-size position jitter for a musical accent.
+        const auto start = static_cast<std::size_t>((beats[i - 1] + beats[i] + kHop) / (2 * kHop));
+        const auto end = static_cast<std::size_t>((beats[i] + beats[i + 1] + kHop) / (2 * kHop));
+        if (end <= start || end > hops.size()) return false;
+        PulseSignature beat;
+        for (const auto& hop : hops.subspan(start, end - start)) {
+            beat.energy += hop.energy;
+            beat.difference += hop.difference;
+        }
+        minimum.energy = std::min(minimum.energy, beat.energy);
+        minimum.difference = std::min(minimum.difference, beat.difference);
+        maximum.energy = std::max(maximum.energy, beat.energy);
+        maximum.difference = std::max(maximum.difference, beat.difference);
+    }
+    constexpr float minimumUniformFraction = 0.96f;
+    return maximum.energy > 0 && minimum.energy >= maximum.energy * minimumUniformFraction &&
+           minimum.difference >= maximum.difference * minimumUniformFraction;
+}
+
 std::optional<MeterPulse> resolveMeter(const WarpBeatMeter& meter, double detectedPulseBpm) {
     const bool compound = meter.numerator >= 6 && meter.numerator % 3 == 0 && meter.denominator >= 8;
     const auto noteTicks = textproj::kWhole / meter.denominator;
@@ -160,7 +204,10 @@ struct WarpBeatCandidateAnalyzer::State {
         std::copy(previous.begin(), previous.end(), spectrumInput.begin());
         std::copy(pending.begin(), pending.end(), spectrumInput.begin() + kHop);
         detection.push_back(onset.processTimeDomain(spectrumInput.data()));
-        if (appendDownbeatAudio) downbeat.pushAudioBlock(pending.data());
+        if (appendDownbeatAudio) {
+            downbeat.pushAudioBlock(pending.data());
+            pulseSignatures.push_back(pulseSignature(std::span(pending).first(pendingFrames), previous.back()));
+        }
         previous.swap(pending);
         pendingFrames = 0;
     }
@@ -174,6 +221,7 @@ struct WarpBeatCandidateAnalyzer::State {
     std::array<float, kHop> previous{}, pending{};
     std::array<double, kWindow> spectrumInput{};
     std::vector<double> detection;
+    std::vector<PulseSignature> pulseSignatures;
 };
 
 WarpBeatCandidateAnalyzer::WarpBeatCandidateAnalyzer(unsigned int beatsPerBar) {
@@ -259,7 +307,11 @@ WarpBeatCandidateResult WarpBeatCandidateAnalyzer::finish(std::stop_token stop) 
     const auto grid = state->meter ? resolveMeter(*state->meter, rawPulseBpm)
         : std::optional<MeterPulse>{{state->beatsPerBar, textproj::kPPQ, false}};
     if (!grid) return {Error::NoBeat, {}, {}, {}, 0};
-    if (result.beats.size() >= grid->pulsesPerBar + 2) {
+    if (grid->pulsesPerBar == 1) {
+        result.downbeats.resize(result.beats.size());
+        std::iota(result.downbeats.begin(), result.downbeats.end(), std::size_t{0});
+    } else if (result.beats.size() >= grid->pulsesPerBar + 2 &&
+               !uniformPulse(state->pulseSignatures, result.beats, grid->pulsesPerBar, stop)) {
         std::size_t decimatedFrames = 0;
         const auto* pcm = state->downbeat.getBufferedAudio(decimatedFrames);
         const auto accent = grid->compound ? accentedBarPhase({pcm, decimatedFrames}, result.beats, grid->pulsesPerBar, stop)

@@ -11,7 +11,7 @@
 namespace adi::audio {
 namespace {
 const std::string tag = "AWTM";
-constexpr std::uint32_t version = 1;
+constexpr std::uint32_t version = 2; // Distinguish a detected pulse from repeatable bar evidence.
 constexpr std::size_t maxPoints = 1000000;
 constexpr std::size_t headerSize = 56;
 

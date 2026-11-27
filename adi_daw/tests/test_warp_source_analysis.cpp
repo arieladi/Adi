@@ -116,6 +116,30 @@ void timingWithUnwritableCache(const std::filesystem::path& folder) {
         !audio::readWarpTiming(cache, {hash.hex, rate, 1, reader.frames()}, {4, 68}),
         "a failed cache publication still returns timing and leaves the request able to retry");
 }
+
+void unaccentedGridKeepsPickup(const std::filesystem::path& source, const std::string& hash,
+                               const std::filesystem::path& cacheFolder) {
+    constexpr auto analysisRate = audio::kWarpAnalysisRate;
+    audio::WavReader reader(source);
+    media::AnalysisCache cache(cacheFolder);
+    audio::WarpTimingAnalysis timing;
+    timing.medianBpm = 120;
+    timing.tempoRegions = {{0, 120}};
+    for (std::uint64_t beat = 0; beat < 32; ++beat) {
+        const auto frame = analysisRate / 20 + beat * (analysisRate / 2);
+        timing.beats.push_back(frame);
+        timing.onsets.push_back({frame, .5f, -12.f});
+    }
+    std::string error;
+    check(audio::storeWarpTiming(cache, {hash, rate, 1, reader.frames()}, {4, 50}, timing, error) ==
+        media::AnalysisCacheProblem::None, "store a steady pulse with no measured bar phase");
+    audio::AutoWarpOptions options;
+    options.useCachedBeatGrid = true;
+    options.fromFirstBeat = true;
+    const auto plan = audio::analyzeWarpSource(reader, hash, 0, reader.frames(), options, {}, &cache);
+    check(plan && plan.trimFrames == 0 && plan.estimatedBpm == 120 && plan.markers.front() == WarpMarker{0, 0},
+          "requested first downbeat keeps the full source when only a steady pulse was measured");
+}
 }
 
 int main() {
@@ -164,5 +188,6 @@ int main() {
     overlappingColdTiming(source, hash.hex, temp.path() / "concurrent");
     timingFlightLifecycle(source, hash.hex, temp.path());
     timingWithUnwritableCache(temp.path());
+    unaccentedGridKeepsPickup(source, hash.hex, temp.path() / "unaccented");
     return errors ? 1 : 0;
 }

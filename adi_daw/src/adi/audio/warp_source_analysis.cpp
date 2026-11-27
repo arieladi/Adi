@@ -203,7 +203,8 @@ AutoWarpResult analyzeWarpSource(WavReader& source, const std::string& contentHa
             grid.tempoRegions = std::move(timing->tempoRegions);
             grid.medianBpm = timing->medianBpm.value_or(0);
             grid.ticksPerPulse = timing->ticksPerPulse;
-            if (auto map = buildWarpBeatCandidateMap(grid, frames, source.sampleRate(), options.fromFirstBeat, stop)) {
+            const bool useDownbeat = options.fromFirstBeat && !grid.downbeats.empty();
+            if (auto map = buildWarpBeatCandidateMap(grid, frames, source.sampleRate(), useDownbeat, stop)) {
                 AutoWarpResult result;
                 result.estimatedBpm = grid.medianBpm;
                 result.trimFrames = map->trimFrames;
@@ -213,8 +214,12 @@ AutoWarpResult analyzeWarpSource(WavReader& source, const std::string& contentHa
                 });
                 return result;
             }
+            // A cached onset is an attack, not a bar boundary. If the timing
+            // grid supplied no usable map, the onset fit keeps any pickup.
+            auto keepSourceStart = options;
+            keepSourceStart.fromFirstBeat = false;
             return autoWarpFromOnsets(warpOnsetsInWindow(*timing, source.sampleRate(), start, frames),
-                frames, source.sampleRate(), options, stop);
+                frames, source.sampleRate(), keepSourceStart, stop);
         }
     }
 

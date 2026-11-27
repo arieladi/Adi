@@ -31,14 +31,14 @@ WarpBeatCandidateResult detect(std::span<const float> pcm, std::size_t chunkSize
     return analyzer.finish();
 }
 
-std::vector<float> accentedClicks(std::uint32_t sourceRate) {
+std::vector<float> accentedClicks(std::uint32_t sourceRate, bool accents = true) {
     std::vector<float> clicks(16 * sourceRate + sourceRate / 250, 0.0f);
     const auto length = sourceRate / 500;
     for (std::size_t index = 0; index < 32; ++index) {
         const auto start = index * (sourceRate / 2) + sourceRate / 20;
         for (std::size_t offset = 0; offset < length; ++offset) {
             const double t = static_cast<double>(offset) / static_cast<double>(length);
-            clicks[start + offset] = static_cast<float>((1.0 - t) * std::sin(t * (index % 4 == 0 ? 13.0 : 61.0)));
+            clicks[start + offset] = static_cast<float>((1.0 - t) * std::sin(t * (accents && index % 4 == 0 ? 13.0 : 61.0)));
         }
     }
     return clicks;
@@ -63,6 +63,17 @@ void streaming() {
     WarpBeatCandidateAnalyzer cancelled;
     check(!cancelled.append(clicks, stop.get_token()) && cancelled.finish().error == WarpBeatCandidateError::Cancelled,
           "stopping an append yields no partial result");
+}
+
+void unaccentedBeats() {
+    const auto pcm = accentedClicks(rate, false);
+    const auto result = detect(pcm, 777);
+    check(result && result.beats.size() >= 28 && result.downbeats.empty(),
+          "identical recurring clicks establish a steady pulse without a bar phase");
+    check(!buildWarpBeatCandidateMap(result, pcm.size(), rate, true),
+          "first-downbeat placement refuses to trim to an arbitrary click");
+    const auto map = buildWarpBeatCandidateMap(result, pcm.size(), rate, false);
+    check(map && map->trimFrames == 0, "an ambiguous bar phase preserves the source start");
 }
 
 void compareSourceRates() {
@@ -158,6 +169,7 @@ void pickupAndTempoShift() {
 
 int main() {
     streaming();
+    unaccentedBeats();
     compareSourceRates();
     compoundMeter();
     pickupAndTempoShift();

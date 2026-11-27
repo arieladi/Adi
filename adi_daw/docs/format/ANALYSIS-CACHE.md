@@ -49,7 +49,7 @@ tempo and key with provenance and key strength, plus bounded read-only file
 tags. Configuration 1 identifies the expanded tag reader. Like APKS, the
 payload repeats source dimensions and checks them against the envelope.
 
-`AWTM` version 1 carries a derived Warp analysis in the 44,100 Hz source
+`AWTM` version 2 carries a derived Warp analysis in the 44,100 Hz source
 clock. Configuration packs the meter numerator, denominator and transient
 sensitivity. The 56-byte payload header repeats the source dimensions,
 counts the four point series, and carries the median tempo, an optional
