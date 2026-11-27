@@ -10,6 +10,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <span>
 #include <vector>
 #include <string>
 namespace adi::ui {
@@ -481,12 +482,39 @@ struct ArrangementGeometry {
             --i;
         return i;
     }
+    static constexpr int takeLaneHeight = 40;
+    std::set<std::int64_t> shownTakeLanes;
+    std::span<const engine::TakeLaneNode> takeLanes(const engine::TrackNode &track) const noexcept {
+        if (shown(track.id) && shownTakeLanes.contains(track.id) && !foldedTracks.contains(track.id))
+            return track.takeLanes;
+        return {};
+    }
+    int rowHeight(const engine::TrackNode &track) const noexcept {
+        return heightFor(track.id) + takeLaneHeight * static_cast<int>(takeLanes(track).size());
+    }
+    struct TakeLaneHit {
+        const engine::TrackNode *track;
+        const engine::TakeLaneNode *lane;
+    };
+    std::optional<TakeLaneHit> takeLaneAt(const SnapshotReader &r, int y) const noexcept {
+        int top = 0;
+        const auto position = rowAt(r, y, &top);
+        const auto all = rows(r);
+        if (position >= all.size())
+            return {};
+        const auto *track = all[position].track;
+        const auto offset = y - top - heightFor(track->id);
+        const auto visible = takeLanes(*track);
+        if (offset < 0 || static_cast<std::size_t>(offset / takeLaneHeight) >= visible.size())
+            return {};
+        return TakeLaneHit{track, &visible[static_cast<std::size_t>(offset / takeLaneHeight)]};
+    }
     // The foot's height, and the tracks' above it, as shown.
     int footHeight(const SnapshotReader &r) const noexcept {
         const auto all = rows(r);
         int total = 0;
         for (auto i = footStart(all); i < all.size(); ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     int tracksHeight(const SnapshotReader &r) const noexcept {
@@ -494,7 +522,7 @@ struct ArrangementGeometry {
         const auto foot = footStart(all);
         int total = 0;
         for (std::size_t i = 0; i < foot; ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     // Where the foot begins in the lanes: at their bottom, whatever the scroll; right after the
@@ -516,7 +544,7 @@ struct ArrangementGeometry {
                 y = footTop(r);
             if (all[i].track->id == id)
                 return heightFor(id) > 0 ? y : -1;
-            y += heightFor(all[i].track->id);
+            y += rowHeight(*all[i].track);
         }
         return -1;
     }
@@ -533,7 +561,7 @@ struct ArrangementGeometry {
             return false;
         int top = 0;
         for (std::size_t k = 0; k < i; ++k)
-            top += heightFor(all[k].track->id);
+            top += rowHeight(*all[k].track);
         const int before = scrollY;
         const int footY = footTop(r);
         if (!fully && top + h > scrollY && top < scrollY + footY)
@@ -561,7 +589,7 @@ struct ArrangementGeometry {
         const bool inFoot = foot < all.size() && y >= footY;
         int at = inFoot ? footY : -scrollY;
         for (std::size_t i = inFoot ? foot : 0; i < (inFoot ? all.size() : foot); ++i) {
-            const int h = heightFor(all[i].track->id);
+            const int h = rowHeight(*all[i].track);
             if (y >= at && y < at + h) {
                 if (top != nullptr)
                     *top = at;

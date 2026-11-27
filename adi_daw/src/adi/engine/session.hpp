@@ -221,6 +221,8 @@ public:
     /// chain but kept alive, because a graph the audio thread may still be
     /// rendering holds their nodes. Then rebuild.
     bool refresh(const Store& store);
+    /// Owner-thread audition, exclusive per track. Zero restores the main lane.
+    bool auditionTakeLane(const Store&, std::int64_t track, std::int64_t lane);
     /// Apply a single material edit admitted by the document's current view.
     /// Empty means the ordinary refresh path must handle the edit.
     std::optional<bool> refreshLocalEdit(const Store&, const ProjectView&);
@@ -741,6 +743,7 @@ private:
     bool prepareFormat(double sampleRate, std::int32_t maxFrames, bool workerPolicyChanged);
     std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
+    std::map<std::int64_t, std::int64_t> auditionedTakeLanes_;
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
         std::string row;

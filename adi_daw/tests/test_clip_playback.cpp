@@ -345,6 +345,21 @@ void takeLanePlayback() {
         }
     }
     check(exact, "main comp plays sample-exactly while a stored take overlaps it");
+    const auto history = OpJournal(*f.store).headSeq();
+    check(f.session.auditionTakeLane(*f.store, 1, 7), "SC-253: auditioning a lane rebuilds the live timeline");
+    f.session.transport().locate(0);
+    const auto audition = f.render(512);
+    bool takeExact = true;
+    for (std::size_t channel = 0; channel < 2; ++channel)
+        for (std::size_t frame = 0; frame < 512; ++frame) {
+            const auto expected = frame < 500 ? f.media[(frame + 51) * 2 + channel] : 0.0f;
+            takeExact = takeExact && audition[channel * 512 + frame] == expected;
+        }
+    check(takeExact && OpJournal(*f.store).headSeq() == history,
+          "SC-253: the take replaces the main playback during audition without an Undo entry");
+    check(f.session.auditionTakeLane(*f.store, 1, 0), "SC-253: turning off audition restores the main lane");
+    f.session.transport().locate(0);
+    check(f.render(512) == out, "SC-253: turning audition off restores the sample-exact comp");
     f.store->db().exec("DELETE FROM clips WHERE id=1");
     if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
     f.session.transport().locate(0);

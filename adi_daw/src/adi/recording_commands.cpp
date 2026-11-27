@@ -1016,8 +1016,40 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
         auto prepared = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), placement, allocated, label);
         if (!prepared.ok)
             throw std::runtime_error(prepared.error);
+        const auto changes = edit_plan::describe(prepared);
+        if (!changes.ok)
+            throw std::runtime_error(changes.error);
         for (auto& request : prepared.requests)
             result.requests.push_back(std::move(request));
+
+        // The comp still replaces just the covered span. Keep each displaced
+        // original whole in a lane from the same transaction, including the
+        // offsets, fades, note streams and expression it had before the cut.
+        std::map<std::int64_t, std::int64_t> lanes;
+        OpContext context{store, store.db()};
+        edit::RowEdits archived(store.db());
+        for (const auto& effect : changes.effects) {
+            if (!effect.before || effect.before->lane.lane)
+                continue;
+            const auto track = effect.before->lane.track;
+            auto original = clip_edit::captureImage(context, effect.before->id);
+            // A linked clip does not own the material it plays. Let the
+            // normal splice manage its owner's references without adding one.
+            if (!original.at("row").at("alias_of").is_null())
+                continue;
+            auto [lane, inserted] = lanes.try_emplace(track, 0);
+            if (inserted) {
+                lane->second = allocated.next("lanes");
+                auto request = createTakeLane(store, lane->second, track, "Previous Take");
+                request.label = label;
+                result.requests.push_back(std::move(request));
+            }
+            auto copy = clip_edit::cloneImage(original, allocated.next("clips"), allocated);
+            copy.at("row")["lane_id"] = lane->second;
+            clip_edit::createImage(archived, copy);
+        }
+        if (!lanes.empty())
+            result.requests.push_back(recordingRows(archived, 0, label));
         result.ok = true;
     } catch (const std::exception& exception) {
         result.error = exception.what();

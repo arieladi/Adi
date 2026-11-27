@@ -12267,6 +12267,108 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
+void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "arrangement-takes.adi", error);
+    check(store != nullptr, "SC-253: the take lane fixture opens");
+    if (!store)
+        return;
+    const auto bar = 4 * textproj::kPPQ;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Takes');"
+                     "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                     "(1,'midi','Keys',0),(2,'audio','Audio',1);"
+                     "INSERT INTO lanes(id,track_id,ord,kind,name) VALUES"
+                     "(31,1,0,'take','Pass 1'),(32,1,1,'take','Pass 2');");
+    const auto addClip = [&](std::int64_t id, std::optional<std::int64_t> lane, const char *name) {
+        SQLite::Statement insert(store->db(), "INSERT INTO clips(id,track_id,lane_id,kind,name,pos_ticks,length_ticks) "
+                                               "VALUES(?,1,?,'midi',?,0,?)");
+        insert.bind(1, id);
+        if (lane)
+            insert.bind(2, *lane);
+        insert.bind(3, name);
+        insert.bind(4, bar);
+        insert.exec();
+    };
+    addClip(11, {}, "Main");
+    addClip(12, 31, "Earlier");
+    addClip(13, 32, "Latest");
+
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "arrangement-takes");
+    root.setBounds(0, 0, 1200, 740);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &geo = arrangement.geometry;
+    auto &headers = arrangement.headers;
+    auto &canvas = arrangement.canvas;
+    geo.selection.track = 1;
+    std::vector<std::pair<std::int64_t, std::int64_t>> auditions;
+    root.setTakeLaneAudition = [&](std::int64_t track, std::int64_t lane) {
+        auditions.emplace_back(track, lane);
+        return true;
+    };
+#if JUCE_MAC
+    constexpr auto command = juce::ModifierKeys::commandModifier;
+#else
+    constexpr auto command = juce::ModifierKeys::ctrlModifier;
+#endif
+    const auto rowWithoutTakes = geo.rowTop(root.reader(), 2);
+    const juce::KeyPress show('u', command | juce::ModifierKeys::altModifier, 0);
+    check(headers.keyPressed(show) && geo.rowTop(root.reader(), 2) ==
+              rowWithoutTakes + 2 * ArrangementGeometry::takeLaneHeight,
+          "SC-253: Show Take Lanes exposes both passes before the next track");
+    const auto firstLaneY = geo.rowTop(root.reader(), 1) + geo.heightFor(1) + 5;
+    const auto secondLaneY = firstLaneY + ArrangementGeometry::takeLaneHeight;
+    const auto click = [](auto &component, int x, int y) {
+        const auto point = juce::Point<int>{x, y}.toFloat();
+        component.mouseDown(pressAt(component, point));
+        component.mouseUp(pressAt(component, point));
+    };
+    click(headers, 7, firstLaneY);
+    click(headers, 7, secondLaneY);
+    check(auditions == std::vector<std::pair<std::int64_t, std::int64_t>>{{1, 31}, {1, 32}} &&
+              !arrangement.takeAuditioned(1, 31) && arrangement.takeAuditioned(1, 32),
+          "SC-253: clicking a second lane auditions it alone, using the track session seam");
+    const auto insideSecond = juce::Point<int>{static_cast<int>(geo.x(bar / 2)), secondLaneY}.toFloat();
+    click(canvas, static_cast<int>(insideSecond.x), secondLaneY);
+    const auto beforeDoubleClick = OpJournal(*store).headSeq();
+    canvas.mouseDoubleClick(pressAt(canvas, insideSecond));
+    check(OpJournal(*store).headSeq() == beforeDoubleClick,
+          "SC-253: double-clicking a take does not edit the main row underneath it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)), "SC-253: Enter chooses the selected pass");
+    root.frame();
+    const auto *chosen = root.reader().findTrack(1);
+    check(chosen && chosen->clips.size() == 1 && chosen->clips.front()->name == "Latest" &&
+              chosen->clips.front()->id != 13 && chosen->takeClips.size() == 2 &&
+              auditions.back() == std::pair<std::int64_t, std::int64_t>{1, 0},
+          "SC-253: choosing a take creates an independent main clip and restores main playback");
+    check(root.command(AppCommands::Undo), "SC-253: Undo the comp in one step");
+    root.frame();
+    check(root.reader().findTrack(1)->clips.front()->id == 11 &&
+              root.reader().findTrack(1)->takeClips.size() == 2,
+          "SC-253: comp Undo restores the earlier main clip and both take sources");
+
+    bool insert = false;
+    const auto menu = arrangement.headerMenu(1);
+    for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+        if (item.getItem().text == "Insert Take Lane" && item.getItem().action) {
+            item.getItem().action();
+            insert = true;
+            break;
+        }
+    root.frame();
+    check(insert && root.reader().findTrack(1)->takeLanes.size() == 3 &&
+              geo.rowTop(root.reader(), 2) == rowWithoutTakes + 3 * ArrangementGeometry::takeLaneHeight,
+          "SC-253: Insert Take Lane adds a visible empty row through the peerless header menu");
+    check(headers.keyPressed(show) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
+          "SC-253: Hide Take Lanes restores the normal track layout");
+}
+
 void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "track-render-menu.adi", true, {}, error);
@@ -26374,6 +26476,7 @@ int main(int argc, char **argv) {
     trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
+    trace("arrangementTakeLanes", [&] { arrangementTakeLanes(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });

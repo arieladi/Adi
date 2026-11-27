@@ -112,7 +112,7 @@ bool same(const TrackNode& a, const TrackNode& b) {
         a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef || a.audioOutput != b.audioOutput ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
-        a.clips != b.clips || a.takeClips != b.takeClips || // pointer identity: already shared
+        a.clips != b.clips || a.takeClips != b.takeClips || a.takeLanes != b.takeLanes || // pointer identity: already shared
         a.frozen != b.frozen || a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode)
         return false;
     return true;
@@ -510,6 +510,15 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    std::map<std::int64_t, std::vector<TakeLaneNode>> takeLanes;
+    try {
+        SQLite::Statement lanes(db, "SELECT track_id,id,name,muted FROM lanes WHERE kind='take' ORDER BY track_id,ord,id");
+        while (lanes.executeStep())
+            takeLanes[lanes.getColumn(0).getInt64()].push_back(
+                {lanes.getColumn(1).getInt64(), lanes.getColumn(2).getString(), lanes.getColumn(3).getInt() != 0});
+    } catch (const std::exception &) {
+        // A partially readable project can still show its main rows.
+    }
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -562,6 +571,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 t.clips = std::move(it->second.main);
                 t.takeClips = std::move(it->second.takes);
             }
+
+            if (auto found = takeLanes.find(t.id); found != takeLanes.end())
+                t.takeLanes = std::move(found->second);
 
             const auto prev = prevTracks.find(t.id);
             if (prev != prevTracks.end() && same(*prev->second, t))

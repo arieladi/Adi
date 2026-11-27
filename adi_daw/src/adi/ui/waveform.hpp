@@ -164,9 +164,10 @@ class WaveformCache {
         generation_ = generation;
         std::set<std::string> used;
         for (const auto &t : snapshot.tracks)
-            for (const auto &c : t->clips)
-                if (c->audio && c->audio->mediaInfo && !c->audio->mediaInfo->contentHash.empty())
-                    used.insert(c->audio->mediaInfo->contentHash);
+            for (const auto *clips : {&t->clips, &t->takeClips})
+                for (const auto &c : *clips)
+                    if (c->audio && c->audio->mediaInfo && !c->audio->mediaInfo->contentHash.empty())
+                        used.insert(c->audio->mediaInfo->contentHash);
         for (const auto &slot : snapshot.sampleSlots)
             if (slot && !slot->empty && !slot->missing && !sampleKey(*slot).empty())
                 used.insert(sampleKey(*slot));

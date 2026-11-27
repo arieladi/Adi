@@ -7,6 +7,8 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/row_ids.hpp"
+#include "adi/take_lane_ops.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -789,7 +791,7 @@ void ArrangementCanvas::realiseAccessible() {
                             std::max(1, h - 7));
                 a.setVisible(true);
             }
-        y += h;
+        y += view.geometry.rowHeight(*t);
     }
     for (std::size_t i = used; i < accessible_.size(); ++i)
         accessible_[i]->setVisible(false);
@@ -1400,6 +1402,16 @@ void ArrangementView::frame(bool modelChanged) noexcept {
         canvas.repaint();
     hadLiveMidiTake_ = hasLiveMidiTake;
     if (modelChanged) {
+        const auto hasLane = [this](std::int64_t track, std::int64_t lane, bool canAudition) {
+            const auto *target = reader().findTrack(track);
+            return target && (!canAudition || !target->frozen) &&
+                   std::ranges::any_of(target->takeLanes, [lane, canAudition](const auto &candidate) {
+                       return candidate.id == lane && (!canAudition || !candidate.muted);
+                   });
+        };
+        std::erase_if(auditionedTakes, [&](const auto &entry) { return !hasLane(entry.first, entry.second, true); });
+        if (takeSelection && !hasLane(takeSelection->track, takeSelection->lane, false))
+            takeSelection.reset();
         canvas.realiseAccessible();
         overview.repaint();
         canvas.repaint();
@@ -1686,6 +1698,77 @@ bool ArrangementView::selectLoop() {
     changed();
     return true;
 }
+namespace {
+bool supportsTakeLanes(const engine::TrackNode *track) {
+    return track && (track->kind == "audio" || track->kind == "midi" || track->kind == "instrument");
+}
+}
+bool ArrangementView::toggleTakeLanes(std::int64_t track) {
+    if (!supportsTakeLanes(reader().findTrack(track)))
+        return false;
+    if (geometry.shownTakeLanes.erase(track) == 0) {
+        geometry.shownTakeLanes.insert(track);
+        geometry.foldedTracks.erase(track);
+    } else {
+        if (takeSelection && takeSelection->track == track)
+            takeSelection.reset();
+        const auto audition = auditionedTakes.find(track);
+        if (audition != auditionedTakes.end())
+            toggleTakeAudition(track, audition->second);
+    }
+    geometry.scrollY = std::min(geometry.scrollY, geometry.maxScroll(reader()));
+    changed();
+    return true;
+}
+bool ArrangementView::insertTakeLane(std::int64_t track) {
+    const auto *target = reader().findTrack(track);
+    if (!supportsTakeLanes(target) || target->frozen)
+        return false;
+    try {
+        auto &store = root.editStore();
+        auto request = createTakeLane(store, RowIds(store.db()).next("lanes"), track, "Take");
+        request.label = "Insert Take Lane";
+        if (!root.submitEdits({std::move(request)}))
+            return false;
+        geometry.shownTakeLanes.insert(track);
+        geometry.foldedTracks.erase(track);
+        changed();
+        return true;
+    } catch (const std::exception &error) {
+        root.say(error.what());
+        return false;
+    }
+}
+bool ArrangementView::takeAuditioned(std::int64_t track, std::int64_t lane) const noexcept {
+    const auto found = auditionedTakes.find(track);
+    return found != auditionedTakes.end() && found->second == lane;
+}
+bool ArrangementView::toggleTakeAudition(std::int64_t track, std::int64_t lane) {
+    const auto next = takeAuditioned(track, lane) ? 0 : lane;
+    if (!root.setTakeLaneAudition || !root.setTakeLaneAudition(track, next)) {
+        root.say("The take lane could not be auditioned.");
+        return false;
+    }
+    if (next == 0)
+        auditionedTakes.erase(track);
+    else
+        auditionedTakes[track] = next;
+    frame(true);
+    return true;
+}
+bool ArrangementView::copyTakeSelectionToMain() {
+    if (!takeSelection)
+        return false;
+    const auto selected = *takeSelection;
+    if (selected.start == selected.end)
+        return false;
+    if (!root.commitEdit(clip_edit::prepareTakeToMain(root.editStore(), selected.track, selected.lane,
+            {0, std::min(selected.start, selected.end)}, {0, std::max(selected.start, selected.end)}, root.editRate())))
+        return false;
+    if (const auto active = auditionedTakes.find(selected.track); active != auditionedTakes.end())
+        toggleTakeAudition(selected.track, active->second);
+    return true;
+}
 juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     auto &commands = root.commands();
     commands.activate(root);
@@ -1746,6 +1829,12 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     }
     root.addTrackAutomationDeleteItem(menu, track);
     root.addTrackRenderItems(menu, track);
+    if (const auto *target = reader().findTrack(track); supportsTakeLanes(target)) {
+        menu.addItem(geometry.shownTakeLanes.contains(track) ? "Hide Take Lanes" : "Show Take Lanes",
+                     [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->toggleTakeLanes(track); });
+        menu.addItem("Insert Take Lane", !target->frozen, false,
+                     [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->insertTakeLane(track); });
+    }
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.
     {
@@ -2236,6 +2325,22 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                                       look::fontSmall);
                 }
         y += h;
+        for (const auto &take : view.geometry.takeLanes(*t)) {
+            const int laneHeight = ArrangementGeometry::takeLaneHeight;
+            const bool audition = view.takeAuditioned(t->id, take.id);
+            g.setColour(audition ? colour : look::panel);
+            g.fillRect(x, y, getWidth() - x, laneHeight - 2);
+            g.setColour(audition ? look::ink : look::textOnBand);
+            g.setFont(look::font(look::fontSmall));
+            const auto name = juce::String::fromUTF8(take.name.c_str());
+            const juce::String action = audition ? "Auditioning" : take.muted ? "Muted" : "Audition";
+            auto box = juce::Rectangle<int>{x + 7, y, std::max(0, getWidth() - x - 12), laneHeight - 2};
+            g.drawText(action, box.removeFromRight(std::min(68, box.getWidth() / 2)), juce::Justification::centredRight);
+            g.drawFittedText(name, box, juce::Justification::centredLeft, 1);
+            g.setColour(look::separator);
+            g.fillRect(x, y + laneHeight - 2, getWidth() - x, 2);
+            y += laneHeight;
+        }
     }
     // Where the dragged tracks would land: a line at their depth, or the group they would go into.
     // White, edged in black, to read on every title's colour and on the rule between rows.
@@ -2340,6 +2445,24 @@ juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
     return menu;
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
+    if (const auto take = view.geometry.takeLaneAt(view.reader(), e.y)) {
+        focusIfShowing(*this);
+        foldPressed_ = true;
+        resizeId = moveId_ = 0;
+        if (e.mods.isPopupMenu()) {
+            view.contextMenu(localPointToGlobal(e.getPosition()), true, nullptr,
+                [this, track = take->track->id, lane = take->lane->id, muted = take->lane->muted](juce::PopupMenu &menu) {
+                    menu.addItem("Audition Take Lane", !muted, view.takeAuditioned(track, lane),
+                        [safe = SafePointer<TrackHeaderList>(this), track, lane] {
+                            if (safe) safe->view.toggleTakeAudition(track, lane);
+                        });
+                });
+        } else if (!take->lane->muted) {
+            view.toggleTakeAudition(take->track->id, take->lane->id);
+        }
+        return;
+    }
+    view.takeSelection.reset();
     view.canvas.clearAutomationSelection();
     if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false;
@@ -2436,7 +2559,8 @@ void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-    const bool split = at < rows.size() && e.y >= top + view.geometry.heightFor(rows[at].track->id) - kSplitLine;
+    const auto bottom = at < rows.size() ? top + view.geometry.heightFor(rows[at].track->id) : top;
+    const bool split = at < rows.size() && e.y < bottom && e.y >= bottom - kSplitLine;
     setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
@@ -2520,7 +2644,7 @@ TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
         // Below the tracks, or over the returns and Main: after the last track at the top.
         drop.y = -view.geometry.scrollY;
         for (std::size_t i = 0; i < foot; ++i)
-            drop.y += view.geometry.heightFor(rows[i].track->id);
+            drop.y += view.geometry.rowHeight(*rows[i].track);
         if (foot < rows.size())
             drop.y = std::min(drop.y, view.geometry.footTop(reader) - 2);
         return drop;
@@ -2528,7 +2652,7 @@ TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
     const auto row = rows[at];
     const auto &place = row.place;
     const auto id = row.track->id;
-    const int h = view.geometry.heightFor(id);
+    const int h = view.geometry.rowHeight(*row.track);
     const int down = y - top;
     // What follows the row in what holds it, past everything it holds; 0 at the end.
     auto next = [&] {
@@ -2578,7 +2702,7 @@ TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
 void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
     // The first click selected the track; a double-click on a group's fold switch only folds it twice.
-    if (e.mods.isPopupMenu())
+    if (e.mods.isPopupMenu() || view.geometry.takeLaneAt(view.reader(), e.y))
         return;
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
@@ -2711,8 +2835,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         if (h == 0)
             continue; // left out by the project view, or folded away: no room
         const int visibleBottom = i < foot ? std::min(footY, paintBounds.getBottom()) : paintBounds.getBottom();
-        if (y >= visibleBottom || y + h <= paintBounds.getY()) {
-            y += h;
+        if (y >= visibleBottom || y + geo.rowHeight(*t) <= paintBounds.getY()) {
+            y += geo.rowHeight(*t);
             continue;
         }
         // Every track the selection covers is lit, as Live lights a selection across tracks.
@@ -2725,7 +2849,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const bool laneSelected = envelopeSelection
             ? std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
                           [&](const auto &entry) { return entry.first == row.track->id; })
-            : selected;
+            : selected && !view.takeSelection;
         if (laneSelected && geo.selection.start != geo.selection.end) {
             const float x0 = static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end)));
             const float x1 = static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end)));
@@ -2736,7 +2860,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto colour = view.colourFor(row.position);
         if (row.place.group)
             paintGroupLane(g, i, y, h, colour);
-        auto drawClip = [&](const engine::ClipNode &clip, bool home = false) {
+        auto drawClip = [&](const engine::ClipNode &clip, int clipY, int clipHeight, bool selectedRange, bool home = false) {
             const auto *c = &clip;
             // A clip being moved by its bar is drawn where it would land; `home`, where it is.
             const bool along = !home && moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
@@ -2758,50 +2882,50 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const auto ownColour = c->color ? look::paletteColour(*c->color) : colour;
             const auto clipColour = c->muted || t->muted ? look::mutedClip : ownColour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
-            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
+            g.fillRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left), static_cast<float>(clipHeight - 4));
             g.setColour(clipColour);
-            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            g.fillRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
             const bool offline = view.root.clipMediaOffline(*c);
             const bool unavailable = offline ||
                 (view.root.clipPlaybackUnavailable && view.root.clipPlaybackUnavailable(c->id));
             if (!offline)
-                paintWaveform(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
-                              static_cast<float>(y + h - 3));
+                paintWaveform(g, *c, contentPos, left, right, static_cast<float>(clipY + 1 + kClipBarHeight),
+                              static_cast<float>(clipY + clipHeight - 3));
             if (!c->audio)
-                paintNotes(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
-                           static_cast<float>(y + h - 3));
+                paintNotes(g, *c, contentPos, left, right, static_cast<float>(clipY + 1 + kClipBarHeight),
+                           static_cast<float>(clipY + clipHeight - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontSmall));
                 g.drawText(juce::String::fromUTF8(c->name.c_str()),
-                           juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,
+                           juce::Rectangle<float>(left + 3.f, static_cast<float>(clipY + 1), right - left - 5.f,
                                                   static_cast<float>(kClipBarHeight)),
                            juce::Justification::centredLeft, false);
             }
             g.setColour(clipColour.darker(0.5f));
-            g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
-                       static_cast<float>(h - 4), 1.f);
+            g.drawRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left),
+                       static_cast<float>(clipHeight - 4), 1.f);
             // Live tints the selected part of a clip's body, under its title strip (the manual's Cut
             // Time and Consolidate figures).
-            if (laneSelected && geo.selection.start != geo.selection.end) {
+            if (selectedRange && geo.selection.start != geo.selection.end) {
                 const float s0 = std::max(left, static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end))));
                 const float s1 = std::min(right, static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end))));
                 if (s1 > s0) {
                     g.setColour(look::selection.withAlpha(0.85f));
-                    g.fillRect(s0, static_cast<float>(y + 1 + kClipBarHeight), s1 - s0,
-                               static_cast<float>(std::max(0, h - 4 - kClipBarHeight)));
+                    g.fillRect(s0, static_cast<float>(clipY + 1 + kClipBarHeight), s1 - s0,
+                               static_cast<float>(std::max(0, clipHeight - 4 - kClipBarHeight)));
                 }
             }
             // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
             // not while it moves.
             if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
-                paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
-                           static_cast<float>(y + h - 3));
+                paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(clipY + 1 + kClipBarHeight),
+                           static_cast<float>(clipY + clipHeight - 3));
             if (unavailable) {
-                const auto banner = juce::Rectangle<float>(left + 1.f, static_cast<float>(y + 1 + kClipBarHeight),
-                    std::max(0.f, right - left - 2.f), static_cast<float>(std::min(13, std::max(0, h - kClipBarHeight - 4))));
+                const auto banner = juce::Rectangle<float>(left + 1.f, static_cast<float>(clipY + 1 + kClipBarHeight),
+                    std::max(0.f, right - left - 2.f), static_cast<float>(std::min(13, std::max(0, clipHeight - kClipBarHeight - 4))));
                 g.setColour(look::error);
                 g.fillRect(banner);
                 g.setColour(look::ink);
@@ -2816,16 +2940,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             // A copy being dragged leaves its original drawn where it is.
             if (copying_ && moving_ != 0 &&
                 (c->id == moving_ || (!geo.selection.pickedClips.empty() && geo.clipSelected(c->id))))
-                drawClip(*c, true);
+                drawClip(*c, y, h, laneSelected, true);
             if (const auto to = movingTargetOf(c->id); to == 0 || to == t->id)
-                drawClip(*c);
+                drawClip(*c, y, h, laneSelected);
         }
         if (moving_ != 0)
             for (const auto &other : view.reader().tracks())
                 if (other->id != t->id)
                     for (const auto &c : other->clips)
                         if (movingTargetOf(c->id) == t->id)
-                            drawClip(*c);
+                            drawClip(*c, y, h, laneSelected);
         // Draw the captured audio over the lane from its actual first sample. The preview can lag
         // the playhead while the writer drains, and the playhead can keep rolling after Record stops.
         if (const auto &live = view.liveTake();
@@ -2914,6 +3038,29 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         if (midiTake != midiTakes.end())
             paintLiveMidiTake(g, *midiTake, *t, row.number(), y, h);
         y += h;
+        for (const auto &take : geo.takeLanes(*t)) {
+            const int laneHeight = ArrangementGeometry::takeLaneHeight;
+            if (y < visibleBottom && y + laneHeight > paintBounds.getY()) {
+                const bool audition = view.takeAuditioned(t->id, take.id);
+                const bool selectedTake = view.takeSelection && view.takeSelection->track == t->id &&
+                                          view.takeSelection->lane == take.id;
+                lanes(y, laneHeight - 2, audition || selectedTake);
+                for (const auto &clip : t->takeClips)
+                    if (clip->laneId == take.id)
+                        drawClip(*clip, y, laneHeight, false);
+                if (selectedTake) {
+                    const auto &range = *view.takeSelection;
+                    const float left = static_cast<float>(geo.x(std::min(range.start, range.end)));
+                    const float right = static_cast<float>(geo.x(std::max(range.start, range.end)));
+                    g.setColour(look::handleChosen.withAlpha(0.4f));
+                    g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
+                               static_cast<float>(laneHeight - 3));
+                }
+                g.setColour(look::separator);
+                g.fillRect(0, y + laneHeight - 2, getWidth(), 2);
+            }
+            y += laneHeight;
+        }
     }
     if (foot == rows.size())
         dropArea(y, getHeight());
@@ -2932,7 +3079,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 g.setColour(look::handleChosen);
                 g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
             }
-            top += geo.heightFor(id);
+            top += geo.rowHeight(*row.track);
         }
     }
     if (view.root.automationMode()) {
@@ -2982,7 +3129,7 @@ std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
         const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
         if (h > 0 && bottom > bodyTop + 4 && row.track->kind != "group" && !geo.foldedTracks.contains(row.track->id))
             out.push_back({row.track, bodyTop, bottom, static_cast<float>(top + h - 3)});
-        top += h;
+        top += geo.rowHeight(*row.track);
     }
     return out;
 }
@@ -3990,6 +4137,41 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     contextMenuPress_ = e.mods.isPopupMenu();
     if (!contextMenuPress_)
         view.followPaused = false; // a primary press in the Arrangement starts Follow again (§6.2)
+    if (const auto take = view.geometry.takeLaneAt(view.reader(), e.y); take && !panning) {
+        clearAutomationSelection();
+        takeAnchor_ = view.geometry.tick(e.x);
+        const auto &selection = view.takeSelection;
+        const bool keepRange = contextMenuPress_ && selection && selection->track == take->track->id &&
+                               selection->lane == take->lane->id &&
+                               takeAnchor_ >= std::min(selection->start, selection->end) &&
+                               takeAnchor_ < std::max(selection->start, selection->end);
+        if (!keepRange) {
+            view.takeSelection = ArrangementView::TakeSelection{take->track->id, take->lane->id, takeAnchor_, takeAnchor_};
+            for (const auto &clip : take->track->takeClips)
+                if (clip->laneId == take->lane->id && takeAnchor_ >= clip->posTicks &&
+                    takeAnchor_ - clip->posTicks < clip->lengthTicks) {
+                    view.takeSelection->start = clip->posTicks;
+                    view.takeSelection->end = clip->posTicks + clip->lengthTicks;
+                }
+        }
+        draggingTakeSelection_ = !contextMenuPress_;
+        if (contextMenuPress_)
+            view.contextMenu(localPointToGlobal(e.getPosition()), false, nullptr,
+                [this, track = take->track->id, lane = take->lane->id, muted = take->lane->muted](juce::PopupMenu &menu) {
+                    menu.addItem("Audition Take Lane", !muted, view.takeAuditioned(track, lane),
+                        [safe = SafePointer<ArrangementCanvas>(this), track, lane] {
+                            if (safe) safe->view.toggleTakeAudition(track, lane);
+                        });
+                    menu.addItem("Copy Selection to Main Lane",
+                        view.takeSelection && view.takeSelection->start != view.takeSelection->end, false,
+                        [safe = SafePointer<ArrangementCanvas>(this)] {
+                            if (safe) safe->view.copyTakeSelectionToMain();
+                        });
+                });
+        repaint();
+        return;
+    }
+    view.takeSelection.reset();
     if (!panning && contextMenuPress_ && view.root.automationMode() && automationPointAt(e.position)) {
         clearAutomationSelection();
         automationContextMenu(e);
@@ -4159,7 +4341,7 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
                 return outside;
             }
         }
-        top += geo.heightFor(t->id);
+        top += geo.rowHeight(*t);
     }
     return nullptr;
 }
@@ -4195,6 +4377,14 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (contextMenuPress_ || e.mods.isPopupMenu())
         return;
+    if (draggingTakeSelection_) {
+        if (view.takeSelection && e.mouseWasDraggedSinceMouseDown()) {
+            view.takeSelection->start = std::max<std::int64_t>(0, takeAnchor_);
+            view.takeSelection->end = std::max<std::int64_t>(0, view.geometry.tick(e.x));
+            repaint();
+        }
+        return;
+    }
     if (automationStroke_) {
         if (view.root.automationMode() && view.root.drawMode())
             updateAutomationStroke(e);
@@ -4316,6 +4506,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(draggingTakeSelection_, false))
+        return;
     if (std::exchange(contextMenuPress_, false))
         return;
     if (automationStroke_) {
@@ -4674,7 +4866,7 @@ bool ArrangementCanvas::editMaterialSelection(bool deactivate) {
 }
 void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
-    if (e.mods.isPopupMenu())
+    if (e.mods.isPopupMenu() || view.geometry.takeLaneAt(view.reader(), e.y))
         return;
     // A breakpoint's hit slop does not cover a clip title.
     std::int64_t titleTrack = 0;
@@ -4735,6 +4927,21 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
     view.changed();
 }
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
+    const auto takeKey = pressed.getKeyCode();
+    const auto takeMods = pressed.getModifiers();
+    if ((takeKey == 'u' || takeKey == 'U') && takeMods.isCommandDown() && takeMods.isAltDown())
+        return view.toggleTakeLanes(view.geometry.selection.track);
+    if (view.takeSelection && !takeMods.isAnyModifierKeyDown()) {
+        if (takeKey == 't' || takeKey == 'T')
+            return view.toggleTakeAudition(view.takeSelection->track, view.takeSelection->lane);
+        if (takeKey == juce::KeyPress::returnKey)
+            return view.copyTakeSelectionToMain();
+        if (takeKey == juce::KeyPress::escapeKey) {
+            view.takeSelection.reset();
+            repaint();
+            return true;
+        }
+    }
     if (view.root.playComputerMidiKey(pressed))
         return true;
     const auto k = view.root.computerMidiShortcut(pressed);

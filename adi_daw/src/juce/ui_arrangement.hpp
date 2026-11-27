@@ -398,6 +398,8 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<AutomationValueAddress> automationValueAt(juce::Point<float>,bool snapToGrid,
                                                            bool allowAdd) const;
     void automationContextMenu(const juce::MouseEvent &);
+    bool draggingTakeSelection_ = false;
+    std::int64_t takeAnchor_ = 0;
     void beginAutomationValueEdit(const AutomationValueAddress &);
     void commitAutomationValue();
     void endAutomationValueEdit(bool refocus=true);
@@ -606,6 +608,16 @@ class ArrangementView final : public juce::Component {
     // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
     // Color to Grouped Tracks and Clips (manual 18.3).
     juce::PopupMenu headerMenu(std::int64_t contextTrack = 0);
+    bool toggleTakeLanes(std::int64_t track);
+    bool insertTakeLane(std::int64_t track);
+    bool toggleTakeAudition(std::int64_t track, std::int64_t lane);
+    bool takeAuditioned(std::int64_t track, std::int64_t lane) const noexcept;
+    struct TakeSelection {
+        std::int64_t track, lane, start, end;
+    };
+    std::optional<TakeSelection> takeSelection;
+    bool copyTakeSelectionToMain();
+
     // The colour chooser's pick: the colour at `index` of Live's palette on every selected track, one
     // undo step ("Recolour Track").
     bool recolour(std::int64_t index);
@@ -641,6 +653,8 @@ class ArrangementView final : public juce::Component {
     // across every track shown.
     bool selectLoop();
     const SnapshotReader &reader() const;
+    std::map<std::int64_t, std::int64_t> auditionedTakes;
+
     // The audio clips' waveforms (N40): the document's cache, which the app and the tests give it;
     // without one, an audio clip is drawn as its colour and its name.
     WaveformCache *waveforms = nullptr;

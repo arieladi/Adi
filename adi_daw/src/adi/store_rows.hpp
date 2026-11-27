@@ -34,6 +34,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -440,6 +441,8 @@ struct Model {
     /// projection silently missing a table is a diff that says something was
     /// deleted.
     std::vector<std::string> problems;
+    // Populated only on the live Session's playback copy of this model.
+    std::map<std::int64_t, std::int64_t> auditionedTakeLanes;
 };
 
 /// Read only one clip's note stream, with the same diagnostics as readModel.

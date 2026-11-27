@@ -134,6 +134,13 @@ struct ClipNode {
     std::shared_ptr<const MidiClipPreview> midiPreview{};
 };
 
+struct TakeLaneNode {
+    std::int64_t id = 0;
+    std::string name;
+    bool muted = false;
+    friend bool operator==(const TakeLaneNode&, const TakeLaneNode&) = default;
+};
+
 struct TrackNode {
     std::int64_t id = 0;
     std::int64_t parent = 0;      // 0 at the top of the tree
@@ -162,6 +169,7 @@ struct TrackNode {
     std::optional<std::int64_t> audioOutput;
     std::optional<std::string> inputRef;
     std::vector<std::shared_ptr<const ClipNode>> takeClips; // same ordering; each node names its lane
+    std::vector<TakeLaneNode> takeLanes; // visible order, including empty lanes
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can

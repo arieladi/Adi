@@ -1509,6 +1509,14 @@ bool Session::readPlayback(const Store &store) {
             return lane.ownerKind == "track" && frozenSources_.contains(lane.ownerId) &&
                    lane.paramRef == "input_gain";
         });
+        std::erase_if(auditionedTakeLanes_, [&](const auto& selection) {
+            return frozenSources_.contains(selection.first) || frozenGroupChildren_.contains(selection.first) ||
+                   std::none_of(model_.lanes.begin(), model_.lanes.end(), [&](const auto& lane) {
+                return lane.trackId == selection.first && lane.id == selection.second &&
+                       lane.kind == "take" && !lane.muted;
+            });
+        });
+        playbackModel_.auditionedTakeLanes = auditionedTakeLanes_;
         clipProject_ = readClipProject(store, playbackModel_);
         if (read) read->commit();
         return true;
@@ -2028,6 +2036,38 @@ bool Session::refresh(const Store& store) {
     const bool rebuilt = rebuild();
     if (rebuilt) appliedSequence_ = appliedSource_.sequence();
     return rebuilt;
+}
+
+bool Session::auditionTakeLane(const Store& store, std::int64_t track, std::int64_t lane) {
+    if (audio::onAudioThread)
+        return false;
+    if (!loaded_ || gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "take audition needs an open session with no active gesture";
+        return false;
+    }
+    if (lane != 0 && (frozenSources_.contains(track) || frozenGroupChildren_.contains(track) ||
+        std::none_of(model_.lanes.begin(), model_.lanes.end(), [track, lane](const auto& candidate) {
+            return candidate.trackId == track && candidate.id == lane && candidate.kind == "take" && !candidate.muted;
+        }))) {
+        error_ = "that take lane cannot be auditioned";
+        return false;
+    }
+    const auto previous = auditionedTakeLanes_.find(track);
+    const auto prior = previous != auditionedTakeLanes_.end() ? previous->second : 0;
+    if (prior == lane)
+        return true;
+    if (lane != 0)
+        auditionedTakeLanes_[track] = lane;
+    else
+        auditionedTakeLanes_.erase(track);
+    if (refresh(store))
+        return true;
+    if (prior != 0)
+        auditionedTakeLanes_[track] = prior;
+    else
+        auditionedTakeLanes_.erase(track);
+    playbackModel_.auditionedTakeLanes = auditionedTakeLanes_;
+    return false;
 }
 
 bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,

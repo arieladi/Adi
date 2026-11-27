@@ -296,11 +296,17 @@ void validRange(const RangeSelection& range) {
     std::set<std::int64_t> tracks;
     for(const auto id:range.tracks)if(!tracks.insert(id).second)throw std::runtime_error("range has duplicate tracks");
 }
-enum class ClipLaneScope { MainLane, AllLanes };
+enum class ClipLaneScope { MainLane, AllLanes, OneTake };
 const char* clipRangeQuery(ClipLaneScope scope) {
-    return scope==ClipLaneScope::MainLane?
-        "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id":
-        "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+    switch (scope) {
+    case ClipLaneScope::MainLane:
+        return "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id";
+    case ClipLaneScope::OneTake:
+        return "SELECT id FROM clips WHERE track_id=? AND lane_id=? ORDER BY id";
+    case ClipLaneScope::AllLanes:
+        return "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+    }
+    throw std::logic_error("unknown clip lane scope");
 }
 void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelection& range,
                 const edit::TimeMap& time,double rate,ClipLaneScope scope) {
@@ -776,13 +782,16 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 }
 
 namespace {
-RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope) {
+RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
+                        std::optional<std::int64_t> lane = {}) {
     RangeCopy result;result.selection=selection;
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
             SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
+            if (lane)
+                clips.bind(2, *lane);
             while(clips.executeStep()) {
                 const auto id=clips.getColumn(0).getInt64();const auto root=*edit::row(store.db(),"clips",id);
                 const int base=static_cast<int>(detail::signedInteger(root.at("time_base")));
@@ -946,6 +955,31 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
+}
+PreparedEdit prepareTakeToMain(Store& store, std::int64_t track, std::int64_t lane,
+                                   TimePoint begin, TimePoint end, double referenceRate) {
+    try {
+        Read read(store.db());
+        const auto row = edit::row(store.db(), "lanes", lane);
+        if (!row || row->at("kind") != "take" || row->at("track_id") != track)
+            throw std::runtime_error("the take lane is no longer on this track");
+        const RangeSelection selection{{track}, begin, end};
+        const auto copy = copyRangeImpl(store, selection, referenceRate, ClipLaneScope::OneTake, lane);
+        if (!copy.ok)
+            throw std::runtime_error(copy.error);
+        if (copy.images.empty())
+            throw std::runtime_error("the selected take range has no clips");
+        edit_plan::Options options{referenceRate, {}};
+        options.policy.automationFollowsClips = false;
+        auto prepared = preparePasteRange(store, copy, selection.tracks, begin, options);
+        for (auto& request : prepared.requests)
+            request.label = "Copy Take to Main Lane";
+        return prepared;
+    } catch (const std::exception& error) {
+        PreparedEdit refused;
+        refused.error = error.what();
+        return refused;
+    }
 }
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     try {

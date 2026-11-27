@@ -102,6 +102,9 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
     TimePoint at,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,const edit_plan::Options&);
+/// Splice the selected portion of a take onto its track's main lane.
+[[nodiscard]] PreparedEdit prepareTakeToMain(Store&, std::int64_t track, std::int64_t lane,
+                                             TimePoint begin, TimePoint end, double referenceRate);
 /// Whole-Set clipboard, including global maps and automation. Owner-thread
 /// value; its media/tuning/lane identities are rechecked during preparation.
 struct TimeCopy {

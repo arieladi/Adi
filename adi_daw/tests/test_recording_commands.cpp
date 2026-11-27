@@ -272,8 +272,8 @@ void mixedLinearTake() {
     if (!committed.ok)
         throw std::runtime_error(committed.error);
     const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
-    check(count("SELECT count(*) FROM clips WHERE track_id=21") == 3 &&
-              count("SELECT count(*) FROM clips WHERE track_id=23") == 3 &&
+    check(count("SELECT count(*) FROM clips WHERE track_id=21 AND lane_id IS NULL") == 3 &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL") == 3 &&
               count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio' AND name='New Audio'") == 1 &&
               count("SELECT count(*) FROM clips WHERE id=10 AND kind='midi'") == 1,
           "one mixed splice splits both covered clips and reserves both incoming IDs before allocating the fragments");
@@ -284,8 +284,9 @@ void mixedLinearTake() {
     check(history.nextUndo() && history.nextUndo()->label == "Record" && history.undo().ok &&
               digestProject(store).text == before,
           "one Undo removes the mixed take and restores the original clips whole");
-    check(history.redo().ok && count("SELECT count(*) FROM clips") == 6,
-          "one Redo restores both audio and MIDI and their surviving fragments");
+    check(history.redo().ok && count("SELECT count(*) FROM clips WHERE lane_id IS NULL") == 6 &&
+              count("SELECT count(*) FROM clips WHERE lane_id IS NOT NULL") == 2,
+          "one Redo restores both audio and MIDI, their surviving fragments and their archived takes");
 }
 
 void midiLoopTakes() {
@@ -752,6 +753,12 @@ void linearTakeReplacesWhatItCovers() {
     check(count("SELECT count(*) FROM clips WHERE id=17 AND name='Second'")==1 &&
           count("SELECT count(*) FROM clips WHERE id=7")==1,
           "the take keeps its id and name; the left part keeps the covered clip's id");
+    check(count("SELECT count(*) FROM clips c JOIN lanes l ON l.id=c.lane_id "
+                "JOIN audio_clips a ON a.clip_id=c.id "
+                "WHERE l.track_id=21 AND c.name='First' AND a.media_id=8 AND a.src_start_frames=0 "
+                "AND c.pos_ticks=(SELECT pos_ticks FROM clips WHERE id=7) "
+                "AND c.pos_ticks+c.length_ticks=(SELECT max(pos_ticks+length_ticks) FROM clips WHERE lane_id IS NULL)") == 1,
+          "SC-252: the full earlier recording is retained on a take lane with the original source");
     const auto heard=f.play(Precision::Float32);
     bool exact=true;
     for(std::size_t frame=0;frame<heard.size();++frame) {

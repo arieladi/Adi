@@ -607,6 +607,7 @@ class AdiRootComponent final : public juce::Component,
     // why. Unset outside the application.
     std::function<RecordStates()> readRecordStates;
     std::function<bool(std::int64_t)> setSelectionArmedTrack;
+    std::function<bool(std::int64_t, std::int64_t)> setTakeLaneAudition;
     void refreshSelectionArming();
     void setRecordStates(RecordStates states) {
         if (states != recordStates_)

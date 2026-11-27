@@ -97,7 +97,8 @@ struct Image {
     bool faderOnly = false;
 };
 std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::set<std::int64_t>& overridden,
-                               const TempoFor& tempoFor,const Snapshot* previous) {
+                               const TempoFor& tempoFor,const Snapshot* previous,
+                               const std::map<std::int64_t,std::int64_t>& auditions) {
     std::optional<SQLite::Transaction> read;
     if(sqlite3_get_autocommit(store.db().getHandle())!=0)
         read.emplace(const_cast<SQLite::Database&>(store.db()),SQLite::TransactionBehavior::DEFERRED);
@@ -105,6 +106,11 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     if(History(const_cast<Store&>(store)).head()!=base.head)throw std::runtime_error("presentation journal base changed during capture");
     auto out=std::make_shared<Image>();out->base=base;out->overrides=overridden;
     out->model=rows::readModel(store);
+    for (const auto& lane : out->model.lanes) {
+        const auto selected = auditions.find(lane.trackId);
+        if (lane.kind == "take" && !lane.muted && selected != auditions.end() && selected->second == lane.id)
+            out->model.auditionedTakeLanes.emplace(lane.trackId, lane.id);
+    }
     out->tables=readTables(store);
     out->transport=readTransportSettings(store);out->cue=readCueSettings(store);
     out->bytes=imageBytes(out->tables,out->transport,out->cue);
@@ -664,7 +670,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                     PresentationStatus{PresentationState::Pending,"earlier device delivery or capture is pending",{}};
             }
             const auto previous=project()->committed();
-            auto next=readImage(store,base,owner->overridden_,tempoRule(owner),previous.get());
+            auto next=readImage(store,base,owner->overridden_,tempoRule(owner),previous.get(),owner->auditionedTakeLanes_);
             // The document and the coordinator can see the same key transaction
             // on different ticks. Publish it once, keeping the running readers.
             if (active.empty()) {
@@ -762,7 +768,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 if(change.operation=="group.setSummingDrive" && !owner->summing_.bussOf(change.id))
                     return {failed(Error::UnsupportedPreview,"drive preview requires an existing native summing buss"),{}, {}};
             }
-            auto image=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get());
+            auto image=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get(),owner->auditionedTakeLanes_);
             if(encodeTables(topology(image->tables, trackDelayTargets))!=
                encodeTables(topology(committed->tables, trackDelayTargets)))
                 return {failed(Error::UnsupportedPreview,"preview changes native topology, device material, width or latency"),{}, {}};
@@ -873,7 +879,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(at==active.end())return adopt(store,base,&receipt);
         auto* owner=engine();if(!owner || !project())return {PresentationState::Detached,"preview endpoint ended after durable commit",{}};
         try {
-            auto actual=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get());
+            auto actual=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get(),owner->auditionedTakeLanes_);
             const auto entry=*at;
             const bool matching=entry->image->faderOnly ? sameFaderImage(*entry->image,*committed,*actual)
                                                          : entry->image->bytes==actual->bytes;

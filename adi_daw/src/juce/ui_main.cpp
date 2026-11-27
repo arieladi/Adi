@@ -1961,6 +1961,9 @@ class AdiApplication final : public juce::JUCEApplication,
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setSelectionArmedTrack = [this](std::int64_t track) { return document_->session().setSelectionArmedTrack(track); };
+        root->setTakeLaneAudition = [this](std::int64_t track, std::int64_t lane) {
+            return document_->session().auditionTakeLane(document_->store(), track, lane);
+        };
         root->setRecordStates(document_->recordStates());
         root->refreshSelectionArming();
         root->previewMidiNote = [this](std::int64_t track, int key, int velocity, bool held) {
