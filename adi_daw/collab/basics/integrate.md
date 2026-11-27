@@ -66,6 +66,12 @@ SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snaps
 | SC-250 | `92f8757c495b432562b9a913d56a82230842d676` | The launch flow offers recovery for audio left by an interrupted recorder. A private worker verifies ownership and repairs complete RIFF/RF64 samples. The document lands them through the current Stop edit with a single Undo and a receipt that prevents duplicate placement. Kept the existing punch and latency placement. The 313-check focused run included a real subprocess exit, active-session refusal, identity checks, PCM24 and idempotence. The combined recording suite also passed. |
 The combined Safety build included JUCE, Pd, warnings as errors and the app. Seventeen affected headless suites and all five validators passed. A rerun after the latency measurement correction passed all 18 no-display window suites and the three affected storage, collect/export and history suites. The final stale-measurement fixture also passed its own Project Files rerun.
 
+## Routing on integrate-2
+
+| Item | Integration head | Change and verification |
+|---|---|---|
+| SC-261 | `f5811eb85bc0a4ef6a92a96eaf86e5d29216317b` | The Arrangement and Mixer choosers use the available routes and preserve configured inputs. Audio To updates the graph and rejects cycles. Main Out selects an enabled physical stereo pair. Combined Main routing with the Browser owner’s sparse channel map, Cue preview and missing-output notice. The focused shell passed 41 checks, including both views, Undo and Redo, and eight focused engine checks passed for sparse outputs, Cue, offline rendering and no allocations. |
+
 ## For the director
 
 - SC-398. Should EX-04 receive the libFLAC and LAME dependency grants? I recommend the planned pinned in-process encoders, including LAME 3.100. The published Export chain includes AIFF.
