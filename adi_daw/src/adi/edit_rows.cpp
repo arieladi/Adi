@@ -12,7 +12,7 @@
 
 namespace adi::edit {
 namespace {
-constexpr std::array<RowSpec,21> specs={{
+constexpr auto specs = std::to_array<RowSpec>({
     {"lanes","id"},
     {"clips","id"},{"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
     {"automation_lanes","id"},{"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},{"clip_properties","clip_id"},
@@ -20,7 +20,7 @@ constexpr std::array<RowSpec,21> specs={{
     {"marker_details","marker_id"},{"project","id"},{"arranger_sections","id"},
     {"key_map_tunings","key_map_id"},{"key_map_degrees","key_map_id","degree"},{"arranger_chain","id"},
     {"clip_pitch_edits","clip_id"}
-}};
+});
 std::string sqlName(const std::string& value) {
     std::string result="\"";for(char c:value){result+=c;if(c=='"')result+=c;}return result+'"';
 }
