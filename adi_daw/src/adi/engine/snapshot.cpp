@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/freeze_groups.hpp"
 
 #include "adi/controller_lanes.hpp"
@@ -50,7 +51,24 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
            a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
-           a.controllers == b.controllers;
+           a.controllers == b.controllers && a.midiPreview == b.midiPreview;
+}
+
+MidiClipPreview readMidiBars(const SQLite::Column& blob) {
+    MidiClipPreview preview;
+    const auto data = std::span(static_cast<const std::byte*>(blob.getBlob()), static_cast<std::size_t>(blob.getBytes()));
+    const StreamReader<NoteRecord> stream(data, FourCC::Notes);
+    if (!stream.ok() || (stream.header().flags & ~StreamFlags::SortedByTime) != 0) return preview;
+    preview.bars.reserve(stream.count());
+    for (std::uint32_t i = 0; i < stream.count(); ++i) {
+        const auto note = stream.at(i);
+        if (!note || !detail::displayableNote(*note)) return {};
+        const auto key = static_cast<int>(note->key);
+        preview.bars.push_back({note->start_ticks, note->dur_ticks, key, (note->flags & NoteFlags::Muted) == 0});
+        preview.low = std::min(preview.low, key);
+        preview.high = std::max(preview.high, key);
+    }
+    return preview;
 }
 
 void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks) {
@@ -378,11 +396,25 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     using ClipList = std::vector<std::shared_ptr<const ClipNode>>;
     struct ClipRows { ClipList main, takes; };
     std::map<std::int64_t, ClipRows> clipsByTrack;
+    std::map<std::int64_t, MidiClipPreview> midiContents;
+    try {
+        SQLite::Statement notes(db, "SELECT e.clip_id,e.data FROM event_streams e JOIN clips c ON c.id=e.clip_id "
+                                    "WHERE c.kind='midi' AND e.stream_kind='notes' AND e.channel IS NULL "
+                                    "AND e.controller IS NULL ORDER BY e.clip_id,e.id");
+        while (notes.executeStep()) {
+            const auto clip = notes.getColumn(0).getInt64();
+            if (!midiContents.contains(clip)) midiContents.emplace(clip, readMidiBars(notes.getColumn(1)));
+        }
+    } catch (const SQLite::Exception&) {
+        // A failed optional projection leaves clip bodies without note bars.
+        midiContents.clear();
+    }
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color,loop_enabled,loop_start_ticks,loop_len_ticks "
+            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color, "
+            "kind,loop_enabled,loop_start_ticks,loop_len_ticks "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -410,9 +442,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.lengthNs=linear(14);
             c.laneId=linear(15);
             c.color=linear(16);
-            c.loopEnabled=st.getColumn(17).getInt()!=0;
-            c.loopStartTicks=st.getColumn(18).getInt64();
-            c.loopLengthTicks=linear(19);
+            c.loopEnabled=st.getColumn(18).getInt()!=0;
+            c.loopStartTicks=st.getColumn(19).getInt64();
+            c.loopLengthTicks=linear(20);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;
@@ -429,6 +461,17 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             auto& rows = clipsByTrack[trackId];
             auto& destination = c.laneId ? rows.takes : rows.main;
             const auto prev = prevClips.find(c.id);
+            if (st.getColumn(17).getString() == "midi") {
+                MidiClipPreview preview;
+                if (const auto notes = midiContents.find(c.id); notes != midiContents.end()) preview = std::move(notes->second);
+                preview.startMarker = c.contentOffsetTicks;
+                if (c.loopEnabled && c.loopLengthTicks.value_or(0) > 0) {
+                    preview.loopStart = c.loopStartTicks;
+                    preview.loopLength = *c.loopLengthTicks;
+                }
+                const auto prior = prev != prevClips.end() ? prev->second->midiPreview : nullptr;
+                c.midiPreview = prior && *prior == preview ? prior : std::make_shared<const MidiClipPreview>(std::move(preview));
+            }
             if (prev != prevClips.end() && same(*prev->second, c))
                 destination.push_back(prev->second);
             else
@@ -707,6 +750,38 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         else snap->sampleSlots.push_back(std::make_shared<const SampleSlotNode>(std::move(node)));
     }
     return snap;
+}
+
+std::shared_ptr<const Snapshot> SnapshotBuilder::withMidiClipNotes(const Store& store,
+        const std::shared_ptr<const Snapshot>& previous,std::int64_t clipId) {
+    if (!previous) return {};
+    for (std::size_t trackIndex = 0; trackIndex < previous->tracks.size(); ++trackIndex) {
+        const auto& track = previous->tracks[trackIndex];
+        for (const bool take : {false,true}) {
+            const auto& clips = take ? track->takeClips : track->clips;
+            const auto at = std::find_if(clips.begin(), clips.end(), [&](const auto& clip) { return clip->id == clipId; });
+            if (at == clips.end()) continue;
+            const auto& before = (*at)->midiPreview;
+            if (!before) return {};
+            SQLite::Statement notes(store.db(), "SELECT data FROM event_streams WHERE clip_id=? AND stream_kind='notes' "
+                                                "AND channel IS NULL AND controller IS NULL ORDER BY id LIMIT 1");
+            notes.bind(1, clipId);
+            auto preview = notes.executeStep() ? readMidiBars(notes.getColumn(0)) : MidiClipPreview{};
+            preview.startMarker = before->startMarker;
+            preview.loopStart = before->loopStart;
+            preview.loopLength = before->loopLength;
+            if (*before == preview) return previous;
+            auto refreshed = std::make_shared<Snapshot>(*previous);
+            auto targetTrack = std::make_shared<TrackNode>(*track);
+            auto targetClip = std::make_shared<ClipNode>(**at);
+            targetClip->midiPreview = std::make_shared<const MidiClipPreview>(std::move(preview));
+            auto& targetClips = take ? targetTrack->takeClips : targetTrack->clips;
+            targetClips[static_cast<std::size_t>(at - clips.begin())] = std::move(targetClip);
+            refreshed->tracks[trackIndex] = std::move(targetTrack);
+            return refreshed;
+        }
+    }
+    return {};
 }
 
 std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& b) {
