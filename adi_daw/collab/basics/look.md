@@ -23,6 +23,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-75 | `basics/look-chain` at `fac5ee51` | Return the stopped transport, marker and viewport to 1.1.1 on Stop while stopped. Engine view-state mailbox and window seat. | Focused mailbox red/green and peerless transport, count-in and Continue checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-89 | `basics/look-chain` at `1f31704b` | Show named scan failures and render load placeholders with the failure reason. Window and Mix View seats. | Peerless scan rows, blocked drag/load and the real document placeholder paint passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-91 | `basics/look-chain` at `a748800b` | Mark keyboard focus and show when more tracks extend below the lanes. Window seat. | Fake-peer keyboard focus and software overflow tests passed. Both refreshed structural fixtures changed exactly 128 pixels inside their new badge. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-63 | `basics/look-chain` at `107f1cec` | Publish MIDI note activity and draw it in Arrangement and Mixer meters. Engine and window seats. | Peerless short-note, held-note, stop and track isolation checks passed. The separate MIDI engine suite passed 586 checks. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -182,6 +183,10 @@ At 1440 × 900 Compact the Browser's existing rows begin at `(127, 81)` and are 
 ### SC-91
 
 Previously neither indicator was drawn. At 1200 × 720 Compact the focused panel now gets a 2 px thick, 32 px wide leading marker. In the test it moves from Arrangement `(328, 36, 32, 2)` to Browser `(12, 36, 32, 2)`. In the tall track list the overflow badge is lane-local `(8, 71, 16, 8)` above the pinned foot, root `(336, 186, 16, 8)`. It contains an 8 × 5 px downward triangle and disappears at the scroll end.
+
+### SC-63
+
+The MIDI dots keep their bounds. In a Compact Arrangement strip with I/O enabled the meter is `(183, 1, 8, 84)` and the first dot is `(184.25, 1, 5.5, 5.5)`. In a 219 px Mixer View strip with Sends off the meter is `(53, 25, 11, 190)` and the first dot is `(55.25, 25, 5.5, 5.5)`. Dot pitch is 8 px. Before, the meter stayed dark `#161616`. A MIDI onset lights it in Dark accent `#ffad3b` for at least 100 ms, including a whole short note between frames. A held note keeps it lit. A separate track's dots remain dark.
 
 ## For the director
 
