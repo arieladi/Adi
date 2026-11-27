@@ -31,6 +31,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-268 | `basics/look-chain` at `03505361` | Disable unavailable Reference Track controls with reasons and connect visibility for assigned roles. Window and Mix View seats. | Peerless menu and visibility tests passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-270 | `basics/look-chain` at `2affb764` | Wire Arrangement M and View Volume to the volume, pan and meter group. Window seat. | Peerless click, layout, menu state and per-window persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-290 | `basics/look-chain` at `9b50a04d` | Show the preceding device's stereo output in each Device View gap. Window seat. | Headless tap, channel, clipping, stale signal and visibility checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-291 | `basics/look-chain` at `8a670768` | Show sample filenames and waveforms and reveal file-backed samples. Window, Mix View and engine seats. | Peerless waveform and folder request checks passed. Debug Werror, 17 UI suites without DISPLAY, 5 sample and snapshot suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -230,6 +231,27 @@ The peerless software-render fixture is 1200 × 720 logical pixels in Compact de
 | Pause in published audio | Fixed wells | The fill clears after 250 ms while the wells stay in place. |
 
 Locations are strip-local `(x,y,width,height)` unless noted. `deviceOutputMeters` uses separate synthetic `ScopeTap` writers on the existing `SharedAnalysis` path and reads the rendered wells. It checks the prior device ID as well as the channel colors and meter height, then hides the Device View to verify release of both tap leases. Folded devices retain their output meters. A gap that would join different authored chains remains dark. This touches the window seat’s Device View implementation and shell tests.
+
+### SC-291
+
+Measured in logical pixels from the Device View and SampleTile layout at the 1440×900 OneShot fixture. Coordinates for tile contents are relative to the tile's top left. The panel puts the tile at `(panel width − 96, 21)` when it has no parameter pages, or at `(panel width − 96, 43)` with page selectors. In Configure, the corresponding y positions are 43 and 65. The tile is 90×84 at the fixture height before and after, with 6 px to the panel's right edge. The headless shell test asserts the tile and control rectangles and samples the software-rendered waveform.
+
+| Element | Before, `(x, y; w×h)` | After, `(x, y; w×h)` |
+|---|---|---|
+| Single slot title | `(6, 3; 78×14)` | `(6, 3; 78×14)` |
+| Slot chooser on a multi-slot device | `(3, 2; 84×17)` | `(3, 2; 84×17)` |
+| Loaded text | `(6, 18; 78×46)` with “Sample loaded” centered | `(6, 20; 78×14)` with the file name left aligned and the full name in the tooltip |
+| Waveform | Absent | `(6, 35; 78×29)` |
+| Hot-Swap | `(4, 66; 17×15)` | `(4, 66; 17×15)` |
+| Show Sample in Folder | Absent | `(26, 66; 17×15)` |
+| Clear | `(50, 67; 36×13)` | `(50, 67; 36×13)` |
+| Empty or missing state text | `(6, 18; 78×46)` | `(6, 18; 78×46)` |
+
+The slot reads the media pool's original filename, with a basename from the stored path as a fallback for older rows. The folder action checks the current slot, then resolves the file by its recorded content hash. Fileless portable presets can display the audio from their embedded backup. Existing preset state has no original basename, so the tile labels those samples “Embedded sample” and disables the folder action. The filename line and waveform have 1 px of vertical clearance. The waveform bottom leaves 2 px before the folder and Hot-Swap controls, and the folder button ends 7 px before Clear begins.
+
+Validation in the isolated worktree used Linux Debug compiler syntax checks for the four changed implementation units and both tests. The headless shell test replaces the file-manager callback with a path recorder. It covers the size and positions, a real sample waveform drawn to a software image, Undo, and replacement. A document test waits for the actual worker and checks the frames, sample rate, channels and peak range of a fileless preset. The recording waveform handoff test verifies media row 0 remains a file-backed request. The integrated window-suite run is managed by the chain session.
+
+Also passed a standalone Linux smoke test with `DISPLAY` unset. It requested embedded stereo peaks through the real cache worker, verified each channel's extrema, confirmed cache eviction when the slot was removed, and checked cancelled and nonfinite source handling. Both supported waveform builder signatures correctly dispatched a file-backed source with media ID 0.
 
 ## For the director
 
