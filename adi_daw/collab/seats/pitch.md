@@ -8,3 +8,4 @@
 
 | Item | Change | Proof | State |
 | --- | --- | --- | --- |
+| Typed note edits | Atomic worker commands for pitch, straightening, tilt, scale quantization, timing, formant, gain/mute, drift and transition. | 35 checks passed under strict GCC and ASan/UBSan. Making correction a no-op failed five contour, drift and transition checks. The fixture measured +100.25 cents with 30 cents of tilt, a 12.50 ms move and a 1.50× stretch. | Engine seam verified. Project ops, persistent rows and undo wiring depend on win's reservations. |
