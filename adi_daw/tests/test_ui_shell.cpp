@@ -1469,6 +1469,76 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         lanes.resizeTrack(12, 40);
         root.frame();
     }
+    // SC-279: the track titles' Ctrl/Cmd arrows move selected siblings one place at a time.
+    {
+        auto &headers = root.arrangement.headers;
+        const auto command = juce::ModifierKeys::commandModifier;
+        const auto up = juce::KeyPress::upKey, down = juce::KeyPress::downKey;
+        auto clickTitle = [&root, &headers](std::int64_t id, juce::ModifierKeys modifiers = {}) {
+            const juce::Point<float> at(60.f, static_cast<float>(laneTop(root, id) + 16));
+            headers.mouseDown(pressAt(headers, at, modifiers));
+            headers.mouseUp(pressAt(headers, at, modifiers));
+        };
+        auto arrow = [&root, &headers](int key, juce::ModifierKeys modifiers = {}) {
+            const bool handled = headers.keyPressed(juce::KeyPress(key, modifiers, 0));
+            root.frame();
+            return handled;
+        };
+        auto undoStep = [&submitter] {
+            const auto step = submitter.nextUndo();
+            return step ? step->txnId : std::int64_t{0};
+        };
+        auto stepBack = [&root, &undoStep, &order, &tree](std::int64_t previous) {
+            const bool undone = undoStep() != previous && root.command(AppCommands::Undo);
+            root.frame();
+            check(undone && order() == tree && undoStep() == previous,
+                  "SC-279: one Undo restores the original track order and previous history step");
+        };
+        auto blocked = [&](std::int64_t id, int key, const char *what) {
+            clickTitle(id);
+            const auto before = order();
+            const auto previous = undoStep();
+            arrow(key, command);
+            check(order() == before && lanes.selection.track == id && undoStep() == previous, what);
+        };
+
+        clickTitle(14);
+        const auto previous = undoStep();
+        check(arrow(down) && lanes.selection.track == 15 && arrow(up) && lanes.selection.track == 14 &&
+                  order() == tree && undoStep() == previous,
+              "SC-279: plain title arrows still change the selection without reordering");
+        clickTitle(14);
+        clickTitle(15, juce::ModifierKeys::shiftModifier);
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> belowGroup{
+            {10, 0}, {11, 1}, {12, 1}, {13, 0}, {16, 1}, {17, 2}, {18, 2}, {14, 1}, {15, 1}, {1, 0}};
+        check(arrow(down, command) && order() == belowGroup && lanes.selection.track == 14 &&
+                  lanes.selectedTracks(root.reader()) == std::vector<std::int64_t>{14, 15},
+              "SC-279: Ctrl/Cmd+Down moves the selected Bass and Synths after one sibling group inside Body");
+        stepBack(previous);
+
+        clickTitle(15);
+        clickTitle(16, juce::ModifierKeys::shiftModifier);
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> aboveBass{
+            {10, 0}, {11, 1}, {12, 1}, {13, 0}, {15, 1}, {16, 1}, {17, 2}, {18, 2}, {14, 1}, {1, 0}};
+        check(arrow(up, command) && order() == aboveBass && lanes.selection.track == 15 &&
+                  lanes.selectedTracks(root.reader()) == std::vector<std::int64_t>{15, 16},
+              "SC-279: Ctrl/Cmd+Up moves a selected group and sibling above Bass with their selection intact");
+        stepBack(previous);
+
+        blocked(14, up, "SC-279: the first child cannot move up out of its parent group");
+        blocked(16, down, "SC-279: the last child cannot move down into its own children");
+        if (root.command(AppCommands::InsertReturnTrack)) {
+            const auto returnId = lanes.selection.track;
+            root.frame();
+            blocked(13, down, "SC-279: the last ordinary track cannot cross a Return");
+            blocked(returnId, up, "SC-279: a Return cannot move into the ordinary tracks");
+            blocked(returnId, down, "SC-279: a Return cannot move below Main");
+            blocked(1, up, "SC-279: Main cannot move above a Return");
+            stepBack(previous);
+        } else {
+            check(false, "SC-279: the boundary fixture inserts a Return before Main");
+        }
+    }
     // Live's Insert Track (manual 18.2) inside a group: right after the selected track, in its group.
     {
         lanes.selection.track = 11;
