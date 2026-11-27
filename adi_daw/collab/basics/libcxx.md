@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026, 22:00 IST — main `ed3da057c1b32166f3acb3743449037a4be32173`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 279 registered CTest suites passed.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 27 November 2026 — seats/pitch-chain `e772da3e`
 
 The modified file passed native x86-64 Clang syntax checking. It failed with `-mlong-double-64` on the following implicit conversions. The full headless build and suite are pending.
