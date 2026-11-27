@@ -46,7 +46,9 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.muted == b.muted && a.gainDb == b.gainDb && a.color == b.color && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
-           a.contentOffsetTicks==b.contentOffsetTicks && a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
+           a.contentOffsetTicks==b.contentOffsetTicks && a.loopEnabled==b.loopEnabled &&
+           a.loopStartTicks==b.loopStartTicks && a.loopLengthTicks==b.loopLengthTicks &&
+           a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
            a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
            a.controllers == b.controllers && a.midiPreview == b.midiPreview;
@@ -366,7 +368,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // rebuilding a frame. Waveform data is read/built by media/peaks off-thread.
     std::map<std::int64_t,AudioClipSource> audioSources;
     try {
-        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
+        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,"
+                                  "a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,"
+                                  "m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing,m.orig_name,m.bit_depth "
+                                  "FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
         while(query.executeStep()) {
             AudioClipSource source;source.mediaId=query.getColumn(1).getInt64();source.sourceStartFrames=query.getColumn(2).getInt64();source.sourceLengthFrames=query.getColumn(3).getInt64();source.warpEnabled=query.getColumn(4).getInt()!=0;source.warpMode=query.getColumn(5).getString();
             if(!query.getColumn(6).isNull()) {
@@ -379,7 +384,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 if(!query.getColumn(13).isNull())media.sampleRate=query.getColumn(13).getInt64();
                 if(!query.getColumn(14).isNull())media.channels=query.getColumn(14).getInt64();
                 if(!query.getColumn(15).isNull())media.frames=query.getColumn(15).getInt64();
-                media.missing=query.getColumn(16).getInt()!=0;source.mediaInfo=std::move(media);
+                media.missing=query.getColumn(16).getInt()!=0;
+                media.originalName=query.getColumn(17).getString();
+                if(!query.getColumn(18).isNull())media.bitDepth=query.getColumn(18).getInt64();
+                source.mediaInfo=std::move(media);
             }
             audioSources.emplace(query.getColumn(0).getInt64(),std::move(source));
         }
@@ -435,6 +443,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.lengthNs=linear(14);
             c.laneId=linear(15);
             c.color=linear(16);
+            c.loopEnabled=st.getColumn(18).getInt()!=0;
+            c.loopStartTicks=st.getColumn(19).getInt64();
+            c.loopLengthTicks=linear(20);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;
@@ -454,11 +465,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (st.getColumn(17).getString() == "midi") {
                 MidiClipPreview preview;
                 if (const auto notes = midiContents.find(c.id); notes != midiContents.end()) preview = std::move(notes->second);
-                preview.startMarker = st.getColumn(11).getInt64();
-                const auto loopLength = st.getColumn(20).getInt64();
-                if (st.getColumn(18).getInt() != 0 && loopLength > 0) {
-                    preview.loopStart = st.getColumn(19).getInt64();
-                    preview.loopLength = loopLength;
+                preview.startMarker = c.contentOffsetTicks;
+                if (c.loopEnabled && c.loopLengthTicks.value_or(0) > 0) {
+                    preview.loopStart = c.loopStartTicks;
+                    preview.loopLength = *c.loopLengthTicks;
                 }
                 const auto prior = prev != prevClips.end() ? prev->second->midiPreview : nullptr;
                 c.midiPreview = prior && *prior == preview ? prior : std::make_shared<const MidiClipPreview>(std::move(preview));

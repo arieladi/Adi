@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 namespace adi::engine {
-struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
+struct StripMeter; // adi/engine/mixer.hpp: the engine's post-fader peak and RMS
 struct MidiNoteActivity;
 }
 namespace adi::ui {
@@ -117,9 +117,9 @@ class MixerStrip final : public juce::Component,
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
     bool dragging() const noexcept { return dragging_; }
-    // What the meter draws, linear: the level and the peak line, after the window's ballistics.
-    float peak() const noexcept { return peak_; }
-    float rms() const noexcept { return rms_; }
+    // What each meter column draws after the window's ballistics, in linear units.
+    float peak(std::size_t channel) const noexcept { return levels_[channel].peak; }
+    float rms(std::size_t channel) const noexcept { return levels_[channel].rms; }
     // Whether the strip has found the engine's meter for its track.
     bool hasMeter() const noexcept { return meter_ != nullptr; }
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
@@ -340,7 +340,7 @@ class MixerStrip final : public juce::Component,
     };
     std::optional<TitleDrag> titleDrag_;
     bool onSplitLine(const juce::MouseEvent &) const noexcept;
-    // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),
+    // The engine's post-fader meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`),
     // written per callback by the audio thread and read here with relaxed loads; null until the
     // session has a strip for the track. The strips live as long as the session (ADR-0122's
     // rule), and the session as long as the root that holds this panel.
@@ -348,10 +348,14 @@ class MixerStrip final : public juce::Component,
     std::uint32_t midiOnsets_ = 0;
     double midiPulseUntil_ = 0;
     bool midiLit_ = false;
-    // What the meter draws after the window's ballistics: the level, falling once the engine's
-    // value drops, and the peak line, held and then falling; the clock readings they need.
-    float peak_ = 0, rms_ = 0;
-    double lastFrame_ = -1, peakSince_ = 0;
+    // Each channel's level falls after the engine's value drops. Its peak line
+    // holds for a moment before falling, independently of the other channel.
+    struct MeterLevel {
+        float peak = 0, rms = 0;
+        double peakSince = 0;
+    };
+    std::array<MeterLevel, 2> levels_{};
+    double lastFrame_ = -1;
 };
 // Two shapes over one strip: rows level with the arrangement's lanes (the track
 // controls), or Live's Mixer View, vertical strips left to right (manual 18.1).
@@ -399,7 +403,7 @@ class MixerPanel final : public juce::Component {
     void reveal(std::size_t index);
     bool submit(const std::string &op, Payload payload, const char *label);
     AdiRootComponent &root;
-    // Where a strip's meter reads from: the engine's {peak, rms} per strip (UI-ARCHITECTURE §9;
+    // Where a strip's meter reads from: the engine's post-fader meter (UI-ARCHITECTURE §9;
     // `Session::strips().stripFor(track)->meter()`, #381), written by the audio thread and read
     // with relaxed loads, never a tap. Null for a track the session has no strip for yet.
     std::function<const engine::StripMeter *(std::int64_t)> meter;

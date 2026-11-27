@@ -128,6 +128,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void restoreLabel(settings::AppSettings &);
     // Selects a label, as a click on it does.
     void choose(int);
+    // Selects this exact sample, with a temporary Current Project row for an unindexed source.
+    void revealSample(std::filesystem::path);
     std::function<void()> requestAddFolder;
     std::function<void(std::span<const std::filesystem::path>)> addFolders;
     std::function<void(const std::filesystem::path &)> removeFolder;
@@ -201,6 +203,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
   private:
     void setSidebarScroll(double);
     void revealSidebarSelection();
+    bool setCurrentProjectLabelVisible(bool);
+    void selectRevealedSampleLabel();
+    void clearRevealedSample();
     int sidebarCursor() const noexcept;
     void sidebarClick(int row, const juce::MouseEvent &);
     void presentContextMenu(juce::PopupMenu, const juce::MouseEvent &);
@@ -272,6 +277,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
     std::shared_ptr<const BrowserLibrarySnapshot> projectLibrary_;
+    std::optional<LibraryFile> revealedSample_;
     std::map<std::string, std::set<std::filesystem::path>> openFolders_;
     bool ready_ = false;
     PluginScan pluginScan_;

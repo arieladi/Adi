@@ -407,6 +407,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"browser.toggle-collection-blue", "Browser"},
         {"browser.toggle-collection-purple", "Browser"},
         {"browser.toggle-collection-gray", "Browser"},
+        {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -645,7 +646,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Browser Preview", "Preview Selected", "Hot-Swap", "Manage Project Files...",
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
-                                  "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection"};
+                                  "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
+                                  "Reverse Clip(s)"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -953,6 +955,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('e', cmd);
         info.setActive(active_ != nullptr);
         break;
+    case ReverseAudio:
+        info.addDefaultKeypress('r', 0);
+        info.setActive(active_ != nullptr && !active_->noteEditorHasContext() && active_->canReverseAudio());
+        break;
     case TogglePluginWindows: // manual 23.3, 41.4: View > Show/Hide Plug-In Windows, Ctrl/Cmd+Alt+P
         info.addDefaultKeypress('p', cmd | alt);
         info.shortName = active_ != nullptr && active_->pluginWindowsShown() ? "Hide Plug-In Windows"
@@ -1156,7 +1162,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case Quantize:
         info.addDefaultKeypress('u', cmd);
-        info.setActive(false);
+        info.setActive(active_ && active_->state().clipView && active_->clipView.audio() &&
+                       active_->clipView.sample.hasKeyboardFocus(true) && active_->clipView.sample.canQuantize());
         break;
     case QuantizeSettings:
         info.addDefaultKeypress('u', cmd | shift);
@@ -2772,6 +2779,34 @@ ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
                     return {t.get(), c.get()};
     return {};
 }
+struct ReverseTargets {
+    std::vector<std::int64_t> clips;
+    std::optional<std::pair<std::int64_t, std::int64_t>> range;
+};
+ReverseTargets reverseTargets(const engine::Snapshot &current, const ArrangementGeometry &geometry,
+                              const SnapshotReader &reader) {
+    ReverseTargets result;
+    const auto &sel = geometry.selection;
+    const auto [from, to] = std::minmax(sel.start, sel.end);
+    if (from != to && !chosenClip(current, sel).clip && sel.pickedClips.empty())
+        result.range.emplace(from, to);
+    for (const auto &track : current.tracks) {
+        if (!track || (result.range && !geometry.inSelection(reader, track->id)))
+            continue;
+        for (const auto &clip : track->clips) {
+            if (!clip)
+                continue;
+            const bool chosen = result.range ? clip->posTicks < to && clip->posTicks + clip->lengthTicks > from
+                                             : geometry.clipSelected(clip->id);
+            if (!chosen)
+                continue;
+            if (!clip->audio)
+                return {};
+            result.clips.push_back(clip->id);
+        }
+    }
+    return result;
+}
 bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
 std::string imageKind(const Payload &image) {
@@ -3374,6 +3409,17 @@ bool AdiRootComponent::timeCommand(int id) {
     default:
         return false;
     }
+}
+bool AdiRootComponent::canReverseAudio() const {
+    const auto current = view_.current();
+    return current && !reverseTargets(*current, arrangement.geometry, reader()).clips.empty();
+}
+bool AdiRootComponent::reverseAudio() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Reverse needs an open project.");
+    const auto targets = reverseTargets(*current, arrangement.geometry, reader());
+    return commitEdit(clip_edit::prepareReverse(submitter_.store(), targets.clips, targets.range, editRate()));
 }
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
@@ -4088,11 +4134,28 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         dropped.push_back(std::move(file));
     }
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
-                                   &commands_.recordingDefaults());
+                                   &commands_.recordingDefaults(), &submitter_.store(), editRate());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
-    if (!submitEdits(std::move(edit.ops)))
+    if (track != 0) {
+        const edit_plan::Options options{editRate(), edit_plan::capturePolicy(commandSettings())};
+        auto cleared = clip_edit::prepareAudioDropReplacement(submitter_.store(), track,
+            {0, std::max<std::int64_t>(0, pos)}, {0, edit.endOnTarget}, options, edit.lastClip);
+        if (!cleared.ok)
+            return fail(std::move(cleared.error));
+        if (!cleared.requests.empty()) {
+            for (auto &request : cleared.requests)
+                request.label = edit.ops.front().label;
+            cleared.requests.insert(cleared.requests.end(), std::make_move_iterator(edit.ops.begin()),
+                                    std::make_move_iterator(edit.ops.end()));
+            if (!commitEdit(std::move(cleared)))
+                return false;
+        } else if (!submitEdits(std::move(edit.ops))) {
+            return false;
+        }
+    } else if (!submitEdits(std::move(edit.ops))) {
         return false;
+    }
     // The first clip selected, as a click on it selects it: its track, and its time.
     auto &sel = arrangement.geometry.selection;
     sel.track = edit.select;
@@ -5478,6 +5541,14 @@ bool AdiRootComponent::command(int id) {
         if (id == AppCommands::RenameTrack)
             return clipView.chooseTitleItem(1);
     }
+    if (state_.clipView && clipView.audio() && clipView.sample.hasKeyboardFocus(true)) {
+        if (id == AppCommands::PlayStop && !mailbox_.desiredPlaying() && clipView.sample.insert()) {
+            clipView.sample.playFromInsert();
+            return true;
+        }
+        if (clipView.sample.command(id))
+            return true;
+    }
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
     if (id >= AppCommands::FoldToNotes && id <= AppCommands::HighlightScales) {
@@ -5930,6 +6001,8 @@ bool AdiRootComponent::command(int id) {
         return deleteFades();
     case AppCommands::Split:
         return splitAtMarker();
+    case AppCommands::ReverseAudio:
+        return reverseAudio();
     case AppCommands::CutTime:
     case AppCommands::CopyTime:
     case AppCommands::PasteTime:
@@ -6426,11 +6499,9 @@ AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoi
     copy.setToggleState(choices.copyIn, juce::dontSendNotification);
     // Live's Warp modes, in Live's order (manual 9.2.1); ADI's stretch is its own (ADR-0061).
     int item = 1;
-    for (const auto m : {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture, audio::WarpMode::RePitch,
-                         audio::WarpMode::Complex, audio::WarpMode::ComplexPro}) {
-        static const char *names[] = {"Beats", "Tones", "Texture", "Re-Pitch", "Complex", "Complex Pro"};
-        mode.addItem(names[item - 1], item);
-        if (m == choices.mode)
+    for (const auto &choice : kWarpModeChoices) {
+        mode.addItem(choice.name, item);
+        if (choice.mode == choices.mode)
             mode.setSelectedId(item, juce::dontSendNotification);
         ++item;
     }
@@ -6448,10 +6519,8 @@ ImportChoices AdiRootComponent::ImportPrompt::choices() const {
     out.warp = warp.getToggleState();
     out.edgeFades = fades.getToggleState();
     out.copyIn = copy.getToggleState();
-    static constexpr audio::WarpMode modes[] = {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture,
-                                                audio::WarpMode::RePitch, audio::WarpMode::Complex, audio::WarpMode::ComplexPro};
-    if (const auto id = mode.getSelectedId(); id >= 1 && id <= 6)
-        out.mode = modes[id - 1];
+    if (const auto id = mode.getSelectedId(); id >= 1 && id <= static_cast<int>(kWarpModeChoices.size()))
+        out.mode = kWarpModeChoices[static_cast<std::size_t>(id - 1)].mode;
     return out;
 }
 void AdiRootComponent::ImportPrompt::answer(bool importing) {

@@ -174,6 +174,36 @@ std::string synchronizedProjectNotice(const Store &store) {
     if (store.readOnly()) return "This read-only project is in a synced or network folder.";
     return "This project is in a synced or network folder. Committed edits are kept in its .adi file.";
 }
+juce::File fileFromPath(const std::filesystem::path &path) {
+    auto nativePath = path;
+    const auto value = nativePath.make_preferred().u8string();
+    return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(value.data()), static_cast<int>(value.size())));
+}
+std::string launchExternalSampleEditor(juce::ChildProcess &process, const juce::File &editor, juce::File source,
+                                       const juce::File &project, bool copy) {
+    juce::StringArray arguments;
+#if JUCE_MAC
+    if (editor.isDirectory() && editor.hasFileExtension(".app"))
+        arguments = juce::StringArray{"/usr/bin/open", "-a", editor.getFullPathName()};
+    else
+#endif
+    if (editor.existsAsFile())
+        arguments.add(editor.getFullPathName());
+    else
+        return "The configured Sample Editor could not be found.";
+
+    if (copy) {
+        const auto folder = project.getParentDirectory().getChildFile("audio/Edited").getChildFile(juce::Uuid().toString());
+        const auto target = folder.getChildFile(source.getFileName());
+        if (folder.createDirectory().failed() || !source.copyFileTo(target))
+            return "The sample could not be copied for editing.";
+        source = target;
+    }
+    arguments.add(source.getFullPathName());
+    if (!process.start(arguments, 0))
+        return "The configured Sample Editor could not be started.";
+    return copy ? "Opened an editable copy of " + source.getFileName().toStdString() + "." : std::string{};
+}
 juce::File defaultUserLibraryFolder() {
     if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isNotEmpty())
         return juce::File::getCurrentWorkingDirectory().getChildFile(home).getChildFile("User Library");
@@ -1729,6 +1759,39 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->browser.swapChoice = [this](const BrowserPanel::HotSwapChoice &choice) { return swapBrowserChoice(choice); };
         root->browser.leaveHotSwap = [this] { leaveHotSwap(); };
+        root->launchSampleEditor = [asker = juce::Component::SafePointer<AdiRootComponent>(root_)](
+                                       const std::filesystem::path &editor, std::int64_t mediaId, bool copy) {
+            if (asker == nullptr)
+                return false;
+            auto &store = asker->editStore();
+            const auto project = fileFromPath(store.path());
+            const auto folder = media::projectFolder(store);
+            Payload identity;
+            try {
+                identity = media::mediaRow(store.db(), mediaId);
+            } catch (const std::exception &e) {
+                asker->say(std::string("The sample could not be opened: ") + e.what());
+                return true;
+            }
+            return juce::Thread::launch([asker, project, folder, editor = fileFromPath(editor),
+                                         identity = std::move(identity), copy] {
+                std::string error;
+                const auto source = media::resolveMedia(folder, identity, error);
+                juce::ChildProcess process;
+                auto message = source.empty() ? "The sample could not be opened: " + error
+                                               : launchExternalSampleEditor(process, editor, fileFromPath(source), project, copy);
+                if (!message.empty())
+                    juce::MessageManager::callAsync([asker, message = std::move(message)] {
+                        if (asker != nullptr)
+                            asker->say(message);
+                    });
+#if !JUCE_WINDOWS
+                // JUCE reaps a POSIX child when isRunning observes its exit.
+                while (process.isRunning())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+#endif
+            });
+        };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.pollParameterEdits = [this] { document_->pollParameterEdits(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
@@ -2128,6 +2191,8 @@ class AdiApplication final : public juce::JUCEApplication,
             ProjectDocument::MaterialBatchJob job;
             try {
                 job = document_->materialBatchJob(files, track, pos, separate, choices, commands_->recordingDefaults(), now);
+                job.defaultsIndex = appdata::libraryIndexFile();
+                job.batch.placementPolicy = edit_plan::capturePolicy(*settings_);
             } catch (const std::exception &error) {
                 done(0, 0, error.what());
                 return true;
@@ -2178,7 +2243,13 @@ class AdiApplication final : public juce::JUCEApplication,
         root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
             // The history's clock: microseconds UTC.
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            if (document_->prepareImport(path, now, out))
+            if (document_->prepareImport(path, now, out, appdata::libraryIndexFile()))
+                return true;
+            why = document_->error();
+            return false;
+        };
+        root->saveSampleDefaults = [this](std::int64_t clip, std::string &why) {
+            if (document_->saveSampleDefaults(clip, appdata::libraryIndexFile()))
                 return true;
             why = document_->error();
             return false;

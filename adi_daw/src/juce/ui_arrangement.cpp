@@ -15,6 +15,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/recording_edits.hpp"
+#include "adi/warp_commands.hpp"
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_decimal.hpp"
@@ -81,11 +82,11 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
                "double-click to see all of it.");
 }
 namespace {
-template <typename FrameAt>
-void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int from, int to, float top, float bottom,
-                      std::span<const std::uint32_t> channelMap, float gain, FrameAt frameAt,
-                      double sourceEnd = std::numeric_limits<double>::infinity()) {
-    const auto channels = channelMap.empty() ? peaks.channels : static_cast<std::uint32_t>(channelMap.size());
+template <typename Peaks, typename FrameAt>
+void paintPeakColumns(juce::Graphics &g, const Peaks &peaks, int from, int to, float top, float bottom,
+                      std::uint32_t sourceChannels, std::span<const std::uint32_t> channelMap, FrameAt frameAt,
+                      double sourceEnd = std::numeric_limits<double>::infinity(), float gain = 1.f) {
+    const auto channels = channelMap.empty() ? sourceChannels : static_cast<std::uint32_t>(channelMap.size());
     if (channels == 0 || bottom - top < 4.f)
         return;
     const float band = (bottom - top) / static_cast<float>(channels);
@@ -857,6 +858,17 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
     for (auto *c : std::array<juce::Component *, 6>{&overview, &ruler, &scrub, &headers, &canvas, &playhead})
         addAndMakeVisible(c);
+    waveformZoom_.setComponentID("waveformVerticalZoom");
+    waveformZoom_.setName("Waveform Vertical Zoom");
+    waveformZoom_.setTitle("Waveform Vertical Zoom");
+    waveformZoom_.setTooltip("Waveform Vertical Zoom for all audio clips in the Arrangement");
+    waveformZoom_.setSliderStyle(juce::Slider::LinearHorizontal);
+    waveformZoom_.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 35, 15);
+    waveformZoom_.setTextValueSuffix(" dB");
+    waveformZoom_.setRange(0., 36., 1.);
+    waveformZoom_.setDoubleClickReturnValue(true, 0.);
+    waveformZoom_.onValueChange = [this] { canvas.repaint(); };
+    addAndMakeVisible(waveformZoom_);
     // The tree the snapshot carries (#299).
     trackRows_ = rowsFromSnapshot;
     auto &show = root.namesBar.show;
@@ -1269,6 +1281,9 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
+float ArrangementView::waveformZoomScale() const noexcept {
+    return std::pow(10.f, static_cast<float>(waveformZoom_.getValue()) / 20.f);
+}
 int ArrangementView::overviewHeight() const noexcept { return root.state().overview ? kOverviewHeight : 0; }
 void ArrangementView::setNamesFirst(bool first, int controls) {
     if (first == namesFirst_ && controls == controlsGap_)
@@ -1290,6 +1305,8 @@ void ArrangementView::resized() {
     canvas.setBounds(lanesX, top, clipsW, body);
     geometry.lanesHeight = body;
     headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
+    waveformZoom_.setBounds(headers.getX() + 2, canvas.getBottom(), std::max(0, headerW - 4), kTimeRulerHeight);
+    waveformZoom_.setVisible(headerW >= 52);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
@@ -1990,6 +2007,7 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
                 }
             }
             addActive(Command::LoopSelection);
+            addActive(Command::ReverseAudio);
             menu.addSeparator();
             if (clips) {
                 addActive(Command::Split);
@@ -3073,11 +3091,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                         const int from = std::max(0, static_cast<int>(std::floor(left)));
                         const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
                         paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
-                                         top + static_cast<float>(h - 4), mapping->channels, 1.f,
+                                         top + static_cast<float>(h - 4), preview->peaks.channels, mapping->channels,
                                          [&](int x) -> std::optional<double> {
                             const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
                             return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
-                        }, sourceEndFrame);
+                        }, sourceEndFrame, view.waveformZoomScale());
                     }
                     if (right - left > 6.f) {
                         g.setColour(look::ink);
@@ -3810,13 +3828,13 @@ std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     return out;
 }
 bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
-    return c.audio && !view.root.automationMode() && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
-                       (fadeDrag_ && fadeDrag_->clip == c.id));
+    return c.audio && (showFades || (fadeDrag_ && fadeDrag_->clip == c.id) ||
+                       (!view.root.automationMode() && (c.id == hoverClip_ || view.geometry.clipSelected(c.id))));
 }
-void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std::int64_t &out,
+void ArrangementCanvas::fadesOf(const engine::ClipNode &c, engine::ClipFadeHandles &in, engine::ClipFadeHandles &out,
                                 std::optional<double> &inTension, std::optional<double> &outTension) const {
-    in = c.fadeInTicks;
-    out = c.fadeOutTicks;
+    in = fadeHandles(c, true);
+    out = fadeHandles(c, false);
     inTension = c.fadeInTension;
     outTension = c.fadeOutTension;
     if (!fadeDrag_)
@@ -3829,7 +3847,7 @@ void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std
     if (fadeDrag_->curve)
         (fadeDrag_->in ? inTension : outTension) = fadeTension_;
     else
-        (fadeDrag_->in ? in : out) = fadeLimit(c, fadeDrag_->in, fadeTicks_);
+        (fadeDrag_->in ? in : out) = movedFadeHandle(c, fadeDrag_->in, fadeDrag_->start, fadeTicks_);
 }
 void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c, float left, float right, float top,
                                    float bottom) const {
@@ -3838,11 +3856,15 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
     // peak and a diamond on each curve.
     if (bottom - top < 8.f || right - left < 4.f)
         return;
-    std::int64_t in = 0, out = 0;
+    engine::ClipFadeHandles in, out;
     std::optional<double> inTension, outTension;
     fadesOf(c, in, out, inTension, outTension);
     const auto &geo = view.geometry;
-    const float xIn = static_cast<float>(geo.x(c.posTicks + in)), xOut = static_cast<float>(geo.x(c.posTicks + c.lengthTicks - out));
+    const auto x = [&](bool incoming, std::int64_t ticks) {
+        return static_cast<float>(geo.x(incoming ? c.posTicks + ticks : c.posTicks + c.lengthTicks - ticks));
+    };
+    const float xIn = x(true, in.peakTicks), xOut = x(false, out.peakTicks);
+    const float startIn = x(true, in.zeroTicks), startOut = x(false, out.zeroTicks);
     const auto curveY = [&](double shape) { return bottom - static_cast<float>(shape) * (bottom - top); };
     const auto draw = [&](float x0, float x1, bool fadeIn, std::int64_t curve, const std::optional<double> &tension) {
         if (x1 - x0 < 1.f)
@@ -3870,35 +3892,51 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
     const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
     const bool bendingOut = fadeDrag_ && fadeDrag_->curve && !fadeDrag_->in && outTension != c.fadeOutTension;
     const auto inCurve = bendingIn ? kBentFadeCurve : c.fadeInCurve, outCurve = bendingOut ? kBentFadeCurve : c.fadeOutCurve;
-    draw(left, xIn, true, inCurve, inTension);
-    draw(xOut, right, false, outCurve, outTension);
+    g.setColour(look::ink.withAlpha(0.22f));
+    if (startIn > left)
+        g.fillRect(left, top, startIn - left, bottom - top);
+    if (right > startOut)
+        g.fillRect(startOut, top, right - startOut, bottom - top);
+    draw(startIn, xIn, true, inCurve, inTension);
+    draw(xOut, startOut, false, outCurve, outTension);
     if (!fadeHandlesShown(c))
         return;
-    const auto square = [&](float x, bool chosen) {
-        const auto box = juce::Rectangle<float>(x - 3.5f, top, 7.f, 7.f);
+    const auto &active = fadeDrag_ ? fadeDrag_ : selectedFade_;
+    if (active && active->clip == c.id) {
+        const auto limit = active->start ? (active->in ? in.peakTicks : out.peakTicks) : fadePeakLimit(c, active->in);
+        const float at = x(active->in, limit);
+        constexpr float dashes[] = {2.f, 2.f};
+        g.setColour(look::ink.withAlpha(.8f));
+        g.drawDashedLine({at, top, at, bottom}, dashes, 2);
+    }
+    const auto square = [&](float horizontal, float y, bool chosen) {
+        const auto box = juce::Rectangle<float>(horizontal - 3.5f, y, 7.f, 7.f);
         g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillRect(box);
         g.setColour(look::ink);
         g.drawRect(box, 1.f);
     };
-    const auto diamond = [&](float x, float y, bool chosen) {
+    const auto diamond = [&](float horizontal, float y, bool chosen) {
         juce::Path d;
-        d.addQuadrilateral(x, y - 4.f, x + 4.f, y, x, y + 4.f, x - 4.f, y);
+        d.addQuadrilateral(horizontal, y - 4.f, horizontal + 4.f, y, horizontal, y + 4.f, horizontal - 4.f, y);
         g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillPath(d);
         g.setColour(look::ink);
         g.strokePath(d, juce::PathStrokeType(1.f));
     };
-    const auto chosen = [&](bool fadeIn, bool curve) {
-        const auto &h = fadeDrag_ ? fadeDrag_ : selectedFade_;
-        return h && h->clip == c.id && h->in == fadeIn && h->curve == curve;
+    const auto chosen = [&](bool fadeIn, bool curve, bool start = false) {
+        return active && active->clip == c.id && active->in == fadeIn && active->curve == curve && active->start == start;
     };
-    square(std::max(left + 3.5f, xIn), chosen(true, false));
-    square(std::min(right - 3.5f, xOut), chosen(false, false));
-    if (in > 0)
-        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
-    if (out > 0)
-        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+    square(std::max(left + 3.5f, xIn), top, chosen(true, false));
+    square(std::min(right - 3.5f, xOut), top, chosen(false, false));
+    if (in.peakTicks > in.zeroTicks) {
+        square(std::max(left + 3.5f, startIn), bottom - 7.f, chosen(true, false, true));
+        diamond((startIn + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
+    }
+    if (out.peakTicks > out.zeroTicks) {
+        square(std::min(right - 3.5f, startOut), bottom - 7.f, chosen(false, false, true));
+        diamond((xOut + startOut) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+    }
 }
 std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h) const {
     for (const auto &b : clipBodies())
@@ -3907,41 +3945,47 @@ std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeH
     return std::nullopt;
 }
 std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h, const ClipBody &b) const {
-    {
-        if (b.clip->id != h.clip || !fadeHandlesShown(*b.clip) || b.bottom - b.top < 8.f)
-            return std::nullopt;
-        std::int64_t in = 0, out = 0;
-        std::optional<double> inTension, outTension;
-        fadesOf(*b.clip, in, out, inTension, outTension);
-        const auto &geo = view.geometry;
-        const float xIn = static_cast<float>(geo.x(b.clip->posTicks + in));
-        const float xOut = static_cast<float>(geo.x(b.clip->posTicks + b.clip->lengthTicks - out));
-        if (!h.curve)
-            return juce::Point<float>(h.in ? std::max(b.left + 3.5f, xIn) : std::min(b.right - 3.5f, xOut), b.top + 3.5f);
-        if ((h.in ? in : out) == 0)
-            return std::nullopt;
-        const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
-        const auto curve = bending ? kBentFadeCurve : h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve;
-        const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
-        return juce::Point<float>(h.in ? (b.left + xIn) / 2.f : (xOut + b.right) / 2.f,
-                                  b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
+    const auto &c = *b.clip;
+    if (c.id != h.clip || !fadeHandlesShown(c) || b.bottom - b.top < 8.f)
+        return std::nullopt;
+    engine::ClipFadeHandles in, out;
+    std::optional<double> inTension, outTension;
+    fadesOf(c, in, out, inTension, outTension);
+    const auto handles = h.in ? in : out;
+    if ((h.start || h.curve) && handles.peakTicks <= handles.zeroTicks)
+        return std::nullopt;
+    const auto point = [&](std::int64_t ticks) {
+        return static_cast<float>(view.geometry.x(h.in ? c.posTicks + ticks : c.posTicks + c.lengthTicks - ticks));
+    };
+    const auto peak = point(handles.peakTicks), start = point(handles.zeroTicks);
+    if (!h.curve) {
+        const auto raw = h.start ? start : peak;
+        return juce::Point<float>(h.in ? std::max(b.left + 3.5f, raw) : std::min(b.right - 3.5f, raw),
+                                  h.start ? b.bottom - 3.5f : b.top + 3.5f);
     }
+    const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
+    const auto curve = bending ? kBentFadeCurve : h.in ? c.fadeInCurve : c.fadeOutCurve;
+    const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
+    return juce::Point<float>((start + peak) / 2.f, b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
 }
 std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int x, int y) const {
-    // The nearest shown handle within a few pixels; the curve's diamond before the squares, which
-    // sit at the clip's top.
     const juce::Point<float> at(static_cast<float>(x), static_cast<float>(y));
+    std::optional<FadeHandle> nearest;
+    float distance = 6.f;
     for (const auto &b : clipBodies()) {
         if (!fadeHandlesShown(*b.clip))
             continue;
-        for (const bool curve : {true, false})
-            for (const bool in : {true, false}) {
-                const FadeHandle h{b.clip->id, b.track->id, in, curve};
-                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) <= 6.f)
-                    return h;
+        for (const bool in : {true, false})
+            for (const auto &h : {FadeHandle{b.clip->id, b.track->id, in, true},
+                                  FadeHandle{b.clip->id, b.track->id, in, false},
+                                  FadeHandle{b.clip->id, b.track->id, in, false, true}}) {
+                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) < distance) {
+                    distance = p->getDistanceFrom(at);
+                    nearest = h;
+                }
             }
     }
-    return std::nullopt;
+    return nearest;
 }
 void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
     if(!pointDrag_)clearAutomationValueReadout();
@@ -4024,23 +4068,61 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
                                       float right, float top, float bottom) const {
     // Live's audio clip (manual 6.1, chapter 9): its waveform across the body, each channel in a
     // band of its own, inside the clip's source window only. The colour is ADI's until measured.
-    if (view.waveforms == nullptr || !clip.audio || bottom - top < 4.f)
+    if (!clip.audio || bottom - top < 4.f)
         return;
-    const auto peaks = view.waveforms->peaks(*clip.audio);
-    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+    const auto peaks = view.waveforms != nullptr ? view.waveforms->peaks(*clip.audio) : nullptr;
+    const auto *finest = peaks ? &peaks->finest() : nullptr;
+    if (!clip.loopEnabled && (!finest || finest->channels == 0))
+        return;
+    const auto rate = finest ? static_cast<double>(finest->sampleRate)
+                             : clip.audio->mediaInfo ? static_cast<double>(clip.audio->mediaInfo->sampleRate.value_or(0)) : 0.;
+    if (!(rate > 0.))
         return;
     const auto *snapshot = view.reader().get();
     const auto &geo = view.geometry;
     auto moved = clip;
     moved.posTicks = pos; // drawn where a drag would put it
-    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(peaks->sampleRate));
-    g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
+    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr, rate);
+    const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) * view.waveformZoomScale() : 0.f;
+    const auto waveColour = look::ink.withAlpha(clip.muted ? 0.4f : 0.85f);
+    g.setColour(waveColour);
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
-    const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) : 0.f;
-    paintPeakColumns(g, *peaks, from, to, top, bottom, {}, gain,
-                     [&](int x) { return source.frameAt(geo.tick(x)); });
+    if (!clip.loopEnabled) {
+        paintPeakColumns(g, *peaks, from, to, top, bottom, finest->channels, {},
+                         [&](int x) { return source.frameAt(geo.tick(x)); }, static_cast<double>(finest->frames), gain);
+        return;
+    }
+    const auto channels = finest ? finest->channels : 0;
+    const float band = channels > 0 ? (bottom - top) / static_cast<float>(channels) : 0.f;
+    const auto repeatColour = waveColour.withMultipliedAlpha(.55f);
+    for (int x = from; x < to; ++x) {
+        const double rightEdge = std::min(static_cast<double>(x + 1), static_cast<double>(right));
+        const auto column = source.framesAcross(geo.tick(x), geo.tick(rightEdge));
+        for (std::uint32_t ch = 0; ch < channels; ++ch) {
+            auto span = peakSpan(*peaks, column.first.from, column.first.to, ch);
+            if (column.repeats) {
+                if (const auto wrapped = peakSpan(*peaks, column.second.from, column.second.to, ch)) {
+                    if (span)
+                        mergePeakBins(*span, *wrapped);
+                    else
+                        span = wrapped;
+                }
+            }
+            if (!span)
+                continue;
+            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
+            const float y0 = mid - std::clamp(span->maximum * gain, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(span->minimum * gain, -1.f, 1.f) * half;
+            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
+        }
+        // At overview scales several short repeats can share one pixel and one boundary mark.
+        if (column.repeats && x + 1 < to) {
+            g.setColour(repeatColour);
+            g.drawVerticalLine(x, top, bottom);
+            g.setColour(waveColour);
+        }
+    }
 }
 void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake &take, const engine::TrackNode &track,
                                          std::size_t trackNumber, int y, int height) const {
@@ -4181,6 +4263,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     moving_ = resizing_ = 0;
     copying_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
+    clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
@@ -4234,7 +4317,9 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         automationContextMenu(e);
         return;
     }
-    if (!panning && automationDown(e)) {
+    // Holding F gives a visible fade handle priority over the automation lane.
+    const auto fade = !panning && !contextMenuPress_ ? fadeHandleAt(e.x, e.y) : std::nullopt;
+    if (!panning && !fade && automationDown(e)) {
         clearAutomationSelection();
         if(const auto point=automationValueAt(e.position,false,false))
             showAutomationValue(point->target,point->value,e.position);
@@ -4243,7 +4328,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     clearAutomationValueReadout();
-    if (!panning && automationSelectionDown(e))
+    if (!panning && !fade && automationSelectionDown(e))
         return;
     if (contextMenuPress_) {
         view.select(e.x, e.y, view.snaps(e.mods), ArrangementView::SelectionPurpose::ContextMenu);
@@ -4256,7 +4341,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
-        if (const auto h = fadeHandleAt(e.x, e.y)) {
+        if (const auto &h = fade) {
             for (const auto &b : clipBodies())
                 if (b.clip->id == h->clip) {
                     auto &sel = view.geometry.selection;
@@ -4271,7 +4356,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
                     }
                     fadeDrag_ = h;
                     selectedFade_ = h;
-                    fadeTicks_ = h->in ? b.clip->fadeInTicks : b.clip->fadeOutTicks;
+                    const auto handles = fadeHandles(*b.clip, h->in);
+                    fadeTicks_ = h->start ? handles.zeroTicks : handles.peakTicks;
                     fadeTensionFrom_ = fadeTension_ = (h->in ? b.clip->fadeInTension : b.clip->fadeOutTension).value_or(0.0);
                     fadeFromY_ = e.y;
                 }
@@ -4281,7 +4367,26 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         // The clip's title bar moves it; either edge of the bar changes its length (§6.7).
         std::int64_t track = 0;
         auto edge = ResizeEdge::None;
-        if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && edge != ResizeEdge::None) {
+        const auto *barClip = barAt(e.x, e.y, track, edge);
+        if (barClip && e.mods.isShiftDown() && e.mods.isAltDown() && !e.mods.isCommandDown()) {
+            // The title drag makes a range inside this clip, even when the pointer leaves it (§42.16).
+            const auto begin = barClip->posTicks, end = begin + barClip->lengthTicks;
+            clipTimeBounds_ = std::pair{begin, end};
+            auto &geo = view.geometry;
+            auto &sel = geo.selection;
+            const auto raw = geo.tick(e.x);
+            const auto snapped = geo.grid.snap ? geo.snap(raw, false) : raw;
+            sel.track = track;
+            sel.toTrack = sel.clip = 0;
+            sel.picked.clear();
+            sel.pickedClips.clear();
+            sel.marked = true;
+            sel.insert = sel.start = sel.end = std::clamp(snapped, begin, end);
+            view.locate();
+            view.changed();
+            return;
+        }
+        if (const auto *c = barClip; c != nullptr && edge != ResizeEdge::None) {
             view.geometry.selection.track = track;
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
@@ -4289,7 +4394,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.pickedClips.clear();
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
-            beginResize(*c, track, edge);
+            beginResize(*c, track, edge, e.mods.isShiftDown());
             view.changed();
             return;
         }
@@ -4463,11 +4568,24 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             for (const auto &b : clipBodies())
                 if (b.clip->id == fadeDrag_->clip) {
                     const auto at = view.geometry.tick(e.x);
-                    fadeTicks_ = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
-                    fadeTicks_ = fadeLimit(*b.clip, fadeDrag_->in, fadeTicks_);
+                    const auto ticks = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
+                    const auto before = fadeHandles(*b.clip, fadeDrag_->in);
+                    const auto requested = !fadeDrag_->start && before.zeroTicks > 0 ? std::max(ticks, before.zeroTicks + 1) : ticks;
+                    const auto next = movedFadeHandle(*b.clip, fadeDrag_->in, fadeDrag_->start, requested);
+                    fadeTicks_ = fadeDrag_->start ? next.zeroTicks : next.peakTicks;
                 }
         }
         repaint();
+        return;
+    }
+    if (clipTimeBounds_) {
+        if (e.mouseWasDraggedSinceMouseDown())
+            view.edgeScroll(e.x, e.y, true, false);
+        auto &geo = view.geometry;
+        const auto raw = geo.tick(e.x);
+        const auto snapped = geo.grid.snap ? geo.snap(raw, raw >= geo.selection.start) : raw;
+        geo.selection.end = std::clamp(snapped, clipTimeBounds_->first, clipTimeBounds_->second);
+        view.frame(true);
         return;
     }
     if (resizing_ != 0) {
@@ -4566,6 +4684,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    clipTimeBounds_.reset();
     if (std::exchange(draggingTakeSelection_, false))
         return;
     if (std::exchange(contextMenuPress_, false))
@@ -4615,13 +4734,14 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         for (const auto &b : clipBodies())
             if (b.clip->id == h.clip)
                 dragged = b.clip;
+        const auto handles = dragged ? fadeHandles(*dragged, h.in) : engine::ClipFadeHandles{};
         const bool changed = dragged != nullptr &&
                              (h.curve ? (h.in ? dragged->fadeInTension : dragged->fadeOutTension).value_or(0.0) != fadeTension_
-                                      : (h.in ? dragged->fadeInTicks : dragged->fadeOutTicks) != fadeTicks_);
+                                      : (h.start ? handles.zeroTicks : handles.peakTicks) != fadeTicks_);
         if (changed) {
             if (const auto current = view.root.current()) {
                 auto edit = dragFades(current->tracks, clips, h.in, h.curve ? std::nullopt : std::optional<std::int64_t>(fadeTicks_),
-                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt);
+                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt, h.start);
                 if (!edit.ops.empty())
                     view.root.submitEdits(std::move(edit.ops));
             }
@@ -4729,8 +4849,9 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
     view.changed();
     view.root.linkLoopToSelection(); // with the setting on, the brace follows a time selection made
 }
-void ArrangementCanvas::beginResize(const engine::ClipNode &clip, std::int64_t track, ResizeEdge edge) {
+void ArrangementCanvas::beginResize(const engine::ClipNode &clip, std::int64_t track, ResizeEdge edge, bool stretch) {
     resizing_ = clip.id;
+    stretching_ = stretch && clip.audio && clip.audio->warpEnabled;
     resizeTrack_ = track;
     resizeStart_ = clip.posTicks;
     resizeFrom_ = resizeLength_ = clip.lengthTicks;
@@ -4750,6 +4871,14 @@ std::optional<std::int64_t> ArrangementCanvas::commitResize() {
     const auto id = std::exchange(resizing_, 0);
     if (resizeLength_ == resizeFrom_)
         return std::nullopt;
+    if (stretching_) {
+        const bool left = resizeEdge_ == ResizeEdge::Left;
+        const auto begin = left ? resizeStart_ + resizeFrom_ - resizeLength_ : resizeStart_;
+        if (view.root.commitEdit(clip_edit::prepareStretchWarpedClip(view.root.editStore(), id,
+                begin, resizeLength_, view.root.editRate())))
+            return left ? begin : begin + resizeLength_;
+        return std::nullopt;
+    }
     if (resizeEdge_ == ResizeEdge::Right) {
         if (view.root.submitEdit("clip.resize", {{"id", id}, {"pos", resizeStart_}, {"length", resizeLength_}}, "Resize Clip"))
             return resizeStart_ + resizeLength_;

@@ -5,6 +5,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/library/index.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -2019,7 +2020,82 @@ void importWithChoices(const std::filesystem::path &dir) {
         SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
         check(db.execAndGet("SELECT count(*) FROM media_files").getInt64() == media, "and leaves no pool row");
     }
+    // An import with choices replaces the covered part in the same journal step.
+    job = doc->materialJob(wav.string(), audioTrack, 0, fades, 1'700'000'000'000'004);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto original = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto shard = outside / "Shard.wav";
+    {
+        std::vector<float> samples(12000, .3f);
+        audio::WavWriter writer(shard, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto halfBeat = textproj::kPPQ / 2;
+    job = doc->materialJob(shard.string(), audioTrack, halfBeat, copy, 1'700'000'000'000'005);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(prepared.edit.ok && original != 0 && clipsOn(audioTrack) == 1,
+          "preparing the overlap leaves the original intact");
+    const auto replacement = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto *track = doc->view().current()->findTrack(audioTrack);
+    check(replacement != 0 && track && track->clips.size() == 3 &&
+              track->clips[0]->id == original && track->clips[0]->lengthTicks == halfBeat &&
+              track->clips[1]->id == replacement && track->clips[1]->posTicks == halfBeat &&
+              track->clips[1]->lengthTicks == halfBeat &&
+              track->clips[2]->posTicks == 2 * halfBeat && track->clips[2]->lengthTicks == 2 * halfBeat &&
+              track->clips[2]->contentOffsetNs == 500'000'000,
+          "copy-in placement replaces its covered range and trims both old pieces to the proper source");
+    check(doc->ops().undo().ok && (doc->synchronise(), clipsOn(audioTrack) == 1) &&
+              doc->view().current()->findTrack(audioTrack)->clips.front()->id == original &&
+              doc->view().current()->findTrack(audioTrack)->clips.front()->lengthTicks == 4 * halfBeat,
+          "one undo removes the imported copy's rows and restores the uncut audio");
+
+    OpRequest gain;
+    gain.opType = "clip.setGain";
+    gain.payload = {{"id", original}, {"gain", -7.0}};
+    check(doc->ops().submit(std::move(gain)).ok, "set the sample's own gain before saving defaults");
+    doc->synchronise();
+    const auto defaultsPath = dir / "import-sample-defaults.sqlite";
+    const auto beforeSave = doc->ops().nextUndo();
+    check(doc->saveSampleDefaults(original, defaultsPath) && beforeSave && doc->ops().nextUndo() &&
+              beforeSave->txnId == doc->ops().nextUndo()->txnId,
+          "saving authored defaults writes to the Library without adding project history");
+    job = doc->materialJob(wav.string(), audioTrack, 8 * halfBeat, warp, 1'700'000'000'000'006);
+    job.defaultsIndex = defaultsPath;
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto recalled = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto *recalledTrack = doc->view().current()->findTrack(audioTrack);
+    check(recalled != 0 && recalledTrack && recalledTrack->clips.size() == 2 &&
+              recalledTrack->clips.back()->id == recalled && recalledTrack->clips.back()->gainDb == -7.0 &&
+              recalledTrack->clips.back()->posTicks == 8 * halfBeat,
+          "a prompted drop recalls authored gain and Warp off before trying to find a beat");
     doc->release();
+
+    // A renamed copy of the same content recalls the defaults in a new project and a new media row.
+    auto fresh = ui::ProjectDocument::open(dir / "plain-defaults.adi", true, {}, error);
+    check(fresh != nullptr, "open another project for a plain drop");
+    if (!fresh)
+        return;
+    const auto renamed = outside / "Renamed Tone.wav";
+    std::filesystem::copy_file(wav, renamed);
+    ui::AudioImport imported;
+    check(fresh->prepareImport(renamed.string(), 1'700'000'000'000'007, imported, defaultsPath),
+          "prepare a plain drop with the same content under a different path");
+    std::vector<ui::DroppedAudio> files{{"Renamed Tone", std::move(imported)}};
+    auto drop = ui::dropAudio(*fresh->view().current(), 0, halfBeat, std::move(files), false, nullptr,
+                              &fresh->store());
+    check(drop.refusal.empty() && fresh->ops().submit(std::move(drop.ops)).ok && fresh->synchronise(),
+          "commit a defaulted clip, its new track and its new pool row in one drop");
+    const auto *plainTrack = fresh->view().current()->findTrack(drop.select);
+    check(plainTrack && plainTrack->clips.size() == 1 && plainTrack->clips.front()->name == "Renamed Tone" &&
+              plainTrack->clips.front()->gainDb == -7.0 && plainTrack->clips.front()->posTicks == halfBeat &&
+              drop.endOnTarget == 5 * halfBeat,
+          "the plain drop uses sample defaults by content and keeps the new clip's name and position");
+    check(fresh->ops().undo().ok && fresh->synchronise() && !fresh->view().current()->findTrack(drop.select),
+          "one undo takes the whole drop away");
+    fresh->release();
 }
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.
 // Arrangement Record (MX-09; Live 12 manual 21.1): the armed audio track records from the device's
@@ -4272,6 +4348,71 @@ void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
     }
     doc->release();
 }
+void waveformDetail(const std::filesystem::path &dir) {
+    constexpr std::uint32_t frames = 131072;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "waveform-detail.adi", true, {}, error);
+    check(doc != nullptr, "a project for waveform detail");
+    if (!doc)
+        return;
+    const auto wav = dir / "transients.wav";
+    {
+        std::vector<float> samples(2 * frames);
+        samples[2 * 13] = .75f;
+        samples.back() = -.5f;
+        audio::WavWriter writer(wav, 48000, 2, audio::WavFormat::Float32);
+        writer.write(samples.data(), frames);
+        writer.close();
+    }
+    ui::AudioImport import;
+    const bool imported = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+    check(imported, "import the sparse stereo wave");
+    if (!imported)
+        return;
+    auto drop = ui::dropAudio(*doc->view().current(), 4, 0, "transients", import);
+    const bool placed = drop.refusal.empty() && doc->ops().submit(std::move(drop.ops)).ok;
+    check(placed, "place the waveform for both editors");
+    if (!placed)
+        return;
+    const auto snapshot = doc->view().current();
+    const auto &clip = *snapshot->findTrack(4)->clips[0];
+    if (!clip.audio || !clip.audio->mediaInfo) {
+        check(false, "the placed source has its media identity");
+        return;
+    }
+    // An older pool cache puts the first transient and its quiet neighbours in one bin.
+    media::MediaPeaks coarse{clip.audio->mediaInfo->contentHash, 48000, 2, frames, 32,
+                            std::vector<media::PeakBin>(2 * (frames / 32))};
+    coarse.bins.front().maximum = .75f;
+    coarse.bins.back().minimum = -.5f;
+    const auto encoded = media::encodePeaks(coarse);
+    SQLite::Statement cache(doc->store().db(), "UPDATE media_files SET peaks=? WHERE id=?");
+    cache.bind(1, encoded.data(), static_cast<int>(encoded.size()));
+    cache.bind(2, clip.audio->mediaId);
+    cache.exec();
+
+    auto &waves = doc->waveforms();
+    check(!waves.peaks(*clip.audio), "the peak work starts off the window thread");
+    for (int i = 0; i < 2000 && !waves.idle(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto peaks = waves.peaks(*clip.audio);
+    check(peaks != nullptr, "the waveform detail lands from the worker");
+    if (!peaks)
+        return;
+    check(ui::peakSpan(*peaks, 0., 4., 0) == media::PeakBin{}, "deep zoom isolates quiet samples beside the transient");
+    check(ui::peakSpan(*peaks, 12., 16., 0) == media::PeakBin{0, .75f}, "deep zoom retains the transient itself");
+    check(ui::peakSpan(*peaks, 0., frames, 0) == media::PeakBin{0, .75f} &&
+              ui::peakSpan(*peaks, 0., frames, 1) == media::PeakBin{-.5f, 0},
+          "zoomed out, both channels retain the full sample, including its last bin");
+    check(ui::peakSpan(*peaks, 16., frames - 2., 0) == media::PeakBin{} &&
+              ui::peakSpan(*peaks, 16., frames - 2., 1) == media::PeakBin{},
+          "wide unaligned columns combine finer edges with whole coarse bins");
+    ui::WaveformPeaks overview(peaks->finest());
+    check(overview.detailValues() > 0 && overview.limitDetail(0) == 0 &&
+              overview.finest().bins.size() <= ui::kWaveformOverviewBins * overview.finest().channels &&
+              ui::peakSpan(overview, 0., frames, 1) == media::PeakBin{-.5f, 0},
+          "an exhausted detail budget keeps bounded overview bins and their extrema");
+}
 // SC-409 to SC-411. Count scans as well as elapsed time so the failure is
 // reproducible on slow and fast builders. Indexed reads for the edited clip
 // and rebuilding the containing track are allowed by the scan budget.
@@ -4570,6 +4711,66 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+void waveformSourceOffsets(const std::filesystem::path &dir) {
+    constexpr auto quarter = textproj::kPPQ;
+    StoreError error{};
+    auto store = Store::create(dir / "offsets.adi", error);
+    check(store != nullptr, "a project for clip waveform source offsets");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) SELECT 0,120 WHERE NOT EXISTS (SELECT 1 FROM tempo_map WHERE pos_ticks=0);"
+            "INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Waveforms');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+            "VALUES(1,'waveform-source','source.wav','wav',48000,1,96100);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
+            "VALUES(7,21,'audio',0,23063040),(8,21,'audio',34594560,23063040);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) "
+            "VALUES(7,1,100,96000),(8,1,100,96000);");
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
+    const auto warp = audio::writeWarpMap(markers, 96000);
+    SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=8");
+    attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+    attachWarp.exec();
+
+    auto snapshot = engine::SnapshotBuilder::fromStore(*store, {}, false);
+    const auto refresh = [&] { snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false); };
+    const auto firstFrameIs = [&](std::int64_t id, double expected) {
+        const auto *track = snapshot->findTrack(21);
+        if (!track)
+            return false;
+        const auto it = std::find_if(track->clips.begin(), track->clips.end(),
+                                     [id](const auto &clip) { return clip->id == id; });
+        if (it == track->clips.end() || !(*it)->audio)
+            return false;
+        const auto &clip = **it;
+        const auto frame = ui::ClipSourceMap(clip, snapshot->tempo.get(), 48000).frameAt(clip.posTicks);
+        return frame && std::abs(*frame - expected) < .01;
+    };
+    const auto split = [&](std::int64_t id, std::int64_t right, std::int64_t at) {
+        const auto edit = clip_edit::prepareSplit(*store, id, right, {0, at}, 48000);
+        return edit.ok && clip_edit::commitPrepared(*store, edit).ok;
+    };
+    const auto changeStart = [&](std::int64_t id) {
+        OpRequest r;
+        r.opType = "clip.setStartMarker";
+        r.payload = {{"id", id}, {"ticks", quarter / 2}};
+        return OpJournal(*store).commit(r).ok;
+    };
+
+    check(split(7, 9, quarter) && split(8, 10, 7 * quarter), "split an unwarped clip and a warped clip");
+    refresh();
+    check(firstFrameIs(7, 100) && firstFrameIs(9, 24100), "unwarped split draws the source at each piece's own start");
+    check(firstFrameIs(8, 100) && firstFrameIs(10, 12100), "warped split goes through the source warp markers");
+    db.exec("UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0;");
+    refresh();
+    check(snapshot->tempo->bpmAt(0) == 240 && firstFrameIs(9, 24100),
+          "an unwarped split's pinned source offset survives a tempo change");
+    check(changeStart(7) && changeStart(8), "move Start on the two left pieces in place");
+    refresh();
+    check(firstFrameIs(7, 6100), "unwarped Start updates the waveform from the new tick offset");
+    check(firstFrameIs(8, 6100), "warped Start updates the waveform within a marker interval");
+}
 void punchedWaveformBounds() {
     engine::TempoMap tempo;
     tempo.events.push_back({0, 120, 0});
@@ -4633,79 +4834,107 @@ void recordedWaveformHandoff() {
     waves.follow(snapshot, 1);
     const auto provisional = waves.peaks(audio);
     const std::vector<media::PeakBin> trackBins{{-.3f, .5f}, {-.2f, .4f}, {-.5f, .7f}, {-.4f, .6f}};
-    check(provisional && provisional->channels == 2 && provisional->frames == 4 &&
-              provisional->framesPerBin == 2 && provisional->bins == trackBins,
+    check(provisional && provisional->finest().channels == 2 && provisional->finest().frames == 4 &&
+              provisional->finest().framesPerBin == 2 && provisional->finest().bins == trackBins,
           "the landed clip immediately uses the recording's bins in track channel order");
     allowBuild.store(true);
     for (int waited = 0; waited < 5000 && !waves.idle(); ++waited)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     const auto built = waves.peaks(audio);
-    check(requestedMedia.load() == audio.mediaId && waves.builds() == 1 && built && *built == filePeaks,
+    check(requestedMedia.load() == audio.mediaId && waves.builds() == 1 && built && built->finest() == filePeaks,
           "SC-291: media row 0 builds a file waveform to replace the provisional recording waveform");
     waves.seedRecording(snapshot, clips, preview);
     check(waves.peaks(audio) == built && waves.builds() == 1,
           "landing another reference preserves the decoded waveform");
 }
 
-void waveformSourceOffsets(const std::filesystem::path &dir) {
+void reversedWaveform() {
     constexpr auto quarter = textproj::kPPQ;
+    engine::ClipNode clip;
+    clip.posTicks = 4 * quarter;
+    clip.audio.emplace();
+    clip.audio->sourceStartFrames = 10;
+    clip.audio->sourceLengthFrames = 96000;
+    clip.audio->reverse = true;
+    const auto frameIs = [&](std::int64_t tick, double expected) {
+        const auto frame = ui::ClipSourceMap(clip, nullptr, 48000).frameAt(clip.posTicks + tick);
+        return frame && std::abs(*frame - expected) < .01;
+    };
+    check(frameIs(0, 96009.) && frameIs(quarter, 72009.), "unwarped reverse draws the source window tail first");
+    clip.contentOffsetNs = 500'000'000;
+    check(frameIs(0, 72009.), "unwarped reverse reflects the physical clip offset as well as its position");
+    clip.contentOffsetNs.reset();
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
+    clip.audio->warpEnabled = true;
+    clip.audio->warpMarkers = audio::writeWarpMap(markers, 96000).bytes;
+    check(frameIs(0, 96009.) && frameIs(quarter, 68009.), "warped reverse mirrors time before interpolating the map");
+    clip.contentOffsetTicks = quarter;
+    check(frameIs(0, 68009.) && ui::warpedWaveformFrame(markers, static_cast<double>(quarter), true) == 68000.,
+          "arrangement offsets and the Sample Editor's source ruler agree on reverse Warp position");
+}
+
+void waveformLoopRepeats(const std::filesystem::path &dir) {
+    constexpr auto beat = textproj::kPPQ;
     StoreError error{};
-    auto store = Store::create(dir / "offsets.adi", error);
-    check(store != nullptr, "a project for clip waveform source offsets");
+    auto store = Store::create(dir / "loop-waveforms.adi", error);
+    check(store != nullptr, "a project for loop repeat waveforms");
     if (!store)
         return;
     auto &db = store->db();
-    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) SELECT 0,120 WHERE NOT EXISTS (SELECT 1 FROM tempo_map WHERE pos_ticks=0);"
-            "INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Waveforms');"
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Loops');"
             "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
-            "VALUES(1,'waveform-source','source.wav','wav',48000,1,96100);"
-            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
-            "VALUES(7,21,'audio',0,23063040),(8,21,'audio',34594560,23063040);"
+            "VALUES(1,'loop-waveforms','source.wav','wav',48000,1,96100);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_start_ticks,loop_len_ticks) "
+            "VALUES(7,21,'audio',0,46126080,1,5765760,5765760),(8,21,'audio',0,46126080,1,2882880,5765760);"
             "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) "
-            "VALUES(7,1,100,96000),(8,1,100,96000);");
-    const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
+            "VALUES(7,1,100,96000),(8,1,100,96000);"
+            "INSERT INTO clip_playback_details(clip_id,loop_begin_ns,loop_end_ns) VALUES(8,250000000,750000000);"
+            "DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(17297280,60);");
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{96000, 4 * beat}};
     const auto warp = audio::writeWarpMap(markers, 96000);
-    SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=8");
+    SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=7");
     attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
     attachWarp.exec();
-
     auto snapshot = engine::SnapshotBuilder::fromStore(*store, {}, false);
-    const auto refresh = [&] { snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false); };
-    const auto firstFrameIs = [&](std::int64_t id, double expected) {
+    const auto frameIs = [&](std::int64_t id, std::int64_t at, double expected) {
         const auto *track = snapshot->findTrack(21);
         if (!track)
             return false;
-        const auto it = std::find_if(track->clips.begin(), track->clips.end(),
-                                     [id](const auto &clip) { return clip->id == id; });
-        if (it == track->clips.end() || !(*it)->audio)
-            return false;
-        const auto &clip = **it;
-        const auto frame = ui::ClipSourceMap(clip, snapshot->tempo.get(), 48000).frameAt(clip.posTicks);
-        return frame && std::abs(*frame - expected) < .01;
+        for (const auto &clip : track->clips)
+            if (clip->id == id && clip->audio) {
+                const auto frame = ui::ClipSourceMap(*clip, snapshot->tempo.get(), 48000).frameAt(at);
+                return frame && std::abs(*frame - expected) < .01;
+            }
+        return false;
     };
-    const auto split = [&](std::int64_t id, std::int64_t right, std::int64_t at) {
-        const auto edit = clip_edit::prepareSplit(*store, id, right, {0, at}, 48000);
-        return edit.ok && clip_edit::commitPrepared(*store, edit).ok;
-    };
-    const auto changeStart = [&](std::int64_t id) {
-        OpRequest r;
-        r.opType = "clip.setStartMarker";
-        r.payload = {{"id", id}, {"ticks", quarter / 2}};
-        return OpJournal(*store).commit(r).ok;
-    };
-
-    check(split(7, 9, quarter) && split(8, 10, 7 * quarter), "split an unwarped clip and a warped clip");
-    refresh();
-    check(firstFrameIs(7, 100) && firstFrameIs(9, 24100), "unwarped split draws the source at each piece's own start");
-    check(firstFrameIs(8, 100) && firstFrameIs(10, 12100), "warped split goes through the source warp markers");
-    db.exec("UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0;");
-    refresh();
-    check(snapshot->tempo->bpmAt(0) == 240 && firstFrameIs(9, 24100),
-          "an unwarped split's pinned source offset survives a tempo change");
-    check(changeStart(7) && changeStart(8), "move Start on the two left pieces in place");
-    refresh();
-    check(firstFrameIs(7, 6100), "unwarped Start updates the waveform from the new tick offset");
-    check(firstFrameIs(8, 6100), "warped Start updates the waveform within a marker interval");
+    check(frameIs(7, 0, 100) && frameIs(7, beat, 24100), "the initial material plays into the loop");
+    check(frameIs(7, 2 * beat, 24100) && frameIs(7, 5 * beat / 2, 36100),
+          "the warped waveform repeats the loop's own source region");
+    check(frameIs(7, 7 * beat / 2, 24100), "a tempo change after the first repeat follows playback's rendered loop clock");
+    check(frameIs(8, 5 * beat / 2, 12100), "the legacy unwarped waveform repeats its physical loop bounds");
+    if (const auto *track = snapshot->findTrack(21); track && !track->clips.empty() && track->clips.front()->audio) {
+        const auto &clip = *track->clips.front();
+        const ui::ClipSourceMap map(clip, snapshot->tempo.get(), 48000);
+        const auto seam = map.framesAcross(7 * beat / 4, 9 * beat / 4);
+        const auto near = [](double a, double b) { return std::abs(a - b) < .01; };
+        check(seam.repeats && near(seam.first.from, 42100) && near(seam.first.to, 48100) &&
+                  near(seam.second.from, 24100) && near(seam.second.to, 30100),
+              "the boundary pixel reads only the source tail and head it plays and marks the repeat");
+        check(!map.framesAcross(3 * beat / 2, 7 * beat / 4).repeats,
+              "pixels away from a loop boundary have no repeat mark");
+    } else {
+        check(false, "find waveform source ranges in the arrangement snapshot");
+    }
+    db.exec("UPDATE clips SET content_offset_ticks=20180160,pos_ticks=20180160 WHERE id=7");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(7, 7 * beat / 2, 24100), "the first pixel of a clip split at a repeat keeps its loop source position");
+    db.exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=7");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(7, 7 * beat / 2, 72099), "reversing a repeat reflects its source frame inside the file window");
+    db.exec("UPDATE clip_playback_details SET loop_end_ns=3000000000 WHERE clip_id=8;"
+            "UPDATE clips SET content_offset_ticks=46126080 WHERE id=8");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(8, 0, 100), "an invalid legacy loop draws the one-shot playback fallback at source zero");
 }
 
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
@@ -5213,16 +5442,25 @@ int main(int argc, char **argv) {
         longTakeStopResponse(speedDir.path());
         return failures != 0;
     }
+    {
+        test::TempDirectory waveDir("ui_document", "wave-detail");
+        waveformDetail(waveDir.path());
+    }
     peakSpans();
     punchedWaveformBounds();
     recordedWaveformHandoff();
-    {
-        test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
-        recordingBitDepth(bitDepthDir.path());
-    }
+    reversedWaveform();
     {
         test::TempDirectory offsetDir("ui_document", "wave-offsets");
         waveformSourceOffsets(offsetDir.path());
+    }
+    {
+        test::TempDirectory loopDir("ui_document", "loop-waveforms");
+        waveformLoopRepeats(loopDir.path());
+    }
+    {
+        test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
+        recordingBitDepth(bitDepthDir.path());
     }
     {
         test::TempDirectory automationDir("ui_document", "automation-record");
@@ -5466,7 +5704,7 @@ int main(int argc, char **argv) {
                     for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
                         std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     const auto built = waves.peaks(*clip.audio);
-                    check(built != nullptr && built->frames == 12000 && !built->bins.empty() && waves.problem().empty(),
+                    check(built != nullptr && built->finest().frames == 12000 && !built->finest().bins.empty() && waves.problem().empty(),
                           "a file imported after Save As gets its waveform");
                 }
             }
@@ -5540,9 +5778,9 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 const auto built = clip.audio ? waves.peaks(*clip.audio) : nullptr;
-                check(first && !hash.empty() && built != nullptr && built->contentHash == hash &&
-                          built->sampleRate == 48000 && built->channels == 1 && built->frames == 24000 &&
-                          !built->bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
+                check(first && !hash.empty() && built != nullptr && built->finest().contentHash == hash &&
+                          built->finest().sampleRate == 48000 && built->finest().channels == 1 && built->finest().frames == 24000 &&
+                          !built->finest().bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
                       "the worker builds the file's peaks once: none drawn at the first request, there at the next");
                 const auto again = waves.peaks(*clip.audio);
                 for (int i = 0; i < 20; ++i)

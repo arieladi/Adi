@@ -22,6 +22,8 @@
 #include "adi/edit_time.hpp"
 #include "adi/device_param_ref.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "adi/library/index.hpp"
+#include "adi/sample_defaults.hpp"
 #include "juce/builtin_samples.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -33,6 +35,7 @@
 #include <condition_variable>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <system_error>
 #include <set>
 #include <thread>
@@ -341,6 +344,16 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
     return end > 0 ? end + tailSeconds : 0;
 }
 
+std::unique_ptr<library::Index> openSampleDefaults(const std::filesystem::path &file) {
+    if (file.empty() || !std::filesystem::exists(file))
+        return {};
+    std::string error;
+    auto index = library::Index::open(file, error, false);
+    if (!index)
+        throw std::runtime_error("cannot read sample defaults from the Library: " + error);
+    return index;
+}
+
 // The waveform worker checks out its read-only store for a build. A Save As
 // can release the idle reader immediately, and an in-flight build hands it
 // back only if the document still uses its file.
@@ -359,7 +372,10 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
                 return refused;
             }
         }
-        if (mediaId) return media::buildMediaPeaks(*reader, *mediaId, 4096, stop);
+        constexpr std::uint32_t fineBinsPerChannel = 65536;
+        if (mediaId)
+            return media::buildMediaPeaks(*reader, *mediaId, fineBinsPerChannel, stop, nullptr,
+                                         media::PeakCacheResolution::PreferRequested);
         try {
             if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
             const auto bytes = reader->getStateBlob(stateHash);
@@ -378,7 +394,16 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
       dailyHistorySource_(appliedSource(*store_)), dailyHistorySequence_(dailyHistorySource_.sequence()),
       ops_(*store_, view_), views_(*store_),
       sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
-      waveforms_(peaksFrom(waveformSource_)) {
+      waveforms_(peaksFrom(waveformSource_), [source = waveformSource_](std::int64_t mediaId, const std::string &hash,
+                                                                      std::stop_token stop) {
+          WaveformSource::Read read(*source);
+          auto &reader = read.store;
+          if (!reader) {
+              StoreError error{};
+              reader = Store::open(read.file, error, true);
+          }
+          return reader ? media::buildMediaTransients(*reader, mediaId, hash, stop) : std::vector<std::uint64_t>{};
+      }) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());
@@ -2514,7 +2539,8 @@ bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesyste
     error_ = "Sample relinked. Playback could not refresh: " + error_;
     return false;
 }
-bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                                    const std::filesystem::path &defaultsIndex) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
     // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
@@ -2533,6 +2559,16 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
         error_ = "That file holds no audio ADI can play.";
         return false;
     }
+    out.savedDefaults.reset();
+    try {
+        if (auto index = openSampleDefaults(defaultsIndex)) {
+            if (auto saved = clip_edit::loadSampleDefaults(*store_, *index, result, captured))
+                out.savedDefaults = std::make_shared<library::SampleSettings>(std::move(*saved));
+        }
+    } catch (const std::exception &e) {
+        error_ = utf8Path + " was not imported: " + e.what();
+        return false;
+    }
     out.mediaId = result.mediaId;
     out.sampleRate = result.audio->sampleRate;
     out.frames = result.audio->frames;
@@ -2540,9 +2576,18 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+bool ProjectDocument::saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex) {
+    auto index = library::Index::open(defaultsIndex, error_, false);
+    if (!index) {
+        error_ = "Cannot open the Library to save sample defaults: " + error_;
+        return false;
+    }
+    const auto rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    return clip_edit::saveSampleDefaults(*store_, clip, rate, *index, error_) == library::SampleSettingsProblem::None;
+}
 ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
                                                           std::int64_t atTicks, const ImportChoices &choices,
-                                                          std::int64_t nowUtc) const {
+                                                          std::int64_t nowUtc, edit_plan::EditPolicy placementPolicy) const {
     MaterialJob job;
     job.project = store_->path();
     job.source = pathFromUtf8(utf8Path);
@@ -2550,6 +2595,7 @@ ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf
     job.atTicks = atTicks;
     job.importedUtc = nowUtc;
     job.choices = choices;
+    job.placementPolicy = placementPolicy;
     job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
     // The next free ids as the project stands; a project changed before the commit refuses as stale.
     RowIds rows(store_->db()); // DF-E16: never an id a remark still holds
@@ -2578,14 +2624,20 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
     options.stop = stop;
-    out = clip_edit::prepareImportAudio(*store, options, job.rate);
+    options.arrangementPlacement = job.placementPolicy;
+    try {
+        auto index = openSampleDefaults(job.defaultsIndex);
+        out = clip_edit::prepareImportAudio(*store, options, job.rate, index.get());
+    } catch (const std::exception &e) {
+        out.edit.error = e.what();
+    }
     return out;
 }
 namespace {
 std::string importRefusal(const std::filesystem::path &path, const std::string &why) {
     const std::string file = media::pathUtf8(path.filename());
     if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
-        return file + ": ADI found no steady beat to warp it by. Import it with Warp off.";
+        return file + ": ADI found no steady beat to warp it by. Import it with Warp off, then enter the source BPM in the Clip View.";
     return file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
 }
 } // namespace
@@ -2655,7 +2707,14 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterialBatch(MaterialBatchJob j
         return refused;
     }
     for (auto &options : job.batch.imports) options.stop = stop;
-    return clip_edit::prepareImportAudioBatch(*store, job.batch, job.rate);
+    try {
+        auto index = openSampleDefaults(job.defaultsIndex);
+        return clip_edit::prepareImportAudioBatch(*store, job.batch, job.rate, index.get());
+    } catch (const std::exception &failure) {
+        clip_edit::MaterialEdit refused;
+        refused.edit.error = failure.what();
+        return refused;
+    }
 }
 bool ProjectDocument::commitMaterialBatch(clip_edit::MaterialEdit &material, const MaterialBatchJob &job) {
     if (!material.edit.ok) {

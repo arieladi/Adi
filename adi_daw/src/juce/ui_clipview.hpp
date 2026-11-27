@@ -7,6 +7,7 @@
 // the selection or the project's generation moves; it keeps that value until the next move and
 // nothing else. Every change it makes is an op through the root's submitter.
 #pragma once
+#include "adi/audio/warp_map.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/clip_edits.hpp"
@@ -27,15 +28,18 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 class ClipViewPanel;
 
-// Another of the selected MIDI clips, shown with the one being edited (manual 10.8).
+// Another selected clip of the same kind as the clip being edited (manual 8.13, 10.8).
 struct ClipLayer {
     engine::ClipDetails details;
     juce::Colour colour;
+    bool warped = false;
+    std::optional<engine::AudioMediaIdentity> media = {};
 };
 
 // Live's MIDI Note Editor (manual 10.1): the time ruler along the top, the note ruler with its
@@ -414,22 +418,69 @@ class SampleEditor final : public juce::Component {
     explicit SampleEditor(ClipViewPanel &);
     void paint(juce::Graphics &) override;
     void resized() override;
+    bool keyPressed(const juce::KeyPress &) override;
+    bool command(int id);
+    bool canQuantize() const noexcept;
+    juce::PopupMenu warpContextMenu();
+    bool chooseWarpContextItem(int);
+    std::function<void(juce::Point<int>)> onWarpContextMenu;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
-    static constexpr int kRulerHeight = 18;
+    static constexpr int kRulerHeight = 18, kScrubHeight = 9, kMarkerHeight = 9;
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;
     void showClip();
+    void updateSource();
+    double sourceBpm() const noexcept;
     void frame();
+    std::optional<std::int64_t> insert() const noexcept { return insert_; }
+    bool playFromInsert();
+    std::int64_t sourceTick(std::int64_t arrangementTick) const noexcept;
+    std::pair<std::int64_t, std::int64_t> sourceRange(std::int64_t from, std::int64_t to) const;
     ArrangementPlayhead playhead;
 
   private:
+    friend class ClipViewPanel;
+    enum class Drag { None, Ruler, Start, End, LoopStart, LoopEnd, Loop, WarpMarker, SourceRange };
     ClipViewPanel &panel;
     bool fitPending_ = false;
+    std::int64_t sourceEnd_ = 0, downTick_ = 0, original_ = 0, preview_ = 0;
+    std::uint64_t waveformsSeen_ = 0;
+    std::int64_t gestureClip_ = 0;
+    Drag drag_ = Drag::None;
+    juce::Point<int> last_;
+    std::optional<std::int64_t> insert_;
+    std::optional<std::pair<std::int64_t, std::int64_t>> sourceRange_;
+    std::vector<WarpMarker> markers_;
+    std::optional<std::int64_t> selectedWarpFrame_, warpContextTick_;
+    bool markerRegionSelected_ = false;
+    juce::Rectangle<int> warpMarkerArea() const noexcept;
+    const WarpMarker *warpMarkerAt(int x) const noexcept;
+    bool deleteWarpMarker();
+    std::shared_ptr<const std::vector<std::uint64_t>> transients();
+    double setTempo() const noexcept;
+    std::int64_t suggestedLoopBars(bool selection) const noexcept;
+    bool warpAsLoop(bool selection, std::int64_t bars);
+    void chooseLoopLength(bool selection);
+    juce::Rectangle<int> scrubArea() const noexcept;
+    bool playFromSource(std::int64_t tick);
+    std::int64_t sourceSecondsToTicks(double seconds) const noexcept;
+    double sourceTicksToSeconds(std::int64_t ticks) const noexcept;
+    std::int64_t playheadTick(std::int64_t arrangementTick) const;
+    std::int64_t startMarker() const noexcept;
+    std::int64_t endMarker() const noexcept;
+    double frameAt(std::int64_t source, double rate, const engine::AudioClipSource &) const noexcept;
+    std::int64_t tickAt(int x, const juce::ModifierKeys &) const noexcept;
 };
 
 // The Clip View: the clip's title bar with its activator, name and colour; the Main panel with the
 // clip's properties; and the editor for its kind (manual 8.1).
-class ClipViewPanel final : public juce::Component {
+class ClipViewPanel final : public juce::Component,
+                            public juce::FileDragAndDropTarget,
+                            public juce::DragAndDropTarget {
   public:
     explicit ClipViewPanel(AdiRootComponent &);
     // Follows the selected clip and the project; called on the window's frame.
@@ -439,6 +490,10 @@ class ClipViewPanel final : public juce::Component {
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int x, int y) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
 
     static constexpr int kPanelWidth = 156, kToolsWidth = 196, kTitleHeight = 17, kHeaderHeight = 17;
     // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.
@@ -581,12 +636,14 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain,
+        SourceTempo, Pitch, Detune
     };
     // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
     // (manual 10.8); one undo step. Item 1 is Rename; items 100 on are the colours.
     static constexpr int kTitleColours = 14;
+    static constexpr int kSaveSampleDefaults = 4;
     juce::PopupMenu titleMenu() const;
     bool chooseTitleItem(int item);
     bool rename(const juce::String &name);
@@ -654,6 +711,10 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
     juce::Rectangle<int> warpBox() const noexcept;
+    juce::Rectangle<int> warpModeBox() const noexcept;
+    juce::PopupMenu warpModeMenu() const;
+    bool chooseWarpMode(int item);
+    juce::Rectangle<int> sourceTempoFactorBox(bool doubleTempo) const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
     bool typeField(Field, const juce::String &);
@@ -696,6 +757,8 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> titleArea() const noexcept;
     juce::Rectangle<int> mainArea() const noexcept;
     juce::Rectangle<int> headerArea() const noexcept;
+    juce::Rectangle<int> sampleNameBox() const noexcept;
+    juce::Rectangle<int> sampleEditBox() const noexcept;
     // The Note Editor's Fold switch, in the header (manual 10.2).
     juce::Rectangle<int> foldBox() const noexcept;
     // Its Draw Mode switch beside it (manual 10.4.1).
@@ -706,9 +769,10 @@ class ClipViewPanel final : public juce::Component {
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {
         juce::String start, end, position, length, signature, scale, grid, transpose, range, title;
+        juce::String sampleName, sampleProperties;
         bool loop = false;
-        // With several clips shown (manual 10.8): some loop and some do not.
         bool loopMixed = false;
+        bool activatorMixed = false;
     };
     Readings readings() const;
     // Reads the clip again now: after an edit of this view's, before the next frame.
@@ -733,8 +797,21 @@ class ClipViewPanel final : public juce::Component {
   private:
     void read(const SnapshotReader &);
     friend class NoteEditor;
+    friend class SampleEditor;
+    void fitArrangementSelection(const SnapshotReader &);
     bool commit(TrackEdit);
+    bool loopAvailable() const noexcept;
+    bool fieldEnabled(Field) const noexcept;
+    bool unwarpedTimeField(Field) const noexcept;
+    std::int64_t fieldMilliseconds(Field) const noexcept;
+    std::int64_t adjustedMilliseconds(Field, int part, int steps) const noexcept;
+    juce::Rectangle<int> sampleMetadataArea() const noexcept;
+    int sampleToolsRight() const noexcept;
+    void editSample();
     bool setGain(double db);
+    int pitchPart(Field, bool preview = false) const noexcept;
+    bool setPitch(Field, int, bool relative);
+    bool setWarp(bool enabled, std::optional<double> sourceBpm = {});
     double draggedGain() const noexcept;
     std::int64_t fieldTicks(Field) const noexcept;
     std::int64_t adjustedTicks(Field, int part, int steps) const noexcept;
@@ -767,6 +844,12 @@ class ClipViewPanel final : public juce::Component {
     const char *filterToggleName(int index) const noexcept;
     std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
+    struct ArrangementRange {
+        std::int64_t clip, from, to;
+        std::pair<std::int64_t, std::int64_t> source;
+        bool operator==(const ArrangementRange &) const = default;
+    };
+    std::optional<ArrangementRange> fittedRange_;
     std::vector<std::int64_t> shown_;
     std::vector<ClipLayer> others_;
     bool focus_ = false;

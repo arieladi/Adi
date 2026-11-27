@@ -11,8 +11,8 @@
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/ui_project_media.hpp"
 #include "../src/juce/window_release.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
-#include "adi/warp_commands.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
@@ -20,6 +20,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/warp_commands.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/export_interruption.hpp"
@@ -5098,6 +5099,61 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
     check(sel.insert == start + step && root.command(AppCommands::Undo), "the marker follows the trim and Undo is available");
     root.frame();
     checkSpan(start, "Undo restores the clip start and sample offset");
+
+    // Keep the stretch destinations inside the canvas, away from drag autoscroll.
+    geo.scale = 60.;
+    geo.left = 0.;
+    check(x(end + 2 * beat) < static_cast<float>(canvas.getWidth() - 24),
+          "the stretch destination is clear of the Arrangement's drag-scroll edge");
+    const auto selectMods = juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier |
+                            juce::ModifierKeys::altModifier;
+    const juce::Point<float> rangeStart{x(start + beat), y}, pastEnd{x(end + beat), y};
+    const auto undoBeforeSelection = root.undoTitle(false);
+    canvas.mouseDown(pressAt(canvas, rangeStart, juce::ModifierKeys(selectMods)));
+    canvas.mouseDrag(dragAt(canvas, rangeStart, pastEnd, juce::ModifierKeys(selectMods)));
+    canvas.mouseUp(dragAt(canvas, rangeStart, pastEnd));
+    root.frame();
+    check(sel.track == track && sel.toTrack == 0 && sel.clip == 0 && sel.start == start + beat && sel.end == end &&
+              root.undoTitle(false) == undoBeforeSelection,
+          "Shift+Alt dragging the title selects time within the clip and writes no edit");
+    checkSpan(start, "the time selection left the clip in place");
+
+    const auto id = audioClip() ? audioClip()->id : 0;
+    clip_edit::WarpOptions warp;
+    warp.analysis.sourceBpm = 120;
+    warp.analysis.fromFirstBeat = false;
+    if (id && root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), id, warp, root.editRate()))) {
+        root.frame();
+        const auto dragStretch = [&](float edge, std::int64_t target) {
+            const juce::ModifierKeys mods(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier);
+            const juce::Point<float> down{edge, y}, up{x(target), y};
+            canvas.mouseDown(pressAt(canvas, down, mods));
+            canvas.mouseDrag(dragAt(canvas, down, up, mods));
+            canvas.mouseUp(dragAt(canvas, down, up));
+            root.frame();
+        };
+        const auto mapEnd = [&] {
+            const auto *clip = audioClip();
+            if (!clip || !clip->audio || !clip->audio->warpMarkers)
+                return std::int64_t{0};
+            const auto map = audio::readWarpMap(*clip->audio->warpMarkers,
+                static_cast<std::uint64_t>(clip->audio->sourceLengthFrames));
+            return map ? map.markers.back().tick : std::int64_t{0};
+        };
+        dragStretch(x(end) - 1.f, end + 2 * beat);
+        check(audioClip() && audioClip()->posTicks == start && audioClip()->lengthTicks == 6 * beat &&
+                  mapEnd() == 6 * beat && root.undoTitle(false) == "Undo Stretch Clip",
+              "Shift and the right title edge stretch the Warp map and keep the start fixed");
+        check(root.command(AppCommands::Undo), "undo the right stretch");
+        root.frame();
+        check(audioClip() && audioClip()->lengthTicks == 4 * beat && mapEnd() == 4 * beat,
+              "one Undo restores both the placement and Warp map");
+        dragStretch(x(start) + 1.f, start - beat);
+        check(audioClip() && audioClip()->posTicks == start - beat && audioClip()->lengthTicks == 5 * beat && mapEnd() == 5 * beat,
+              "Shift and the left title edge stretch the Warp map and keep the end fixed");
+    } else {
+        check(false, "enable Warp before testing a stretch");
+    }
     commands.detach(root);
 }
 
@@ -6680,6 +6736,29 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // A separate-track drop covers only its first file's range on the target track.
+    const auto beat = textproj::kPPQ;
+    const auto punch = bar2 + beat / 2;
+    const auto initial = clipsOn(1);
+    const auto originalLength = root.reader().findTrack(1)->clips.front()->lengthTicks;
+    check(root.dropAudioFiles({{snarePath.toStdString(), "Snare 909"}, {path.toStdString(), "Kick 808"}}, 1, punch, true),
+          "drop a file over the middle of an audio clip with a second file on its own track");
+    root.frame();
+    const auto *overwritten = root.reader().findTrack(1);
+    check(clipsOn(1) == Clips{{"Kick 808", bar2}, {"Snare 909", punch}, {"Kick 808", punch + beat}} &&
+              overwritten && overwritten->clips.size() == 3 &&
+              overwritten->clips[0]->lengthTicks == beat / 2 &&
+              overwritten->clips[1]->lengthTicks == beat &&
+              overwritten->clips[2]->lengthTicks == originalLength - beat - beat / 2 &&
+              overwritten->clips[2]->contentOffsetNs == 750'000'000 &&
+              clipsOn(3) == Clips{{"Kick 808", punch}},
+          "overlapping drop replaces only what it covers and keeps both source-aligned survivors");
+    check(root.command(AppCommands::Undo), "undo the overwrite in one step");
+    root.frame();
+    check(clipsOn(1) == initial && root.reader().findTrack(3) == nullptr &&
+              root.reader().findTrack(1)->clips.front()->lengthTicks == originalLength,
+          "undo restores the uncut clip and removes the full drop");
 
     // The browser's Samples and Places (D1; Live 12 manual 4.1, 4.6, 4.7; N15's index part): a folder
     // registered and scanned into the library index (#102) lists its audio files, and not its others;
@@ -9717,8 +9796,8 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
     open(2);
     check(panel.audio() && panel.toolsArea().isEmpty() && panel.panelWidth() == ClipViewPanel::kPanelWidth &&
-              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldBox(Field::Scale).isEmpty(),
-          "an audio clip: the Main panel only, the Sample Editor right beside it, no Scale field");
+              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && !panel.fieldBox(Field::Scale).isEmpty(),
+          "an audio clip has a Scale field in Main and the Sample Editor beside it");
     open(1);
     const int both = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth;
     check(panel.midi() && !panel.toolsArea().isEmpty() && panel.panelWidth() == both && ed.getX() == both + 1 &&
@@ -11225,6 +11304,22 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     const int shift = juce::ModifierKeys::shiftModifier, command = juce::ModifierKeys::commandModifier;
     const auto song = [&](std::int64_t clipBeats) { return bar + clipBeats; }; // the clip starts at the song's second bar
 
+    const auto splitKey = key('e', command | shift);
+    check(!ed.keyPressed(splitKey), "without a time selection the Note Editor leaves the Export MIDI shortcut available");
+    ed.selectTime(song(2 * beat), song(4 * beat));
+    const bool split = ed.keyPressed(splitKey);
+    root.frame();
+    const auto *splitTrack = root.reader().findTrack(1);
+    const bool threePieces = splitTrack && splitTrack->clips.size() == 3;
+    check(split && threePieces && splitTrack->clips[0]->id == 11 &&
+              splitTrack->clips[0]->lengthTicks == 2 * beat && splitTrack->clips[1]->posTicks == song(2 * beat) &&
+              splitTrack->clips[1]->lengthTicks == 2 * beat && splitTrack->clips[2]->posTicks == song(4 * beat) &&
+              panel.clip() == splitTrack->clips[1]->id && submitter.nextUndo()->opCount == 1,
+          "Ctrl+Shift+E in the Note Editor splits the Arrangement clip at both selected boundaries and selects the middle");
+    if (threePieces)
+        check(undo() && panel.clip() == 11 && details().notes.size() == 5,
+              "one Undo restores the original MIDI clip and its notes");
+
     // The time commands, over the clip's beats 2 to 4.
     ed.selectTime(song(2 * beat), song(4 * beat));
     check(ed.keyPressed(key('d', command | shift)) && details().notes.size() == 6 && note(4).startTicks == 7 * beat && note(5).startTicks == 9 * beat &&
@@ -12139,14 +12234,30 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     bool made = true;
     for (const auto &[id, name] : {std::pair<std::int64_t, const char *>{1, "Keys"}, {2, "Bass"}, {3, "Drums"}})
         made = submitter.submit(op("track.create", {{"id", id}, {"kind", id == 3 ? "audio" : "midi"}, {"name", name}, {"index", id - 1}}, "Create track")).ok && made;
-    // Keys: two bars from the start, a C3. Bass: two bars from bar 2, an E2 on its first beat. An audio clip.
+    // Keys: two bars from the start, a C3. Bass: two bars from bar 2, an E2 on its first beat.
     made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Chords"}, {"pos", 0}, {"length", 2 * bar}}, "Create clip")).ok && made;
     made = submitter.submit(op("clip.create", {{"id", 12}, {"track", 2}, {"kind", "midi"}, {"name", "Line"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
-    made = submitter.submit(op("clip.create", {{"id", 13}, {"track", 3}, {"kind", "audio"}, {"name", "Loop"}, {"pos", 0}, {"length", bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 13}, {"track", 3}, {"kind", "audio"}, {"name", "Kick"}, {"pos", 0}, {"length", bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 14}, {"track", 3}, {"kind", "audio"}, {"name", "Snare"}, {"pos", bar}, {"length", bar}}, "Create clip")).ok && made;
     made = submitter.submit(std::vector<OpRequest>{
                op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
                op("note.insert", {{"clip", 12}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 52}}, "Add Note")}).ok && made;
-    check(made, "two MIDI tracks with a clip each, and an audio clip");
+    check(made, "two MIDI tracks with a clip each and an audio track with two clips");
+    auto &db = store->db();
+    db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames,orig_name,bit_depth) "
+            "VALUES(1,'multi-kick','kick.wav','wav',48000,1,96000,'Kick.wav',16),"
+            "(2,'multi-snare','snare.wav','wav',44100,1,88200,'Snare.wav',16);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode) "
+            "VALUES(13,1,96000,1,'beats'),(14,2,88200,1,'beats');");
+    for (const auto &[id, frames] : {std::pair<std::int64_t, std::int64_t>{13, 96000}, {14, 88200}}) {
+        const std::array markers{WarpMarker{0, 0}, WarpMarker{frames, bar}};
+        const auto warp = audio::writeWarpMap(markers, static_cast<std::uint64_t>(frames));
+        SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=?");
+        attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+        attachWarp.bind(2, id);
+        attachWarp.exec();
+    }
+    view.refresh(*store);
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-multi");
     commands.activate(root);
     root.setSize(1400, 900);
@@ -12165,6 +12276,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               ed.rulerArea().getY() == 0,
           "one clip open: no loop bars, no Focus switch");
     const auto oneScale = ed.time.scale;
+    const auto clickActivator = [&] {
+        const auto dot = panel.activatorArea().getCentre().toFloat();
+        panel.mouseDown(pressAt(panel, dot));
+        panel.mouseUp(pressAt(panel, dot));
+        root.frame();
+    };
 
     // A second MIDI clip and an audio clip picked with it: both MIDI clips are shown, the audio clip is not.
     geo.selection.pickedClips = {12, 13};
@@ -12290,6 +12407,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
         check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
               "with two clips shown the title reads their number; they agree on looping and on the scale");
+        clickActivator();
+        check(edited().muted && another().muted && submitter.nextUndo()->opCount == 2,
+              "the MIDI Clip Activator deactivates both clips in one undo step");
+        check(root.command(AppCommands::Undo), "undo deactivating both MIDI clips");
+        root.frame();
+        check(!edited().muted && !another().muted, "one Undo reactivates both MIDI clips");
         const bool looped = edited().loopEnabled;
         check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
               "the Loop switch switches both clips: one undo step");
@@ -12381,6 +12504,52 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(!ed.keyPressed(juce::KeyPress('n')), "and N is not the editor's with one clip");
     check(panel.readings().title == "Verse A" && panel.rename("") && panel.details()->name.empty() && panel.readings().title == "Keys",
           "one clip shown: the title is its name; a clip with no name reads its track's");
+
+    root.arrangement.selectClip(3, 13);
+    geo.selection.pickedClips = {14};
+    root.frame();
+    const auto summary = panel.readings();
+    check(panel.shownClips() == std::vector<std::int64_t>{13, 14} && summary.title == "2 Audio Clips" &&
+              summary.sampleName == "2 Samples" && summary.sampleProperties == "*   16 bit   1 ch",
+          "selected audio clips show a count and shared sample properties, with an asterisk for a differing rate");
+    const auto audioCount = [&](const char *sql) { return value(*store, sql) == "2"; };
+    check(panel.rename("Break") && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND name='Break'") &&
+              submitter.nextUndo()->opCount == 2,
+          "renaming the audio selection names both clips in one undo step");
+    check(panel.recolour(5) && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND color=5") &&
+              submitter.nextUndo()->opCount == 2,
+          "colouring the audio selection colours both clips in one undo step");
+
+    check(submitter.submit(op("clip.setMute", {{"id", 13}, {"muted", true}}, "Deactivate Clip")).ok,
+          "deactivate the primary audio clip to make a mixed selection");
+    root.frame();
+    clickActivator();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND muted=1") &&
+              submitter.nextUndo()->opCount == 1,
+          "the mixed audio Clip Activator deactivates the one active clip");
+    clickActivator();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND muted=0") &&
+              submitter.nextUndo()->opCount == 2,
+          "the audio Clip Activator reactivates both clips in one undo step");
+
+    check(panel.toggleLoop() && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=1") &&
+              submitter.nextUndo()->opCount == 2,
+          "the audio Loop switch enables both warped clips in one undo step");
+    check(root.command(AppCommands::Undo), "undo the audio selection's Loop switch");
+    root.frame();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=0"),
+          "one Undo switches off both audio clips' loops");
+    db.exec("UPDATE audio_clips SET warp_enabled=0 WHERE clip_id=14");
+    view.refresh(*store);
+    root.frame();
+    check(!panel.toggleLoop() && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=0"),
+          "Loop is unavailable when a selected audio clip has Warp off");
+
+    geo.selection.pickedClips.clear();
+    root.frame();
+    check(panel.readings().title == "Break" && panel.readings().sampleName == "Kick.wav" &&
+              panel.readings().sampleProperties == "48000 Hz   16 bit   1 ch",
+          "the single audio clip shows its shared edits and its own sample");
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
@@ -15146,6 +15315,33 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
               canvas.fadeHandlePoint(Handle{first, 4, true, false}) && canvas.fadeHandlePoint(Handle{second, 4, false, false}),
           "F held: every audio clip's peak handles show");
     canvas.showFades = false;
+    root.setAutomationMode(true);
+    root.frame();
+    const Handle fadeIn{first, 4, true, false};
+    check(!canvas.fadeHandlePoint(fadeIn), "Automation Mode hides fade handles while F is up");
+    auto keys = std::move(root.input.keyDown);
+    root.input.keyDown = [](int key) { return key == 'f'; };
+    check(canvas.keyPressed(juce::KeyPress('f')), "F is handled in Automation Mode");
+    const auto automationPeak = canvas.fadeHandlePoint(fadeIn);
+    check(automationPeak.has_value(), "holding F reveals the fade while Automation Mode stays on");
+    if (automationPeak) {
+        const juce::Point<float> to{static_cast<float>(lanes.x(bar / 4)), automationPeak->y};
+        canvas.mouseDown(pressAt(canvas, *automationPeak));
+        canvas.mouseDrag(dragAt(canvas, *automationPeak, to));
+        check(canvas.fadeDragging().has_value(), "the fade takes the drag in Automation Mode");
+        canvas.mouseUp(dragAt(canvas, *automationPeak, to));
+        root.frame();
+        check(clips()[0]->fadeInTicks > 0 && root.automationMode() && root.undoTitle(false) == "Undo Change Fade",
+              "the drag writes one fade change while Automation Mode stays on");
+        check(root.command(AppCommands::Undo), "Undo the fade changed while F was held");
+        root.frame();
+    }
+    root.input.keyDown = [](int) { return false; };
+    canvas.keyStateChanged(false);
+    root.input.keyDown = std::move(keys);
+    check(!canvas.fadeHandlePoint(fadeIn), "releasing F hides the handles in Automation Mode again");
+    root.setAutomationMode(false);
+    root.frame();
     // Choose the first clip; drag its fade-in peak a quarter of a bar in: one clip.setFades, one step.
     sel.track = 4;
     sel.clip = first;
@@ -15180,6 +15376,30 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         check(image.getPixelAt(x0, y).getBrightness() + 0.05f < image.getPixelAt(x1, y).getBrightness(),
               "the faded start of the clip is drawn darker than its middle, over the selection's tint");
     }
+    // The lower square moves the silent boundary without moving the peak.
+    const auto beforeStartDrag = clips()[0]->fadeInHandles;
+    const juce::Point<float> fadeStart(static_cast<float>(lanes.x(0)) + 3.5f,
+                                      static_cast<float>(laneTop(root, 4) + lanes.heightFor(4)) - 6.5f);
+    const juce::Point<float> newStart(static_cast<float>(lanes.x(bar / 8)), fadeStart.y);
+    canvas.mouseDown(pressAt(canvas, fadeStart));
+    const bool pickedStart = canvas.fadeDragging().has_value();
+    canvas.mouseDrag(dragAt(canvas, fadeStart, newStart));
+    canvas.mouseUp(dragAt(canvas, fadeStart, newStart));
+    root.frame();
+    const auto afterStartDrag = clips()[0]->fadeInHandles;
+    check(pickedStart && near(afterStartDrag.zeroTicks, bar / 8) &&
+              afterStartDrag.peakTicks == beforeStartDrag.peakTicks,
+          "the lower fade handle moves the fade start and leaves its peak fixed");
+    if (afterStartDrag != beforeStartDrag) {
+        check(root.command(AppCommands::Undo), "one undo restores the fade start");
+        root.frame();
+        check(clips()[0]->fadeInHandles == beforeStartDrag, "undo preserves the original peak and start");
+    }
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
     // The curve's diamond, dragged up, writes the fade's tension.
     if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
         const juce::Point<float> up(diamond->x, diamond->y - 30.f);
@@ -15353,6 +15573,253 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-warp.adi", true, {}, error);
+    check(document != nullptr, "a project for the Clip View Warp switch");
+    if (!document)
+        return;
+    const auto wav = dir / "clip-warp.wav";
+    {
+        std::vector<float> frames(96000, .3f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport import;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, import)) {
+        check(false, "read the file for the Warp switch");
+        return;
+    }
+    auto drop = dropAudio(*document->view().current(), 4, 0, "Loop", import);
+    if (!drop.refusal.empty() || !document->ops().submit(std::move(drop.ops)).ok || !document->synchronise()) {
+        check(false, "place a sample on the audio track");
+        return;
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clip-warp");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto *track = root.reader().findTrack(4);
+    const auto id = track && !track->clips.empty() ? track->clips.front()->id : 0;
+    root.arrangement.selectClip(4, id);
+    if (!root.state().clipView)
+        root.command(AppCommands::ToggleClipView);
+    root.frame();
+    auto &panel = root.clipView;
+    const auto warped = [&] {
+        const auto *node = panel.node();
+        return node && node->audio && node->audio->warpEnabled;
+    };
+    const auto button = panel.warpBox();
+    const auto tempo = panel.fieldBox(ClipViewPanel::Field::SourceTempo);
+    const auto half = panel.sourceTempoFactorBox(false);
+    const auto twice = panel.sourceTempoFactorBox(true);
+    check(!button.isEmpty() && !tempo.isEmpty() && !half.isEmpty() && !twice.isEmpty() && !warped(),
+          "the selected audio clip shows Warp, source BPM and both correction buttons");
+    if (!button.isEmpty() && !tempo.isEmpty() && !half.isEmpty() && !twice.isEmpty()) {
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+            root.frame();
+        };
+        click(button);
+        check(!warped(), "the Warp switch cannot infer a beat from a steady sample");
+        click(tempo);
+        check(panel.editing() == ClipViewPanel::Field::SourceTempo, "clicking BPM opens its numeric editor");
+        panel.fieldEditor().setText("120");
+        panel.fieldEditor().onReturnKey();
+        root.frame();
+        check(warped() && std::abs(panel.sample.sourceBpm() - 120.) < .01, "typing BPM enables Warp with the specified source tempo");
+        const auto menu = panel.warpModeMenu();
+        int texture = 0, choices = 0;
+        bool beats = false;
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            const auto &entry = it.getItem();
+            ++choices;
+            if (entry.text == "Texture")
+                texture = entry.itemID;
+            if (entry.text == "Beats")
+                beats = entry.isTicked;
+        }
+        check(!panel.warpModeBox().isEmpty() && choices == 6 && beats && texture > 0,
+              "a placed warped clip offers the same six modes as import and shows its current mode");
+        check(panel.chooseWarpMode(texture), "choose Texture for the already-placed clip");
+        root.frame();
+        check(warped() && panel.node()->audio->warpMode == "texture" && root.undoTitle(false) == "Undo Change Warp Mode" &&
+                  std::abs(panel.sample.sourceBpm() - 120.) < .01,
+              "mode choice changes the placed clip in one edit without changing its source BPM");
+        check(root.command(AppCommands::Undo), "undo the Warp mode choice");
+        root.frame();
+        check(warped() && panel.node()->audio->warpMode == "beats", "the chooser follows the restored mode");
+        click(half);
+        check(std::abs(panel.sample.sourceBpm() - 60.) < .01 && root.undoTitle(false) == "Undo Change Source Tempo",
+              "the half button recomputes the warp clock in one edit");
+        click(twice);
+        check(std::abs(panel.sample.sourceBpm() - 120.) < .01, "the double button restores the original warp tempo");
+        // The editable marker band uses the clip's normal source clock. The
+        // file has only the immutable boundary anchors until the double click.
+        auto &sample = panel.sample;
+        sample.time.grid.snap = false;
+        const auto markers = [&]() {
+            const auto *node = panel.node();
+            if (!node || !node->audio || !node->audio->warpMarkers)
+                return std::vector<WarpMarker>{};
+            return audio::readWarpMap(*node->audio->warpMarkers,
+                static_cast<std::uint64_t>(node->audio->sourceLengthFrames)).markers;
+        };
+        const auto before = markers();
+        const auto eventAt = [&](std::int64_t tick) {
+            return pressAt(sample, {static_cast<float>(sample.time.x(tick)), static_cast<float>(sample.waveArea().getY() - 4)},
+                           juce::ModifierKeys::leftButtonModifier);
+        };
+        sample.mouseDoubleClick(eventAt(textproj::kPPQ));
+        root.frame();
+        const auto added = markers();
+        check(before.size() == 2 && added.size() == 3 && added.front() == before.front() && added.back() == before.back(),
+              "double click adds an interior Warp marker without changing either source anchor");
+        if (added.size() == 3) {
+            sample.mouseDown(eventAt(added[1].tick));
+            const auto betweenGridLines = 2 * textproj::kPPQ + textproj::kPPQ / 10;
+            sample.mouseDrag(eventAt(betweenGridLines));
+            sample.mouseUp(eventAt(betweenGridLines));
+            root.frame();
+            const auto moved = markers();
+            check(moved.size() == 3 && moved[1].sourceFrame == added[1].sourceFrame && moved[1].tick > added[1].tick,
+                  "dragging a Warp marker changes only its tick");
+            sample.time.grid.fixed = true;
+            sample.time.grid.fixedQuarters = .25;
+            bool askedForMenu = false;
+            sample.onWarpContextMenu = [&](juce::Point<int> at) { askedForMenu = sample.waveArea().contains(at); };
+            sample.mouseDown(pressAt(sample, sample.waveArea().getCentre().toFloat(), juce::ModifierKeys::rightButtonModifier));
+            const auto warpMenu = sample.warpContextMenu();
+            bool offersQuantize = false, offersTransients = false;
+            for (juce::PopupMenu::MenuItemIterator it(warpMenu); it.next();) {
+                const auto &entry = it.getItem();
+                offersQuantize |= entry.text == "Quantize Audio" && entry.isEnabled;
+                offersTransients |= entry.text == "Add Warp Markers at Transients";
+            }
+            check(askedForMenu && offersQuantize && offersTransients,
+                  "the Sample Editor opens its Warp menu with both audio timing commands");
+            sample.onWarpContextMenu = {};
+            const bool quantized = sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
+            root.frame();
+            const auto snapped = markers();
+            check(quantized && snapped.size() == 3 && snapped[1].sourceFrame == added[1].sourceFrame &&
+                      snapped[1].tick == 2 * textproj::kPPQ && snapped.front() == before.front() &&
+                      snapped.back() == before.back() && root.undoTitle(false) == "Undo Quantize Audio",
+                  "Ctrl+U quantizes a Warp marker to the Sample Editor grid in one edit");
+            if (quantized) {
+                check(root.command(AppCommands::Undo), "audio quantize can be undone");
+                root.frame();
+                check(markers() == moved, "Undo keeps the marker's pre-quantize time");
+            }
+            check(sample.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete is consumed by the selected Warp marker");
+            root.frame();
+            check(markers() == before, "deleting the interior marker restores a straight map");
+
+            constexpr auto beat = textproj::kPPQ;
+            sample.mouseDoubleClick(eventAt(beat));
+            root.frame();
+            sample.mouseDoubleClick(eventAt(3 * beat));
+            root.frame();
+            const auto pinned = markers();
+            check(pinned.size() == 4, "two interior markers set up the Warp From Here suffix edit");
+            if (pinned.size() == 4) {
+                sample.mouseDown(eventAt(pinned[2].tick));
+                sample.mouseDrag(eventAt(3 * beat + beat / 2));
+                sample.mouseUp(eventAt(3 * beat + beat / 2));
+                root.frame();
+                const auto oldMap = markers();
+                sample.time.grid.snap = true;
+                sample.onWarpContextMenu = [](juce::Point<int>) {};
+                sample.mouseDown(pressAt(sample, {static_cast<float>(sample.time.x(2 * beat)),
+                                                  static_cast<float>(sample.waveArea().getCentreY())},
+                                         juce::ModifierKeys::rightButtonModifier));
+                sample.onWarpContextMenu = {};
+                int useSetTempo = 0;
+                bool infer = false, startAt = false, straight = false;
+                const auto menu = sample.warpContextMenu();
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                    const auto &entry = it.getItem();
+                    infer |= entry.text == "Warp From Here";
+                    startAt |= entry.text.startsWith("Warp From Here (Start At ");
+                    straight |= entry.text == "Warp From Here (Straight)";
+                    if (entry.text.startsWith("Warp ") && entry.text.endsWith(" BPM From Here") && entry.isEnabled)
+                        useSetTempo = entry.itemID;
+                }
+                check(infer && startAt && straight && useSetTempo != 0,
+                      "the source menu offers all four Warp From Here commands");
+                const bool warpedFromHere = useSetTempo != 0 && sample.chooseWarpContextItem(useSetTempo);
+                root.frame();
+                const auto newMap = markers();
+                check(warpedFromHere && oldMap.size() == 4 && newMap.size() == 4 &&
+                          newMap[0] == oldMap[0] && newMap[1] == oldMap[1] &&
+                          newMap[2].tick == 2 * beat && newMap[2].sourceFrame != oldMap[2].sourceFrame &&
+                          newMap.back().sourceFrame == oldMap.back().sourceFrame && newMap.back().tick != oldMap.back().tick,
+                      "Warp From Here keeps the left map, inserts the snapped anchor and replaces the right suffix");
+                if (warpedFromHere) {
+                    check(root.command(AppCommands::Undo), "Warp From Here is one undo step");
+                    root.frame();
+                    check(markers() == oldMap && root.command(AppCommands::Redo),
+                          "Undo restores the previous Warp map exactly");
+                    root.frame();
+                    check(markers() == newMap, "Redo restores the captured replacement suffix");
+                    check(root.command(AppCommands::Undo), "restore the old Warp map for the remaining checks");
+                    root.frame();
+                }
+            }
+
+            const auto beforeLoop = markers();
+            const auto position = panel.node()->posTicks, length = panel.node()->lengthTicks;
+            const auto waveformPoint = [&](std::int64_t at) {
+                return juce::Point<float>{static_cast<float>(sample.time.x(at)),
+                                           static_cast<float>(sample.waveArea().getCentreY())};
+            };
+            const auto begin = waveformPoint(beat), end = waveformPoint(3 * beat);
+            sample.mouseDown(pressAt(sample, begin, juce::ModifierKeys::leftButtonModifier));
+            sample.mouseDrag(dragAt(sample, begin, end, juce::ModifierKeys::leftButtonModifier));
+            sample.mouseUp(dragAt(sample, begin, end));
+            sample.onWarpContextMenu = [](juce::Point<int>) {};
+            sample.mouseDown(pressAt(sample, begin, juce::ModifierKeys::rightButtonModifier));
+            sample.onWarpContextMenu = {};
+            const auto loopMenu = sample.warpContextMenu();
+            int warpSelection = 0;
+            bool offersWholeSample = false;
+            for (juce::PopupMenu::MenuItemIterator it(loopMenu); it.next();) {
+                const auto &entry = it.getItem();
+                if (entry.text == "Warp Selection as 1 Bar Loop" && entry.isEnabled)
+                    warpSelection = entry.itemID;
+                offersWholeSample |= entry.text == "Warp Sample as 1 Bar Loop" && entry.isEnabled;
+            }
+            const bool looped = warpSelection != 0 && sample.chooseWarpContextItem(warpSelection);
+            root.frame();
+            check(offersWholeSample && looped && panel.details()->loopEnabled && panel.details()->loopStartTicks == beat &&
+                      panel.details()->loopLengthTicks == 4 * beat && panel.details()->startMarkerTicks == beat &&
+                      panel.node()->posTicks == position && panel.node()->lengthTicks == length,
+                  "warp the selected source into one bar without changing its Arrangement placement");
+            if (looped) {
+                const auto loopMap = markers();
+                check(loopMap.front() == beforeLoop.front() && loopMap.back().sourceFrame == beforeLoop.back().sourceFrame &&
+                          loopMap.back().tick == beforeLoop.back().tick + 2 * beat,
+                      "stretch the selected map interval and keep source material on both sides");
+                check(root.command(AppCommands::Undo), "one Undo restores the map and the loop");
+                root.frame();
+                check(markers() == beforeLoop && !panel.details()->loopEnabled,
+                      "Undo restores the exact Warp map and leaves the loop off");
+            }
+        }
+        click(button);
+        check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
+        check(!panel.chooseWarpMode(texture), "the Warp mode chooser is inactive while Warp is off");
+        click(button);
+        check(warped() && root.undoTitle(false) == "Undo Enable Warp", "the switch re-enables the saved Warp map");
+        check(root.command(AppCommands::Undo), "Undo the Warp switch");
+        root.frame();
+        check(!warped(), "Undo restores the prior Warp state");
+    }
+    commands.detach(root);
+}
 void panelFocusAndOverflow(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "panel-focus.adi", true, {}, error);
@@ -15438,14 +15905,452 @@ void arrangementClipColour(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     check(hasColour(look::paletteColour(2)), "SC-37: undo restores the inherited track colour");
 }
-
-void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
+void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "clip-warp.adi", true, {}, error);
+    auto document = ProjectDocument::open(dir / "sample-gestures.adi", true, {}, error);
+    check(document != nullptr, "a project to exercise the Sample Editor");
+    if (!document)
+        return;
+    const auto wav = dir / "sample-gestures.wav";
+    {
+        std::vector<float> frames(192000, .3f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    constexpr std::int64_t track = 4, beat = textproj::kPPQ;
+    AudioImport imported;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, imported)) {
+        check(false, "read the Sample Editor's source");
+        return;
+    }
+    // Older media rows and formats without a known bit depth leave this column null.
+    imported.media.payload.at("row")["bit_depth"] = nullptr;
+    auto placed = dropAudio(*document->view().current(), track, 4 * beat, "Eight Beats", imported);
+    if (!placed.refusal.empty() || !document->ops().submit(std::move(placed.ops)).ok || !document->synchronise()) {
+        check(false, "place the Sample Editor's source on the track");
+        return;
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "sample-gestures");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto *row = root.reader().findTrack(track);
+    if (!row || row->clips.empty()) {
+        check(false, "find the Sample Editor's source on the track");
+        commands.detach(root);
+        return;
+    }
+    root.arrangement.selectClip(track, row->clips.front()->id);
+    if (!root.state().clipView)
+        root.command(AppCommands::ToggleClipView);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &edit = panel.sample;
+    const auto scaleBox = panel.fieldBox(ClipViewPanel::Field::Scale);
+    const auto scaleMode = panel.scaleModeBox();
+    check(!scaleBox.isEmpty() && !scaleMode.isEmpty() &&
+              !panel.loopBox().intersects(scaleMode) && !scaleMode.intersects(scaleBox),
+          "an audio clip exposes Scale Mode and its chooser alongside Loop");
+    if (!scaleMode.isEmpty()) {
+        const auto clickScaleMode = [&] {
+            panel.mouseDown(pressAt(panel, scaleMode.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+        };
+        clickScaleMode();
+        check(panel.details() && panel.details()->scale.local && root.undoTitle(false) == "Undo Activate Scale",
+              "audio Scale Mode stores the inherited scale as a local clip property in one edit");
+        check(panel.chooseScale(true, 3) && panel.details() && panel.details()->scale.local &&
+                  panel.details()->scale.root == 2 && panel.readings().scale.startsWith("D "),
+              "the audio clip can choose and display its own root");
+        clickScaleMode();
+        check(panel.details() && !panel.details()->scale.local && root.undoTitle(false) == "Undo Deactivate Scale",
+              "turning the audio clip's Scale Mode off restores Set inheritance");
+        check(root.command(AppCommands::Undo), "undo deactivating the audio clip's scale");
+        root.frame();
+        check(panel.details() && panel.details()->scale.local && panel.details()->scale.root == 2,
+              "undo restores the audio clip's authored scale");
+    }
+    check(root.commandSettings().get("files.sampleEditorOpens") == "inPlace",
+          "the external editor opens the project sample in place by default");
+    const auto clickEdit = [&] {
+        panel.mouseDown(pressAt(panel, panel.sampleEditBox().getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+    };
+    clickEdit();
+    check(root.error().find("Sample Editor in Settings") != std::string::npos,
+          "the audio clip's Edit button identifies the missing editor setting");
+    const auto editor = dir / "External Sample Editor";
+    const auto oldEditor = settings.get("files.sampleEditor"), oldMode = settings.get("files.sampleEditorOpens");
+    std::string why;
+    check(settings.set("files.sampleEditor", media::pathUtf8(editor), {}, why), "configure an external editor path with spaces");
+    std::vector<bool> copied;
+    root.launchSampleEditor = [&](const auto &application, std::int64_t mediaId, bool copy) {
+        if (application != editor || mediaId != imported.mediaId)
+            return false;
+        copied.push_back(copy);
+        return true;
+    };
+    engine::Transport editPlayback;
+    editPlayback.play(true);
+    document->mailbox().publish(editPlayback);
+    root.frame();
+    clickEdit();
+    check(root.playing() && copied.empty() && root.error().find("Stop playback before editing") != std::string::npos,
+          "Edit blocks the external sample editor while playback is active");
+    editPlayback.play(false);
+    document->mailbox().publish(editPlayback);
+    root.frame();
+    clickEdit();
+    check(settings.set("files.sampleEditorOpens", "copy", {}, why), "set the configured editor to open a copy");
+    clickEdit();
+    check(copied == std::vector<bool>{false, true}, "Edit routes the exact source through each of the configured editor modes");
+    root.launchSampleEditor = nullptr;
+    settings.set("files.sampleEditor", oldEditor, {}, why);
+    settings.set("files.sampleEditorOpens", oldMode, {}, why);
+    const auto readings = panel.readings();
+    check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
+              readings.sampleProperties == juce::String::fromUTF8("48000 Hz   — bit   1 ch") &&
+              panel.headerArea().contains(panel.sampleNameBox()) && !panel.sampleNameBox().isEmpty(),
+          "the Sample Editor header shows the source and its available properties when bit depth is unknown");
+    const auto sourcePath = std::filesystem::weakly_canonical(wav);
+    const auto sameName = sourcePath.parent_path() / "another-folder" / sourcePath.filename();
+    const auto revealSample = [&] {
+        panel.mouseDown(pressAt(panel, panel.sampleNameBox().getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+    };
+    const auto selectedSource = [&]() -> std::filesystem::path {
+        const auto i = root.browser.list.getSelectedRow();
+        const auto &rows = root.browser.rows();
+        if (i >= 0 && i < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(i)].file)
+            return rows[static_cast<std::size_t>(i)].file->path;
+        return {};
+    };
+    const bool browserWasVisible = root.browser.isVisible();
+    if (browserWasVisible)
+        root.command(AppCommands::ToggleBrowser);
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"},
+                                   {"sample-gestures.wav", sourcePath, "source"}}, {}});
+    root.browser.search.setText("exclude this sample", false);
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name opens the Browser on its exact indexed file, even with another sample of the same name");
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"}}, {}});
+    check(selectedSource() == sourcePath, "a library refresh keeps the revealed project source selected");
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name reveals the project's source even outside the indexed library");
+    if (!browserWasVisible && root.browser.isVisible())
+        root.command(AppCommands::ToggleBrowser);
+    using Field = ClipViewPanel::Field;
+    check(!panel.toggleLoop() && !panel.setField(Field::Position, beat) &&
+              !panel.setField(Field::Length, 2 * beat) && !panel.setFieldHere(Field::Length),
+          "Warp-off audio cannot enter Loop through the switch or the loop fields");
+    check(panel.setField(Field::Start, 2 * beat) && panel.setField(Field::End, 6 * beat),
+          "start with material trimmed at both ends");
+    root.frame();
+    check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
+          "unwarped audio reads Start and End in minutes, seconds and milliseconds");
+    const bool typedClock = panel.typeField(Field::Start, "0:01.125");
+    root.frame();
+    check(typedClock && panel.readings().start == "0:01.125", "a typed source time changes the Start marker");
+    if (typedClock) {
+        check(!panel.typeField(Field::End, "0:60.200"), "a source clock with 60 seconds is refused");
+        check(root.command(AppCommands::Undo), "undo the source clock edit");
+        root.frame();
+    }
+    if (root.setTempoAtPlay("100")) {
+        root.frame();
+        check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
+              "a tempo change preserves both unwarped source clock readings");
+        const bool changedEnd = panel.typeField(Field::End, "0:01.100");
+        root.frame();
+        check(changedEnd && panel.readings().start == "0:01.000" && panel.readings().end == "0:01.100",
+              "after a tempo change, End can move just past the pinned Start");
+        if (root.undoTitle(false) == "Undo Set Clip End") {
+            check(root.command(AppCommands::Undo), "undo the new End and keep the tempo change");
+            root.frame();
+        }
+        const bool changedStart = panel.typeField(Field::Start, "0:01.200");
+        root.frame();
+        check(changedStart && panel.readings().start == "0:01.200" && panel.readings().end == "0:03.000",
+              "after a tempo change, Start can move to the old marker's now different timestamp");
+        if (root.undoTitle(false) == "Undo Set Clip Start") {
+            check(root.command(AppCommands::Undo), "undo the new Start and keep the tempo change");
+            root.frame();
+        }
+        check(root.command(AppCommands::Undo), "undo the tempo change before the Sample Editor gestures");
+        root.frame();
+    } else {
+        check(false, "change tempo with unwarped Start and End markers set");
+    }
+    check(edit.time.tick(0) == 0 && edit.time.tick(edit.getWidth()) >= 8 * beat,
+          "the editor still shows the whole source around both markers");
+    const auto x = [&](std::int64_t at) { return static_cast<float>(std::ceil(edit.time.x(at))); };
+    auto &mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport driver;
+    const auto scrub = [&](std::int64_t at) {
+        const juce::Point<float> point{x(at), static_cast<float>(SampleEditor::kRulerHeight + 2)};
+        edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseUp(pressAt(edit, point));
+        mailbox.drain(driver);
+    };
+    scrub(beat);
+    check(!driver.playing() && driver.position() == 0, "the clip scrub strip skips source material before the placed Start");
+    scrub(4 * beat);
+    const auto clicked = edit.time.tick(x(4 * beat));
+    const auto *tempo = root.reader().tempo();
+    const auto wanted = static_cast<std::int64_t>(tempo->ticksToSeconds(2 * beat + clicked) * 48000.);
+    check(driver.playing() && std::llabs(driver.position() - wanted) <= 1,
+          "the Sample Editor scrub strip starts the arrangement at the clicked source point after applying Start");
+    const auto heard = driver.position();
+    scrub(7 * beat);
+    check(driver.position() == heard, "a source point after the placed End does not seek the arrangement");
+    mailbox.post(TransportMailbox::Command::Stop);
+    mailbox.drain(driver);
+    const auto y = edit.waveArea().getY();
+    const juce::Point<float> insertPoint{x(5 * beat), static_cast<float>(y + 5)};
+    edit.mouseDown(pressAt(edit, insertPoint, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(pressAt(edit, insertPoint));
+    mailbox.drain(driver);
+    check(!driver.playing() && edit.insert(), "a waveform click sets a local start while the transport stays stopped");
+    const auto chosen = edit.insert().value_or(0);
+    check(edit.playFromInsert(), "the Sample Editor can play from the chosen waveform point");
+    mailbox.drain(driver);
+    const auto fromInsert = static_cast<std::int64_t>(tempo->ticksToSeconds(2 * beat + chosen) * 48000.);
+    check(driver.playing() && std::llabs(driver.position() - fromInsert) <= 1,
+          "playing from the selected point honours the same placement and source offset");
+    mailbox.post(TransportMailbox::Command::Stop);
+    mailbox.drain(driver);
+    const auto drag = [&](std::int64_t from, std::int64_t to, int atY) {
+        const juce::Point<float> down{x(from), static_cast<float>(atY)}, up{x(to), static_cast<float>(atY)};
+        edit.mouseDown(pressAt(edit, down, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseDrag(dragAt(edit, down, up, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseUp(dragAt(edit, down, up));
+        root.frame();
+    };
+    drag(2 * beat, 3 * beat, y - 4);
+    check(panel.details() && panel.details()->startMarkerTicks == 3 * beat &&
+              root.undoTitle(false) == "Undo Set Clip Start",
+          "drag the waveform's Start marker as one undo step");
+    drag(6 * beat, 5 * beat, y - 4);
+    check(panel.details() && panel.details()->endMarkerTicks == 5 * beat,
+          "drag the waveform's End marker");
+
+    const auto markerClick = [&](std::int64_t at, int where, int modifiers = 0) {
+        const juce::Point<float> point{x(at), static_cast<float>(where)};
+        edit.mouseDown(pressAt(edit, point, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier | modifiers)));
+        edit.mouseUp(pressAt(edit, point));
+        root.frame();
+    };
+    markerClick(5 * beat, y - 4);
+    markerClick(2 * beat, y + 5, juce::ModifierKeys::commandModifier);
+    const bool movedStart = panel.details() && panel.details()->startMarkerTicks == 2 * beat;
+    check(movedStart && root.undoTitle(false) == "Undo Set Clip Start",
+          "Ctrl clicking the waveform with a marker selected sets Start");
+    markerClick(6 * beat, y + 5, juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+    const bool movedEnd = panel.details() && panel.details()->endMarkerTicks == 6 * beat;
+    check(movedEnd && root.undoTitle(false) == "Undo Set Clip End",
+          "Ctrl+Shift clicking the waveform with a marker selected sets End");
+    if (movedEnd)
+        check(root.command(AppCommands::Undo), "undo the end marker shortcut");
+    if (movedStart)
+        check(root.command(AppCommands::Undo), "undo the start marker shortcut");
+    root.frame();
+
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+    const auto beforeFollow = edit.time.left;
+    edit.time.left = 50.;
+    engine::Transport followDriver;
+    constexpr auto ordinaryProbe = 4 * beat + beat / 2;
+    followDriver.locate(std::llround(root.reader().tempo()->ticksToSeconds(ordinaryProbe) * mailbox.sampleRate()));
+    followDriver.play(true);
+    mailbox.publish(followDriver);
+    root.frame();
+    const auto at = edit.time.x(edit.sourceTick(ordinaryProbe));
+    check(root.timelineTick() == ordinaryProbe && root.playing() && root.state().follow &&
+              edit.playhead.isVisible() && std::abs(at - edit.playhead.getX()) < 1.,
+          "Follow pages the Sample Editor to the audio clip's playhead");
+    edit.time.left = 50.;
+    edit.mouseWheelMove(pressAt(edit, insertPoint, juce::ModifierKeys::shiftModifier),
+                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+    const auto parked = edit.time.left;
+    root.frame();
+    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
+    followDriver.play(false);
+    mailbox.publish(followDriver);
+    root.frame();
+    edit.time.left = beforeFollow;
+
+    clip_edit::WarpOptions warp;
+    warp.analysis.sourceBpm = 120;
+    warp.analysis.fromFirstBeat = false;
+    if (!panel.details() || !root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), panel.details()->id, warp, root.editRate()))) {
+        check(false, "enable Warp before editing the loop brace");
+        commands.detach(root);
+        return;
+    }
+    root.frame();
+    check(panel.toggleLoop() && panel.setField(Field::Position, 3 * beat) && panel.setField(Field::Length, beat),
+          "set a warped loop from beat four to beat five");
+    root.frame();
+    drag(3 * beat + beat / 2, 4 * beat + beat / 2, y - 14);
+    check(panel.details() && panel.details()->loopStartTicks == 4 * beat &&
+              panel.details()->loopLengthTicks == beat,
+          "moving the warped loop brace keeps its length");
+    const juce::Point<float> point{x(beat), static_cast<float>(edit.waveArea().getY() + 5)};
+    edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(pressAt(edit, point));
+    check(panel.setFieldHere(Field::Start), "Set Start takes the point picked in the waveform");
+    root.frame();
+    check(panel.details() && panel.details()->startMarkerTicks == beat,
+          "a waveform click supplies the sample-local edit point");
+    const auto scale = edit.time.scale;
+    const juce::Point<float> down{100.f, 6.f}, up{100.f, 26.f};
+    edit.mouseDown(pressAt(edit, down, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseDrag(dragAt(edit, down, up, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(dragAt(edit, down, up));
+    check(edit.time.scale > scale, "dragging down on the time ruler zooms in");
+    const auto zoomed = edit.time.scale;
+    const auto arrangementScale = root.arrangement.geometry.scale;
+    check(edit.keyPressed(juce::KeyPress('+')) && edit.time.scale > zoomed,
+          "Plus zooms the Sample Editor");
+    check(edit.keyPressed(juce::KeyPress('-')) && std::abs(edit.time.scale - zoomed) < .01,
+          "Minus zooms out in the Sample Editor");
+    const auto left = edit.time.left;
+    check(edit.keyPressed(juce::KeyPress('z')) && edit.time.historySize > 0,
+          "Z remembers the previous waveform view and fits the clip");
+    check(edit.keyPressed(juce::KeyPress('x')) && edit.time.left == left &&
+              std::abs(edit.time.scale - zoomed) < .01 && root.arrangement.geometry.scale == arrangementScale,
+          "X restores the waveform view without zooming the Arrangement");
+    const auto undoBefore = root.undoTitle(false);
+    check(edit.keyPressed(juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)) &&
+              root.undoTitle(false) == undoBefore,
+          "the Sample Editor consumes Insert Silence without inserting song time");
+
+    root.setSize(root.getWidth(), 1200);
+    root.frame();
+    if (const auto *clip = panel.node()) {
+        auto &arrangement = root.arrangement;
+        auto &lane = arrangement.geometry;
+        lane.reveal(root.reader(), track);
+        auto &canvas = arrangement.canvas;
+        lane.grid.snap = false;
+        lane.scale = 120.;
+        lane.left = 0.;
+        const auto bodyY = static_cast<float>(laneTop(root, track) + ArrangementCanvas::kClipBarHeight + 9);
+        const auto *hitTrack = lane.trackAt(root.reader(), static_cast<int>(bodyY));
+        check(hitTrack && hitTrack->id == track, "the range gesture starts on the visible audio lane");
+        if (!hitTrack || hitTrack->id != track) {
+            commands.detach(root);
+            return;
+        }
+        const juce::Point<float> from{static_cast<float>(lane.x(clip->posTicks + beat / 4)), bodyY};
+        const juce::Point<float> until{static_cast<float>(lane.x(clip->posTicks + beat / 2)), bodyY};
+        canvas.mouseDown(pressAt(canvas, from, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseDrag(dragAt(canvas, from, until, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseUp(dragAt(canvas, from, until));
+        root.frame();
+        const auto selectedFrom = edit.sourceTick(lane.selection.start), selectedTo = edit.sourceTick(lane.selection.end);
+        check(lane.selection.start < lane.selection.end && edit.time.x(selectedFrom) < 1. &&
+                  edit.time.x(selectedFrom) > -1. && edit.time.x(selectedTo) > edit.getWidth() * .9,
+              "an Arrangement body time selection fits the corresponding source range in the Sample Editor");
+        const auto history = edit.time.historySize;
+        const auto selectedLeft = edit.time.left;
+        check(edit.keyPressed(juce::KeyPress('x')) && edit.time.left != selectedLeft,
+              "Zoom Back restores the waveform view from before the Arrangement selection");
+        root.frame();
+        check(edit.time.historySize == history - 1 && edit.time.left != selectedLeft,
+              "the same Arrangement range does not zoom the Sample Editor on every frame");
+
+        const auto id = clip->id, start = clip->posTicks;
+        const auto changeAt = start + 8 * beat;
+        const bool extended = root.submitEdit("clip.resize", {{"id", id}, {"pos", start}, {"length", 12 * beat}},
+                                              "Extend the looped clip");
+        const bool retimed = extended &&
+                             root.submitEdit("project.insertTempoEvent", {{"pos", changeAt}, {"bpm", 60.}, {"curve", 0}},
+                                             "Slow down inside the looped clip");
+        check(retimed, "extend the loop and change tempo after it has already repeated");
+        if (retimed) {
+            root.frame();
+            lane.scale = 128.;
+            lane.left = static_cast<double>(changeAt - beat) / beat;
+            const auto fitRange = [&](std::int64_t from, std::int64_t to, std::int64_t sourceFrom, std::int64_t sourceTo,
+                                      const char *message) {
+                arrangement.showInsertMarkerAt(from);
+                const juce::Point<float> until{static_cast<float>(lane.x(to)), bodyY};
+                const auto historyBefore = edit.time.historySize;
+                const auto leftBefore = edit.time.left;
+                canvas.mouseDown(pressAt(canvas, until, juce::ModifierKeys::shiftModifier |
+                                                        juce::ModifierKeys::leftButtonModifier));
+                canvas.mouseUp(pressAt(canvas, until));
+                root.frame();
+                const auto width = edit.waveArea().getWidth();
+                const auto span = static_cast<double>(sourceTo - sourceFrom) / beat;
+                check(lane.selection.start == from && lane.selection.end == to &&
+                          std::abs(edit.time.x(sourceFrom)) < 1. &&
+                          std::abs(edit.time.x(sourceTo) - std::min(static_cast<double>(width), 4096. * span)) < 1.,
+                      message);
+                root.frame();
+                check(edit.time.historySize == historyBefore + 1 && edit.keyPressed(juce::KeyPress('x')) &&
+                          edit.time.left == leftBefore,
+                      "one Zoom Back restores the view before fitting the selected repeat");
+            };
+            // At 60 BPM, a quarter of an Arrangement beat is half a beat in the 120 BPM source loop.
+            fitRange(changeAt + beat / 8, changeAt + beat / 4, 4 * beat + beat / 4, 4 * beat + beat / 2,
+                     "selecting time in a later repeat fits its audible waveform interval");
+            fitRange(changeAt + 3 * beat / 8, changeAt + 5 * beat / 8, 4 * beat, 5 * beat,
+                     "a selection across a later wrap fits both sides of the loop");
+            fitRange(changeAt + beat / 4, changeAt + beat / 2, 4 * beat + beat / 2, 5 * beat,
+                     "a selection ending at the wrap fits through the loop end");
+            check(root.command(AppCommands::Undo), "restore the tempo before fitting looped ranges");
+        }
+        if (extended)
+            check(root.command(AppCommands::Undo), "restore the clip length before fitting looped ranges");
+        root.frame();
+    }
+
+    if (const auto *clip = panel.node()) {
+        const auto id = clip->id, start = clip->posTicks;
+        const auto changeAt = start + 8 * beat;
+        const bool arranged = root.submitEdit("clip.resize", {{"id", id}, {"pos", start}, {"length", 12 * beat}},
+                                              "Extend the looped clip") &&
+                              root.submitEdit("project.insertTempoEvent", {{"pos", changeAt}, {"bpm", 60.}, {"curve", 0}},
+                                              "Slow down inside the looped clip");
+        check(arranged, "extend the loop and change tempo after it has already repeated");
+        if (arranged) {
+            root.frame();
+            const auto *tempo = root.reader().tempo();
+            const auto rate = document->mailbox().sampleRate() > 0 ? document->mailbox().sampleRate()
+                                                                   : root.reader().sampleRate();
+            const auto probe = changeAt + beat / 4;
+            followDriver.locate(std::llround(tempo->ticksToSeconds(probe) * rate));
+            followDriver.play(true);
+            document->mailbox().publish(followDriver);
+            root.arrangement.followPaused = false;
+            edit.time.left = 50.;
+            root.frame();
+            const auto repeatedSource = 4 * beat + beat / 2;
+            const auto pixel = edit.time.x(repeatedSource);
+            check(edit.sourceTick(root.timelineTick()) > 8 * beat && edit.playhead.isVisible() &&
+                      std::abs(pixel - edit.playhead.getX()) < 1.,
+                  "Follow pages to the audible repeat after a tempo change, beyond the unrolled source end");
+            followDriver.play(false);
+            document->mailbox().publish(followDriver);
+            root.frame();
+        }
+    }
+    commands.detach(root);
+}
+
+void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-warp-onsets.adi", true, {}, error);
     check(document != nullptr, "a project for the Clip View Warp switch");
     if (!document)
         return;
-    const auto wav = dir / "clip-warp.wav";
+    const auto wav = dir / "clip-warp-onsets.wav";
     {
         std::vector<float> frames(96000);
         for (std::size_t i = 0; i < frames.size(); i += 24000)
@@ -15463,9 +16368,17 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         check(false, "place a sample on the audio track");
         return;
     }
+    WaveformCache waveforms(
+        [](std::optional<std::int64_t>, const std::string &, std::stop_token) -> media::PeakResult {
+            return {media::PeakProblem::invalidSource, {}, {}};
+        },
+        [](std::int64_t, const std::string &, std::stop_token) {
+            return std::vector<std::uint64_t>{0, 30000, 66000};
+        });
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
-                          document->sessionState(), "clip-warp");
+                          document->sessionState(), "clip-warp-onsets");
     root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &waveforms;
     root.setSize(1440, 900);
     root.frame();
     commands.activate(root);
@@ -15490,6 +16403,64 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
     };
     const auto button = panel.warpBox();
     check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
+    if (warped()) {
+        const auto markers = [&] {
+            const auto &source = *panel.node()->audio;
+            return audio::readWarpMap(*source.warpMarkers, static_cast<std::uint64_t>(source.sourceLengthFrames)).markers;
+        };
+        const auto original = markers();
+        waveforms.transients(*panel.node()->audio);
+        for (int i = 0; i < 1000 && !waveforms.idle(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(original.size() == 2 && waveforms.transients(*panel.node()->audio),
+              "the warped clip has only its two fixed anchors and a cached onset map");
+        panel.sample.time.grid.fixed = true;
+        panel.sample.time.grid.fixedQuarters = 1.;
+        const juce::KeyPress quantizeKey('u', juce::ModifierKeys::commandModifier, 0);
+        const bool quantized = panel.sample.keyPressed(quantizeKey);
+        root.frame();
+        constexpr auto beat = textproj::kPPQ;
+        const auto result = markers();
+        check(quantized && original.size() == 2 && result.size() == 4 && result.front() == original.front() &&
+                  result[1] == WarpMarker{30000, beat} && result[2] == WarpMarker{66000, 3 * beat} &&
+                  result.back() == original.back() && root.undoTitle(false) == "Undo Quantize Audio",
+              "Quantize Audio snaps cached transients while retaining the straight Warp map's fixed anchors");
+        if (quantized) {
+            check(root.command(AppCommands::Undo), "undo transient promotion and quantizing together");
+            root.frame();
+            check(markers() == original, "one Undo restores the original two anchors");
+        }
+
+        const auto anchor = WarpMarker{48000, 2 * beat + beat / 4};
+        const bool added = root.commitEdit(clip_edit::prepareWarpMarkerEdit(root.editStore(), id,
+            clip_edit::WarpMarkerChange::Add, anchor, root.editRate()));
+        check(added, "add an authored anchor between two cached transients");
+        if (added) {
+            root.frame();
+            const auto authored = markers();
+            const bool mixed = panel.sample.keyPressed(quantizeKey);
+            root.frame();
+            const auto mixedMap = markers();
+            check(mixed && authored.size() == 3 && mixedMap.size() == 5 &&
+                      mixedMap.front() == authored.front() && mixedMap[1] == WarpMarker{30000, beat} &&
+                      mixedMap[2] == WarpMarker{48000, 2 * beat} && mixedMap[3] == WarpMarker{66000, 3 * beat} &&
+                      mixedMap.back() == authored.back() && root.undoTitle(false) == "Undo Quantize Audio",
+                  "Quantize Audio snaps authored anchors and missing cached transients in the same edit");
+            if (mixed) {
+                const auto beforeNoOp = document->ops().nextUndo();
+                check(panel.sample.keyPressed(quantizeKey), "repeat Quantize Audio on the aligned map");
+                root.frame();
+                const auto afterNoOp = document->ops().nextUndo();
+                check(beforeNoOp && afterNoOp && beforeNoOp->txnId == afterNoOp->txnId && markers() == mixedMap,
+                      "repeating Quantize Audio makes no extra undo step");
+                check(root.command(AppCommands::Undo), "undo quantizing the mixed Warp map");
+                root.frame();
+                check(markers() == authored, "one Undo restores the original authored anchor and both fixed endpoints");
+            }
+            check(root.command(AppCommands::Undo), "remove the authored anchor before testing the Warp switch");
+            root.frame();
+        }
+    }
     if (!button.isEmpty()) {
         const auto click = [&] {
             panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
@@ -15610,6 +16581,22 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.submitEdit("clip.setGain", {{"id", clipId}, {"gain", -24.}}, "Set Clip Gain"), "lower the audio clip's gain");
     root.frame();
     check(waveformHeight() + 40 < inside, "the arrangement waveform shrinks with clip gain");
+    auto *verticalZoom =
+        dynamic_cast<juce::Slider *>(root.arrangement.findChildWithID("waveformVerticalZoom"));
+    check(verticalZoom != nullptr && verticalZoom->isVisible() && !verticalZoom->getBounds().isEmpty(),
+          "the Arrangement shows a waveform vertical zoom slider");
+    if (verticalZoom != nullptr) {
+        const auto atLowGain = waveformHeight();
+        const auto undoBeforeZoom = document->ops().nextUndo()->txnId;
+        verticalZoom->setValue(24., juce::sendNotificationSync);
+        check(std::abs(waveformHeight() - inside) <= 4 && waves.builds() == 1,
+              "24 dB of display zoom enlarges the same cached peaks");
+        check(root.reader().findTrack(4)->clips[0]->gainDb == -24. &&
+                  document->ops().nextUndo()->txnId == undoBeforeZoom,
+              "waveform vertical zoom preserves clip gain and does not add an Undo step");
+        verticalZoom->setValue(0., juce::sendNotificationSync);
+        check(waveformHeight() == atLowGain, "returning to unity restores the previous waveform height");
+    }
     check(root.command(AppCommands::Undo), "undo the lower gain");
     root.frame();
     check(waveformHeight() == inside && waves.builds() == 1, "undo restores the waveform height using the same peaks");
@@ -15650,8 +16637,126 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
               gainIs(-5.5) && undoIsGain(),
           "the audio Gain field also steps with the arrow keys");
     editor.onEscapeKey();
+    const auto enterPitch = [&](Field field, const char *value) {
+        const auto box = panel.fieldBox(field);
+        const auto point = box.getCentre().toFloat();
+        panel.mouseDown(pressAt(panel, point));
+        panel.mouseUp(pressAt(panel, point));
+        if (!panel.fieldEditor().isVisible())
+            return false;
+        panel.fieldEditor().setText(value, false);
+        panel.fieldEditor().onReturnKey();
+        return true;
+    };
+    const auto pitchIs = [&](double pitch) { return panel.details() && panel.details()->transposeSemis == pitch; };
+    check(enterPitch(Field::Pitch, "12 st") && pitchIs(12.) && enterPitch(Field::Detune, "-50 ct") && pitchIs(11.5),
+          "the audio clip's semitone and cent controls set one shared pitch value");
+    const auto detune = panel.fieldBox(Field::Detune).getCentre().toFloat();
+    const auto up = detune.translated(0.f, -8.f);
+    panel.mouseDown(pressAt(panel, detune));
+    panel.mouseDrag(dragAt(panel, detune, up));
+    panel.mouseUp(dragAt(panel, detune, up));
+    const auto pitchEdit = document->ops().nextUndo();
+    check(pitchIs(11.52) && pitchEdit && pitchEdit->label == "Set Clip Pitch" && pitchEdit->opCount == 1,
+          "dragging Detune steps in cents and commits once");
+    check(root.command(AppCommands::Undo), "undo the cents drag");
+    root.frame();
+    check(pitchIs(11.5), "pitch Undo restores the previous cents");
+    const auto defaultsIndex = dir / "clip-view-defaults.sqlite";
+    root.saveSampleDefaults = [&](std::int64_t id, std::string &why) {
+        const bool saved = document->saveSampleDefaults(id, defaultsIndex);
+        why = document->error();
+        return saved;
+    };
+    const auto menu = panel.titleMenu();
+    bool offersSave = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        offersSave = offersSave || (it.getItem().itemID == ClipViewPanel::kSaveSampleDefaults && it.getItem().isEnabled);
+    const auto undoBeforeSave = root.undoTitle(false);
+    check(offersSave && panel.chooseTitleItem(ClipViewPanel::kSaveSampleDefaults) && root.undoTitle(false) == undoBeforeSave &&
+              std::filesystem::exists(defaultsIndex),
+          "the audio Clip View's title action saves defaults to the Library without making an undo step");
+    const auto replacement = dir / "Different Source.wav";
+    {
+        std::vector<float> samples(96000, .2f);
+        audio::WavWriter writer(replacement, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), 96000);
+    }
+    root.importAudio = [&](const std::string &path, AudioImport &source, std::string &why) {
+        const bool imported = document->prepareImport(path, 1'700'000'000'000'001, source);
+        if (!imported) {
+            why = document->error();
+        } else {
+            auto defaults = std::make_shared<library::SampleSettings>();
+            defaults->gainDb = -24.;
+            defaults->transposeSemis = 3.;
+            source.savedDefaults = std::move(defaults);
+        }
+        return imported;
+    };
+    const auto point = panel.editorArea().getCentre();
+    const juce::String path(media::pathUtf8(replacement));
+    const juce::DragAndDropTarget::SourceDetails drop("adi-sample:" + path, &root.browser.list, point);
+    check(panel.isInterestedInDragSource(drop) && panel.isInterestedInFileDrag({path}) && !panel.isInterestedInFileDrag({path, path}),
+          "Clip View accepts one sample from the Browser or desktop and refuses a multi-file drop");
+    panel.itemDropped(drop);
+    root.frame();
+    const auto mediaId = [&] { return panel.node() && panel.node()->audio ? panel.node()->audio->mediaId : 0; };
+    const bool swapped = panel.clip() == clipId && mediaId() != 0 && mediaId() != import.mediaId &&
+                         root.undoTitle(false) == "Undo Replace Clip Sample";
+    check(swapped && gainIs(-5.5) && pitchIs(11.5),
+          "the browser sample reaches Clip View and preserves the selected clip's Gain and Pitch over the new sample's defaults");
+    if (swapped) {
+        check(root.command(AppCommands::Undo), "undo the Clip View source replacement");
+        root.frame();
+        check(mediaId() == import.mediaId && gainIs(-5.5) && pitchIs(11.5),
+              "one Undo restores the previous source in Clip View");
+    }
     root.afterEdit = nullptr;
     document->release();
+}
+void reverseAudioSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr auto quarter = textproj::kPPQ;
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "reverse-selection.adi", error);
+    check(store != nullptr, "an arrangement for Reverse Clip(s)");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO project(id,name) VALUES(1,'Reverse');"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(2,'midi','MIDI',1);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(1,1,'audio',0,23063040),(2,2,'midi',0,23063040);"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+            "VALUES(1,'reverse-test','source.wav','wav',48000,1,96000);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(1,1,96000);");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "reverse-selection");
+    root.setSize(1200, 700);
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 1;
+    selection.start = quarter;
+    selection.end = 2 * quarter;
+    selection.toTrack = 2;
+    check(!root.canReverseAudio(), "a time range containing MIDI cannot be reversed as audio");
+    selection.toTrack = 0;
+    const auto menu = root.arrangement.contextMenuItems(false);
+    bool shown = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        shown = shown || (it.getItem().text == "Reverse Clip(s)" && it.getItem().isEnabled);
+    check(shown, "the Arrangement's audio time range offers Reverse Clip(s)");
+    check(commands.key(juce::KeyPress('r'), root) &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=1").getInt() == 3 &&
+              db.execAndGet("SELECT count(*) FROM audio_clips WHERE reverse=1").getInt() == 1,
+          "R reverses only the selected middle and leaves its neighbours in place");
+    check(root.command(AppCommands::Undo) && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=1").getInt() == 1,
+          "one Undo removes both cuts and the reversed section");
+    commands.detach(root);
 }
 void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir) {
     const auto project = dir / "relink-sample.adi";
@@ -25075,15 +26180,15 @@ int main(int argc, char **argv) {
                       C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::HotSwap == C::PreviewSelected + 1 &&
                       C::ManageProjectFiles == C::HotSwap + 1 && C::ToggleFavorite == C::ManageProjectFiles + 1 &&
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
-                      C::LastId == C::ToggleCollectionGray,
+                      C::ReverseAudio == C::ToggleCollectionGray + 1 && C::LastId == C::ReverseAudio,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
-                  "Computer MIDI Keyboard, MIDI import and export, Browser Preview controls, Hot-Swap, Manage Project Files, "
-                  "and the Favorite and Collection commands");
+                  "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
+                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, and Reverse Clip(s)");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -26653,15 +27758,21 @@ int main(int argc, char **argv) {
         integrated.frame();
         integrated.resizeDevices(169);
         // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes. The meters read the
-        // engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381; worklist B3) through the
+        // engine's post-fader levels (UI-ARCHITECTURE §9; N9, #381; worklist B3) through the
         // panel's lookup: fixed values here, track 2 at a half-scale sine's peak and RMS, the
         // others silent, so nothing plays and no tap is opened. The clock is the test's.
         const float halfSineRms = std::sqrt(.125f); // .5 / sqrt 2
         engine::StripMeter fixed, other;
-        fixed.peak.store(.5f);
-        fixed.rms.store(halfSineRms);
-        other.peak.store(.25f);
-        other.rms.store(.1f);
+        const auto publish = [](engine::StripMeter &meter, float peak, float rms) {
+            meter.peak.store(peak);
+            meter.rms.store(rms);
+            for (auto &channel : meter.stereo) {
+                channel.peak.store(peak);
+                channel.rms.store(rms);
+            }
+        };
+        publish(fixed, .5f, halfSineRms);
+        publish(other, .25f, .1f);
         const engine::StripMeter *meterOfTwo = &fixed;
         int lookups = 0;
         double clock = 0;
@@ -26690,9 +27801,36 @@ int main(int argc, char **argv) {
             for (const auto &s : mixer.strips())
                 if (s->isVisible() && s->track() != 2 && unmetered == nullptr)
                     unmetered = s.get();
-            check(row->hasMeter() && row->peak() == .5f && row->rms() == halfSineRms && unmetered != nullptr &&
-                      !unmetered->hasMeter() && unmetered->peak() == 0 && unmetered->rms() == 0,
+            check(row->hasMeter() && row->peak(0) == .5f && row->rms(0) == halfSineRms && unmetered != nullptr &&
+                      !unmetered->hasMeter() && unmetered->peak(0) == 0 && unmetered->rms(0) == 0,
                   "the meter draws the engine's peak and RMS for its strip; a track with no strip yet draws silence");
+            {
+                // SC-81: the two Arrangement meter columns read the two actual strip outputs.
+                engine::StripNode leftOnly;
+                leftOnly.prepare(48000, 2);
+                const float left[]{.5f, -.5f}, right[]{0, 0};
+                float outLeft[2]{}, outRight[2]{};
+                const float *in[]{left, right};
+                float *out[]{outLeft, outRight};
+                engine::NodeIo io;
+                io.in = in;
+                io.out = out;
+                io.channels = io.frames = 2;
+                leftOnly.process(io);
+                meterOfTwo = &leftOnly.meter();
+                MixerStrip stereoRow(mixer);
+                stereoRow.setSize(400, 80);
+                stereoRow.bind(2);
+                juce::Image meters(juce::Image::ARGB, stereoRow.getWidth(), stereoRow.getHeight(), true,
+                                   juce::SoftwareImageType{});
+                juce::Graphics g(meters);
+                stereoRow.paint(g);
+                const int x = (stereoRow.showsInOut() ? MixerPanel::kInOutWidth : 0) + 105;
+                check(meters.getPixelAt(x + 1, 30) == look::meterLevel &&
+                          meters.getPixelAt(x + 6, 30) == look::display,
+                      "a left-only signal lights the left meter column and leaves the right dark");
+                meterOfTwo = &fixed;
+            }
             // A refresh finds the meter again (a track's strip arrives with the session's next sync,
             // after the row was bound): what the lookup now gives is drawn, five seconds on so the
             // ballistics have let the old values go.
@@ -26701,32 +27839,30 @@ int main(int argc, char **argv) {
             clock = 5;
             integrated.mark(DirtySet::Layout);
             integrated.frame();
-            check(lookups > lookupsBefore && row->track() == 2 && row->peak() == .25f && row->rms() == .1f,
+            check(lookups > lookupsBefore && row->track() == 2 && row->peak(0) == .25f && row->rms(0) == .1f,
                   "after a refresh the meter is resolved again");
             meterOfTwo = &fixed;
             integrated.mark(DirtySet::Layout);
             integrated.frame();
-            check(row->peak() == .5f && row->rms() == halfSineRms, "and again, back to the first");
+            check(row->peak(0) == .5f && row->rms(0) == halfSineRms, "and again, back to the first");
             // The ballistics, the window's (win's placement until Readings M1-02 to M1-04): the
             // engine's value gone, the level falls 24 dB a second; the peak line holds a second first.
-            fixed.peak.store(0);
-            fixed.rms.store(0);
+            publish(fixed, 0, 0);
             clock = 5.5;
             integrated.frame();
             const float twelveDown = std::pow(10.f, -12.f / 20);
-            check(std::abs(row->rms() - halfSineRms * twelveDown) < .002f && row->peak() == .5f,
+            check(std::abs(row->rms(0) - halfSineRms * twelveDown) < .002f && row->peak(0) == .5f,
                   "half a second of silence: the level is 12 dB down, the peak line still held");
             clock = 6.5;
             integrated.frame();
-            check(std::abs(row->peak() - .5f * twelveDown) < .002f && row->rms() < .01f,
+            check(std::abs(row->peak(0) - .5f * twelveDown) < .002f && row->rms(0) < .01f,
                   "a second and a half: the line, let go after its second, is 12 dB down");
             clock = 15;
             integrated.frame();
-            check(row->peak() == 0 && row->rms() == 0, "ten seconds on: the meter is at rest");
-            fixed.peak.store(.5f);
-            fixed.rms.store(halfSineRms);
+            check(row->peak(0) == 0 && row->rms(0) == 0, "ten seconds on: the meter is at rest");
+            publish(fixed, .5f, halfSineRms);
             integrated.frame();
-            check(row->peak() == .5f && row->rms() == halfSineRms, "a new value is drawn at once: the rise is instant");
+            check(row->peak(0) == .5f && row->rms(0) == halfSineRms, "a new value is drawn at once: the rise is instant");
             row->volume.onDragStart();
             row->volume.setValue(-6, juce::sendNotificationSync);
             check(std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
@@ -26929,7 +28065,7 @@ int main(int argc, char **argv) {
             // Over 0 dBFS the Peak Level turns red (manual 18.1: "resettable peak level indicators";
             // Live's goes red once the track has clipped): read in the pill's own pixels, away from
             // its text.
-            fixed.peak.store(1.2f);
+            publish(fixed, 1.2f, halfSineRms);
             integrated.frame();
             juce::Image pill(juce::Image::ARGB, held.getWidth(), held.getHeight(), true, juce::SoftwareImageType{});
             {
@@ -26937,7 +28073,7 @@ int main(int argc, char **argv) {
                 held.paintEntireComponent(g, true);
             }
             const auto edge = pill.getPixelAt(3, held.getHeight() / 2);
-            check(held.held == 1.2f && sounding->peak() == 1.2f && edge.getRed() > 200 && edge.getGreen() < 100 &&
+            check(held.held == 1.2f && sounding->peak(0) == 1.2f && edge.getRed() > 200 && edge.getGreen() < 100 &&
                       edge.getBlue() < 100,
                   "a peak over 0 dBFS turns the Peak Level red");
             // The window at twice its size, for the PR's picture (ADI_UI_PARITY): the strips with
@@ -26955,15 +28091,15 @@ int main(int argc, char **argv) {
                 if (auto stream = file.createOutputStream())
                     juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
             }
-            fixed.peak.store(.5f);
+            publish(fixed, .5f, halfSineRms);
             held.onClick();
             clock = 20;
             integrated.frame();
-            check(held.held == .5f && sounding->peak() == .5f && sounding->rms() == halfSineRms,
+            check(held.held == .5f && sounding->peak(0) == .5f && sounding->rms(0) == halfSineRms,
                   "reset and ten seconds on, the strip is back at the engine's value");
             // A12: the Peak Level is the track's (manual 18.1), not its column's. The track after
             // track 2 moved before it takes track 2's strip; track 2's hold goes with track 2, silent now.
-            fixed.peak.store(0);
+            publish(fixed, 0, halfSineRms);
             integrated.frame();
             const auto at = std::find(trackOrder.begin(), trackOrder.end(), std::int64_t{2});
             check(at != trackOrder.end() && at + 1 != trackOrder.end(), "track 2 has a track after it");
@@ -27008,7 +28144,7 @@ int main(int argc, char **argv) {
                 check(sounding->track() == 2 && std::abs(held.held - .5f) < .01f,
                       "undone, track 2 is back on its strip with its hold");
             }
-            fixed.peak.store(.5f);
+            publish(fixed, .5f, halfSineRms);
             integrated.frame();
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
@@ -27733,6 +28869,9 @@ int main(int argc, char **argv) {
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
+    trace("clipWarpSwitchWithOnsets", [&] { clipWarpSwitchWithOnsets(commands, temp.path()); });
+    trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, settings, temp.path()); });
+    trace("reverseAudioSelection", [&] { reverseAudioSelection(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("relinkMissingSample", [&] { relinkMissingSample(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });

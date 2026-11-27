@@ -16,6 +16,8 @@ enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, Pl
 constexpr auto kLastLabel = "browser.lastLabel";
 constexpr auto kAllLabel = "label:All";
 constexpr auto kFirstLabel = "label:Instruments";
+constexpr auto kSamplesLabel = "label:Samples";
+constexpr auto kCurrentProjectLabel = "label:Current Project";
 constexpr std::string_view kSampleMarkPrefix = "sample:";
 constexpr auto kFavoriteSlot = 0u;
 constexpr auto kFavoriteMarkSize = 5, kFavoriteMarkPitch = 7, kFavoriteMarkInset = 5;
@@ -248,6 +250,7 @@ void BrowserPanel::syncSearchClearButton() {
         search.setBorder(border);
 }
 void BrowserPanel::searchEdited() {
+    clearRevealedSample();
     syncSearchClearButton();
     refill();
     startSearchPluginScan();
@@ -471,10 +474,77 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     setSidebarScroll(sidebarScroll_);
     if (keepInView)
         revealSidebarSelection();
+    if (revealedSample_ && !hotSwap_)
+        selectRevealedSampleLabel();
     const bool sameLabel = labelKey(selected_) == priorLabel;
-    refill(-1, hotSwap_ || sameLabel);
-    if (!hotSwap_ && !sameLabel)
+    refill(-1, hotSwap_ || sameLabel || revealedSample_.has_value());
+    if (!hotSwap_ && !sameLabel && !revealedSample_)
         setPreviewRowShown(false);
+    repaint();
+}
+bool BrowserPanel::setCurrentProjectLabelVisible(bool visible) {
+    const int currentProject = findLabel(kCurrentProjectLabel);
+    if (visible == (currentProject >= 0))
+        return false;
+    const auto key = labelKey(selected_);
+    const bool inView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
+    if (visible) {
+        sidebar_.insert(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1), {"Current Project", Project});
+        ++baseEntries_;
+    } else {
+        sidebar_.erase(sidebar_.begin() + currentProject);
+        --baseEntries_;
+    }
+    selected_ = findLabel(key);
+    const bool selectionRemoved = selected_ < 0;
+    if (selectionRemoved) {
+        selected_ = findLabel(kAllLabel);
+        setPreviewRowShown(false);
+    }
+    setSidebarScroll(sidebarScroll_);
+    if (inView)
+        revealSidebarSelection();
+    repaint();
+    return selectionRemoved;
+}
+void BrowserPanel::selectRevealedSampleLabel() {
+    const auto *indexed = library_ ? library_->matchingFileAtPath(revealedSample_->path, LibraryQuery{""}) : nullptr;
+    const bool inSamples = indexed && indexed->isSample();
+    setCurrentProjectLabelVisible(projectLibrary_ || !inSamples);
+    const int label = findLabel(inSamples ? kSamplesLabel : kCurrentProjectLabel);
+    if (selected_ != label) {
+        selected_ = label;
+        revealSidebarSelection();
+    }
+}
+void BrowserPanel::clearRevealedSample() {
+    if (revealedSample_) {
+        revealedSample_.reset();
+        if (!projectLibrary_)
+            setCurrentProjectLabelVisible(false);
+    }
+}
+void BrowserPanel::revealSample(std::filesystem::path path) {
+    const SafePointer<BrowserPanel> alive(this);
+    cancelHotSwap();
+    if (!alive || hotSwap_ || path.empty())
+        return;
+    const auto priorLabel = labelKey(selected_);
+    revealedSample_ = LibraryFile{media::pathUtf8(path.filename()), std::move(path), {}};
+    addFolderFocused_ = false;
+    pendingLabel_.clear();
+    selectRevealedSampleLabel();
+    revealSidebarSelection();
+    if (priorLabel != labelKey(selected_))
+        setPreviewRowShown(false);
+    search.setText({}, false);
+    syncSearchClearButton();
+    refill();
+    const auto found = std::ranges::find_if(rows_, [this](const Row &row) {
+        return row.file && row.file->path == revealedSample_->path;
+    });
+    if (found != rows_.end())
+        list.selectRow(static_cast<int>(found - rows_.begin()));
     repaint();
 }
 void BrowserPanel::setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library) {
@@ -484,27 +554,10 @@ void BrowserPanel::setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrar
     const auto previous = std::exchange(projectLibrary_, std::move(library));
     updateMarkedSamples();
     bool keepListPosition = true;
-    if (static_cast<bool>(previous) != static_cast<bool>(projectLibrary_)) {
-        const auto key = labelKey(selected_);
-        const bool inView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
-        if (projectLibrary_) {
-            sidebar_.insert(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1), {"Current Project", Project});
-            ++baseEntries_;
-        } else {
-            --baseEntries_;
-            sidebar_.erase(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1));
-        }
-        selected_ = findLabel(key);
-        if (selected_ < 0) {
-            selected_ = findLabel(kAllLabel);
-            setPreviewRowShown(false);
-            keepListPosition = false;
-        }
-        setSidebarScroll(sidebarScroll_);
-        if (inView)
-            revealSidebarSelection();
-        repaint();
-    }
+    if (revealedSample_ && !hotSwap_)
+        selectRevealedSampleLabel();
+    else if (!revealedSample_ && static_cast<bool>(previous) != static_cast<bool>(projectLibrary_))
+        keepListPosition = !setCurrentProjectLabelVisible(static_cast<bool>(projectLibrary_));
     if (!hotSwap_ && selected_ >= 0) {
         const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
         if (glyph == Project || glyph == All || glyph == Favorite)
@@ -803,8 +856,13 @@ void BrowserPanel::refillRows() {
         queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_,
                              projectLibrary_.get()}, hits);
         hits.files.swap(shown_);
-    } else if (chosen.glyph == Project && projectLibrary_) {
-        projectLibrary_->appendSamples(query, nullptr, shown_);
+    } else if (chosen.glyph == Project) {
+        if (projectLibrary_)
+            projectLibrary_->appendSamples(query, nullptr, shown_);
+        if (revealedSample_ && std::ranges::none_of(shown_, [this](const LibraryFile *file) {
+                return file->path == revealedSample_->path;
+            }))
+            shown_.push_back(&*revealedSample_);
     } else if (sounds) {
         queryLibrary(query, {nullptr, {}, {}, &devicePresets_}, hits);
         std::ranges::sort(hits.presets, presetNameLess, [](const preset::Entry *entry) -> const preset::Entry & {
@@ -1671,12 +1729,19 @@ void BrowserPanel::choose(int i) {
     if (hotSwap_)
         return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
-        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
-        if (entry.glyph == AddFolder) {
+        if (sidebar_[static_cast<std::size_t>(i)].glyph == AddFolder) {
             if (requestAddFolder) requestAddFolder();
             else root_.say("Choose a sample folder in the application.");
             return;
         }
+        if (revealedSample_) {
+            const auto key = labelKey(i);
+            clearRevealedSample();
+            i = findLabel(key);
+            if (i < 0)
+                i = findLabel(kAllLabel);
+        }
+        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         addFolderFocused_ = false;
         const bool differentList = selected_ != i;
         selected_ = i;

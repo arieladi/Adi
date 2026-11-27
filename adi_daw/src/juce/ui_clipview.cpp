@@ -4,19 +4,32 @@
 #include "ui_controls.hpp"
 #include "ui_decimal.hpp"
 #include "ui_shell.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <string_view>
 #include <utility>
 namespace adi::ui {
 namespace {
 // The playback reader accepts clip gain within this finite dB range.
 constexpr double kClipGainLimitDb = 120.;
+constexpr int kPitchLimitCents = 4800;
+constexpr int kAudioLoopWidth = 42, kAudioScaleModeWidth = 34, kAudioControlGap = 4;
 const juce::String kGainLabel{"Gain"};
 juce::String clipGainText(double db) { return juce::String(db, 2) + " dB"; }
+const juce::String kUnsetWarpModeLabel{"Warp Mode"};
+const auto kWarpModeLabels = [] {
+    std::array<juce::String, kWarpModeChoices.size()> labels;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        labels[i] = kWarpModeChoices[i].name;
+    return labels;
+}();
 
 // Pending the direct Live reading (R20): an editor click places its local cursor.
 constexpr bool kNoteEditorClickMovesArrangementInsertMarker = false;
@@ -31,6 +44,34 @@ juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> 
 juce::String lengthText(std::int64_t ticks, const textproj::Meter &meter) {
     const auto l = barsBeats(ticks, meter);
     return juce::String(l.bars) + ". " + juce::String(l.beats) + ". " + juce::String(l.sixteenths);
+}
+juce::String sourceClockText(std::int64_t milliseconds) {
+    const auto total = std::max<std::int64_t>(0, milliseconds);
+    return juce::String(static_cast<juce::int64>(total / 60000)) + ":" +
+           juce::String(static_cast<int>((total / 1000) % 60)).paddedLeft('0', 2) + "." +
+           juce::String(static_cast<int>(total % 1000)).paddedLeft('0', 3);
+}
+std::optional<std::int64_t> parseSourceClock(const juce::String &text) {
+    const std::string_view clock(text.toRawUTF8());
+    const auto colon = clock.find(':'), point = clock.find('.');
+    if (colon == clock.npos || point == clock.npos || colon == 0 || point <= colon + 1 || point + 1 >= clock.size())
+        return std::nullopt;
+    const auto fraction = clock.substr(point + 1);
+    if (fraction.size() > 3)
+        return std::nullopt;
+    const auto read = [](std::string_view part, std::int64_t &value) {
+        const auto *end = part.data() + part.size();
+        const auto result = std::from_chars(part.data(), end, value);
+        return result.ec == std::errc{} && result.ptr == end && value >= 0 && part.front() != '-';
+    };
+    std::int64_t minutes = 0, seconds = 0, milliseconds = 0;
+    constexpr auto maxSourceMs = std::numeric_limits<std::int64_t>::max() / 1000000;
+    if (!read(clock.substr(0, colon), minutes) || minutes >= maxSourceMs / 60000 ||
+        !read(clock.substr(colon + 1, point - colon - 1), seconds) || seconds >= 60 || !read(fraction, milliseconds))
+        return std::nullopt;
+    for (auto digits = fraction.size(); digits < 3; ++digits)
+        milliseconds *= 10;
+    return minutes * 60000 + seconds * 1000 + milliseconds;
 }
 // The time ruler both editors share: the song's bars along the foot of a dark band, as the
 // arrangement's beat-time ruler draws them. The Note Editor also marks the finer editing grid.
@@ -2520,8 +2561,40 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
         crop();
         return true;
     }
-    if (timeSelection()) {
+    if (const auto span = timeSelection()) {
         const bool both = mods.isCommandDown() && mods.isShiftDown() && !mods.isAltDown();
+        if (both && (code == 'e' || code == 'E')) {
+            const auto window = ClipWindow::of(*clip);
+            const auto from = std::max(span->first, window.pos), to = std::min(span->second, window.end());
+            if (from >= to || (from == window.pos && to == window.end()))
+                return true;
+            const auto snapshot = panel.root.current();
+            if (!snapshot)
+                return true;
+            const auto id = clip->id, track = clip->trackId;
+            const auto next = audio_drop_detail::newClipId(*snapshot);
+            const bool cutStart = from > window.pos, cutEnd = to < window.end();
+            const auto rate = panel.root.editRate();
+            auto &store = panel.root.editStore();
+            const auto first = clip_edit::TimePoint{0, cutStart ? from : to};
+            auto prepared = cutStart && cutEnd
+                ? clip_edit::prepareSplit(store, id, next, next + 1, first, {0, to}, rate)
+                : clip_edit::prepareSplit(store, id, next, first, rate);
+            if (panel.root.commitEdit(std::move(prepared))) {
+                auto &arrangement = panel.root.arrangement;
+                auto &selection = arrangement.geometry.selection;
+                selection.track = track;
+                selection.toTrack = 0;
+                selection.picked.clear();
+                selection.clip = cutStart ? next : id;
+                selection.pickedClips.clear();
+                selection.insert = selection.start = from;
+                selection.end = to;
+                selection.marked = true;
+                arrangement.changed();
+            }
+            return true;
+        }
         if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
             return timeCommand(TimeCommand::Duplicate), true;
         if (both && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey))
@@ -3085,34 +3158,647 @@ void NoteEditor::paint(juce::Graphics &g) {
 // ---------------------------------------------------------------------------------------------
 SampleEditor::SampleEditor(ClipViewPanel &p) : panel(p) {
     setTitle("Sample Editor");
+    setWantsKeyboardFocus(true);
     setOpaque(true);
     addChildComponent(playhead);
 }
+std::int64_t SampleEditor::sourceSecondsToTicks(double seconds) const noexcept {
+    const auto *node = panel.node();
+    const auto *snapshot = panel.root.reader().get();
+    if (node && snapshot && snapshot->tempo) {
+        const auto &tempo = *snapshot->tempo;
+        return tempo.secondsToTicks(tempo.ticksToSeconds(node->posTicks) + seconds) - node->posTicks;
+    }
+    return std::llround(seconds * (2. * textproj::kPPQ));
+}
+double SampleEditor::sourceTicksToSeconds(std::int64_t ticks) const noexcept {
+    const auto *node = panel.node();
+    const auto *snapshot = panel.root.reader().get();
+    if (node && snapshot && snapshot->tempo) {
+        const auto &tempo = *snapshot->tempo;
+        return tempo.ticksToSeconds(node->posTicks + ticks) - tempo.ticksToSeconds(node->posTicks);
+    }
+    return static_cast<double>(ticks) / (2. * textproj::kPPQ);
+}
+std::int64_t SampleEditor::sourceTick(std::int64_t arrangementTick) const noexcept {
+    const auto *clip = panel.details();
+    if (!clip)
+        return 0;
+    auto window = ClipWindow::of(*clip);
+    const auto *node = panel.node();
+    if (node)
+        window.pos = node->posTicks;
+    if (node && node->audio && !node->audio->warpEnabled && node->contentOffsetNs)
+        return sourceSecondsToTicks(static_cast<double>(*node->contentOffsetNs) * 1e-9 +
+                                    sourceTicksToSeconds(arrangementTick - window.pos));
+    return window.toSource(arrangementTick);
+}
+std::pair<std::int64_t, std::int64_t> SampleEditor::sourceRange(std::int64_t from, std::int64_t to) const {
+    auto range = std::pair{sourceTick(from), sourceTick(to)};
+    const auto *node = panel.node();
+    if (node && node->loopEnabled && node->audio && node->audio->mediaInfo) {
+        const auto rate = static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0));
+        const ClipSourceMap source(*node, panel.root.reader().tempo(), rate, std::span<const WarpMarker>(markers_));
+        if (const auto repeated = source.repeatedRangeAcross(from, to)) {
+            const auto rulerTick = [&](const ClipSourceMap::LoopPosition &position) {
+                return position.warpTicks ? std::llround(*position.warpTicks) : sourceSecondsToTicks(position.seconds);
+            };
+            if (repeated->from)
+                range.first = rulerTick(*repeated->from);
+            range.second = rulerTick(repeated->to);
+        }
+    }
+    return range;
+}
+std::int64_t SampleEditor::playheadTick(std::int64_t arrangementTick) const {
+    const auto *node = panel.node();
+    if (node && node->loopEnabled && node->audio && node->audio->mediaInfo) {
+        const auto rate = static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0));
+        const ClipSourceMap source(*node, panel.root.reader().tempo(), rate, std::span<const WarpMarker>(markers_));
+        if (const auto repeated = source.repeatedPositionAt(arrangementTick))
+            return repeated->warpTicks ? std::llround(*repeated->warpTicks) : sourceSecondsToTicks(repeated->seconds);
+    }
+    return sourceTick(arrangementTick);
+}
+bool SampleEditor::playFromInsert() {
+    return insert_ && playFromSource(*insert_);
+}
+bool SampleEditor::playFromSource(std::int64_t tick) {
+    const auto *clip = panel.details();
+    const auto *node = panel.node();
+    const auto refuse = [&] {
+        panel.root.say("Choose a point in this clip's placed playback range.");
+        return false;
+    };
+    if (!clip || !node || !node->audio || node->posTicks < 0 || tick < 0 || tick >= sourceEnd_)
+        return refuse();
+
+    const auto start = startMarker();
+    auto targetSource = tick;
+    if (clip->loopEnabled) {
+        const auto first = clip->loopStartTicks;
+        const auto length = loopLengthOf(*clip);
+        if (first < 0 || length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length || tick >= first + length)
+            return refuse();
+        if (tick < start && tick >= first && node->audio->warpEnabled) {
+            // Find the first arranged occurrence of a point before the Start
+            // marker but inside a repeating warped loop.
+            const auto earlier = start - tick;
+            const auto wraps = earlier / length + (earlier % length != 0 ? 1 : 0);
+            if (wraps > (std::numeric_limits<std::int64_t>::max() - tick) / length)
+                return refuse();
+            targetSource += wraps * length;
+        }
+    } else if (tick >= endMarker()) {
+        return refuse();
+    }
+    if (targetSource < start)
+        return refuse();
+
+    auto target = node->posTicks;
+    const auto *tempo = panel.root.reader().tempo();
+    if (!node->audio->warpEnabled && node->contentOffsetNs && tempo && targetSource != start) {
+        if (targetSource > std::numeric_limits<std::int64_t>::max() - node->posTicks)
+            return refuse();
+        const auto seconds = tempo->ticksToSeconds(node->posTicks + targetSource) -
+                             static_cast<double>(*node->contentOffsetNs) * 1e-9;
+        target = tempo->secondsToTicks(seconds);
+    } else {
+        if (start < 0 && targetSource > std::numeric_limits<std::int64_t>::max() + start)
+            return refuse();
+        const auto elapsed = targetSource - start;
+        if (elapsed > std::numeric_limits<std::int64_t>::max() - target)
+            return refuse();
+        target += elapsed;
+    }
+    if (target < node->posTicks || target - node->posTicks >= node->lengthTicks)
+        return refuse();
+    if (!panel.root.playFrom(target))
+        return false;
+    panel.root.arrangement.followPaused = false;
+    return true;
+}
 void SampleEditor::frame() {
+    if (panel.audio())
+        if (const auto *waveforms = panel.root.arrangement.waveforms)
+            if (const auto delivered = waveforms->delivered(); delivered != waveformsSeen_) {
+                waveformsSeen_ = delivered;
+                repaint();
+            }
     const auto area = waveArea();
-    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
-    playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
+    const auto tick = panel.root.timelineTick();
+    const auto *node = panel.node();
+    const bool inClip = node && tick >= node->posTicks && tick - node->posTicks < node->lengthTicks;
+    const bool playing = panel.audio() && panel.root.playing() && inClip;
+    const auto source = playing ? playheadTick(tick) : sourceTick(tick);
+    auto x = time.x(source);
+    if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused &&
+        source >= 0 && source < sourceEnd_ && area.getWidth() > 0 && (x < 0 || x >= area.getWidth())) {
+        time.left = static_cast<double>(source) / textproj::kPPQ;
+        x = 0.;
+        repaint();
+    }
+    const int pixel = static_cast<int>(std::clamp(x, -1e7, 1e7));
+    playhead.setVisible(playing && x >= 0. && x < area.getWidth());
+    playhead.setBounds(area.getX() + pixel, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
-    return {0, kRulerHeight, getWidth(), std::max(0, getHeight() - kRulerHeight)};
+    const auto top = kRulerHeight + kScrubHeight + (markers_.empty() ? 2 : 3) * kMarkerHeight;
+    return {0, top, getWidth(), std::max(0, getHeight() - top)};
+}
+juce::Rectangle<int> SampleEditor::scrubArea() const noexcept {
+    return {0, kRulerHeight, getWidth(), kScrubHeight};
+}
+juce::Rectangle<int> SampleEditor::warpMarkerArea() const noexcept {
+    return markers_.empty() ? juce::Rectangle<int>{} : juce::Rectangle<int>{0, waveArea().getY() - kMarkerHeight, getWidth(), kMarkerHeight};
+}
+const WarpMarker *SampleEditor::warpMarkerAt(int x) const noexcept {
+    if (markers_.size() < 3)
+        return nullptr;
+    const WarpMarker *nearest = nullptr;
+    double distance = 5.;
+    for (auto marker = markers_.begin() + 1; marker != markers_.end() - 1; ++marker) {
+        const auto at = std::abs(time.x(marker->tick) - x);
+        if (at <= distance) {
+            distance = at;
+            nearest = &*marker;
+        }
+    }
+    return nearest;
+}
+bool SampleEditor::deleteWarpMarker() {
+    if (!selectedWarpFrame_ || markers_.empty() || !panel.node())
+        return false;
+    const auto frame = *selectedWarpFrame_;
+    selectedWarpFrame_.reset();
+    panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), panel.node()->id,
+        clip_edit::WarpMarkerChange::Remove, {frame, 0}, panel.root.editRate()));
+    repaint();
+    return true;
+}
+void SampleEditor::mouseDoubleClick(const juce::MouseEvent &e) {
+    const auto *node = panel.node();
+    const auto at = e.getPosition();
+    const auto upperWave = waveArea().withHeight(waveArea().getHeight() / 2);
+    if (!node || markers_.empty() || e.mods.isPopupMenu() ||
+        (!warpMarkerArea().contains(at) && !upperWave.contains(at)))
+        return;
+    if (warpMarkerArea().contains(at)) {
+        if (const auto *marker = warpMarkerAt(at.x)) {
+            selectedWarpFrame_ = marker->sourceFrame;
+            deleteWarpMarker();
+            return;
+        }
+    }
+    const auto tick = std::clamp(time.tick(at.x), std::int64_t{0}, sourceEnd_);
+    const auto frame = std::llround(warpedWaveformFrame(markers_, static_cast<double>(tick), false));
+    if (frame <= 0 || frame >= markers_.back().sourceFrame)
+        return;
+    if (panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), node->id,
+            clip_edit::WarpMarkerChange::Add, {frame, tick}, panel.root.editRate())))
+        selectedWarpFrame_ = frame;
+    repaint();
 }
 void SampleEditor::showClip() {
     fitPending_ = true;
+    insert_.reset();
+    sourceRange_.reset();
+    selectedWarpFrame_.reset();
+    markerRegionSelected_ = false;
+    warpContextTick_.reset();
+    drag_ = Drag::None;
+}
+void SampleEditor::updateSource() {
+    markers_.clear();
+    const auto *clip = panel.details();
+    const auto *node = panel.node();
+    sourceEnd_ = clip ? std::max<std::int64_t>(1, endMarkerOf(*clip)) : 0;
+    if (node && node->audio) {
+        const auto &audio = *node->audio;
+        if (audio.warpEnabled && audio.warpMarkers && audio.sourceLengthFrames > 0)
+            if (auto map = adi::audio::readWarpMap(*audio.warpMarkers, static_cast<std::uint64_t>(audio.sourceLengthFrames)))
+                markers_ = std::move(map.markers);
+        if (!markers_.empty()) {
+            sourceEnd_ = markers_.back().tick;
+        } else if (audio.mediaInfo && audio.mediaInfo->sampleRate.value_or(0) > 0) {
+            const auto nativeRate = static_cast<double>(*audio.mediaInfo->sampleRate);
+            const auto rate = audio.warpEnabled ? nativeRate : adi::audio::pitchedSampleRate(nativeRate, audio.transposeSemis);
+            if (rate > 0.)
+                sourceEnd_ = std::max<std::int64_t>(1, sourceSecondsToTicks(static_cast<double>(audio.sourceLengthFrames) / rate));
+        }
+    }
+    if (selectedWarpFrame_ && std::ranges::find(markers_, *selectedWarpFrame_, &WarpMarker::sourceFrame) == markers_.end())
+        selectedWarpFrame_.reset();
+    if (sourceRange_ && sourceRange_->second > sourceEnd_)
+        sourceRange_.reset();
     resized();
+    repaint();
+}
+double SampleEditor::sourceBpm() const noexcept {
+    const auto *node = panel.node();
+    if (!node || !node->audio || !node->audio->mediaInfo)
+        return 0;
+    return audio::sourceTempoBpm(markers_, static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0)));
 }
 void SampleEditor::resized() {
-    if (!fitPending_ || getWidth() <= 0)
-        return;
-    if (const auto *clip = panel.details()) {
+    if (fitPending_ && getWidth() > 0 && sourceEnd_ > 0) {
         fitPending_ = false;
-        const auto window = ClipWindow::of(*clip);
-        const auto length = std::max<std::int64_t>(textproj::kPPQ, window.length);
-        time.fit(window.pos, window.pos + length + length / 24, getWidth(), false);
+        const auto margin = std::max<std::int64_t>(textproj::kPPQ / 24, sourceEnd_ / 24);
+        time.fit(0, sourceEnd_ + margin, getWidth(), false);
     }
+}
+std::int64_t SampleEditor::startMarker() const noexcept {
+    if (const auto *node = panel.node())
+        return sourceTick(node->posTicks);
+    const auto *clip = panel.details();
+    return clip ? clip->startMarkerTicks : 0;
+}
+std::int64_t SampleEditor::endMarker() const noexcept {
+    const auto *node = panel.node();
+    const auto *clip = panel.details();
+    if (node && node->audio && !node->audio->warpEnabled && node->sourceEndNs && clip && clip->endMarkerTicks)
+        return sourceSecondsToTicks(static_cast<double>(*node->sourceEndNs) * 1e-9);
+    return clip ? endMarkerOf(*clip) : 0;
+}
+double SampleEditor::frameAt(std::int64_t tick, double rate, const engine::AudioClipSource &audio) const noexcept {
+    if (!markers_.empty())
+        return warpedWaveformFrame(markers_, static_cast<double>(tick), audio.reverse);
+    const auto length = static_cast<double>(audio.sourceLengthFrames);
+    const auto frame = std::clamp(sourceTicksToSeconds(tick) * rate, 0., length);
+    return audio.reverse ? length - frame : frame;
+}
+std::int64_t SampleEditor::tickAt(int x, const juce::ModifierKeys &mods) const noexcept {
+    const auto raw = time.tick(x);
+#if JUCE_MAC
+    const bool bypass = mods.isCommandDown();
+#else
+    const bool bypass = mods.isAltDown();
+#endif
+    if (time.grid.snap == bypass)
+        return std::clamp(raw, std::int64_t{0}, sourceEnd_);
+    const auto lo = time.snap(raw, false), hi = time.snap(raw, true);
+    return std::clamp(raw - lo <= hi - raw ? lo : hi, std::int64_t{0}, sourceEnd_);
+}
+void SampleEditor::mouseDown(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (!clip)
+        return;
+    if (e.mods.isPopupMenu()) {
+        const auto at = e.getPosition();
+        if (!warpMarkerArea().contains(at) && !waveArea().contains(at))
+            return;
+        const auto *marker = warpMarkerArea().contains(at) ? warpMarkerAt(at.x) : nullptr;
+        warpContextTick_ = marker ? marker->tick : tickAt(at.x, e.mods);
+        focusIfShowing(*this);
+        if (onWarpContextMenu) {
+            onWarpContextMenu(at);
+        } else {
+            juce::Component::SafePointer<SampleEditor> safe(this);
+            warpContextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                [safe, clipId = clip->id, anchor = warpContextTick_, range = sourceRange_](int item) {
+                    if (safe && safe->panel.clip() == clipId && safe->warpContextTick_ == anchor && safe->sourceRange_ == range)
+                        safe->chooseWarpContextItem(item);
+                });
+        }
+        return;
+    }
+    if (!e.mods.isLeftButtonDown())
+        return;
+    focusIfShowing(*this);
+    gestureClip_ = clip->id;
+    drag_ = Drag::None;
+    last_ = e.getPosition();
+    if (scrubArea().contains(last_) || (last_.y < kRulerHeight && e.mods.isShiftDown())) {
+        // Match the Arrangement scrub strip's unquantized transport position.
+        const auto point = time.tick(last_.x);
+        if (playFromSource(point)) {
+            insert_ = point;
+            repaint();
+        }
+        return;
+    }
+    downTick_ = tickAt(last_.x, e.mods);
+    if (markerRegionSelected_ && waveArea().contains(last_) && e.mods.isCommandDown() && !e.mods.isAltDown()) {
+        using Field = ClipViewPanel::Field;
+        panel.setField(e.mods.isShiftDown() ? Field::End : Field::Start, downTick_);
+        return;
+    }
+    markerRegionSelected_ = false;
+    if (warpMarkerArea().contains(last_)) {
+        if (const auto *marker = warpMarkerAt(last_.x)) {
+            selectedWarpFrame_ = marker->sourceFrame;
+            drag_ = Drag::WarpMarker;
+            original_ = preview_ = marker->tick;
+        } else {
+            selectedWarpFrame_.reset();
+        }
+        repaint();
+        return;
+    }
+    selectedWarpFrame_.reset();
+    const auto near = [&](std::int64_t tick) { return std::abs(time.x(tick) - last_.x) <= 5.; };
+    if (last_.y < kRulerHeight) {
+        drag_ = Drag::Ruler;
+    } else if (last_.y < scrubArea().getBottom() + kMarkerHeight && clip->loopEnabled && panel.loopAvailable()) {
+        const auto first = clip->loopStartTicks, end = first + loopLengthOf(*clip);
+        if (near(first)) {
+            drag_ = Drag::LoopStart;
+            original_ = first;
+        } else if (near(end)) {
+            drag_ = Drag::LoopEnd;
+            original_ = end;
+        } else if (last_.x > time.x(first) && last_.x < time.x(end)) {
+            drag_ = Drag::Loop;
+            original_ = first;
+        }
+    } else if (last_.y < waveArea().getY()) {
+        const auto start = startMarker(), end = endMarker();
+        if (near(start) || near(end)) {
+            const bool left = std::abs(time.x(start) - last_.x) <= std::abs(time.x(end) - last_.x);
+            drag_ = left ? Drag::Start : Drag::End;
+            original_ = left ? start : end;
+        }
+    } else {
+        insert_ = downTick_;
+        sourceRange_.reset();
+        drag_ = Drag::SourceRange;
+        repaint();
+    }
+    markerRegionSelected_ = drag_ == Drag::Start || drag_ == Drag::End || drag_ == Drag::Loop ||
+                            drag_ == Drag::LoopStart || drag_ == Drag::LoopEnd;
+    preview_ = original_;
+}
+void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (drag_ == Drag::None || !clip || clip->id != gestureClip_)
+        return;
+    panel.root.arrangement.followPaused = true;
+    if (drag_ == Drag::SourceRange) {
+        const auto end = tickAt(e.x, e.mods);
+        if (std::abs(e.x - last_.x) >= 3 && end != downTick_)
+            sourceRange_ = std::pair{std::min(downTick_, end), std::max(downTick_, end)};
+        else
+            sourceRange_.reset();
+        repaint();
+        return;
+    }
+    if (drag_ == Drag::Ruler) {
+        time.pan(static_cast<double>(last_.x - e.x));
+        time.zoom(std::pow(1.012, static_cast<double>(e.y - last_.y)), static_cast<double>(e.x));
+        last_ = e.getPosition();
+    } else {
+        auto low = std::int64_t{0}, high = sourceEnd_;
+        const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
+        switch (drag_) {
+        case Drag::Start: high = std::min(high, endMarker() - 1); break;
+        case Drag::End: low = startMarker() + 1; break;
+        case Drag::LoopStart: high = std::min(high, first + length - 1); break;
+        case Drag::LoopEnd: low = first + 1; break;
+        case Drag::Loop: high = std::max<std::int64_t>(0, high - length); break;
+        case Drag::WarpMarker: {
+            if (!selectedWarpFrame_ || markers_.size() < 3)
+                return;
+            const auto marker = std::ranges::find(markers_, *selectedWarpFrame_, &WarpMarker::sourceFrame);
+            if (marker == markers_.begin() || marker >= markers_.end() - 1)
+                return;
+            low = (marker - 1)->tick + 1;
+            high = (marker + 1)->tick - 1;
+            break;
+        }
+        default: break;
+        }
+        preview_ = std::clamp(original_ + tickAt(e.x, e.mods) - downTick_, low, std::max(low, high));
+    }
+    repaint();
+}
+void SampleEditor::mouseUp(const juce::MouseEvent &) {
+    const auto drag = std::exchange(drag_, Drag::None);
+    const auto *clip = panel.details();
+    if (!clip || clip->id != gestureClip_ || drag == Drag::SourceRange || preview_ == original_)
+        return;
+    const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
+    using Field = ClipViewPanel::Field;
+    switch (drag) {
+    case Drag::Start: panel.setField(Field::Start, preview_); break;
+    case Drag::End: panel.setField(Field::End, preview_); break;
+    case Drag::LoopStart:
+        if (panel.loopAvailable())
+            panel.commit(setClipLoop(*clip, preview_, first + length - preview_));
+        break;
+    case Drag::LoopEnd: panel.setField(Field::Length, preview_ - first); break;
+    case Drag::Loop: panel.setField(Field::Position, preview_); break;
+    case Drag::WarpMarker:
+        if (selectedWarpFrame_)
+            panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), clip->id,
+                clip_edit::WarpMarkerChange::Move, {*selectedWarpFrame_, preview_}, panel.root.editRate()));
+        break;
+    default: break;
+    }
+    repaint();
+}
+bool SampleEditor::command(int id) {
+    const auto *clip = panel.details();
+    if (!clip)
+        return false;
+    switch (id) {
+    case AppCommands::TimeZoomIn:
+    case AppCommands::TimeZoomOut: {
+        const auto anchor = insert_.value_or(panel.root.playing() ? playheadTick(panel.root.timelineTick())
+                                                                  : time.tick(getWidth() / 2.));
+        time.zoomAround(id == AppCommands::TimeZoomIn ? 1.25 : .8, anchor);
+        break;
+    }
+    case AppCommands::ZoomToSelection: {
+        const auto start = std::max<std::int64_t>(0, startMarker());
+        const auto end = std::max(start + 1, endMarker());
+        time.fit(start, end + std::max<std::int64_t>(1, (end - start) / 24), getWidth());
+        break;
+    }
+    case AppCommands::ZoomBack:
+        time.back();
+        break;
+    case AppCommands::Quantize: {
+        if (!canQuantize())
+            return false;
+        const auto onsets = transients();
+        if (markers_.size() == 2 && (!onsets || onsets->empty())) {
+            panel.root.say("Quantize Audio needs detected transients.");
+            return true;
+        }
+        const auto frames = onsets ? std::span<const std::uint64_t>(*onsets) : std::span<const std::uint64_t>{};
+        return panel.root.commitEdit(clip_edit::prepareQuantizeWarpMarkers(panel.root.editStore(), clip->id,
+            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate(), frames));
+    }
+    case AppCommands::InsertSilence:
+        return true;
+    default:
+        return false;
+    }
+    panel.root.arrangement.followPaused = true;
+    repaint();
+    return true;
+}
+bool SampleEditor::canQuantize() const noexcept { return markers_.size() >= 2; }
+std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
+    const auto *node = panel.node();
+    auto *waveforms = panel.root.arrangement.waveforms;
+    return waveforms && node && node->audio && node->audio->warpEnabled ? waveforms->transients(*node->audio) : nullptr;
+}
+namespace {
+enum WarpContextItem {
+    QuantizeSource = 1, PromoteSourceTransients, WarpSourceFromHere, WarpSourceStartAtTempo, WarpSourceStraight,
+    WarpSourceSetTempo, WarpWholeSampleLoop, WarpSelectionLoop, ChooseWarpLoopLength
+};
+}
+double SampleEditor::setTempo() const noexcept {
+    const auto *tempo = panel.root.reader().tempo();
+    return tempo ? tempo->bpmAt(panel.root.timelineTick()) : 120.;
+}
+std::int64_t SampleEditor::suggestedLoopBars(bool selection) const noexcept {
+    const auto bar = panel.meter().barTicks();
+    if (markers_.empty() || bar <= 0 || (selection && !sourceRange_))
+        return 0;
+    const auto from = selection ? sourceRange_->first : 0;
+    const auto to = selection ? sourceRange_->second : markers_.back().tick;
+    if (const auto *node = panel.node(); node && node->audio && node->audio->mediaInfo) {
+        const auto rate = node->audio->mediaInfo->sampleRate.value_or(0);
+        if (rate > 0) {
+            const auto first = warpedWaveformFrame(markers_, static_cast<double>(from), false);
+            const auto last = warpedWaveformFrame(markers_, static_cast<double>(to), false);
+            const auto seconds = (last - first) / static_cast<double>(rate);
+            const auto bars = seconds * setTempo() / 60. * static_cast<double>(textproj::kPPQ) / static_cast<double>(bar);
+            if (std::isfinite(bars) && bars < static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                return std::max<std::int64_t>(1, std::llround(bars));
+        }
+    }
+    const auto span = to - from;
+    return std::max<std::int64_t>(1, span / bar + (span % bar >= (bar + 1) / 2 ? 1 : 0));
+}
+bool SampleEditor::warpAsLoop(bool selection, std::int64_t bars) {
+    const auto bar = panel.meter().barTicks();
+    if (bar <= 0 || bars <= 0 || bars > std::numeric_limits<std::int64_t>::max() / bar) {
+        panel.root.say("Enter a supported positive whole number of bars.");
+        return false;
+    }
+    std::optional<clip_edit::WarpLoopSelection> range;
+    if (selection) {
+        if (!sourceRange_)
+            return false;
+        range = clip_edit::WarpLoopSelection{sourceRange_->first, sourceRange_->second};
+    }
+    if (!panel.root.commitEdit(clip_edit::prepareWarpAsLoop(panel.root.editStore(), panel.clip(), range,
+                                                           bars * bar, panel.root.editRate())))
+        return false;
+    sourceRange_.reset();
+    repaint();
+    return true;
+}
+void SampleEditor::chooseLoopLength(bool selection) {
+    auto *prompt = new juce::AlertWindow(selection ? "Warp Selection as Loop" : "Warp Sample as Loop",
+                                         "Enter the loop length in bars.", juce::MessageBoxIconType::NoIcon, this);
+    prompt->addTextEditor("bars", juce::String(static_cast<juce::int64>(suggestedLoopBars(selection))), "Bars");
+    prompt->addButton("Warp", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<SampleEditor> safe(this);
+    prompt->enterModalState(true, juce::ModalCallbackFunction::create(
+        [safe, prompt, selection, clip = panel.clip(), generation = panel.root.generation(), range = sourceRange_](int choice) {
+            if (choice != 1 || !safe || safe->panel.clip() != clip || safe->panel.root.generation() != generation ||
+                safe->sourceRange_ != range)
+                return;
+            const auto text = prompt->getTextEditorContents("bars").trim().toStdString();
+            std::int64_t bars = 0;
+            const auto *end = text.data() + text.size();
+            const auto parsed = std::from_chars(text.data(), end, bars);
+            if (parsed.ec != std::errc{} || parsed.ptr != end || bars <= 0) {
+                safe->panel.root.say("Enter the loop length as a positive whole number of bars.");
+                return;
+            }
+            safe->warpAsLoop(selection, bars);
+        }), true);
+}
+juce::PopupMenu SampleEditor::warpContextMenu() {
+    juce::PopupMenu menu;
+    menu.addItem(QuantizeSource, "Quantize Audio", canQuantize());
+    const auto onsets = transients();
+    const bool hasTransients = onsets && !onsets->empty();
+    menu.addItem(PromoteSourceTransients, "Add Warp Markers at Transients", hasTransients);
+    const bool canWarp = !markers_.empty() && warpContextTick_ && *warpContextTick_ < sourceEnd_;
+    const bool canInfer = canWarp && onsets && onsets->size() >= 3;
+    const auto tempo = juce::String(setTempo(), 2);
+    menu.addSeparator();
+    menu.addItem(WarpSourceFromHere, "Warp From Here", canInfer);
+    menu.addItem(WarpSourceStartAtTempo, "Warp From Here (Start At " + tempo + " BPM)", canInfer);
+    menu.addItem(WarpSourceStraight, "Warp From Here (Straight)", canInfer);
+    menu.addItem(WarpSourceSetTempo, "Warp " + tempo + " BPM From Here", canWarp);
+    const auto loopLabel = [](const char *subject, std::int64_t bars) {
+        return juce::String("Warp ") + subject + " as " + juce::String(static_cast<juce::int64>(bars)) +
+               (bars == 1 ? " Bar Loop" : " Bars Loop");
+    };
+    if (const auto bars = suggestedLoopBars(false); bars > 0) {
+        menu.addSeparator();
+        menu.addItem(WarpWholeSampleLoop, loopLabel("Sample", bars));
+        if (const auto selectedBars = suggestedLoopBars(true); selectedBars > 0)
+            menu.addItem(WarpSelectionLoop, loopLabel("Selection", selectedBars));
+        menu.addItem(ChooseWarpLoopLength, juce::String::fromUTF8(sourceRange_ ? "Warp Selection as a Different Loop Length…"
+                                                                            : "Warp Sample as a Different Loop Length…"));
+    }
+    return menu;
+}
+bool SampleEditor::chooseWarpContextItem(int item) {
+    if (item == QuantizeSource)
+        return command(AppCommands::Quantize);
+    if (item == PromoteSourceTransients) {
+        const auto onsets = transients();
+        return onsets && !onsets->empty() &&
+               panel.root.commitEdit(clip_edit::prepareWarpMarkersAtTransients(panel.root.editStore(), panel.clip(),
+                   *onsets, panel.root.editRate()));
+    }
+    if (item == WarpWholeSampleLoop || item == WarpSelectionLoop) {
+        const bool selection = item == WarpSelectionLoop;
+        const auto bars = suggestedLoopBars(selection);
+        return bars > 0 && warpAsLoop(selection, bars);
+    }
+    if (item == ChooseWarpLoopLength && suggestedLoopBars(sourceRange_.has_value()) > 0) {
+        chooseLoopLength(sourceRange_.has_value());
+        return true;
+    }
+    if (item < WarpSourceFromHere || item > WarpSourceSetTempo || !warpContextTick_ || markers_.empty())
+        return false;
+    audio::AutoWarpOptions options;
+    options.detectTempoChanges = item == WarpSourceFromHere || item == WarpSourceStartAtTempo;
+    options.numerator = panel.meter().numerator;
+    options.denominator = panel.meter().denominator;
+    if (item == WarpSourceStartAtTempo)
+        options.tempoHint = setTempo();
+    if (item == WarpSourceSetTempo)
+        options.sourceBpm = setTempo();
+    const auto onsets = item == WarpSourceSetTempo ? nullptr : transients();
+    if (item != WarpSourceSetTempo && !onsets)
+        return false;
+    const auto frames = onsets ? std::span<const std::uint64_t>(*onsets) : std::span<const std::uint64_t>{};
+    return panel.root.commitEdit(clip_edit::prepareWarpFromHere(panel.root.editStore(), panel.clip(), *warpContextTick_,
+        frames, options, panel.root.editRate()));
+}
+bool SampleEditor::keyPressed(const juce::KeyPress &key) {
+    const auto code = key.getKeyCode();
+    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && deleteWarpMarker())
+        return true;
+    const auto mods = key.getModifiers();
+    if (!mods.isCommandDown() && !mods.isAltDown() && (code == '+' || code == '=' || code == '-'))
+        return command(code == '-' ? AppCommands::TimeZoomOut : AppCommands::TimeZoomIn);
+    if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z'))
+        return command(AppCommands::ZoomToSelection);
+    if (!mods.isAnyModifierKeyDown() && (code == 'x' || code == 'X'))
+        return command(AppCommands::ZoomBack);
+    if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0))
+        return command(AppCommands::InsertSilence);
+    if (key == juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0))
+        return command(AppCommands::Quantize);
+    return false;
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (timeWheel(time, e, w, 0)) {
+        panel.root.arrangement.followPaused = true;
         panel.repaint(panel.headerArea());
         repaint();
     }
@@ -3128,36 +3814,100 @@ void SampleEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
+    g.setColour(look::field);
+    g.fillRect(scrubArea());
     const auto area = waveArea();
-    juce::Graphics::ScopedSaveState state(g);
-    g.reduceClipRegion(area);
     paintGrid(g, area, time, meters);
-    const auto window = ClipWindow::of(*clip);
-    shadeOutside(g, area, time, window);
-    // The clip's audio inside its source window, a band for each channel, as the arrangement
-    // draws it (N40): the peaks land from their worker and the next frame draws them.
+    if (sourceRange_) {
+        const auto left = std::clamp(time.x(sourceRange_->first), 0., static_cast<double>(area.getWidth()));
+        const auto right = std::clamp(time.x(sourceRange_->second), 0., static_cast<double>(area.getWidth()));
+        g.setColour(look::selection.withAlpha(.65f));
+        g.fillRect(static_cast<float>(left), static_cast<float>(area.getY()), static_cast<float>(right - left),
+                   static_cast<float>(area.getHeight()));
+    }
+    const auto start = drag_ == Drag::Start ? preview_ : startMarker();
+    const auto end = drag_ == Drag::End ? preview_ : endMarker();
+    shadeOutside(g, area, time, {start, std::max<std::int64_t>(1, end - start), 0});
+    if (clip->loopEnabled && panel.loopAvailable()) {
+        const auto first = drag_ == Drag::Loop || drag_ == Drag::LoopStart ? preview_ : clip->loopStartTicks;
+        const auto base = drag_ == Drag::Loop ? preview_ : clip->loopStartTicks;
+        const auto last = drag_ == Drag::LoopEnd ? preview_ : base + loopLengthOf(*clip);
+        const auto x = static_cast<float>(time.x(first)), right = static_cast<float>(time.x(last));
+        g.setColour(look::accent.withAlpha(.55f));
+        g.fillRect(x, static_cast<float>(scrubArea().getBottom() + 2), right - x, static_cast<float>(kMarkerHeight - 3));
+    }
+    for (const auto tick : {start, end}) {
+        const auto x = static_cast<float>(time.x(tick));
+        g.setColour(look::textBright.withAlpha(.55f));
+        g.fillRect(x - 3.f, static_cast<float>(scrubArea().getBottom() + kMarkerHeight + 1), 7.f, static_cast<float>(kMarkerHeight - 2));
+        g.fillRect(x, static_cast<float>(area.getY()), 1.f, static_cast<float>(area.getHeight()));
+    }
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
-    if (node == nullptr || !node->audio || waveforms == nullptr)
+    if (node && node->audio && node->audio->sourceStartFrames >= 0 && node->audio->sourceLengthFrames > 0 && !markers_.empty()) {
+        const auto band = warpMarkerArea();
+        g.setColour(look::band);
+        g.fillRect(band);
+        if (waveforms) {
+            const auto &audio = *node->audio;
+            if (const auto onsets = waveforms->transients(audio)) {
+                juce::Graphics::ScopedSaveState marks(g);
+                g.reduceClipRegion(band);
+                g.setColour(look::text.withAlpha(.55f));
+                const auto first = static_cast<std::uint64_t>(audio.sourceStartFrames);
+                const auto frames = static_cast<std::uint64_t>(audio.sourceLengthFrames);
+                for (auto onset = std::ranges::lower_bound(*onsets, first); onset != onsets->end() && *onset - first < frames; ++onset) {
+                    const auto local = *onset - first;
+                    const auto frame = static_cast<std::int64_t>(audio.reverse ? frames - 1 - local : local);
+                    const auto right = std::ranges::upper_bound(markers_, frame, {}, &WarpMarker::sourceFrame);
+                    if (right == markers_.begin() || right == markers_.end())
+                        continue;
+                    const auto &left = *(right - 1);
+                    const auto fraction = static_cast<double>(frame - left.sourceFrame) / static_cast<double>(right->sourceFrame - left.sourceFrame);
+                    const auto tick = static_cast<double>(left.tick) + fraction * static_cast<double>(right->tick - left.tick);
+                    const auto x = static_cast<float>(time.x(std::llround(tick)));
+                    g.fillRect(x, static_cast<float>(band.getY() + 3), 2.f, 4.f);
+                }
+            }
+        }
+        for (const auto &marker : markers_) {
+            const bool selected = selectedWarpFrame_ == marker.sourceFrame;
+            const auto at = drag_ == Drag::WarpMarker && selected ? preview_ : marker.tick;
+            const auto x = static_cast<float>(time.x(at));
+            if (x < -4.f || x > static_cast<float>(getWidth()) + 4.f)
+                continue;
+            g.setColour(selected ? look::textBright : look::accent);
+            g.fillRect(x - 2.f, static_cast<float>(band.getY() + 1), 5.f, static_cast<float>(band.getHeight() - 2));
+        }
+    }
+    if (node == nullptr || !node->audio || node->audio->sourceLengthFrames <= 0 || waveforms == nullptr)
         return;
     const auto peaks = waveforms->peaks(*node->audio);
-    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+    if (!peaks)
         return;
-    const auto *snapshot = panel.root.reader().get();
-    const ClipSourceMap source(*node, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(peaks->sampleRate));
+    const auto &finest = peaks->finest();
+    if (finest.channels == 0 || finest.sampleRate == 0)
+        return;
+    juce::Graphics::ScopedSaveState state(g);
+    g.reduceClipRegion(area);
     const float top = static_cast<float>(area.getY()) + 4.f, bottom = static_cast<float>(area.getBottom()) - 4.f;
-    const float band = (bottom - top) / static_cast<float>(peaks->channels);
-    const int from = std::max(0, static_cast<int>(std::floor(time.x(window.pos)))),
-              to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(window.end()))));
+    const float band = (bottom - top) / static_cast<float>(finest.channels);
+    const int from = std::max(0, static_cast<int>(std::floor(time.x(0)))),
+              to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(sourceEnd_))));
+    const auto &audio = *node->audio;
+    const auto origin = static_cast<double>(audio.sourceStartFrames);
+    const auto endFrame = origin + static_cast<double>(audio.sourceLengthFrames);
+    const auto rate = audio.warpEnabled ? static_cast<double>(finest.sampleRate)
+                                        : adi::audio::pitchedSampleRate(finest.sampleRate, audio.transposeSemis);
+    if (rate <= 0.)
+        return;
     g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
     for (int x = from; x < to; ++x) {
-        const auto f0 = source.frameAt(time.tick(x)), f1 = source.frameAt(time.tick(x + 1));
-        if (!f0)
-            continue;
-        const double end = f1 ? *f1 : *f0 + 1.;
-        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
-            const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
+        const auto f0 = origin + frameAt(time.tick(x), rate, audio), f1 = origin + frameAt(time.tick(x + 1), rate, audio);
+        const auto low = std::min(f0, f1);
+        const auto high = std::min(endFrame, std::max({low + 1., f0, f1}));
+        for (std::uint32_t ch = 0; ch < finest.channels; ++ch) {
+            const auto span = peakSpan(*peaks, low, high, ch);
             if (!span)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
@@ -3165,6 +3915,11 @@ void SampleEditor::paint(juce::Graphics &g) {
                         y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
             g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
         }
+    }
+    if (insert_) {
+        g.setColour(look::accent);
+        g.fillRect(static_cast<float>(time.x(*insert_)), static_cast<float>(area.getY()), 1.f,
+                   static_cast<float>(area.getHeight()));
     }
 }
 
@@ -3215,7 +3970,10 @@ juce::Rectangle<int> ClipViewPanel::panelsEdge() const noexcept {
     return !details_ || !midi() || panelsFolded_ ? juce::Rectangle<int>() : juce::Rectangle<int>(panelWidth() - 3, 0, 5, getHeight());
 }
 void ClipViewPanel::mouseMove(const juce::MouseEvent &e) {
-    setMouseCursor(panelsEdge().contains(e.getPosition()) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+    const auto at = e.getPosition();
+    setMouseCursor(panelsEdge().contains(at) ? juce::MouseCursor::LeftRightResizeCursor
+                   : others_.empty() && sampleNameBox().contains(at) ? juce::MouseCursor::PointingHandCursor
+                                                  : juce::MouseCursor::NormalCursor);
 }
 void ClipViewPanel::foldPanels(bool fold) {
     if (fold == panelsFolded_)
@@ -3635,17 +4393,30 @@ void ClipViewPanel::read(const SnapshotReader &reader) {
         meter_.denominator = song.denominator;
     }
     clipMeters_.assign(1, meter_);
-    // The other selected MIDI clips (manual 10.8): up to eight clips in all; only beside a MIDI clip.
-    if (midi())
-        for (const auto id : shown_) {
-            if (id == clip_ || others_.size() + 1 >= kMaxClips)
-                continue;
-            auto other = engine::readClipDetails(root.editStore(), id);
-            if (other.clip && other.clip->kind == "midi" && other.clip->notesProblem.empty())
-                others_.push_back(ClipLayer{std::move(*other.clip), look::trackColour(0)});
-        }
+    // Audio clips share the common controls. The Note Editor layers up to eight MIDI clips.
+    for (const auto id : shown_) {
+        if (midi() && others_.size() + 1 >= kMaxClips)
+            break;
+        if (id == clip_)
+            continue;
+        auto other = engine::readClipDetails(root.editStore(), id, midi());
+        if (!other.clip || other.clip->kind != details_->kind || !other.clip->notesProblem.empty())
+            continue;
+        ClipLayer layer{std::move(*other.clip), look::trackColour(0)};
+        if (audio())
+            if (const auto *track = reader.findTrack(layer.details.trackId))
+                for (const auto &clip : track->clips)
+                    if (clip->id == id && clip->audio) {
+                        layer.warped = clip->audio->warpEnabled;
+                        layer.media = clip->audio->mediaInfo;
+                        break;
+                    }
+        others_.push_back(std::move(layer));
+    }
 }
 bool ClipViewPanel::activate(std::int64_t clip) {
+    if (!midi())
+        return false;
     const bool shown = std::any_of(others_.begin(), others_.end(), [clip](const ClipLayer &l) { return l.details.id == clip; });
     if (!shown)
         return false;
@@ -3672,13 +4443,15 @@ juce::Rectangle<int> ClipViewPanel::highlightBox() const noexcept {
     return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4).withWidth(54);
 }
 juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
-    if (!midi() || panelsFolded_)
-        return {};
     const auto box = fieldBox(Field::Scale);
+    if (box.isEmpty())
+        return {};
+    if (audio())
+        return box.withX(box.getX() - kAudioScaleModeWidth - kAudioControlGap).withWidth(kAudioScaleModeWidth);
     return {box.getRight() - 24, box.getY() - 15 + 2, 24, 11};
 }
 bool ClipViewPanel::toggleScaleMode() {
-    if (!details_ || !midi())
+    if (!midi() && !audio())
         return false;
     // On, every shown clip takes the edited clip's scale as its own; off, each holds none.
     const bool on = !details_->scale.local;
@@ -3693,7 +4466,8 @@ bool ClipViewPanel::toggleScaleMode() {
             o.label = "Activate Scale";
         return taken;
     });
-    notes.prune();
+    if (midi())
+        notes.prune();
     return done;
 }
 juce::Rectangle<int> ClipViewPanel::focusBox() const noexcept {
@@ -3704,6 +4478,34 @@ void ClipViewPanel::reread() {
     read(root.reader());
     notes.prune();
     repaint();
+}
+bool ClipViewPanel::isInterestedInFileDrag(const juce::StringArray &files) {
+    return audio() && details_->aliasOf == std::nullopt && files.size() == 1 &&
+           isAudioFile(media::pathFromUtf8(files[0].toStdString()));
+}
+void ClipViewPanel::filesDropped(const juce::StringArray &files, int, int) {
+    if (!isInterestedInFileDrag(files))
+        return;
+    if (!root.importAudio) {
+        root.say("Replacing a clip's sample needs an open project.");
+        return;
+    }
+    const auto clip = details_->id;
+    AudioImport source;
+    std::string error;
+    if (!root.importAudio(files[0].toStdString(), source, error)) {
+        root.say(error.empty() ? "The replacement sample could not be read." : std::move(error));
+        return;
+    }
+    if (root.commitEdit(clip_edit::prepareSetSource(root.editStore(), clip, source.mediaId, source.frames,
+                                                    source.sampleRate, std::move(source.media))))
+        reread();
+}
+bool ClipViewPanel::isInterestedInDragSource(const SourceDetails &details) {
+    return isInterestedInFileDrag(BrowserPanel::droppedFiles(details.description));
+}
+void ClipViewPanel::itemDropped(const SourceDetails &details) {
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
 }
 void ClipViewPanel::frame(const SnapshotReader &reader) {
     // The selected clips; with none selected, what is already shown stays, as Live's does. The clip
@@ -3732,7 +4534,8 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     // Asked once for each clip and each generation: a selected clip that is gone is not read again
     // until the project moves (an Undo may bring it back).
     const bool other = wanted != wanted_ || !read_ || (!none && !sameAsShown());
-    if (other || generation != generation_) {
+    const bool refresh = other || generation != generation_;
+    if (refresh) {
         wanted_ = wanted;
         clip_ = wanted;
         if (!none) {
@@ -3752,18 +4555,19 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         resized();
         if (other) {
             closeEditor();
-            if (pressed_ == Field::Gain) {
+            if (pressed_ == Field::Gain || pressed_ == Field::Pitch || pressed_ == Field::Detune) {
                 pressed_ = Field::None;
                 dragged_ = false;
             }
             notes.select({});
-            notes.showClip();
+            if (midi())
+                notes.showClip();
             sample.showClip();
         }
         repaint();
     }
-    notes.frame();
-    sample.frame();
+    if (midi())
+        notes.frame();
     // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
     if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
         statusStamp_ = stamp;
@@ -3772,7 +4576,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     // The frame's own snapshot: the clip's node and its track's colour, and the song's meters for
     // the rulers. They live until the next frame.
     notes.time.meters = &reader.meters();
-    sample.time.meters = &reader.meters();
+    sample.time.meters = &clipMeters_;
     node_ = nullptr;
     bool named = false;
     colour_ = look::trackColour(0);
@@ -3807,26 +4611,81 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         trackStored_.clear();
         trackNamed_ = false;
     }
+    if (refresh) {
+        if (!fieldEnabled(editing_))
+            closeEditor();
+        sample.updateSource();
+    }
+    fitArrangementSelection(reader);
+    sample.frame();
+}
+void ClipViewPanel::fitArrangementSelection(const SnapshotReader &reader) {
+    const auto &geometry = root.arrangement.geometry;
+    const auto &selection = geometry.selection;
+    const int width = audio() ? sample.waveArea().getWidth() : notes.notesArea().getWidth();
+    if (!isVisible() || width == 0 || !node_ || !details_ || selection.start == selection.end ||
+        !geometry.inSelection(reader, details_->trackId)) {
+        fittedRange_.reset();
+        return;
+    }
+    const auto clipEnd = node_->posTicks + node_->lengthTicks;
+    const auto from = std::max(node_->posTicks, std::min(selection.start, selection.end));
+    const auto to = std::min(clipEnd, std::max(selection.start, selection.end));
+    if (from >= to || (geometry.clipSelected(clip_) && from == node_->posTicks && to == clipEnd)) {
+        fittedRange_.reset();
+        return;
+    }
+    const auto source = audio() ? sample.sourceRange(from, to) : std::pair{from, to};
+    const ArrangementRange range{clip_, from, to, source};
+    if (source.first >= source.second || fittedRange_ == range)
+        return;
+    fittedRange_ = range;
+    auto &editor = audio() ? static_cast<juce::Component &>(sample) : static_cast<juce::Component &>(notes);
+    auto &time = audio() ? sample.time : notes.time;
+    time.fit(source.first, source.second, width, true, 1. / textproj::kPPQ);
+    editor.repaint();
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {
     Readings out;
     if (!details_)
         return out;
     const auto &d = *details_;
-    out.start = positionText(d.startMarkerTicks, clipMeters_);
-    out.end = positionText(endMarkerOf(d), clipMeters_);
+    out.start = unwarpedTimeField(Field::Start) ? sourceClockText(fieldMilliseconds(Field::Start))
+                                               : positionText(d.startMarkerTicks, clipMeters_);
+    out.end = unwarpedTimeField(Field::End) ? sourceClockText(fieldMilliseconds(Field::End))
+                                           : positionText(endMarkerOf(d), clipMeters_);
     out.loop = d.loopEnabled;
     bool sameScale = true;
     for (const auto &layer : others_) {
         out.loopMixed = out.loopMixed || layer.details.loopEnabled != d.loopEnabled;
+        out.activatorMixed = out.activatorMixed || layer.details.muted != d.muted;
         sameScale = sameScale && layer.details.scale.root == d.scale.root && layer.details.scale.id == d.scale.id &&
                     layer.details.scale.local == d.scale.local;
     }
-    // The title: the clip's name; with several clips shown, how many (manual 10.8).
-    // A clip with no name reads its track's (manual 10.8).
-    out.title = !others_.empty() ? juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips"
+    const auto count = juce::String(static_cast<juce::int64>(others_.size() + 1));
+    // The title gives the number of clips in a group (manual 8.1.1.2).
+    out.title = !others_.empty() ? count + (audio() ? " Audio Clips" : " MIDI Clips")
                 : !d.name.empty() ? juce::String(d.name)
                                   : juce::String(juce::CharPointer_UTF8(trackName_.data()), juce::CharPointer_UTF8(trackName_.data() + trackName_.size()));
+    if (audio()) {
+        const auto *media = node_ && node_->audio && node_->audio->mediaInfo ? &*node_->audio->mediaInfo : nullptr;
+        if (!others_.empty())
+            out.sampleName = count + " Samples";
+        else if (media)
+            out.sampleName = juce::String(media->originalName);
+        if (media || !others_.empty()) {
+            const auto measure = [&](std::optional<std::int64_t> engine::AudioMediaIdentity::*member, const char *unit) {
+                const auto value = media ? media->*member : std::nullopt;
+                for (const auto &layer : others_)
+                    if ((layer.media ? (*layer.media).*member : std::nullopt) != value)
+                        return juce::String("*");
+                return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String::fromUTF8("—")) + unit;
+            };
+            out.sampleProperties = measure(&engine::AudioMediaIdentity::sampleRate, " Hz") + "   " +
+                                   measure(&engine::AudioMediaIdentity::bitDepth, " bit") + "   " +
+                                   measure(&engine::AudioMediaIdentity::channels, " ch");
+        }
+    }
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
@@ -3860,9 +4719,11 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
             out.length = lengthText(adjustedTicks(pressed_, pressPart_, dragSteps_), meter_);
-        } else if (pressed_ != Field::Gain) {
+        } else if (pressed_ != Field::Gain && pressed_ != Field::Pitch && pressed_ != Field::Detune) {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
-            shown = positionText(adjustedTicks(pressed_, pressPart_, dragSteps_), clipMeters_);
+            shown = unwarpedTimeField(pressed_)
+                ? sourceClockText(adjustedMilliseconds(pressed_, pressPart_, dragSteps_))
+                : positionText(adjustedTicks(pressed_, pressPart_, dragSteps_), clipMeters_);
         }
     }
     const auto &time = midi() ? notes.time : sample.time;
@@ -3875,11 +4736,32 @@ constexpr int kFieldLabel = 15, kFieldBox = 16;
 constexpr int kDenominators[] = {1, 2, 4, 8, 16};
 }
 juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
+    if (field == Field::SourceTempo) {
+        const auto header = headerArea();
+        const auto warp = warpBox();
+        if (warp.isEmpty() || header.getWidth() < 285)
+            return {};
+        return {warp.getRight() + 4, warp.getY(), 75, warp.getHeight()};
+    }
     const auto main = mainArea().reduced(6, 5);
     const int half = (main.getWidth() - 6) / 2;
+    if (field == Field::Scale && audio()) {
+        const auto loop = loopBox();
+        if (loop.isEmpty())
+            return {};
+        const int left = loop.getRight() + kAudioScaleModeWidth + 2 * kAudioControlGap;
+        return {left, loop.getY(), std::max(0, main.getRight() - left), loop.getHeight()};
+    }
+    if (field == Field::Pitch || field == Field::Detune) {
+        if (panelsFolded_ || !audio())
+            return {};
+        return {main.getX() + (field == Field::Detune ? half + 6 : 0),
+                main.getY() + (getHeight() < 180 ? 112 : 142), half, kFieldBox};
+    }
+    const bool compactAudio = audio() && getHeight() < 180;
     const int row = field == Field::Start || field == Field::End          ? 0
-                    : field == Field::Position || field == Field::Length ? 58
-                                                                         : 95;
+                    : field == Field::Position || field == Field::Length ? (compactAudio ? 49 : 58)
+                                                                         : (compactAudio ? 81 : 95);
     const int column = field == Field::End || field == Field::Length || field == Field::Scale || field == Field::Gain ? 1 : 0;
     if (field == Field::None)
         return {};
@@ -4368,8 +5250,8 @@ void ClipViewPanel::showScaleMenu(bool roots) {
     juce::Component::SafePointer<ClipViewPanel> safe(this);
     scaleMenu(roots).showMenuAsync(
         juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(fieldBox(Field::Scale))),
-        [safe, roots](int item) {
-            if (safe != nullptr && item > 0)
+        [safe, roots, clip = clip_](int item) {
+            if (safe != nullptr && item > 0 && safe->clip() == clip)
                 safe->chooseScale(roots, item);
         });
 }
@@ -4385,13 +5267,103 @@ juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
     if (panelsFolded_)
         return {};
     const auto main = mainArea().reduced(6, 5);
-    return {main.getX(), main.getY() + 37, main.getWidth(), kFieldBox};
+    return {main.getX(), main.getY() + (audio() && getHeight() < 180 ? 33 : 37),
+            audio() ? kAudioLoopWidth : main.getWidth(), kFieldBox};
 }
 juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
     const auto header = headerArea();
     if (!node_ || !node_->audio || header.getWidth() < 198)
         return {};
     return {header.getX() + 72, header.getY() + 2, 52, 13};
+}
+int ClipViewPanel::sampleToolsRight() const noexcept {
+    return std::max({headerArea().getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
+                     sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
+}
+juce::Rectangle<int> ClipViewPanel::sampleEditBox() const noexcept {
+    if (!others_.empty() || !node_ || !node_->audio || !node_->audio->mediaInfo)
+        return {};
+    auto area = headerArea().withTrimmedRight(84);
+    const auto edit = area.removeFromRight(36).reduced(0, 2);
+    return edit.getX() >= sampleToolsRight() + 4 ? edit : juce::Rectangle<int>{};
+}
+juce::Rectangle<int> ClipViewPanel::sampleMetadataArea() const noexcept {
+    const auto header = headerArea();
+    const int trimRight = sampleEditBox().isEmpty() ? 84 : 124;
+    return header.withTrimmedLeft(sampleToolsRight() + 4 - header.getX()).withTrimmedRight(trimRight);
+}
+void ClipViewPanel::editSample() {
+    if (!node_ || !node_->audio)
+        return;
+    const auto &settings = root.commandSettings();
+    const auto editor = media::pathFromUtf8(settings.get("files.sampleEditor").get<std::string>());
+    if (!editor.is_absolute()) {
+        root.say("Choose a Sample Editor in Settings > File & Folder.");
+        return;
+    }
+    if (root.playing()) {
+        root.say("Stop playback before editing the sample.");
+        return;
+    }
+    const bool copy = settings.get("files.sampleEditorOpens") == "copy";
+    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, node_->audio->mediaId, copy))
+        root.say("The configured Sample Editor could not be started.");
+}
+juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
+    if (!audio() || (others_.empty() &&
+                     (!node_ || !node_->audio || !node_->audio->mediaInfo || node_->audio->mediaInfo->originalName.empty())))
+        return {};
+    const auto area = sampleMetadataArea();
+    if (problem_.empty() && area.getWidth() >= 220)
+        return area.withWidth(std::min(168, area.getWidth() - 148));
+    const auto head = headerArea().withTrimmedLeft(8).withTrimmedRight(84);
+    return head.withWidth(std::min(60, head.getWidth()));
+}
+juce::Rectangle<int> ClipViewPanel::warpModeBox() const noexcept {
+    constexpr int width = 84;
+    const auto warp = warpBox();
+    if (warp.isEmpty())
+        return {};
+    const auto left = std::max({warp.getRight(), fieldBox(Field::SourceTempo).getRight(),
+                                sourceTempoFactorBox(true).getRight()}) + 4;
+    if (headerArea().getRight() - left < width + 80) // the grid chooser keeps its right margin
+        return {};
+    return {left, warp.getY(), width, warp.getHeight()};
+}
+juce::PopupMenu ClipViewPanel::warpModeMenu() const {
+    juce::PopupMenu menu;
+    if (!node_ || !node_->audio || !node_->audio->warpEnabled)
+        return menu;
+    const auto mode = audio::parseWarpMode(node_->audio->warpMode);
+    for (std::size_t i = 0; i < kWarpModeChoices.size(); ++i) {
+        menu.addItem(static_cast<int>(i) + 1, kWarpModeLabels[i], true, mode == kWarpModeChoices[i].mode);
+    }
+    return menu;
+}
+bool ClipViewPanel::chooseWarpMode(int item) {
+    if (!details_ || item < 1 || item > static_cast<int>(kWarpModeChoices.size()))
+        return false;
+    const auto current = root.current();
+    const auto *track = current ? current->findTrack(details_->trackId) : nullptr;
+    if (!track)
+        return false;
+    const auto chosen = std::find_if(track->clips.begin(), track->clips.end(), [this](const auto &clip) {
+        return clip && clip->id == clip_;
+    });
+    if (chosen == track->clips.end() || !(*chosen)->audio || !(*chosen)->audio->warpEnabled)
+        return false;
+    clip_edit::WarpOptions options;
+    options.mode = kWarpModeChoices[static_cast<std::size_t>(item - 1)].mode;
+    if (audio::parseWarpMode((*chosen)->audio->warpMode) == options.mode)
+        return true;
+    return root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), clip_, options, root.editRate()));
+}
+juce::Rectangle<int> ClipViewPanel::sourceTempoFactorBox(bool doubleTempo) const noexcept {
+    constexpr int width = 23;
+    const auto bpm = fieldBox(Field::SourceTempo);
+    if (bpm.isEmpty() || headerArea().getWidth() < 333)
+        return {};
+    return {bpm.getRight() + 3 + (doubleTempo ? width + 2 : 0), bpm.getY(), width, bpm.getHeight()};
 }
 std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
     if (!details_)
@@ -4410,13 +5382,30 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
         return 0;
     }
 }
+bool ClipViewPanel::loopAvailable() const noexcept {
+    return midi() || (node_ && node_->audio && node_->audio->warpEnabled &&
+                      std::all_of(others_.begin(), others_.end(), [](const ClipLayer &layer) { return layer.warped; }));
+}
+bool ClipViewPanel::fieldEnabled(Field field) const noexcept {
+    if (field == Field::Pitch || field == Field::Detune)
+        return details_ && details_->pitchEnabled;
+    return (field != Field::Position && field != Field::Length) || loopAvailable();
+}
+bool ClipViewPanel::unwarpedTimeField(Field field) const noexcept {
+    return (field == Field::Start || field == Field::End) && node_ && node_->audio && !node_->audio->warpEnabled;
+}
+std::int64_t ClipViewPanel::fieldMilliseconds(Field field) const noexcept {
+    const auto pin = field == Field::Start ? node_->contentOffsetNs : node_->sourceEndNs;
+    const auto seconds = pin ? static_cast<double>(*pin) * 1e-9 : sample.sourceTicksToSeconds(fieldTicks(field));
+    return std::llround(seconds * 1000.);
+}
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
                              Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
-                             Field::Interval, Field::Stretch, Field::Gain})
-        if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
+                             Field::Interval, Field::Stretch, Field::Gain, Field::Pitch, Field::Detune})
+        if (fieldEnabled(field) && fieldBox(field).contains(at) && (midi() || field != Field::Transpose))
             return field;
     return Field::None;
 }
@@ -4434,9 +5423,22 @@ bool ClipViewPanel::commit(TrackEdit edit) {
     return true;
 }
 bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
-    if (!details_)
+    if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
+    if (unwarpedTimeField(field)) {
+        const bool start = field == Field::Start;
+        const auto pin = start ? node_->contentOffsetNs : node_->sourceEndNs;
+        const auto current = pin ? sample.sourceSecondsToTicks(static_cast<double>(*pin) * 1e-9) : fieldTicks(field);
+        if (ticks == current)
+            return true;
+        // The marker op validates against the other marker's physical pin. The
+        // stored ticks can still reflect the tempo from when the pin was set.
+        TrackEdit edit;
+        edit.ops.push_back(track_edits_detail::op(start ? "clip.setStartMarker" : "clip.setEndMarker",
+                                                  {{"id", d.id}, {"ticks", ticks}}, start ? "Set Clip Start" : "Set Clip End"));
+        return commit(std::move(edit));
+    }
     switch (field) {
     case Field::Start:
         return commit(setClipStart(d, ticks));
@@ -4462,6 +5464,32 @@ bool ClipViewPanel::setGain(double db) {
     reread();
     return true;
 }
+int ClipViewPanel::pitchPart(Field field, bool preview) const noexcept {
+    const auto pitch = details_->transposeSemis.value_or(0.);
+    int cents = std::isfinite(pitch) ? static_cast<int>(std::lround(100. * std::clamp(pitch, -48., 48.))) : 0;
+    if (preview && dragged_ && (pressed_ == Field::Pitch || pressed_ == Field::Detune))
+        cents = std::clamp(cents + std::clamp(dragSteps_, -kPitchLimitCents, kPitchLimitCents) *
+                                      (pressed_ == Field::Pitch ? 100 : 1), -kPitchLimitCents, kPitchLimitCents);
+    const int semis = (cents + (cents < 0 ? -50 : 50)) / 100;
+    return field == Field::Pitch ? semis : cents - semis * 100;
+}
+bool ClipViewPanel::setPitch(Field field, int value, bool relative) {
+    if (!fieldEnabled(field))
+        return false;
+    const int semis = pitchPart(Field::Pitch), cents = pitchPart(Field::Detune);
+    const int current = semis * 100 + cents;
+    const int fieldValue = std::clamp(value, -kPitchLimitCents, kPitchLimitCents);
+    const auto next = relative ? current + fieldValue * (field == Field::Pitch ? 100 : 1)
+                    : field == Field::Pitch ? fieldValue * 100 + cents : semis * 100 + fieldValue;
+    const double pitch = std::clamp(next, -kPitchLimitCents, kPitchLimitCents) / 100.;
+    repaint();
+    if (pitch == details_->transposeSemis)
+        return true;
+    if (!root.submitEdit("audioClip.setTranspose", {{"id", clip_}, {"semitones", pitch}}, "Set Clip Pitch"))
+        return false;
+    reread();
+    return true;
+}
 double ClipViewPanel::draggedGain() const noexcept {
     return std::clamp(details_->gainDb + dragSteps_, -kClipGainLimitDb, kClipGainLimitDb);
 }
@@ -4470,6 +5498,14 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
         return false;
     if (field == Field::Name)
         return rename(typed);
+    if (field == Field::SourceTempo) {
+        const auto bpm = decimal::parse(typed.trim().toStdString());
+        if (!bpm || !(*bpm > 0 && *bpm < 1000)) {
+            root.say("Type a source BPM greater than 0 and below 1000.");
+            return false;
+        }
+        return setWarp(true, *bpm);
+    }
     if (field == Field::Gain) {
         auto raw = typed.trim();
         if (raw.endsWithIgnoreCase("dB"))
@@ -4484,6 +5520,23 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             return false;
         }
         return setGain(*db);
+    }
+    if (field == Field::Pitch || field == Field::Detune) {
+        auto raw = typed.trim();
+        const char *unit = field == Field::Pitch ? "st" : "ct";
+        if (raw.endsWithIgnoreCase(unit))
+            raw = raw.dropLastCharacters(2).trimEnd();
+        if (raw.startsWithChar('+') && !raw.startsWith("+-"))
+            raw = raw.substring(1);
+        const auto number = raw.toStdString();
+        const auto end = number.data() + number.size();
+        int pitch = 0;
+        const auto parsed = std::from_chars(number.data(), end, pitch);
+        if (parsed.ec != std::errc{} || parsed.ptr != end) {
+            root.say(field == Field::Pitch ? "Type a whole number of semitones." : "Type a whole number of cents.");
+            return false;
+        }
+        return setPitch(field, pitch, false);
     }
     const auto text = typed.toStdString();
     {
@@ -4526,6 +5579,8 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             root.say("Type a time signature as 3/4.");
             return false;
         }
+        if (audio())
+            return commit(setClipSignature(*details_, signature->first, signature->second));
         return commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature->first, signature->second); });
     }
     if (field == Field::Length) {
@@ -4535,6 +5590,16 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             return false;
         }
         return setField(field, ticksOf(*length, meter_));
+    }
+    if (unwarpedTimeField(field)) {
+        const auto milliseconds = parseSourceClock(typed.trim());
+        if (!milliseconds) {
+            root.say("Type a source time in minutes, seconds and milliseconds: 0:01.250.");
+            return false;
+        }
+        if (*milliseconds == fieldMilliseconds(field))
+            return true;
+        return setField(field, sample.sourceSecondsToTicks(static_cast<double>(*milliseconds) * .001));
     }
     // A position: bar, beat and sixteenth from 1, in the clip's own time.
     const auto position = parsePosition(text);
@@ -4550,11 +5615,12 @@ bool ClipViewPanel::setFieldHere(Field field) {
     // the arrangement's insert marker. In the clip's own time. On the loop they also switch it on:
     // Set Position moves the loop's start there; Set Length moves its end there, or, when the loop
     // was off, keeps its length.
-    if (!details_)
+    if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
     const auto at = root.playing() ? root.timelineTick() : root.arrangement.geometry.selection.insert;
-    const auto here = ClipWindow::of(d).toSource(at);
+    const auto here = audio() ? (!root.playing() && sample.insert() ? *sample.insert() : sample.sourceTick(at))
+                              : ClipWindow::of(d).toSource(at);
     if (field == Field::Position)
         return commit(setClipLoop(d, here, loopLengthOf(d), true));
     if (field == Field::Length)
@@ -4577,7 +5643,7 @@ bool ClipViewPanel::commitForAll(const std::function<TrackEdit(const engine::Cli
         for (const auto &layer : others_) {
             auto part = build(layer.details);
             if (!part.refusal.empty())
-                continue;
+                return commit(std::move(part));
             for (auto &o : part.ops) {
                 // The step is named for the edit, whichever clip's op comes first.
                 all.ops.push_back(std::move(o));
@@ -4599,6 +5665,10 @@ juce::PopupMenu ClipViewPanel::titleMenu() const {
         colours.addItem(std::move(item));
     }
     menu.addSubMenu("Color", colours);
+    if (node_ && node_->audio && root.saveSampleDefaults) {
+        menu.addSeparator();
+        menu.addItem(kSaveSampleDefaults, "Save Default Clip");
+    }
     menu.addSeparator();
     menu.addItem(2, "Arrange Clip View Panels Automatically", true, arrangement_ == Panels::Automatic);
     menu.addItem(3, "Fold", true, panelsFolded_);
@@ -4620,6 +5690,12 @@ bool ClipViewPanel::chooseTitleItem(int item) {
         foldPanels(!panelsFolded_);
         return true;
     }
+    if (item == kSaveSampleDefaults && node_ && node_->audio && root.saveSampleDefaults) {
+        std::string why;
+        const bool saved = root.saveSampleDefaults(node_->id, why);
+        root.say(saved ? "Saved default clip settings for this sample." : std::move(why));
+        return saved;
+    }
     return item >= 100 && item < 100 + kTitleColours && recolour(item - 100);
 }
 bool ClipViewPanel::rename(const juce::String &name) {
@@ -4630,23 +5706,29 @@ bool ClipViewPanel::recolour(int colour) {
     return commitForAll([colour](const engine::ClipDetails &clip) { return recolourClip(clip, colour); });
 }
 bool ClipViewPanel::toggleLoop() {
-    if (!details_)
+    if (!details_ || !loopAvailable())
         return false;
     // Every shown clip takes the state the edited clip is switched to.
     const bool on = !details_->loopEnabled;
     return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
 }
 bool ClipViewPanel::toggleWarp() {
+    return node_ && node_->audio && setWarp(!node_->audio->warpEnabled);
+}
+bool ClipViewPanel::setWarp(bool enabled, std::optional<double> sourceBpm) {
     if (!node_ || !node_->audio)
         return false;
     clip_edit::WarpOptions options;
-    options.enabled = !node_->audio->warpEnabled;
+    options.enabled = enabled;
+    options.analysis.sourceBpm = sourceBpm;
     options.mode = audio::parseWarpMode(node_->audio->warpMode).value_or(audio::WarpMode::Beats);
     if (const auto snapshot = root.current(); snapshot && snapshot->tempo)
         options.analysis.tempoHint = snapshot->tempo->bpmAt(node_->posTicks);
     return root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), node_->id, options, root.editRate()));
 }
 juce::String ClipViewPanel::fieldText(Field field) {
+    if (unwarpedTimeField(field))
+        return sourceClockText(fieldMilliseconds(field));
     if (field == Field::Name)
         return juce::String(details_->name);
     if (const auto *value = plainField(field))
@@ -4666,6 +5748,13 @@ juce::String ClipViewPanel::fieldText(Field field) {
         return "100";
     case Field::Gain:
         return juce::String(details_->gainDb, 2);
+    case Field::Pitch:
+    case Field::Detune:
+        return juce::String(pitchPart(field));
+    case Field::SourceTempo: {
+        const auto bpm = sample.sourceBpm();
+        return bpm > 0 ? juce::String(bpm, 2) : juce::String();
+    }
     default:
         return {};
     }
@@ -4726,10 +5815,18 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (!details_ || e.mods.isPopupMenu())
         return;
     const auto at = e.getPosition();
-    // The Clip Activator (manual 8.1.1): one click, one undo step.
+    // If any selected clip is active, the activator switches the group off (manual 8.1.1.1).
     if (activatorArea().expanded(2).contains(at)) {
-        root.submitEdit("clip.setMute", {{"id", clip_}, {"muted", !details_->muted}},
-                        details_->muted ? "Activate Clip" : "Deactivate Clip");
+        const bool mute = !details_->muted || std::any_of(others_.begin(), others_.end(), [](const ClipLayer &layer) {
+            return !layer.details.muted;
+        });
+        commitForAll([mute](const engine::ClipDetails &clip) {
+            TrackEdit edit;
+            if (clip.muted != mute)
+                edit.ops.push_back(track_edits_detail::op("clip.setMute", {{"id", clip.id}, {"muted", mute}},
+                                                        mute ? "Deactivate Clip" : "Activate Clip"));
+            return edit;
+        });
         return;
     }
     if (const auto thumb = scrollThumb(); !thumb.isEmpty() && columnArea().contains(at) && at.x >= thumb.getX() - 2 && at.x < thumb.getRight()) {
@@ -4751,6 +5848,21 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         edgeFrom_ = at.x;
         return;
     }
+    if (sampleEditBox().contains(at)) {
+        editSample();
+        return;
+    }
+    if (others_.empty() && sampleNameBox().contains(at)) {
+        std::string error;
+        auto path = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
+        if (path.empty()) {
+            root.say("The sample could not be revealed: " + error);
+        } else if (!root.state().panels.find(Panel::Browser)->collapsed || root.command(AppCommands::ToggleBrowser)) {
+            root.browser.revealSample(std::move(path));
+            focusIfShowing(root.browser.list);
+        }
+        return;
+    }
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length})
         if (setBox(field).contains(at)) {
             setFieldHere(field);
@@ -4759,6 +5871,30 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (warpBox().contains(at)) {
         toggleWarp();
         return;
+    }
+    if (const auto mode = warpModeBox(); mode.contains(at)) {
+        if (node_->audio->warpEnabled) {
+            juce::Component::SafePointer<ClipViewPanel> safe(this);
+            warpModeMenu().showMenuAsync(
+                juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(mode)),
+                [safe, clip = clip_](int item) {
+                    if (item > 0 && safe != nullptr && safe->clip() == clip)
+                        safe->chooseWarpMode(item);
+                });
+        }
+        return;
+    }
+    if (fieldBox(Field::SourceTempo).contains(at)) {
+        openEditor(Field::SourceTempo);
+        return;
+    }
+    for (const bool doubleTempo : {false, true}) {
+        if (sourceTempoFactorBox(doubleTempo).contains(at)) {
+            const auto bpm = sample.sourceBpm() * (doubleTempo ? 2. : .5);
+            if (bpm > 0 && bpm < 1000)
+                setWarp(true, bpm);
+            return;
+        }
     }
     if (loopBox().contains(at)) {
         toggleLoop();
@@ -4940,6 +6076,8 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
     }
 }
 std::int64_t ClipViewPanel::adjustedTicks(Field field, int part, int steps) const noexcept {
+    if (unwarpedTimeField(field))
+        return sample.sourceSecondsToTicks(static_cast<double>(adjustedMilliseconds(field, part, steps)) * .001);
     const std::int64_t beat = meter_.denominator == 0 ? 0 : textproj::kWhole / meter_.denominator;
     const std::int64_t unit = part == 0 ? meter_.barTicks() : part == 1 ? beat : textproj::kPPQ / 4;
     const auto tick = fieldTicks(field), delta = steps * unit;
@@ -4948,6 +6086,10 @@ std::int64_t ClipViewPanel::adjustedTicks(Field field, int part, int steps) cons
     if (delta < 0 && tick < std::numeric_limits<std::int64_t>::min() - delta)
         return std::numeric_limits<std::int64_t>::min();
     return tick + delta;
+}
+std::int64_t ClipViewPanel::adjustedMilliseconds(Field field, int part, int steps) const noexcept {
+    constexpr std::int64_t units[] = {60000, 1000, 1};
+    return std::max<std::int64_t>(0, fieldMilliseconds(field) + steps * units[part]);
 }
 std::pair<std::int64_t, std::int64_t> ClipViewPanel::adjustedSignature(int part, int steps) const noexcept {
     std::int64_t numerator = meter_.numerator, denominator = meter_.denominator;
@@ -4969,13 +6111,18 @@ void ClipViewPanel::adjustField(Field field, int part, int steps) {
         numberChanged(field, false);
     } else if (field == Field::Gain) {
         setGain(details_->gainDb + steps);
+    } else if (field == Field::Pitch || field == Field::Detune) {
+        setPitch(field, steps, true);
     } else if (field == Field::Transpose) {
         transpose(steps);
     } else if (field == Field::Stretch) {
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
     } else if (field == Field::Signature) {
         const auto signature = adjustedSignature(part, steps);
-        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
+        if (audio())
+            commit(setClipSignature(*details_, signature.first, signature.second));
+        else
+            commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
     } else {
         setField(field, adjustedTicks(field, part, steps));
     }
@@ -5033,20 +6180,25 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         return;
     }
     const auto &d = *details_;
-    // The title bar in the clip's colour: Live's round activator, lit while the clip plays, and
-    // the clip's name.
-    g.setColour(d.muted ? look::mutedClip : colour_);
+    const auto r = readings();
+    const bool audioGroup = audio() && !others_.empty();
+    g.setColour(audioGroup ? look::field : d.muted ? look::mutedClip : colour_);
     g.fillRect(title);
-    // Its round shape stays; its colours are the shared button's (language.png part B), lit or at rest.
     const auto dot = activatorArea().toFloat();
-    g.setColour(d.muted ? look::buttonRest : look::accent);
+    const bool unlit = d.muted || r.activatorMixed;
+    g.setColour(unlit ? look::buttonRest : look::accent);
     g.fillEllipse(dot);
-    if (d.muted) {
+    if (unlit) {
         g.setColour(look::buttonEdge);
         g.drawEllipse(dot.reduced(look::hairline / 2), look::hairline);
     }
+    if (r.activatorMixed) {
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(activatorArea().withWidth(activatorArea().getWidth() / 2));
+        g.setColour(look::accent);
+        g.fillEllipse(dot);
+    }
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
-    const auto r = readings();
     if (!others_.empty()) {
         // Several clips shown: a striped title (manual 10.8).
         juce::Graphics::ScopedSaveState state(g);
@@ -5057,7 +6209,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
                        static_cast<float>(title.getY()), 2.f);
     }
     if (!panelsFolded_)
-        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::ink, look::fontField, true);
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft,
+             audioGroup ? look::text : look::ink, look::fontField, true);
     // A scrolled column is cut at the title, which stays over it.
     const bool scrolled = columnScroll() > 0;
     if (scrolled) {
@@ -5069,11 +6222,13 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (box.isEmpty())
             return; // folded
         const auto set = setBox(which);
+        const bool enabled = fieldEnabled(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
-             juce::Justification::centredLeft, look::text, look::fontCaption);
+             juce::Justification::centredLeft, enabled ? look::text : look::textDim, look::fontCaption);
         // Live's Set button: a small pill beside the field's name, the shared button at rest.
         if (!set.isEmpty()) {
-            controls::button(g, set.toFloat(), controls::ButtonState::Rest, "Set", look::fontMicro);
+            controls::button(g, set.toFloat(), enabled ? controls::ButtonState::Rest : controls::ButtonState::Disabled,
+                             "Set", look::fontMicro);
             labels_.push_back(set);
         }
         // The field's value: the shared value box (language.png part D); Scale's opens the scales,
@@ -5081,7 +6236,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (which == Field::Scale)
             controls::chooser(g, box.toFloat(), value, look::fontLabel);
         else
-            controls::valueBox(g, box.toFloat(), value, std::nullopt, look::fontLabel);
+            controls::valueBox(g, box.toFloat(), enabled ? value : juce::String{}, std::nullopt, look::fontLabel);
         labels_.push_back(box);
     };
     field(Field::Start, "Start", r.start);
@@ -5089,9 +6244,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto loop = loopBox(); !loop.isEmpty()) {
         // The shared button, lit while the clip loops. Looped and unlooped clips together: the
         // button is half lit (manual 10.8), its left half drawn lit over the button at rest.
-        controls::button(g, loop.toFloat(), r.loop && !r.loopMixed ? controls::ButtonState::On : controls::ButtonState::Rest,
-                         "Loop", look::fontLabel);
-        if (r.loopMixed) {
+        const bool enabled = loopAvailable();
+        const auto state = !enabled ? controls::ButtonState::Disabled
+                           : r.loop && !r.loopMixed ? controls::ButtonState::On : controls::ButtonState::Rest;
+        controls::button(g, loop.toFloat(), state, "Loop", look::fontLabel);
+        if (enabled && r.loopMixed) {
             juce::Graphics::ScopedSaveState half(g);
             g.reduceClipRegion(loop.withWidth(loop.getWidth() / 2));
             controls::button(g, loop.toFloat(), controls::ButtonState::On, "Loop", look::fontLabel);
@@ -5114,12 +6271,35 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.setColour(look::textDim);
         g.fillRect(centre - .5f, scale.getBottom() - 2.f, 1.f, 2.f);
     }
-    if (midi() && !panelsFolded_) {
-        field(Field::Scale, "Scale", r.scale);
+    if (audio()) {
+        const auto readPitch = [&](Field which, const char *unit) {
+            return juce::String(pitchPart(which, true)) + unit;
+        };
+        if (getHeight() < 180) {
+            for (const auto which : {Field::Pitch, Field::Detune}) {
+                const auto box = fieldBox(which);
+                if (box.isEmpty())
+                    continue;
+                controls::valueBox(g, box.toFloat(), fieldEnabled(which) ? readPitch(which, which == Field::Pitch ? " st" : " ct")
+                                                                        : juce::String{}, std::nullopt, look::fontLabel);
+                labels_.push_back(box);
+            }
+        } else {
+            field(Field::Pitch, "Pitch", readPitch(Field::Pitch, " st"));
+            field(Field::Detune, "Detune", readPitch(Field::Detune, " ct"));
+        }
+    }
+    if (const auto mode = scaleModeBox(); !mode.isEmpty()) {
+        if (audio()) {
+            const auto box = fieldBox(Field::Scale);
+            controls::chooser(g, box.toFloat(), r.scale, look::fontSmall);
+            labels_.push_back(box);
+        } else {
+            field(Field::Scale, "Scale", r.scale);
+        }
         // Scale Mode's switch (manual 8.2.4): the shared button, lit while the clip holds a scale of its own.
-        const auto mode = scaleModeBox();
         controls::button(g, mode.toFloat(), details_->scale.local ? controls::ButtonState::On : controls::ButtonState::Rest,
-                         details_->scale.local ? "On" : "Off", look::fontMicro);
+                         audio() ? "Scale" : details_->scale.local ? "On" : "Off", look::fontMicro);
         labels_.push_back(mode);
     }
 
@@ -5317,12 +6497,48 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto warp = warpBox(); !warp.isEmpty())
         controls::button(g, warp.toFloat(), node_->audio->warpEnabled ? controls::ButtonState::On : controls::ButtonState::Rest,
                          "Warp", look::fontSmall);
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
-         juce::Justification::centredLeft, look::text, look::fontBody, true);
+    if (const auto box = fieldBox(Field::SourceTempo); !box.isEmpty()) {
+        const auto bpm = sample.sourceBpm();
+        controls::valueBox(g, box.toFloat(), bpm > 0 ? juce::String(bpm, 2) + " BPM" : "Source BPM",
+                           std::nullopt, look::fontSmall);
+        labels_.push_back(box);
+        for (const bool doubleTempo : {false, true}) {
+            const auto factorBox = sourceTempoFactorBox(doubleTempo);
+            if (factorBox.isEmpty())
+                continue;
+            const auto canApply = bpm > 0 && bpm * (doubleTempo ? 2. : .5) < 1000;
+            controls::button(g, factorBox.toFloat(), canApply ? controls::ButtonState::Rest : controls::ButtonState::Disabled,
+                             doubleTempo ? "×2" : "/2", look::fontSmall);
+            labels_.push_back(factorBox);
+        }
+    }
+    if (const auto box = warpModeBox(); !box.isEmpty()) {
+        const auto mode = audio::parseWarpMode(node_->audio->warpMode);
+        const auto choice = std::find_if(kWarpModeChoices.begin(), kWarpModeChoices.end(),
+                                         [mode](const auto &entry) { return entry.mode == mode; });
+        const auto &label = choice == kWarpModeChoices.end() ? kUnsetWarpModeLabel
+            : kWarpModeLabels[static_cast<std::size_t>(choice - kWarpModeChoices.begin())];
+        controls::chooser(g, box.toFloat(), label, look::fontSmall, node_->audio->warpEnabled);
+        labels_.push_back(box);
+    }
+    const auto name = sampleNameBox();
+    const auto metadata = sampleMetadataArea();
+    if (midi() || (audio() && (name.isEmpty() || metadata.contains(name))))
+        text(midi() ? "Notes" : "Sample", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+             juce::Justification::centredLeft, look::text, look::fontBody, true);
+    if (!name.isEmpty())
+        text(r.sampleName, name, juce::Justification::centredLeft, look::textBright, look::fontLabel, true);
+    if (const auto edit = sampleEditBox(); !edit.isEmpty()) {
+        controls::button(g, edit.toFloat(), controls::ButtonState::Rest, "Edit", look::fontSmall);
+        labels_.push_back(edit);
+    }
+    if (problem_.empty() && !r.sampleProperties.isEmpty() && !metadata.isEmpty()) {
+        const auto properties = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
+        text(r.sampleProperties, properties, juce::Justification::centredLeft, look::text, look::fontLabel);
+    }
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())
-        text(juce::String(problem_), header.withTrimmedLeft(warpBox().isEmpty() ? 76 : 128).withTrimmedRight(84), juce::Justification::centredLeft,
-             look::text, look::fontLabel);
+        text(juce::String(problem_), metadata, juce::Justification::centredLeft, look::text, look::fontLabel);
     if (!midi() && !audio()) {
         g.setColour(look::lane);
         g.fillRect(editorArea());

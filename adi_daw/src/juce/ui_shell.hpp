@@ -199,7 +199,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleCollectionBlue,
         ToggleCollectionPurple,
         ToggleCollectionGray,
-        LastId = ToggleCollectionGray
+        ReverseAudio,      // Reverse Clip(s) in the Arrangement, R (manual 6.9)
+        LastId = ReverseAudio
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -546,6 +547,8 @@ class AdiRootComponent final : public juce::Component,
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // The explicit sample-defaults write belongs to the active Library profile.
+    std::function<bool(std::int64_t clip, std::string &why)> saveSampleDefaults;
     // The drop with Warp, edge fades and copy is prepared off the message thread and committed as
     // one undo step. `done` gives the first clip and track, or 0 and the reason for refusal.
     using MaterialDone = std::function<void(std::int64_t clip, std::int64_t track, const std::string &why)>;
@@ -836,6 +839,8 @@ class AdiRootComponent final : public juce::Component,
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
     // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
     bool splitAtMarker();
+    bool canReverseAudio() const;
+    bool reverseAudio();
     // Live's Create Fade In/Out and Create Crossfade (manual 6.8; Ctrl/Cmd+Alt+F, the Create menu):
     // over the time selection's audio clip starts, ends and boundaries, one undo step. And Delete
     // Fades/Crossfades (Ctrl/Cmd+Alt+Backspace) on the chosen clips, or the audio clips the time
@@ -873,6 +878,8 @@ class AdiRootComponent final : public juce::Component,
     // The store an engine edit is prepared against, and the settings its policy is captured from.
     Store &editStore() noexcept { return submitter_.store(); }
     const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
+    // Launch the configured executable or application bundle with a verified source from the pool.
+    std::function<bool(const std::filesystem::path &editor, std::int64_t mediaId, bool copy)> launchSampleEditor;
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);

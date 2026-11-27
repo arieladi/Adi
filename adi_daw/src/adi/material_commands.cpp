@@ -5,7 +5,6 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
 #include "adi/audio/decode.hpp"
-#include "adi/audio/io_audit.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
@@ -24,6 +23,9 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <iterator>
+#include <limits>
+#include <set>
 #include <map>
 #include <stdexcept>
 
@@ -104,9 +106,13 @@ void snapshot(Store& store,const fs::path& target) {
 }
 namespace {
 using ImportedHashes = std::map<std::string, std::int64_t>;
+struct ImportedPlacement {
+    edit_plan::ClearInterval range;
+    std::int64_t endTicks = 0;
+};
 MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double referenceRate,
                           library::Index* index, ImportedHashes* hashes = nullptr,
-                          std::int64_t* endTicks = nullptr) {
+                          ImportedPlacement* placement = nullptr) {
     // The callback refusal is a prvalue built in the caller's slot: guaranteed
     // elision, not optional NRVO, so it costs exactly one empty result.
     if(audio::onAudioThread)return {};
@@ -134,17 +140,7 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
-        std::optional<library::SampleSettings> saved;
-        if(index) {
-            std::string hash;
-            if(mediaRequest.opType=="media.import")hash=mediaRequest.payload.at("row").at("hash_blake3").get<std::string>();
-            else {SQLite::Statement key(store.db(),"SELECT hash_blake3 FROM media_files WHERE id=?");key.bind(1,imported.mediaId);if(!key.executeStep())throw std::runtime_error("imported source identity is missing");hash=key.getColumn(0).getString();}
-            const auto loaded=index->sampleSettings(hash);
-            if(loaded) {
-                if(loaded.data->sampleRate!=info.sampleRate || loaded.data->channels!=info.channels || loaded.data->frames!=static_cast<std::uint64_t>(info.frames))throw std::runtime_error("saved sample defaults do not match source dimensions");
-                saved=*loaded.data;
-            }else if(loaded.problem!=library::SampleSettingsProblem::Missing)throw std::runtime_error("cannot recall authored sample defaults: "+loaded.error);
-        }
+        const auto saved=index?loadSampleDefaults(store,*index,imported,mediaRequest):std::nullopt;
         std::optional<audio::AutoWarpResult> warped;
         std::optional<audio::WarpMapWrite> markers;
         if(options.warp && !saved) {
@@ -239,15 +235,88 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
         image["children"]["audio_clips"]=Payload::array({edit::defaultRow(store.db(),"audio_clips",sourceValues)});
         image["children"]["clip_playback_details"]=Payload::array({edit::defaultRow(store.db(),"clip_playback_details",playbackValues)});
         if(saved)applySampleDefaults(store,image,*saved,referenceRate);
+        if (options.arrangementPlacement || placement) {
+            const auto& placed = image.at("row");
+            const int clock = placed.at("time_base").get<int>();
+            const auto first = placed.at(clock == 0 ? "pos_ticks" : "pos_ns").get<std::int64_t>();
+            const auto length = placed.at(clock == 0 ? "length_ticks" : "length_ns").get<std::int64_t>();
+            const auto last = edit::addTime(first, length);
+            if (placement) {
+                placement->range = {{options.track, std::nullopt},
+                                    {clock == 0 ? time.nanos(first) : first, clock == 0 ? time.nanos(last) : last}};
+                placement->endTicks = clock == 0 ? last : time.ticks(last);
+            }
+            if (options.arrangementPlacement) {
+                auto cleared = prepareAudioDropReplacement(store, options.track, {clock, first}, {clock, last},
+                    {referenceRate, *options.arrangementPlacement}, options.clipId);
+                if (!cleared.ok)
+                    throw std::runtime_error(cleared.error);
+                for (auto& request : cleared.requests) {
+                    request.label = "Import Audio";
+                    result.edit.requests.push_back(std::move(request));
+                }
+            }
+        }
         edit::RowEdits plan(store.db());createImage(plan,image);
         OpRequest request;request.opType="clip.duplicate";request.payload={{"id",options.clipId},{"changes",plan.changes()}};
         request.label="Import Audio";request.targetKind="clip";request.targetId=options.clipId;result.edit.requests.push_back(std::move(request));
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
-        if (endTicks) *endTicks = edit::addTime(beginTicks, tickSpan);
         result.edit.ok=true;
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
+// One splice for all affected original rows. Separate per-file splices would
+// each capture the same old clip when a consecutive drop cuts through it twice.
+PreparedEdit prepareBatchReplacement(Store& store, std::span<const edit_plan::ClearInterval> ranges,
+                                     const edit_plan::Options& options, std::int64_t lastIncomingId) {
+    edit::TimeMap time(store.db());
+    edit_plan::EditScope scope;
+    scope.clock = edit_plan::PlacementClock::Nanoseconds;
+    scope.bounds = {std::numeric_limits<std::int64_t>::max(), 0};
+    edit_plan::detail::PlacementBatch material;
+    std::set<edit_plan::PlacementLane> tracks;
+    SQLite::Statement clips(store.db(),
+        "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
+        "FROM clips WHERE track_id=? AND lane_id IS NULL");
+    for (const auto& range : ranges) {
+        if (range.span.begin >= range.span.end)
+            continue;
+        clips.bind(1, range.lane.track);
+        bool covered = false;
+        while (clips.executeStep()) {
+            const auto clock = clips.getColumn(0).getInt();
+            const auto start = clips.getColumn(1).getInt64();
+            const auto physical = [&](std::int64_t value) { return clock == 0 ? time.nanos(value) : value; };
+            if (physical(start) >= range.span.end)
+                continue;
+            const auto length = clips.getColumn(2);
+            if (length.isNull() || (length.getInt64() > 0 &&
+                physical(edit::addTime(start, length.getInt64())) > range.span.begin)) {
+                covered = true;
+                break;
+            }
+        }
+        clips.reset();
+        if (!covered)
+            continue;
+        tracks.insert(range.lane);
+        scope.bounds.begin = std::min(scope.bounds.begin, range.span.begin);
+        scope.bounds.end = std::max(scope.bounds.end, range.span.end);
+        material.clear.push_back(range);
+        if (options.policy.automationFollowsClips)
+            material.envelopes.push_back({range.lane.track, {1, range.span.begin}, {1, range.span.end}, Payload::array()});
+    }
+    if (tracks.empty()) {
+        PreparedEdit ready;
+        ready.ok = true;
+        return ready;
+    }
+    scope.targets.assign(tracks.begin(), tracks.end());
+    CopyIds ids(store.db());
+    ids.reserve("clips", lastIncomingId);
+    return edit_plan::detail::prepareCaptured(store, scope, std::move(material), options, ids, "Import Audio");
+}
+
 } // namespace
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
     return prepareImportAudio(store,options,referenceRate,nullptr);
@@ -255,7 +324,8 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
     return prepareAudio(store, options, referenceRate, index);
 }
-MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, double referenceRate) {
+MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, double referenceRate,
+                                     library::Index* sampleDefaults) {
     if (audio::onAudioThread) return {};
     MaterialEdit material;
     try {
@@ -267,21 +337,37 @@ MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, dou
         material.edit.requests = batch.createTracks;
         ImportedHashes hashes;
         auto next = batch.imports.front().at;
+        const bool replace = batch.placementPolicy && batch.placementPolicy->deleteOverlaps;
+        std::vector<edit_plan::ClearInterval> covered;
+        std::int64_t lastIncomingId = 0;
         for (std::size_t i = 0; i < batch.imports.size(); ++i) {
             auto options = batch.imports[i];
             if (batch.consecutive && i != 0) options.at = next;
-            std::int64_t end = 0;
-            auto file = prepareAudio(store, options, referenceRate, nullptr, &hashes, &end);
+            if (batch.placementPolicy)
+                options.arrangementPlacement.reset();
+            ImportedPlacement placement;
+            auto file = prepareAudio(store, options, referenceRate, sampleDefaults, &hashes, &placement);
             if (!file.edit.ok) {
                 material.edit.error = std::move(file.edit.error);
                 material.refusedImport = i;
                 return material;
             }
-            next = {0, end};
+            next = {0, placement.endTicks};
+            lastIncomingId = std::max(lastIncomingId, options.clipId);
+            if (replace)
+                covered.push_back(placement.range);
             if (i == 0) material.edit.sourceFile = std::move(file.edit.sourceFile);
             for (auto &request : file.edit.requests)
                 material.edit.requests.push_back(std::move(request));
             material.files.push_back(std::move(file.files.front()));
+        }
+        if (replace) {
+            auto cleared = prepareBatchReplacement(store, covered, {referenceRate, *batch.placementPolicy}, lastIncomingId);
+            if (!cleared.ok)
+                throw std::runtime_error(cleared.error);
+            const auto afterTracks = material.edit.requests.begin() + static_cast<std::ptrdiff_t>(batch.createTracks.size());
+            material.edit.requests.insert(afterTracks, std::make_move_iterator(cleared.requests.begin()),
+                                          std::make_move_iterator(cleared.requests.end()));
         }
         material.edit.ok = true;
     } catch (const std::exception& error) {

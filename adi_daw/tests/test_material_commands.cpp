@@ -161,6 +161,38 @@ void batchImports() {
           History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22").getInt() == 3,
           "SC-158: one Undo and one Redo cover the complete drop");
 }
+void batchReplacement() {
+    Project project;
+    auto& db = project.store->db();
+    db.exec("INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) "
+            "VALUES(6,21,'midi','Original',0,1000000)");
+    auto first = project.options();
+    first.at = {0, 200000};
+    auto second = first;
+    second.clipId = 9;
+    second.mediaId = 10;
+    clip_edit::ImportBatch batch;
+    batch.expectedHead = OpJournal(*project.store).headSeq();
+    batch.consecutive = true;
+    batch.placementPolicy.emplace();
+    batch.imports = {first, second};
+    auto prepared = clip_edit::prepareImportAudioBatch(*project.store, batch, 48000);
+    const auto applied = clip_edit::commitMaterial(*project.store, prepared);
+    if (!applied.ok)
+        std::printf("batch replacement: %s\n", applied.error.c_str());
+    check(prepared.edit.ok && applied.ok &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21").getInt() == 4 &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=6").getInt64() == 200000 &&
+              db.execAndGet("SELECT count(*) FROM clips a,clips b,clips tail WHERE a.id=7 AND b.id=9 "
+                            "AND tail.name='Original' AND b.pos_ticks=a.pos_ticks+a.length_ticks "
+                            "AND tail.pos_ticks=b.pos_ticks+b.length_ticks "
+                            "AND tail.pos_ticks+tail.length_ticks=1000000").getInt() == 1,
+          "SC-35/158: consecutive files in one drop clear the same original together and preserve both faces");
+    check(applied.ok && History(*project.store).undo().ok &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21").getInt() == 1 &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=6").getInt64() == 1000000,
+          "SC-35/158: one Undo restores the whole original after a consecutive replacement");
+}
 void bounce() {
     Project p;auto& db=p.store->db();auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"bounce fixture imports source");
@@ -230,4 +262,4 @@ void bounceInPlaceAndStale() {
 }
 
 }
-int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();batchReplacement();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

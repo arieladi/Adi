@@ -134,6 +134,8 @@ constexpr ScalarSpec kScalars[] = {
      FieldType::Bool, EngineImpact::Snapshot, false},
     {"clip.setGain", "Set a clip's gain", "clips", "id", "gain_db", "gain",
      FieldType::Real, EngineImpact::Snapshot, true},
+    {"audioClip.setTranspose", "Set an audio clip's pitch", "audio_clips", "clip_id", "transpose_semis", "semitones",
+     FieldType::Real, EngineImpact::Snapshot, true},
     {"clip.setColor", "Recolour a clip", "clips", "id", "color", "color",
      FieldType::Int, EngineImpact::None, false},
 
@@ -209,6 +211,10 @@ bool scalarApply(OpContext& c, const Payload& p, std::string& err) {
                 if (track.executeStep() && otherMainOutput(c.db, track.getColumn(0).getInt64(), id))
                     throw std::runtime_error("track already has an enabled main output");
             }
+        }
+        if constexpr (std::string_view(S.op) == "audioClip.setTranspose") {
+            if (!c.replay && !(std::abs(p.at("semitones").get<double>()) <= 48.))
+                throw std::runtime_error("clip pitch must be between -48 and 48 semitones");
         }
         SQLite::Statement st(c.db, std::string("UPDATE ") + S.table + " SET " + S.col +
                                        " = ? WHERE " + S.idCol + " = ?");

@@ -387,7 +387,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
-    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                       const std::filesystem::path &defaultsIndex = {});
+    // An explicit Library write, available even for a read-only project.
+    bool saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex);
     struct ClipRelinkTarget {
         std::int64_t clipId{}, mediaId{};
         std::string hash, originalName;
@@ -405,17 +408,19 @@ class ProjectDocument final : public engine::BlockProcessor {
     // stale when the project changed meanwhile, leaving nothing behind.
     struct MaterialJob {
         std::filesystem::path project, source;
+        std::filesystem::path defaultsIndex;
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
+        edit_plan::EditPolicy placementPolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
-                            const ImportChoices &, std::int64_t nowUtc) const;
+                            const ImportChoices &, std::int64_t nowUtc, edit_plan::EditPolicy = {}) const;
     static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
     // The new clip's id when it landed; 0 with `error()` saying why when it did not.
     std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
     struct MaterialBatchJob {
-        std::filesystem::path project;
+        std::filesystem::path project, defaultsIndex;
         clip_edit::ImportBatch batch;
         double rate = 48000.0;
     };

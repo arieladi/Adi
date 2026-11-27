@@ -699,6 +699,8 @@ void unwarpedRecordingTempoChanges() {
     auto prepared = recording::prepareCommit(*f.store, recorded, ids);
     if (!recording::commit(*f.store, prepared).ok)
         throw std::runtime_error("could not publish the recording");
+    // Recorded takes follow the Set by default (SC-248). Turn Warp off
+    // through the Clip View command to exercise SC-11.
     clip_edit::WarpOptions warp;
     warp.enabled = false;
     const auto unwarped = clip_edit::prepareSetWarp(*f.store, 7, warp, 48000);

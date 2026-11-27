@@ -454,7 +454,7 @@ struct ArrangementGeometry {
         left = std::max(0., at - pixel / scale);
     }
     void zoomAround(double factor, std::int64_t at) noexcept { zoom(factor, x(at)); }
-    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true) noexcept {
+    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true, double minimumQuarters = 1.) noexcept {
         if (remember) {
             if (historySize == history.size()) {
                 std::move(history.begin() + 1, history.end(), history.begin());
@@ -464,7 +464,7 @@ struct ArrangementGeometry {
         }
         left = static_cast<double>(start) / textproj::kPPQ;
         scale = std::clamp(static_cast<double>(std::max(width, 1)) /
-                               std::max(1., static_cast<double>(end - start) / textproj::kPPQ),
+                               std::max(minimumQuarters, static_cast<double>(end - start) / textproj::kPPQ),
                            1., 4096.);
     }
     void back() noexcept {

@@ -78,6 +78,8 @@ struct AudioMediaIdentity {
     std::string contentHash;
     std::optional<std::int64_t> sampleRate,channels,frames;
     bool missing=false; // stored pool flag, not a fresh filesystem probe
+    std::string originalName{};
+    std::optional<std::int64_t> bitDepth{};
     friend bool operator==(const AudioMediaIdentity&,const AudioMediaIdentity&)=default;
 };
 struct AudioClipSource {
@@ -122,6 +124,9 @@ struct ClipNode {
     std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
     std::optional<double> fadeInTension,fadeOutTension;
     std::int64_t contentOffsetTicks=0;
+    bool loopEnabled=false;
+    std::int64_t loopStartTicks=0;
+    std::optional<std::int64_t> loopLengthTicks;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain

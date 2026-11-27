@@ -11,6 +11,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -329,6 +330,160 @@ void unwarpedTempoChanges() {
         atTempo(60, "tempo redo restores the exact unwarped endpoint");
     }
 }
+void reversedSource() {
+    constexpr int start=73, source=37, length=21001, block=317;
+    const auto addReversed = [](Fixture& fixture) {
+        fixture.add(1,start,length,source,length);
+        fixture.store->db().exec("UPDATE audio_clips SET reverse=1");
+    };
+    Fixture f(48000,2,30000);
+    addReversed(f);
+    f.load(block);
+    bool exact=true;
+    for(int at=0;at<start+length+block;at+=block) {
+        const auto out=f.render(block);
+        for(int channel=0;channel<2;++channel)for(int frame=0;frame<block;++frame) {
+            const auto local=at+frame-start;
+            const auto expected=local<0 || local>=length ? 0.0f :
+                f.media[static_cast<std::size_t>(2*(source+length-1-local)+channel)];
+            exact=exact && out[static_cast<std::size_t>(channel*block+frame)]==expected;
+        }
+    }
+    check(exact && f.session.problems().empty() && f.session.clips()->underrunSamples()==0,
+          "native reverse plays the source window frame-exactly with intact channels across disk pages");
+
+    Fixture forward(48000,2,30000);
+    forward.add(1,start,length,source,length);
+    for(int i=0;i<length/2;++i)for(int c=0;c<2;++c)
+        std::swap(forward.media[static_cast<std::size_t>(2*(source+i)+c)],
+                  forward.media[static_cast<std::size_t>(2*(source+length-1-i)+c)]);
+    {
+        audio::WavWriter writer(forward.dir.path()/"audio.wav",48000,2,audio::WavFormat::Float32);
+        writer.write(forward.media.data(),30000);
+        writer.close();
+    }
+    Fixture reversed(48000,2,30000);
+    addReversed(reversed);
+    reversed.load(block,44100);
+    forward.load(block,44100);
+    bool resampled=true;
+    for(const auto at:{13000,200,7500}) {
+        reversed.session.transport().locate(at);
+        forward.session.transport().locate(at);
+        resampled=resampled && reversed.render(block)==forward.render(block);
+    }
+    check(resampled,"reverse seeks and resampling match a physically reversed source window");
+}
+void reverseSelectedRange() {
+    constexpr int source=37, block=512;
+    constexpr auto quarter=textproj::kPPQ;
+    Fixture f(48000,2,40000);
+    f.add(1,0,24000,source,30000);
+    const auto hash = media::blake3File(f.dir.path() / "audio.wav");
+    if (!hash) {
+        check(false,"hash the Reverse selection's source file");
+        return;
+    }
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
+    const std::array clips{std::int64_t{1}};
+    const auto edit=clip_edit::prepareReverse(*f.store,clips,std::pair{quarter/4,quarter/2},48000);
+    if (!edit.ok) {
+        check(false,edit.error.c_str());
+        return;
+    }
+    const auto committed = clip_edit::commitPrepared(*f.store,edit);
+    if (!committed.ok) {
+        check(false,committed.error.c_str());
+        return;
+    }
+    check(edit.requests.size()==1,"Reverse captures both cuts and the selected audio in one edit");
+    f.load(block);
+    const auto matches=[&](bool reversed) {
+        bool exact=true;
+        f.session.transport().locate(0);
+        for(int at=0;at<24000;at+=block) {
+            const auto out=f.render(block);
+            for(int i=0;i<block && at+i<24000;++i) {
+                const auto t=at+i;
+                const auto material=reversed && t>=6000 && t<12000?17999-t:t;
+                exact=exact && out[static_cast<std::size_t>(i)]==f.media[static_cast<std::size_t>(2*(source+material))];
+            }
+        }
+        return exact;
+    };
+    check(matches(true),"the reversed middle plays only the selected audio with forward material on both sides");
+    check(History(*f.store).undo().ok && f.session.refresh(*f.store) && matches(false),
+          "one undo restores the original uninterrupted playback");
+}
+void reverseSelectedRepeats() {
+    constexpr int block=256, loopSource=7, nextSource=500;
+    const auto at=[](std::int64_t frame) {return frame*textproj::kPPQ/24000;};
+    Fixture f(48000,2,2000);
+    f.add(1,0,1200,loopSource,300);
+    f.add(2,1200,120,nextSource,120);
+    const auto hash=media::blake3File(f.dir.path()/"audio.wav");
+    if(!hash){check(false,"hash the looping Reverse selection source");return;}
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
+    f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=24024 WHERE id=1;"
+                       "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,48048);"
+                       "INSERT INTO clip_playback_details(clip_id,source_end_ns,loop_begin_ns,loop_end_ns,in_begin_ns,in_end_ns) "
+                       "VALUES(1,4166667,2083333,4166667,0,520833);");
+    const std::array both{std::int64_t{1},std::int64_t{2}};
+    const std::array loop{std::int64_t{1}};
+    const auto head=OpJournal(*f.store).headSeq();
+    const auto mixed=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(250)},48000);
+    check(!mixed.ok && mixed.error.find("intro")!=std::string::npos && OpJournal(*f.store).headSeq()==head,
+          "an intro followed by loop wraps refuses without changing any clip");
+
+    const auto read=[&] {
+        std::array<float,1320> pcm{};
+        f.session.transport().locate(0);
+        for(int start=0;start<1320;start+=block) {
+            const auto out=f.render(block);
+            std::copy_n(out.begin(),std::min(block,1320-start),pcm.data()+start);
+        }
+        return pcm;
+    };
+    f.load(block);
+    const auto original=read();
+    const auto matches=[&](auto&& originalIndex) {
+        const auto pcm=read();
+        for(int i=0;i<1320;++i)
+            if(pcm[static_cast<std::size_t>(i)]!=original[static_cast<std::size_t>(originalIndex(i))])return false;
+        return true;
+    };
+    const auto reversed=clip_edit::prepareReverse(*f.store,both,std::pair{at(900),at(1250)},48000);
+    check(reversed.ok && reversed.requests.size()==1,"a late repeat and its neighbor can be reversed in one prepared edit");
+    if(reversed.ok && clip_edit::commitPrepared(*f.store,reversed).ok && f.session.refresh(*f.store)) {
+        check(matches([](int frame) {
+            if(frame>=900 && frame<1200)return 2099-frame;
+            if(frame>=1200 && frame<1250)return 2449-frame;
+            return frame;
+        }),"Reverse changes only the selected later repeats and the covered portion of the neighboring clip");
+        if(!History(*f.store).undo().ok || !f.session.refresh(*f.store)) {
+            check(false,"one Undo restores both selected clips");
+            return;
+        }
+        check(read()==original,"one Undo restores the initial loop phase and neighboring PCM");
+    } else if(reversed.ok) {
+        check(false,"commit the single captured Reverse edit for both clips");
+        return;
+    }
+
+    const auto firstPass=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(175)},48000);
+    const bool committed=firstPass.ok && clip_edit::commitPrepared(*f.store,firstPass).ok && f.session.refresh(*f.store);
+    check(committed && matches([](int frame) {
+        return frame>=50 && frame<175?224-frame:frame;
+    }),"the intro and uninterrupted first pass reverse as a one-shot, keeping the surrounding loop intact");
+}
 void takeLanePlayback() {
     Fixture f;
     f.add(1, 0, 500, 11, 1000);
@@ -389,6 +544,44 @@ void properties() {
         Fixture m;m.add(1,0,100,0,100);m.store->db().exec("UPDATE audio_clips SET channel_mode="+std::to_string(mode));m.load(128);o=m.render(128);
         const float want=mode==1?m.media[20]:(m.media[20]+m.media[21])*0.5f;
         check(o[10]==want && o[138]==want,"left and mono-sum channel modes");
+    }
+}
+void legacyUnwarpedLoopPastSource() {
+    for (const auto offset : {0, 96096}) {
+        Fixture f;
+        f.add(1, 0, 2000, 7, 300);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                           "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                           "content_offset_ticks=" + std::to_string(offset));
+        f.load(512);
+        const auto audio = f.render(512);
+        check(audio.front() == f.media[14] && audio[299] == f.media[612] && audio[300] == 0,
+              "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
+    }
+}
+void legacyUnwarpedLoopRetainsEnd() {
+    for (const bool physicalEnd : {false, true}) {
+        for (const auto &[offsetTicks, firstFrame] : {std::pair{0, 0}, std::pair{6006, 50},
+                                                        std::pair{24024, 0}, std::pair{96096, 0}}) {
+            Fixture f;
+            f.add(1, 0, 2000, 7, 300);
+            f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                               "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                               "content_offset_ticks=" + std::to_string(offsetTicks));
+            if (physicalEnd)
+                f.store->db().exec("INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,2500000)");
+            else
+                f.store->db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,15015)");
+            f.load(512);
+            const auto pcm = f.render(512);
+            const auto endFrame = physicalEnd ? 120 : 125;
+            const auto played = static_cast<std::size_t>(endFrame - firstFrame);
+            check(pcm.front() == f.media[static_cast<std::size_t>(7 + firstFrame) * 2] &&
+                      pcm[played - 1] == f.media[static_cast<std::size_t>(7 + endFrame - 1) * 2] &&
+                      std::all_of(pcm.begin() + static_cast<std::ptrdiff_t>(played), pcm.begin() + 512,
+                                  [](float sample) { return sample == 0.f; }),
+                  "the nonloop fallback respects End and resets only offsets outside that interval");
+        }
     }
 }
 void editedFades() {
@@ -1657,9 +1850,9 @@ void unsupported() {
         f.add(2,0,500,0,1000);
         f.store->db().exec("UPDATE clips SET muted=1 WHERE id=2");
         if(kind==0)f.store->db().exec("UPDATE audio_clips SET warp_enabled=1");
-        if(kind==1)f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=1");
+        if(kind==1)f.store->db().exec("UPDATE audio_clips SET formant_shift=1 WHERE clip_id=1");
         if(kind==2){std::ofstream file(f.dir.path()/"audio.wav",std::ios::binary|std::ios::trunc);file<<"not WAV";}
-        if(kind==3)f.store->db().exec("UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=1");
+        if(kind==3)f.store->db().exec("UPDATE audio_clips SET transpose_semis=49 WHERE clip_id=1");
         f.load(512);const auto o=f.render(512);
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
         check(f.session.clipPlaybackUnavailable(1) && !f.session.clipPlaybackUnavailable(2),
@@ -1672,12 +1865,15 @@ void missingMediaOnUnplayedClips() {
         f.add(1, 0, 500, 0, 1000);
         f.add(2, 0, 500, 0, 1000);
         f.store->db().exec("UPDATE clips SET muted=1 WHERE id=1;"
-                           "UPDATE audio_clips SET reverse=1 WHERE clip_id=2");
+                           "UPDATE audio_clips SET formant_shift=1 WHERE clip_id=2");
         if (missing) fs::rename(f.dir.path() / "audio.wav", f.dir.path() / "moved.wav");
         f.load(64);
         const auto* playback = f.session.clips();
         check(playback->mediaUnavailable(1) == missing, "a muted clip reports whether its source file is missing");
-        check(playback->mediaUnavailable(2) == missing, "a reversed clip reports whether its source file is missing");
+        check(playback->mediaUnavailable(2) == missing, "an unsupported clip reports whether its source file is missing");
+        const auto& problems = playback->problems();
+        check(problems.size() == 1 && problems.front().find("unwarped formant shift unsupported") != std::string::npos,
+              "the unsupported clip reports its playback problem even when the source file is missing");
         const auto pcm = f.render(64);
         check(playback->externalSources().empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0.f; }),
               "checking skipped clip media leaves both clips out of playback");
@@ -1857,9 +2053,10 @@ int main(int argc,char** argv) {
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
+        if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();reverseSelectedRepeats();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
-        if(only=="all" || only=="properties")properties();
+        if(only=="all" || only=="properties"){properties();legacyUnwarpedLoopPastSource();legacyUnwarpedLoopRetainsEnd();}
         if(only=="all" || only=="fades"){editedFades();shortenedFade();resizeClampsFades();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
