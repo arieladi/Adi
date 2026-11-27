@@ -1071,6 +1071,7 @@ class AdiRootComponent final : public juce::Component,
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     bool infoShown_ = true;
     bool infoPressed_ = false;
+    DensityId appliedDensity_ = DensityId::Compact;
     void applyInfoAnalyserMode();
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs

@@ -1724,8 +1724,8 @@ void AdiRootComponent::frame() noexcept {
         arrangement.geometry.selection = session_.selection();
         dirty_.mark(DirtySet::Layout);
     }
-    // The Info View is app-scoped: a toggle in another window shows here too.
-    if (infoShown_ != commands_.infoView()) {
+    // The Info View and density are app-scoped and can change in another window.
+    if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
         infoShown_ = commands_.infoView();
         resized();
     }
@@ -1867,6 +1867,7 @@ int AdiRootComponent::shownPanelWidth(const PanelGeometry &panel) const noexcept
     return panel.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth : width;
 }
 void AdiRootComponent::resized() {
+    appliedDensity_ = look::densityId();
     const int w = getWidth(), h = getHeight(), gap = look::gap;
     transport.setBounds(0, 0, w, look::controlBarHeight);
     status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);

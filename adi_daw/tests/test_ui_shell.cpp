@@ -20559,9 +20559,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.command(AppCommands::ToggleMixView);
     }
 }
-void appearanceSettingsView(settings::AppSettings &settings, AppCommands &commands) {
+void appearanceSettingsView(settings::AppSettings &settings, AppCommands &commands, const std::filesystem::path &dir) {
     const auto oldTheme = settings.get("lookfeel.theme");
     const auto oldDensity = settings.get("lookfeel.density");
+    std::string error;
     SettingsPanel panel(settings);
     panel.setSize(560, 680);
     panel.onChange = [&] { commands.reload(); };
@@ -20581,6 +20582,43 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
               density->getItemText(0) == "Compact" && density->getItemText(1) == "Open",
           "Theme & Colors presents four themes and two densities");
     if (theme && density) {
+        density->setSelectedItemIndex(0, juce::sendNotificationSync);
+        commands.reload();
+        auto document = ProjectDocument::open(dir / "appearance-density.adi", true, {}, error);
+        check(document != nullptr, "a peer-free project for changing density in an open workspace");
+        if (document) {
+            AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                                  document->sessionState(), "appearance-density");
+            root.setSize(1440, 900);
+            root.frame();
+            const auto &compact = densityFor(DensityId::Compact);
+            const auto &open = densityFor(DensityId::Open);
+            check(root.transport.getHeight() == compact.controlBarHeight && root.arrangement.getY() == compact.controlBarHeight,
+                  "Compact lays out the Control Bar and Arrangement");
+            density->setSelectedItemIndex(1, juce::sendNotificationSync);
+            root.frame();
+            check(root.transport.getHeight() == open.controlBarHeight && root.arrangement.getY() == open.controlBarHeight &&
+                      root.status.getHeight() == open.statusBarHeight,
+                  "an open Arrangement adopts the Open density without a window resize");
+            check(root.setMixView(true, false), "open the docked Mix View Stack");
+            root.frame();
+            auto &stackPanel = root.mixViewPanel.stack;
+            const auto openGeometry = stack::mixChannelGeometry(DensityId::Open);
+            check(stackPanel.model().windowView().baseHeight == open.mixStackRow &&
+                      stackPanel.model().constants().pluginChipWidth == open.mixPluginChipWidth &&
+                      stackPanel.rowSize.getMaximum() == openGeometry.baseMax,
+                  "the existing Stack adopts Open row and plug-in geometry");
+            constexpr int customHeight = 97;
+            root.state().mixStackBaseHeight = customHeight;
+            root.state().mixStackSearch = "MIDI";
+            stackPanel.adoptViewState();
+            density->setSelectedItemIndex(0, juce::sendNotificationSync);
+            root.frame();
+            check(stackPanel.model().constants().baseDefault == compact.mixStackRow &&
+                      stackPanel.model().windowView().baseHeight == customHeight &&
+                      stackPanel.model().windowView().search == "MIDI" && stackPanel.rowSize.getValue() == customHeight,
+                  "switching the visible Stack to Compact keeps its custom row height and filter");
+        }
         density->setSelectedItemIndex(1, juce::sendNotificationSync);
         for (std::size_t i = 0; i < kThemes.size(); ++i) {
             const auto id = kThemes[i];
@@ -21524,7 +21562,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "[shell] end %s\n", name);
     };
     if (argc == 2 && std::string(argv[1]) == "--appearance-settings-only") {
-        appearanceSettingsView(settings, commands);
+        appearanceSettingsView(settings, commands, temp.path());
         std::printf("%d checks, %d failures (appearance settings components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -21683,7 +21721,7 @@ int main(int argc, char **argv) {
                 }
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
-        appearanceSettingsView(settings, commands);
+        appearanceSettingsView(settings, commands, temp.path());
         // The shared controls (DF-W24 step 3; language.png parts B, C, D): one painter each.
         look::apply(ThemeId::Dark, DensityId::Compact);
         {
