@@ -156,25 +156,28 @@ double transitionAt(std::span<const Observation> run, std::size_t boundary) {
     return std::min(std::abs(local), std::abs(sustained)) - (before.spread + after.spread) / 2;
 }
 
-PitchNote makeNote(std::span<const Observation> voiced, std::uint64_t start, std::uint64_t end, std::uint64_t hop,
-                   std::vector<double>& pitches) {
-    PitchNote note;
-    note.startFrame = start;
-    note.endFrame = end;
-    note.curve.reserve(voiced.size());
+bool validCurve(const PitchNote& note) noexcept {
+    if (note.startFrame >= note.endFrame || note.curve.empty()) return false;
+    auto earliest = note.startFrame;
+    for (const auto& point : note.curve) {
+        if (point.frame < earliest || point.frame >= note.endFrame || !validCents(point.cents)) return false;
+        earliest = point.frame + 1;
+    }
+    return true;
+}
+
+void measureNote(PitchNote& note, std::vector<double>& pitches) {
     pitches.clear();
-    pitches.reserve(voiced.size());
+    pitches.reserve(note.curve.size());
     double pitchSum = 0;
     double timeSum = 0;
-    const auto count = static_cast<double>(voiced.size());
-    const auto duration = static_cast<double>(end - start);
-    for (std::size_t index = 0; index < voiced.size(); ++index) {
-        const auto frame = std::min(start + index * hop + hop / 2, end - 1);
-        const double pitch = voiced[index].cents;
-        note.curve.push_back({frame, pitch});
-        pitches.push_back(pitch);
-        pitchSum += pitch;
-        timeSum += static_cast<double>(frame - start) / duration;
+    const auto count = static_cast<double>(note.curve.size());
+    const auto start = note.startFrame;
+    const auto duration = static_cast<double>(note.endFrame - start);
+    for (const auto& point : note.curve) {
+        pitches.push_back(point.cents);
+        pitchSum += point.cents;
+        timeSum += static_cast<double>(point.frame - start) / duration;
     }
 
     const auto middle = pitches.begin() + static_cast<std::ptrdiff_t>(pitches.size() / 2);
@@ -197,6 +200,19 @@ PitchNote makeNote(std::span<const Observation> voiced, std::uint64_t start, std
         residualSquares += residual * residual;
     }
     note.vibratoCents = std::sqrt(residualSquares / count);
+}
+
+PitchNote makeNote(std::span<const Observation> voiced, std::uint64_t start, std::uint64_t end, std::uint64_t hop,
+                   std::vector<double>& pitches) {
+    PitchNote note;
+    note.startFrame = start;
+    note.endFrame = end;
+    note.curve.reserve(voiced.size());
+    for (std::size_t index = 0; index < voiced.size(); ++index) {
+        const auto frame = std::min(start + index * hop + hop / 2, end - 1);
+        note.curve.push_back({frame, voiced[index].cents});
+    }
+    measureNote(note, pitches);
     return note;
 }
 
@@ -297,17 +313,18 @@ bool validPitchAnalysis(const PitchAnalysis& analysis) noexcept {
     if (!validRate(analysis.sampleRate) || analysis.sourceFrames == 0) return false;
     std::uint64_t previousEnd = 0;
     for (const auto& note : analysis.notes) {
-        if (note.startFrame < previousEnd || note.endFrame <= note.startFrame || note.endFrame > analysis.sourceFrames ||
+        if (note.startFrame < previousEnd || note.endFrame > analysis.sourceFrames ||
             !validCents(note.pitchCents) || !validCents(note.driftCents) || !validCents(note.vibratoCents) ||
-            note.vibratoCents < 0 || note.curve.empty()) return false;
-        auto earliest = note.startFrame;
-        for (const auto& point : note.curve) {
-            if (point.frame < earliest || point.frame >= note.endFrame || !validCents(point.cents)) return false;
-            earliest = point.frame + 1;
-        }
+            note.vibratoCents < 0 || !validCurve(note)) return false;
         previousEnd = note.endFrame;
     }
     return true;
+}
+
+bool summarizePitchNote(PitchNote& note, std::vector<double>& workspace) {
+    if (onAudioThread || !validCurve(note)) return false;
+    measureNote(note, workspace);
+    return validCents(note.pitchCents) && validCents(note.driftCents) && validCents(note.vibratoCents);
 }
 
 PitchAnalysisResult analyzePitch(std::span<const float> mono, std::uint32_t sourceRate, std::stop_token stop) {

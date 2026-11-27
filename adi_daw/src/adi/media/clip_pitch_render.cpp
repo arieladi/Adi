@@ -259,13 +259,14 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
         const auto edits = clip_edit::resolveClipPitchEdits(saved, *analyzed.analysis, identity.hash,
                                                            kPitchAnalysisVersion, kPitchAnalysisConfiguration);
         if (!edits.state) return fail(ClipPitchRenderProblem::Edits, edits.error.c_str());
+        const auto& effective = edits.adjustedAnalysis ? *edits.adjustedAnalysis : *analyzed.analysis;
 
         const auto first = static_cast<std::size_t>(plan.sourceStart);
         const auto count = static_cast<std::size_t>(plan.sourceFrames);
         std::unique_ptr<const std::vector<float>> renderedMono;
         std::span<const float> window;
         if (channels == 1) {
-            renderedMono = renderChannel(pcm, *analyzed.analysis, *edits.state, stop);
+            renderedMono = renderChannel(pcm, effective, *edits.state, stop);
             window = std::span(*renderedMono).subspan(first, count);
         } else {
             // Every original channel shares the same note clock and controls.
@@ -275,7 +276,7 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
                     if (frame % blockFrames == 0) checkCancelled(stop);
                     mono[frame] = pcm[frame * channels + channel];
                 }
-                const auto changed = renderChannel(mono, *analyzed.analysis, *edits.state, stop);
+                const auto changed = renderChannel(mono, effective, *edits.state, stop);
                 for (std::size_t frame = first; frame < first + count; ++frame) {
                     if (frame % blockFrames == 0) checkCancelled(stop);
                     pcm[frame * channels + channel] = (*changed)[frame];

@@ -13,6 +13,8 @@
 
 namespace adi::audio {
 
+enum class PitchBoundary { Start, End };
+
 struct PitchTiltGeometry {
     double anchor = 0.5; // normalized source position, from first to last sample
     double startCents = 0;

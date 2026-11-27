@@ -285,11 +285,12 @@ void buildCurve(Event& event, const audio::PitchNote& note, const audio::PitchNo
         [](const auto& a, const auto& b) { return a.at == b.at; }), event.curve.end());
 }
 
-std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const audio::PitchEditState& edits,
+std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const audio::PitchAnalysis& notes,
+                                const audio::PitchEditState& edits,
                                 const PitchMidiOptions& options, const Clock& clock) {
     auto selected = std::vector(options.selectedNotes.begin(), options.selectedNotes.end());
     std::sort(selected.begin(), selected.end());
-    if ((!selected.empty() && selected.back() >= analysis.analysis.notes.size()) ||
+    if ((!selected.empty() && selected.back() >= notes.notes.size()) ||
         std::adjacent_find(selected.begin(), selected.end()) != selected.end())
         throw CaptureError{PitchMidiProblem::Edits, "invalid or duplicate source pitch note selection"};
     if (options.velocity == 0 || options.velocity > 127)
@@ -302,9 +303,9 @@ std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const 
     std::vector<audio::PitchNoteEdit> timeline;
     if (options.includePitchCurve &&
         std::any_of(edits.notes.begin(), edits.notes.end(), [](const auto& edit) { return edit.transitionFrames != 0; })) {
-        timeline.reserve(analysis.analysis.notes.size());
-        for (std::size_t index = 0; index < analysis.analysis.notes.size(); ++index)
-            timeline.push_back(audio::resolvePitchNoteEdit(analysis.analysis, edits, index));
+        timeline.reserve(notes.notes.size());
+        for (std::size_t index = 0; index < notes.notes.size(); ++index)
+            timeline.push_back(audio::resolvePitchNoteEdit(notes, edits, index));
         std::sort(timeline.begin(), timeline.end(), [](const auto& a, const auto& b) { return a.endFrame < b.endFrame; });
     }
 
@@ -312,11 +313,11 @@ std::vector<Event> collectNotes(const media::ClipPitchAnalysis& analysis, const 
     const auto last = analysis.sourceEndFrame;
     std::vector<Event> events;
     std::size_t curvePoints = 0;
-    for (std::size_t index = 0; index < analysis.analysis.notes.size(); ++index) {
+    for (std::size_t index = 0; index < notes.notes.size(); ++index) {
         cancellation(options.stop);
         if (!selected.empty() && !std::binary_search(selected.begin(), selected.end(), index)) continue;
-        const auto& note = analysis.analysis.notes[index];
-        const auto edit = audio::resolvePitchNoteEdit(analysis.analysis, edits, index);
+        const auto& note = notes.notes[index];
+        const auto edit = audio::resolvePitchNoteEdit(notes, edits, index);
         if (edit.gainDb == -std::numeric_limits<double>::infinity()) continue;
         const auto begin = std::max(first, edit.startFrame);
         const auto end = std::min(last, edit.endFrame);
@@ -381,16 +382,17 @@ PitchMidiProjection::PitchCurve projectCurve(const Event& event, const NoteRecor
 }
 
 PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
-                            const media::ClipPitchAnalysis& analysis, const audio::PitchEditState& edited,
+                            const media::ClipPitchAnalysis& analysis, const audio::PitchAnalysis& notes,
+                            const audio::PitchEditState& edited,
                             const PitchMidiOptions& options) {
     const audio::PitchEditState empty;
     const auto& edits = options.content == PitchMidiContent::DetectedMelody ? empty : edited;
-    const auto validation = audio::validatePitchEdits(analysis.analysis, edits);
+    const auto validation = audio::validatePitchEdits(notes, edits);
     if (validation != audio::PitchEditError::None)
         throw CaptureError{PitchMidiProblem::Edits, "pitch MIDI requires valid, nonoverlapping edits"};
     const Clock clock(source, time, analysis.analysis.sampleRate,
                       analysis.sourceEndFrame - analysis.sourceStartFrame);
-    const auto events = collectNotes(analysis, edits, options, clock);
+    const auto events = collectNotes(analysis, notes, edits, options, clock);
     PitchMidiProjection result{clock.positionTicks, clock.lengthTicks, {}, {}};
     std::size_t points = 0;
     const auto intersecting = [&events](std::int64_t begin) {
@@ -586,18 +588,21 @@ const char* labelFor(PitchMidiContent content) {
     return content == PitchMidiContent::DetectedMelody ? "Convert Melody" : "Extract MIDI";
 }
 
-PitchMidiResult<audio::PitchEditState> readEdits(Store& store, const media::ClipPitchAnalysis& analysis,
-                                              const PitchMidiOptions& options) {
-    if (options.content == PitchMidiContent::EditedPitch) {
-        const auto stored = readClipPitchEdits(store, analysis.clipId);
-        if (!stored.error.empty()) return fail<audio::PitchEditState>(PitchMidiProblem::Edits, stored.error);
-        if (stored.edits) {
-            auto resolved = resolveClipPitchEdits(*stored.edits, analysis);
-            if (!resolved.state) return fail<audio::PitchEditState>(PitchMidiProblem::Edits, resolved.error);
-            return {PitchMidiProblem::None, std::move(resolved.state), {}};
-        }
+ClipPitchEditsResolve readEdits(Store& store, const media::ClipPitchAnalysis& analysis,
+                               const PitchMidiOptions& options) {
+    if (options.content == PitchMidiContent::DetectedMelody) return {audio::PitchEditState{}, {}};
+    auto stored = readClipPitchEdits(store, analysis.clipId);
+    if (!stored.error.empty()) {
+        // The authored payload may be broken but its typed source hash still
+        // identifies an edit dormant under a different attachment.
+        SQLite::Statement identity(store.db(), "SELECT source_hash FROM clip_pitch_edits WHERE clip_id=?");
+        identity.bind(1, analysis.clipId);
+        if (!identity.executeStep() || identity.getColumn(0).getString() == analysis.source.hash)
+            return {{}, std::move(stored.error)};
     }
-    return {PitchMidiProblem::None, audio::PitchEditState{}, {}};
+    if (stored.edits && stored.edits->sourceHash == analysis.source.hash)
+        return resolveClipPitchEdits(*stored.edits, analysis);
+    return {audio::PitchEditState{}, {}};
 }
 
 template<class T>
@@ -614,7 +619,7 @@ PitchMidiResult<PitchMidiProjection> projectPitchMidi(
         cancellation(options.stop);
         auto read = snapshot(store);
         auto source = readSource(store, analysis);
-        auto result = project(source, edit::TimeMap(store.db()), analysis, edits, options);
+        auto result = project(source, edit::TimeMap(store.db()), analysis, analysis.analysis, edits, options);
         if (read) read->commit();
         return {PitchMidiProblem::None, std::move(result), {}};
     } catch (const CaptureError& error) {
@@ -632,13 +637,14 @@ PitchMidiPreparation preparePitchMidi(Store& store, const media::ClipPitchAnalys
         if (store.readOnly()) return fail<PreparedPitchMidi>(PitchMidiProblem::Storage, "project is read-only");
         auto read = snapshot(store);
         const auto source = readSource(store, analysis);
-        const auto edits = readEdits(store, analysis, options);
-        if (!edits) return {edits.problem, {}, edits.detail};
+        auto edits = readEdits(store, analysis, options);
+        if (!edits.state) return fail<PreparedPitchMidi>(PitchMidiProblem::Edits, std::move(edits.error));
+        const auto& notes = edits.adjustedAnalysis ? *edits.adjustedAnalysis : analysis.analysis;
         PreparedPitchMidi result;
         result.owner = &store;
         result.client = store.clientId();
         result.head = OpJournal(store).headSeq();
-        result.projection = project(source, edit::TimeMap(store.db()), analysis, *edits.data, options);
+        result.projection = project(source, edit::TimeMap(store.db()), analysis, notes, *edits.state, options);
         RowIds ids(store.db());
         result.track = options.destinationTrack ? *options.destinationTrack : ids.next("tracks");
         result.midiClip = ids.next("clips");
@@ -661,9 +667,10 @@ PitchMidiResult<ClipCopy> copyPitchMidi(Store& store, const media::ClipPitchAnal
         cancellation(options.stop);
         auto read = snapshot(store);
         const auto source = readSource(store, analysis);
-        const auto edits = readEdits(store, analysis, options);
-        if (!edits) return {edits.problem, {}, edits.detail};
-        const auto midi = project(source, edit::TimeMap(store.db()), analysis, *edits.data, options);
+        auto edits = readEdits(store, analysis, options);
+        if (!edits.state) return fail<ClipCopy>(PitchMidiProblem::Edits, std::move(edits.error));
+        const auto& notes = edits.adjustedAnalysis ? *edits.adjustedAnalysis : analysis.analysis;
+        const auto midi = project(source, edit::TimeMap(store.db()), analysis, notes, *edits.state, options);
         RowIds ids(store.db());
         ClipCopy copy;
         copy.ok = true;

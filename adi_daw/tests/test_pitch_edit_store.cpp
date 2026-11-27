@@ -94,8 +94,9 @@ PitchEditState changed(const media::ClipPitchAnalysis& analysis, double cents = 
     return state;
 }
 
-OpRequest request(const media::ClipPitchAnalysis& analysis, const PitchEditState& state) {
-    auto prepared = prepareClipPitchEdits(analysis, state);
+OpRequest request(const media::ClipPitchAnalysis& analysis, const PitchEditState& state,
+                  const PitchSegmentation* geometry = nullptr) {
+    auto prepared = prepareClipPitchEdits(analysis, state, geometry);
     if (!prepared.request) throw std::runtime_error(prepared.error);
     return std::move(*prepared.request);
 }
@@ -234,6 +235,70 @@ void snapshotRead() {
           "project and single-clip authored reads refuse the audio callback");
 }
 
+void authoredGeometry() {
+    Fixture fixture;
+    const auto base = source();
+    const auto edits = changed(base);
+    OpJournal journal(*fixture.store);
+    if (!journal.commit(request(base, edits)).ok) throw std::runtime_error("could not seed clip pitch edit");
+    const auto original = fixture.row();
+
+    auto draft = draftPitchSegments(base.analysis, edits);
+    if (!draft) throw std::runtime_error("could not draft clip pitch segmentation");
+    const PitchSegmentationCommand split[] = {PitchSplitSegment{1, 300}};
+    if (applyPitchSegmentation(base.analysis, *draft.draft, split) != PitchEditError::None)
+        throw std::runtime_error("could not split fixture note");
+    const auto& geometry = draft.draft->geometry;
+    const auto authored = request(base, draft.draft->edits, &geometry);
+    auto malformed = authored;
+    malformed.payload["segmentation"]["segments"][1]["id"] = 1;
+    check(!journal.commit(malformed).ok && fixture.row() == original,
+          "duplicate stable segment ID refuses atomically");
+    malformed = authored;
+    malformed.payload["rows"][0]["sourceStart"] = 601;
+    check(!journal.commit(malformed).ok && fixture.row() == original,
+          "authored edit bounds must match the stored segment they identify");
+    const auto committed = journal.commit(authored);
+    check(committed.ok && fixture.row() != original, "one operation commits split geometry with the retained note edit");
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    const auto afterSplit = fixture.row();
+
+    fixture.reopen();
+    const auto stored = readClipPitchEdits(*fixture.store, 15);
+    check(stored.edits && stored.edits->segmentation == geometry && fixture.row() == afterSplit,
+          "reopening preserves split segment IDs, bounds and next ID");
+    if (!stored.edits || !stored.edits->segmentation) throw std::runtime_error("authored split geometry is missing");
+    const auto effective = resolveClipPitchEdits(*stored.edits, base);
+    check(effective.state && effective.state->notes == draft.draft->edits.notes && effective.adjustedAnalysis &&
+          effective.adjustedAnalysis->notes == draft.draft->analysis.notes,
+          "immutable detector curves reconstitute authored geometry before applying sparse edits");
+
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.row() == original, "undo restores exact original array-form CBOR");
+    check(history.redo().ok && fixture.row() == afterSplit, "redo restores exact geometry-form CBOR");
+
+    auto impossible = *stored.edits;
+    impossible.segmentation->segments[1].endFrame = 550;
+    check(!resolveClipPitchEdits(impossible, base).state,
+          "stored geometry cannot project outside the available detector frames");
+
+    const PitchSegmentation empty{{}, geometry.nextId};
+    const auto deleted = OpJournal(*fixture.store).commit(request(base, {}, &empty));
+    check(deleted.ok && fixture.row(), "explicit deletion of every segment remains an authored row");
+    const auto afterDelete = fixture.row();
+    fixture.reopen();
+    const auto storedEmpty = readClipPitchEdits(*fixture.store, 15);
+    check(storedEmpty.edits && storedEmpty.edits->segmentation == empty && fixture.row() == afterDelete,
+          "no-segments geometry survives reopen and keeps its next ID");
+    if (!storedEmpty.edits) throw std::runtime_error(storedEmpty.error);
+    const auto emptyEffective = resolveClipPitchEdits(*storedEmpty.edits, base);
+    check(emptyEffective.state && emptyEffective.state->notes.empty() && emptyEffective.adjustedAnalysis &&
+          emptyEffective.adjustedAnalysis->notes.empty() && emptyEffective.adjustedAnalysis->sourceFrames == base.analysis.sourceFrames,
+          "explicit empty geometry resolves no notes and preserves the source duration");
+    check(History(*fixture.store).undo().ok && fixture.row() == afterSplit,
+          "undo restores split geometry after delete-all and reopen");
+}
+
 } // namespace
 
 int main() {
@@ -241,6 +306,7 @@ int main() {
         durabilityAndHistory();
         validationAndRollback();
         snapshotRead();
+        authoredGeometry();
     } catch (const std::exception& exception) {
         check(false, exception.what());
     }

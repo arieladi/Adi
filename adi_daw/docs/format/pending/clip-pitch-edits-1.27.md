@@ -13,7 +13,14 @@ source-frame clock. The payload preserves their source note ordinals and
 original bounds when the analysis cache evicts its rebuildable data. Each
 edit carries its destination bounds and literal control values. The CBOR
 encoding is bounded to 16 MiB. Mute has its own boolean and uses zero for the
-stored finite gain. Empty edit sets are represented by row absence.
+stored finite gain. An empty edit set with automatic note geometry has no row.
+
+The ordinary CBOR record is the array of edit rows. Authored geometry wraps
+that array under `rows` alongside `segmentation` with `nextId` and `segments`.
+Each segment has a stable ID and a half-open range in the original source
+clock. The detector's measurements rebuild the authored segments' contours.
+An explicitly empty geometry retains its row and suppresses the analyzed
+segments while retaining the source signal for playback.
 
 Clipboard copies and split pieces retain the complete source-bound edit set
 under their own clip identities. Each piece uses its usual playback window and

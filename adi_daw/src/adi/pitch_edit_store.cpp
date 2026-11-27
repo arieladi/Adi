@@ -54,6 +54,16 @@ constexpr std::array rowFields = {
     Field{"preserveExpression", FieldType::Bool, true, "Retain nonlinear drift residual"},
     Field{"transition", FieldType::Int, true, "Incoming transition in destination frames", {}, 0},
 };
+constexpr std::array segmentFields = {
+    Field{"id", FieldType::Int, true, "Stable segment identity", {}, 1},
+    Field{"start", FieldType::Int, true, "First original source frame", {}, 0},
+    Field{"end", FieldType::Int, true, "Exclusive original source frame", {}, 1},
+};
+constexpr std::array segmentationFields = {
+    Field{"nextId", FieldType::Int, true, "Next available segment identity", {}, 1},
+    Field{"segments", FieldType::Array, true, "Complete segment geometry in source order",
+          {}, {}, {}, {}, maxRows, segmentFields},
+};
 constexpr std::array fields = {
     Field{"id", FieldType::Int, true, "Audio clip identity", {}, 1},
     Field{"hash", FieldType::Text, true, "Source BLAKE3 in lowercase hex", {}, {}, {}, 64},
@@ -62,6 +72,8 @@ constexpr std::array fields = {
     Field{"version", FieldType::Int, true, "Source analysis version", {}, 1, UINT32_MAX},
     Field{"configuration", FieldType::Int, true, "Source analysis configuration", {}, 0, UINT32_MAX},
     Field{"rows", FieldType::Array, true, "Complete replacement in original note order", {}, {}, {}, {}, maxRows, rowFields},
+    Field{"segmentation", FieldType::Object, false, "Authored note geometry in the original source clock",
+          {}, {}, {}, {}, {}, segmentationFields},
 };
 
 std::uint64_t frame(const Payload& value) {
@@ -142,8 +154,36 @@ StoredPitchNoteEdit decodeRow(const Payload& value) {
     return row;
 }
 
+Payload encodeSegmentation(const audio::PitchSegmentation& geometry) {
+    Payload segments = Payload::array();
+    for (const auto& span : geometry.segments) {
+        segments.push_back({{"id", span.id}, {"start", span.startFrame}, {"end", span.endFrame}});
+    }
+    return {{"nextId", geometry.nextId}, {"segments", std::move(segments)}};
+}
+
+audio::PitchSegmentation decodeSegmentation(const Payload& payload) {
+    audio::PitchSegmentation geometry;
+    geometry.nextId = frame(payload.at("nextId"));
+    const auto& spans = payload.at("segments");
+    if (!spans.is_array() || spans.size() > maxRows) throw std::runtime_error("invalid clip pitch segment list");
+    geometry.segments.reserve(spans.size());
+    for (const auto& span : spans) {
+        geometry.segments.push_back({frame(span.at("id")), frame(span.at("start")), frame(span.at("end"))});
+    }
+    return geometry;
+}
+
+bool matchesGeometry(const StoredPitchNoteEdit& row, const audio::PitchSegmentation& geometry) noexcept {
+    if (row.edit.noteIndex >= geometry.segments.size()) return false;
+    const auto& span = geometry.segments[row.edit.noteIndex];
+    return row.sourceStartFrame == span.startFrame && row.sourceEndFrame == span.endFrame;
+}
+
 void validateRows(const ClipPitchEdits& edits) {
     if (edits.rows.size() > maxRows) throw std::runtime_error("too many pitch edit rows");
+    if (edits.segmentation && !audio::validPitchSegmentation(*edits.segmentation, edits.sourceFrames))
+        throw std::runtime_error("invalid clip pitch segmentation");
     std::uint64_t previousEnd = 0;
     std::optional<std::size_t> previousNote;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> destinations;
@@ -153,6 +193,7 @@ void validateRows(const ClipPitchEdits& edits) {
         const auto original = audio::PitchNote{.startFrame=row.sourceStartFrame, .endFrame=row.sourceEndFrame, .curve={}};
         if (row.sourceStartFrame < previousEnd || (previousNote && edit.noteIndex <= *previousNote) ||
             edit.noteIndex >= edits.sourceFrames ||
+            (edits.segmentation && !matchesGeometry(row, *edits.segmentation)) ||
             !audio::validPitchNoteEdit(original, edit, edits.sourceFrames, edits.sampleRate))
             throw std::runtime_error("invalid clip pitch note identity or edit");
         previousEnd = row.sourceEndFrame;
@@ -173,7 +214,11 @@ void decodeRows(ClipPitchEdits& edits, const Payload& payload) {
 }
 
 std::vector<std::byte> encodeRecord(const ClipPitchEdits& edits) {
-    auto bytes = encodePayload(encodeRows(edits.rows));
+    auto rows = encodeRows(edits.rows);
+    const auto record = edits.segmentation
+        ? Payload{{"rows", std::move(rows)}, {"segmentation", encodeSegmentation(*edits.segmentation)}}
+        : std::move(rows);
+    auto bytes = encodePayload(record);
     if (bytes.size() > maxEditBytes) throw std::runtime_error("clip pitch edits exceed storage limit");
     return bytes;
 }
@@ -181,7 +226,7 @@ std::vector<std::byte> encodeRecord(const ClipPitchEdits& edits) {
 // Preflight the definite CBOR envelope before giving project bytes to the
 // recursive decoder. Key bytes and float words are skipped without decoding.
 bool boundedRecord(std::span<const std::uint8_t> bytes) noexcept {
-    std::array<std::size_t, 4> remaining{1};
+    std::array<std::size_t, 5> remaining{1};
     std::size_t depth = 0;
     while (!bytes.empty()) {
         if (remaining[depth] == 0) return false;
@@ -189,7 +234,7 @@ bool boundedRecord(std::span<const std::uint8_t> bytes) noexcept {
         const auto major = bytes.front() >> 5;
         const auto sizeCode = bytes.front() & 31;
         bytes = bytes.subspan(1);
-        if (sizeCode > 27 || major == 2 || major == 6) return false;
+        if (sizeCode > 27 || major == 2 || major == 6 || (depth == 0 && major != 4 && major != 5)) return false;
 
         auto value = static_cast<std::uint64_t>(sizeCode);
         if (sizeCode >= 24) {
@@ -200,17 +245,16 @@ bool boundedRecord(std::span<const std::uint8_t> bytes) noexcept {
             bytes = bytes.subspan(width);
         }
         if (major == 4) {
-            if (depth != 0 || value > maxRows) return false;
+            if (depth == remaining.size() - 1 || value > maxRows) return false;
             remaining[++depth] = static_cast<std::size_t>(value);
         } else if (major == 5) {
-            if (!((depth == 1 && value <= rowFields.size()) || (depth == 2 && value <= rangeFields.size()))) return false;
+            if (depth == remaining.size() - 1 || value > rowFields.size()) return false;
             remaining[++depth] = static_cast<std::size_t>(value) * 2;
         } else {
-            if (depth < 2) return false;
             if (major == 3) {
                 if (value > std::string_view("preserveExpression").size() || value > bytes.size()) return false;
                 bytes = bytes.subspan(static_cast<std::size_t>(value));
-            } else if (major == 7 && (depth != 2 || (sizeCode != 20 && sizeCode != 21 && sizeCode < 25))) {
+            } else if (major == 7 && sizeCode != 20 && sizeCode != 21 && sizeCode < 25) {
                 return false;
             }
         }
@@ -236,8 +280,10 @@ ClipPitchEdits decodeRecord(SQLite::Statement& row) {
     const std::span cbor(static_cast<const std::uint8_t*>(blob.getBlob()), size);
     if (!boundedRecord(cbor))
         throw std::runtime_error("invalid clip pitch edit record structure or nesting");
-    decodeRows(edits, Payload::from_cbor(cbor.begin(), cbor.end()));
-    if (edits.rows.empty() || !std::ranges::equal(encodeRecord(edits), bytes))
+    const auto record = Payload::from_cbor(cbor.begin(), cbor.end());
+    if (record.is_object()) edits.segmentation = decodeSegmentation(record.at("segmentation"));
+    decodeRows(edits, record.is_object() ? record.at("rows") : record);
+    if ((!edits.segmentation && edits.rows.empty()) || !std::ranges::equal(encodeRecord(edits), bytes))
         throw std::runtime_error("noncanonical clip pitch edit record");
     return edits;
 }
@@ -305,8 +351,9 @@ bool apply(OpContext& context, const Payload& payload, std::string& error) {
             uint32(payload.at("version")), uint32(payload.at("configuration")), frame(payload.at("sourceFrames")), {}};
         validateIdentity(edits);
         requireCurrentSource(context.db, edits);
+        if (payload.contains("segmentation")) edits.segmentation = decodeSegmentation(payload.at("segmentation"));
         decodeRows(edits, payload.at("rows"));
-        if (edits.rows.empty()) {
+        if (!edits.segmentation && edits.rows.empty()) {
             detail::eraseRowKey(context.db, table, {{clipKey, id}});
             return true;
         }
@@ -380,18 +427,25 @@ ClipPitchEditsResolve resolveClipPitchEdits(const ClipPitchEdits& edits, const a
         edits.sourceFrames != analysis.sourceFrames || edits.analysisVersion != version ||
         edits.analysisConfiguration != configuration) return {{}, "clip pitch analysis identity changed"};
     try {
+        std::optional<audio::PitchAnalysis> adjusted;
+        if (edits.segmentation) {
+            auto draft = audio::draftPitchSegments(analysis, {}, &*edits.segmentation);
+            if (!draft) return {{}, "clip pitch segmentation does not fit the analyzed notes"};
+            adjusted = std::move(draft.draft->analysis);
+        }
+        const auto& effective = adjusted ? *adjusted : analysis;
         audio::PitchEditState state;
         state.notes.reserve(edits.rows.size());
         for (const auto& row : edits.rows) {
-            if (row.edit.noteIndex >= analysis.notes.size()) return {{}, "clip pitch note index changed"};
-            const auto& note = analysis.notes[row.edit.noteIndex];
+            if (row.edit.noteIndex >= effective.notes.size()) return {{}, "clip pitch note index changed"};
+            const auto& note = effective.notes[row.edit.noteIndex];
             if (row.sourceStartFrame != note.startFrame || row.sourceEndFrame != note.endFrame)
                 return {{}, "clip pitch note bounds changed"};
             state.notes.push_back(row.edit);
         }
-        if (audio::validatePitchEdits(analysis, state) != audio::PitchEditError::None)
+        if (audio::validatePitchEdits(effective, state) != audio::PitchEditError::None)
             return {{}, "clip pitch edits do not fit the analyzed notes"};
-        return {std::move(state), {}};
+        return {std::move(state), {}, std::move(adjusted)};
     } catch (const std::exception& exception) {
         return {{}, exception.what()};
     }
@@ -403,19 +457,28 @@ ClipPitchEditsResolve resolveClipPitchEdits(const ClipPitchEdits& edits, const m
     return resolveClipPitchEdits(edits, source.analysis, source.source.hash, source.analysisVersion, source.analysisConfiguration);
 }
 
-ClipPitchEditRequest prepareClipPitchEdits(const media::ClipPitchAnalysis& source, const audio::PitchEditState& state) {
+ClipPitchEditRequest prepareClipPitchEdits(const media::ClipPitchAnalysis& source, const audio::PitchEditState& state,
+                                          const audio::PitchSegmentation* geometry) {
     if (audio::onAudioThread) return {{}, "audio callback"};
     try {
         ClipPitchEdits edits{source.clipId, source.source.hash, source.source.sampleRate, source.analysisVersion,
                            source.analysisConfiguration, source.source.frames, {}};
         validateIdentity(edits);
         if (edits.sampleRate != source.analysis.sampleRate || edits.sourceFrames != source.analysis.sourceFrames ||
-            state.notes.size() > maxRows ||
-            audio::validatePitchEdits(source.analysis, state) != audio::PitchEditError::None)
+            state.notes.size() > maxRows || (geometry && geometry->segments.size() > maxRows))
             return {{}, "pitch edit state does not fit its source analysis"};
+        std::optional<audio::PitchAnalysis> adjusted;
+        if (geometry) {
+            auto draft = audio::draftPitchSegments(source.analysis, state, geometry);
+            if (!draft) return {{}, "pitch edit geometry does not fit its source analysis"};
+            adjusted = std::move(draft.draft->analysis);
+        } else if (audio::validatePitchEdits(source.analysis, state) != audio::PitchEditError::None) {
+            return {{}, "pitch edit state does not fit its source analysis"};
+        }
+        const auto& effective = adjusted ? *adjusted : source.analysis;
         edits.rows.reserve(state.notes.size());
         for (const auto& edit : state.notes) {
-            const auto& note = source.analysis.notes[edit.noteIndex];
+            const auto& note = effective.notes[edit.noteIndex];
             edits.rows.push_back({note.startFrame, note.endFrame, edit});
         }
         OpRequest request;
@@ -426,6 +489,7 @@ ClipPitchEditRequest prepareClipPitchEdits(const media::ClipPitchAnalysis& sourc
         request.payload = {{"id", edits.clipId}, {"hash", edits.sourceHash}, {"sampleRate", edits.sampleRate},
             {"sourceFrames", edits.sourceFrames}, {"version", edits.analysisVersion},
             {"configuration", edits.analysisConfiguration}, {"rows", encodeRows(edits.rows)}};
+        if (geometry) request.payload["segmentation"] = encodeSegmentation(*geometry);
         return {std::move(request), {}};
     } catch (const std::exception& exception) {
         return {{}, exception.what()};

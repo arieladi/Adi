@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
-#include "adi/audio/pitch_edit.hpp"
+#include "adi/audio/pitch_segments.hpp"
 #include "adi/ops.hpp"
 
 #include <map>
@@ -26,6 +26,7 @@ struct ClipPitchEdits {
     std::uint32_t sampleRate = 0, analysisVersion = 0, analysisConfiguration = 0;
     std::uint64_t sourceFrames = 0;
     std::vector<StoredPitchNoteEdit> rows;
+    std::optional<audio::PitchSegmentation> segmentation{};
     bool operator==(const ClipPitchEdits&) const = default;
 };
 
@@ -42,6 +43,9 @@ struct ProjectPitchEditsRead {
 struct ClipPitchEditsResolve {
     std::optional<audio::PitchEditState> state;
     std::string error;
+    // Geometry is projected from the immutable source analysis. Consumers
+    // use these note bounds when present, including an explicit empty list.
+    std::optional<audio::PitchAnalysis> adjustedAnalysis{};
 };
 
 struct ClipPitchEditRequest {
@@ -65,7 +69,8 @@ struct ClipPitchEditRequest {
 
 // Prepare one explicit durable replacement, including a clear when the state
 // is empty. Journal commit checks the clip's source again in its transaction.
-[[nodiscard]] ClipPitchEditRequest prepareClipPitchEdits(const media::ClipPitchAnalysis&, const audio::PitchEditState&);
+[[nodiscard]] ClipPitchEditRequest prepareClipPitchEdits(const media::ClipPitchAnalysis&, const audio::PitchEditState&,
+                                                          const audio::PitchSegmentation* = nullptr);
 
 } // namespace clip_edit
 } // namespace adi

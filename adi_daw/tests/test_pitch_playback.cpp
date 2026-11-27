@@ -2,6 +2,7 @@
 #include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_segments.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/session.hpp"
@@ -160,6 +161,27 @@ void run() {
           "Session's edited source uses no callback allocations or file I/O");
     std::printf("Session pitch edit %.3f Hz to %.3f Hz (%+.3f cents), then Re-Pitch %.3f Hz\n",
                 originalHz, shiftedHz, shift, warpedHz);
+
+    database.exec("UPDATE audio_clips SET warp_enabled=0,warp_mode='none',warp_markers=NULL WHERE clip_id=7;"
+                  "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=500000000 WHERE id=7;");
+    auto draft = audio::draftPitchSegments(analysis.data->analysis, {});
+    if (!draft) throw std::runtime_error("draft source notes");
+    const std::array split{audio::PitchSegmentationCommand{audio::PitchSplitSegment{
+        draft.draft->geometry.segments.front().id, sourceFrames / 2}}};
+    const std::array pitchRight{audio::PitchEditCommand{1, audio::PitchSetShift{100}}};
+    if (audio::applyPitchSegmentation(analysis.data->analysis, *draft.draft, split) != audio::PitchEditError::None ||
+        audio::applyPitchEdits(draft.draft->analysis, draft.draft->edits, pitchRight) != audio::PitchEditError::None)
+        throw std::runtime_error("split source note and edit one child");
+    const auto structural = clip_edit::prepareClipPitchEdits(*analysis.data, draft.draft->edits, &draft.draft->geometry);
+    if (!structural.request || !OpJournal(*store).commit(*structural.request).ok)
+        throw std::runtime_error("commit split pitch note");
+    engine::Session splitSession;
+    load(splitSession, *store);
+    const auto leftHz = frequency(render(splitSession, 2500));
+    const auto rightHz = frequency(render(splitSession, 13800));
+    check(std::abs(leftHz - 220) < 0.01 && std::abs(rightHz - shiftedHz) < 0.05,
+          "Session uses durable split geometry and shifts only the edited child");
+    std::printf("Durable split at frame %u, left %.3f Hz, right %.3f Hz\n", sourceFrames / 2, leftHz, rightHz);
 
     writeTone(file, 300);
     engine::Session changed;

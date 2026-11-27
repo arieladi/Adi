@@ -287,12 +287,16 @@ void analyzedMelody() {
           "shared cached analysis converts the scale to its exact MIDI keys");
 }
 
+void installPitchSchema(Store& store) {
+    std::ifstream schema(ADI_PITCH_SCHEMA_PATH);
+    if (!schema) throw std::runtime_error("cannot open the pitch schema fixture");
+    store.db().exec(std::string(std::istreambuf_iterator<char>(schema), {}));
+}
+
 void durableEdits() {
     Fixture f;
     f.warp();
-    std::ifstream schema(ADI_PITCH_SCHEMA_PATH);
-    if (!schema) throw std::runtime_error("cannot open the pitch schema fixture");
-    f.store->db().exec(std::string(std::istreambuf_iterator<char>(schema), {}));
+    installPitchSchema(*f.store);
     audio::PitchEditState state;
     const std::array commands{audio::PitchEditCommand{1, audio::PitchSetShift{100}},
                               audio::PitchEditCommand{1, audio::PitchSetTiming{7200,16800}},
@@ -316,6 +320,63 @@ void durableEdits() {
           "Convert Melody reuses raw detection independently of authored pitch edits");
 }
 
+void durableGeometry() {
+    Fixture f;
+    f.warp();
+    installPitchSchema(*f.store);
+    auto draft = audio::draftPitchSegments(f.analysis.analysis, {});
+    if (!draft) throw std::runtime_error("fixture pitch segmentation is invalid");
+    const std::array<audio::PitchSegmentationCommand, 1> remove{audio::PitchDeleteSegment{3}};
+    if (audio::applyPitchSegmentation(f.analysis.analysis, *draft.draft, remove) != audio::PitchEditError::None)
+        throw std::runtime_error("fixture could not delete its segment");
+    const auto authored = prepareClipPitchEdits(f.analysis, draft.draft->edits, &draft.draft->geometry);
+    if (!authored.request || !OpJournal(*f.store).commit(*authored.request).ok)
+        throw std::runtime_error("fixture could not store segmentation");
+
+    const auto extraction = preparePitchMidi(*f.store, f.analysis);
+    check(extraction && extraction.data->projection.notes.size() == 2 &&
+          extraction.data->projection.notes[0].key == 57 && extraction.data->projection.notes[1].key == 72,
+          "edited extraction uses effective geometry and excludes a deleted segment");
+    const auto copied = copyPitchMidi(*f.store, f.analysis);
+    if (copied) {
+        const auto& bytes = copied.data->image.at("children").at("event_streams").at(0).at("data").get_binary();
+        StreamReader<NoteRecord> stream({reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()}, FourCC::Notes);
+        check(stream.ok() && stream.count() == 2 && stream.at(1)->key == 72,
+              "edited clipboard uses effective geometry");
+    } else check(false, "edited clipboard uses effective geometry");
+    PitchMidiOptions raw;
+    raw.content = PitchMidiContent::DetectedMelody;
+    const auto melody = preparePitchMidi(*f.store, f.analysis, raw);
+    check(melody && melody.data->projection.notes.size() == 3 && melody.data->projection.notes[1].key == 69,
+          "Convert Melody keeps the original detected segment");
+    auto incompatible = f.analysis;
+    ++incompatible.analysisVersion;
+    check(preparePitchMidi(*f.store, incompatible).problem == PitchMidiProblem::Edits,
+          "geometry with the same source hash still checks the analysis version");
+
+    const audio::PitchSegmentation noSegments{{}, draft.draft->geometry.nextId};
+    const auto cleared = prepareClipPitchEdits(f.analysis, {}, &noSegments);
+    if (!cleared.request || !OpJournal(*f.store).commit(*cleared.request).ok)
+        throw std::runtime_error("fixture could not store empty geometry");
+    check(preparePitchMidi(*f.store, f.analysis).problem == PitchMidiProblem::Empty &&
+          copyPitchMidi(*f.store, f.analysis).problem == PitchMidiProblem::Empty,
+          "an explicit empty geometry stays empty in extraction and clipboard");
+
+    f.store->db().exec("UPDATE clip_pitch_edits SET edits=X'00' WHERE clip_id=11");
+    check(preparePitchMidi(*f.store, f.analysis).problem == PitchMidiProblem::Edits &&
+          copyPitchMidi(*f.store, f.analysis).problem == PitchMidiProblem::Edits,
+          "malformed geometry on the current source refuses extraction");
+    check(static_cast<bool>(preparePitchMidi(*f.store, f.analysis, raw)),
+          "Convert Melody does not depend on authored geometry decoding");
+    SQLite::Statement changed(f.store->db(), "UPDATE media_files SET hash_blake3=? WHERE id=1");
+    f.analysis.source.hash = std::string(64, 'b');
+    changed.bind(1, f.analysis.source.hash);
+    changed.exec();
+    const auto dormant = preparePitchMidi(*f.store, f.analysis);
+    check(dormant && dormant.data->projection.notes.size() == 3 && copyPitchMidi(*f.store, f.analysis),
+          "a reattached source ignores an older source's dormant authored geometry");
+}
+
 void callback() {
     Fixture f;
     unsigned allocations = callbackAllocations.load();
@@ -332,7 +393,7 @@ void callback() {
 }
 
 int main() {
-    try { projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); callback(); }
+    try { projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); durableGeometry(); callback(); }
     catch (const std::exception& error) { check(false, error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

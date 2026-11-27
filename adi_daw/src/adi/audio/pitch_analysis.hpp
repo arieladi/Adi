@@ -44,6 +44,10 @@ struct PitchAnalysisResult {
 
 [[nodiscard]] bool validPitchAnalysis(const PitchAnalysis&) noexcept;
 
+// Recalculate note summaries after changing source bounds/observations. The
+// work buffer can be reused between notes. This is a worker-only operation.
+[[nodiscard]] bool summarizePitchNote(PitchNote&, std::vector<double>& workspace);
+
 /// Worker-only signal analysis of a monophonic source at 8–384 kHz. Silence
 /// produces an analysis with no notes. A failed or cancelled call has no result.
 [[nodiscard]] PitchAnalysisResult analyzePitch(std::span<const float> mono, std::uint32_t sourceRate,
