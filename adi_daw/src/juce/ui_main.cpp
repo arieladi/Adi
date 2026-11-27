@@ -371,7 +371,9 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!root_)
             return;
         try {
-            root_->browser.setDevicePresets(preset::list(userLibraryPath()));
+            auto entries = preset::list(userLibraryPath());
+            root_->browser.setDevicePresets(entries);
+            if (appControl_) appControl_->setCataloguePresets(entries);
         } catch (const std::exception &e) {
             root_->say(e.what());
         }
@@ -610,6 +612,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             const auto &state = catalogue_->state();
             root_->browser.setPluginScan(state);
+            if (appControl_) appControl_->setCataloguePlugins(state);
             // SC-330: the scan's progress stands in the Status Bar while it runs, wherever the Browser is,
             // unless another message holds it; at its end the line goes, or says what went wrong.
             if (auto line = scanLine_.next(state, root_->error()))
@@ -1229,6 +1232,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 discover(DiscoveryMode::Incremental);
             };
             root->browser.setPluginScan(catalogue_->state());
+            if (appControl_) appControl_->setCataloguePlugins(catalogue_->state());
             scanLine_ = {};
             if (auto line = scanLine_.next(catalogue_->state(), root->error()))
                 root->say(std::move(*line));

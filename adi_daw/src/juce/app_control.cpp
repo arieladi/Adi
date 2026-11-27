@@ -3,10 +3,13 @@
 
 #include "adi/control/agent_runtime.hpp"
 #include "adi/control/agent_stop.hpp"
+#include "adi/control/browser_catalogue.hpp"
 #include "adi/control/jobs.hpp"
 #include "adi/control/live_project.hpp"
 #include "adi/control/loopback_listener.hpp"
 #include "adi/control/mcp.hpp"
+#include "adi/device_presets.hpp"
+#include "adi/ui/plugin_scan.hpp"
 #include "adi/version.hpp"
 
 #include <algorithm>
@@ -82,12 +85,18 @@ public:
         context.jobs = &jobs;
         context.agentWrites = &agentWrites;
         context.askConsent = [this](ConsentRequest question) { ask(std::move(question)); };
+        context.browserCatalogue = [this] { return catalogue.load(); };
+        publishCatalogue();
         registerControlMethods(service, context);
     }
 
     void ask(ConsentRequest question) {
         std::lock_guard lock(questionMutex);
         if (questions.size() < 64) questions.push_back(std::move(question));
+    }
+
+    void publishCatalogue() {
+        catalogue.store(std::make_shared<const BrowserCatalogue>(plugins, presets));
     }
 
     Outcome agentTool(const Principal& who, std::string_view method, const Json& args,
@@ -277,6 +286,10 @@ public:
     JobBook jobs;
     AgentWriteGate agentWrites;
     ConsentLedger ledger;
+    ui::PluginListing plugins;
+    std::optional<std::uint64_t> pluginRevision;
+    std::vector<preset::Entry> presets;
+    std::atomic<std::shared_ptr<const BrowserCatalogue>> catalogue;
     ControlContext context;
     AgentRuntime agent;
     McpEndpoint mcp;
@@ -305,6 +318,18 @@ void AppControl::configure(AppControlOptions options) {
 }
 std::optional<SessionDiscovery> AppControl::session() const { return impl_->activeSession; }
 void AppControl::attach(ui::ProjectDocument* doc) { impl_->attach(doc); }
+
+void AppControl::setCataloguePlugins(const ui::PluginScan& scan) {
+    if (impl_->pluginRevision == scan.listed) return;
+    impl_->plugins = scan.listing;
+    impl_->publishCatalogue();
+    impl_->pluginRevision = scan.listed;
+}
+
+void AppControl::setCataloguePresets(std::span<const preset::Entry> entries) {
+    impl_->presets.assign(entries.begin(), entries.end());
+    impl_->publishCatalogue();
+}
 
 void AppControl::tick(ui::ProjectDocument* doc) {
     impl_->attach(doc);

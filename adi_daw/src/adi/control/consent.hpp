@@ -14,7 +14,7 @@ enum class ConsentTerm { ThisTime, OneHour, OneDay, UntilRevoked };
 enum class ConsentData {
     ProjectMetadata, TrackNames, Routing, Devices, Parameters, Markers, Clips,
     Automation, Notes, Remarks, Tunings, Diagnostics, Prompt, Audio, PluginState,
-    ProjectGraph, Telemetry, ChangesetPreview
+    ProjectGraph, Telemetry, ChangesetPreview, BrowserCatalogue
 };
 
 struct ConsentItem {

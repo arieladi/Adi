@@ -2,6 +2,7 @@
 #include "adi/control/methods.hpp"
 
 #include "adi/control/agent_stop.hpp"
+#include "adi/control/browser_catalogue.hpp"
 #include "adi/control/consent_scope.hpp"
 #include "adi/control/jobs.hpp"
 #include "adi/control/projection.hpp"
@@ -524,6 +525,39 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             if (auto denied = requireReadConsent(ctx, call, *project, result)) return std::move(*denied);
             if (result.contains("remarks") && !result.at("remarks").empty())
                 recordRemarkRead(ctx, call);
+            return Outcome::ok(std::move(result));
+        };
+        service.add(std::move(m));
+    }
+
+    if (ctx.browserCatalogue) {
+        MethodSpec m;
+        m.name = "browser.catalog";
+        m.summary = "Read the live Browser's devices, plug-ins and presets";
+        m.paramsSchema = {{"type", "object"}, {"additionalProperties", false},
+            {"properties", {{"project", projectSchemaProperty()},
+                            {"query", {{"type", "string"}, {"maxLength", 256}}},
+                            {"offset", {{"type", "integer"}, {"minimum", 0}}},
+                            {"limit", {{"type", "integer"}, {"minimum", 1},
+                                       {"maximum", BrowserCatalogue::kMaxLimit}}}}}};
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
+            if (auto e = closedKeys(p, {"project", "query", "offset", "limit"})) return failWith(*e);
+            RpcError e;
+            auto project = ctx.projects.resolve(p, e);
+            if (!project) return failWith(e);
+            std::optional<std::int64_t> offset, limit;
+            if (!readInt(p, "offset", 0, std::numeric_limits<std::int32_t>::max(), offset, e) ||
+                !readInt(p, "limit", 1, BrowserCatalogue::kMaxLimit, limit, e)) return failWith(e);
+            const auto query = p.find("query");
+            if (query != p.end() && (!query->is_string() || query->get_ref<const std::string&>().size() > 256))
+                return Outcome::fail(errc::InvalidParams, "query must be a string of at most 256 bytes");
+            const auto catalogue = ctx.browserCatalogue();
+            if (!catalogue) return Outcome::fail(errc::Internal, "the Browser catalogue is unavailable");
+            auto result = catalogue->page(query == p.end() ? std::string_view{} : query->get_ref<const std::string&>(),
+                                          static_cast<std::size_t>(offset.value_or(0)),
+                                          static_cast<std::size_t>(limit.value_or(BrowserCatalogue::kDefaultLimit)));
+            if (auto denied = requireReadConsent(ctx, call, *project, result, ConsentData::BrowserCatalogue))
+                return std::move(*denied);
             return Outcome::ok(std::move(result));
         };
         service.add(std::move(m));

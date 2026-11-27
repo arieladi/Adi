@@ -7,11 +7,14 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace adi::ui {
 class ProjectDocument;
+struct PluginScan;
 }
+namespace adi::preset { struct Entry; }
 
 namespace adi::control {
 
@@ -51,6 +54,8 @@ public:
     [[nodiscard]] std::optional<SessionDiscovery> session() const;
     void attach(ui::ProjectDocument*);
     void tick(ui::ProjectDocument*);
+    void setCataloguePlugins(const ui::PluginScan&);
+    void setCataloguePresets(std::span<const preset::Entry>);
     [[nodiscard]] std::vector<ConsentRequest> takeConsentQuestions();
     [[nodiscard]] bool answerConsent(const ConsentRequest&, ConsentTerm);
     [[nodiscard]] std::vector<QueuedChangeset> proposals() const;

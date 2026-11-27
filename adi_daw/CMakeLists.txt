@@ -865,6 +865,7 @@ add_library(adi_control STATIC
     src/adi/control/agent_process.cpp
     src/adi/control/agent_runtime.cpp
     src/adi/control/agent_log.cpp
+    src/adi/control/browser_catalogue.cpp
     src/adi/control/consent.cpp
     src/adi/control/consent_file.cpp
     src/adi/control/consent_scope.cpp
@@ -921,6 +922,10 @@ add_test(NAME adi_agent_runtime_tests COMMAND adi_agent_runtime_tests)
 add_executable(adi_agent_log_tests tests/test_agent_log.cpp)
 target_link_libraries(adi_agent_log_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_agent_log_tests COMMAND adi_agent_log_tests)
+
+add_executable(adi_browser_catalogue_tests tests/test_browser_catalogue.cpp)
+target_link_libraries(adi_browser_catalogue_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_browser_catalogue_tests COMMAND adi_browser_catalogue_tests)
 
 add_executable(adi_tracked_render_queue_tests tests/test_tracked_render_queue.cpp)
 target_link_libraries(adi_tracked_render_queue_tests PRIVATE adi_control adi_warnings)

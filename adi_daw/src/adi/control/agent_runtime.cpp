@@ -74,6 +74,7 @@ ConsentRequest disclosure(std::string project, const AgentProvider& provider, st
 std::string_view controlMethod(std::string_view tool) {
     if (tool == "project_read") return "project.read";
     if (tool == "ops_describe") return "ops.describe";
+    if (tool == "browser_catalog") return "browser.catalog";
     if (tool == "changeset_propose") return "changeset.propose";
     return {};
 }

@@ -28,6 +28,7 @@
 namespace adi::control {
 
 class JobBook;
+class BrowserCatalogue;
 
 struct ControlContext {
     ProjectSet& projects;
@@ -55,6 +56,7 @@ struct ControlContext {
     JobBook* jobs = nullptr;
     const AgentWriteGate* agentWrites = nullptr;
     std::function<agent::Limits()> readLimits = {};
+    std::function<std::shared_ptr<const BrowserCatalogue>()> browserCatalogue = {};
 };
 
 /// Registers the control methods. `context` must outlive `service`.

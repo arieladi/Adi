@@ -37,6 +37,9 @@ constexpr ToolDef kTools[] = {
      "With no arguments, the index of ops a changeset may contain; with names, their exact JSON "
      "Schemas. Read a schema before you use an op.",
      true, true},
+    {"browser_catalog", "browser.catalog", "Read the Browser catalogue",
+     "Read devices, discovered plug-ins and their presets. Use nextOffset to page through matching rows.",
+     true, true},
     {"changeset_propose", "changeset.propose", "Propose a changeset",
      "Group every op for ONE request into ONE call: it is previewed and queued for the user, never "
      "applied here, and once applied it is a single undo step. Pass the head you read as baseHead. "
@@ -229,6 +232,9 @@ Json McpEndpoint::resourcesList(bool discloseLabels) const {
     }
     list.push_back({{"uri", "adi://ops"}, {"name", "ops"}, {"mimeType", "application/json"},
                     {"description", "the ops a changeset may contain"}});
+    if (service_.find("browser.catalog"))
+        list.push_back({{"uri", "adi://browser/catalog"}, {"name", "Browser catalogue"},
+                        {"mimeType", "application/json"}, {"description", "first page of devices, plug-ins and presets"}});
     return {{"resources", std::move(list)}};
 }
 
@@ -380,7 +386,9 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
     Json args = Json::object();
     constexpr std::string_view kProjects = "adi://projects/";
     constexpr std::string_view kOps = "adi://ops";
-    if (uri == kOps) {
+    if (uri == "adi://browser/catalog" && service_.find("browser.catalog")) {
+        method = "browser.catalog";
+    } else if (uri == kOps) {
         method = "ops.describe";
     } else if (uri.rfind(std::string(kOps) + "/", 0) == 0 && uri.size() > kOps.size() + 1) {
         method = "ops.describe";

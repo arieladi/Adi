@@ -10,7 +10,7 @@ import { toLlmContent } from "@earendil-works/pi-mcp";
 import { resolveProvider } from "./providers.js";
 import type { ProviderConfig } from "./providers.js";
 
-export type ToolName = "project_read" | "ops_describe" | "changeset_propose";
+export type ToolName = "project_read" | "ops_describe" | "browser_catalog" | "changeset_propose";
 
 export interface RunRequest {
   id: string;
@@ -75,6 +75,14 @@ const definitions = {
   ops_describe: {
     description: "List available ADI operations, or get their schemas by exact names.",
     properties: { names: { type: "array", items: { type: "string" }, maxItems: 64 }, query: { type: "string" } },
+  },
+  browser_catalog: {
+    description: "Find devices, plug-ins or presets in the live Browser. Use a query and a small limit to narrow the page.",
+    properties: {
+      query: { type: "string", maxLength: 256 },
+      offset: { type: "integer", minimum: 0, maximum: 2147483647 },
+      limit: { type: "integer", minimum: 1, maximum: 128 },
+    },
   },
   changeset_propose: {
     description: "Propose the complete edit against the head returned by project_read.",

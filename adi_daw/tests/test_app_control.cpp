@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "adi/control/mcp.hpp"
+#include "adi/device_presets.hpp"
+#include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/app_control.hpp"
 #include "temp_directory.hpp"
@@ -137,6 +139,14 @@ void testAppControl() {
     options.tier = Tier::Apply;
     AppControl app([&owner](Task task) { owner.post(std::move(task)); }, std::move(options));
     app.attach(document.get());
+    ui::PluginScan scan;
+    scan.listed = 1;
+    scan.listing.plugins.push_back({"clap", "fixture.eq", "Catalogue Fixture EQ", "Fixture Vendor", "1.0",
+                                    "/private/fixture.clap", ui::PluginEntry::Kind::Effect});
+    const std::vector<preset::Entry> presets = {{preset::deviceKey({"clap", "fixture.eq", std::nullopt}),
+                                                "Catalogue Fixture Preset", "/private/fixture.adipreset"}};
+    app.setCataloguePlugins(scan);
+    app.setCataloguePresets(presets);
     if (!app.start(error)) throw std::runtime_error("start app control: " + error);
     const auto session = app.session();
     require(session.has_value() && session->port != 0 && !session->token.empty(), "the running app offers pairing");
@@ -149,6 +159,22 @@ void testAppControl() {
     call(request(1, "initialize", {{"protocolVersion", "2025-11-25"}}));
     require(call(request(2, "resources/list", Json::object())).dump().find("Private project title") ==
                 std::string::npos, "listing resources exposes no project content before consent");
+    require(call(request(22, "resources/list", Json::object())).dump().find("adi://browser/catalog") !=
+                std::string::npos, "MCP lists the live Browser catalogue resource");
+
+    const Json search = {{"project", uuid}, {"query", "catalogue fixture"}};
+    const auto unapproved = call(callTool(23, "browser_catalog", search, "catalogue"));
+    require(needsConsent(unapproved) && unapproved.dump().find("Fixture EQ") == std::string::npos,
+            "the external client needs consent before receiving any catalogue row");
+    approveDisclosure(app, uuid, ConsentData::BrowserCatalogue);
+    const auto catalogue = call(callTool(24, "browser_catalog", search, "catalogue")).at("structuredContent");
+    require(catalogue.at("total") == 2 && catalogue.at("entries")[0].at("name") == "Catalogue Fixture EQ" &&
+            catalogue.at("entries")[1].at("name") == "Catalogue Fixture Preset" &&
+            catalogue.dump().find("/private/") == std::string::npos,
+            "the approved search returns the shared plug-in and preset without their paths");
+    require(needsConsent(call(callTool(25, "browser_catalog", search, "catalogue"))),
+            "a second catalogue disclosure needs its own approval");
+    require(app.takeConsentQuestions().size() == 1, "the second consent question can be dismissed");
 
     const Json read = {{"project", uuid}};
     require(needsConsent(call(callTool(3, "project_read", read, "read"))), "the external client must ask before reading");
