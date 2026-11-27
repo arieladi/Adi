@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_commands.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+
+namespace {
+
+using namespace adi::audio;
+
+int checks = 0;
+int failures = 0;
+
+void check(bool condition, const char* description) {
+    ++checks;
+    if (!condition) {
+        ++failures;
+        std::printf("FAIL %s\n", description);
+    }
+}
+
+bool near(double left, double right) { return std::abs(left - right) < 1e-9; }
+
+PitchAnalysis fixture() {
+    return {48000, 12000, {
+        {1000, 3000, 6130, 0, 0, {{1000, 6130}, {2999, 6130}}},
+        {3000, 5000, 6415, 0, 0, {{3000, 6415}, {4999, 6415}}},
+        {6000, 8000, 6680, 0, 0, {{6000, 6680}, {7999, 6680}}},
+        {9000, 11000, 6912, 0, 0, {{9000, 6912}, {10999, 6912}}}
+    }};
+}
+
+double nominal(const PitchAnalysis& analysis, const PitchEditState& state, std::size_t index) {
+    return analysis.notes[index].pitchCents + resolvePitchNoteEdit(analysis, state, index).pitchShiftCents;
+}
+
+void selectionSnap() {
+    const auto analysis = fixture();
+    const std::array<std::size_t, 2> selected{1, 0};
+    PitchEditState absolute, relative, free;
+    check(movePitchSelection(analysis, absolute, selected, 6551.5, PitchSnapMode::Absolute) == PitchEditError::None &&
+          near(nominal(analysis, absolute, 1), 6600) && near(nominal(analysis, absolute, 0), 6300),
+          "absolute mode snaps each displaced target to its nearest semitone");
+    check(movePitchSelection(analysis, relative, selected, 6551.5, PitchSnapMode::Relative) == PitchEditError::None &&
+          near(nominal(analysis, relative, 1), 6615) && near(nominal(analysis, relative, 0), 6330),
+          "relative mode preserves each note's current cents deviation");
+    check(movePitchSelection(analysis, free, selected, 6551.5, PitchSnapMode::Free) == PitchEditError::None &&
+          near(nominal(analysis, free, 1), 6551.5) && near(nominal(analysis, free, 0), 6266.5),
+          "free mode applies a fractional anchor displacement to the entire selection");
+    check(free.notes.size() == 2 && near(nominal(analysis, free, 2), 6680), "pitch changes are sparse and selection-scoped");
+    const std::array<std::size_t, 1> one{2};
+    check(movePitchSelection(analysis, absolute, one, 6750, PitchSnapMode::Absolute) == PitchEditError::None &&
+          near(nominal(analysis, absolute, 2), 6700), "semitone ties select the lower pitch");
+
+    const auto unchanged = free.notes;
+    const std::array invalidSelection{std::size_t{1}, analysis.notes.size()};
+    check(movePitchSelection(analysis, free, invalidSelection, 6400, PitchSnapMode::Free) == PitchEditError::UnknownNote &&
+          free.notes == unchanged, "an invalid member leaves the whole selection untouched");
+    const std::array priorEdit{PitchEditCommand{0, PitchSetShift{2350}}};
+    check(applyPitchEdits(analysis, free, priorEdit) == PitchEditError::None, "fixture has an earlier large edit");
+    const auto nearLimit = free.notes;
+    check(movePitchSelection(analysis, free, selected, 6700, PitchSnapMode::Free) == PitchEditError::InvalidValue &&
+          free.notes == nearLimit, "a later member exceeding the edit bound rolls the gesture back");
+
+    std::printf("Absolute targets %.0f and %.0f cents; relative detunes %.0f and %.0f cents\n",
+                nominal(analysis, absolute, 1), nominal(analysis, absolute, 0),
+                nominal(analysis, relative, 1) - 6600, nominal(analysis, relative, 0) - 6300);
+}
+
+void midiAssignment() {
+    const auto analysis = fixture();
+    const std::array<std::size_t, 2> selected{1, 0};
+    PitchEditState state;
+    const auto notes = assignPitchSelectionFromMidi(analysis, state, selected, 65, true);
+    check(notes.error == PitchEditError::None && notes.nextNote == 2 &&
+          near(nominal(analysis, state, 1), 6500) && near(nominal(analysis, state, 0), 6215),
+          "MIDI places the first selected note exactly and applies the same interval to all others");
+
+    const std::array swap{PitchEditCommand{0, PitchSetTiming{6000, 8000}},
+                          PitchEditCommand{2, PitchSetTiming{1000, 3000}}};
+    check(applyPitchEdits(analysis, state, swap) == PitchEditError::None, "fixture reorders notes on the destination timeline");
+    const std::array<std::size_t, 1> anchor{1}, last{3};
+    const auto next = assignPitchSelectionFromMidi(analysis, state, anchor, 65, true);
+    check(next.error == PitchEditError::None && next.nextNote == 0, "step follows actual destination order after retiming");
+    const auto done = assignPitchSelectionFromMidi(analysis, state, last, 69, true);
+    check(done.error == PitchEditError::None && !done.nextNote, "step stops at the final note");
+    const auto stepOff = assignPitchSelectionFromMidi(analysis, state, anchor, 66, false);
+    check(stepOff.error == PitchEditError::None && !stepOff.nextNote, "MIDI step is optional");
+    const auto upper = assignPitchSelectionFromMidi(analysis, state, last, 84, false);
+    check(upper.error == PitchEditError::None && near(nominal(analysis, state, 3), 8400), "MIDI includes the documented upper bound");
+
+    const auto previous = state.notes;
+    const auto outOfRange = assignPitchSelectionFromMidi(analysis, state, anchor, 85, true);
+    check(outOfRange.error == PitchEditError::InvalidValue && !outOfRange.nextNote && state.notes == previous,
+          "MIDI outside the documented range fails without edit or cursor advance");
+}
+
+void partialCorrection() {
+    const auto analysis = fixture();
+    const std::array<std::size_t, 2> selected{0, 2};
+    std::string error;
+    const auto scale = adi::engine::compileScaleContext({}, {}, error);
+    check(scale.has_value(), "native major scale can be captured");
+    if (!scale) return;
+    const PitchQuantize capture{*scale, 6000};
+    PitchEditState state;
+    const std::array preset{PitchEditCommand{0, PitchSetShift{20}}, PitchEditCommand{0, PitchSetTilt{30}}};
+    check(applyPitchEdits(analysis, state, preset) == PitchEditError::None, "fixture has pitch and contour edits");
+    const auto before = state.notes;
+    check(correctPitchSelection(analysis, state, selected, capture, 0) == PitchEditError::None && state.notes == before,
+          "zero correction has no effect");
+    check(correctPitchSelection(analysis, state, selected, capture, 0.25) == PitchEditError::None &&
+          near(nominal(analysis, state, 0), 6162.5) && near(nominal(analysis, state, 2), 6685) &&
+          near(resolvePitchNoteEdit(analysis, state, 0).tiltCents, 30),
+          "partial correction moves nominal pitch by one quarter of the scale distance");
+    std::printf("Quarter correction moved the detuned note by %+.2f cents\n", nominal(analysis, state, 0) - 6150);
+    check(correctPitchSelection(analysis, state, selected, capture, 1) == PitchEditError::None &&
+          near(nominal(analysis, state, 0), 6200) && near(nominal(analysis, state, 2), 6700),
+          "full correction reaches the nearest native scale tones");
+    const auto corrected = state.notes;
+    const PitchQuantize noTonic{*scale, std::numeric_limits<double>::quiet_NaN()};
+    check(correctPitchSelection(analysis, state, selected, noTonic, 0.5) == PitchEditError::InvalidScale &&
+          correctPitchSelection(analysis, state, selected, capture, 1.01) == PitchEditError::InvalidValue &&
+          state.notes == corrected, "invalid scale capture and out-of-range amounts preserve the prior state");
+    const std::array existing{PitchEditCommand{0, PitchSetShift{-30}}};
+    const std::array<std::size_t, 1> first{0};
+    check(applyPitchEdits(analysis, state, existing) == PitchEditError::None &&
+          correctPitchSelection(analysis, state, first, capture, 1) == PitchEditError::None &&
+          near(nominal(analysis, state, 0), 6000), "captured scale resolves an equal distance to its lower degree");
+}
+
+void boundaryRetime() {
+    const auto analysis = fixture();
+    PitchEditState state;
+    check(retimePitchBoundary(analysis, state, 0, PitchBoundary::End, 3400) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0).endFrame == 3400 &&
+          resolvePitchNoteEdit(analysis, state, 1).startFrame == 3400 &&
+          resolvePitchNoteEdit(analysis, state, 1).endFrame == 5000,
+          "moving a shared end stretches the first note and sets the next start atomically");
+    const auto newBoundary = static_cast<double>(resolvePitchNoteEdit(analysis, state, 0).endFrame);
+    const auto originalBoundary = static_cast<double>(analysis.notes[0].endFrame);
+    std::printf("Shared boundary moved %.0f frames (%.3f ms)\n", newBoundary - originalBoundary,
+                (newBoundary - originalBoundary) * 1000 / analysis.sampleRate);
+    check(retimePitchBoundary(analysis, state, 1, PitchBoundary::Start, 3200) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0).endFrame == 3200 &&
+          resolvePitchNoteEdit(analysis, state, 1).startFrame == 3200,
+          "moving a shared start changes the preceding end on the authored timeline");
+    check(retimePitchBoundary(analysis, state, 1, PitchBoundary::End, 5300) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 2).startFrame == 6000, "a gap isolates a neighbor from a boundary gesture");
+    const auto previous = state.notes;
+    check(retimePitchBoundary(analysis, state, 1, PitchBoundary::End, 6400) == PitchEditError::Overlap &&
+          retimePitchBoundary(analysis, state, 1, PitchBoundary::Start, 1000) == PitchEditError::InvalidValue &&
+          state.notes == previous, "crossing a gap or collapsing a contiguous neighbor fails atomically");
+
+    const std::array swap{PitchEditCommand{0, PitchSetTiming{6000, 8000}},
+                          PitchEditCommand{2, PitchSetTiming{1000, 3200}}};
+    check(applyPitchEdits(analysis, state, swap) == PitchEditError::None &&
+          retimePitchBoundary(analysis, state, 1, PitchBoundary::Start, 3333) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 2).endFrame == 3333 &&
+          resolvePitchNoteEdit(analysis, state, 0).endFrame == 8000,
+          "neighbor matching uses the destination span even when source notes are reordered");
+}
+
+void dimensionReset() {
+    const auto analysis = fixture();
+    const auto originalAnalysis = analysis;
+    const std::array<std::size_t, 1> first{0}, second{1};
+    PitchEditState state;
+    const std::array edits{
+        PitchEditCommand{0, PitchSetShift{100}}, PitchEditCommand{0, PitchSetTilt{30}},
+        PitchEditCommand{0, PitchSetTiltGeometry{{0.4, 10, -20}}},
+        PitchEditCommand{0, PitchSetStraighten{0.5}},
+        PitchEditCommand{0, PitchSetStraightenRange{PitchStraightenRange{1200, 2500}}},
+        PitchEditCommand{0, PitchSetDrift{0.5, true}}, PitchEditCommand{0, PitchSetTransition{80}},
+        PitchEditCommand{0, PitchSetFormant{200}},
+        PitchEditCommand{0, PitchSetGain{-std::numeric_limits<double>::infinity()}},
+        PitchEditCommand{0, PitchSetTiming{1100, 2900}},
+        PitchEditCommand{1, PitchSetShift{200}}, PitchEditCommand{1, PitchSetFormant{-300}},
+        PitchEditCommand{1, PitchSetGain{-7}}, PitchEditCommand{1, PitchSetTiming{3200, 5300}},
+    };
+    check(applyPitchEdits(analysis, state, edits) == PitchEditError::None, "fixture authors independent edit dimensions");
+    auto expectedFirst = resolvePitchNoteEdit(analysis, state, 0);
+    auto expectedSecond = resolvePitchNoteEdit(analysis, state, 1);
+    expectedFirst.pitchShiftCents = 0;
+    check(resetPitchSelection(analysis, state, first, PitchResetDimension::PitchCenter) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0) == expectedFirst &&
+          resolvePitchNoteEdit(analysis, state, 1) == expectedSecond,
+          "pitch-center reset affects only selected centers");
+
+    expectedFirst.straighten = 0;
+    expectedFirst.straightenRange.reset();
+    expectedFirst.tiltCents = 0;
+    expectedFirst.tiltGeometry = {};
+    expectedFirst.drift = 1;
+    expectedFirst.preserveExpression = false;
+    expectedFirst.transitionFrames = 0;
+    check(resetPitchSelection(analysis, state, first, PitchResetDimension::PitchCurve) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0) == expectedFirst &&
+          resolvePitchNoteEdit(analysis, state, 1) == expectedSecond && analysis == originalAnalysis,
+          "curve reset removes authored expression and retains the source analysis and other edits");
+
+    expectedFirst.formantShiftCents = 0;
+    expectedSecond.formantShiftCents = 0;
+    check(resetPitchSelection(analysis, state, {}, PitchResetDimension::Formant) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0) == expectedFirst &&
+          resolvePitchNoteEdit(analysis, state, 1) == expectedSecond,
+          "no-selection formant reset applies to every authored note");
+    expectedFirst.gainDb = 0;
+    check(resetPitchSelection(analysis, state, first, PitchResetDimension::Volume) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0) == expectedFirst &&
+          resolvePitchNoteEdit(analysis, state, 1) == expectedSecond,
+          "volume reset restores unity from mute and keeps the other note's gain");
+    check(resetPitchSelection(analysis, state, second, PitchResetDimension::All) == PitchEditError::None &&
+          state.notes == std::vector{expectedFirst}, "all-dimension reset can target one note");
+    check(resetPitchSelection(analysis, state, {}, PitchResetDimension::All) == PitchEditError::None &&
+          state.notes.empty(), "all-dimension reset without a selection clears the clip edits");
+
+    const std::array swap{PitchEditCommand{0, PitchSetTiming{3000, 5000}},
+                          PitchEditCommand{1, PitchSetTiming{1000, 3000}},
+                          PitchEditCommand{0, PitchSetShift{125}}};
+    check(applyPitchEdits(analysis, state, swap) == PitchEditError::None, "fixture swaps timing spans");
+    const auto before = state.notes;
+    check(resetPitchSelection(analysis, state, first, PitchResetDimension::Timing) == PitchEditError::Overlap &&
+          before == state.notes, "a conflicting selected timing reset leaves authored rows intact");
+    check(resetPitchSelection(analysis, state, {}, PitchResetDimension::Timing) == PitchEditError::None &&
+          state.notes.size() == 1 && resolvePitchNoteEdit(analysis, state, 0).startFrame == 1000 &&
+          resolvePitchNoteEdit(analysis, state, 1).startFrame == 3000 && near(nominal(analysis, state, 0), 6255),
+          "resetting both timing spans validates the final layout and keeps the independent pitch");
+}
+
+void workerOnly() {
+    const auto analysis = fixture();
+    PitchEditState state;
+    const std::array<std::size_t, 1> one{0};
+    const auto before = state.notes;
+    check(movePitchSelection(analysis, state, {}, 6200, PitchSnapMode::Absolute) == PitchEditError::None &&
+          state.notes == before, "empty selection is a no-op");
+    const CallbackScope callback;
+    check(movePitchSelection(analysis, state, one, 6200, PitchSnapMode::Free) == PitchEditError::Realtime &&
+          assignPitchSelectionFromMidi(analysis, state, one, 62, true).error == PitchEditError::Realtime &&
+          retimePitchBoundary(analysis, state, 0, PitchBoundary::End, 3200) == PitchEditError::Realtime &&
+          resetPitchSelection(analysis, state, {}, PitchResetDimension::All) == PitchEditError::Realtime &&
+          state.notes == before, "callback refusal occurs before staging any commands");
+}
+
+} // namespace
+
+int main() {
+    selectionSnap();
+    midiAssignment();
+    partialCorrection();
+    boundaryRetime();
+    dimensionReset();
+    workerOnly();
+    std::printf("%s -- %d checks\n", failures == 0 ? "PASS" : "FAILED", checks);
+    return failures == 0 ? 0 : 1;
+}
