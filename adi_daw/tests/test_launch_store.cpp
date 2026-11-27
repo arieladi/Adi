@@ -53,7 +53,7 @@ void legacy() {
     check(model.slotClips.empty() && model.clips.size() == 1 && model.clips.front().id == 2,
           "an Arrangement clip at zero stays in the Arrangement");
 
-    if (kUserVersion < kSessionSchemaUserVersion) {
+    if constexpr (kUserVersion < kSessionSchemaUserVersion) {
         store->db().exec("CREATE TABLE scenes(id INTEGER PRIMARY KEY) STRICT");
         check(refuses(*store, model, "incomplete Session schema"), "partial staging reports a named error");
     }
