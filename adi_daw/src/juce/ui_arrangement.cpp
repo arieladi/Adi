@@ -3645,8 +3645,10 @@ bool ArrangementCanvas::resolveAutomationValue(const AutomationValueAddress &add
 
 void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
     const auto edit=automationValueAt(e.position,view.snaps(e.mods),true);
+    const auto current = view.root.current();
+    const auto *lane = edit && current ? envelopeOf(*current, edit->target).lane : view.automationLaneAt(e.y);
     const juce::Component::SafePointer<ArrangementCanvas> safe(this);
-    view.contextMenu(e.getScreenPosition(),false,view.automationLaneAt(e.y),[safe,edit](juce::PopupMenu &menu) {
+    view.contextMenu(e.getScreenPosition(),false,lane,[safe,edit](juce::PopupMenu &menu) {
         if(!edit)return;
         menu.addSeparator();
         const auto name=juce::String::fromUTF8(edit->point?"Edit Value\xE2\x80\xA6":"Add Value\xE2\x80\xA6");

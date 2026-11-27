@@ -16779,6 +16779,127 @@ void automationKeyboardEdits(AppCommands &commands, const std::filesystem::path 
           "Alt+Up returns to Volume while both envelopes remain unchanged");
 }
 
+void reenableArrangementEnvelope(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "reenable-arrangement-envelope.adi", true, {}, error);
+    check(document != nullptr, "a project for arrangement Re-Enable Automation");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "reenable-arrangement-envelope");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.reenableLane = [&](std::int64_t lane) { return document->reenableAutomation(lane); };
+    root.setSize(1440, 900);
+    constexpr std::int64_t track = 2;
+    constexpr auto tick = textproj::kWhole;
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.left = 0;
+    geometry.scale = 48;
+    root.arrangement.changed();
+    const auto volume = volumeTarget(track), pan = panTarget(track);
+    root.showAutomation(track, volume);
+    const bool madeVolume = root.addAutomationPoint(track, volume, tick, -32., true);
+    root.showAutomation(track, pan);
+    const bool madePan = root.addAutomationPoint(track, pan, tick, 1., true);
+    check(madeVolume && madePan, "a centered Volume breakpoint and a Pan breakpoint at the top of its envelope");
+    if (!madeVolume || !madePan)
+        return;
+
+    document->prepare(48000, 64);
+    OpRequest volumeOverride, panOverride;
+    volumeOverride.opType = "mixer.setVolume";
+    volumeOverride.payload = {{"id", track}, {"db", -3.}};
+    panOverride.opType = "mixer.setPan";
+    panOverride.payload = {{"id", track}, {"pan", -.5}};
+    const bool submitted = document->ops().submit({std::move(volumeOverride), std::move(panOverride)}).ok &&
+                           document->synchronise();
+    root.frame();
+    const auto current = root.current();
+    const auto volumeEnvelope = envelopeOf(*current, volume), panEnvelope = envelopeOf(*current, pan);
+    const bool overridden = submitted && volumeEnvelope.lane && volumeEnvelope.lane->overridden &&
+                            panEnvelope.lane && panEnvelope.lane->overridden;
+    check(overridden, "the session has overridden both Volume and Pan");
+    if (!overridden)
+        return;
+    const auto volumeId = volumeEnvelope.lane->id, panId = panEnvelope.lane->id;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto panBody = [&]() -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target == pan)
+                return body;
+        return std::nullopt;
+    };
+    struct Context {
+        std::int64_t lane = 0;
+        bool editPoint = false;
+        std::function<void()> reenable;
+    };
+    const auto openMenu = [&](juce::Point<float> position) {
+        Context context;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *lane,
+                                             const juce::PopupMenu &menu) {
+            if (header)
+                return;
+            context.lane = lane ? lane->id : 0;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.isEnabled && item.text == "Re-Enable Automation")
+                    context.reenable = item.action;
+                if (item.isEnabled && item.text == juce::String::fromUTF8("Edit Value\xE2\x80\xA6"))
+                    context.editPoint = true;
+            }
+        };
+        const juce::ModifierKeys right(juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(pressAt(canvas, position, right));
+        canvas.mouseUp(pressAt(canvas, position, right));
+        root.arrangement.onContextMenu = {};
+        return context;
+    };
+
+    const auto overlay = panBody();
+    check(overlay.has_value(), "the Pan envelope is visible over the clips");
+    if (!overlay)
+        return;
+    const auto x = static_cast<float>(geometry.x(tick));
+    const auto mainMenu = openMenu({x, (overlay->top + overlay->bottom) / 2});
+    check(mainMenu.lane == panId && mainMenu.reenable,
+          "the main overlay menu offers Re-Enable for Pan while Volume is overridden too");
+
+    const bool promoted = root.addAutomationLane(track, pan);
+    root.showAutomation(track, volume);
+    root.frame();
+    const auto auxiliary = panBody();
+    check(promoted && auxiliary && auxiliary->top > overlay->bottom,
+          "Pan has its own row below the Volume overlay");
+    if (!promoted || !auxiliary)
+        return;
+
+    // The Pan point paints two pixels below its row's top. Hit testing can reach across the
+    // row boundary. Edit and Re-Enable should agree at that hit.
+    const juce::Point<float> edge{x, auxiliary->top - 3.f};
+    const auto hit = canvas.automationPointAt(edge);
+    const auto *rowLane = root.arrangement.automationLaneAt(juce::roundToInt(edge.y));
+    const bool atBoundary = hit && hit->lane == panId && hit->target == pan && rowLane && rowLane->id == volumeId;
+    check(atBoundary, "the point at the row boundary can be hit from a Volume row pixel");
+    if (!atBoundary)
+        return;
+
+    const auto step = document->ops().nextUndo();
+    const auto menu = openMenu(edge);
+    check(menu.editPoint && menu.lane == panId && menu.reenable,
+          "Edit Value and Re-Enable Automation address the same Pan breakpoint's envelope");
+    if (menu.reenable)
+        menu.reenable();
+    root.frame();
+    const auto after = document->ops().nextUndo();
+    const auto &overrides = document->session().overriddenLanes();
+    check(!overrides.contains(panId) && overrides.contains(volumeId) && step && after && after->txnId == step->txnId,
+          "choosing Re-Enable follows Pan, keeps Volume overridden, and adds no Undo step");
+    document->release();
+}
+
 void lockEnvelopes(const std::filesystem::path &parent) {
     const auto dir = parent / "lock-envelopes";
     std::filesystem::create_directories(dir);
@@ -23611,6 +23732,7 @@ int main(int argc, char **argv) {
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
+    trace("reenableArrangementEnvelope", [&] { reenableArrangementEnvelope(commands, temp.path()); });
     trace("lockEnvelopes", [&] { lockEnvelopes(temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
