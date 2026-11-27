@@ -3391,8 +3391,11 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         const auto range = automationRange(target);
         const auto env = envelopeOf(*current, target);
         const bool selectedLane = hasSpan && automationLaneSelected(body);
-        const auto *keyboard = keyboardAutomationDraft_ && keyboardAutomationDraft_->address.track == body.track->id &&
-                               keyboardAutomationDraft_->address.target == target ? &*keyboardAutomationDraft_ : nullptr;
+        const auto *keyboard = keyboardAutomationDraft_ &&
+            keyboardAutomationDraft_->address.track == body.track->id &&
+            keyboardAutomationDraft_->address.target == target &&
+            keyboardAutomationDraft_->address.lane == (env.lane ? env.lane->id : 0) &&
+            keyboardAutomationDraft_->address.data == (env.data ? env.data->id : 0) ? &*keyboardAutomationDraft_ : nullptr;
         const AutomationDragLane *dragLane = nullptr;
         if (drag && env.lane && env.data) {
             const auto captured = std::find_if(drag->lanes.begin(), drag->lanes.end(), [&](const auto &lane) {
@@ -3445,10 +3448,12 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
             g.strokePath(automationPath(points, 0, right), juce::PathStrokeType(1.f));
             for (const auto &p : points) {
                 const auto box = juce::Rectangle<float>(7, 7).withCentre(p.at);
-                const bool chosen = p.selected || (chosenPoint_ && chosenPoint_->track == body.track->id &&
-                                    chosenPoint_->target == target && chosenPoint_->point == p.id);
-                const bool focused = keyboardAutomationFocus_ && keyboardAutomationFocus_->track == body.track->id &&
-                                     keyboardAutomationFocus_->target == target && keyboardAutomationFocus_->point == p.id;
+                const auto matches = [&](const auto &pick) {
+                    return pick && env.lane && env.data && pick->track == body.track->id && pick->target == target &&
+                           pick->lane == env.lane->id && pick->data == env.data->id && pick->point == p.id;
+                };
+                const bool chosen = p.selected || matches(chosenPoint_);
+                const bool focused = matches(keyboardAutomationFocus_);
                 g.setColour(chosen ? look::handleChosen : focused ? look::accent : look::panel);
                 g.fillRect(box);
                 g.setColour(look::record);
@@ -5530,7 +5535,8 @@ bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
     };
     const auto *points = envelope.data ? &envelope.data->points : nullptr;
     const engine::AutomationPointNode *selected = nullptr;
-    if (points && chosenPoint_ && chosenPoint_->track == track && chosenPoint_->target == target) {
+    if (points && envelope.lane && chosenPoint_ && chosenPoint_->track == track && chosenPoint_->target == target &&
+        chosenPoint_->lane == envelope.lane->id && chosenPoint_->data == envelope.data->id) {
         const auto point = std::find_if(points->begin(), points->end(), [&](const auto &entry) {
             return entry.id == chosenPoint_->point;
         });
