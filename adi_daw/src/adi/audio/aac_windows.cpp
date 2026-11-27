@@ -268,7 +268,14 @@ static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &
             std::filesystem::remove(path, ec);
         }
     } cleanup{path};
-    writeAacAudioMovie(path,track,call);
+    // SC-376: Windows 10's Media Foundation plays an edit list's priming (1,024 frames late) where later
+    // versions skip it. The packets are handed over whole, with no priming edit, on every version, and ADI
+    // trims the priming and the tail itself, as the track declares them.
+    auto whole = track;
+    whole.priming = 0;
+    whole.frames = static_cast<std::uint64_t>(track.packets.size()) * 1024;
+    writeAacAudioMovie(path, whole, call);
+    std::uint64_t skip = track.priming;
     ComPtr<IMFSourceReader> reader;
     check(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader), "source reader");
     // MSVC /WX: the MF_SOURCE_READER_* stream ids are an enum, and passing one as the DWORD
@@ -304,14 +311,17 @@ static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &
                 buffer->Unlock();
                 throw std::runtime_error("unaligned AAC PCM");
             }
-            const auto count = static_cast<std::uint32_t>(
-                (std::min)(static_cast<std::uint64_t>(length / frameBytes), track.frames - done));
+            const auto available = static_cast<std::uint64_t>(length / frameBytes);
+            const auto dropped = (std::min)(available, skip);
+            skip -= dropped;
+            const auto count = static_cast<std::uint32_t>((std::min)(available - dropped, track.frames - done));
             try {
                 if (count) {
                     if (count > 65536)
                         throw std::runtime_error("AAC PCM block exceeds bound");
                     std::vector<float> aligned(static_cast<std::size_t>(count) * channels);
-                    std::memcpy(aligned.data(), bytes, static_cast<std::size_t>(count) * frameBytes);
+                    std::memcpy(aligned.data(), bytes + static_cast<std::size_t>(dropped) * frameBytes,
+                                static_cast<std::size_t>(count) * frameBytes);
                     for (const auto value : aligned)
                         if (!std::isfinite(value))
                             throw std::runtime_error("nonfinite native AAC decode");

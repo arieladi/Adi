@@ -439,7 +439,9 @@ void conversionAndLoop() {
     reference.release(wav);
 }
 void nativeAac() {
-    if(!aacCodecAvailable()){std::printf("AAC native codec unavailable: runtime AAC progress checks skipped\n");return;}
+    // The fixture is encoded here: a platform that decodes AAC but has no sample-exact encoder (Windows 10's
+    // Media Foundation, SC-376) skips, as the NI Stems suite does.
+    if(!aacCodecAvailable() || !aacEncoderAvailable()){std::printf("AAC native codec or encoder unavailable: runtime AAC progress checks skipped\n");return;}
     test::TempDirectory temp{"progressive","aac"};const auto wav=temp.path()/"long.wav",packets=temp.path()/"packets",movie=temp.path()/"audio.m4a";
     {WavWriter w(wav,48000,2,WavFormat::Float32);std::vector<float> samples(480000*2);for(std::size_t i=0;i<480000;++i){samples[i*2]=static_cast<float>(0.3*std::sin(static_cast<double>(i)*0.13));samples[i*2+1]=samples[i*2]*0.5f;}w.write(samples.data(),480000);w.close();}
     const auto track=encodeAac(wav,packets);writeAacAudioMovie(movie,track);const auto parsed=readAacAudioMovie(movie).tracks.front();
