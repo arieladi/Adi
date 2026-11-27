@@ -140,7 +140,7 @@ class MixerStrip final : public juce::Component,
     // Cue Volume on Main in both views. One transport op at release or when typed, outside undo.
     PrimaryButtonSlider cueVolume;
     // The Arrangement's compact chooser. Mixer View paints its chooser in the In/Out section.
-    juce::TextButton cueOut{"1/2"};
+    juce::TextButton cueOut;
     void cueOutMenu();
     // Whether `at` is on Main's Cue Out chooser in this panel.
     bool onCueOut(juce::Point<int> at) const noexcept;

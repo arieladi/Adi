@@ -78,8 +78,18 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label,
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
 }
-juce::String cuePairLabel(int first) {
-    return juce::String(first + 1) + "/" + juce::String(first + 2);
+constexpr int kCuePairCount = 32;
+const juce::String &cuePairLabel(int first) {
+    // The strip constructor initializes the shared labels before its first frame.
+    static const auto labels = [] {
+        std::array<juce::String, kCuePairCount> pairs;
+        for (int pair = 0; pair < kCuePairCount; ++pair) {
+            const auto channel = pair * 2 + 1;
+            pairs[static_cast<std::size_t>(pair)] = juce::String(channel) + "/" + juce::String(channel + 1);
+        }
+        return pairs;
+    }();
+    return labels[static_cast<std::size_t>(std::clamp(first / 2, 0, kCuePairCount - 1))];
 }
 class InputMenuReading {
   public:
@@ -269,7 +279,7 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      controls::stateOf(held >= 1, over, down, isEnabled(), controls::Lit::Record),
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
-MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
+MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(panel) {
     // Focus is explicit for the channel's title menu and for Esc during a live drag (MX-23).
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
@@ -1177,7 +1187,7 @@ void MixerStrip::cueOutMenu() {
     const auto current = panel_.root.current();
     const int first = current ? current->cue.firstOutputChannel : 0;
     juce::PopupMenu m;
-    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
+    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair / 2 < kCuePairCount); pair += 2)
         m.addItem(cuePairLabel(pair), true, pair == first,
                   [safe = SafePointer<MixerStrip>(this), track = track_, pair] {
                       if (safe && safe->track_ == track && safe->kind_ == "master")
