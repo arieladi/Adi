@@ -1873,6 +1873,26 @@ add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+target_sources(adi_core PRIVATE
+    src/adi/audio/sample_classification.cpp
+    src/adi/audio/short_sample_warp.cpp
+    src/adi/library/analysis_worker.cpp
+    src/adi/library/sample_analysis.cpp
+    src/adi/library/sample_analysis_catalog.cpp
+    src/adi/library/sample_descriptors.cpp
+    src/adi/library/sample_file_tags.cpp
+    src/adi/library/sample_query.cpp
+    src/adi/library/sample_swap.cpp
+    src/adi/library/sample_tonality.cpp)
+foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
+                       sample_analysis sample_descriptors sample_query sample_tonality)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
+target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings)
+add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
 add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
 target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)

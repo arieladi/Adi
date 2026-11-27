@@ -33,6 +33,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string_view>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -321,6 +322,11 @@ class ProjectDocument final : public engine::BlockProcessor {
                                const std::optional<rows::PluginRef> &installed = {});
     bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
                        std::int64_t nowUtc);
+    enum class SampleAssignmentResult { Applied, SourceChanged, Failed };
+    // The content hash identifies the indexed sound through import and decoding.
+    SampleAssignmentResult hotSwapIndexedSample(const DevicePanelData &, std::int32_t slot,
+                                                const std::filesystem::path &, std::int64_t nowUtc,
+                                                std::string_view expectedHash);
     // SC-325 (ADR-0134 d7): the expression route remembered for a plug-in (format, uid), the default of a
     // new instance `loadPlugin` makes; the project then keeps it on the device row. Unset: Auto.
     std::function<std::optional<engine::RouteChoice>(const std::string &, const std::string &)> pluginRouteDefault;
@@ -375,6 +381,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    SampleAssignmentResult assignSampleWithIdentity(std::int64_t device, std::int32_t slot,
+                                                    const std::filesystem::path &, std::int64_t nowUtc,
+                                                    std::string_view expectedHash);
     enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
     struct TrackRenderWork;
     bool startTrackRender(TrackRenderKind, std::int64_t track);

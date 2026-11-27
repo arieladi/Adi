@@ -51,7 +51,7 @@ void addState(PreparedSampleAssignment& prepared,const Payload& state) {
     prepared.requests.push_back(std::move(request));
 }
 PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t slot,const std::filesystem::path* file,
-    double rate,std::int64_t utc,audio::DecodeCache* cache,std::string_view stagedUid={}) {
+    double rate,std::int64_t utc,audio::DecodeCache* cache,std::string_view expectedHash={},std::string_view stagedUid={}) {
     PreparedSampleAssignment result;result.deviceId=deviceId;
     try {
         if(audio::onAudioThread)throw std::runtime_error("sample assignment belongs off the audio thread");
@@ -67,6 +67,12 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
             OpRequest import;const auto imported=media::prepareImport(store,*file,ids.next("media_files"),utc,import,cache);
             if(!imported.ok)throw std::runtime_error(imported.error);
             result.mediaId=imported.mediaId;
+            const auto hash=import.opType=="media.import" ? import.payload.at("row").at("hash_blake3").get<std::string>()
+                                                          : media::mediaRow(db,result.mediaId).at("hash_blake3").get<std::string>();
+            if(!expectedHash.empty() && hash!=expectedHash) {
+                result.sourceChanged=true;
+                throw std::runtime_error("The selected sample has changed since it was indexed.");
+            }
             if(!import.opType.empty())result.requests.push_back(std::move(import));
             const auto source=file->is_absolute()?*file:media::projectFolder(store)/ *file;
             const auto playable=cache?cache->playable(source):source;
@@ -75,10 +81,10 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
             if(cache)cache->release(playable);
             // The import and decode must describe the SAME content even if a
             // worker overwrote the file while preparation was reading it.
-            std::string expected;
-            if(!result.requests.empty() && result.requests.front().opType=="media.import")expected=result.requests.front().payload.at("row").at("hash_blake3").get<std::string>();
-            else expected=media::mediaRow(db,result.mediaId).at("hash_blake3").get<std::string>();
-            if(state.at("mediaHash")!=expected)throw std::runtime_error("sample media changed during preparation");
+            if(state.at("mediaHash")!=hash) {
+                result.sourceChanged=true;
+                throw std::runtime_error("sample media changed during preparation");
+            }
         }
         if (stagedUid.empty()) {
             SQLite::Statement existing(db,"SELECT 1 FROM plugin_state WHERE device_id=? AND stream_role=?");
@@ -98,7 +104,9 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
 }
 }
 PreparedSampleAssignment prepareSampleAssignment(Store& store,std::int64_t device,std::int32_t slot,
-    const std::filesystem::path& path,double rate,std::int64_t utc,audio::DecodeCache* cache){return prepare(store,device,slot,&path,rate,utc,cache);}
+    const std::filesystem::path& path,double rate,std::int64_t utc,audio::DecodeCache* cache,std::string_view expectedHash) {
+    return prepare(store,device,slot,&path,rate,utc,cache,expectedHash);
+}
 PreparedSampleAssignment prepareSampleClear(Store& store,std::int64_t device,std::int32_t slot){return prepare(store,device,slot,nullptr,48000,0,nullptr);}
 PreparedSampleAssignment prepareSampleInstrument(Store& store, std::int64_t track,
     const std::filesystem::path& file, double rate, std::int64_t utc,
@@ -112,7 +120,7 @@ PreparedSampleAssignment prepareSampleInstrument(Store& store, std::int64_t trac
         requireEditableInstrumentTrack(db, track);
         auto insertion = prepareBuiltinInsert(store, sampleInstrumentUid, track, {}, retainedDeviceId);
         if (!insertion.ok) throw std::runtime_error(insertion.error);
-        auto prepared = prepare(store, insertion.deviceId, sampleInstrumentSlot, &file, rate, utc, cache, sampleInstrumentUid);
+        auto prepared = prepare(store, insertion.deviceId, sampleInstrumentSlot, &file, rate, utc, cache, {}, sampleInstrumentUid);
         if (!prepared.ok) return prepared;
         prepared.requests.insert(prepared.requests.begin(), std::make_move_iterator(insertion.requests.begin()),
                                   std::make_move_iterator(insertion.requests.end()));

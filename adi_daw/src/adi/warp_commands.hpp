@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/clip_commands.hpp"
 #include "adi/audio/auto_warp.hpp"
+#include "adi/audio/short_sample_warp.hpp"
 #include "adi/audio/warp.hpp"
 namespace adi::clip_edit {
 struct WarpOptions {
@@ -9,6 +10,7 @@ struct WarpOptions {
     audio::WarpMode mode=audio::WarpMode::Beats;
     audio::AutoWarpOptions analysis;
     std::stop_token stop;
+    std::optional<audio::ShortSampleWarpInput> shortSample = {};
 };
 /// Owner/worker connection, off the callback. Auto-Warp a clean, full-source
 /// audio clip (ADR-0203 d7). Edited offsets, loops and aliases refuse explicitly.

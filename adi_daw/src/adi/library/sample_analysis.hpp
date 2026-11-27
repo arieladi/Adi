@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+#include "adi/audio/sample_classification.hpp"
+#include "adi/library/sample_descriptors.hpp"
+#include "adi/library/sample_tonality.hpp"
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <vector>
+
+namespace adi::audio { class DecodeCache; }
+namespace adi::media { class AnalysisCache; }
+namespace adi::library {
+inline constexpr std::uint32_t sampleSimilarityWindowSeconds = 2;
+inline constexpr std::uint32_t sampleSimilarityMaximumSeconds = 60;
+
+struct SampleAnalysis {
+    double lengthSeconds = 0;
+    audio::SampleClassification classification{};
+    std::optional<double> tempoBpm;
+    std::optional<SampleKey> key;
+    SampleDescriptors descriptors;
+    std::optional<SampleDescriptors> similarityPrefix;
+    audio::SampleKindSource tempoSource = audio::SampleKindSource::Detection;
+    audio::SampleKindSource keySource = audio::SampleKindSource::Detection;
+    float keyStrength = 0;
+    std::vector<std::string> tags;
+    std::string contentHash; // Preserved for read-only Places before ADIL has a hash.
+};
+
+struct SampleAnalysisOverrides {
+    audio::SampleKindHint classification;
+    std::optional<SampleKey> key;
+    std::vector<std::string> tags;
+};
+
+[[nodiscard]] SampleAnalysis applySampleOverrides(SampleAnalysis, const SampleAnalysisOverrides&);
+
+enum class SampleAnalysisProblem { None, Realtime, Cancelled, Missing, SourceChanged, Read, CacheWrite };
+struct SampleAnalysisResult {
+    SampleAnalysisProblem problem = SampleAnalysisProblem::None;
+    std::optional<SampleAnalysis> analysis;
+    std::string hash;
+    bool fromCache = false;
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return problem == SampleAnalysisProblem::None && analysis.has_value();
+    }
+};
+
+// Owner-worker service. A known hash identifies an indexed publication and
+// permits a cache-only read. New measurements are committed only after the
+// source hash has been verified. The caller owns both existing caches.
+class SampleAnalysisService {
+public:
+    SampleAnalysisService(media::AnalysisCache& analysis, audio::DecodeCache& decode)
+        : analysis_(analysis), decode_(decode) {}
+    [[nodiscard]] SampleAnalysisResult read(const std::string& hash, std::stop_token = {}) const;
+    [[nodiscard]] SampleAnalysisResult analyze(const std::filesystem::path& source,
+        const std::string& expectedHash = {}, std::stop_token = {});
+
+private:
+    media::AnalysisCache& analysis_;
+    audio::DecodeCache& decode_;
+};
+
+// Used by launchers after they have resolved the sample's measurements and
+// current authored overrides. The caller chooses when to enable audition looping.
+[[nodiscard]] bool samplePreviewLoops(const SampleAnalysis&) noexcept;
+}

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/library/sample_analysis.hpp"
 #include "index.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -420,6 +421,33 @@ std::vector<Entry> Index::entries() const {
     SQLite::Statement q(*impl_->db,"SELECT volume,rel_path,size,mtime,coalesce(hash,''),error,present FROM files ORDER BY volume,path_key");
     while(q.executeStep()) result.push_back({q.getColumn(0).getString(),q.getColumn(1).getString(),q.getColumn(4).getString(),q.getColumn(5).getString(),static_cast<std::uintmax_t>(q.getColumn(2).getInt64()),q.getColumn(3).getInt64(),q.getColumn(6).getInt()!=0});
     return result;
+}
+SampleAnalysisOverrides Index::analysisOverrides(const std::string& hash) const {
+    if (audio::onAudioThread || !validHash(hash)) return {};
+    try {
+        std::lock_guard lock(impl_->mutex);
+        SQLite::Statement query(*impl_->db, "SELECT payload FROM annotations WHERE hash=?");
+        query.bind(1, hash);
+        if (!query.executeStep()) return {};
+        const auto field = query.getColumn(0);
+        if (field.getBytes() < 0 || static_cast<std::size_t>(field.getBytes()) > kMaxSampleWarpBytes*2+65536)
+            return {};
+        const auto payload = libraryJson(field.getString());
+        if (!payload.is_object()) return {};
+        SampleAnalysisOverrides result;
+        if (const auto bpm = payload.find("bpm"); bpm != payload.end() && bpm->is_number())
+            result.classification.bpm = bpm->get<double>();
+        if (const auto tags = payload.find("tags"); tags != payload.end() && tags->is_array())
+            for (const auto& tag : *tags) if (tag.is_string()) result.tags.push_back(tag.get<std::string>());
+        if (const auto settings = payload.find("sample_settings"); settings != payload.end()) {
+            const auto saved = decodeSampleSettings(*settings);
+            if (saved)
+                result.classification.kind = saved.data->loopEnabled ? audio::SampleKind::Loop : audio::SampleKind::OneShot;
+        }
+        return result;
+    } catch (const std::exception&) {
+        return {};
+    }
 }
 SampleSettingsResult Index::sampleSettings(const std::string& hash) const {
     if(audio::onAudioThread)return {SampleSettingsProblem::Realtime,{},{}};

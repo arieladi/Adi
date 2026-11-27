@@ -44,7 +44,9 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)throw std::runtime_error("Warp needs an attached, independent audio clip");
         auto source=sources[0];
         if((integer(source,"warp_enabled")!=0)==options.enabled)throw std::runtime_error("clip already has the requested Warp state");
-        if(integer(root,"content_offset_ticks")!=0 || integer(root,"loop_enabled")!=0 || integer(source,"reverse")!=0 ||
+        const bool wholeLoop=options.shortSample && integer(root,"loop_enabled")!=0 && !options.enabled &&
+            integer(root,"loop_start_ticks")==0 && root.at("loop_len_ticks")==root.at("length_ticks");
+        if(integer(root,"content_offset_ticks")!=0 || (integer(root,"loop_enabled")!=0 && !wholeLoop) || integer(source,"reverse")!=0 ||
            source.at("transpose_semis")!=0 || source.at("formant_shift")!=0)
             throw std::runtime_error("Auto-Warp currently needs a clean full-source clip without offsets, loops, reverse or pitch edits");
         if(image.at("children").contains("clip_properties"))for(const auto& properties:image.at("children").at("clip_properties"))
@@ -83,9 +85,33 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             if(std::abs(static_cast<long double>(spanNs)-physicalLd)>toleranceLd ||
                (!details.at("source_end_ns").is_null() && std::abs(static_cast<long double>(integer(details,"source_end_ns"))-physicalLd)>toleranceLd))
                 throw std::runtime_error("Auto-Warp currently needs a clean full-source clip");
-            const auto onsets=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);cancelled(options.stop);
-            if(!onsets)throw std::runtime_error("cannot analyze Warp source transients");
-            const auto analysis=audio::autoWarpFromOnsets(onsets.frames,frames,reader.sampleRate(),options.analysis,options.stop);cancelled(options.stop);
+            using Action=audio::ShortSampleWarpAction;
+            audio::ShortSampleWarpPlan plan{Action::UseAutoWarp,{},{}};
+            auto settings=options.analysis;
+            if(options.shortSample && start==0 && frames==reader.frames()) {
+                if(!options.shortSample->contentHash.empty() && options.shortSample->contentHash!=hash.hex)
+                    throw std::runtime_error("short sample Warp analysis is stale");
+                auto sample=options.shortSample->classification;
+                if(settings.sourceBpm && sample.bpm!=settings.sourceBpm) {
+                    sample.bpm=settings.sourceBpm;sample.bars.reset();
+                }
+                plan=audio::planShortSampleWarp(audio::ShortSampleWarpTrigger::WarpPress,
+                    options.shortSample->mode,sample,frames,reader.sampleRate(),settings.tempoHint);
+                if(plan.action==Action::Invalid)throw std::runtime_error("invalid short sample Warp settings");
+                if(plan.action==Action::KeepUnwarped){result.ok=true;return result;}
+            }
+            audio::AutoWarpResult analysis;
+            if(plan.loopMarkers) {
+                analysis.markers.assign(plan.loopMarkers->begin(),plan.loopMarkers->end());
+            } else if(plan.action==Action::WarpedOneShot) {
+                settings.sourceBpm=plan.sourceBpm;settings.fromFirstBeat=false;
+                analysis=audio::autoWarpFromOnsets({},frames,reader.sampleRate(),settings,options.stop);
+            } else {
+                const auto onsets=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
+                if(!onsets)throw std::runtime_error("cannot analyze Warp source transients");
+                analysis=audio::autoWarpFromOnsets(onsets.frames,frames,reader.sampleRate(),settings,options.stop);
+            }
+            cancelled(options.stop);
             if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?"Warp needs a detected beat or an explicit source tempo":"source timing cannot be analyzed with these Warp options");
             const auto markers=audio::writeWarpMap(analysis.markers,frames-analysis.trimFrames);
             if(!markers)throw std::runtime_error("cannot capture Warp markers");
@@ -97,6 +123,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             source["warp_markers"]=Payload::binary(std::move(bytes));source["warp_mode"]=audio::warpModeName(options.mode);
             source["src_start_frames"]=edit::addTime(start,static_cast<std::int64_t>(analysis.trimFrames));source["src_len_frames"]=static_cast<std::int64_t>(frames-analysis.trimFrames);
             root["length_ticks"]=analysis.markers.back().tick;
+            if(plan.loopMarkers){root["loop_enabled"]=1;root["loop_len_ticks"]=root["length_ticks"];}
             details["content_offset_ns"]=nullptr;details["source_end_ns"]=nullptr;
         } else {
             if(source.at("warp_markers").is_null() || !source.at("warp_markers").is_binary())throw std::runtime_error("Warp off needs the stored source map");
@@ -104,6 +131,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             const auto markers=audio::readWarpMap(std::span<const std::byte>(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),frames);
             if(!markers || std::abs(static_cast<long double>(spanNs)-static_cast<long double>(time.duration(origin,markers.markers.back().tick)))>toleranceLd)throw std::runtime_error("Warp off currently needs an untrimmed full-source Warp clip");
             root["length_ticks"]=time.ticks(edit::addTime(beginNs,physicalNs))-origin;
+            if(wholeLoop){root["loop_enabled"]=0;root["loop_len_ticks"]=nullptr;}
             details["content_offset_ns"]=0;details["source_end_ns"]=physicalNs;
         }
         root["time_base"]=0;root["pos_ticks"]=origin;root["pos_ns"]=nullptr;root["length_ns"]=nullptr;

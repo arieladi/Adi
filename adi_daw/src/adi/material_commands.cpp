@@ -121,12 +121,11 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
+        const auto capturedHash=(mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):
+            media::mediaRow(store.db(),imported.mediaId).at("hash_blake3")).get<std::string>();
         std::optional<library::SampleSettings> saved;
         if(index) {
-            std::string hash;
-            if(mediaRequest.opType=="media.import")hash=mediaRequest.payload.at("row").at("hash_blake3").get<std::string>();
-            else {SQLite::Statement key(store.db(),"SELECT hash_blake3 FROM media_files WHERE id=?");key.bind(1,imported.mediaId);if(!key.executeStep())throw std::runtime_error("imported source identity is missing");hash=key.getColumn(0).getString();}
-            const auto loaded=index->sampleSettings(hash);
+            const auto loaded=index->sampleSettings(capturedHash);
             if(loaded) {
                 if(loaded.data->sampleRate!=info.sampleRate || loaded.data->channels!=info.channels || loaded.data->frames!=static_cast<std::uint64_t>(info.frames))throw std::runtime_error("saved sample defaults do not match source dimensions");
                 saved=*loaded.data;
@@ -134,22 +133,46 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         }
         std::optional<audio::AutoWarpResult> warped;
         std::optional<audio::WarpMapWrite> markers;
-        if(options.warp && !saved) {
+        using WarpAction=audio::ShortSampleWarpAction;
+        audio::ShortSampleWarpPlan shortWarp{WarpAction::UseAutoWarp,{},{}};
+        auto warpSettings=options.warpAnalysis;
+        if(options.warp && !saved && options.shortSample && info.frames>0) {
+            if(!options.shortSample->contentHash.empty() && options.shortSample->contentHash!=capturedHash)
+                throw std::runtime_error("short sample Warp analysis is stale");
+            auto sample=options.shortSample->classification;
+            if(warpSettings.sourceBpm && sample.bpm!=warpSettings.sourceBpm) {
+                sample.bpm=warpSettings.sourceBpm;sample.bars.reset();
+            }
+            shortWarp=audio::planShortSampleWarp(audio::ShortSampleWarpTrigger::ImportWarp,
+                options.shortSample->mode,sample,static_cast<std::uint64_t>(info.frames),
+                static_cast<std::uint32_t>(info.sampleRate),warpSettings.tempoHint);
+            if(shortWarp.action==WarpAction::Invalid)throw std::runtime_error("invalid short sample Warp settings");
+        }
+        if(options.warp && !saved && shortWarp.action!=WarpAction::KeepUnwarped) {
             if(referenceRate<44100 || referenceRate!=std::floor(referenceRate) || info.sampleRate<8000 ||
                info.sampleRate>768000 || info.channels<1 || info.channels>64 || info.frames<=0 || info.frames>0x7fffffff ||
                !audio::warpModeName(options.warpMode))throw std::runtime_error("audio source is outside supported warp bounds");
-            struct Decoded {
-                std::filesystem::path file;bool pinned=false;
-                explicit Decoded(const std::filesystem::path& input):file(audio::playableFile(input)),pinned(file!=input){}
-                ~Decoded(){if(pinned)try{audio::defaultDecodeCache().release(file);}catch(...){}}
-            } decoded(source);
-            audio::WavReader reader(decoded.file);
-            if(reader.frames()!=static_cast<std::uint64_t>(info.frames) || reader.sampleRate()!=static_cast<std::uint32_t>(info.sampleRate) || reader.channels()!=static_cast<std::uint16_t>(info.channels))
-                throw std::runtime_error("source dimensions changed during import");
-            const auto onsets=audio::detectTransients(reader,0,static_cast<std::uint64_t>(info.frames),50,options.stop);
-            if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
-            if(!onsets)throw std::runtime_error("cannot analyze the source audio");
-            warped=audio::autoWarpFromOnsets(onsets.frames,static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),options.warpAnalysis,options.stop);
+            if(shortWarp.loopMarkers) {
+                warped.emplace();
+                warped->markers.assign(shortWarp.loopMarkers->begin(),shortWarp.loopMarkers->end());
+            } else if(shortWarp.action==WarpAction::WarpedOneShot) {
+                warpSettings.sourceBpm=shortWarp.sourceBpm;warpSettings.fromFirstBeat=false;
+                warped=audio::autoWarpFromOnsets({},static_cast<std::uint64_t>(info.frames),
+                    static_cast<std::uint32_t>(info.sampleRate),warpSettings,options.stop);
+            } else {
+                struct Decoded {
+                    std::filesystem::path file;bool pinned=false;
+                    explicit Decoded(const std::filesystem::path& input):file(audio::playableFile(input)),pinned(file!=input){}
+                    ~Decoded(){if(pinned)try{audio::defaultDecodeCache().release(file);}catch(...){}}
+                } decoded(source);
+                audio::WavReader reader(decoded.file);
+                if(reader.frames()!=static_cast<std::uint64_t>(info.frames) || reader.sampleRate()!=static_cast<std::uint32_t>(info.sampleRate) || reader.channels()!=static_cast<std::uint16_t>(info.channels))
+                    throw std::runtime_error("source dimensions changed during import");
+                const auto onsets=audio::detectTransients(reader,0,static_cast<std::uint64_t>(info.frames),50,options.stop);
+                if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
+                if(!onsets)throw std::runtime_error("cannot analyze the source audio");
+                warped=audio::autoWarpFromOnsets(onsets.frames,static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),warpSettings,options.stop);
+            }
             if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
             if(!*warped) {
                 if(warped->error==audio::AutoWarpError::NoTempo)throw std::runtime_error("Warp needs a detected beat or an explicit source tempo");
@@ -161,7 +184,6 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
             if(!*markers)throw std::runtime_error("cannot capture the detected warp map");
         }
         const auto sourceHash=media::blake3File(source,options.stop);
-        const auto capturedHash=mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),imported.mediaId).at("hash_blake3");
         if(!sourceHash || capturedHash!=sourceHash.hex)throw std::runtime_error("source changed during material capture");
         files->staged=source;files->hash=sourceHash.hex;
         if(options.copyIn) {
@@ -199,6 +221,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
                         {"name",media::pathUtf8(options.source.stem())},{"time_base",base}};
         if(base==0){values["pos_ticks"]=beginTicks;values["length_ticks"]=tickSpan;}
         else {values["pos_ns"]=beginNs;values["length_ns"]=duration;}
+        if(shortWarp.loopMarkers){values["loop_enabled"]=1;values["loop_len_ticks"]=tickSpan;}
         if(options.edgeFades) {
             const auto placedDuration=warped?time.duration(beginTicks,tickSpan):duration;
             const auto fade=std::min(tickSpan/2,time.ticks(edit::addTime(beginNs,std::min<std::int64_t>(placedDuration/2,5000000)))-beginTicks);

@@ -86,10 +86,19 @@ AnalysisCacheResult decodeAnalysis(std::span<const std::byte> bytes) {
 AnalysisCacheResult AnalysisCache::read(const AnalysisIdentity& id,std::stop_token stop)const {
     if(audio::onAudioThread)return failure(AnalysisCacheProblem::Realtime);
     if(!identityValid(id))return failure(AnalysisCacheProblem::Invalid);
+    return readChecked(id.hash,&id,stop);
+}
+AnalysisCacheResult AnalysisCache::readByHash(const std::string& hash,std::stop_token stop)const {
+    if(audio::onAudioThread)return failure(AnalysisCacheProblem::Realtime);
+    if(!hashValid(hash))return failure(AnalysisCacheProblem::Invalid);
+    return readChecked(hash,nullptr,stop);
+}
+AnalysisCacheResult AnalysisCache::readChecked(const std::string& hash,const AnalysisIdentity* expected,std::stop_token stop)const {
     if(folder_.empty() || !folder_.is_absolute())return failure(AnalysisCacheProblem::Io,"analysis folder must be absolute");
     try {
-        std::lock_guard lock(ioMutex);const auto file=folder_/(id.hash+".adia");
-        auto result=readFile(file,&id,stop);
+        std::lock_guard lock(ioMutex);const auto file=folder_/(hash+".adia");
+        auto result=readFile(file,expected,stop);
+        if(result && result.data->identity.hash!=hash)return failure(AnalysisCacheProblem::Invalid,"analysis source hash changed");
         // Cache recency is optional metadata: failure to stamp a readable cache
         // must not turn a usable waveform into a miss (e.g. a read-only volume).
         if(result){std::error_code ec;fs::last_write_time(file,fs::file_time_type::clock::now(),ec);}

@@ -54,6 +54,8 @@ public:
     // Missing/invalid optional data can be rebuilt. Updating one section keeps
     // other supported/unknown sections; inconsistent identity is replaced.
     [[nodiscard]] AnalysisCacheResult read(const AnalysisIdentity&,std::stop_token={}) const;
+    // Indexed content already carries a hash but may not have media dimensions.
+    [[nodiscard]] AnalysisCacheResult readByHash(const std::string&,std::stop_token={}) const;
     [[nodiscard]] AnalysisCacheProblem update(const AnalysisIdentity&,const std::string& tag,
                                              const AnalysisSection&,std::string& error,std::stop_token={});
     [[nodiscard]] AnalysisCacheProblem remove(const std::string& hash,std::string& error);
@@ -69,6 +71,7 @@ public:
                                                std::stop_token={});
     [[nodiscard]] const std::filesystem::path& folder()const noexcept{return folder_;}
 private:
+    [[nodiscard]] AnalysisCacheResult readChecked(const std::string&,const AnalysisIdentity*,std::stop_token) const;
     std::filesystem::path folder_;
 };
 [[nodiscard]] AnalysisCache& defaultAnalysisCache();

@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/clip_commands.hpp"
 #include "adi/audio/auto_warp.hpp"
+#include "adi/audio/short_sample_warp.hpp"
 #include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
 namespace adi::library {class Index;}
@@ -19,6 +20,7 @@ struct ImportOptions {
     audio::WarpMode warpMode=audio::WarpMode::Beats;
     audio::AutoWarpOptions warpAnalysis;
     std::stop_token stop;
+    std::optional<audio::ShortSampleWarpInput> shortSample = {};
 };
 /// Off-callback, on this connection's owner. Does not change project rows.
 /// Keep the document generation with the job. Hosts keep their thread contract.

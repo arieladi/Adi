@@ -9,6 +9,7 @@
 #include <stop_token>
 #include <vector>
 namespace adi::library {
+struct SampleAnalysisOverrides;
 struct Entry {
     std::string volumeId, relativePath, hash, error;
     std::uintmax_t size = 0;
@@ -65,6 +66,7 @@ public:
     [[nodiscard]] SampleSettingsResult sampleSettings(const std::string& hash) const;
     [[nodiscard]] SampleSettingsProblem saveSampleSettings(const std::string& hash,const SampleSettings&,std::string& error);
     [[nodiscard]] SampleSettingsProblem clearSampleSettings(const std::string& hash,std::string& error);
+    [[nodiscard]] SampleAnalysisOverrides analysisOverrides(const std::string& hash) const;
     std::string exportJson() const;
     bool importJson(const std::string&, std::string& error);
 private:
