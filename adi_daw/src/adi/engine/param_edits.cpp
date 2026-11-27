@@ -142,11 +142,17 @@ std::size_t ParamEditCapture::drainAbsorbing(std::int64_t nowMs, std::vector<Par
 }
 
 std::size_t ParamEditCapture::drainLifecycle(std::int64_t nowMs,std::vector<ParamEdit>& out,
-                                             std::vector<ParamActivity>& activity,bool absorb) {
-    return drainImpl(nowMs,out,absorb,&activity);
+                                             std::vector<ParamActivity>& activity,bool absorb,bool finishOpen) {
+    return drainImpl(nowMs,out,absorb,&activity,finishOpen);
+}
+void ParamEditCapture::clearLastTouch() noexcept {
+    touches_.clear();
+    const auto read = read_.load(std::memory_order_relaxed);
+    const auto write = write_.load(std::memory_order_acquire);
+    priorAttachmentEvents_ = write >= read ? write - read : ring_.size() - read + write;
 }
 std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
-                                        bool absorb,std::vector<ParamActivity>* activity) {
+                                        bool absorb,std::vector<ParamActivity>* activity,bool finishOpen) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (const auto& entry : maintenance_) {
@@ -166,7 +172,14 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         }
     }
     // ADR-0154: only explicit gestures contribute touches during absorption.
-    std::int32_t touched = -1;
+    const auto touch = [&](std::int32_t index) {
+        if (priorAttachmentEvents_ != 0 || index < 0) return;
+        const ParameterTouch observation{index, ++touchSequence_};
+        if (!touches_.empty() && touches_.back().index == index)
+            touches_.back() = observation;
+        else
+            touches_.push_back(observation);
+    };
     const auto activityStart = activity ? activity->size() : 0;
     bool promotedActivity = false;
     auto r = read_.load(std::memory_order_relaxed);
@@ -193,6 +206,10 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     // already tracked gestures bound the extra synthetic observations.
     if(activity)activity->reserve(activity->size()+pending*2+tracked);
     out.reserve(out.size()+pending+tracked);
+    const auto touchLimit = std::max(ring_.size() - 1, std::size_t{128});
+    // Room for one whole producer prefix lets us trim the old tail once
+    // after the drain rather than shifting history for each reported touch.
+    if (pending != 0 && touches_.capacity() == 0) touches_.reserve(touchLimit * 2);
     while (r != end) {
         const auto slot=ring_[r];
         const auto event=slot.event;
@@ -206,7 +223,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         switch (event.kind) {
         case ParamEventKind::Begin: {
             observed.kind=ParamActivityKind::Begin;
-            touched = event.paramIndex;
+            touch(event.paramIndex);
             const bool promote=p.open && p.implicit;
             observed.implicit=promote && absorb && activity;
             promotedActivity=promotedActivity || observed.implicit;
@@ -217,6 +234,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             } else if (p.open) {
                 ++stats_.strayBegins;
             } else {
+                track(key, p);
                 p.open = true;
                 p.implicit = false;
                 p.hasValue = false;
@@ -248,7 +266,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                     break;
                 }
             }
-            if (!absorb || (p.open && !p.implicit)) touched = event.paramIndex;
+            if (!absorb || (p.open && !p.implicit)) touch(event.paramIndex);
             if (!p.open) {
                 track(key, p);
                 p.open = true;
@@ -266,10 +284,12 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             break;
         }
         if(activity)activity->push_back(std::move(observed));
+        if (priorAttachmentEvents_ != 0) --priorAttachmentEvents_;
         r = r + 1 == ring_.size() ? 0 : r + 1;
         read_.store(r, std::memory_order_release);
     }
-    if (touched >= 0) lastTouched_ = touched;
+    if (touches_.size() > touchLimit)
+        touches_.erase(touches_.begin(), touches_.begin() + static_cast<std::ptrdiff_t>(touches_.size() - touchLimit));
     if (activity && promotedActivity) {
         // ParamOps gives implicit observations to the state snapshot. A
         // promoted gesture owns its earlier values in the same prefix, back
@@ -295,8 +315,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     for (const auto& entry : maintenance_) {
         const auto& key = entry.key;
         auto& p = *entry.parameter;
-        if (p.open && p.implicit) {
-            if (absorb) {
+        if (p.open) {
+            if (absorb && p.implicit) {
                 if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
                 // Folded into the snapshot: the value is where the plugin put it,
                 // and no edit says so.
@@ -307,12 +327,17 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                 }
                 p.open = false;
                 p.hasValue = false;
-            } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
-                if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
+            } else if (finishOpen || (p.implicit && elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_))) {
+                if (activity) {
+                    const auto before = p.hasValue ? p.before : p.last;
+                    const auto after = p.hasValue ? p.after : p.last;
+                    activity->push_back({ParamActivityKind::QuietEnd,
+                        {key.first,key.second,ParamEventKind::End,0},before,after,p.implicit,false,nullptr});
+                }
                 close(key, p, out);
             }
         }
-        p.tracked = p.guarded || !p.echoes.empty() || (p.open && p.implicit);
+        p.tracked = p.guarded || !p.echoes.empty() || p.open;
         if (p.tracked) *retained++ = entry;
     }
     maintenance_.erase(retained, maintenance_.end());

@@ -25,7 +25,6 @@
 #include "adi/engine/mpe_output.hpp"
 #include "adi/pd_builtins/colorcab_sample.hpp"
 #include "adi/pd_builtins/hybrid_reverb_sample.hpp"
-#include "adi/pd_builtins/oneshot_midi.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
 #include "juce/pd_declarations.hpp"
@@ -334,31 +333,6 @@ template <class Core> class NativeDevice final : public NativePdDevice {
 // parameter N as `p N-1 <value>` in its own units, as the Pd external reads
 // it; notes keep their block-relative frames (the external's ticks cannot);
 // the sample is slot 1, published by the host's sample slots.
-// The OneShot canvas's notein/bendin wiring and pd_engine's wire quantisation,
-// for OneShot and the Sampler alike.
-void wireMidi(OneShotPdMidi& midi, const engine::MpeOut& message) noexcept {
-    const auto channel = static_cast<float>(message.channel + 1);
-    switch (message.kind) {
-    case engine::MpeOut::Kind::NoteOn: {
-        const double value = std::isfinite(message.value) ? std::clamp(message.value, 0.0, 1.0) : 0.0;
-        midi.note(static_cast<float>(message.key), static_cast<float>(std::max(1L, std::lround(value * 127.0))),
-                  channel, message.frame);
-        break;
-    }
-    case engine::MpeOut::Kind::NoteOff:
-        midi.note(static_cast<float>(message.key), 0, channel, message.frame);
-        break;
-    case engine::MpeOut::Kind::Control:
-        if (message.ctrl == engine::kCtrlPitchBend) {
-            midi.bend(static_cast<float>(message.word), channel, message.frame);
-        }
-        break;
-    case engine::MpeOut::Kind::Expression:
-    case engine::MpeOut::Kind::PolyPressure:
-        break;
-    }
-}
-
 class OneShotNative final : public NativePdDevice {
   public:
     void prepare(double sampleRate, int maxFrames) override {
@@ -367,7 +341,6 @@ class OneShotNative final : public NativePdDevice {
         if (!prepared_ || rate != rate_ || maxFrames != frames_) {
             core_.release();
             core_.prepare(rate, maxFrames);
-            midi_.reset();
             rate_ = rate;
             frames_ = maxFrames;
             prepared_ = true;
@@ -385,21 +358,18 @@ class OneShotNative final : public NativePdDevice {
     void tempo(double bpm) noexcept override {
         if (std::isfinite(bpm) && bpm > 0) transport_.bpm = bpm;
     }
-    void midi(const engine::MpeOut& message) noexcept override { wireMidi(midi_, message); }
+    bool usesTypedMidi() const noexcept override { return true; }
+    void resetTypedMidi() noexcept override { core_.resetVoices(); core_.setMidiChannels({}); }
     // OneShot keeps its own transport for the tempo; the Pd fallback is not used.
     void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         const auto* buffer = PdSampleBlock::get(1);
         const auto* sample = dynamic_cast<const PdOneShotSample*>(buffer);
         auto child = io;
-        child.events = midi_.events();
         child.transport = io.transport != nullptr ? io.transport : &transport_;
-        if (midi_.needsVoiceReset()) core_.resetVoices();
         core_.processPrepared(child, sample ? sample->prepared.get() : nullptr, buffer ? buffer->seq : 0);
-        midi_.consumed();
     }
   private:
     OneShot core_;
-    OneShotPdMidi midi_;
     engine::TransportInfo transport_{};
     double rate_ = 0;
     int frames_ = 0;
@@ -418,7 +388,6 @@ class SamplerNative final : public NativePdDevice {
         if (!prepared_ || rate != rate_ || maxFrames != frames_) {
             core_.release();
             core_.prepare(rate, maxFrames);
-            midi_.reset();
             rate_ = rate;
             frames_ = maxFrames;
             prepared_ = true;
@@ -442,7 +411,8 @@ class SamplerNative final : public NativePdDevice {
             transport_.bpm = bpm;
         }
     }
-    void midi(const engine::MpeOut& message) noexcept override { wireMidi(midi_, message); }
+    bool usesTypedMidi() const noexcept override { return true; }
+    void resetTypedMidi() noexcept override { core_.resetVoices(); }
     void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         std::array<Sampler::SlotSample, Sampler::kSlots> slots{};
         for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -453,17 +423,11 @@ class SamplerNative final : public NativePdDevice {
             }
         }
         auto child = io;
-        child.events = midi_.events();
         child.transport = io.transport != nullptr ? io.transport : &transport_;
-        if (midi_.needsVoiceReset()) {
-            core_.resetVoices();
-        }
         core_.processSlots(child, slots);
-        midi_.consumed();
     }
   private:
     Sampler core_;
-    OneShotPdMidi midi_;
     engine::TransportInfo transport_{};
     double rate_ = 0;
     int frames_ = 0;

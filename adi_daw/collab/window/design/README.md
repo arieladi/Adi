@@ -184,8 +184,8 @@ shows the Browser's column in four states (a sample search with the filters by w
 a device selected and so no preview row, AI chosen, AI with the column wider) and the floating search
 twice (opened on samples, and moved to AI). His four choices from it are ADR-0262: choosing AI widens
 the column by itself; the full list of a proposed change opens in a floating window; in the Mix View
-the floating search calls the agent and the column slides in; four buttons, Samples first. He has not
-said "agreed" for the whole sheet: what is built from it is shown to him against it. Where this
+the floating search calls the agent and the column slides in; four buttons, Samples first. His word for
+the sheet, 27 November: "agreed". What is built from it is shown to him against it. Where this
 picture and the Arrangement's differ (the preview row always shown there, no AI label), this one and
 ADR-0261 win. Proposal 1 of the Browser (19 November, on `window/proposals`) was never shown to him
 and is overtaken.

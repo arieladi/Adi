@@ -134,6 +134,7 @@ bool Sampler::publishSlotZones(std::span<const Zone, kSlots> zones) {
     return true;
 }
 void Sampler::resetVoices() noexcept {
+    midiChannels_ = {};
     for (auto &engine : slotEngines_) {
         if (engine) {
             engine->resetVoices();
@@ -206,6 +207,7 @@ void Sampler::prepare(double rate, std::int32_t frames) {
                             kEventCapacity) +
                    params_.size());
     modulation_.fill(0);
+    midiChannels_ = {};
     if (messageBank_)
         for (auto &l : messageBank_->layers) {
             // A Sampler that prepares afresh prepares its layers afresh: their
@@ -224,6 +226,7 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
                         const std::array<double, OneShot::Count> &initial,
                         const OneShot::PreparedSample *sample, std::uint64_t generation,
                         bool slot) noexcept {
+    engine.setMidiChannels(midiChannels_);
     // This block's values, by index: no string lookup per layer (DEV-21).
     for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
         engine.setParamAt(static_cast<int>(destinations_[i]), initial[i]);
@@ -272,11 +275,13 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             }
             continue;
         }
-        // Sized in prepare() for the block's events. Should one still not
-        // fit, a lost note-off must not leave a voice sounding: stop them.
+        // If a release cannot fit, discard this layer's segment and queued
+        // onsets together so none of those onsets can get stuck.
         if (!events.push(e)) {
-            if (e.type == engine::EventType::NoteOff) {
+            if (e.type == engine::EventType::NoteOff ||
+                (e.type == engine::EventType::Controller && e.paramId == 64 && e.value < .5)) {
                 engine.resetVoices();
+                return;
             }
         } else if (e.type == engine::EventType::NoteOn) {
             notes = true;  // a velocity-0 note-on still reaches the engine
@@ -324,13 +329,7 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
     if (bank.valid())
         for (const auto &layer : bank->layers)
             playLayer(io, *layer.engine, layer.zone, initial, nullptr, 0, false);
-    for (const auto &e : io.events)
-        if (e.paramId < params_.size() && std::isfinite(e.value)) {
-            if (e.type == engine::EventType::ParamValue)
-                values_[e.paramId].store(std::clamp(e.value, 0., 1.), std::memory_order_relaxed);
-            else if (e.type == engine::EventType::ParamMod)
-                modulation_[e.paramId] = e.value;
-        }
+    rememberEvents(io.events);
 }
 void Sampler::processSlots(const engine::NodeIo &io,
                            std::span<const SlotSample, kSlots> slots) noexcept {
@@ -376,7 +375,14 @@ void Sampler::processSlots(const engine::NodeIo &io,
         slotSeen_[i] = slot.generation;
         playLayer(io, engine, table->zones[i], initial, slot.sample, slot.generation, true);
     }
-    for (const auto &e : io.events) {
+    rememberEvents(io.events);
+}
+void Sampler::rememberEvents(engine::EventSpan events) noexcept {
+    for (const auto &e : events) {
+        if (engine::isNoteStream(e.type)) {
+            OneShot::rememberMidiControl(midiChannels_, e);
+            continue;
+        }
         if (e.paramId < params_.size() && std::isfinite(e.value)) {
             if (e.type == engine::EventType::ParamValue) {
                 values_[e.paramId].store(std::clamp(e.value, 0., 1.), std::memory_order_relaxed);
