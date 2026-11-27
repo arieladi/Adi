@@ -19,6 +19,7 @@ namespace {
 // The playback reader accepts clip gain within this finite dB range.
 constexpr double kClipGainLimitDb = 120.;
 constexpr int kPitchLimitCents = 4800;
+constexpr int kAudioLoopWidth = 42, kAudioScaleModeWidth = 34, kAudioControlGap = 4;
 const juce::String kGainLabel{"Gain"};
 juce::String clipGainText(double db) { return juce::String(db, 2) + " dB"; }
 const juce::String kUnsetWarpModeLabel{"Warp Mode"};
@@ -4018,13 +4019,15 @@ juce::Rectangle<int> ClipViewPanel::highlightBox() const noexcept {
     return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4).withWidth(54);
 }
 juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
-    if (!midi() || panelsFolded_)
-        return {};
     const auto box = fieldBox(Field::Scale);
+    if (box.isEmpty())
+        return {};
+    if (audio())
+        return box.withX(box.getX() - kAudioScaleModeWidth - kAudioControlGap).withWidth(kAudioScaleModeWidth);
     return {box.getRight() - 24, box.getY() - 15 + 2, 24, 11};
 }
 bool ClipViewPanel::toggleScaleMode() {
-    if (!details_ || !midi())
+    if (!midi() && !audio())
         return false;
     // On, every shown clip takes the edited clip's scale as its own; off, each holds none.
     const bool on = !details_->scale.local;
@@ -4039,7 +4042,8 @@ bool ClipViewPanel::toggleScaleMode() {
             o.label = "Activate Scale";
         return taken;
     });
-    notes.prune();
+    if (midi())
+        notes.prune();
     return done;
 }
 juce::Rectangle<int> ClipViewPanel::focusBox() const noexcept {
@@ -4291,6 +4295,13 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     }
     const auto main = mainArea().reduced(6, 5);
     const int half = (main.getWidth() - 6) / 2;
+    if (field == Field::Scale && audio()) {
+        const auto loop = loopBox();
+        if (loop.isEmpty())
+            return {};
+        const int left = loop.getRight() + kAudioScaleModeWidth + 2 * kAudioControlGap;
+        return {left, loop.getY(), std::max(0, main.getRight() - left), loop.getHeight()};
+    }
     if (field == Field::Pitch || field == Field::Detune) {
         if (panelsFolded_ || !audio())
             return {};
@@ -4789,8 +4800,8 @@ void ClipViewPanel::showScaleMenu(bool roots) {
     juce::Component::SafePointer<ClipViewPanel> safe(this);
     scaleMenu(roots).showMenuAsync(
         juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(fieldBox(Field::Scale))),
-        [safe, roots](int item) {
-            if (safe != nullptr && item > 0)
+        [safe, roots, clip = clip_](int item) {
+            if (safe != nullptr && item > 0 && safe->clip() == clip)
                 safe->chooseScale(roots, item);
         });
 }
@@ -4806,7 +4817,8 @@ juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
     if (panelsFolded_)
         return {};
     const auto main = mainArea().reduced(6, 5);
-    return {main.getX(), main.getY() + (audio() && getHeight() < 180 ? 33 : 37), main.getWidth(), kFieldBox};
+    return {main.getX(), main.getY() + (audio() && getHeight() < 180 ? 33 : 37),
+            audio() ? kAudioLoopWidth : main.getWidth(), kFieldBox};
 }
 juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
     const auto header = headerArea();
@@ -4916,7 +4928,7 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
                              Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
                              Field::Interval, Field::Stretch, Field::Gain, Field::Pitch, Field::Detune})
-        if (fieldEnabled(field) && fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
+        if (fieldEnabled(field) && fieldBox(field).contains(at) && (midi() || field != Field::Transpose))
             return field;
     return Field::None;
 }
@@ -5751,12 +5763,17 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             field(Field::Detune, "Detune", readPitch(Field::Detune, " ct"));
         }
     }
-    if (midi() && !panelsFolded_) {
-        field(Field::Scale, "Scale", r.scale);
+    if (const auto mode = scaleModeBox(); !mode.isEmpty()) {
+        if (audio()) {
+            const auto box = fieldBox(Field::Scale);
+            controls::chooser(g, box.toFloat(), r.scale, look::fontSmall);
+            labels_.push_back(box);
+        } else {
+            field(Field::Scale, "Scale", r.scale);
+        }
         // Scale Mode's switch (manual 8.2.4): the shared button, lit while the clip holds a scale of its own.
-        const auto mode = scaleModeBox();
         controls::button(g, mode.toFloat(), details_->scale.local ? controls::ButtonState::On : controls::ButtonState::Rest,
-                         details_->scale.local ? "On" : "Off", look::fontMicro);
+                         audio() ? "Scale" : details_->scale.local ? "On" : "Off", look::fontMicro);
         labels_.push_back(mode);
     }
 
