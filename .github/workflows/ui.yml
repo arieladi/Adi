@@ -1,726 +1,103 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-name: Recording chain Linux headless verification
+name: Step 7 UI
 on:
+  pull_request:
+    # GitHub's default three, plus ready_for_review: a draft runs nothing (the
+    # `if` on `changes`), so marking it ready is what builds it.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
+  push:
+    branches: [main]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   workflow_dispatch:
 permissions:
   contents: read
+# A pull request's run is cancelled by its next push; main's never is, so every
+# merge burst still ends in a finished run on main. The reasoning is in ci.yml.
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  headless:
+  # Whether the shell builds at all: not on a draft, and not for a pull request
+  # that changes only Markdown no build reads (the rule is ci.yml's, in
+  # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
+  # more than this one Linux job does. Its name must not begin "GUI shell /",
+  # which is how land_top.sh finds the three shell checks. land_checks.py reads
+  # this job's name, the workflow's and the matrix's size (a Markdown-only
+  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
+  # they drift from what is written here.
+  changes:
+    name: 'ui: which jobs run'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    if: ${{ !github.event.pull_request.draft }}
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 8680cacbae73412a93a59d15e7f3cc4f6b6bf083
-          persist-credentials: false
-      - name: Verify the candidate tree
+          fetch-depth: 2
+      - name: Only Markdown no build reads?
+        id: changes
+        env:
+          # code=false only when the base is main: a stack's top lands with no
+          # new run, so a stacked pull request always builds (the script says why).
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
+  shell:
+    name: GUI shell / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
         shell: bash
-        run: |
-          sed 's/^|//; s/|$//' > "$RUNNER_TEMP/recording-candidate.patch" <<'PATCH'
-          |diff --git a/adi_daw/src/juce/ui_controlbar.cpp b/adi_daw/src/juce/ui_controlbar.cpp|
-          |index 8c6db08c..d412232d 100644|
-          |--- a/adi_daw/src/juce/ui_controlbar.cpp|
-          |+++ b/adi_daw/src/juce/ui_controlbar.cpp|
-          |@@ -182,6 +182,10 @@ void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {|
-          |         repaint();|
-          |     }|
-          | }|
-          |+void BarItem::clicked(const juce::ModifierKeys &modifiers) {|
-          |+    if (onModifiedClick)|
-          |+        onModifiedClick(modifiers);|
-          |+}|
-          | void BarItem::mouseDown(const juce::MouseEvent &event) {|
-          |     dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);|
-          |     if (dropdownPress_)|
-          |@@ -511,7 +515,10 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {|
-          |         root_.mark(DirtySet::Transport);|
-          |     };|
-          |     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.|
-          |-    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };|
-          |+    record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {|
-          |+        root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate|
-          |+                                              : AppCommands::ArrangementRecord);|
-          |+    };|
-          |     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };|
-          |     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording|
-          |     // does to the notes already there, once MIDI records (SRF-05).|
-          |@@ -685,7 +692,7 @@ void TransportBar::refresh() {|
-          |     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);|
-          |     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);|
-          |     play.setToggleState(root_.playing(), juce::dontSendNotification);|
-          |-    record.setToggleState(root_.isRecording(), juce::dontSendNotification);|
-          |+    record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);|
-          |     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);|
-          |     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);|
-          |     follow.setToggleState(root_.state().follow, juce::dontSendNotification);|
-          |diff --git a/adi_daw/src/juce/ui_controlbar.hpp b/adi_daw/src/juce/ui_controlbar.hpp|
-          |index 30c97f3c..a8298008 100644|
-          |--- a/adi_daw/src/juce/ui_controlbar.hpp|
-          |+++ b/adi_daw/src/juce/ui_controlbar.hpp|
-          |@@ -36,6 +36,8 @@ class BarItem : public juce::Button {|
-          |     void paintButton(juce::Graphics &, bool over, bool down) override;|
-          |     void mouseDown(const juce::MouseEvent &) override;|
-          |     void mouseUp(const juce::MouseEvent &) override;|
-          |+    void clicked(const juce::ModifierKeys &) override;|
-          |+    std::function<void(const juce::ModifierKeys &)> onModifiedClick;|
-          |     void focusGained(FocusChangeType) override;|
-          |     void focusLost(FocusChangeType) override;|
-          |     void setText(const juce::String &t);|
-          |diff --git a/adi_daw/src/juce/ui_main.cpp b/adi_daw/src/juce/ui_main.cpp|
-          |index cb6ab9f4..18bae373 100644|
-          |--- a/adi_daw/src/juce/ui_main.cpp|
-          |+++ b/adi_daw/src/juce/ui_main.cpp|
-          |@@ -1053,6 +1053,7 @@ class AdiApplication final : public juce::JUCEApplication,|
-          |             refreshRecordingPreview();|
-          |         };|
-          |         root->recording = [this] { return document_->recording(); };|
-          |+        root->landingRecording = [this] { return document_->landingTake(); };|
-          |         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };|
-          |         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.|
-          |         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };|
-          |diff --git a/adi_daw/src/juce/ui_shell.cpp b/adi_daw/src/juce/ui_shell.cpp|
-          |index 139fea6f..21a5af71 100644|
-          |--- a/adi_daw/src/juce/ui_shell.cpp|
-          |+++ b/adi_daw/src/juce/ui_shell.cpp|
-          |@@ -33,6 +33,9 @@ bool deviceOrTrackEditCommand(int id) noexcept {|
-          |     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste |||
-          |            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;|
-          | }|
-          |+// SC-258 provisional policy pending a Live 12 reading of Undo during Arrangement Record.|
-          |+constexpr bool kHoldHistoryUntilArrangementTakeLands = true;|
-          |+constexpr auto kRecordingHistoryMessage = "Undo and Redo are available after the current take finishes.";|
-          | // Interface zoom steps per window. PROVISIONAL: Live's own list is to be|
-          | // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.|
-          | constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};|
-          |@@ -63,6 +66,7 @@ void AppCommands::reload() {|
-          |     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";|
-          |     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);|
-          |     exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);|
-          |+    startPlaybackWithRecord_ = flag(settings_, "record.startPlaybackWithRecord", true);|
-          |     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())|
-          |         recordingDefaults_.quantize = quantize.get<std::string>();|
-          |     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);|
-          |@@ -310,6 +314,7 @@ const StableEntry *stableEntry(int id) noexcept {|
-          |         {"view.automation-mode", "View"}, // AutomationMode|
-          |         {"edit.delete-automation", "Edit"}, // DeleteAutomation|
-          |         {"mixer.arm-selected", "Mixer"}, // ArmSelected|
-          |+        {"transport.arrangement-record-alternate", "Transport"}, // ArrangementRecordAlternate|
-          |     }};|
-          |     const auto at = id - AppCommands::PlayStop;|
-          |     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;|
-          |@@ -535,7 +540,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf|
-          |                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",|
-          |                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",|
-          |                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",|
-          |-                                  "Arm Selected Tracks"};|
-          |+                                  "Arm Selected Tracks", "Arrangement Record (Alternate Start)"};|
-          |     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);|
-          |     if (id == Undo || id == Redo) {|
-          |         const bool redo = id == Redo;|
-          |@@ -1009,9 +1014,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf|
-          |         info.addDefaultKeypress('j', cmd | alt);|
-          |         info.setActive(false);|
-          |         break;|
-          |-    case ArrangementRecord: // manual 21.1 and §41.6: F9|
-          |-        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);|
-          |-        info.setTicked(active_ != nullptr && active_->isRecording());|
-          |+    case ArrangementRecord:|
-          |+    case ArrangementRecordAlternate:|
-          |+        info.addDefaultKeypress(juce::KeyPress::F9Key, id == ArrangementRecordAlternate ? shift : 0);|
-          |+        info.setTicked(active_ != nullptr && active_->arrangementRecordEnabled());|
-          |         break;|
-          |     case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)|
-          |         info.setTicked(delayCompensation_);|
-          |@@ -1092,6 +1098,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf|
-          | bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {|
-          |     activate(root);|
-          |     const auto id = manager.getKeyMappings()->findCommandForKeyPress(key);|
-          |+    if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {|
-          |+        // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.|
-          |+        root.command(id);|
-          |+        return true;|
-          |+    }|
-          |     // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.|
-          |     // A key that comes here was pressed elsewhere, where they are no command's.|
-          |     if (id >= FoldToNotes && id <= HighlightScales)|
-          |@@ -1665,11 +1676,20 @@ bool AdiRootComponent::playFrom(std::int64_t tick) {|
-          |         if (const auto result = submitter_.submit(std::move(request)); !result)|
-          |             return fail(result.error);|
-          |     }|
-          |-    if (!locate(tick))|
-          |+    // Scrub playback keeps its explicitly requested position.|
-          |+    const bool requestedRecording = start && recordPending_;|
-          |+    const bool recordingFromHere = requestedRecording && beginArrangementRecording(tick, true);|
-          |+    if (requestedRecording && !recordingFromHere)|
-          |+        setRecordPending(false);|
-          |+    if (!locate(tick)) {|
-          |+        if (recordingFromHere)|
-          |+            stopRecording();|
-          |         return fail("The project has no tempo map to locate in.");|
-          |+    }|
-          |     if (start)|
-          |         mailbox_.post(TransportMailbox::Command::Play);|
-          |-    error_.clear();|
-          |+    if (!requestedRecording || recordingFromHere)|
-          |+        error_.clear();|
-          |     dirty_.mark(DirtySet::Transport | DirtySet::Status);|
-          |     return true;|
-          | }|
-          |@@ -3101,9 +3121,14 @@ juce::String AdiRootComponent::selectionText() const {|
-          |     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +|
-          |            seconds(s.marked ? s.insert : 0) + ")";|
-          | }|
-          |+bool AdiRootComponent::recordingHoldsHistory() const {|
-          |+    return kHoldHistoryUntilArrangementTakeLands && (isRecording() || (landingRecording && landingRecording()));|
-          |+}|
-          | std::string AdiRootComponent::undoTitle(bool redo) const {|
-          |-    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();|
-          |     const std::string verb = redo ? "Redo" : "Undo";|
-          |+    if (recordingHoldsHistory())|
-          |+        return verb;|
-          |+    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();|
-          |     if (!canUndo(redo))|
-          |         return "Nothing to " + verb;|
-          |     // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.|
-          |@@ -3633,24 +3658,41 @@ bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view r|
-          |         return true;|
-          |     return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");|
-          | }|
-          |-bool AdiRootComponent::toggleRecord() {|
-          |+void AdiRootComponent::setRecordPending(bool pending) {|
-          |+    if (recordPending_ == pending)|
-          |+        return;|
-          |+    recordPending_ = pending;|
-          |+    mark(DirtySet::Transport);|
-          |+}|
-          |+bool AdiRootComponent::toggleRecord(bool alternate) {|
-          |+    if (recordPending_) {|
-          |+        setRecordPending(false);|
-          |+        return true;|
-          |+    }|
-          |     if (!startRecording || !stopRecording || !recording)|
-          |         return fail("Recording runs in the application, with an audio device.");|
-          |-    if (recording()) {|
-          |-        // Live's Record button again: recording stops, playback goes on.|
-          |+    if (isRecording()) {|
-          |         stopRecording();|
-          |         mark(DirtySet::Transport);|
-          |         return true;|
-          |     }|
-          |     const bool rolling = mailbox_.desiredPlaying();|
-          |-    if (!rolling && !mailbox_.hasRoom(1))|
-          |+    if (!rolling && commands_.startPlaybackWithRecord() == alternate) {|
-          |+        setRecordPending(true);|
-          |+        return true;|
-          |+    }|
-          |+    return beginArrangementRecording(rolling ? timelineTick() : arrangement.geometry.selection.insert, rolling);|
-          |+}|
-          |+bool AdiRootComponent::beginArrangementRecording(std::int64_t takeStart, bool rolling) {|
-          |+    if (!startRecording || !stopRecording || !recording)|
-          |+        return fail("Recording runs in the application, with an audio device.");|
-          |+    if (!rolling && !mailbox_.hasRoom())|
-          |         return fail("Transport command queue is full");|
-          |-    // Where the take begins: the playhead when playing (punch-in), else the insert marker.|
-          |-    const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;|
-          |-    if (!startRecording(arrangement.geometry.selection.insert, rolling))|
-          |-        return false; // the application said why|
-          |-    // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as|
-          |-    // it grows (walk-B B4).|
-          |+    const auto insertTick = rolling ? arrangement.geometry.selection.insert : takeStart;|
-          |+    if (!startRecording(insertTick, rolling))|
-          |+        return false;|
-          |+    setRecordPending(false);|
-          |+    // The armed audio tracks' lanes show the take as it grows.|
-          |     if (const auto *current = reader().get())|
-          |         arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);|
-          |     // A recording start plays the transport: the same op Play writes, so the history's transport state|
-          |@@ -4023,6 +4065,8 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {|
-          |     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");|
-          | }|
-          | bool AdiRootComponent::restoreStep(std::int64_t txnId) {|
-          |+    if (recordingHoldsHistory())|
-          |+        return fail(kRecordingHistoryMessage);|
-          |     if (settleEdits && !settleEdits())|
-          |         return false;|
-          |     const auto result = submitter_.restore(txnId);|
-          |@@ -4542,6 +4586,8 @@ bool AdiRootComponent::command(int id) {|
-          |          mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))|
-          |         return false;|
-          |     if (id == AppCommands::Undo || id == AppCommands::Redo) {|
-          |+        if (recordingHoldsHistory())|
-          |+            return fail(kRecordingHistoryMessage);|
-          |         mixViewPanel.stack.cancelInteractions();|
-          |         devices.cancelFunctionInteractions();|
-          |     }|
-          |@@ -4617,6 +4663,7 @@ bool AdiRootComponent::command(int id) {|
-          |     }|
-          |     // No action carries the presented frame into an edit: OpSubmitter resolves|
-          |     // current store/history state on arrival, even when this window is a frame behind.|
-          |+    bool recordStartRefused = false;|
-          |     switch (id) {|
-          |     case AppCommands::PlayStop:|
-          |     case AppCommands::Stop:|
-          |@@ -4624,9 +4671,19 @@ bool AdiRootComponent::command(int id) {|
-          |         // Space plays from the insert marker, Shift+Space from where it stopped.|
-          |         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();|
-          |         const bool fromMarker = play && id == AppCommands::PlayStop;|
-          |-        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.|
-          |-        if (!play && recording && recording() && stopRecording)|
-          |-            stopRecording();|
-          |+        // Stop clears a waiting request even if the driver cannot accept another command.|
-          |+        if (!play) {|
-          |+            setRecordPending(false);|
-          |+            if (isRecording() && stopRecording)|
-          |+                stopRecording();|
-          |+        }|
-          |+        if (fromMarker && recordPending_) {|
-          |+            // The Record command starts at the normal recording point with the saved Count-In.|
-          |+            if (beginArrangementRecording(arrangement.geometry.selection.insert, false))|
-          |+                break;|
-          |+            recordStartRefused = true;|
-          |+            setRecordPending(false);|
-          |+        }|
-          |         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))|
-          |             return fail("Transport command queue is full");|
-          |         OpRequest request;|
-          |@@ -4635,6 +4692,11 @@ bool AdiRootComponent::command(int id) {|
-          |         const auto result = submitter_.submit(std::move(request));|
-          |         if (!result)|
-          |             return fail(result.error);|
-          |+        // Continue keeps the exact stopped sample owned by the driver's mailbox.|
-          |+        if (play && recordPending_ && !beginArrangementRecording(timelineTick(), true)) {|
-          |+            recordStartRefused = true;|
-          |+            setRecordPending(false);|
-          |+        }|
-          |         if (fromMarker)|
-          |             locate(arrangement.geometry.selection.insert);|
-          |         using Command = TransportMailbox::Command;|
-          |@@ -4642,7 +4704,8 @@ bool AdiRootComponent::command(int id) {|
-          |         break;|
-          |     }|
-          |     case AppCommands::ArrangementRecord:|
-          |-        if (!toggleRecord())|
-          |+    case AppCommands::ArrangementRecordAlternate:|
-          |+        if (!toggleRecord(id == AppCommands::ArrangementRecordAlternate))|
-          |             return false;|
-          |         break;|
-          |     case AppCommands::AutomationMode:|
-          |@@ -5036,7 +5099,8 @@ bool AdiRootComponent::command(int id) {|
-          |     }|
-          |     if (afterEdit)|
-          |         afterEdit();|
-          |-    error_.clear();|
-          |+    if (!recordStartRefused)|
-          |+        error_.clear();|
-          |     resized();|
-          |     return true;|
-          | }|
-          |diff --git a/adi_daw/src/juce/ui_shell.hpp b/adi_daw/src/juce/ui_shell.hpp|
-          |index 580e93c5..47699e5d 100644|
-          |--- a/adi_daw/src/juce/ui_shell.hpp|
-          |+++ b/adi_daw/src/juce/ui_shell.hpp|
-          |@@ -175,7 +175,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
-          |         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)|
-          |         DeleteAutomation,|
-          |         ArmSelected,|
-          |-        LastId = ArmSelected|
-          |+        ArrangementRecordAlternate, // Shift+F9: the other Start Playback with Record behavior|
-          |+        LastId = ArrangementRecordAlternate|
-          |     };|
-          |     explicit AppCommands(settings::AppSettings &);|
-          |     void reload();|
-          |@@ -237,6 +238,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
-          |     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless|
-          |     // Ctrl/Cmd is held.|
-          |     bool exclusiveArm() const noexcept { return exclusiveArm_; }|
-          |+    bool startPlaybackWithRecord() const noexcept { return startPlaybackWithRecord_; }|
-          |     // The registry's recording defaults a new track takes (`record.quantize`,|
-          |     // `audio.keepMonitoringLatency`; N31).|
-          |     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }|
-          |@@ -298,6 +300,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {|
-          |     bool followByPage_ = true;|
-          |     bool exclusiveSolo_ = true;|
-          |     bool exclusiveArm_ = true;|
-          |+    bool startPlaybackWithRecord_ = true;|
-          |     RecordingDefaults recordingDefaults_;|
-          |     bool linkLoop_ = false;|
-          |     bool splitAll_ = true;|
-          |@@ -410,7 +413,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     juce::String selectionText() const;|
-          |     // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so|
-          |     // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.|
-          |+    bool recordingHoldsHistory() const;|
-          |     bool canUndo(bool redo) const {|
-          |+        if (recordingHoldsHistory())|
-          |+            return false;|
-          |         const bool held = editsHeld && editsHeld();|
-          |         return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;|
-          |     }|
-          |@@ -512,6 +518,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;|
-          |     std::function<void()> stopRecording;|
-          |     std::function<bool()> recording;|
-          |+    std::function<bool()> landingRecording;|
-          |     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;|
-          |     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.|
-          |     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).|
-          |@@ -521,6 +528,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     // not known).|
-          |     TrackRecordState recordState(std::int64_t track) const;|
-          |     bool isRecording() const { return recording && recording(); }|
-          |+    bool arrangementRecordEnabled() const { return recordPending_ || isRecording(); }|
-          |     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto|
-          |     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;|
-          |     // the new clip and its track are selected. A refusal goes to the Status Bar.|
-          |@@ -741,7 +749,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     bool setExternalAudioInput(std::int64_t id, std::string_view ref);|
-          |     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,|
-          |     // stops recording and the transport plays on.|
-          |-    bool toggleRecord();|
-          |+    bool toggleRecord(bool alternate = false);|
-          |     // Selects clip `clip` as a click on it would (a recorded take, once it lands).|
-          |     void selectClip(std::int64_t clip);|
-          |     // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the|
-          |@@ -916,6 +924,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     bool canRenderTrack(TrackRenderAction, const engine::TrackNode &) const;|
-          |     bool renderTrack(TrackRenderAction, std::int64_t);|
-          |     ProjectDocument *trackRenderDocument_ = nullptr;|
-          |+    bool beginArrangementRecording(std::int64_t takeStart, bool rolling);|
-          |+    void setRecordPending(bool pending);|
-          |     bool insertTrack(bool midi);|
-          |     bool deleteTrack();|
-          |     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the|
-          |@@ -951,6 +961,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC|
-          |     } windowFollower_{*this};|
-          |     unsigned lastDrain_ = 0;|
-          |     bool playing_ = false;|
-          |+    bool recordPending_ = false;|
-          |     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set|
-          |     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)|
-          |     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }|
-          |diff --git a/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt b/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
-          |index bda1f0c2..baaf5253 100644|
-          |--- a/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
-          |+++ b/adi_daw/tests/fixtures/ui/keymap-bitwig-pc.txt|
-          |@@ -128,3 +128,4 @@|
-          | 29055 Automation Mode: A|
-          | 29056 Delete Automation: Cmd+Backspace|
-          | 29057 Arm Selected Tracks: C|
-          |+29058 Arrangement Record (Alternate Start): Shift+F9|
-          |diff --git a/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt b/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
-          |index bda1f0c2..baaf5253 100644|
-          |--- a/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
-          |+++ b/adi_daw/tests/fixtures/ui/keymap-cubase-pc.txt|
-          |@@ -128,3 +128,4 @@|
-          | 29055 Automation Mode: A|
-          | 29056 Delete Automation: Cmd+Backspace|
-          | 29057 Arm Selected Tracks: C|
-          |+29058 Arrangement Record (Alternate Start): Shift+F9|
-          |diff --git a/adi_daw/tests/fixtures/ui/keymap-live-pc.txt b/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
-          |index 004ad0e5..b9444a51 100644|
-          |--- a/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
-          |+++ b/adi_daw/tests/fixtures/ui/keymap-live-pc.txt|
-          |@@ -128,3 +128,4 @@|
-          | 29055 Automation Mode: A|
-          | 29056 Delete Automation: Cmd+Backspace|
-          | 29057 Arm Selected Tracks: C|
-          |+29058 Arrangement Record (Alternate Start): Shift+F9|
-          |diff --git a/adi_daw/tests/test_ui_shell.cpp b/adi_daw/tests/test_ui_shell.cpp|
-          |index 20615d02..2d92729f 100644|
-          |--- a/adi_daw/tests/test_ui_shell.cpp|
-          |+++ b/adi_daw/tests/test_ui_shell.cpp|
-          |@@ -12956,6 +12956,178 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path|
-          |     check(configured == 2, "SC-23: both input menus reach Audio Settings");|
-          |     document->release();|
-          | }|
-          |+// SC-257: deferred Arrangement Record is UI intent until playback begins.|
-          |+void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {|
-          |+    std::string why;|
-          |+    auto document = ProjectDocument::open(dir / "record-waits.adi", true, {}, why);|
-          |+    check(document != nullptr, "a project for the deferred Arrange Record checks");|
-          |+    if (!document)|
-          |+        return;|
-          |+    document->prepare(48000, 64);|
-          |+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),|
-          |+                          document->sessionState(), "record-waits");|
-          |+    root.afterEdit = [&] { document->synchronise(); };|
-          |+    root.readRecordStates = [&] { return document->recordStates(); };|
-          |+    int starts = 0;|
-          |+    root.startRecording = [&](std::int64_t insertTick, bool playing) {|
-          |+        ++starts;|
-          |+        const bool ok = document->startRecording(insertTick, 2, playing);|
-          |+        if (!ok)|
-          |+            root.say(document->error());|
-          |+        return ok;|
-          |+    };|
-          |+    root.stopRecording = [&] { document->stopRecording(); };|
-          |+    root.recording = [&] { return document->recording(); };|
-          |+    root.setSize(1440, 900);|
-          |+    root.frame();|
-          |+    check(root.armTrack(4, false) && root.setCountIn(1), "arm an audio track and set a one-bar Count-In");|
-          |+|
-          |+    std::array<float, 64> left{}, right{}, outL{}, outR{};|
-          |+    left.fill(.25f);|
-          |+    const float *inputs[]{left.data(), right.data()};|
-          |+    float *outputs[]{outL.data(), outR.data()};|
-          |+    engine::AudioIo io;|
-          |+    io.in = inputs;|
-          |+    io.numIn = 2;|
-          |+    io.out = outputs;|
-          |+    io.numOut = 2;|
-          |+    io.frames = 64;|
-          |+    const auto block = [&] {|
-          |+        document->process(io);|
-          |+        io.streamTimeSamples += io.frames;|
-          |+        root.frame();|
-          |+    };|
-          |+    const juce::ModifierKeys shift(juce::ModifierKeys::shiftModifier);|
-          |+    const juce::KeyPress f9(juce::KeyPress::F9Key), shiftF9(juce::KeyPress::F9Key, shift, 0);|
-          |+    const auto oldPreference = settings.get("record.startPlaybackWithRecord");|
-          |+    const auto setPreference = [&](bool immediate) {|
-          |+        check(settings.set("record.startPlaybackWithRecord", immediate, {}, why), "change the Record setting");|
-          |+        commands.reload();|
-          |+    };|
-          |+    auto &record = root.transport.record;|
-          |+    auto &mailbox = document->mailbox();|
-          |+|
-          |+    setPreference(false);|
-          |+    check(root.keyPressed(f9), "F9 invokes Record");|
-          |+    block();|
-          |+    check(starts == 0 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),|
-          |+          "with the setting off, F9 only lights Record and doesn't prepare capture or play");|
-          |+    check(root.canUndo(false) && root.command(AppCommands::Undo) && !document->recordStates().at(4).armed,|
-          |+          "SC-258: Undo still takes back track Arm while Record is waiting for Play");|
-          |+    check(root.canUndo(true) && root.command(AppCommands::Redo) && document->recordStates().at(4).armed,|
-          |+          "SC-258: Redo still restores Arm while Record is waiting for Play");|
-          |+    block();|
-          |+    check(starts == 0 && record.getToggleState() && !mailbox.desiredPlaying(),|
-          |+          "SC-258: Undo and Redo preserve waiting Record without starting capture or playback");|
-          |+    check(root.keyPressed(f9), "press Record again without playing");|
-          |+    block();|
-          |+    check(starts == 0 && !record.getToggleState(), "Record again cancels the wait");|
-          |+    record.clicked({});|
-          |+    check(root.command(AppCommands::Stop), "Stop while Record is waiting");|
-          |+    block();|
-          |+    check(starts == 0 && !record.getToggleState() && !mailbox.desiredPlaying(),|
-          |+          "Stop clears the waiting request before it reaches the recorder");|
-          |+    check(root.command(AppCommands::PlayStop), "ordinary Play after cancelling");|
-          |+    block();|
-          |+    check(starts == 0 && mailbox.playing(), "Play after cancelling does not record");|
-          |+    check(root.command(AppCommands::Stop), "stop ordinary playback");|
-          |+    block();|
-          |+    const auto stopped = mailbox.position();|
-          |+|
-          |+    record.clicked({});|
-          |+    check(root.locate(1920, true), "move the insert marker while Record is waiting");|
-          |+    block();|
-          |+    check(mailbox.position() != stopped && starts == 0, "locating preserves the wait and the stopped sample");|
-          |+    check(root.command(AppCommands::ContinuePlay), "Continue consumes the waiting Record");|
-          |+    block();|
-          |+    check(starts == 1 && document->recording() && mailbox.position() == stopped + io.frames,|
-          |+          "Continue records from the exact driver-stopped sample after locating");|
-          |+    check(root.command(AppCommands::Stop), "stop recording from Continue");|
-          |+    block();|
-          |+    check(document->settleRecording(), "settle the take");|
-          |+|
-          |+    record.clicked({});|
-          |+    root.transport.play.onClick();|
-          |+    check(starts == 2 && document->recording() && mailbox.desiredPlaying(), "Play starts a waiting Record");|
-          |+    block();|
-          |+    check(document->session().transport().countInRemaining() > 0 &&|
-          |+              document->session().recording().acceptedFrames() == 0,|
-          |+          "starting a waiting Record through Play observes Count-In before capture");|
-          |+    check(root.command(AppCommands::Stop), "stop the Count-In");|
-          |+    block();|
-          |+    check(document->settleRecording() && !document->recording(), "settle the cancelled start");|
-          |+|
-          |+    check(root.keyPressed(shiftF9) && starts == 3 && document->recording() && mailbox.desiredPlaying(),|
-          |+          "Shift+F9 starts immediately when the setting is off");|
-          |+    check(root.command(AppCommands::Stop), "Stop before the callback consumes Record");|
-          |+    block();|
-          |+    check(document->settleRecording() && !document->recording() && !mailbox.desiredPlaying(),|
-          |+          "rapid Record and Stop leave no queued recording or playback");|
-          |+|
-          |+    setPreference(true);|
-          |+    record.clicked(shift);|
-          |+    block();|
-          |+    check(starts == 3 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),|
-          |+          "Shift+Record waits with the setting on");|
-          |+    check(root.command(AppCommands::Stop), "cancel the shifted Record");|
-          |+    check(root.keyPressed(f9) && starts == 4 && document->recording(),|
-          |+          "unshifted F9 starts immediately when the setting is on");|
-          |+    check(root.command(AppCommands::Stop), "stop the immediate Record");|
-          |+    block();|
-          |+    check(document->settleRecording(), "finish the immediate Record");|
-          |+|
-          |+    record.clicked(shift);|
-          |+    const auto tempo = document->view().current()->tempo;|
-          |+    const auto scrubSample = static_cast<std::int64_t>(tempo->ticksToSeconds(3840) * mailbox.sampleRate());|
-          |+    check(root.playFrom(3840), "scrub playback also consumes a waiting Record");|
-          |+    block();|
-          |+    check(starts == 5 && document->recording() && mailbox.position() == scrubSample + io.frames,|
-          |+          "scrub playback records from the requested position");|
-          |+    check(root.command(AppCommands::Stop), "stop recording from scrub playback");|
-          |+    block();|
-          |+    check(document->settleRecording(), "settle scrub playback's take");|
-          |+|
-          |+    record.clicked(shift);|
-          |+    while (mailbox.post(TransportMailbox::Command::LocateMarker, scrubSample)) {}|
-          |+    check(!root.command(AppCommands::Stop), "Stop reports a full transport mailbox");|
-          |+    block();|
-          |+    check(starts == 5 && !mailbox.desiredPlaying() && !record.getToggleState(),|
-          |+          "Stop cancels a waiting Record even when it cannot queue a transport command");|
-          |+|
-          |+    check(root.armTrack(4, false), "disarm the last audio track before testing refused Record starts");|
-          |+    const auto plays = [&] {|
-          |+        return document->store().db().execAndGet("SELECT count(*) FROM ops WHERE op_type='transport.play'").getInt64();|
-          |+    };|
-          |+    const auto head = OpJournal(document->store()).headSeq();|
-          |+    for (const bool scrub : {false, true}) {|
-          |+        record.clicked(shift);|
-          |+        const auto before = plays();|
-          |+        check(scrub ? root.playFrom(7680) : root.command(AppCommands::ContinuePlay),|
-          |+              "refused pending Record still starts the requested playback");|
-          |+        check(mailbox.desiredPlaying() && plays() == before + 1 && OpJournal(document->store()).headSeq() == head,|
-          |+              "a refused capture queues one Play without an undo step");|
-          |+        check(root.error() == "Arm a track to record into it.",|
-          |+              "the capture refusal is reported while playback is pending");|
-          |+        block();|
-          |+        check(!document->recording() && !document->landingTake() && !record.getToggleState(),|
-          |+              "a refused capture clears the Record button without creating a take");|
-          |+        // Scrub can land inside the WAV just recorded. The mailbox waits for its media page.|
-          |+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);|
-          |+        while (mailbox.desiredPlaying() && !mailbox.playing() && std::chrono::steady_clock::now() < deadline) {|
-          |+            std::this_thread::sleep_for(std::chrono::milliseconds(1));|
-          |+            block();|
-          |+        }|
-          |+        check(mailbox.playing(), scrub ? "refused scrub capture plays once the sample is ready"|
-          |+                                       : "refused Continue capture resumes playback");|
-          |+        check(root.command(AppCommands::Stop), "stop ordinary playback after refusing capture");|
-          |+        block();|
-          |+    }|
-          |+    check(starts == 7, "Continue and scrub each attempted the waiting capture once");|
-          |+    check(settings.set("record.startPlaybackWithRecord", oldPreference, {}, why), "restore the prior preference");|
-          |+    commands.reload();|
-          |+    document->release();|
-          |+}|
-          |+|
-          | // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the|
-          | // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a|
-          | // document whose callback the test drives with an input.|
-          |@@ -12990,6 +13162,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
-          |         refreshRecordingPreview();|
-          |     };|
-          |     root.recording = [&] { return document->recording(); };|
-          |+    root.landingRecording = [&] { return document->landingTake(); };|
-          |     root.arrangement.waveforms = &document->waveforms();|
-          |     root.setSize(1440, 900);|
-          |     // The application's frame: the timer's tick, the rows handed over, the window's frame.|
-          |@@ -13069,7 +13242,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
-          |           "Arrangement Record is named as Live's and on F9 (manual 21.1) [P:recording#17]");|
-          |     auto &record = root.transport.record;|
-          |     check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");|
-          |-    record.onClick();|
-          |+    record.clicked({});|
-          |     frame();|
-          |     check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit [P:recording#17]");|
-          |     std::array<float, 64> left{}, right{}, outL{}, outR{};|
-          |@@ -13093,6 +13266,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
-          |     };|
-          |     for (int b = 0; b < 16; ++b)|
-          |         block();|
-          |+    const auto armHistory = document->ops().nextUndo();|
-          |+    const auto undoActive = [&] {|
-          |+        juce::ApplicationCommandInfo info(AppCommands::Undo);|
-          |+        commands.getCommandInfo(AppCommands::Undo, info);|
-          |+        return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;|
-          |+    };|
-          |+    commands.activate(root);|
-          |+    check(!undoActive() && !root.canUndo(true), "SC-258: Edit Undo and Redo are held during a take");|
-          |+    check(root.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) &&|
-          |+              root.error().find("after the current take") != std::string::npos,|
-          |+          "SC-258: the mapped Undo key says why the current take holds history");|
-          |+    check(!root.command(AppCommands::Redo) && !root.restoreStep(0),|
-          |+          "SC-258: direct Redo and Undo History also respect the hold");|
-          |+    const auto currentHistory = document->ops().nextUndo();|
-          |+    check(document->recording() && states().at(4).armed && states().at(5).armed &&|
-          |+              armHistory && currentHistory && armHistory->txnId == currentHistory->txnId,|
-          |+          "SC-258: the take keeps recording and its track arm and history remain intact");|
-          |     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);|
-          |     while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)|
-          |         std::this_thread::sleep_for(std::chrono::milliseconds(1));|
-          |@@ -13159,6 +13349,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
-          |     check(laneMenus == 1, "SC-02: the right press asks for the lanes' menu once");|
-          |     lanes.onContextMenu = nullptr;|
-          |     check(root.command(AppCommands::ArrangementRecord), "F9's command again");|
-          |+    check(document->landingTake() && !undoActive() && !root.command(AppCommands::Undo),|
-          |+          "SC-258: the hold lasts through writer settlement");|
-          |     frame();|
-          |     check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,|
-          |           "SC-20: the waveform stays visible while the writer finishes");|
-          |@@ -13178,11 +13370,18 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {|
-          |     check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&|
-          |               root.reader().findTrack(5)->clips.size() == 1,|
-          |           "a clip on each armed track");|
-          |-    check(root.command(AppCommands::Undo), "one Undo");|
-          |+    check(undoActive() && root.command(AppCommands::Undo), "SC-258: one Undo is available after landing");|
-          |     frame();|
-          |     check(root.reader().findTrack(3)->clips.empty() && root.reader().findTrack(4)->clips.empty() &&|
-          |               root.reader().findTrack(5)->clips.empty(),|
-          |           "takes all three takes back [P:recording#23]");|
-          |+    check(root.command(AppCommands::Redo), "SC-258: Redo reapplies the landed take");|
-          |+    frame();|
-          |+    check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&|
-          |+              root.reader().findTrack(5)->clips.size() == 1,|
-          |+          "SC-258: Redo restores the audio and MIDI clips together");|
-          |+    check(root.command(AppCommands::Undo), "clear the clips before the next capture");|
-          |+    frame();|
-          |     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.|
-          |     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),|
-          |           "Record while playing records; the transport keeps rolling [P:recording#22]");|
-          |@@ -18393,12 +18592,14 @@ int main(int argc, char **argv) {|
-          |                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&|
-          |                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&|
-          |                       C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&|
-          |-                      C::LastId == C::ArmSelected,|
-          |+                      C::ArrangementRecordAlternate == C::ArmSelected + 1 &&|
-          |+                      C::LastId == C::ArrangementRecordAlternate,|
-          |                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "|
-          |                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "|
-          |                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "|
-          |                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "|
-          |-                  "Arrangement Record, Delay Compensation, Delete Automation and Arm Selected Tracks, each named");|
-          |+                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks and "|
-          |+                  "Arrangement Record (Alternate Start), each named");|
-          |             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.|
-          |             {|
-          |                 const auto named = [&](int id) {|
-          |@@ -20929,6 +21130,7 @@ int main(int argc, char **argv) {|
-          |     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });|
-          |     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });|
-          |     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });|
-          |+    trace("recordWaitsForPlay", [&] { recordWaitsForPlay(commands, settings, temp.path()); });|
-          |     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });|
-          |     trace("exportPage", [&] { exportPage(commands, temp.path()); });|
-          |     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });|
-          PATCH
-          git apply --index "$RUNNER_TEMP/recording-candidate.patch"
-          test "$(git write-tree)" = f3ad5429d4eec5dffcdbb1259604a85cc650dc37
-          echo "Verified candidate f3ad5429d4eec5dffcdbb1259604a85cc650dc37"
-      - name: Install Linux JUCE build dependencies
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Linux build headers (no display server)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxrandr-dev libxinerama-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
-      - name: Fetch pinned ADI dependencies
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
+      - name: Fetch pinned sources
         run: bash adi_daw/tools/fetch_external.sh --with-juce
-      - name: Build Debug UI tests
-        shell: bash
+      - name: Select a short build path
         run: |
-          cmake -S adi_daw -B "$RUNNER_TEMP/adi" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON \
-            "-DCMAKE_C_FLAGS_DEBUG=-O0 -g1" "-DCMAKE_CXX_FLAGS_DEBUG=-O0 -g1 -fno-var-tracking-assignments"
-          mapfile -t suites < <(ninja -C "$RUNNER_TEMP/adi" -t targets all | sed -nE 's/^(adi_ui_[a-z0-9_]+_tests):.*/\1/p' | sort -u)
-          test "${#suites[@]}" -ge 15
-          cmake --build "$RUNNER_TEMP/adi" --parallel 2 --target "${suites[@]}"
-      - name: Run every UI suite with DISPLAY unset
-        run: env -u DISPLAY -u WAYLAND_DISPLAY ADI_HOME="$RUNNER_TEMP/adi-test-home" ctest --test-dir "$RUNNER_TEMP/adi" -R '^adi_ui_' --output-on-failure --timeout 1800
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "ADI_UI_BUILD=C:/b/adi-ui-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          else
+            echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
+          fi
+      - name: Build root window and UI test tiers
+        run: |
+          cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests adi_ui_stack_model_tests adi_ui_shared_analysis_tests adi_ui_shared_spectrum_tests adi_ui_mix_functions_tests adi_ui_eq_pages_tests adi_ui_param_capture_tests adi_mix_document_tests adi_mix_pipeline_document_tests adi_mix_limiter_tests adi_mix_limiter_owner_tests adi_mix_clip_tests adi_mix_limit_chain_tests adi_mix_functions_tests adi_mix_render_intent_tests adi_mix_pdc_pin_tests adi_mix_eq_tests adi_mix_eq_host_tests adi_mix_eq_pipeline_tests adi_mix_parameter_feed_tests adi_analyser_taps_tests adi_ui_analysis_comparison_tests adi_ui_spectrum_slope_tests adi_ui_spectrum_average_tests adi_ui_triggered_scope_tests --parallel 2
+      - name: Peerless software renders and synthesised keyboard events
+        run: |
+          # An unset DISPLAY deliberately proves the Linux offscreen path.
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_(ui_(shell|window_state|document|stack_model|shared_analysis|shared_spectrum|mix_functions|eq_pages|param_capture|analysis_comparison|spectrum_slope|spectrum_average|triggered_scope)|mix_(document|pipeline_document|limiter|limiter_owner|clip|limit_chain|functions|render_intent|pdc_pin|eq|eq_host|eq_pipeline|parameter_feed)|analyser_taps)_tests$' --output-on-failure
+      - name: Windows native window smoke (no audio device)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
+          # WTS-01: the smoke run keeps its settings and logs in a home of its own, never the runner's.
+          $env:ADI_HOME = "$env:ADI_UI_BUILD/home"
+          New-Item -ItemType Directory -Force -Path $env:ADI_HOME | Out-Null
+          $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0 -or -not (Test-Path "$env:ADI_UI_BUILD/native-actual.png")) { throw 'Native window smoke failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-renders-${{ matrix.os }}
+          path: ${{ env.ADI_UI_BUILD }}/*-actual.png
+          if-no-files-found: ignore
