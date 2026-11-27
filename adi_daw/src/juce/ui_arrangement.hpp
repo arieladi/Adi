@@ -598,6 +598,8 @@ class ArrangementView final : public juce::Component {
     // Re-Enable Automation the lanes' menu ends with (AU-04).
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr,
                      const std::function<void(juce::PopupMenu &)> &configure = {});
+    void presentContextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane,
+                            juce::PopupMenu menu);
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
     // Headless tests receive the menu and its hit context without opening a native popup.
     std::function<void(juce::Point<int>,bool,const engine::AutomationLaneNode *,const juce::PopupMenu &)> onContextMenu;

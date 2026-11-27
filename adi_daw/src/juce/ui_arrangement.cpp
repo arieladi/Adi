@@ -5,6 +5,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/ui/clip_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/row_ids.hpp"
@@ -25,6 +26,55 @@
 #include <span>
 #include <string_view>
 namespace adi::ui {
+namespace {
+class ColourChooser final : public juce::PopupMenu::CustomComponent {
+  public:
+    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14;
+    ColourChooser(std::function<void(int)> pick, std::int64_t current)
+        : juce::PopupMenu::CustomComponent(false), pick_(std::move(pick)), current_(current) {}
+    void getIdealSize(int &width, int &height) override {
+        width = 8 + kColumns * kPitch;
+        height = kSwatch + 8;
+    }
+    void paint(juce::Graphics &g) override {
+        for (int i = 0; i < kColumns; ++i) {
+            const juce::Rectangle<float> r(static_cast<float>(4 + i * kPitch), 4.f, kSwatch, kSwatch);
+            g.setColour(look::paletteColour(i));
+            g.fillRect(r);
+            if (i == current_ || i == hover_) {
+                g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
+                g.drawRect(r.expanded(1.5f), 1.5f);
+            }
+        }
+    }
+    void mouseMove(const juce::MouseEvent &e) override {
+        if (const int at = swatchAt(e.x); at != hover_) {
+            hover_ = at;
+            repaint();
+        }
+    }
+    void mouseExit(const juce::MouseEvent &) override {
+        hover_ = -1;
+        repaint();
+    }
+    void mouseUp(const juce::MouseEvent &e) override {
+        if (const int at = swatchAt(e.x); at >= 0) {
+            pick_(at);
+            if (getParentComponent() != nullptr)
+                triggerMenuItem();
+        }
+    }
+
+  private:
+    static int swatchAt(int x) noexcept {
+        const int i = (x - 4) / kPitch;
+        return x >= 4 && i < kColumns && (x - 4) % kPitch < kSwatch ? i : -1;
+    }
+    std::function<void(int)> pick_;
+    std::int64_t current_;
+    int hover_ = -1;
+};
+} // namespace
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
     setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
@@ -825,55 +875,6 @@ class ProjectViewMenuLook final : public juce::LookAndFeel_V4 {
         g.drawRect(0, 0, width, height, 1);
     }
     int getPopupMenuBorderSize() override { return 3; }
-};
-// Live's colour chooser in a track's menu (Live 12 manual 2.3.2): a row of swatches of Live's palette,
-// the track's own outlined. Only the palette's first row is measured (ADR-0211 d3), so only it is
-// offered; a click colours the selected tracks and closes the menu.
-class ColourChooser final : public juce::PopupMenu::CustomComponent {
-  public:
-    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14;
-    ColourChooser(ArrangementView &view, std::int64_t current)
-        : juce::PopupMenu::CustomComponent(false), view_(view), current_(current) {}
-    void getIdealSize(int &width, int &height) override {
-        width = 8 + kColumns * kPitch;
-        height = kSwatch + 8;
-    }
-    void paint(juce::Graphics &g) override {
-        for (int i = 0; i < kColumns; ++i) {
-            const juce::Rectangle<float> r(static_cast<float>(4 + i * kPitch), 4.f, kSwatch, kSwatch);
-            g.setColour(look::paletteColour(i));
-            g.fillRect(r);
-            if (i == current_ || i == hover_) {
-                g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
-                g.drawRect(r.expanded(1.5f), 1.5f);
-            }
-        }
-    }
-    void mouseMove(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at != hover_) {
-            hover_ = at;
-            repaint();
-        }
-    }
-    void mouseExit(const juce::MouseEvent &) override {
-        hover_ = -1;
-        repaint();
-    }
-    void mouseUp(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at >= 0) {
-            view_.recolour(at);
-            triggerMenuItem();
-        }
-    }
-
-  private:
-    static int swatchAt(int x) noexcept {
-        const int i = (x - 4) / kPitch;
-        return x >= 4 && i < kColumns && (x - 4) % kPitch < kSwatch ? i : -1;
-    }
-    ArrangementView &view_;
-    std::int64_t current_;
-    int hover_ = -1;
 };
 // One entry: indented by how deep it sits, a folder in its group's colour, its name.
 class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
@@ -1895,18 +1896,25 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
                 safe->root.insertReturnTrack(track);
         });
     }
-    menu.addCustomItem(1, std::make_unique<ColourChooser>(*this, colourIndex(track)), nullptr,
-                       "Colour");
+    menu.addCustomItem(1, std::make_unique<ColourChooser>([safe = SafePointer<ArrangementView>(this)](int colour) {
+        if (safe != nullptr)
+            safe->recolour(colour);
+    }, colourIndex(track)), nullptr, "Colour");
     return menu;
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane,
                                   const std::function<void(juce::PopupMenu &)> &configure) {
-    auto menu=contextMenuItems(header,lane);
-    if(configure)configure(menu);
-    if(onContextMenu)
-        onContextMenu(where,header,lane,menu);
+    auto menu = contextMenuItems(header, lane);
+    if (configure)
+        configure(menu);
+    presentContextMenu(where, header, lane, std::move(menu));
+}
+void ArrangementView::presentContextMenu(juce::Point<int> where, bool header,
+                                        const engine::AutomationLaneNode *lane, juce::PopupMenu menu) {
+    if (onContextMenu)
+        onContextMenu(where, header, lane, menu);
     else
-        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>(where.x,where.y,1,1)));
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
 }
 const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
     if (!root.automationMode())
@@ -1922,49 +1930,97 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
-        // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
-        // was clicked, above the lanes' items. The lanes' own menu offers Paste.
-        if (geometry.selection.clip != 0) {
-            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate,
-                                  AppCommands::DeleteTrack})
+        using Command = AppCommands;
+        const auto addActive = [&commands, &menu](Command::Id id) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            if ((info.flags & juce::ApplicationCommandInfo::isDisabled) == 0)
+                menu.addCommandItem(&commands.manager, id);
+        };
+        const auto &sel = geometry.selection;
+        const bool clips = sel.clip != 0 || !sel.pickedClips.empty();
+        const bool time = !clips && sel.start != sel.end;
+        if (canvas.hasAutomationSelection()) {
+            for (const auto id : {Command::Cut, Command::Copy, Command::Paste, Command::Duplicate, Command::DeleteTrack})
                 menu.addCommandItem(&commands.manager, id);
             menu.addSeparator();
-            menu.addCommandItem(&commands.manager, AppCommands::Split);
-            menu.addSeparator();
-            // Rename, the clip's (walk-B B14): the same command as Ctrl/Cmd+R, which acts on the
-            // selected clip.
-            menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
-            if (const auto snapshot = root.current(); snapshot && root.locateClipMedia) {
-                const auto clipId = geometry.selection.clip;
-                for (const auto &track : snapshot->tracks) {
-                    if (!track) continue;
-                    const auto found = std::find_if(track->clips.begin(), track->clips.end(), [clipId](const auto &clip) {
-                        return clip->id == clipId;
-                    });
-                    if (found == track->clips.end()) continue;
-                    const auto &clip = **found;
-                    if (root.clipMediaOffline(clip) && clip.audio->mediaInfo) {
-                        const auto safe = juce::Component::SafePointer<ArrangementView>(this);
-                        menu.addItem("Locate Missing Sample...", [safe, clipId] {
-                            if (safe && safe->root.locateClipMedia) safe->root.locateClipMedia(clipId);
+        } else if (clips || time) {
+            for (const auto id : {Command::Cut, Command::Copy, Command::Paste, Command::Duplicate})
+                addActive(id);
+            juce::Component::SafePointer<ArrangementView> safe(this);
+            menu.addItem("Delete", [safe] {
+                if (safe != nullptr)
+                    safe->canvas.editMaterialSelection(false);
+            });
+            if (const auto current = root.current()) {
+                if (clips) {
+                    const auto ids = geometry.selectedClips();
+                    const auto activation = deactivateClips(current->tracks, ids);
+                    if (!activation.ops.empty())
+                        menu.addItem(activation.ops.front().payload.value("muted", false) ? "Deactivate" : "Activate", [safe] {
+                            if (safe != nullptr)
+                                safe->canvas.editMaterialSelection(true);
                         });
-                    }
-                    break;
+                    if (!deleteFades(current->tracks, ids).ops.empty())
+                        addActive(Command::DeleteFades);
+                    auto colour = colourIndex(sel.track);
+                    if (const auto *track = reader().findTrack(sel.track))
+                        for (const auto &clip : track->clips)
+                            if (clip->id == sel.clip)
+                                colour = clip->color.value_or(colour);
+                    menu.addCustomItem(1, std::make_unique<ColourChooser>([safe, ids](int index) {
+                        if (safe == nullptr)
+                            return;
+                        std::vector<OpRequest> ops;
+                        for (const auto id : ids) {
+                            const auto details = engine::readClipDetails(safe->root.editStore(), id, false);
+                            if (!details.clip) {
+                                safe->root.say(details.error);
+                                return;
+                            }
+                            auto edit = recolourClip(*details.clip, index);
+                            for (auto &op : edit.ops)
+                                ops.push_back(std::move(op));
+                        }
+                        if (!ops.empty() && safe->root.submitEdits(std::move(ops)))
+                            safe->changed();
+                    }, colour), nullptr, "Clip Colour");
+                } else if (!createFades(current->tracks, geometry.selectedTracks(reader()), sel.start, sel.end).ops.empty()) {
+                    addActive(Command::CreateFade);
                 }
             }
+            addActive(Command::LoopSelection);
             menu.addSeparator();
-        } else if (canvas.hasAutomationSelection()) {
-            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
-                                  AppCommands::Duplicate, AppCommands::DeleteTrack})
-                menu.addCommandItem(&commands.manager, id);
+            if (clips) {
+                addActive(Command::Split);
+                addActive(Command::RenameTrack);
+                if (const auto snapshot = root.current(); snapshot && root.locateClipMedia) {
+                    const auto clipId = sel.clip;
+                    for (const auto &track : snapshot->tracks) {
+                        if (!track) continue;
+                        const auto found = std::find_if(track->clips.begin(), track->clips.end(), [clipId](const auto &clip) {
+                            return clip->id == clipId;
+                        });
+                        if (found == track->clips.end()) continue;
+                        const auto &clip = **found;
+                        if (clip.audio && root.clipMediaOffline(clip) && clip.audio->mediaInfo) {
+                            menu.addItem("Locate Missing Sample...", [safe, clipId] {
+                                if (safe && safe->root.locateClipMedia) safe->root.locateClipMedia(clipId);
+                            });
+                        }
+                        break;
+                    }
+                }
+            } else {
+                for (const auto id : {Command::CutTime, Command::CopyTime, Command::PasteTime, Command::DuplicateTime,
+                                      Command::DeleteTime, Command::InsertSilence})
+                    addActive(id);
+            }
             menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
-            menu.addCommandItem(&commands.manager, AppCommands::Paste);
+            addActive(Command::Paste);
             menu.addSeparator();
         }
-        if (!canvas.hasAutomationSelection() && geometry.selection.clip == 0 &&
-            geometry.selection.start != geometry.selection.end)
-            menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).
@@ -2451,13 +2507,15 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         foldPressed_ = true;
         resizeId = moveId_ = 0;
         if (e.mods.isPopupMenu()) {
-            view.contextMenu(localPointToGlobal(e.getPosition()), true, nullptr,
-                [this, track = take->track->id, lane = take->lane->id, muted = take->lane->muted](juce::PopupMenu &menu) {
-                    menu.addItem("Audition Take Lane", !muted, view.takeAuditioned(track, lane),
-                        [safe = SafePointer<TrackHeaderList>(this), track, lane] {
-                            if (safe) safe->view.toggleTakeAudition(track, lane);
-                        });
+            const auto track = take->track->id;
+            const auto lane = take->lane->id;
+            juce::PopupMenu menu;
+            menu.addItem("Audition Take Lane", !take->lane->muted, view.takeAuditioned(track, lane),
+                [safe = SafePointer<TrackHeaderList>(this), track, lane] {
+                    if (safe)
+                        safe->view.toggleTakeAudition(track, lane);
                 });
+            view.presentContextMenu(localPointToGlobal(e.getPosition()), true, nullptr, std::move(menu));
         } else if (!take->lane->muted) {
             view.toggleTakeAudition(take->track->id, take->lane->id);
         }
@@ -4150,19 +4208,23 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
                 }
         }
         draggingTakeSelection_ = !contextMenuPress_;
-        if (contextMenuPress_)
-            view.contextMenu(localPointToGlobal(e.getPosition()), false, nullptr,
-                [this, track = take->track->id, lane = take->lane->id, muted = take->lane->muted](juce::PopupMenu &menu) {
-                    menu.addItem("Audition Take Lane", !muted, view.takeAuditioned(track, lane),
-                        [safe = SafePointer<ArrangementCanvas>(this), track, lane] {
-                            if (safe) safe->view.toggleTakeAudition(track, lane);
-                        });
-                    menu.addItem("Copy Selection to Main Lane",
-                        view.takeSelection && view.takeSelection->start != view.takeSelection->end, false,
-                        [safe = SafePointer<ArrangementCanvas>(this)] {
-                            if (safe) safe->view.copyTakeSelectionToMain();
-                        });
+        if (contextMenuPress_) {
+            const auto track = take->track->id;
+            const auto lane = take->lane->id;
+            juce::PopupMenu menu;
+            menu.addItem("Audition Take Lane", !take->lane->muted, view.takeAuditioned(track, lane),
+                [safe = SafePointer<ArrangementCanvas>(this), track, lane] {
+                    if (safe)
+                        safe->view.toggleTakeAudition(track, lane);
                 });
+            menu.addItem("Copy Selection to Main Lane",
+                view.takeSelection && view.takeSelection->start != view.takeSelection->end, false,
+                [safe = SafePointer<ArrangementCanvas>(this)] {
+                    if (safe)
+                        safe->view.copyTakeSelectionToMain();
+                });
+            view.presentContextMenu(localPointToGlobal(e.getPosition()), false, nullptr, std::move(menu));
+        }
         repaint();
         return;
     }

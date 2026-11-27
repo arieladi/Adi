@@ -605,6 +605,7 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     const auto &settings = root.mixViewPanel.analysis.detail;
     pane->view.setClassicControls(settings.view.classicControls());
     pane->setMode(settings.mode());
+    pane->view.setFilledSpectrumCurve(settings.view.filledSpectrumCurve());
     pane->setPoint(settings.point());
     pane->view.setChannel(settings.view.channel());
     pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
