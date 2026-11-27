@@ -151,7 +151,7 @@ bool LaunchAudioClip::allWarpPhasesPrimed() const noexcept {
 std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const noexcept {
     if (!std::isfinite(bpm) || bpm <= 0)
         return -1;
-    const auto ticks = static_cast<long double>(tick) - firstTick_;
+    const auto ticks = static_cast<long double>(tick) - static_cast<long double>(firstTick_);
     const auto frame = ticks * rate_ * 60.0L / (static_cast<long double>(bpm) * textproj::kPPQ);
     if (frame <= static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
         frame >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
