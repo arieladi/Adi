@@ -258,7 +258,7 @@ void midiControllerOnlyTake() {
     const std::array points{controllers::Point{1, 120, .5}};
     const std::array<recording::MidiControllerLane, 1> wheel{{{15, controllers::kPitchBend, points}}};
     const std::array<recording::MidiLinearTake, 1> fresh{{{23, 7, 1000, 1000, "Wheel", {}, {}, false, wheel}}};
-    const auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
+    auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
     check(seed.ok && recording::commit(store, seed).ok, "record a new pitch-only Arrangement take");
     if (!seed.ok)
         return;
@@ -267,7 +267,7 @@ void midiControllerOnlyTake() {
     const std::array moved{controllers::Point{1, 120, .125}};
     const std::array<recording::MidiControllerLane, 1> movedWheel{{{15, controllers::kPitchBend, moved}}};
     const std::array<recording::MidiLinearTake, 1> take{{{23, 8, 1000, 800, "Move", {}, {}, true, movedWheel}}};
-    const auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
+    auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
     check(overdub.ok && recording::commit(store, overdub).ok, "overdub a pitch-only take into its existing source");
     const auto landed = controllers::readLanes(store, 7);
     check(original.ok && original.lanes.size() == 1 && landed.ok && landed.lanes.size() == 1 &&
