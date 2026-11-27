@@ -33,6 +33,9 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
+// SC-258 provisional policy pending a Live 12 reading of Undo during Arrangement Record.
+constexpr bool kHoldHistoryUntilArrangementTakeLands = true;
+constexpr auto kRecordingHistoryMessage = "Undo and Redo are available after the current take finishes.";
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -1095,6 +1098,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
     const auto id = manager.getKeyMappings()->findCommandForKeyPress(key);
+    if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {
+        // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.
+        root.command(id);
+        return true;
+    }
     // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (id >= FoldToNotes && id <= HighlightScales)
@@ -3113,9 +3121,14 @@ juce::String AdiRootComponent::selectionText() const {
     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
            seconds(s.marked ? s.insert : 0) + ")";
 }
+bool AdiRootComponent::recordingHoldsHistory() const {
+    return kHoldHistoryUntilArrangementTakeLands && (isRecording() || (landingRecording && landingRecording()));
+}
 std::string AdiRootComponent::undoTitle(bool redo) const {
-    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
     const std::string verb = redo ? "Redo" : "Undo";
+    if (recordingHoldsHistory())
+        return verb;
+    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
     if (!canUndo(redo))
         return "Nothing to " + verb;
     // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.
@@ -4052,6 +4065,8 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    if (recordingHoldsHistory())
+        return fail(kRecordingHistoryMessage);
     if (settleEdits && !settleEdits())
         return false;
     const auto result = submitter_.restore(txnId);
@@ -4571,6 +4586,8 @@ bool AdiRootComponent::command(int id) {
          mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
+        if (recordingHoldsHistory())
+            return fail(kRecordingHistoryMessage);
         mixViewPanel.stack.cancelInteractions();
         devices.cancelFunctionInteractions();
     }

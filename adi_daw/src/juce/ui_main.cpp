@@ -1053,6 +1053,7 @@ class AdiApplication final : public juce::JUCEApplication,
             refreshRecordingPreview();
         };
         root->recording = [this] { return document_->recording(); };
+        root->landingRecording = [this] { return document_->landingTake(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };

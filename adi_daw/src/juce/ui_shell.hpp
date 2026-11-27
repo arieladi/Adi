@@ -413,7 +413,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     juce::String selectionText() const;
     // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so
     // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.
+    bool recordingHoldsHistory() const;
     bool canUndo(bool redo) const {
+        if (recordingHoldsHistory())
+            return false;
         const bool held = editsHeld && editsHeld();
         return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;
     }
@@ -515,6 +518,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
+    std::function<bool()> landingRecording;
     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).

@@ -13012,6 +13012,13 @@ void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, 
     block();
     check(starts == 0 && record.getToggleState() && !document->recording() && !mailbox.desiredPlaying(),
           "with the setting off, F9 only lights Record and doesn't prepare capture or play");
+    check(root.canUndo(false) && root.command(AppCommands::Undo) && !document->recordStates().at(4).armed,
+          "SC-258: Undo still takes back track Arm while Record is waiting for Play");
+    check(root.canUndo(true) && root.command(AppCommands::Redo) && document->recordStates().at(4).armed,
+          "SC-258: Redo still restores Arm while Record is waiting for Play");
+    block();
+    check(starts == 0 && record.getToggleState() && !mailbox.desiredPlaying(),
+          "SC-258: Undo and Redo preserve waiting Record without starting capture or playback");
     check(root.keyPressed(f9), "press Record again without playing");
     block();
     check(starts == 0 && !record.getToggleState(), "Record again cancels the wait");
@@ -13155,6 +13162,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         refreshRecordingPreview();
     };
     root.recording = [&] { return document->recording(); };
+    root.landingRecording = [&] { return document->landingTake(); };
     root.arrangement.waveforms = &document->waveforms();
     root.setSize(1440, 900);
     // The application's frame: the timer's tick, the rows handed over, the window's frame.
@@ -13258,6 +13266,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
+    const auto armHistory = document->ops().nextUndo();
+    const auto undoActive = [&] {
+        juce::ApplicationCommandInfo info(AppCommands::Undo);
+        commands.getCommandInfo(AppCommands::Undo, info);
+        return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+    };
+    commands.activate(root);
+    check(!undoActive() && !root.canUndo(true), "SC-258: Edit Undo and Redo are held during a take");
+    check(root.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)) &&
+              root.error().find("after the current take") != std::string::npos,
+          "SC-258: the mapped Undo key says why the current take holds history");
+    check(!root.command(AppCommands::Redo) && !root.restoreStep(0),
+          "SC-258: direct Redo and Undo History also respect the hold");
+    const auto currentHistory = document->ops().nextUndo();
+    check(document->recording() && states().at(4).armed && states().at(5).armed &&
+              armHistory && currentHistory && armHistory->txnId == currentHistory->txnId,
+          "SC-258: the take keeps recording and its track arm and history remain intact");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -13324,6 +13349,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(laneMenus == 1, "SC-02: the right press asks for the lanes' menu once");
     lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
+    check(document->landingTake() && !undoActive() && !root.command(AppCommands::Undo),
+          "SC-258: the hold lasts through writer settlement");
     frame();
     check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
           "SC-20: the waveform stays visible while the writer finishes");
@@ -13343,11 +13370,18 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
               root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
-    check(root.command(AppCommands::Undo), "one Undo");
+    check(undoActive() && root.command(AppCommands::Undo), "SC-258: one Undo is available after landing");
     frame();
     check(root.reader().findTrack(3)->clips.empty() && root.reader().findTrack(4)->clips.empty() &&
               root.reader().findTrack(5)->clips.empty(),
           "takes all three takes back [P:recording#23]");
+    check(root.command(AppCommands::Redo), "SC-258: Redo reapplies the landed take");
+    frame();
+    check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
+              root.reader().findTrack(5)->clips.size() == 1,
+          "SC-258: Redo restores the audio and MIDI clips together");
+    check(root.command(AppCommands::Undo), "clear the clips before the next capture");
+    frame();
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
           "Record while playing records; the transport keeps rolling [P:recording#22]");
