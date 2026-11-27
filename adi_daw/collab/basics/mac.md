@@ -91,6 +91,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/analysers-chain` | `ff0e566b46a7f797b8c520fe6f7685906cc52f4b` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. The shared spectrum suite checks rendered Phase goniometer traces, four-frame persistence, freeze, and clear. |
 | `origin/basics/analysers-chain` | `31d621d0c743bb769ead41d771cb7d5973b737d0` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. Shared analysis and window checks cover Third-Octave Bands, held peak markers, and the resampled mono period scope. |
 | `origin/basics/analysers-chain` | `d83ec6f3447ba0d7314493399846e65e7e4978f6` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. Shared analysis and window checks cover the two-second color waveform, frequency bands, scrolling, freeze, and clear. |
+| `origin/basics/midi-chain` | `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Yes | All 50 production targets built. Passed 54/54, including window and mixer 33/33, acceptance 3/3, and affected and session 18/18. This merge includes the speed landing and the MIDI Clip View fixture. The standalone VST3 probe also passed. |
 
 ## Nine-step window walk
 
