@@ -58,6 +58,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/land/basics-1127f` | `869078ae293100dd58ae2c5a2e733c3566f5c31b` | Yes | Passed 37/37, including affected suites 5/5, window and mixer 32/32. |
 | `origin/basics/look-chain` | `77f611a51345739db40f589414323384f8d310d2` | Production targets only | Passed 36/36, including affected suites 4/4, window and mixer 32/32. Recording test blocked at `tests/test_audio_recording.cpp:836` by `loop variable 'invalidLoop' creates a copy` under `-Werror,-Wrange-loop-construct`. The same type and loop fail with upstream Clang and GCC. |
 | `origin/basics/look-chain` | `0350536107712187d11eccadd637195ca183f775` | Production targets only | Passed 35/35, including affected suites 3/3, window and mixer 32/32. Recording test blocked at `tests/test_audio_recording.cpp:836` by `loop variable 'invalidLoop' creates a copy` under `-Werror,-Wrange-loop-construct`. The same type and loop fail with upstream Clang and GCC. |
+| `origin/basics/look-chain` | `2affb764e927c8e992f4f6df651f92df581f5cde` | Production targets only | Passed 35/35, including affected suites 3/3, window and mixer 32/32. Recording test blocked at `tests/test_audio_recording.cpp:836` by `loop variable 'invalidLoop' creates a copy` under `-Werror,-Wrange-loop-construct`. The same type and loop fail with upstream Clang and GCC. |
 
 ## Nine-step window walk
 
