@@ -8,10 +8,12 @@
 #include "adi/engine/session.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/timeline_clips.hpp"
+#include "adi/history.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/render/freeze_capture.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
 #include <algorithm>
 #include <array>
@@ -194,6 +196,30 @@ void checkRows(Store& store) {
     const auto range = clip_edit::copyRange(store, {{1}, {1, 0}, {1, 5000000}}, rate);
     require(range.ok && range.images.size() == 1, "Arrangement range does not copy slots: " + range.error);
 }
+
+void tempoChangesOnlyArrangement(Store& store) {
+    constexpr auto quarter = textproj::kPPQ;
+    SQLite::Statement musical(store.db(),
+        "UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=?,pos_ns=NULL,length_ns=NULL WHERE id IN (1,101)");
+    musical.bind(1, quarter);
+    musical.exec();
+    const auto arrangementLength = [&] {
+        return store.db().execAndGet("SELECT length_ticks FROM clips WHERE id=1").getInt64();
+    };
+    const auto slotLength = [&] {
+        return store.db().execAndGet("SELECT length_ticks FROM clips WHERE id=101").getInt64();
+    };
+    OpRequest tempo;
+    tempo.opType = "project.insertTempoEvent";
+    tempo.payload = {{"pos", quarter / 2}, {"bpm", 180.0}};
+    const auto add = OpJournal(store).commit(tempo);
+    require(add.ok, "insert a tempo change across both audio clips: " + add.error);
+    require(arrangementLength() == 5 * quarter / 4 && slotLength() == quarter,
+            "a tempo change preserves unwarped Arrangement duration and leaves the authored slot length");
+    require(History(store).undo().ok && arrangementLength() == quarter && slotLength() == quarter &&
+            History(store).redo().ok && arrangementLength() == 5 * quarter / 4 && slotLength() == quarter,
+            "tempo Undo and Redo preserve the same Arrangement-only ownership");
+}
 } // namespace
 
 int main() {
@@ -215,6 +241,7 @@ int main() {
                 equalPcm(baselineFreeze.wet, sessionFreeze.wet) && equalPcm(baselineExport, sessionExport),
                 "512 stereo samples are bit-identical in player, dry/wet freeze and export");
         require(baselineFreeze.fingerprint == sessionFreeze.fingerprint, "slots leave freeze's causal fingerprint unchanged");
+        tempoChangesOnlyArrangement(*fixture.owner);
         fixture.owner->db().exec("DELETE FROM clip_slots WHERE track_id=1 AND scene_id=10");
         require(!equalPcm(baseline, play(*session)), "the same PCM leaks into Arrangement when it loses slot ownership");
         std::printf("PASS -- %u stereo frames bit-identical through player, both freeze taps and export\n", frames);
