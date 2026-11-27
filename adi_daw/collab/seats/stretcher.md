@@ -2,7 +2,6 @@ Codex took the stretcher seat on 27 November 2026.
 
 ## Still unbuilt
 
-- M3-LAUNCH L2 running scene tempo changes. The persisted authored-ramp case streams resident native slots. Still to verify a tempo-bearing scene with a continuing or Legato slot.
 - Session launch audio on an Arrangement R3 track must share its source delay. Streaming paged media and worker R3 slot media still need a launch/readiness path.
 - A cold seek into a variable-tempo R3 clip can meet a cached page produced with different phase history. Make the boundary continuous and test it with an audible fixture.
 
@@ -18,6 +17,7 @@ The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC repor
 | TM-WT-04 driver clock portability | Traverse immutable tempo and meter data without checked vector iterators in timing, count-in, device transport and the metronome. Make conversions explicit where MSVC uses 53-bit `long double`. | A checked-iterator probe measured 2,025 mutex calls before and zero afterward with the same clock checksum. The transport, Session and R3 compensation checks passed under strict GCC. Native MSVC validation is pending. | `50f971c6f` on the stretcher chain. |
 | TM-WT-04 local R3 ratio admission | Check the tempo range from the source origin through the audible placement, including loop laps and excluding tempo changes at the end boundary. | A 300 BPM step at beat 16 or 80 previously cleared graph latency to zero. The new path reports 2,048 frames and plays the expected landmark at 0.815 FS. A 300 BPM step inside the clip still takes the prepared fallback. | `2a0d9f70f` on the stretcher chain. |
 | TM-WT-04 persisted Session Warp launch | Wire the stored slot loader and scheduler's clock anchors into resident Beats, Texture and Re-Pitch. Keep fixed media banks on the prepared source path so their private render has no R3 pipeline delay. | Before the bridge the scheduler fired both scenes but all eight pulses were silent. Afterward the persisted project launches at frames 93,428 and 182,063, preserves the second slot's −0.60 FS Legato landmark, and plays all eight pulses within one frame. Zero callback allocations and file I/O. Four focused CTest suites passed. | `0876e3845` on the companion chain. |
+| TM-WT-04 performed scene clock | A tempo-enabled scene publishes the shared clock while resident Warp runs continue or transfer their source phase by Legato. Fixed banks keep the prepared handover. | The former admission guard rejected both cases. At frame 96,000 the loaded 120 BPM project now performs 140 BPM. A No Stop slot kept the same run and all four landmarks were exact. Legato inherited source beat one with one sample of worst error. Paged Complex starts at −0.304 FS at the handover. Four focused suites passed with zero allocations or file I/O in the measured callbacks. | `e9ebbcf77` on the companion chain. |
 
 The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, page publication, physical delay and clip diagnostics. `CMakeLists.txt` registers the engines and tests. `docs/ENGINE-WARP.md` records the playback contract. The Warp work requires no format, operation or register reservation.
 
