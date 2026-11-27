@@ -770,13 +770,21 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             return r;
         }
 
-        // ADR-0213: optional compaction has its own savepoint. Its failure
-        // reports a warning and cannot discard the edit or its applied batch.
-        const auto retention = history_detail::tryCompactUndo(store_);
-        if (!retention.ok)
-            r.retentionWarning = "history compaction: " + retention.error;
-        else if (retention.protectedHistory)
-            r.retentionWarning = "history remains above its undo budget; protected content retained";
+        // Transport navigation adds only audit rows, which do not count
+        // toward the undo budget. Leave the history scan to an edit.
+        const bool navigationOnly = !inputs && !options.beforeCommit &&
+            std::all_of(descs.begin(), descs.end(), [](const auto* descriptor) {
+                return descriptor->ephemeral && isEphemeralTransportNavigation(descriptor->name);
+            });
+        if (!navigationOnly) {
+            // ADR-0213: optional compaction owns its savepoint. A failure
+            // reports a warning and the edit can still commit.
+            const auto retention = history_detail::tryCompactUndo(store_);
+            if (!retention.ok)
+                r.retentionWarning = "history compaction: " + retention.error;
+            else if (retention.protectedHistory)
+                r.retentionWarning = "history remains above its undo budget; protected content retained";
+        }
 
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {

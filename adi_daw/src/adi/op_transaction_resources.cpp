@@ -225,7 +225,7 @@ bool validateOpPresentationImage(const Store& store, const std::optional<OpPrese
                                  std::string& error) {
     if (!guard) return true;
     try {
-        if (guard->image != engine::capturePresentationImage(store)) {
+        if (!guard->image || *guard->image != engine::capturePresentationImage(store)) {
             error = "stale presentation material or schema";
             return false;
         }

@@ -74,6 +74,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -113,6 +114,8 @@ struct SessionSpec {
     bool exporting = false;
     /// Processing without a realtime deadline, even at the normal quality.
     bool offline = false;
+    /// An offline driver prepares clip pages itself between process calls.
+    bool synchronousClipReads = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -201,11 +204,26 @@ public:
     /// devices resolved so far are kept, so a caller can still report them.
     bool load(const Store& store, DeviceLoader loader, SessionSpec spec);
 
+    struct LoadProgress {
+        std::size_t completedDevices = 0, totalDevices = 0;
+        std::string_view nextDevice;
+    };
+    /// Stage a candidate on the owner thread. The caller may yield between
+    /// device steps or destroy the candidate to cancel. It becomes playable
+    /// only after finishLoad publishes its first graph.
+    bool beginLoad(const Store&, DeviceLoader, SessionSpec);
+    [[nodiscard]] LoadProgress loadProgress() const noexcept;
+    bool loadNextDevice(const Store&);
+    bool finishLoad(const Store&);
+
     /// Re-read the project after an edit. Rows that are new are resolved
     /// through the loader; rows that are gone are RETIRED -- left out of every
     /// chain but kept alive, because a graph the audio thread may still be
     /// rendering holds their nodes. Then rebuild.
     bool refresh(const Store& store);
+    /// Apply a single material edit admitted by the document's current view.
+    /// Empty means the ordinary refresh path must handle the edit.
+    std::optional<bool> refreshLocalEdit(const Store&, const ProjectView&);
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
@@ -506,6 +524,10 @@ private:
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
     struct TimingView;
+    struct PendingLoad;
+    bool prepareLoad(const Store&, DeviceLoader, SessionSpec, bool staged);
+    bool checkLoadRevision(const Store&);
+    SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
@@ -680,6 +702,7 @@ private:
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
     std::string error_;
+    std::unique_ptr<PendingLoad> pendingLoad_;
     std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;
     bool presentationPending_=false; ///< graph already published; owner tick retries auxiliary Cue scene
