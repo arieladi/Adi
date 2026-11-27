@@ -1,3 +1,11 @@
+## Still unbuilt
+
+- DEV-27 needs a checked-in host fixture for the native CLAP end-to-end proof. The real Surge trials currently use a scratch host.
+- The remote client still needs to expose and restore supported plug-in parameters through the ordinary device contract. The typed CLAP block already carries their events.
+- Stock Surge VST3 can go silent after a state set even when readback is exact. Investigating a reproducible repair.
+- The durable AGT-02/03 grants and DEV-25 full-ID catalogue feed are dependencies for normal app activation. The window and authenticated production fork have separate rows.
+- Physical two-host PTP evidence awaits separately clocked endpoints and PHC access.
+
 I took the server engine seat on 27 November 2026.
 
 | Item | What changed | Proof | State |
