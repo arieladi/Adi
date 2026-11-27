@@ -5,10 +5,11 @@
 | Step and source head | Integration head | Resolution and verification |
 |---|---|---|
 | Merge landed `origin/main` at `6e684bda45882118cbf073f4e31014f95749d57c` | `336f2200f679fc6a9439076ccbf379c3c3d35ab0` | Clean merge after the ninth stack landed. Preserved its Windows Save a Copy path-spelling fix and the serial `adi_library_tests` scheduling required by Win's checklist. The resulting tree matched the preflight merge. |
+| `basics/clips-chain` at `a4375146f518de5cfdbc26e6d56ed1d637a3c4fc` | Merge `02320a38a23816aa8b508d72d212a5aacf03e2fc`, verified through `a4a2d82205b6391682adba17a0f995978be584d9` | Resolved 13 conflicts. Combined clip playback and transforms with routing and the missing-media diagnostics, composed saved sample defaults with one-Undo batch drop and overlap replacement, and revealed exact files through the indexed Browser. Kept take and edit menu seams and existing command IDs. Enabled the Sample Editor settings. Two SC-151 fixtures now exercise unsupported formant shifts and keep the original diagnostics and recovery assertions. Built the app, player and affected tests with GCC 14 Debug, JUCE, Pd and warnings as errors. Passed 23 focused suites across the initial run and corrected Warp rerun, all 18 window suites with DISPLAY unset, all three acceptance suites on identical production sources, six validators and the landing-check tests. |
 
 The first bundle is Clips, Automation and Tracks. Edit's newer SC-179 tip appeared during Clips verification. It joins MIDI and Safety in the next bundle. The Browser tip already belongs to integrate-2. Routing's two newer named branches are still local, and their features already have verified integration commits.
 
-The [Windows checklist](https://github.com/arieladi/Adi/blob/4123d158894e3e3aa24c343e3a6d802141771727/adi_daw/collab/basics/wincheck.md) also lists Session and Pitch seat changes outside these bundles.
+The Windows checklist also lists Session and Pitch seat changes outside these bundles. [Windows checklist](https://github.com/arieladi/Adi/blob/4123d158894e3e3aa24c343e3a6d802141771727/adi_daw/collab/basics/wincheck.md)
 
 ## Ninth stack and earlier integration
 
