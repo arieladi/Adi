@@ -97,10 +97,26 @@ juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::Audi
     auto error = manager.initialise(2, 2, nullptr, true, {}, &setup);
     // A default input that cannot open beside the output leaves the output to open alone, as before.
     if (error.isNotEmpty() && setup.inputDeviceName.isEmpty())
-        error = manager.initialise(0, 2, nullptr, true, {}, &setup);
+        if (const auto alone = manager.initialise(0, 2, nullptr, true, {}, &setup); alone.isEmpty())
+            error = {};
     if (error.isEmpty())
-        error = useChannelConfig(manager, store);
-    return error;
+        return useChannelConfig(manager, store);
+    // SC-375, the walk's A35: the output would not open (unplugged, or held by another program). The box
+    // names the device and the cause, not the library's text alone, and a free input is not dropped with
+    // the output: it opens on its own, so recording and monitoring wait only for an output. The device
+    // chosen afterwards in Settings plays at once (the application's callback stays attached).
+    const auto output = setup.outputDeviceName.isNotEmpty() ? "\"" + setup.outputDeviceName + "\""
+                                                            : juce::String("the system's output");
+    auto inputOnly = setup;
+    inputOnly.outputDeviceName = {};
+    juce::String input;
+    if (manager.initialise(2, 0, nullptr, true, {}, &inputOnly).isEmpty() && manager.getCurrentAudioDevice() != nullptr) {
+        input = manager.getAudioDeviceSetup().inputDeviceName;
+        (void)useChannelConfig(manager, store);
+    }
+    return "The audio output " + output + " could not be opened: " + error +
+           (input.isNotEmpty() ? " The input \"" + input + "\" is open." : juce::String()) +
+           " Choose an output in Settings > Audio.";
 }
 AudioDevicePage::ChannelButtons::ChannelButtons() {
     setTitle("Channel Configuration");

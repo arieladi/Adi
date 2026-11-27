@@ -192,7 +192,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
-        state.follow = j.value("follow", false);
+        state.follow = j.value("follow", state.follow);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);

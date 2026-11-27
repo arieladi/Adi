@@ -179,11 +179,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
-        // The Status Bar's message and button, the AI tab's label and the Info
-        // View's text are typography too; their geometry is checked by bounds.
+        // The Status Bar's message and button and the Info View's text are
+        // typography too; their geometry is checked by bounds.
         g.fillRect(root.status.getBounds().withTrimmedTop(1));
-        if (root.aiTab.isVisible())
-            g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
         for (const auto &strip : root.mixerView.strips()) {
@@ -1909,6 +1907,115 @@ void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir
     } else {
         check(false, "the same track has a visible Mixer title and a Device View panel");
     }
+}
+// SC-73: exercise the real field handlers on a peerless root.
+void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "control-bar-adjustments.adi", error);
+    check(store != nullptr, "the Control Bar's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Control Bar Adjustments')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "control-bar-adjustments");
+    root.setSize(1440, 900);
+    root.frame();
+    auto &bar = root.transport;
+    const auto up = juce::KeyPress(juce::KeyPress::upKey);
+    const auto down = juce::KeyPress(juce::KeyPress::downKey);
+    const auto left = juce::KeyPress(juce::KeyPress::leftKey);
+    const auto right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto at = [](juce::Component &field, int part) -> juce::Point<float> {
+        const int x = part == 0 ? 4 : part == 1 ? field.getWidth() / 2 : field.getWidth() - 4;
+        return {static_cast<float>(x), static_cast<float>(field.getHeight() / 2)};
+    };
+    const auto wheel = [&](juce::Component &field, int part, bool increase) {
+        field.mouseWheelMove(pressAt(field, at(field, part)), {0, increase ? 1.f : -1.f, false, false, false});
+    };
+    const auto press = [&](juce::Component &field, int part) {
+        field.mouseDown(pressAt(field, at(field, part)));
+    };
+    const auto drag = [&](juce::Component &field, int part, float distance) {
+        const auto from = at(field, part);
+        field.mouseDrag(dragAt(field, from, from.translated(0, -distance)));
+    };
+    const auto release = [&](juce::Component &field, int part, float distance) {
+        field.mouseUp(pressAt(field, at(field, part).translated(0, -distance)));
+    };
+    const auto bpm = [&] { return view.current()->tempo->bpmAt(0); };
+    const auto meter = [&] { return meterAt(0, view.current()->meters); };
+    const auto loopRange = [&] { return loopOf(view.current()->transport); };
+    const auto insert = [&] { return root.arrangement.geometry.selection.insert; };
+    const auto q = textproj::kPPQ;
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1.e-9; };
+
+    // One drag can move through several steps without writing intermediate undo transactions.
+    press(bar.tempo, 0);
+    drag(bar.tempo, 0, 4.f);
+    drag(bar.tempo, 0, 8.f);
+    check(near(bpm(), 120) && !submitter.canUndo(), "dragging tempo has not written an undo step");
+    release(bar.tempo, 0, 8.f);
+    check(near(bpm(), 122) && bar.editing() == nullptr && submitter.nextUndo() &&
+              submitter.nextUndo()->label == "Change Tempo",
+          "an eight-point coarse drag adds 2 BPM and leaves no text editor");
+    root.command(AppCommands::Undo);
+    check(near(bpm(), 120) && !submitter.canUndo(), "one undo restores the whole tempo drag");
+    wheel(bar.tempo, 2, true);
+    wheel(bar.tempo, 2, true);
+    check(near(bpm(), 120.02), "wheel events in the same frame both step the fine tempo");
+    check(bar.tempo.keyPressed(down) && near(bpm(), 120.01), "the arrow steps the selected fine tempo");
+    root.frame();
+
+    press(bar.signature, 2);
+    drag(bar.signature, 2, 4.f);
+    release(bar.signature, 2, 4.f);
+    check(meter().numerator == 4 && meter().denominator == 8, "signature drag steps the denominator");
+    check(bar.signature.keyPressed(left) && bar.signature.keyPressed(up) && meter().numerator == 5,
+          "left selects the numerator and up adds one");
+    wheel(bar.signature, 2, false);
+    check(meter().numerator == 5 && meter().denominator == 4, "signature wheel steps the power-of-two denominator");
+
+    // Click still opens typing, and up/down after that click work on the selected number.
+    root.frame();
+    press(bar.position, 1);
+    release(bar.position, 1, 0.f);
+    check(bar.editing() == &bar.position && bar.fieldEditor.getText() == "1.1.1",
+          "a plain click opens the existing position editor");
+    check(bar.fieldEditor.keyPressed(up) && bar.editing() == nullptr && insert() == q,
+          "up from the fresh editor steps the position's beats");
+    const auto undoHead = [&] {
+        const auto head = submitter.nextUndo();
+        return head ? head->txnId : 0;
+    };
+    const auto beforePosition = undoHead();
+    wheel(bar.position, 2, true);
+    press(bar.position, 0);
+    drag(bar.position, 0, 4.f);
+    release(bar.position, 0, 4.f);
+    check(insert() == 6 * q + q / 4 && undoHead() == beforePosition,
+          "position wheel and drag step sixteenths and bars with no undo entry");
+
+    const auto originalLength = loopRange().length();
+    press(bar.loopStart, 0);
+    drag(bar.loopStart, 0, 4.f);
+    release(bar.loopStart, 0, 4.f);
+    check(bar.loopStart.keyPressed(right) && bar.loopStart.keyPressed(up), "the loop start steps its beats");
+    wheel(bar.loopStart, 2, true);
+    check(loopRange().start == 6 * q + q / 4 && loopRange().length() == originalLength,
+          "loop start drag, arrows and wheel preserve the brace's length");
+    const auto start = loopRange().start;
+    press(bar.loopLength, 0);
+    drag(bar.loopLength, 0, 4.f);
+    release(bar.loopLength, 0, 4.f);
+    check(bar.loopLength.keyPressed(right) && bar.loopLength.keyPressed(down), "the loop length steps its beats");
+    wheel(bar.loopLength, 2, false);
+    check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
+          "loop length drag, arrows and wheel preserve the brace's start");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -3697,6 +3804,56 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         late.poll();
         check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
         late.stop();
+        // SC-330: the scan's progress in the Status Bar while it runs; another message keeps the bar.
+        {
+            ScanStatusLine bar;
+            PluginScan scanning;
+            scanning.phase = PluginScan::Phase::Scanning;
+            scanning.candidates = 40;
+            scanning.completed = 7;
+            const auto shownFirst = bar.next(scanning, "");
+            check(shownFirst && *shownFirst == "Scanning plug-ins: 7 of 40 files…",
+                  "a running scan's count stands in an empty Status Bar (SC-330)");
+            scanning.completed = 8;
+            const auto second = bar.next(scanning, shownFirst.value_or(""));
+            check(second && *second == "Scanning plug-ins: 8 of 40 files…", "and follows the count");
+            check(!bar.next(scanning, "Snapshot taken: Verse"), "another message holds the bar: the scan leaves it");
+            PluginScan done;
+            done.phase = PluginScan::Phase::Done;
+            done.listing.complete = true;
+            done.listing.plugins.resize(1);
+            check(!bar.next(done, "Snapshot taken: Verse"), "the end leaves another message alone");
+            ScanStatusLine ending;
+            const auto line = ending.next(scanning, "");
+            const auto end = ending.next(done, line.value_or(""));
+            check(end && end->empty(), "at the end the scan's own line goes");
+            check(!ending.next(done, ""), "and nothing more is said");
+        }
+        // SC-327: Alt held as ADI starts skips the startup scan; the stored list shows and says why.
+        {
+            PluginCatalogueService skipping(port);
+            const auto before = started.size();
+            skipping.startup(true);
+            check(!skipping.running() && started.size() == before && skipping.state().skipped &&
+                      skipping.state().listing.plugins.size() == 2 &&
+                      pluginScanStatus(skipping.state()).find("Alt was held") != std::string::npos,
+                  "Alt at start: no scan runs, the stored list is shown, and the line says why (SC-327)");
+            skipping.request(DiscoveryMode::Refresh);
+            check(skipping.running() && started.size() == before + 1 && !skipping.state().skipped &&
+                      pluginScanStatus(skipping.state()).find("Alt") == std::string::npos,
+                  "a Rescan asked for later scans as usual");
+            finish(Outcome::Published);
+            skipping.poll();
+            skipping.stop();
+            PluginCatalogueService ordinary(port);
+            const auto startedFirst = started.size();
+            ordinary.startup(false);
+            check(ordinary.running() && started.size() == startedFirst + 1 && started.back() == DiscoveryMode::Incremental,
+                  "without Alt the startup lists the catalogue, then runs an Incremental discovery");
+            finish(Outcome::Published);
+            ordinary.poll();
+            ordinary.stop();
+        }
         // A count during a job changes no list: the Browser keeps its rows and selection.
         service.request(DiscoveryMode::Incremental);
         const auto listedDuring = service.state().listed;
@@ -9897,6 +10054,57 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
     root.afterEdit = nullptr;
     document->release();
 }
+void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
+    check(document != nullptr, "a new project for insert marker navigation");
+    if (!document)
+        return;
+    constexpr auto bar = 4 * textproj::kPPQ;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "insert-marker-view");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.state().follow = false; // Explicit navigation works independently of playback Follow.
+    auto &arrangement = root.arrangement;
+    auto &lanes = arrangement.geometry;
+    auto &selection = lanes.selection;
+    lanes.scale = 30;
+    lanes.left = 0;
+    root.frame();
+    check(root.addLocatorAt(16 * bar), "add the offscreen locator at bar 17");
+    selection.track = 2;
+
+    auto typePosition = [&](const char *position) {
+        root.transport.position.onClick();
+        root.transport.fieldEditor.setText(position, false);
+        root.transport.fieldEditor.onReturnKey();
+        root.frame();
+    };
+    check(lanes.x(32 * bar) >= arrangement.canvas.getWidth(), "bar 33 starts to the right of the lanes");
+    typePosition("33.1.1");
+    check(selection.insert == 32 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 128,
+          "typing an offscreen position places the marker at the left edge and saves the new view");
+    typePosition("34.1.1");
+    check(selection.insert == 33 * bar && lanes.x(selection.insert) == 120 && lanes.left == 128,
+          "typing a visible position moves the marker without scrolling");
+
+    selection.end = selection.start + bar;
+    check(lanes.x(0) < 0, "the song start is to the left of the lanes");
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::homeKey)),
+          "Home invokes Go to Start from the Arrangement");
+    root.frame();
+    check(selection.insert == 0 && selection.start == selection.end && selection.track == 2 &&
+              lanes.x(selection.insert) == 0 && root.state().timelineLeft == 0,
+          "Home reveals the insert marker at the start and keeps the selected track");
+
+    check(lanes.x(16 * bar) >= arrangement.canvas.getWidth(), "the locator is to the right of the lanes");
+    arrangement.mouseDown(pressAt(arrangement, arrangement.topButton(ArrangementView::TopButton::Next).getCentre()));
+    root.frame();
+    check(selection.insert == 16 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 64 &&
+              lanes.scale == 30 && !root.state().follow,
+          "Next Locator reveals the marker without changing zoom or enabling Follow");
+}
 // Live's locators (C3, N25; Live 12 manual 6.4, 6.9; MR 3.3): Set, which reads Del on a selected
 // locator; Previous and Next, to the arrangement's start or end past the first or the last; a click
 // jumps, a double-click while stopped plays; Ctrl/Cmd+R renames, Edit Info Text, the arrows move it,
@@ -11201,17 +11409,23 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
                         return slider;
         return nullptr;
     };
+    // JUCE snaps to a hundredth of a dB. Fused arithmetic can round the same
+    // step slightly differently, so compare well below the slider interval.
+    const auto sameLevel = [](double actual, double expected) { return std::abs(actual - expected) < 1e-9; };
     const auto volumeMenu = bar.metronomeMenu();
     auto *slider = volumeSlider(volumeMenu);
-    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+    check(slider && sameLevel(slider->getValue(), readCueSettings(document->store()).volumeDb),
           "SC-246: the menu slider shows the project's Cue Volume");
     if (slider) {
-        slider->setValue(-12.0, juce::sendNotificationSync);
+        constexpr double newVolumeDb = -12.0;
+        slider->setValue(newVolumeDb, juce::sendNotificationSync);
         root.frame();
         const auto updated = bar.metronomeMenu();
         const auto *updatedSlider = volumeSlider(updated);
-        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
-                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+        check(sameLevel(readCueSettings(document->store()).volumeDb, newVolumeDb) &&
+                  sameLevel(root.reader().get()->cue.volumeDb, newVolumeDb) &&
+                  updatedSlider && sameLevel(updatedSlider->getValue(), newVolumeDb) &&
+                  root.undoTitle(false) == undoTitle,
               "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
     }
 
@@ -11926,6 +12140,17 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     int opened = 0;
     std::string refuse, editorError;
     bool editorGone = false;
+    // SC-321: an editor whose teardown pumps messages, so the window's frame clock can fire inside it.
+    struct PumpingEditor final : juce::Component {
+        std::function<void()> onGone;
+        ~PumpingEditor() override {
+            if (onGone) onGone();
+        }
+    };
+    std::function<void()> editorClosing;
+    bool editorDestroyed = false;
+    int framesAfterDestroy = 0;
+    bool editorResizable = false; // SC-328
     check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
           "with no opener wired, the wrench says plug-in windows open in the application");
     root.pluginHost = &host;
@@ -11936,10 +12161,19 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
             return view;
         }
         ++opened;
-        auto editor = std::make_unique<juce::Component>();
+        auto editor = std::make_unique<PumpingEditor>();
         editor->setSize(320, 200);
+        editorDestroyed = false;
+        editor->onGone = [&] {
+            editorDestroyed = true;
+            if (editorClosing) editorClosing();
+        };
         view.view = std::move(editor);
-        view.frame = [&] { return editorError; };
+        view.frame = [&] {
+            if (editorDestroyed) ++framesAfterDestroy;
+            return editorError;
+        };
+        view.resizable = editorResizable;
         view.gone = [&] { return editorGone; };
         return view;
     };
@@ -12029,9 +12263,31 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
                   !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
               "its window is titled track/device, fits the plug-in, and does not resize");
     }
+    // SC-321: the frame clock firing while the editor is destroyed (a plug-in pumping messages as its
+    // editor closes) never reaches the freed editor.
+    editorClosing = [&] { host.frame(key3); };
     panels[0]->wrench.onClick();
     root.frame();
+    editorClosing = nullptr;
     check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
+    check(editorDestroyed && framesAfterDestroy == 0,
+          "a frame that fires while the editor is destroyed never calls into it (SC-321)");
+    // SC-328: a plug-in that can be resized has a window resized from its edges, the plug-in following.
+    editorResizable = true;
+    check(root.togglePluginWindow(3, false) && host.contains(key3), "a resizable plug-in's window opens");
+    if (auto *window = dynamic_cast<juce::ResizableWindow *>(host.window(key3))) {
+        check(window->isResizable(), "and it can be resized from its edges (SC-328)");
+        const auto border = window->getContentComponentBorder();
+        window->setSize(border.getLeftAndRight() + 480, border.getTopAndBottom() + 360);
+        check(host.content(key3) != nullptr && host.content(key3)->getWidth() == 480 &&
+                  host.content(key3)->getHeight() == 360,
+              "a size dragged to is the plug-in's view's size");
+    } else {
+        check(false, "a resizable plug-in's window is a window");
+    }
+    root.togglePluginWindow(3, false);
+    editorResizable = false;
+    check(!host.contains(key3), "and it closes again");
     // One at a time; Ctrl/Cmd keeps the others open.
     check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
               host.contains(key5),
@@ -16894,9 +17150,12 @@ void launchIsolation(AppCommands &commands) {
 // hardware is opened. A type that refuses inputs stands for a default input that cannot open.
 struct ListedAudioType final : juce::AudioIODeviceType {
     struct Device final : juce::AudioIODevice {
-        Device(const juce::String &out, const juce::String &in, bool refused)
+        Device(const juce::String &out, const juce::String &in, bool refused, bool outputHeld = false)
             : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
-              outs(out.isNotEmpty() ? 2 : 0), error(refused && in.isNotEmpty() ? "The input will not open." : "") {}
+              outs(out.isNotEmpty() ? 2 : 0),
+              error(refused && in.isNotEmpty()       ? "The input will not open."
+                    : outputHeld && out.isNotEmpty() ? "The device is in use by another program."
+                                                     : "") {}
         int ins, outs;
         juce::String error;
         juce::BigInteger activeIns, activeOuts;
@@ -16936,11 +17195,12 @@ struct ListedAudioType final : juce::AudioIODeviceType {
         int getOutputLatencyInSamples() override { return 0; }
         int getInputLatencyInSamples() override { return 0; }
     };
-    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false)
-        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs) {}
+    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false, bool holdOutputs = false)
+        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs),
+          held(holdOutputs) {}
     juce::StringArray ins, outs{"Speakers"};
     int defaultIn;
-    bool refused;
+    bool refused, held; // held: every output is in use by another program (SC-375, the walk's A35)
     void scanForDevices() override {}
     juce::StringArray getDeviceNames(bool wantInputNames) const override { return wantInputNames ? ins : outs; }
     int getDefaultDeviceIndex(bool forInput) const override { return forInput ? defaultIn : 0; }
@@ -16949,7 +17209,7 @@ struct ListedAudioType final : juce::AudioIODeviceType {
     }
     bool hasSeparateInputsAndOutputs() const override { return true; }
     juce::AudioIODevice *createDevice(const juce::String &out, const juce::String &in) override {
-        return new Device(out, in, refused);
+        return new Device(out, in, refused, held);
     }
 };
 // A16 (walk-A): a first run (no device kept) on a machine with an input opened no input, so F9 had
@@ -16989,6 +17249,26 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
     check(why.isEmpty() && stuck.isEmpty() && stuckIns == 0 && out == "Speakers",
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
+}
+// SC-375 and the walk's A35: when the output cannot be opened at launch (unplugged, or held by another
+// program), the box names the device and the cause, and a free input is not dropped with it; a device
+// chosen afterwards in Settings then plays at once, which the application makes sure of by attaching its
+// callback whether or not the first open succeeded (ui_main's attachAudio).
+void heldOutputKeepsInput(const std::filesystem::path &dir) {
+    settings::AppSettings fresh(appdata::App::Daw, dir / "held-output-audio.json");
+    juce::AudioDeviceManager manager;
+    manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{"Cable Output"}, 0, false, true));
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    setup.outputDeviceName = "Speakers";
+    const auto why = openAudioDevice(manager, setup, fresh);
+    std::printf("held output: \"%s\"\n", why.toRawUTF8());
+    check(why.contains("Speakers") && why.contains("in use by another program"),
+          "the box names the device that would not open and the cause");
+    const auto *device = manager.getCurrentAudioDevice();
+    check(device != nullptr && manager.getAudioDeviceSetup().inputDeviceName == "Cable Output" &&
+              device->getActiveInputChannels().countNumberOfSetBits() == 2,
+          "the free input is open, inputs 1/2 on, though the output is not");
+    check(why.contains("Settings"), "and it says where to choose another output");
 }
 // Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
 // (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
@@ -17090,6 +17370,7 @@ int main(int argc, char **argv) {
         // These fixtures render components in software and do not create a native peer.
         trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
@@ -17592,7 +17873,7 @@ int main(int argc, char **argv) {
     audit = false;
     check(allocations == 0, "an unchanged selection costs a frame nothing");
     // The rulings since 29 September (ADR-0203 d6, d7, d12): Live's view keys,
-    // the strip's floor, the Info View and Status Bar, the AI tab, tooltips.
+    // the strip's floor, the Info View and Status Bar, tooltips.
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     a.setSize(1200, 720);
@@ -17613,7 +17894,7 @@ int main(int argc, char **argv) {
           "Ctrl/Cmd+Alt+B hides the browser");
     check(persistence.load("main").panels.find(Panel::Browser)->collapsed,
           "browser visibility persists in ui_view");
-    check(!a.aiTab.isVisible() && a.browserArea().isEmpty(), "the AI tab goes with the browser");
+    check(!a.browser.isVisible() && a.browserArea().isEmpty(), "the browser has no visible area when hidden");
     check(a.keyPressed(juce::KeyPress('5', cmd | alt, 0)) &&
               !a.state().panels.find(Panel::Browser)->collapsed,
           "Ctrl/Cmd+Alt+5 shows it again");
@@ -17626,15 +17907,21 @@ int main(int argc, char **argv) {
     check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && a.state().docked &&
               a.deviceArea().getHeight() == 300,
           "and shows it at its own height");
-    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 20 &&
-              a.chatArea().getBottom() ==
-                  a.browserArea().getBottom() - BrowserPanel::kBarHeight - look::border,
-          "the AI chat is a collapsed tab at the foot of the browser's panes");
-    a.aiTab.onClick();
-    check(a.state().aiChatOpen && a.chatArea().getHeight() > 20 &&
-              persistence.load("main").aiChatOpen,
-          "the tab opens and is remembered per window");
-    a.aiTab.onClick();
+    {
+        // SC-110: a project saved with the old chat open still makes the full Browser available.
+        auto legacyState = persistence.load("main");
+        legacyState.aiChatOpen = true;
+        std::string error;
+        check(persistence.save("legacy-ai-chat", legacyState, error), "save the legacy chat flag");
+        AdiRootComponent legacy(view, submitter, mailbox, commands, persistence, session, "legacy-ai-chat");
+        check(legacy.state().aiChatOpen && legacy.browser.isVisible() &&
+                  legacy.browser.list.getBottom() == legacy.browser.contentArea().getBottom(),
+              "the old chat flag is readable and the Browser list reaches the preview strip");
+        bool hasAiTab = false;
+        for (auto *child : legacy.getChildren())
+            hasAiTab |= child->isVisible() && child->getTitle() == "AI";
+        check(!hasAiTab, "the Browser has no AI tab");
+    }
     check(commands.infoView() && a.infoArea().getX() == look::gap &&
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
@@ -18999,6 +19286,8 @@ int main(int argc, char **argv) {
                   "jumps there and keeps playing");
             // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays.
             const auto viewBefore = arrangement.geometry;
+            if (integrated.state().follow)
+                integrated.command(AppCommands::Follow);
             check(!integrated.state().follow && integrated.command(AppCommands::Follow) &&
                       integrated.state().follow && document->views().load("main").follow,
                   "Follow switches on, kept with the window");
@@ -19191,6 +19480,55 @@ int main(int argc, char **argv) {
             integrated.devices.fold(11);
             check(!first.beginRename() && !first.rename.isVisible(), "a folded device has no title to rename");
             integrated.devices.fold(11);
+            // SC-325: a plug-in's menu chooses how it receives per-note expression, as Live's MPE Mode.
+            {
+                auto plugged = std::make_shared<ParameterPublication>(*publication);
+                (*plugged)[1].plugin = true;
+                (*plugged)[1].format = "vst3";
+                (*plugged)[1].uid = "VST3-Synth-1-2";
+                (*plugged)[1].route = "mpe_midi";
+                integrated.devices.publication = [plugged] { return plugged; };
+                integrated.frame();
+                const auto routesOf = [&](const juce::PopupMenu &menu) {
+                    std::vector<juce::PopupMenu::Item> found;
+                    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                        if (it.getItem().text == "MPE" && it.getItem().subMenu)
+                            for (juce::PopupMenu::MenuItemIterator sub(*it.getItem().subMenu); sub.next();)
+                                found.push_back(sub.getItem());
+                    return found;
+                };
+                check(routesOf(integrated.devices.panels[0]->commands()).empty(),
+                      "ADI's own device has no MPE choice");
+                const auto routes = routesOf(integrated.devices.panels[1]->commands());
+                juce::StringArray labels;
+                for (const auto &item : routes) labels.add(item.text + (item.isTicked ? "*" : ""));
+                check(labels == juce::StringArray{"Auto", "VST3 Note Expression", "MIDI-MPE*", "Poly-AT (no MPE)"},
+                      "a plug-in's MPE choices, the project's one ticked (SC-325)");
+                std::vector<std::pair<std::string, Payload>> sent;
+                std::vector<std::pair<std::string, engine::RouteChoice>> remembered;
+                integrated.devices.submit = [&](const std::string &op, Payload p) {
+                    sent.emplace_back(op, std::move(p));
+                    return true;
+                };
+                integrated.devices.rememberRoute = [&](const DevicePanelData &d, engine::RouteChoice c) {
+                    remembered.emplace_back(d.uid, c);
+                };
+                if (routes.size() == 4) {
+                    routes[1].action();
+                    routes[0].action();
+                }
+                check(sent.size() == 2 && sent[0].first == "device.setExpressionRoute" &&
+                          sent[0].second.value("dev", 0) == 12 && sent[0].second["route"] == "note_expression" &&
+                          sent[1].second["route"].is_null(),
+                      "a choice is one op on the device row; Auto clears it");
+                check(remembered.size() == 2 && remembered[0].first == "VST3-Synth-1-2" &&
+                          remembered[0].second == engine::RouteChoice::NoteExpression &&
+                          remembered[1].second == engine::RouteChoice::Auto,
+                      "and it is remembered for the plug-in's next instance");
+                integrated.devices.rememberRoute = nullptr;
+                integrated.devices.publication = [publication] { return publication; };
+                integrated.frame();
+            }
             UiPeerRoot deviceHost;
             deviceHost.setSize(integrated.getWidth(), integrated.getHeight());
             deviceHost.addAndMakeVisible(integrated);
@@ -20531,7 +20869,9 @@ int main(int argc, char **argv) {
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
+    trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
@@ -20584,6 +20924,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("insertMarkerRevealsPosition", [&] { insertMarkerRevealsPosition(commands, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });

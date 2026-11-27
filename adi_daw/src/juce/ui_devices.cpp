@@ -9,6 +9,7 @@
 #include "mix_eq_host.hpp"
 #include "adi/mix/eq/Preview.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 namespace adi::ui {
@@ -1950,6 +1951,37 @@ juce::PopupMenu DevicePanelView::commands() {
         }
         for(auto& [sourceId,entry]:sources){(void)sourceId;keys.addSubMenu(entry.first,entry.second);}
         if(!choices.empty()){m.addSeparator();m.addSubMenu("Sidechain Input",keys);}
+    }
+    if (data && data->plugin) {
+        // SC-325 (ADR-0134 d7): how the plug-in receives per-note expression, from its device menu as
+        // Live's MPE Mode is. The project keeps the choice (one undo step), and it is remembered for the
+        // plug-in, so the next instance of it starts with it.
+        juce::PopupMenu routes;
+        const auto expected = *data;
+        const bool clap = data->format == "clap";
+        const std::array<std::pair<engine::RouteChoice, const char *>, 4> choices{{
+            {engine::RouteChoice::Auto, "Auto"},
+            {engine::RouteChoice::NoteExpression, clap ? "CLAP Note Expression" : "VST3 Note Expression"},
+            {engine::RouteChoice::MpeMidi, "MIDI-MPE"},
+            {engine::RouteChoice::Plain, "Poly-AT (no MPE)"}}};
+        for (const auto &[choice, label] : choices) {
+            juce::PopupMenu::Item item(label);
+            item.isTicked = data->route == engine::routeChoiceName(choice);
+            item.action = [safe, epoch, expected, choice] {
+                if (!safe || safe->menuEpoch_ != epoch) return;
+                safe->endInteraction(Interaction::Menu);
+                if (!safe || !safe->validTarget() || !safe->strip.validExpected(expected)) return;
+                const std::string name = engine::routeChoiceName(choice);
+                Payload payload{{"dev", expected.id}};
+                payload["route"] = name.empty() ? Payload(nullptr) : Payload(name);
+                if (safe->strip.action("device.setExpressionRoute", std::move(payload)) && safe &&
+                    safe->strip.rememberRoute)
+                    safe->strip.rememberRoute(expected, choice);
+            };
+            routes.addItem(std::move(item));
+        }
+        m.addSeparator();
+        m.addSubMenu("MPE", routes);
     }
     if (!eqPresentation()) {
         m.addSeparator();

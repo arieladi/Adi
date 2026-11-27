@@ -182,10 +182,6 @@ bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Compone
     panel.enterList();
     return true;
 }
-void BrowserPanel::setFootLimit(int y) {
-    footLimit_ = y;
-    resized();
-}
 juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *> &files) {
     juce::StringArray paths;
     // The native spelling, as a file dragged from the desktop arrives: JUCE names a file by its last
@@ -646,13 +642,12 @@ void BrowserPanel::resized() {
     const auto r = getLocalBounds();
     const int edge = look::border;
     search.setBounds(kStripWidth + edge, edge, std::max(0, r.getWidth() - kStripWidth - 2 * edge), 21);
-    const int top = kBarHeight - edge + edge, bottom = r.getHeight() - kBarHeight - edge;
+    const int top = kBarHeight, bottom = r.getHeight() - kBarHeight - edge;
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
     contentArea_ = {sidebarArea_.getRight() + 2, top,
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
-    // Under the list's header, and above the AI tab at the panes' foot.
-    auto rows = contentArea_.withTrimmedTop(19);
-    list.setBounds(rows.withBottom(std::max(rows.getY(), std::min(rows.getBottom(), footLimit_))));
+    // The list fills the content pane below its header.
+    list.setBounds(contentArea_.withTrimmedTop(19));
 }
 void BrowserPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -676,7 +671,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(area);
     }
-    // The rows stop at the pane's foot, under the AI tab, as a list does.
+    // The rows stop at the pane's foot.
     {
         juce::Graphics::ScopedSaveState clip(g);
         g.reduceClipRegion(sidebarArea_);
