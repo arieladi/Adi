@@ -15,7 +15,8 @@ namespace {
 constexpr std::int64_t frameLimit = std::int64_t{1} << 50;
 constexpr std::int64_t inputPageFrames = 2048;
 constexpr std::int64_t steadyTileFrames = 8192;
-constexpr std::int64_t steadyOverlap = 512;
+constexpr std::int64_t dynamicTileFrames = 16384;
+constexpr std::int64_t tileOverlap = 512;
 constexpr std::int32_t maxStitchLag = 64;
 
 std::int64_t checkedFrame(double frame) {
@@ -32,7 +33,7 @@ std::int32_t bestStitchLag(const float* previous, const float* current, std::uin
     double energy = 0;
     for (std::uint16_t c = 0; c < channels; ++c) {
         double candidate = 0;
-        for (std::int64_t i = 0; i < steadyOverlap; i += stride) {
+        for (std::int64_t i = 0; i < tileOverlap; i += stride) {
             const auto sample = previous[i*channels+c];
             candidate += static_cast<double>(sample)*sample;
         }
@@ -42,7 +43,7 @@ std::int32_t bestStitchLag(const float* previous, const float* current, std::uin
 
     const auto correlation = [&](std::int32_t lag) {
         double dot = 0, currentEnergy = 0;
-        for (std::int64_t i = 0; i < steadyOverlap; i += stride) {
+        for (std::int64_t i = 0; i < tileOverlap; i += stride) {
             const auto a = previous[i*channels+channel];
             const auto b = current[(i+lag)*channels+channel];
             dot += static_cast<double>(a)*b;
@@ -146,9 +147,7 @@ WarpR3Pages::WarpR3Pages(const audio::WarpRenderPlan& plan, std::uint32_t source
 std::int32_t WarpR3Pages::latencySamples() const noexcept { return latency_; }
 
 void WarpR3Pages::releaseIdle() noexcept {
-    voice_.reset();
-    nextOutputFrame_.reset();
-    for (auto& tile : steadyTiles_) tile = {};
+    for (auto& tile : renderTiles_) tile = {};
     for (auto& page : inputPages_) page = {};
 }
 
@@ -250,78 +249,49 @@ bool WarpR3Pages::render(std::int64_t first, std::uint32_t count, float* output,
     const auto begin = std::max(first, firstOutputFrame_);
     const auto end = std::min(first+count, endOutputFrame_);
     if (begin >= end) return true;
-    if (steadyFramesPerTick_ != 0) return renderSteady(first, begin, end, output, reader);
-
-    auto cursor = begin;
-    if (!voice_) {
-        voice_ = std::make_unique<audio::RealtimeWarpR3>(voicePlan_, sourceRate_, channels_,
-                                                       timeRatioAt(firstOutputFrame_));
-        nextOutputFrame_ = firstOutputFrame_;
-    }
-    if (nextOutputFrame_ != begin) {
-        // A cold page starts with real source context. Running consecutive
-        // pages never enters this path or discards the previous phase state.
-        const auto history = std::int64_t{2} * latencySamples();
-        cursor = std::max(firstOutputFrame_, begin-history);
-        const auto source = checkedFrame(std::max(0.0, unrolledSourceAt(cursor)));
-        if (!voice_->restart(source, timeRatioAt(cursor))) return false;
-    }
-    nextOutputFrame_.reset();
-
-    struct Inputs {
-        WarpR3Pages& pages;
-        const WarpR3Source& reader;
-        const std::int64_t& outputFrame;
-    } inputs{*this, reader, cursor};
-    const audio::R3WarpInput input{&inputs,
-        [](void* context, std::int64_t frame, std::span<float> pcm) {
-            const auto& i = *static_cast<const Inputs*>(context);
-            return i.pages.readFrame(frame, pcm, i.reader);
-        }, [](void* context, std::int64_t) noexcept {
-            const auto& i = *static_cast<const Inputs*>(context);
-            // R3 applies the ratio before its synthesis window reaches the
-            // aligned output. Schedule the musical command one R3 delay
-            // ahead, independently of how far the file read cursor has run.
-            const auto ratioFrame = std::min(i.outputFrame + i.pages.latencySamples(),
-                                             i.pages.endOutputFrame_-1);
-            return i.pages.timeRatioAt(ratioFrame);
-        }};
-    std::array<float, 64> preroll{};
-    for (; cursor < end; ++cursor) {
-        auto* destination = cursor < begin ? preroll.data() :
-            output + static_cast<std::size_t>(cursor-first)*channels_;
-        if (!voice_->pull({destination, channels_}, input)) return false;
-    }
-    nextOutputFrame_ = end;
-    return true;
+    return renderTiled(first, begin, end, output, reader);
 }
 
-WarpR3Pages::SteadyTile* WarpR3Pages::steadyTile(std::int64_t first, const WarpR3Source& reader) {
-    for (std::size_t i = 0; i < steadyTiles_.size(); ++i) {
-        if (steadyTiles_[i].first == first) {
-            lastSteadyTile_ = i;
-            return &steadyTiles_[i];
+std::int64_t WarpR3Pages::tileFrames() const noexcept {
+    // Keep the established source-clock tiles for steady clips. Dynamic
+    // tiles cover two 48 kHz output pages, amortizing their R3 preroll.
+    return steadyFramesPerTick_ == 0 ? dynamicTileFrames : steadyTileFrames;
+}
+
+WarpR3Pages::RenderTile* WarpR3Pages::renderTile(std::int64_t first, const WarpR3Source& reader) {
+    for (std::size_t i = 0; i < renderTiles_.size(); ++i) {
+        if (renderTiles_[i].first == first) {
+            lastRenderTile_ = i;
+            return &renderTiles_[i];
         }
     }
 
-    // Each tile has a fixed source-clock origin and bounded history. A seek,
-    // trim, or request in a different order reconstructs the same tile.
+    // Each tile has a fixed clock origin and bounded history. A seek or a
+    // request in a different order reconstructs the same output.
     const auto latency = static_cast<std::int64_t>(latencySamples());
+    const auto framesInTile = tileFrames();
     auto frame = std::max<std::int64_t>(0, first - 2 * latency);
-    const auto source = checkedFrame(sourceAtTick(static_cast<double>(frame) / steadyFramesPerTick_));
+    const auto sourceAt = steadyFramesPerTick_ != 0
+        ? sourceAtTick(static_cast<double>(frame) / steadyFramesPerTick_)
+        : unrolledSourceAt(firstOutputFrame_ + frame);
+    const auto source = checkedFrame(std::max(0.0, sourceAt));
     const auto ratioAt = [this](std::int64_t at) noexcept {
-        return ticksPerSourceFrameAt(static_cast<double>(at) / steadyFramesPerTick_) * steadyFramesPerTick_;
+        if (steadyFramesPerTick_ != 0)
+            return ticksPerSourceFrameAt(static_cast<double>(at) / steadyFramesPerTick_) * steadyFramesPerTick_;
+        // Dynamic ratio commands are scheduled from the arranged output
+        // clock, including R3's synthesis delay passed by the caller below.
+        return timeRatioAt(std::min(firstOutputFrame_+at, endOutputFrame_-1));
     };
     // R3's reset retains some analysis state in the multi-window modes.
     // Begin from a fresh worker voice so cache order cannot change the tile.
     const auto ratio = ratioAt(frame);
     if (!audio::RealtimeWarpR3::supportsRatio(ratio)) return nullptr;
     audio::RealtimeWarpR3 tileVoice(voicePlan_, sourceRate_, channels_, ratio, source);
-    lastSteadyTile_ = 1 - lastSteadyTile_;
-    auto& tile = steadyTiles_[lastSteadyTile_];
+    lastRenderTile_ = 1 - lastRenderTile_;
+    auto& tile = renderTiles_[lastRenderTile_];
     tile.first = -1;
     tile.stitchLag.reset();
-    tile.pcm.resize(static_cast<std::size_t>(steadyTileFrames + steadyOverlap + 2 * maxStitchLag) * channels_);
+    tile.pcm.resize(static_cast<std::size_t>(framesInTile + tileOverlap + 2 * maxStitchLag) * channels_);
 
     struct Inputs {
         WarpR3Pages& pages;
@@ -333,6 +303,8 @@ WarpR3Pages::SteadyTile* WarpR3Pages::steadyTile(std::int64_t first, const WarpR
     const audio::R3WarpInput input{&inputs,
         [](void* context, std::int64_t sourceFrame, std::span<float> pcm) {
             const auto& i = *static_cast<const Inputs*>(context);
+            if (i.pages.steadyFramesPerTick_ == 0)
+                return i.pages.readFrame(sourceFrame, pcm, i.reader);
             if (const auto* sample = i.pages.sourceFrame(sourceFrame, i.reader))
                 std::copy_n(sample, i.pages.channels_, pcm.begin());
             else
@@ -343,7 +315,7 @@ WarpR3Pages::SteadyTile* WarpR3Pages::steadyTile(std::int64_t first, const WarpR
             return i.ratioAtFrame(i.frame + i.latency);
         }};
     std::array<float, 64> history{};
-    for (; frame < first + steadyTileFrames + steadyOverlap + maxStitchLag; ++frame) {
+    for (; frame < first + framesInTile + tileOverlap + maxStitchLag; ++frame) {
         auto* output = frame < first-maxStitchLag ? history.data() :
             tile.pcm.data() + static_cast<std::size_t>(frame-first+maxStitchLag) * channels_;
         if (!tileVoice.pull({output, channels_}, input)) return nullptr;
@@ -352,30 +324,31 @@ WarpR3Pages::SteadyTile* WarpR3Pages::steadyTile(std::int64_t first, const WarpR
     return &tile;
 }
 
-bool WarpR3Pages::renderSteady(std::int64_t first, std::int64_t begin, std::int64_t end,
-                              float* output, const WarpR3Source& reader) {
+bool WarpR3Pages::renderTiled(std::int64_t first, std::int64_t begin, std::int64_t end,
+                             float* output, const WarpR3Source& reader) {
+    const auto framesInTile = tileFrames();
     for (auto frame = begin; frame < end; ++frame) {
         auto local = frame - firstOutputFrame_;
         if (steadyLoopLength_ > 0 && local >= steadyLoopStart_)
             local = steadyLoopStart_ + (local - steadyLoopStart_) % steadyLoopLength_;
-        const auto tileOffset = local % steadyTileFrames;
+        const auto tileOffset = local % framesInTile;
         const auto tileFirst = local - tileOffset;
-        auto* tile = steadyTile(tileFirst, reader);
+        auto* tile = renderTile(tileFirst, reader);
         if (!tile) return false;
         auto* pcm = output + static_cast<std::size_t>(frame - first) * channels_;
         const auto* current = tile->pcm.data() + static_cast<std::size_t>(maxStitchLag) * channels_;
-        if (tileFirst == 0 || tileOffset >= steadyOverlap) {
+        if (tileFirst == 0 || tileOffset >= tileOverlap) {
             std::copy_n(current+static_cast<std::size_t>(tileOffset)*channels_, channels_, pcm);
             continue;
         }
 
-        // Both fixed tiles cover this span. Blend their matching source-clock
-        // samples so changing spectral history at the tile edge has no step.
-        const auto* previous = steadyTile(tileFirst - steadyTileFrames, reader);
+        // Both fixed tiles cover this span. Blend their matching samples so
+        // changing spectral history at the tile edge has no step.
+        const auto* previous = renderTile(tileFirst - framesInTile, reader);
         if (!previous) return false;
-        const auto* prior = previous->pcm.data() + static_cast<std::size_t>(steadyTileFrames+maxStitchLag) * channels_;
+        const auto* prior = previous->pcm.data() + static_cast<std::size_t>(framesInTile+maxStitchLag) * channels_;
         if (!tile->stitchLag) tile->stitchLag = bestStitchLag(prior, current, channels_);
-        const auto t = static_cast<float>(tileOffset) / static_cast<float>(steadyOverlap);
+        const auto t = static_cast<float>(tileOffset) / static_cast<float>(tileOverlap);
         const auto blend = t*t*(3-2*t);
         // Fade out the lead/lag before either tile becomes the sole source.
         // The matching samples blend without a level dip in correlated tones.
