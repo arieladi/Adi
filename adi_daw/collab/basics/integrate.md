@@ -56,6 +56,7 @@ SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snaps
 | SC-155 | `f030e6689af578439c8f34b5760e4f7214cb9125` | The bottom Open Project row restores the journal head at this opening. Earlier rows and branch navigation remain available, with timestamps and an opening marker. A peerless reopen and cross-branch restore probe passed. The combined history suites and no-display shell passed. |
 | SC-344 | `8334b46e4a7fcf13d309fc2a71f9f528ddbf6643` | A press-and-drag on a new automation breakpoint commits the final point once. Escape leaves the journal unchanged. Preserves Edit’s context press and Follow behavior together with Automation’s existing menus. The combined no-display shell passed undo, redo and cancellation coverage. |
 | SC-184 | `cc7bc859a31d0244cbb7c229218d181adfac5bc2` | Split prepares all eligible cuts against one snapshot and commits them together. The first refusal still names its track. The combined Clip Edit and Edit Plan suites and no-display shell passed the multi-track and two-edge time-selection regressions. |
+| SC-158 | `523f32b64446cdaed81baaef92ccbe2c92059510` | Prompted audio drops prepare the whole batch asynchronously and apply track, clip and copied-media changes in one Undo step. Copied content is deduplicated and failed publications leave no partial drop. The existing reserved-ID test now exercises the active drop planner. The focused Material suite passed 38 checks. Combined Material, UI Seams and no-display shell passed. |
 
 ## For the director
 
