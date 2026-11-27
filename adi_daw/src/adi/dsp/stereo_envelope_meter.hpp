@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include "adi/dsp/biquad.hpp"
+
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <span>
-#include <cstdint>
+#include <vector>
 
 namespace adi::dsp {
 
@@ -12,10 +15,11 @@ namespace adi::dsp {
 class StereoMeterWeighting {
   public:
     enum class Weighting { Standard, A, C, K };
+    enum class Purpose { Audition, Measurement };
     struct State { double first = 0, second = 0; };
     using History = std::array<State, 4>;
 
-    bool prepare(double sampleRate, Weighting) noexcept;
+    bool prepare(double sampleRate, Weighting, Purpose = Purpose::Audition) noexcept;
     bool flat() const noexcept { return sectionCount_ == 0; }
     double process(double sample, History &history) const noexcept {
         for (std::size_t section = 0; section < sectionCount_; ++section) {
@@ -30,9 +34,6 @@ class StereoMeterWeighting {
     }
 
   private:
-    struct Biquad {
-        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-    };
     std::array<Biquad, 4> coefficients_{};
     std::size_t sectionCount_ = 0;
 };
@@ -44,10 +45,10 @@ class StereoEnvelopeMeter {
     using Weighting = StereoMeterWeighting::Weighting;
     struct Settings {
         double sampleRate;
-        double peakDecaySeconds;       // amplitude time constant after a peak
-        double meanSquareSeconds;      // power integration time constant
-        double coincidenceSeconds;     // time constant of signed coincidence
-        double coincidenceFloor;       // linear magnitude, applied to both channels
+        double peakDecaySeconds;       // seconds for peak amplitude to fall 20 dB in silence
+        double meanSquareSeconds;      // sliding RMS window duration
+        double coincidenceSeconds;     // time constant of the correlation powers
+        double coincidenceFloor;       // linear magnitude floor for correlation
         bool midSide = false;
         Weighting weighting = Weighting::Standard;
         bool linkedDynamic = false;
@@ -60,10 +61,13 @@ class StereoEnvelopeMeter {
         std::array<double, 2> maximumPeak{}, peakHold{}, rmsHold{}, floatingPeak{};
         std::array<double, 2> dynamicDb{};
         std::optional<double> linkedDynamicDb;
+        std::array<std::uint64_t, 2> clipCount{};
+        double balanceDb = 0, maxCrestFactorDb = 0, linkedSineReferencedRms = 0;
         bool operator==(const Reading &) const = default;
     };
 
     // Starts a fresh stream. Invalid settings preserve the current stream.
+    // Allocates the sample-power history for both RMS windows.
     bool prepare(const Settings &) noexcept;
     // Clear history after a source discontinuity, keeping the configuration.
     void reset() noexcept;
@@ -72,19 +76,26 @@ class StereoEnvelopeMeter {
     Reading reading() const noexcept;
 
   private:
-    template <bool weighted, bool linked>
-    bool update(std::span<const float>, std::span<const float>) noexcept;
+    template <bool weighted>
+    void update(std::span<const float>, std::span<const float>) noexcept;
     struct Lane {
-        double peak = 0, power = 0, maximum = 0, heldPeak = 0, heldPower = 0, floatingPeak = 0, ratio = .5;
-        std::int64_t peakWait = 0, rmsWait = 0;
+        double peak = 0, maximum = 0, heldPeak = 0, heldPower = 0, floatingPeak = 0;
+        double rmsSum = 0, crestSum = 0;
+        std::size_t peakWait = 0, rmsWait = 0, silentSamples = 0;
     };
     bool prepared_ = false, midSide_ = false, linkedDynamic_ = false;
-    double peakDecay_ = 0, powerStep_ = 0, coincidenceStep_ = 0, floor_ = 0, drStep_ = 0, floatStep_ = 0;
-    std::int64_t holdSamples_ = 0;
+    double peakReleaseStep_ = 0, coincidenceStep_ = 0, balanceStep_ = 0, floorPower_ = 0, floatStep_ = 0;
+    std::size_t rmsSamples_ = 0, crestSamples_ = 0, holdSamples_ = 0;
+    double rmsScale_ = 0, crestScale_ = 0;
+    std::vector<std::array<double, 2>> powerHistory_;
+    std::size_t historyNext_ = 0, historyFilled_ = 0;
     std::array<Lane, 2> lanes_{};
     StereoMeterWeighting weighting_;
     std::array<StereoMeterWeighting::History, 2> filterState_{};
-    double coincidence_ = 0, balance_ = 0, linkedRatio_ = 0;
+    std::array<double, 2> correlationPower_{}, balancePower_{};
+    double crossPower_ = 0, maxCrestRatio_ = 1;
+    std::array<std::uint64_t, 2> clipCount_{};
+    std::array<bool, 2> clipping_{};
 };
 
 } // namespace adi::dsp
