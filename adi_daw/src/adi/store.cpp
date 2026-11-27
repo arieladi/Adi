@@ -14,10 +14,23 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <random>
 #include <stdexcept>
 #include <system_error>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/mount.h>
+#elif defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+#endif
 
 namespace adi {
 namespace {
@@ -25,6 +38,91 @@ namespace {
 std::string sqlitePath(const std::filesystem::path& path) {
     const auto bytes=path.generic_u8string();
     return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
+
+namespace fs = std::filesystem;
+
+fs::path environmentFolder(const char* name) {
+#if defined(_WIN32)
+    const auto key = fs::path(name).wstring();
+    const auto capacity = GetEnvironmentVariableW(key.c_str(), nullptr, 0);
+    if (capacity == 0) return {};
+    std::wstring value(capacity, L'\0');
+    const auto length = GetEnvironmentVariableW(key.c_str(), value.data(), capacity);
+    if (length == 0 || length >= capacity) return {};
+    value.resize(length);
+    return fs::path(value);
+#else
+    if (const auto* value = std::getenv(name)) return fs::path(value);
+#endif
+    return {};
+}
+
+bool insideFolder(const fs::path& path, const fs::path& configuredRoot) {
+    if (!configuredRoot.is_absolute()) return false;
+    std::error_code error;
+    const auto root = fs::canonical(configuredRoot, error);
+    if (error) return false;
+    auto part = path.begin();
+    for (const auto& component : root) {
+        if (part == path.end()) return false;
+#if defined(_WIN32)
+        if (CompareStringOrdinal(part->c_str(), -1, component.c_str(), -1, TRUE) != CSTR_EQUAL) return false;
+#else
+        if (*part != component) return false;
+#endif
+        ++part;
+    }
+    return true;
+}
+
+bool networkFolder(const fs::path& folder) {
+#if defined(_WIN32)
+    const auto& name = folder.native();
+    if (name.starts_with(L"\\\\?\\UNC\\") ||
+        (name.starts_with(L"\\\\") && !name.starts_with(L"\\\\?\\") && !name.starts_with(L"\\\\.\\")))
+        return true;
+    std::wstring volume(32768, L'\0');
+    return GetVolumePathNameW(folder.c_str(), volume.data(), static_cast<DWORD>(volume.size())) &&
+           GetDriveTypeW(volume.c_str()) == DRIVE_REMOTE;
+#elif defined(__APPLE__)
+    struct statfs volume{};
+    return ::statfs(folder.c_str(), &volume) == 0 && (volume.f_flags & MNT_LOCAL) == 0;
+#elif defined(__linux__)
+    struct statfs volume{};
+    if (::statfs(folder.c_str(), &volume) != 0) return false;
+    switch (static_cast<std::uint32_t>(volume.f_type)) {
+        case NFS_SUPER_MAGIC:
+        case SMB_SUPER_MAGIC:
+        case SMB2_SUPER_MAGIC:
+        case CIFS_SUPER_MAGIC:
+        case CEPH_SUPER_MAGIC:
+        case AFS_SUPER_MAGIC:
+        case NCP_SUPER_MAGIC:
+        case CODA_SUPER_MAGIC:
+            return true;
+        default:
+            return false;
+    }
+#else
+    (void)folder;
+    return false;
+#endif
+}
+
+bool synchronizedProject(const fs::path& path) {
+    if (path.empty() || path == fs::path(":memory:")) return false;
+    std::error_code error;
+    const auto canonical = fs::canonical(path, error);
+    if (error) return false;
+    for (const char* key : {"OneDrive", "OneDriveConsumer", "OneDriveCommercial", "ADI_SYNC_PROJECTS"})
+        if (insideFolder(canonical, environmentFolder(key))) return true;
+#if defined(__APPLE__)
+    const auto library = environmentFolder("HOME") / "Library";
+    if (insideFolder(canonical, library / "Mobile Documents" / "com~apple~CloudDocs") ||
+        insideFolder(canonical, library / "CloudStorage")) return true;
+#endif
+    return networkFolder(canonical.parent_path());
 }
 
 std::int64_t nowUtcMicros() {
@@ -205,6 +303,8 @@ const char* toString(StoreError e) {
         case StoreError::SqlError:      return "sql error";
         case StoreError::MigrationFailed:
             return "an older 1.x file could not be upgraded; it was left unchanged";
+        case StoreError::SyncJournalUnavailable:
+            return "could not prepare single-file journaling in the synced or network folder";
     }
     return "unknown";
 }
@@ -259,15 +359,23 @@ Store::~Store() {
 }
 
 bool Store::applySessionPragmas() {
-    // SPEC §3.2. WAL is what makes autosave-during-playback cheap and lets the
-    // render path read a consistent snapshot while the user keeps editing.
+    // Local WAL lets a worker pin a snapshot while the owner keeps editing.
+    // In a sync or network folder, each completed transaction belongs in the
+    // main file. SQLite recovers any previous WAL before leaving WAL mode.
     try {
-        if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
-        db_->exec("PRAGMA synchronous = NORMAL");
-        db_->exec("PRAGMA foreign_keys = ON");
+        synchronizedLocation_ = synchronizedProject(path_);
         db_->exec("PRAGMA busy_timeout = 5000");
+        if (!readOnly_ && synchronizedLocation_) {
+            db_->exec("PRAGMA synchronous = FULL");
+            if (db_->execAndGet("PRAGMA journal_mode = DELETE").getString() != "delete")
+                throw std::runtime_error("SQLite did not enter rollback journal mode");
+        } else {
+            if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
+            db_->exec("PRAGMA synchronous = NORMAL");
+        }
+        db_->exec("PRAGMA foreign_keys = ON");
         return true;
-    } catch (const SQLite::Exception& e) {
+    } catch (const std::exception& e) {
         lastError_ = e.what();
         return false;
     }
@@ -418,13 +526,13 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
         auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false,lease));
         if (!store->applySessionPragmas()) {
+            err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
             // As the catch below: no schema-only file left at the user's path.
             // Close SQLite first (on Windows it holds the file without
             // FILE_SHARE_DELETE); removeCreated still keeps a file another
             // reader has already opened.
             store.reset();
             if(lease)(void)lease->removeCreated(ec);
-            err = StoreError::SqlError;
             return nullptr;
         }
         err = StoreError::Ok;
@@ -535,7 +643,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
     if (!store->applySessionPragmas()) {
-        err = StoreError::SqlError;
+        err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
         return nullptr;
     }
     err = result;
@@ -561,7 +669,7 @@ bool Store::closeFinalized() {
     if (closed_ || !db_) return true;
     closed_ = true;
 
-    if (readOnly_) {
+    if (readOnly_ || synchronizedLocation_) {
         db_.reset();
         fileLease_.reset();
         return true;

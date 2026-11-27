@@ -8,7 +8,7 @@
 //
 //   SPEC §2    application_id is verified before any table is trusted
 //   SPEC §3.1  the pragmas a new file is created with
-//   SPEC §3.2  WAL while open
+//   SPEC §3.2  local WAL and synchronized project journaling
 //   SPEC §3.3  THE CLOSE POLICY -- a cleanly closed .adi is exactly ONE file
 //   SPEC §11   a newer major schema opens read-only, never read-write
 //   ADR-0009   one blob per editable object, never wider
@@ -55,6 +55,7 @@ enum class StoreError {
     SchemaCorrupt,
     SqlError,
     MigrationFailed, // an older 1.x file could not be upgraded; it is unchanged (ADR-0144)
+    SyncJournalUnavailable, // the writable connection could not leave WAL safely
 };
 
 const char* toString(StoreError);
@@ -194,6 +195,7 @@ public:
     [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
+    [[nodiscard]] bool synchronizedLocation() const noexcept { return synchronizedLocation_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
     [[nodiscard]] int schemaMinor() const { return minor_; }
@@ -286,6 +288,7 @@ private:
     std::filesystem::path path_;
     bool readOnly_ = false;
     bool closed_ = false;
+    bool synchronizedLocation_ = false;
     int major_ = kSchemaMajor;
     int minor_ = kSchemaMinor;
     std::optional<int> upgradedFrom_;

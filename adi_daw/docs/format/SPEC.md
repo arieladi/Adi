@@ -101,26 +101,32 @@ undo/redo, history branching and reverting to a snapshot taken before any edit.
 
 ### 3.2 Required pragmas while a project is open
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;          -- FULL on removable/network volumes
-PRAGMA busy_timeout = 5000;
-```
+Local projects use `journal_mode = WAL` and `synchronous = NORMAL`. The
+write-ahead log lets render and export read a consistent snapshot while the
+user keeps editing. The connection uses `busy_timeout = 5000`.
 
-`WAL` is what makes autosave-during-playback cheap and lets the render/export
-path read a consistent snapshot while the user keeps editing.
+An open project in a recognized synced folder or on a network volume uses
+`journal_mode = DELETE` and `synchronous = FULL` (ADR-0258 d7). Each successful
+commit is present in the `.adi` file, and SQLite removes its rollback journal
+at the end of the transaction. The app recognizes configured OneDrive roots,
+macOS iCloud Drive and CloudStorage, and supported network filesystems. For
+another sync service, `ADI_SYNC_PROJECTS` can name an absolute synchronized
+folder. Folder matches use whole components of the canonical project path.
+
+The Status Bar tells the user when the project is in such a location. A file
+copied between transactions carries all committed changes. Use Save a Copy or
+Collect and Export to take a consistent copy of an open project.
 
 ### 3.3 Close policy — the WAL sidecar rule
 
 **A cleanly closed `.adi` MUST be exactly one file on disk.**
 
-While open, SQLite maintains `foo.adi-wal` and `foo.adi-shm` alongside it. A user
-who copies or emails only `foo.adi` from that state gets a project that opens
-*cleanly* but is silently missing everything since the last checkpoint — a worse
-failure than an error.
+While a local project is open in WAL mode, SQLite maintains `foo.adi-wal` and
+`foo.adi-shm` alongside it. A copy of `foo.adi` taken in that state can open
+cleanly while missing every change since the last checkpoint.
 
-On clean close, and on every explicit **Save As** / **Export**, the writer
-**MUST**:
+When closing a WAL project or publishing a **Save As** / **Export** copy,
+the writer **MUST** fold the write-ahead log:
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);

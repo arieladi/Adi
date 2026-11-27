@@ -753,6 +753,7 @@ StoreFileResult Store::switchToCopy(const fs::path& output, const CopyState& cop
     gestureDomain_.swap(replacement->gestureDomain_);
     detail::rebindAppliedDomain(*this);
     std::swap(readOnly_,replacement->readOnly_);std::swap(major_,replacement->major_);std::swap(minor_,replacement->minor_);
+    std::swap(synchronizedLocation_,replacement->synchronizedLocation_);
     upgradedFrom_.swap(replacement->upgradedFrom_);lastError_.clear();
     if (cleanup) {
         untitledCleanupReady_ = false;

@@ -134,6 +134,11 @@ juce::File withExtension(const juce::File &file, const char *extension) {
     return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
 juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
+std::string synchronizedProjectNotice(const Store &store) {
+    if (!store.synchronizedLocation()) return {};
+    if (store.readOnly()) return "This read-only project is in a synced or network folder.";
+    return "This project is in a synced or network folder. Committed edits are kept in its .adi file.";
+}
 juce::File defaultUserLibraryFolder() {
     if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isNotEmpty())
         return juce::File::getCurrentWorkingDirectory().getChildFile(home).getChildFile("User Library");
@@ -1892,6 +1897,8 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
+        if (const auto notice = synchronizedProjectNotice(document_->store()); !notice.empty())
+            root_->say(withWarning(root_->error(), notice));
         return true;
     }
     // SC-320 (ADR-0258 d16): the project opened with its plug-ins held off because one brought ADI down
@@ -2349,6 +2356,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 message = withWarning(("Saved a copy as " + save.file.getFileName() + ".").toStdString(), message);
             else if (saved && !message.empty())
                 message = withWarning("Project saved.", message);
+            if (saved && save.kind != SaveKind::copy)
+                message = withWarning(std::move(message), synchronizedProjectNotice(document_->store()));
             root_->say(save.takeWarning + message);
         }
         document_->clearSave();
