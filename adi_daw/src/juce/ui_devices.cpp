@@ -2143,6 +2143,16 @@ void DevicePanelView::configure() {
                         safe->strip.action("device.setPanel", {{"dev", safe->id}, {"params", ids}});
                     });
 }
+struct DeviceChainStrip::OutputMeter {
+    engine::ScopeSource source;
+    std::uint64_t instance = 0;
+    SharedAnalysis::Lease lease;
+    SharedAnalysis::Lease::SourcePosition first;
+    std::uint64_t revision = 0;
+    std::int64_t lastUpdate = 0;
+    std::array<int, 2> levels{};
+    std::array<bool, 2> clipping{};
+};
 DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     addAndMakeVisible(scroll);
     scroll.setViewedComponent(&content, false);
@@ -2368,6 +2378,7 @@ void DeviceChainStrip::suspendParameters(bool suspended) {
     if (suspended) {
         const auto safe = SafePointer<DeviceChainStrip>(this);
         cancelFunctionInteractions();
+        if (safe) releaseOutputMeters();
         if (safe) updateParameterDemand({});
     }
 }
@@ -2375,6 +2386,7 @@ void DeviceChainStrip::visibilityChanged() {
     if (!isShowing()) {
         const auto safe = SafePointer<DeviceChainStrip>(this);
         cancelFunctionInteractions();
+        if (safe) releaseOutputMeters();
         if (safe) updateParameterDemand({});
     }
 }
@@ -2527,7 +2539,11 @@ void DeviceChainStrip::frame(std::int64_t track) {
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto epoch = ++frameEpoch_;
     const auto current = [&safe, epoch] { return safe && safe->frameEpoch_ == epoch; };
-    if (parameterDemand && (parametersSuspended_ || !isShowing())) { updateParameterDemand({}); return; }
+    if (parameterDemand && (parametersSuspended_ || !isShowing())) {
+        releaseOutputMeters();
+        if (current()) updateParameterDemand({});
+        return;
+    }
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
@@ -2555,8 +2571,10 @@ void DeviceChainStrip::frame(std::int64_t track) {
         next = publication ? publication() : nullptr;
         if (!current()) return;
     }
-    if (next == presented && track == selectedTrack)
+    if (next == presented && track == selectedTrack) {
+        frameOutputMeters();
         return;
+    }
     if (track != selectedTrack) {
         ++addMenuEpoch_;
         chosen_.reset();
@@ -2624,6 +2642,84 @@ void DeviceChainStrip::frame(std::int64_t track) {
     showSamples();
     resized();
     repaint();
+    frameOutputMeters();
+}
+juce::Rectangle<int> DeviceChainStrip::outputMeterBounds(std::size_t gap) const noexcept {
+    return {panels[gap + 1]->getX() - scroll.getViewPositionX() - 8, getHeight() / 2 - 12, 5, 24};
+}
+void DeviceChainStrip::releaseOutputMeters() {
+    if (outputMeters_.empty())
+        return;
+    auto released = std::move(outputMeters_);
+    outputMeterBroker_.reset();
+    repaint();
+}
+void DeviceChainStrip::frameOutputMeters() {
+    const auto broker = root.sharedAnalysis;
+    if (!broker || parametersSuspended_ || !isShowing() || panels.size() < 2) {
+        releaseOutputMeters();
+        return;
+    }
+    if (outputMeterBroker_.lock() != broker) {
+        releaseOutputMeters();
+        outputMeterBroker_ = broker;
+    }
+    outputMeters_.resize(panels.size() - 1);
+    bool active = false;
+    for (std::size_t gap = 0; gap < outputMeters_.size(); ++gap) {
+        auto &meter = outputMeters_[gap];
+        const auto bounds = outputMeterBounds(gap);
+        const auto *before = panels[gap]->data;
+        const auto *after = panels[gap + 1]->data;
+        const auto previousLevels = meter.levels;
+        const auto previousClipping = meter.clipping;
+        if (!getLocalBounds().intersects(bounds) || !before || !before->available || !after ||
+            before->chain != after->chain) {
+            meter = {};
+        } else {
+            const engine::ScopeSource source{before->track, engine::ScopePoint::DeviceOutput, before->id};
+            if (meter.source != source || meter.instance != before->instance) {
+                meter = {};
+                meter.source = source;
+                meter.instance = before->instance;
+            }
+            if (!meter.lease) {
+                SharedAnalysis::Request request{source.track, source.point};
+                request.device = source.device;
+                request.outputs = SharedAnalysis::Meters;
+                request.hopSize = request.fftSize;
+                try { meter.lease = broker->acquire(request); }
+                catch (...) {}
+                meter.first = meter.lease.sourcePosition();
+            }
+            active = active || static_cast<bool>(meter.lease);
+            const auto now = root.input.ms();
+            const auto result = meter.lease.read();
+            if (result && meter.first.generation != result->generation)
+                meter.first = {result->generation, 0};
+            if (result && meter.revision != result->revision &&
+                result->firstSequence + result->request.fftSize > meter.first.written) {
+                meter.revision = result->revision;
+                meter.lastUpdate = now;
+                for (std::size_t channel = 0; channel < meter.levels.size(); ++channel) {
+                    const auto peak = result->peak[channel];
+                    const auto db = 20. * std::log10(std::max(peak, 1.e-6f));
+                    meter.levels[channel] = juce::roundToInt(bounds.getHeight() * (1. - meterDepth(db)));
+                    meter.clipping[channel] = peak >= 1.f;
+                }
+            }
+            // A stopped audio device cannot publish the silence that a running one would send.
+            constexpr auto staleMilliseconds = 250;
+            if (!result || now < meter.lastUpdate || now - meter.lastUpdate >= staleMilliseconds) {
+                meter.levels = {};
+                meter.clipping = {};
+            }
+        }
+        if (meter.levels != previousLevels || meter.clipping != previousClipping)
+            repaint(bounds);
+    }
+    if (active)
+        broker->requestFrame();
 }
 void DeviceChainStrip::resized() {
     scroll.setBounds(getLocalBounds());
@@ -2641,13 +2737,19 @@ void DeviceChainStrip::resized() {
 }
 void DeviceChainStrip::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
-    // Between devices, Live's two dark marks; after the last, where the next one goes.
-    g.setColour(look::display);
-    for (std::size_t i = 1; i < panels.size(); ++i) {
-        const int x = panels[i]->getX() - scroll.getViewPositionX() - 8;
-        const int y = getHeight() / 2 - 12;
-        g.fillRect(x, y, 2, 24);
-        g.fillRect(x + 3, y, 2, 24);
+    // Each gap shows the two channels leaving the device on its left.
+    for (std::size_t gap = 0; gap + 1 < panels.size(); ++gap) {
+        const auto bounds = outputMeterBounds(gap);
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            const auto well = bounds.withX(bounds.getX() + static_cast<int>(channel) * 3).withWidth(2);
+            g.setColour(look::display);
+            g.fillRect(well);
+            if (gap < outputMeters_.size()) {
+                const auto &meter = outputMeters_[gap];
+                g.setColour(meter.clipping[channel] ? look::record : look::meterLevel);
+                g.fillRect(well.withTop(well.getBottom() - meter.levels[channel]));
+            }
+        }
     }
     const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
     g.setColour(look::text);

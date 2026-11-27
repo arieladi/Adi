@@ -3321,6 +3321,88 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     }
 }
+void deviceOutputMeters(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-meters.adi", true, {}, error);
+    check(document != nullptr, "SC-290: a project for Device View meters");
+    if (!document)
+        return;
+    const auto first = std::make_shared<engine::ScopeTap>(48000., .25);
+    const auto second = std::make_shared<engine::ScopeTap>(48000., .25);
+    std::vector<std::int64_t> requested, released;
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            if (source.track != 2 || source.point != engine::ScopePoint::DeviceOutput)
+                return {};
+            requested.push_back(source.device);
+            return source.device == 50 ? first : source.device == 51 ? second : nullptr;
+        },
+        [&](engine::ScopeSource source) {
+            if (source.point == engine::ScopePoint::DeviceOutput)
+                released.push_back(source.device);
+        }, SharedAnalysis::Mode::Manual);
+    auto publication = std::make_shared<ParameterPublication>();
+    for (const auto id : {50, 51, 52}) {
+        DevicePanelData data;
+        data.id = id;
+        data.track = 2;
+        data.chain = 70;
+        data.available = true;
+        data.name = "Effect";
+        publication->push_back(std::move(data));
+    }
+    std::int64_t now = 2000;
+    auto rootOwner = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                        document->views(), document->sessionState(), "device-meters");
+    auto &root = *rootOwner;
+    UiPeerRoot peer;
+    peer.setSize(1200, 720);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-290: a software-only peer");
+    root.setBounds(peer.getLocalBounds());
+    root.frame();
+    root.sharedAnalysis = broker;
+    root.input.now = [&] { return now; };
+    auto &strip = root.devices;
+    strip.publication = [publication] { return publication; };
+    root.arrangement.geometry.selection.track = 2;
+    root.frame();
+    check(strip.panels.size() == 3 && requested == std::vector<std::int64_t>{50, 51},
+          "SC-290: two gaps observe the outputs of their preceding devices");
+    if (strip.panels.size() != 3)
+        return;
+    const auto meterAt = [&](std::size_t i) {
+        return strip.getLocalPoint(strip.panels[i].get(), juce::Point<int>{-8, strip.getHeight() / 2 - 12});
+    };
+    const auto firstMeter = meterAt(1), secondMeter = meterAt(2);
+    const juce::Point<int> foot{0, 23}, rightChannel{3, 0};
+    check(renderedPixel(strip, firstMeter + foot) == look::display &&
+              renderedPixel(strip, secondMeter + rightChannel + foot) == look::display,
+          "SC-290: the meter wells wait in silence before the source publishes");
+    std::array<float, 1024> normal, clipped, silence{};
+    normal.fill(.5f);
+    clipped.fill(1.1f);
+    first->write(normal.data(), silence.data(), 1024, 0, false);
+    second->write(silence.data(), clipped.data(), 1024, 0, false);
+    broker->pump();
+    root.frame();
+    check(renderedPixel(strip, firstMeter + juce::Point<int>{0, 3}) == look::display &&
+              renderedPixel(strip, firstMeter + juce::Point<int>{0, 4}) == look::meterLevel &&
+              renderedPixel(strip, firstMeter + rightChannel + foot) == look::display &&
+              renderedPixel(strip, secondMeter + foot) == look::display &&
+              renderedPixel(strip, secondMeter + rightChannel + foot) == look::record,
+          "SC-290: the first output lights left at -6 dB and the other output shows a right-channel clip");
+    now += 250;
+    root.frame();
+    check(renderedPixel(strip, firstMeter + foot) == look::display &&
+              renderedPixel(strip, secondMeter + rightChannel + foot) == look::display,
+          "SC-290: both meters clear when the driver stops publishing");
+    check(root.command(AppCommands::ToggleDeviceView), "SC-290: hide the strip");
+    std::sort(released.begin(), released.end());
+    check(released == std::vector<std::int64_t>{50, 51}, "SC-290: a hidden Device View releases both taps");
+}
 void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "bypass-appearance.adi", true, {}, error);
@@ -21674,6 +21756,7 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
+    trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });

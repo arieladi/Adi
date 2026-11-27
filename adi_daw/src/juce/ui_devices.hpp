@@ -406,6 +406,12 @@ class DeviceChainStrip final : public juce::Component,
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    struct OutputMeter;
+    juce::Rectangle<int> outputMeterBounds(std::size_t gap) const noexcept;
+    void frameOutputMeters();
+    void releaseOutputMeters();
+    std::vector<OutputMeter> outputMeters_;
+    std::weak_ptr<SharedAnalysis> outputMeterBroker_;
     void setDropPreview(std::optional<int>);
     struct PickedDevice {
         std::int64_t id, track, chain;
