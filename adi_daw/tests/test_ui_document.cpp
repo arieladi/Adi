@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/blob.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
@@ -14,6 +17,7 @@
 #include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,6 +31,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <optional>
+#include <string_view>
 #include <thread>
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -175,6 +180,293 @@ class SurfaceKnobs final : public device::DeviceInstance {
 Payload readLatencyReport(Store &store) {
     SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
     return query.executeStep() ? Payload::parse(query.getColumn(0).getString()) : Payload(nullptr);
+}
+
+void slowProjectOpen(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    constexpr int deviceCount = 20;
+    constexpr auto deviceTime = std::chrono::milliseconds(25);
+    const auto file = dir / "slow-open.adi";
+    {
+        StoreError error{};
+        auto store = Store::createEmpty(file, error);
+        if (!store) throw std::runtime_error(toString(error));
+        auto &db = store->db();
+        db.exec("INSERT INTO project(id,name) VALUES(1,'Slow project');"
+                "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slow source',0),(9,'master','Main',1);"
+                "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
+                "INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                "(1,'clap','test.slow-open','Slow Open'),(2,'clap','test.slow-unavailable','Unavailable');"
+                "INSERT INTO device_chains(id,track_id) SELECT 1,id FROM tracks WHERE kind='audio' ORDER BY id LIMIT 1");
+        const std::array bytes{std::byte{0x42}};
+        const auto hash = media::blake3Bytes(bytes);
+        if (!hash) throw std::runtime_error("hash slow-open state");
+        SQLite::Statement blob(db, "INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,1)");
+        blob.bind(1, hash.hex);
+        blob.bind(2, bytes.data(), 1);
+        blob.exec();
+        SQLite::Statement device(db, "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(?,1,?,?,'Slow device')");
+        SQLite::Statement state(db, "INSERT INTO plugin_state(device_id,stream_role,state_hash) VALUES(?,'state',?)");
+        for (int id = 1; id <= deviceCount; ++id) {
+            device.bind(1, id);
+            device.bind(2, id - 1);
+            device.bind(3, id == deviceCount ? 2 : 1);
+            device.exec();
+            device.reset();
+            state.bind(1, id);
+            state.bind(2, hash.hex);
+            state.exec();
+            state.reset();
+        }
+    }
+    struct Trace {
+        std::thread::id owner = std::this_thread::get_id();
+        bool ownerOnly = true;
+        int attempts = 0, created = 0, restored = 0, prepared = 0, destroyed = 0;
+        void onOwner() { ownerOnly = ownerOnly && std::this_thread::get_id() == owner; }
+    } trace;
+    class SlowDevice final : public device::DeviceInstance {
+      public:
+        explicit SlowDevice(Trace &events) : events_(events) { events_.onOwner(); ++events_.created; }
+        ~SlowDevice() override { events_.onOwner(); ++events_.destroyed; }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
+            events_.onOwner();
+            const bool accepted = role == "state" && bytes == std::vector<std::uint8_t>{0x42};
+            if (accepted) ++events_.restored;
+            return accepted;
+        }
+        void prepare(double, std::int32_t) override { events_.onOwner(); ++events_.prepared; }
+        void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+      private:
+        Trace &events_;
+        device::DeviceIdentity identity_;
+    };
+    const auto loader = [&](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        trace.onOwner();
+        ++trace.attempts;
+        std::this_thread::sleep_for(deviceTime);
+        if (request.ref && request.ref->uid == "test.slow-open") return std::make_unique<SlowDevice>(trace);
+        error = "the fixture plug-in is unavailable";
+        return {};
+    };
+    const auto elapsed = [](Clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    };
+    using OpenJob = ui::ProjectDocument::OpenJob;
+    using Phase = OpenJob::Phase;
+    const auto active = [](const OpenJob &job) {
+        return job.phase() != Phase::ready && job.phase() != Phase::failed;
+    };
+    const auto start = Clock::now();
+    auto job = ui::ProjectDocument::startOpen(file, false, loader);
+    check(job && job->phase() == Phase::preparing && trace.attempts == 0, "opening starts before any device is loaded");
+    if (!job) return;
+    double longestTurn = elapsed(start);
+    int turns = 0;
+    std::size_t lastCompleted = 0;
+    bool monotonic = true, sawDevices = false, sawGraph = false;
+    while (active(*job) && turns < 4 * deviceCount) {
+        sawDevices = sawDevices || job->phase() == Phase::loadingDevices;
+        sawGraph = sawGraph || job->phase() == Phase::buildingGraph;
+        const auto turn = Clock::now();
+        job->advance();
+        longestTurn = std::max(longestTurn, elapsed(turn));
+        ++turns;
+        const auto completed = job->completedDevices();
+        monotonic = monotonic && completed >= lastCompleted && completed <= job->totalDevices();
+        lastCompleted = completed;
+    }
+    const double wall = elapsed(start);
+    std::printf("SC-415 20 slow plug-ins: %.2f ms wall, %.2f ms longest owner turn, %d turns, %d loader calls, %d resolved\n",
+                wall, longestTurn, turns, trace.attempts, trace.created);
+    check(monotonic && sawDevices && sawGraph && lastCompleted == deviceCount && job->totalDevices() == deviceCount &&
+              turns >= deviceCount && job->phase() == Phase::ready,
+          "device progress is monotonic and owner turns continue through graph preparation");
+    auto document = job->takeDocument();
+    check(document != nullptr, job->error().empty() ? "the slow project opens" : job->error().c_str());
+    if (!document) return;
+    const auto *missing = document->session().entryFor(deviceCount);
+    check(trace.attempts == deviceCount && document->session().stats().loaded == deviceCount - 1 &&
+              document->session().stats().placeholders == 1 && missing && missing->placeholder,
+          "all twenty devices are attempted, including one retained placeholder");
+    document.reset();
+    check(trace.ownerOnly && trace.created == deviceCount - 1 && trace.restored == trace.created &&
+              trace.prepared >= trace.created && trace.destroyed == trace.created,
+          "plug-in creation, state restore, DSP preparation and destruction stay with the document owner");
+    check(longestTurn < wall / 3, "opening yields to the owner between slow plug-in loads");
+
+    trace = {};
+    auto cancelled = ui::ProjectDocument::startOpen(file, false, loader);
+    check(cancelled != nullptr, "create a second candidate to cancel");
+    if (!cancelled) return;
+    for (int step = 0; active(*cancelled) && trace.attempts < 4 && step < deviceCount; ++step)
+        cancelled->advance();
+    check(active(*cancelled) && trace.attempts == 4 && !cancelled->takeDocument(),
+          "a partial open exposes progress without exposing an installable document");
+    cancelled.reset();
+    check(trace.ownerOnly && trace.created == 4 && trace.restored == 4 && trace.destroyed == 4,
+          "cancelling between steps destroys only the devices created so far on their owner");
+    {
+        StoreError error{};
+        const auto reopened = Store::open(file, error);
+        check(reopened != nullptr, "a cancelled open releases its project file lease");
+    }
+
+    trace = {};
+    auto stale = ui::ProjectDocument::startOpen(file, false, loader);
+    check(stale != nullptr, "create a candidate to test a concurrent project change");
+    if (!stale) return;
+    for (int step = 0; active(*stale) && trace.attempts < 1 && step < deviceCount; ++step)
+        stale->advance();
+    check(active(*stale) && trace.attempts == 1, "a staged candidate has begun resolving the original stored project");
+    {
+        SQLite::Database writer(media::pathUtf8(file), SQLite::OPEN_READWRITE);
+        writer.exec("UPDATE project SET name='Changed during Open' WHERE id=1");
+    }
+    for (int step = 0; active(*stale) && step < 4 * deviceCount; ++step)
+        stale->advance();
+    check(stale->phase() == Phase::failed && !stale->error().empty() && !stale->takeDocument(),
+          "a change on another SQLite connection refuses the now-stale candidate");
+    stale.reset();
+    check(trace.ownerOnly && trace.created > 0 && trace.destroyed == trace.created,
+          "a stale candidate releases all of its devices on the owner");
+}
+
+void manyDeviceTickSpeed(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    constexpr int warmupTicks = 5, timedTicks = 80, frames = 64;
+    struct ParameterReads {
+        std::size_t counts = 0, descriptors = 0, values = 0, texts = 0;
+    };
+    class StandIn final : public device::DeviceInstance {
+      public:
+        StandIn(int parameterCount, ParameterReads &reads)
+            : parameters_(static_cast<std::size_t>(parameterCount)), reads_(reads) {
+            identity_.format = "vst3";
+            identity_.uid = "test.many-parameters";
+            identity_.name = "Parameter stand-in";
+            for (int index = 0; index < parameterCount; ++index) {
+                auto &parameter = parameters_[static_cast<std::size_t>(index)];
+                parameter.id = std::to_string(index);
+                parameter.name = "Parameter " + parameter.id;
+                parameter.defaultValue = device::ParamValue::fromNormalized(0.25);
+            }
+        }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        void pumpMainThread() override { ++pumps; }
+        void process(const engine::NodeIo &io) noexcept override { ++blocks; device::passThrough(io); }
+        std::int32_t paramCount() const noexcept override {
+            ++reads_.counts;
+            return static_cast<std::int32_t>(parameters_.size());
+        }
+        const device::ParamDescriptor *paramAt(std::int32_t index) const noexcept override {
+            ++reads_.descriptors;
+            return index >= 0 && static_cast<std::size_t>(index) < parameters_.size()
+                ? &parameters_[static_cast<std::size_t>(index)] : nullptr;
+        }
+        device::ParamValue getParam(const std::string &) const noexcept override {
+            ++reads_.values;
+            return device::ParamValue::fromNormalized(0.25);
+        }
+        std::string paramText(const std::string &, double) const override { ++reads_.texts; return "25%"; }
+        int pumps = 0, blocks = 0;
+
+      private:
+        std::vector<device::ParamDescriptor> parameters_;
+        ParameterReads &reads_;
+        device::DeviceIdentity identity_;
+    };
+    const auto compare = [&](int deviceCount, int parameterCount) {
+        const auto file = dir / ("stand-ins-" + std::to_string(deviceCount) + ".adi");
+        {
+            StoreError error{};
+            auto store = Store::createEmpty(file, error);
+            if (!store) throw std::runtime_error(toString(error));
+            auto &db = store->db();
+            db.exec("INSERT INTO project(id,name) VALUES(1,'Plug-in tick benchmark');"
+                    "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(100,'master','Main',100);"
+                    "INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                    "(1,'vst3','test.many-parameters','Parameter stand-in');");
+            for (int track = 1; track <= deviceCount; ++track) {
+                const auto id = std::to_string(track);
+                db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(" + id + ",'audio','Track'," + id + ");"
+                        "INSERT INTO device_chains(id,track_id) VALUES(" + id + "," + id + ");"
+                        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(" + id + "," + id + ",0,1,'Stand-in');");
+            }
+            db.exec("INSERT INTO mixer_strip(track_id) SELECT id FROM tracks");
+        }
+        const auto measure = [&](int parameters) -> std::optional<double> {
+            ParameterReads reads;
+            std::vector<StandIn *> instances;
+            std::string error;
+            auto doc = ui::ProjectDocument::open(file, false,
+                [&](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+                    if (!request.ref || request.ref->uid != "test.many-parameters") return {};
+                    auto instance = std::make_unique<StandIn>(parameters, reads);
+                    instances.push_back(instance.get());
+                    return instance;
+                }, error);
+            check(doc != nullptr, error.empty() ? "open plug-in tick benchmark project" : error.c_str());
+            if (!doc) return {};
+            check(instances.size() == static_cast<std::size_t>(deviceCount) &&
+                      doc->session().stats().loaded == deviceCount,
+                  "all shapes use the same live plug-in count and routing");
+            doc->prepare(48000, frames);
+            std::array<float, frames> left{}, right{};
+            std::array<float *, 2> outputs{left.data(), right.data()};
+            engine::AudioIo io;
+            io.out = outputs.data();
+            io.numOut = static_cast<std::int32_t>(outputs.size());
+            io.frames = frames;
+            doc->process(io);
+            check(std::all_of(instances.begin(), instances.end(), [](const StandIn *p) { return p->blocks == 1; }),
+                  "the running graph processes every stand-in");
+            for (int tick = 0; tick < warmupTicks; ++tick) doc->tick(tick * 20);
+            reads = {};
+            for (auto *instance : instances) instance->pumps = 0;
+            std::array<double, timedTicks> times{};
+            for (int tick = 0; tick < timedTicks; ++tick) {
+                const auto start = Clock::now();
+                doc->tick((warmupTicks + tick) * 20);
+                times[static_cast<std::size_t>(tick)] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            }
+            std::sort(times.begin(), times.end());
+            const double median = (times[times.size() / 2 - 1] + times[times.size() / 2]) / 2;
+            const bool allPumped = std::all_of(instances.begin(), instances.end(), [&](const StandIn *p) {
+                return p->pumps == timedTicks && p->blocks == 1;
+            });
+            std::printf("SC-417 %d x %d: %.3f ms median idle tick, %zu count / %zu descriptor / %zu value / %zu text reads, %s\n",
+                        deviceCount, parameters, median, reads.counts, reads.descriptors, reads.values, reads.texts,
+                        allPumped ? "all plug-ins pumped each tick" : "unexpected plug-in pump or process count");
+            check(allPumped, "each idle tick pumps every live plug-in once without running the audio callback");
+            check(reads.counts == 0 && reads.descriptors == 0 && reads.values == 0 && reads.texts == 0,
+                  "idle ticks without demand do not ask plug-ins for parameters");
+            reads = {};
+            const auto choices = doc->automationParameters(1);
+            check(choices && choices->size() == 1 && choices->front().track == 1 &&
+                      choices->front().declarations().size() == static_cast<std::size_t>(parameters) &&
+                      choices->front().defaultValues().at("0") == 0.25 && choices->front().parameters().empty(),
+                  "the lane chooser gets declarations and defaults from just its track");
+            check(reads.counts == 1 && reads.descriptors == static_cast<std::size_t>(parameters) &&
+                      reads.values == 0 && reads.texts == 0,
+                  "opening the lane chooser reads metadata without polling live values");
+            doc->release();
+            return median;
+        };
+        const auto sparse = measure(2);
+        const auto dense = measure(parameterCount);
+        if (sparse && dense) {
+            std::printf("SC-417 %d devices: %.2fx idle tick at %d instead of 2 parameters\n",
+                        deviceCount, *dense / *sparse, parameterCount);
+            check(*dense < 3 * *sparse, "idle tick cost tracks plug-in count, not the size of each parameter table");
+        }
+    };
+    compare(20, 700);
+    compare(40, 2000);
 }
 
 void reportedDeviceLatency(const std::filesystem::path &dir) {
@@ -2131,6 +2423,389 @@ void countInPositionFeedback(const std::filesystem::path &dir) {
     doc->release();
     check(doc->settleRecording(), "settle the stopped count-in");
 }
+std::optional<std::uint64_t> ownerReadBytes() {
+#if defined(__linux__)
+    std::ifstream stats("/proc/thread-self/io");
+    std::string field;
+    std::uint64_t bytes = 0;
+    while (stats >> field >> bytes)
+        if (field == "rchar:")
+            return bytes;
+#endif
+    return std::nullopt;
+}
+void largeProjectSaveResponse(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    using SaveKind = ui::ProjectDocument::SaveKind;
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    constexpr std::uintmax_t payloadBytes = 256U * 1024U * 1024U;
+    constexpr std::string_view sourceName = "Saved from the WAL", laterName = "Edited during Save As";
+    const auto source = dir / "source" / "song.adi";
+    const auto copy = dir / "copy" / "copy.adi";
+    const auto saved = dir / "saved" / "saved.adi";
+    const auto cancelled = dir / "cancelled" / "cancelled.adi";
+    const auto stale = dir / "stale" / "stale.adi";
+    for (const auto &path : {source, copy, saved, cancelled, stale})
+        fs::create_directories(path.parent_path());
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "large project save: open the fixture");
+    if (!doc)
+        return;
+
+    const auto wav = source.parent_path() / "snare.wav";
+    {
+        std::array<float, 4800> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(i % 17) / 32.f - .25f;
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    const bool prepared = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+    auto drop = ui::dropAudio(*doc->view().current(), 4, 0, "Snare", import);
+    const bool placed = prepared && drop.refusal.empty() && doc->ops().submit(std::move(drop.ops)).ok && doc->synchronise();
+    check(placed, "large project save: the project references a playable WAV");
+    if (!placed)
+        return;
+
+    // Materialize real SQLite pages without making the project parser decode
+    // hundreds of megabytes of unrelated musical events before the benchmark.
+    {
+        auto &db = doc->store().db();
+        db.exec("CREATE TABLE save_fixture_blocks(id INTEGER PRIMARY KEY, data BLOB NOT NULL) STRICT");
+        db.exec("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256) "
+                "INSERT INTO save_fixture_blocks SELECT i, zeroblob(1048576) FROM n");
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        db.exec("PRAGMA wal_autocheckpoint=0");
+    }
+    const auto sourceBytes = fs::file_size(source);
+    check(sourceBytes >= payloadBytes, "large project save: at least 256 MiB of pages are in the source file");
+    const auto checkpointTime = fs::last_write_time(source);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 4}, {"name", sourceName}};
+    rename.label = "Rename Track";
+    const bool renamed = doc->ops().submit(rename).ok && doc->synchronise();
+    auto wal = source;
+    wal += "-wal";
+    std::error_code walError;
+    const auto walBytes = fs::file_size(wal, walError);
+    check(renamed && !walError && walBytes > 32 && fs::last_write_time(source) == checkpointTime,
+          "large project save: the journaled track name is still in the source WAL");
+    if (!renamed)
+        return;
+    std::printf("Large project save fixture: %ju main-file bytes, %ju WAL bytes\n", sourceBytes,
+                walError ? std::uintmax_t{0} : walBytes);
+    const auto ops = OpJournal(doc->store()).count();
+    const auto identity = doc->deviceCopyIdentity();
+
+    const auto terminal = [](Phase phase) {
+        return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
+    };
+    struct Observation {
+        std::optional<Phase> phase;
+        Clock::duration longestTurn{};
+        int pagesDone = 0, pagesTotal = 0;
+        bool progressOrdered = true;
+    };
+    const auto settle = [&](Clock::time_point start, Clock::duration firstTurn) {
+        Observation observed;
+        observed.longestTurn = firstTurn;
+        auto progress = doc->saveProgress();
+        while (progress) {
+            if (observed.phase && progress->phase < *observed.phase)
+                observed.progressOrdered = false;
+            if (progress->pagesDone < observed.pagesDone || progress->pagesDone > progress->pagesTotal ||
+                (observed.pagesTotal != 0 && progress->pagesTotal != observed.pagesTotal))
+                observed.progressOrdered = false;
+            observed.phase = progress->phase;
+            observed.pagesDone = progress->pagesDone;
+            observed.pagesTotal = progress->pagesTotal;
+            if (terminal(*observed.phase) || Clock::now() - start >= 2min)
+                break;
+            std::this_thread::sleep_for(1ms);
+            const auto turn = Clock::now();
+            doc->advanceSave();
+            progress = doc->saveProgress();
+            observed.longestTurn = std::max(observed.longestTurn, Clock::now() - turn);
+        }
+        if (observed.phase && terminal(*observed.phase)) {
+            const auto turn = Clock::now();
+            doc->clearSave();
+            observed.longestTurn = std::max(observed.longestTurn, Clock::now() - turn);
+        }
+        return observed;
+    };
+    const auto measure = [&](const char *label, const fs::path &path, SaveKind kind) {
+        const auto readBefore = ownerReadBytes();
+        const auto start = Clock::now();
+        const bool started = doc->startSave(path, kind);
+        const auto observed = settle(start, Clock::now() - start);
+        const auto elapsed = Clock::now() - start;
+        const auto readAfter = ownerReadBytes();
+        const bool ok = started && observed.phase == Phase::succeeded;
+        if (!ok)
+            std::printf("%s failed: %s\n", label, doc->error().c_str());
+        check(ok, label);
+        check(observed.progressOrdered && observed.pagesTotal > 0 && observed.pagesDone == observed.pagesTotal,
+              "large project save: phase and page progress reaches a complete stable total");
+        check(observed.longestTurn < 250ms, "large project save: each owner turn returns within 250 ms");
+#if defined(__linux__)
+        check(readBefore && readAfter, "large project save: capture Linux owner-thread read counters");
+#endif
+        const auto ms = [](Clock::duration value) { return std::chrono::duration<double, std::milli>(value).count(); };
+        std::printf("%s: %.2f ms longest owner turn, %.2f ms total, %d/%d pages", label, ms(observed.longestTurn),
+                    ms(elapsed), observed.pagesDone, observed.pagesTotal);
+        if (readBefore && readAfter) {
+            const auto bytes = *readAfter - *readBefore;
+            std::printf(", %llu owner read bytes", static_cast<unsigned long long>(bytes));
+            check(bytes < 32U * 1024U * 1024U, "large project save: the owner reads less than 32 MiB");
+        }
+        std::printf("\n");
+        return ok;
+    };
+    const auto trackName = [](Store &store) { return store.db().execAndGet("SELECT name FROM tracks WHERE id=4").getString(); };
+    const auto verify = [&](Store &store, std::string_view expectedName) {
+        auto &db = store.db();
+        const auto mediaId = db.execAndGet("SELECT media_id FROM audio_clips").getInt64();
+        std::string problem;
+        const auto resolved = media::resolveMedia(media::projectFolder(store), media::mediaRow(db, mediaId), problem);
+        return !resolved.empty() && fs::equivalent(resolved, wav) &&
+               trackName(store) == expectedName &&
+               db.execAndGet("SELECT sum(length(data)) FROM save_fixture_blocks").getInt64() ==
+                   static_cast<std::int64_t>(payloadBytes);
+    };
+    if (measure("Large project Save a Copy", copy, SaveKind::copy)) {
+        check(fs::equivalent(doc->store().path(), source) && doc->name() == "song" &&
+                  doc->deviceCopyIdentity() == identity,
+              "large project Save a Copy: the live document and its identity stay on the source");
+        StoreError opened{};
+        auto copied = Store::open(copy, opened, true);
+        check(copied && verify(*copied, sourceName) && OpJournal(*copied).count() == ops,
+              "large project Save a Copy: the destination includes the WAL, payload, history, and resolved WAV");
+    }
+    if (measure("Large project Save As", saved, SaveKind::as)) {
+        check(fs::equivalent(doc->store().path(), saved) && doc->name() == "saved" &&
+                  doc->deviceCopyIdentity() != identity && verify(doc->store(), sourceName) && OpJournal(doc->store()).count() == ops,
+              "large project Save As: the live document adopts a snapshot with the WAL, payload, history, and WAV");
+        check(doc->ops().undo().ok && doc->synchronise() && doc->view().current()->findTrack(4)->name != sourceName,
+              "large project Save As: Undo still reaches the journaled rename in the new file");
+        check(doc->ops().redo().ok && doc->synchronise() && trackName(doc->store()) == sourceName,
+              "large project Save As: Redo restores the journaled rename in the new file");
+        StoreError opened{};
+        auto original = Store::open(source, opened, true);
+        check(original && verify(*original, sourceName) && OpJournal(*original).count() == ops,
+              "large project Save As: the source keeps its original snapshot after edits in the destination");
+    } else {
+        return;
+    }
+
+    const auto savedIdentity = doc->deviceCopyIdentity();
+    const auto cancelStart = Clock::now();
+    const bool startedCancel = doc->startSave(cancelled, SaveKind::copy);
+    doc->cancelSave();
+    const auto cancelledRun = settle(cancelStart, Clock::now() - cancelStart);
+    check(startedCancel && cancelledRun.phase == Phase::cancelled && !doc->saveProgress() &&
+              fs::is_empty(cancelled.parent_path()) && doc->deviceCopyIdentity() == savedIdentity,
+          "large project save: cancellation removes its stage, leaves no copy, and keeps the live project");
+
+    const auto staleStart = Clock::now();
+    const bool startedStale = doc->startSave(stale, SaveKind::as);
+    // The owner has not yet run a turn that could adopt any worker result.
+    rename.payload = {{"id", 4}, {"name", laterName}};
+    const bool edited = doc->ops().submit(rename).ok && doc->synchronise();
+    const auto staleRun = settle(staleStart, {});
+    check(startedStale && edited && staleRun.phase == Phase::failed && !doc->saveProgress() &&
+              fs::equivalent(doc->store().path(), saved) && doc->deviceCopyIdentity() == savedIdentity &&
+              trackName(doc->store()) == laterName && OpJournal(doc->store()).count() == ops + 1,
+          "large project save: a stale Save As cannot adopt over a later source edit");
+    StoreError opened{};
+    auto coherent = Store::open(stale, opened, true);
+    bool validCopy = false;
+    if (coherent) {
+        const auto name = trackName(*coherent);
+        const auto count = OpJournal(*coherent).count();
+        // The worker may have pinned the source before or after the rename.
+        const bool frozenVersion = (name == sourceName && count == ops) || (name == laterName && count == ops + 1);
+        validCopy = frozenVersion && verify(*coherent, name);
+    }
+    check(validCopy, "large project save: stale adoption leaves a readable coherent copy at the destination");
+    for (const auto &path : {copy, saved, stale}) {
+        const bool clean = std::none_of(fs::directory_iterator(path.parent_path()), fs::directory_iterator(),
+                                       [](const auto &entry) { return entry.path().filename().string().starts_with(".adi-save-"); });
+        check(clean, "large project save: a completed save leaves no staging directory");
+    }
+}
+void longTakeStopResponse(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    constexpr int rate = 48'000, block = 4'096;
+    constexpr std::int64_t frames = 30 * 60 * rate;
+    constexpr std::array<std::int64_t, 4> tracks{4, 5, 8, 9};
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "long-take.adi", true, {}, error);
+    check(doc != nullptr, "long take: open the project");
+    if (!doc)
+        return;
+    std::vector<OpRequest> edits;
+    for (const auto id : {8, 9}) {
+        OpRequest &add = edits.emplace_back();
+        add.opType = "track.create";
+        add.payload = {{"id", id}, {"kind", "audio"}, {"name", "Recording track"}};
+    }
+    for (const auto id : tracks) {
+        OpRequest &arm = edits.emplace_back();
+        arm.opType = "track.setArm";
+        arm.payload = {{"id", id}, {"armed", true}};
+    }
+    const bool armed = doc->ops().submit(edits).ok && doc->synchronise();
+    check(armed, "long take: arm four audio tracks");
+    if (!armed)
+        return;
+    doc->prepare(rate, block);
+    const bool recording = doc->startRecording(0, 2, false);
+    check(recording, "long take: start stereo arrangement recording");
+    if (!recording) {
+        doc->release();
+        return;
+    }
+    std::filesystem::path lastTake;
+    const auto folder = media::projectFolder(doc->store());
+    for (const auto &entry : std::filesystem::directory_iterator(folder))
+        if (media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            lastTake = entry.path() / "take-3.wav";
+    check(!lastTake.empty(), "long take: the recorder made its private take folder");
+    if (lastTake.empty()) {
+        doc->release();
+        return;
+    }
+
+    const auto sample = [](std::int64_t frame, int channel) {
+        return channel == 0 ? static_cast<float>(frame % 127 - 63) / 128.f
+                            : static_cast<float>(frame % 113 - 56) / 128.f;
+    };
+    std::array<float, block> left{}, right{}, outLeft{}, outRight{};
+    const float *inputs[]{left.data(), right.data()};
+    float *outputs[]{outLeft.data(), outRight.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 2;
+    io.out = outputs;
+    io.numOut = 2;
+    const auto captureStarted = Clock::now();
+    std::int64_t stream = 0;
+    while (stream < frames) {
+        // The burst runs much faster than a device. Pace it against the last WAV
+        // writer so queued audio never fills the recorder's two-second ring.
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(lastTake, sizeError);
+        const auto written = sizeError ? 0 : static_cast<std::int64_t>(size / (2 * sizeof(float)));
+        if (stream - written > 65'536) {
+            if (Clock::now() - captureStarted > 3min)
+                break;
+            std::this_thread::sleep_for(1ms);
+            continue;
+        }
+        io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(block, frames - stream));
+        io.streamTimeSamples = stream;
+        for (int i = 0; i < io.frames; ++i) {
+            left[static_cast<std::size_t>(i)] = sample(stream + i, 0);
+            right[static_cast<std::size_t>(i)] = sample(stream + i, 1);
+        }
+        doc->process(io);
+        stream += io.frames;
+    }
+    check(stream == frames && doc->session().recording().acceptedFrames() == frames,
+          "long take: capture all 30 minutes on the four tracks");
+    if (stream != frames || doc->session().recording().acceptedFrames() != frames) {
+        doc->release();
+        return;
+    }
+
+    const auto readBefore = ownerReadBytes();
+    const auto stoppedAt = Clock::now();
+    doc->stopRecording();
+    const auto buttonTime = Clock::now() - stoppedAt;
+    io.streamTimeSamples = stream;
+    doc->process(io);
+    auto longestTick = Clock::duration::zero();
+    std::optional<Clock::time_point> clipsVisible;
+    std::optional<ui::ProjectDocument::TakeLanded> landed;
+    while (!landed && Clock::now() - stoppedAt < 2min) {
+        const auto tickStarted = Clock::now();
+        doc->tick(std::chrono::duration_cast<std::chrono::milliseconds>(tickStarted - stoppedAt).count());
+        longestTick = std::max(longestTick, Clock::now() - tickStarted);
+        if (!clipsVisible) {
+            const auto *track = doc->view().current()->findTrack(tracks.front());
+            if (track && !track->clips.empty())
+                clipsVisible = Clock::now();
+        }
+        landed = doc->takeLanded();
+        if (!landed)
+            std::this_thread::sleep_for(1ms);
+    }
+    const auto finishedAt = Clock::now();
+    const auto readAfter = ownerReadBytes();
+    const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+    std::printf("long take stop: 30 min, 4 stereo tracks at %d Hz, capture %.0f ms, Stop call %.3f ms, "
+                "longest owner tick %.3f ms, Stop to clips %.3f ms, Stop to completion %.3f ms\n",
+                rate, ms(stoppedAt - captureStarted), ms(buttonTime), ms(longestTick),
+                ms(clipsVisible.value_or(finishedAt) - stoppedAt), ms(finishedAt - stoppedAt));
+    if (readBefore && readAfter) {
+        const auto bytes = *readAfter - *readBefore;
+        std::printf("long take stop: owner read %llu bytes\n", static_cast<unsigned long long>(bytes));
+        check(bytes < 32 * 1'024 * 1'024, "long take: the owner does not read the recorded WAV data");
+    }
+    check(longestTick < 250ms, "long take: the owner timer returns within 250 ms");
+    if (landed && !landed->ok)
+        std::printf("long take stop: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == tracks.size() && !doc->takeLanded(),
+          "long take: land four clips and report the result once");
+    if (!landed || !landed->ok || landed->clips.size() != tracks.size()) {
+        doc->release();
+        return;
+    }
+
+    auto &db = doc->store().db();
+    SQLite::Statement clips(db, "SELECT c.track_id, a.src_start_frames, a.src_len_frames, m.rel_path "
+                                "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                                "JOIN media_files m ON m.id=a.media_id ORDER BY c.track_id");
+    std::string relative;
+    bool exact = true;
+    for (const auto track : tracks) {
+        if (!clips.executeStep()) {
+            exact = false;
+            break;
+        }
+        if (relative.empty())
+            relative = clips.getColumn(3).getString();
+        exact = exact && clips.getColumn(0).getInt64() == track && clips.getColumn(1).getInt64() == 0 &&
+                clips.getColumn(2).getInt64() == frames && clips.getColumn(3).getString() == relative;
+    }
+    check(exact && !relative.empty() && !clips.executeStep(),
+          "long take: each armed track references the whole take and identical audio deduplicates");
+    if (!relative.empty()) {
+        audio::WavReader wave(folder / media::pathFromUtf8(relative));
+        std::array<float, 2 * block> interleaved{};
+        exact = wave.frames() == frames && wave.channels() == 2 && wave.sampleRate() == rate;
+        for (std::int64_t at = 0; exact && at < frames;) {
+            const auto count = static_cast<std::uint32_t>(std::min<std::int64_t>(block, frames - at));
+            exact = wave.read(interleaved.data(), count) == count;
+            for (std::uint32_t i = 0; exact && i < count; ++i)
+                exact = interleaved[2 * i] == sample(at + i, 0) && interleaved[2 * i + 1] == sample(at + i, 1);
+            at += count;
+        }
+        check(exact, "long take: the landed WAV matches all stereo input samples");
+    }
+    const auto undo = doc->ops().nextUndo();
+    check(undo && undo->label == "Record Audio" && doc->ops().undo().ok && doc->synchronise() &&
+              db.execAndGet("SELECT count(*) FROM clips").getInt() == 0,
+          "long take: one Undo removes all four clips");
+    doc->release();
+}
 void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     std::string error;
     constexpr std::int32_t upstreamLatency = 16;
@@ -2416,6 +3091,154 @@ void mixerDragHeard(const std::filesystem::path &dir) {
           "a pan drag lands as one step too");
     doc->release();
 }
+struct ProcessMemory {
+    std::uint64_t residentKiB = 0, peakKiB = 0;
+};
+ProcessMemory processMemory() {
+    ProcessMemory memory;
+#if defined(__linux__)
+    std::ifstream status("/proc/self/status");
+    std::string field;
+    while (std::getline(status, field)) {
+        if (field.starts_with("VmRSS:") || field.starts_with("VmHWM:")) {
+            const auto value = field.find_first_of("0123456789");
+            if (value == std::string::npos)
+                continue;
+            const auto kib = std::strtoull(field.c_str() + value, nullptr, 10);
+            if (field.starts_with("VmRSS:"))
+                memory.residentKiB = kib;
+            else
+                memory.peakKiB = kib;
+        }
+    }
+#endif
+    return memory;
+}
+void manyTrackMemory(const std::filesystem::path &dir) {
+    constexpr std::int64_t trackCount = 256, firstAddedTrack = 8, faderTrack = 4;
+    const auto file = dir / "many-track-memory.adi";
+    {
+        StoreError error{};
+        auto store = Store::createNewProject(file, error);
+        check(store != nullptr, "many-track memory: create the project fixture");
+        if (!store)
+            return;
+        std::vector<OpRequest> tracks;
+        // A new Set already has four arrangement tracks, two returns and Main.
+        for (std::int64_t i = 0; i < trackCount - 4; ++i) {
+            auto &add = tracks.emplace_back();
+            add.opType = "track.create";
+            add.payload = {{"id", firstAddedTrack + i}, {"kind", "audio"}, {"name", "Empty track"}};
+        }
+        const auto seeded = OpJournal(*store).commit(tracks);
+        check(seeded.ok, "many-track memory: seed 256 empty arrangement tracks");
+        if (!seeded.ok)
+            return;
+    }
+    const auto report = [](const char *phase, ui::ProjectDocument *doc, ProcessMemory memory) {
+        std::printf("256 tracks %s: RSS %llu KiB, HWM %llu KiB", phase,
+                    static_cast<unsigned long long>(memory.residentKiB), static_cast<unsigned long long>(memory.peakKiB));
+        if (doc != nullptr) {
+            auto &host = doc->session().graph();
+            const auto graph = host.currentGraph();
+            const auto stats = host.stats();
+            std::printf(", PDC %zu bytes, graphs %lld published / %lld swapped / %lld reclaimed",
+                        graph != nullptr ? graph->compensationBytes() : 0,
+                        static_cast<long long>(stats.published), static_cast<long long>(stats.swaps),
+                        static_cast<long long>(stats.reclaimed));
+        }
+        std::printf("\n");
+    };
+    report("before open", nullptr, processMemory());
+    Tone tone;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(file, false, {}, error);
+    check(doc && doc->session().model().tracks.size() == trackCount + 3, "many-track memory: open all 256 tracks");
+    if (!doc)
+        return;
+    report("open", doc.get(), processMemory());
+    const auto openPdc = doc->session().graph().currentGraph()->compensationBytes();
+
+    // A test signal on one otherwise empty track makes the same real callback
+    // path prove the fader still sounds right. It adds no media or plugin.
+    doc->session().setSourcesFor([&](std::int64_t id) {
+        return id == faderTrack ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    constexpr int frames = 512;
+    doc->prepare(48000, frames);
+    report("prepare", doc.get(), processMemory());
+    const auto preparedPdc = doc->session().graph().currentGraph()->compensationBytes();
+    std::array<float, frames> l{}, r{};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += frames;
+        doc->tick(stream / 48);
+        return std::max(*std::max_element(l.begin(), l.end()), *std::max_element(r.begin(), r.end()));
+    };
+    doc->mailbox().post(ui::TransportMailbox::Command::Play);
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    const double base = block();
+    check(base > .05, "many-track memory: the graph is actually playing the test signal");
+    report("callbacks and ticks", doc.get(), processMemory());
+
+    const auto storedDb = [&] {
+        return doc->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 4").getDouble();
+    };
+    const auto ops = OpJournal(doc->store()).count();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, faderTrack, {}, {-70, 6, -150}};
+    const bool started = doc->beginMixerDrag(fader, std::nullopt, "Change Track Volume");
+    check(started, "many-track memory: start a real live fader gesture");
+    report("fader begin", doc.get(), processMemory());
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto afterBegin = doc->session().graph().stats();
+    ProcessMemory duringDrag;
+    bool moved = true;
+    for (int i = 1; i <= 20; ++i) {
+        moved = doc->mixerDrag(-i) && moved;
+        (void)block();
+        const auto memory = processMemory();
+        duringDrag.residentKiB = std::max(duringDrag.residentKiB, memory.residentKiB);
+        duringDrag.peakKiB = std::max(duringDrag.peakKiB, memory.peakKiB);
+    }
+    const double dragged = block();
+    report("20 fader updates (peak)", doc.get(), duringDrag);
+    check(moved && storedDb() == 0 && OpJournal(doc->store()).count() == ops &&
+              std::abs(dragged / base - .1) < .025,
+          "many-track memory: the gesture changes the sound without writing history");
+    check(doc->session().graph().stats().published == afterBegin.published,
+          "many-track memory: live fader updates do not publish another graph");
+    check(doc->endMixerDrag() && std::abs(storedDb() + 20) < 1e-6 &&
+              OpJournal(doc->store()).count() == ops + 1 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Change Track Volume",
+          "many-track memory: fader release writes one Undo step at the final level");
+    report("fader release", doc.get(), processMemory());
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(doc->ops().undo().ok && doc->synchronise(), "many-track memory: undo the fader edit");
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(storedDb() == 0 && std::abs(block() / base - 1.) < .025,
+          "many-track memory: one Undo restores the level and the sound");
+    report("Undo, callbacks and collection", doc.get(), processMemory());
+    // Leave room for real summing inputs and Track Delay history. Most edges
+    // on the empty strips do not need an 8K-sample reserve of their own.
+    check(std::max(openPdc, preparedPdc) < 36U * 1024U * 1024U,
+          "many-track memory: empty-track PDC rings stay below 36 MiB");
+    doc->release();
+    doc.reset();
+    report("close", nullptr, processMemory());
+}
 // walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
 // let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
 // clip sounds. Blocks run back to back, as a callback does, with no time for a cold reader to catch up.
@@ -2570,6 +3393,167 @@ void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
             (void)block();
     }
     doc->release();
+}
+// SC-409 to SC-411. Count scans as well as elapsed time so the failure is
+// reproducible on slow and fast builders. Indexed reads for the edited clip
+// and rebuilding the containing track are allowed by the scan budget.
+void largeSongResponse(const std::filesystem::path &dir) {
+    constexpr int firstTrack = 11, trackCount = 40, firstClip = 100, clipCount = 2000;
+    constexpr std::int64_t clipLength = 3072;
+    std::string error;
+    const auto file = dir / "large-song.adi";
+    auto doc = ui::ProjectDocument::open(file, true, {}, error);
+    check(doc != nullptr, "large song: create a project");
+    if (!doc)
+        return;
+    {
+        std::vector<OpRequest> tracks;
+        for (int track = firstTrack; track < firstTrack + trackCount; ++track) {
+            OpRequest request;
+            request.opType = "track.create";
+            request.payload = {{"id", track}, {"kind", "midi"}, {"name", "Song track"}};
+            tracks.push_back(std::move(request));
+        }
+        if (!doc->ops().submit(std::move(tracks)).ok) {
+            check(false, "large song: create 40 tracks");
+            return;
+        }
+        std::array<NoteRecord, 25> notes{};
+        for (std::size_t i = 0; i < notes.size(); ++i) {
+            notes[i].start_ticks = static_cast<std::int64_t>(i) * 96;
+            notes[i].dur_ticks = 72;
+            notes[i].note_id = i + 1;
+            notes[i].key = 60;
+            notes[i].vel_on = 100;
+            notes[i].probability = 10000;
+        }
+        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, notes, 1, StreamFlags::SortedByTime);
+        auto &db = doc->store().db();
+        SQLite::Transaction seed(db);
+        SQLite::Statement clip(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(?,?,'midi',?,?)");
+        for (int i = 0; i < clipCount; ++i) {
+            const int id = firstClip + i;
+            clip.bind(1, id);
+            clip.bind(2, firstTrack + i % trackCount);
+            clip.bind(3, (i / trackCount) * clipLength);
+            clip.bind(4, clipLength);
+            clip.exec();
+            clip.reset();
+            if (!doc->store().putEventStream(id, "notes", bytes)) {
+                check(false, "large song: write the MIDI stream");
+                return;
+            }
+        }
+        seed.commit();
+    }
+    doc.reset();
+    doc = ui::ProjectDocument::open(file, false, {}, error);
+    check(doc && doc->session().model().clips.size() == clipCount &&
+              doc->session().model().notes.size() == clipCount * 25,
+          "large song: load 2,000 clips with 50,000 notes");
+    if (!doc)
+        return;
+    struct Scans {
+        int statements = 0;
+        int steps = 0;
+    };
+    auto *db = doc->store().db().getHandle();
+    const auto measure = [&](const char *action, auto &&perform, std::size_t repetitions = 3, bool checkScans = true) {
+        Scans scans;
+        std::vector<double> durations(repetitions);
+        const auto trace = [](unsigned, void *data, void *statement, void *) -> int {
+            auto *stmt = static_cast<sqlite3_stmt *>(statement);
+            const auto *text = sqlite3_sql(stmt);
+            if (!text)
+                return 0;
+            const std::string_view sql(text);
+            if (sql.find("event_streams") == sql.npos && sql.find("FROM clips") == sql.npos &&
+                sql.find("FROM \"clips\"") == sql.npos)
+                return 0;
+            const int steps = sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_FULLSCAN_STEP, 1);
+            auto &count = *static_cast<Scans *>(data);
+            count.statements += steps > 0;
+            count.steps += steps;
+            return 0;
+        };
+        bool ok = true;
+        for (std::size_t i = 0; i < durations.size(); ++i) {
+            sqlite3_trace_v2(db, SQLITE_TRACE_PROFILE, trace, &scans);
+            const auto start = std::chrono::steady_clock::now();
+            const bool performed = perform(static_cast<int>(i));
+            durations[i] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            sqlite3_trace_v2(db, 0, nullptr, nullptr);
+            ok = ok && performed;
+        }
+        std::sort(durations.begin(), durations.end());
+        std::printf("Large song %s: %.2f ms median, %d scan statements, %d scan steps across %zu calls\n",
+                    action, durations[durations.size() / 2], scans.statements, scans.steps, durations.size());
+        check(ok, action);
+        if (checkScans)
+            check(scans.steps < clipCount / 2, "large song: action does not scan unrelated clips or MIDI streams");
+    };
+    const auto submit = [&](std::string operation, Payload payload) {
+        OpRequest request;
+        request.opType = std::move(operation);
+        request.payload = std::move(payload);
+        return doc->ops().submit(std::move(request)).ok;
+    };
+    const auto graphBeforeRename = doc->session().graph().stats().published;
+    const auto untouchedMidi = doc->session().midiClips()->sourcesFor(firstTrack + 1).front();
+    measure("rename", [&](int i) {
+        return submit("track.rename", {{"id", firstTrack}, {"name", "Renamed " + std::to_string(i)}}) &&
+               doc->synchronise();
+    });
+    check(doc->view().current()->findTrack(firstTrack)->name == "Renamed 2", "large song: rename reaches the view");
+    check(doc->session().graph().stats().published == graphBeforeRename, "large song: rename leaves the playing graph in place");
+    measure("move clip", [&](int i) {
+        return submit("clip.move", {{"id", firstClip}, {"to", i + 1}, {"track", firstTrack}}) && doc->synchronise();
+    });
+    check(doc->view().current()->findTrack(firstTrack)->clips.front()->posTicks == 3,
+          "large song: edited clip reaches the view");
+    measure("insert note", [&](int i) {
+        return submit("note.insert", {{"clip", firstClip}, {"note", 30 + i}, {"start", 48 + i}, {"dur", 24},
+                                       {"key", 62}}) && doc->synchronise();
+    });
+    check(doc->session().model().notes.size() == clipCount * 25 + 3, "large song: inserted notes reach the engine");
+    check(doc->session().midiClips()->sourcesFor(firstTrack + 1).front() == untouchedMidi,
+          "large song: MIDI edits retain the source on an untouched track");
+    constexpr std::int64_t lastClipIndex = clipCount / trackCount - 1;
+    constexpr auto lastClip = firstClip + lastClipIndex * trackCount;
+    constexpr auto lastPosition = lastClipIndex * clipLength;
+    const std::array<std::int64_t, 1> movedTracks{firstTrack};
+    const auto scope = edit_plan::materialScope(movedTracks, edit_plan::PlacementClock::Ticks,
+                                               {lastPosition, lastPosition + clipLength + 7});
+    const std::array<edit_plan::Move, 1> positions{{{lastClip, {firstTrack, std::nullopt}, {0, lastPosition + 7}}}};
+    auto prepared = edit_plan::prepareMove(doc->store(), scope, positions, {});
+    check(prepared.ok && prepared.requests.size() == 1, "large song: prepare the Arrangement's clip move");
+    measure("commit prepared clip move", [&](int) {
+        return doc->ops().commitPrepared(std::move(prepared), [](Store& store, clip_edit::PreparedEdit& edit, Actor actor) {
+                   return clip_edit::commitPrepared(store, edit, actor);
+               }).ok && doc->synchronise();
+    }, 1);
+    check(doc->view().current()->findTrack(firstTrack)->clips.back()->posTicks == lastPosition + 7,
+          "large song: the prepared clip move reaches the view");
+    const auto undoCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto beforeDrag = undoCount();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, firstTrack, {}, {-70, 6, -150}};
+    measure("mixer begin", [&](int) { return doc->beginMixerDrag(fader, -6, "Change Track Volume"); }, 1, false);
+    measure("mixer move and tick", [&](int i) {
+        const bool ok = doc->mixerDrag(-7 - i);
+        doc->tick(i);
+        return ok;
+    });
+    check(undoCount() == beforeDrag && doc->view().current()->findTrack(firstTrack)->volumeDb == -9,
+          "large song: preview follows the fader and leaves SQLite history alone");
+    measure("mixer release", [&](int) { return doc->endMixerDrag(); }, 1, false);
+    check(undoCount() == beforeDrag + 1, "large song: fader release lands one op");
+    const auto afterDrag = undoCount();
+    measure("play/stop before mailbox", [&](int i) {
+        const bool play = i % 2 == 0;
+        return submit(play ? "transport.play" : "transport.stop", Payload::object()) &&
+               doc->mailbox().post(play ? ui::TransportMailbox::Command::Play : ui::TransportMailbox::Command::Stop);
+    });
+    check(doc->mailbox().desiredPlaying() && undoCount() == afterDrag + 3, "large song: transport reaches mailbox and journal");
 }
 void trackRenderLifecycle(const std::filesystem::path &dir) {
     const auto project = dir / "freeze-document.adi";
@@ -2828,7 +3812,20 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
         }
     });
     const auto first = dir / "guard-as.adi";
-    const bool saved = doc->saveAs(first);
+    using SaveKind = ui::ProjectDocument::SaveKind;
+    using SavePhase = ui::ProjectDocument::SaveProgress::Phase;
+    const bool requested = doc->startSave(first, SaveKind::as);
+    auto progress = doc->saveProgress();
+    check(requested && progress && progress->phase == SavePhase::waitingForRecording &&
+              !doc->recording() && doc->landingTake(),
+          "Save As returns while the take is still landing");
+    for (int tick = 0; progress && tick < 5000 && progress->phase < SavePhase::succeeded; ++tick) {
+        doc->tick(tick);
+        progress = doc->saveProgress();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const bool saved = progress && progress->phase == SavePhase::succeeded && progress->switched;
+    doc->clearSave();
     running = false;
     callback.join();
     const auto landed = doc->takeLanded();
@@ -2853,7 +3850,13 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
         block();
     doc->stopRecording();
     doc->release();
-    check(doc->landingTake(), "stopped: the take is pending");
+    for (int i = 0; i < 5000 && doc->session().recording().pending(); ++i) {
+        doc->tick(i);
+        if (doc->session().recording().pending())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(!doc->session().recording().pending() && doc->landingTake(),
+          "the recorder finished and the take's publication is pending");
     const auto second = dir / "pending-as.adi";
     check(doc->saveAs(second) && !doc->landingTake() && clipsIn(second) == clipsBefore + 1 &&
               clipsIn(dir / "pending.adi") == clipsBefore + 1 && doc->warning().find("Recording stopped") == std::string::npos,
@@ -2977,6 +3980,36 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--large-song-speed-only") {
+        test::TempDirectory speedDir("ui_document", "large-song");
+        largeSongResponse(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--slow-open-only") {
+        test::TempDirectory speedDir("ui_document", "slow-open");
+        slowProjectOpen(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--many-device-speed-only") {
+        test::TempDirectory speedDir("ui_document", "many-device-tick");
+        manyDeviceTickSpeed(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--many-track-memory-only") {
+        test::TempDirectory memoryDir("ui_document", "many-track-memory");
+        manyTrackMemory(memoryDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--large-project-save-only") {
+        test::TempDirectory saveDir("ui_document", "large-project-save");
+        largeProjectSaveResponse(saveDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
+        test::TempDirectory speedDir("ui_document", "long-take");
+        longTakeStopResponse(speedDir.path());
+        return failures != 0;
+    }
     peakSpans();
     punchedWaveformBounds();
     recordedWaveformHandoff();
@@ -3021,6 +4054,8 @@ int main(int argc, char **argv) {
         commitKeepsClipSounding(commitDir.path());
         test::TempDirectory stoppedDir("ui_document", "stopped-commit");
         playRightAfterAStoppedCommit(stoppedDir.path());
+        test::TempDirectory speedDir("ui_document", "large-song");
+        largeSongResponse(speedDir.path());
         test::TempDirectory renderDir("ui_document", "track-render");
         trackRenderLifecycle(renderDir.path());
     }
@@ -4013,6 +5048,8 @@ int main(int argc, char **argv) {
     devicePresetRoundTrip(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
+    slowProjectOpen(temp.path());
+    manyDeviceTickSpeed(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

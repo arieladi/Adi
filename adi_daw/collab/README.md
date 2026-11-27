@@ -347,6 +347,8 @@ subject, say so in your log instead of writing it twice.
 | 0258 | win | `win/sanity2-1126` | after the sanity check's round 2: a folder per song and fifteen more answers, each as Live; a silent MIDI track until it has an instrument; presets are files; who works what on 27 to 29 November | used |
 | 0259 | win | `win/adr-0259` | surfaces, phones and the agent's stop: Stop Agent, a Captures place, a phone page as a direction, bias controls parked, OSC and learned mappings as decided, a lost device, who did it | used |
 | 0260 | win | `win/adr-0260` | the Jam: three templates, a Mark command with a riff list, rule-made grooves, Make Session after the Foundry, backing to the Cue output | used |
+| 0261 | win | `win/adr-0261-browser-ai` | the Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, the plug-in server carried whole | used |
+| 0262 | win | `win/adr-0262-sheet` | the Browser's second sheet and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, four buttons | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

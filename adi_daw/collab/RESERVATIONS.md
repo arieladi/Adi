@@ -34,17 +34,17 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0261**.
+Next free: **ADR-0263**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
 | Prefix | Section | Who numbers in it | Last used | Next free |
 |---|---|---|---|---|
-| DF-C | Control | the control seat, through win | DF-C8 | DF-C9 |
+| DF-C | Control | the control seat, through win | DF-C9 | DF-C10 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M79 | DF-M80 |
-| DF-W | Window | the window lane and win | DF-W60 | DF-W61 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E91 | DF-E92 |
-| DF-R | Repository | win | DF-R2 | DF-R3 |
+| DF-W | Window | the window lane and win | DF-W61 | DF-W62 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E92 | DF-E93 |
+| DF-R | Repository | win | DF-R3 | DF-R4 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
 
@@ -74,6 +74,9 @@ are in the seat's queue (`collab/prompts/2026-11-22-gemini-queue.md` for gemini)
 | CO-01, the collaboration core | engine | gemini | `src/adi/collab/**` (new), `tests/test_collab_*.cpp`, their lines in `CMakeLists.txt`; its schema minor, if a slice needs one, reserved in the table above first | after 3 December | reserved |
 | the rows of `docs/SANITY-CHECK.md` (fixes; ADR-0257 d2) | each row's owner seat | the six basics sessions (`collab/prompts/2026-11-27-basics-*.md`) | the files each queue names, for its own rows only | now, in win's stacks | lent 27 November, until the owner seat next runs |
 | DF-E89, the Release warnings (a fix) | engine, engine-win and devices | gemini | the 54 units its sweep named, for those warnings only (`collab/prompts/2026-11-27-gemini-basics.md`) | now | lent 27 November |
+| N76 and DF-E82, the preview player (with SC-123) | engine | the basics browser session (`collab/prompts/2026-11-27-basics-browser.md`) | the preview source and its cue path, the Browser's preview row, their tests | now, in win's stacks | lent 27 November (ADR-0261 d14) |
+| the analyser files (fixes; `collab/prompts/2026-11-27-basics-analysers.md`) | mixview | the basics analysers session | `src/juce/ui_analysis.*`, `src/juce/ui_mix_analysers.cpp`, `src/adi/ui/shared_analysis*`, the loudness meter under `src/adi/mix/`, their tests | now, in win's stacks | lent by the director's word of 27 November, until the Mix View seat next runs |
+| the audio device and file rows (SC-376 to SC-391, SC-405, SC-428; `collab/prompts/2026-11-27-basics-device.md`) | each row's owner seat | the Windows 10 walk session | the files its queue names, for its own rows only | now, in win's stacks | lent 27 November |
 
 | DF-M34, a device told each skipped segment's length (a fix, not a PLAN row) | engine | mixview | the device backend's interface in `src/juce/device_model.hpp` (one hook taking each skipped segment's exact frame count, beside `didSuspend`) and the graph's skip site that already calls `Node::silenceTaps` (`src/adi/engine/graph.*`), with a test in the engine's graph suite | before 3 December | lent by win 25 November, the engine seat being out; the engine reviews it when back |
 | DF-E76, a symlinked VST3 bundle resolves to its module (a fix) | engine-win | window-fn | `src/juce/juce_device_loader.cpp` (the canonical module identity) and `tests/test_play_render.cpp` | when proved | lent by win 25 November (first to the Codex work seat, which is out until 29 November) |
@@ -107,6 +110,6 @@ None of the four needs a schema minor, an op name or a register id today.
 | N73 | a loop recording keeps the passes it has when it ends early (a tempo change, Tap Tempo, a loop edit, running out of passes) | engine (`engine/audio_recording.*`, `recording_commands.*`) |
 | N74 | Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today. A reading of Live 12 first (the devices lane's ONE list); until it, the window follows the engine, a step per pass | engine and win (a ruling after the reading) |
 | N75 | MX-07's registry half: `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built", and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`settings/registry.cpp`) |
-| N76 | the engine's preview path: a source that exists with no project open (ADR-0104 d2), heard on Cue Out; the Browser's preview row calls it (MX-08, DF-E82, ADR-0254 d24) | engine |
+| N76 | the engine's preview path: a source that exists with no project open (ADR-0104 d2), heard on Cue Out; the Browser's preview row calls it (MX-08, DF-E82, ADR-0254 d24); lent to the basics browser queue with SC-123 (ADR-0261 d14): one player, built once, with three callers (the Browser's row, the floating search, the map) | engine |
 
 Next free: **N77**. The project key and scale take the next free one if they need an engine field. N69 to N75 were the window-fn seat's unnumbered needs, numbered by win on 24 November in the order of its needs table.
