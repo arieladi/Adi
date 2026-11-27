@@ -95,7 +95,7 @@ void snapshot(Store& store,const fs::path& target) {
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
     return prepareImportAudio(store,options,referenceRate,nullptr);
 }
-MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,const library::Index* index) {
     // The callback refusal is a prvalue built in the caller's slot: guaranteed
     // elision, not optional NRVO, so it costs exactly one empty result.
     if(audio::onAudioThread)return {};
@@ -124,6 +124,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         const auto capturedHash=(mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):
             media::mediaRow(store.db(),imported.mediaId).at("hash_blake3")).get<std::string>();
         std::optional<library::SampleSettings> saved;
+        if(!index && options.shortSamplePolicy) index=options.shortSamplePolicy->library;
         if(index) {
             const auto loaded=index->sampleSettings(capturedHash);
             if(loaded) {
@@ -136,15 +137,19 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         using WarpAction=audio::ShortSampleWarpAction;
         audio::ShortSampleWarpPlan shortWarp{WarpAction::UseAutoWarp,{},{}};
         auto warpSettings=options.warpAnalysis;
-        if(options.warp && !saved && options.shortSample && info.frames>0) {
-            if(!options.shortSample->contentHash.empty() && options.shortSample->contentHash!=capturedHash)
+        auto shortSample=options.shortSample;
+        if(options.warp && !saved && !shortSample && options.shortSamplePolicy && info.frames>0 &&
+            info.frames<=static_cast<std::int64_t>(info.sampleRate)*audio::kShortSampleSeconds)
+            shortSample=library::readSampleWarpInput(*options.shortSamplePolicy,source,capturedHash,options.stop);
+        if(options.warp && !saved && shortSample && info.frames>0) {
+            if(!shortSample->contentHash.empty() && shortSample->contentHash!=capturedHash)
                 throw std::runtime_error("short sample Warp analysis is stale");
-            auto sample=options.shortSample->classification;
+            auto sample=shortSample->classification;
             if(warpSettings.sourceBpm && sample.bpm!=warpSettings.sourceBpm) {
                 sample.bpm=warpSettings.sourceBpm;sample.bars.reset();
             }
             shortWarp=audio::planShortSampleWarp(audio::ShortSampleWarpTrigger::ImportWarp,
-                options.shortSample->mode,sample,static_cast<std::uint64_t>(info.frames),
+                shortSample->mode,sample,static_cast<std::uint64_t>(info.frames),
                 static_cast<std::uint32_t>(info.sampleRate),warpSettings.tempoHint);
             if(shortWarp.action==WarpAction::Invalid)throw std::runtime_error("invalid short sample Warp settings");
         }

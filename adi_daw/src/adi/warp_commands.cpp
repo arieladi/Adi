@@ -44,7 +44,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)throw std::runtime_error("Warp needs an attached, independent audio clip");
         auto source=sources[0];
         if((integer(source,"warp_enabled")!=0)==options.enabled)throw std::runtime_error("clip already has the requested Warp state");
-        const bool wholeLoop=options.shortSample && integer(root,"loop_enabled")!=0 && !options.enabled &&
+        const bool wholeLoop=(options.shortSample || options.shortSamplePolicy) && integer(root,"loop_enabled")!=0 && !options.enabled &&
             integer(root,"loop_start_ticks")==0 && root.at("loop_len_ticks")==root.at("length_ticks");
         if(integer(root,"content_offset_ticks")!=0 || (integer(root,"loop_enabled")!=0 && !wholeLoop) || integer(source,"reverse")!=0 ||
            source.at("transpose_semis")!=0 || source.at("formant_shift")!=0)
@@ -88,15 +88,19 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             using Action=audio::ShortSampleWarpAction;
             audio::ShortSampleWarpPlan plan{Action::UseAutoWarp,{},{}};
             auto settings=options.analysis;
-            if(options.shortSample && start==0 && frames==reader.frames()) {
-                if(!options.shortSample->contentHash.empty() && options.shortSample->contentHash!=hash.hex)
+            auto shortSample=options.shortSample;
+            if(!shortSample && options.shortSamplePolicy && start==0 && frames==reader.frames() &&
+                frames<=static_cast<std::uint64_t>(reader.sampleRate())*audio::kShortSampleSeconds)
+                shortSample=library::readSampleWarpInput(*options.shortSamplePolicy,file,hash.hex,options.stop);
+            if(shortSample && start==0 && frames==reader.frames()) {
+                if(!shortSample->contentHash.empty() && shortSample->contentHash!=hash.hex)
                     throw std::runtime_error("short sample Warp analysis is stale");
-                auto sample=options.shortSample->classification;
+                auto sample=shortSample->classification;
                 if(settings.sourceBpm && sample.bpm!=settings.sourceBpm) {
                     sample.bpm=settings.sourceBpm;sample.bars.reset();
                 }
                 plan=audio::planShortSampleWarp(audio::ShortSampleWarpTrigger::WarpPress,
-                    options.shortSample->mode,sample,frames,reader.sampleRate(),settings.tempoHint);
+                    shortSample->mode,sample,frames,reader.sampleRate(),settings.tempoHint);
                 if(plan.action==Action::Invalid)throw std::runtime_error("invalid short sample Warp settings");
                 if(plan.action==Action::KeepUnwarped){result.ok=true;return result;}
             }

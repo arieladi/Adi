@@ -4,6 +4,7 @@
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/short_sample_warp.hpp"
 #include "adi/audio/warp.hpp"
+#include "adi/library/sample_warp_policy.hpp"
 #include "adi/render/queue.hpp"
 namespace adi::library {class Index;}
 namespace adi::clip_edit {
@@ -21,6 +22,7 @@ struct ImportOptions {
     audio::AutoWarpOptions warpAnalysis;
     std::stop_token stop;
     std::optional<audio::ShortSampleWarpInput> shortSample = {};
+    std::optional<library::SampleWarpPolicy> shortSamplePolicy = {};
 };
 /// Off-callback, on this connection's owner. Does not change project rows.
 /// Keep the document generation with the job. Hosts keep their thread contract.
@@ -28,7 +30,7 @@ struct ImportOptions {
 // Explicit app-owned library: authored defaults override automatic Warp. Missing
 // defaults use normal import; unsupported/mismatched authored data refuse. The
 // captured native request owns all values; no library survives into commit/play.
-[[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,library::Index*);
+[[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,const library::Index*);
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;

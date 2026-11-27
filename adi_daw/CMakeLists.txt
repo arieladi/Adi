@@ -1938,10 +1938,10 @@ target_sources(adi_core PRIVATE
     src/adi/library/sample_analysis.cpp
     src/adi/library/sample_analysis_catalog.cpp
     src/adi/library/sample_descriptors.cpp
-    src/adi/library/sample_file_tags.cpp
     src/adi/library/sample_query.cpp
     src/adi/library/sample_swap.cpp
-    src/adi/library/sample_tonality.cpp)
+    src/adi/library/sample_tonality.cpp
+    src/adi/library/sample_warp_policy.cpp)
 foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
                        sample_analysis sample_descriptors sample_query sample_tonality)
     add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
