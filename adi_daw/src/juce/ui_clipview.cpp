@@ -3738,8 +3738,8 @@ juce::PopupMenu SampleEditor::warpContextMenu() {
         menu.addItem(WarpWholeSampleLoop, loopLabel("Sample", bars));
         if (const auto selectedBars = suggestedLoopBars(true); selectedBars > 0)
             menu.addItem(WarpSelectionLoop, loopLabel("Selection", selectedBars));
-        menu.addItem(ChooseWarpLoopLength, sourceRange_ ? "Warp Selection as a Different Loop Length…"
-                                                      : "Warp Sample as a Different Loop Length…");
+        menu.addItem(ChooseWarpLoopLength, juce::String::fromUTF8(sourceRange_ ? "Warp Selection as a Different Loop Length…"
+                                                                            : "Warp Sample as a Different Loop Length…"));
     }
     return menu;
 }
