@@ -1155,6 +1155,8 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(!halfLit(10), "unsoloed, Drums' Solo is whole again");
         // Live's colour chooser at the foot of a track's menu (Live 12 manual 2.3.2): the palette's
         // measured row; on a group, Assign Track Color to Grouped Tracks and Clips (manual 18.3).
+        constexpr auto *assignClips = "Assign Track Color to Clips";
+        constexpr auto *assignGroup = "Assign Track Color to Grouped Tracks and Clips";
         auto headerItems = [&root] {
             juce::StringArray out;
             const auto menu = root.arrangement.headerMenu();
@@ -1163,19 +1165,29 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                     out.add(it.getItem().text + (it.getItem().customComponent != nullptr ? " (swatches)" : ""));
             return out;
         };
+        const auto chooseHeader = [&root](std::int64_t track, const char *text) {
+            const auto menu = root.arrangement.headerMenu(track);
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == text && item.isEnabled && item.action) {
+                    item.action();
+                    return true;
+                }
+            }
+            return false;
+        };
         auto colourOf = [&trackNamed](std::int64_t id) -> std::int64_t {
             const auto *t = trackNamed(id);
             return t != nullptr && t->color ? *t->color : -1;
         };
         lanes.selection.track = 10;
         lanes.selection.toTrack = 0;
-        check(headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
-                  headerItems()[headerItems().size() - 1] == "Colour (swatches)",
+        check(headerItems().contains(assignGroup) && headerItems()[headerItems().size() - 1] == "Colour (swatches)",
               "a group's menu ends with Assign Track Color to Grouped Tracks and Clips, then the colour chooser");
         lanes.selection.track = 11;
-        check(!headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
+        check(!headerItems().contains(assignGroup) && headerItems().contains(assignClips) &&
                   headerItems().contains("Colour (swatches)"),
-              "a track's has the chooser only");
+              "SC-275: an ordinary track's menu offers Assign Track Color to Clips beside its swatches");
         check(root.arrangement.recolour(5), "a swatch picked on Clap/Snare");
         refresh();
         check(colourOf(11) == 5 && root.undoTitle(false) == "Undo Recolour Track", "Clap/Snare takes colour 5, one step");
@@ -1208,7 +1220,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "every selected track takes it, one step");
         lanes.selection.track = 10;
         lanes.selection.toTrack = 0;
-        check(root.arrangement.recolour(3) && root.arrangement.assignGroupColour(), "Drums coloured, then its colour assigned");
+        check(root.arrangement.recolour(3) && chooseHeader(0, assignGroup), "Drums coloured, then its colour assigned");
         refresh();
         check(colourOf(10) == 3 && colourOf(11) == 3 && colourOf(12) == 3 &&
                   root.undoTitle(false) == "Undo Assign Track Color to Grouped Tracks and Clips",
@@ -1217,6 +1229,79 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
             root.command(AppCommands::Undo);
         refresh();
         check(colourOf(10) != 3 && colourOf(11) != 7 && colourOf(12) != 7, "four undos put the colours back");
+
+        const auto seedOp = [](const char *type, Payload payload) {
+            OpRequest request;
+            request.opType = type;
+            request.payload = std::move(payload);
+            request.label = "Prepare Clip Colors";
+            return request;
+        };
+        const bool seeded = root.submitEdits({
+            seedOp("track.setColor", {{"id", 14}, {"color", 0}}),
+            seedOp("clip.setColor", {{"id", 102}, {"color", 5}}),
+            seedOp("clip.create", {{"id", 106}, {"track", 14}, {"kind", "midi"},
+                                   {"pos", 64 * textproj::kPPQ}, {"length", textproj::kPPQ}}),
+        });
+        check(seeded, "SC-275: seed one explicitly coloured clip and one inherited clip on Bass");
+        if (seeded) {
+            refresh();
+            const auto clipColour = [&root](std::int64_t id) -> std::int64_t {
+                for (const auto &track : root.reader().tracks())
+                    for (const auto &clip : track->clips)
+                        if (clip->id == id)
+                            return clip->color.value_or(-1);
+                return -2;
+            };
+            const auto undoHead = [&submitter] {
+                const auto step = submitter.nextUndo();
+                return step ? step->txnId : 0;
+            };
+            const auto before = undoHead();
+            lanes.selection.track = 11;
+            lanes.selection.toTrack = 0;
+            lanes.selection.picked = {14};
+            root.publishSelection();
+            const bool assigned = chooseHeader(14, assignClips);
+            refresh();
+            check(assigned && clipColour(102) == 0 && clipColour(106) == 0 && clipColour(100) == -1 &&
+                      clipColour(103) == -1 && colourOf(14) == 0 &&
+                      root.undoTitle(false) == "Undo Assign Track Color to Clips",
+                  "SC-275: the clicked Bass uses its palette zero on all its clips and leaves other tracks' clips alone");
+            if (assigned && undoHead() != before) {
+                const auto applied = undoHead();
+                chooseHeader(14, assignClips);
+                check(undoHead() == applied, "SC-275: assigning the same clip colours adds no step");
+                check(root.command(AppCommands::Undo), "SC-275: undo the ordinary track assignment once");
+                refresh();
+                check(clipColour(102) == 5 && clipColour(106) == -1 && undoHead() == before,
+                      "SC-275: one Undo restores both an explicit clip colour and inherited colour");
+            }
+
+            lanes.selection.track = 11;
+            lanes.selection.toTrack = 0;
+            lanes.selection.picked = {13};
+            root.publishSelection();
+            const auto bodyColour = root.arrangement.colourIndex(13);
+            const bool assignedGroup = chooseHeader(13, assignGroup);
+            refresh();
+            check(assignedGroup && clipColour(102) == bodyColour && clipColour(103) == bodyColour &&
+                      clipColour(104) == bodyColour && clipColour(106) == bodyColour && clipColour(100) == -1 &&
+                      colourOf(14) == bodyColour && colourOf(17) == bodyColour && colourOf(11) == -1 &&
+                      root.undoTitle(false) == "Undo Assign Track Color to Grouped Tracks and Clips",
+                  "SC-275: Body assigns its displayed colour to clips and tracks at both depths within its group only");
+            if (assignedGroup && undoHead() != before) {
+                check(root.command(AppCommands::Undo), "SC-275: undo the group assignment once");
+                refresh();
+                check(clipColour(102) == 5 && clipColour(103) == -1 && clipColour(104) == -1 && clipColour(106) == -1 &&
+                          colourOf(14) == 0 && colourOf(17) == -1 && undoHead() == before,
+                      "SC-275: one Undo restores the subgroup's track and clip colours along with the direct descendants'");
+            }
+            if (undoHead() == before)
+                check(root.command(AppCommands::Undo), "SC-275: remove the test clip and its setup colours");
+            lanes.selection.picked.clear();
+            refresh();
+        }
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
