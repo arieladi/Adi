@@ -2,7 +2,8 @@ Codex took the stretcher seat on 27 November 2026.
 
 ## Still unbuilt
 
-- M3-LAUNCH L2 through the actual Session slot graph. Connect the slot loader and scheduler to the streaming source and verify a running scene tempo change.
+- M3-LAUNCH L2 running scene tempo changes. The persisted authored-ramp case streams resident native slots. Still to verify a tempo-bearing scene with a continuing or Legato slot.
+- Session launch audio on an Arrangement R3 track must share its source delay. Streaming paged media and worker R3 slot media still need a launch/readiness path.
 - A cold seek into a variable-tempo R3 clip can meet a cached page produced with different phase history. Make the boundary continuous and test it with an audible fixture.
 
 The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC report contains no stretcher entry or fix branch. Live 12.4 reference measurements are tracked under Readings owed.
@@ -16,6 +17,7 @@ The Windows checker has reported on Session, Pitch and main. Its 18:30 UTC repor
 | TM-WT-04 adjacent onsets and page reads | Beats keeps the first attack when two onsets round to the same output sample. Beats skips unused interpolation neighbors and Texture skips grains with zero Hann gain. | The collapsed attack now reads 0.75 FS and its continuation 0.25 FS. The Beats and Texture tests read only contributing PCM. Strict GCC, checked iterators, ASan and UBSan passed. | `4aa1413b9` on the stretcher chain. |
 | TM-WT-04 driver clock portability | Traverse immutable tempo and meter data without checked vector iterators in timing, count-in, device transport and the metronome. Make conversions explicit where MSVC uses 53-bit `long double`. | A checked-iterator probe measured 2,025 mutex calls before and zero afterward with the same clock checksum. The transport, Session and R3 compensation checks passed under strict GCC. Native MSVC validation is pending. | `50f971c6f` on the stretcher chain. |
 | TM-WT-04 local R3 ratio admission | Check the tempo range from the source origin through the audible placement, including loop laps and excluding tempo changes at the end boundary. | A 300 BPM step at beat 16 or 80 previously cleared graph latency to zero. The new path reports 2,048 frames and plays the expected landmark at 0.815 FS. A 300 BPM step inside the clip still takes the prepared fallback. | `2a0d9f70f` on the stretcher chain. |
+| TM-WT-04 persisted Session Warp launch | Wire the stored slot loader and scheduler's clock anchors into resident Beats, Texture and Re-Pitch. Keep fixed media banks on the prepared source path so their private render has no R3 pipeline delay. | Before the bridge the scheduler fired both scenes but all eight pulses were silent. Afterward the persisted project launches at frames 93,428 and 182,063, preserves the second slot's −0.60 FS Legato landmark, and plays all eight pulses within one frame. Zero callback allocations and file I/O. Four focused CTest suites passed. | `0876e3845` on the companion chain. |
 
 The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, page publication, physical delay and clip diagnostics. `CMakeLists.txt` registers the engines and tests. `docs/ENGINE-WARP.md` records the playback contract. The Warp work requires no format, operation or register reservation.
 
@@ -26,7 +28,7 @@ The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, pa
 - TM-TT-01 is stacked on this chain from `engine/tm-tt01-tempo-ramps-current` at `7c37df259`. Land the dependency ahead of or with this chain. `src/adi/engine/tempo_map.cpp` shares its ramp integral with the Warp index. `src/adi/render/queue.cpp` propagates named clip failures.
 - The authored-tempo handover adds a driver admission predicate to `src/adi/engine/host.*`, wires the delayed-source readiness check in `src/adi/engine/session.*` and `src/adi/engine/gesture_preview.cpp`, and uses the same page admission code in `src/adi/engine/clip_playback.*`.
 - SC-27's compatibility fix also changes `src/adi/recording_commands.cpp` to use the shared playback tempo map for landing captured loops. Ordinary recording keeps its established default lead-in rule.
-- The tested scene seam `WarpClipPlayer::launchAt` accepts the project launch tick and source Legato phase and renders against the prepared shared tempo. The remaining unbuilt integration is the full M3-LAUNCH L2 Session dispatch through the actual slot track graph. The Session seat owns replacing fixed-tempo resident slot PCM under TM-SV-03 and TM-SV-04. Its current chain at `1e5183741` has the reserved persistence work and the existing fixed-tempo slot player. The reserved schema minors, operations and ADIA section belong to the Session and Pitch seats.
+- `seats/stretcher-session-integration` stacks the reserved Session engine, its Windows checker fixes and the stretcher chain. The persisted slot graph now drives `WarpClipPlayer::launchAt` using the real scheduler's launch tick and source Legato phase. The standalone chain can land ahead of the Session schema. [Companion chain](https://github.com/arieladi/Adi/tree/seats/stretcher-session-integration)
 
 ## Readings owed
 
