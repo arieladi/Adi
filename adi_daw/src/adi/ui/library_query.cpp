@@ -76,12 +76,12 @@ bool LibraryQuery::matchesFolded(std::string_view name, std::string_view other) 
 }
 
 BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing_(std::move(listing)) {
-    foldedNames_.reserve(listing_.samples.size());
-    paths_.reserve(listing_.samples.size());
-    for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
-        const auto &sample = listing_.samples[i];
-        paths_.push_back({std::filesystem::hash_value(sample.path), i});
-        const auto &name = foldedNames_.emplace_back(folded(sample.name));
+    foldedNames_.reserve(listing_.files.size());
+    paths_.reserve(listing_.files.size());
+    for (std::size_t i = 0; i < listing_.files.size(); ++i) {
+        const auto &file = listing_.files[i];
+        paths_.push_back({std::filesystem::hash_value(file.path), i});
+        const auto &name = foldedNames_.emplace_back(folded(file.name));
         for (std::size_t start = 0; start < name.size(); ++start) {
             // A leading 1 distinguishes grams of different widths, even for non-ASCII names.
             std::uint32_t key = 1;
@@ -97,14 +97,14 @@ BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing
     std::sort(paths_.begin(), paths_.end(), [](const PathEntry &a, const PathEntry &b) {
         return a.hash < b.hash || (a.hash == b.hash && a.index < b.index);
     });
-    // A sample deduplicated by the library index may belong to several overlapping Places.
+    // A file deduplicated by the library index may belong to several overlapping Places.
     // Keep their path-based membership here, so changing the query never compares paths.
     for (const auto &place : listing_.places) {
         if (place.volumeId.empty())
             continue;
         auto &scope = places_[place.volumeId];
         scope.ordered.clear();
-        scope.contains.assign(listing_.samples.size(), false);
+        scope.contains.assign(listing_.files.size(), false);
         scope.folders.clear();
         if (place.root.empty())
             continue;
@@ -126,13 +126,13 @@ BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing
         for (const auto &directory : place.directories)
             if (!directory.empty() && !directory.has_root_path() && directory != "." && *directory.begin() != "..")
                 folderIndex(folderIndex, directory);
-        for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
-            const auto relative = listing_.samples[i].path.lexically_relative(place.root);
+        for (std::size_t i = 0; i < listing_.files.size(); ++i) {
+            const auto relative = listing_.files[i].path.lexically_relative(place.root);
             if (!relative.empty() && relative != "." && *relative.begin() != "..") {
                 scope.ordered.push_back(i);
                 scope.contains[i] = true;
                 const auto parent = folderIndex(folderIndex, relative.parent_path());
-                scope.folders[parent].samples.push_back(i);
+                scope.folders[parent].files.push_back(i);
             }
         }
         for (auto &folder : scope.folders)
@@ -150,9 +150,9 @@ std::span<const BrowserLibrarySnapshot::Folder> BrowserLibrarySnapshot::folders(
     return {};
 }
 
-void BrowserLibrarySnapshot::appendSamples(const LibraryQuery &query, const std::string *volume,
-                                           std::vector<const LibraryFile *> &results) const {
-    const PlaceSamples *scope = nullptr;
+void BrowserLibrarySnapshot::appendFiles(const LibraryQuery &query, const std::string *volume,
+                                         std::vector<const LibraryFile *> &results, FileFilter fileFilter) const {
+    const PlaceFiles *scope = nullptr;
     if (volume != nullptr) {
         const auto found = places_.find(*volume);
         if (found == places_.end())
@@ -160,20 +160,25 @@ void BrowserLibrarySnapshot::appendSamples(const LibraryQuery &query, const std:
         scope = &found->second;
     }
 
+    const auto accepts = [fileFilter](const LibraryFile &file) {
+        return fileFilter == FileFilter::All || file.isSample();
+    };
     if (query.empty()) {
         if (scope != nullptr) {
             results.reserve(results.size() + scope->ordered.size());
             for (const auto i : scope->ordered)
-                results.push_back(&listing_.samples[i]);
+                if (accepts(listing_.files[i]))
+                    results.push_back(&listing_.files[i]);
         } else {
-            results.reserve(results.size() + listing_.samples.size());
-            for (const auto &sample : listing_.samples)
-                results.push_back(&sample);
+            results.reserve(results.size() + listing_.files.size());
+            for (const auto &file : listing_.files)
+                if (accepts(file))
+                    results.push_back(&file);
         }
         return;
     }
 
-    const SampleIndices *shortest = nullptr;
+    const FileIndices *shortest = nullptr;
     for (const std::string_view word : query.words_) {
         const auto gramSize = std::min(kMaxGramBytes, word.size());
         for (std::size_t start = 0; start <= word.size() - gramSize; ++start) {
@@ -196,11 +201,12 @@ void BrowserLibrarySnapshot::appendSamples(const LibraryQuery &query, const std:
                                                                  : std::string_view{};
     const bool exact = !scanPlace && !singleWord.empty() && singleWord.size() <= kMaxGramBytes;
     for (const auto i : candidates) {
-        if (filter != nullptr && !filter->contains[i])
+        const auto &file = listing_.files[i];
+        if ((filter != nullptr && !filter->contains[i]) || !accepts(file))
             continue;
         if (exact || (singleWord.empty() ? query.matchesFolded(foldedNames_[i])
                                          : foldedNames_[i].find(singleWord) != std::string::npos))
-            results.push_back(&listing_.samples[i]);
+            results.push_back(&file);
     }
 }
 
@@ -208,7 +214,7 @@ const LibraryFile *BrowserLibrarySnapshot::matchingFileAtPath(const std::filesys
                                                               const LibraryQuery &query) const {
     const auto candidates = std::ranges::equal_range(paths_, std::filesystem::hash_value(path), {}, &PathEntry::hash);
     for (const auto &candidate : candidates) {
-        const auto &file = listing_.samples[candidate.index];
+        const auto &file = listing_.files[candidate.index];
         if (file.path == path && query.matchesFolded(foldedNames_[candidate.index]))
             return &file;
     }
@@ -216,35 +222,35 @@ const LibraryFile *BrowserLibrarySnapshot::matchingFileAtPath(const std::filesys
 }
 
 void queryLibrary(const LibraryQuery &query, const LibraryQuerySources &sources, LibraryQueryResults &results) {
-    results.samples.clear();
+    results.files.clear();
     results.builtins.clear();
     results.plugins.clear();
     results.presets.clear();
-    if (sources.samples != nullptr)
-        sources.samples->appendSamples(query, nullptr, results.samples);
+    if (sources.files != nullptr)
+        sources.files->appendFiles(query, nullptr, results.files);
     if (sources.projectSamples != nullptr) {
-        const auto sharedCount = results.samples.size();
-        sources.projectSamples->appendSamples(query, nullptr, results.samples);
-        if (sharedCount != 0 && sharedCount < results.samples.size()) {
-            // appendSamples emits shared matches in listing order. Leave that prefix intact until
+        const auto sharedCount = results.files.size();
+        sources.projectSamples->appendSamples(query, nullptr, results.files);
+        if (sharedCount != 0 && sharedCount < results.files.size()) {
+            // appendFiles emits shared matches in listing order. Leave that prefix intact until
             // every replacement position has been found, then prefer the project's display names.
-            const auto shared = std::span(results.samples).first(sharedCount);
+            const auto shared = std::span(results.files).first(sharedCount);
             std::unordered_map<std::size_t, const LibraryFile *> replacements;
             auto tail = sharedCount;
-            for (auto index = sharedCount; index < results.samples.size(); ++index) {
-                const auto *project = results.samples[index];
-                if (const auto *duplicate = sources.samples->matchingFileAtPath(project->path, query)) {
+            for (auto index = sharedCount; index < results.files.size(); ++index) {
+                const auto *project = results.files[index];
+                if (const auto *duplicate = sources.files->matchingFileAtPath(project->path, query)) {
                     const auto slot = std::ranges::lower_bound(shared, duplicate);
                     if (slot != shared.end() && *slot == duplicate) {
                         replacements.try_emplace(static_cast<std::size_t>(slot - shared.begin()), project);
                         continue;
                     }
                 }
-                results.samples[tail++] = project;
+                results.files[tail++] = project;
             }
             for (const auto &[slot, project] : replacements)
-                results.samples[slot] = project;
-            results.samples.resize(tail);
+                results.files[slot] = project;
+            results.files.resize(tail);
         }
     }
     for (const auto &device : sources.builtins)

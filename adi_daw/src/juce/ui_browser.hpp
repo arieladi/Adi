@@ -138,7 +138,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a library folder, a heading, a device or a saved preset.
+    // A row of the list: a library file or folder, a heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
@@ -155,7 +155,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool canMarkSelection() const noexcept;
     bool toggleSelectionMark(unsigned slot);
 
-    // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
+    // Activates the row (double-click or Enter).
     bool load(int row);
     void setDevicePresets(std::vector<preset::Entry>);
     std::function<bool(const std::filesystem::path &)> loadDevicePreset;

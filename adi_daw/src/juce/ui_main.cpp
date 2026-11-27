@@ -1923,7 +1923,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->locateClipMedia = [this](std::int64_t clip) { locateMissingSample(clip); };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
-        root->openRecentProject = [this](const juce::File &chosen) {
+        root->openProjectFile = [this](const juce::File &chosen) {
             if (chosen.existsAsFile())
                 openProject(chosen, false);
             else

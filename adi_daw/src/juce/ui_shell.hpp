@@ -514,7 +514,7 @@ class AdiRootComponent final : public juce::Component,
     std::function<bool(int)> applicationCommand;
     std::function<void()> openAudioSettings;
     bool needsFirstSave = false;
-    std::function<void(const juce::File &)> openRecentProject;
+    std::function<void(const juce::File &)> openProjectFile;
     std::function<void()> afterEdit;
     std::function<std::int64_t()> retainedDeviceId;
     std::function<bool(std::string &)> beforeDeleteTrack;

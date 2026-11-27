@@ -39,32 +39,32 @@ void mixedLibrary() {
     const LibraryQuerySources sources{&snapshot, devices, plugins, &presets};
     LibraryQueryResults results;
     queryLibrary(LibraryQuery{"  cIRcuit\tcrunch\n"}, sources, results);
-    check(results.samples == std::vector{&snapshot.listing().samples[2]} &&
+    check(results.files == std::vector{&snapshot.listing().files[2]} &&
               results.builtins == std::vector{&devices[0]} && results.plugins == std::vector{&plugins[0]} &&
               results.presets == std::vector{&presets.begin()->second[0]},
           "SC-120 and SC-122: one query matches samples, built-ins, plug-ins and presets by all words");
     queryLibrary(LibraryQuery{"LAbS CIRCUIT"}, sources, results);
-    check(results.samples.empty() && results.builtins.empty() && results.presets.empty() &&
+    check(results.files.empty() && results.builtins.empty() && results.presets.empty() &&
               results.plugins == std::vector{&plugins[0]},
           "SC-122: a plug-in matches tokens from both its name and its maker");
     const LibraryQuery kick{"kick 808"};
     queryLibrary(kick, sources, results);
-    check(results.samples == std::vector{&snapshot.listing().samples[0]} && results.plugins.empty(),
+    check(results.files == std::vector{&snapshot.listing().files[0]} && results.plugins.empty(),
           "SC-122: reordered words find 808 Kick.wav, without matching directory names");
     const std::string volume = "drums";
-    results.samples.clear();
-    snapshot.appendSamples(kick, &volume, results.samples);
-    check(results.samples == std::vector{&snapshot.listing().samples[0]},
+    results.files.clear();
+    snapshot.appendSamples(kick, &volume, results.files);
+    check(results.files == std::vector{&snapshot.listing().files[0]},
           "SC-421: a nested Place searches a file indexed under its parent");
-    snapshot.appendSamples(LibraryQuery{"808 snare"}, &volume, results.samples);
-    check(results.samples == std::vector{&snapshot.listing().samples[0], &snapshot.listing().samples[1]},
+    snapshot.appendSamples(LibraryQuery{"808 snare"}, &volume, results.files);
+    check(results.files == std::vector{&snapshot.listing().files[0], &snapshot.listing().files[1]},
           "SC-421: scoped matching appends stable references in source order");
     queryLibrary(LibraryQuery{" \t\r\n "}, sources, results);
-    check(results.samples.size() == snapshot.listing().samples.size() && results.builtins.size() == devices.size() &&
+    check(results.files.size() == snapshot.listing().files.size() && results.builtins.size() == devices.size() &&
               results.plugins.size() == plugins.size() && results.presets.size() == 1,
           "SC-120: a blank query lists all published source entries");
     queryLibrary(LibraryQuery{""}, {}, results);
-    check(results.samples.empty() && results.builtins.empty() && results.plugins.empty() && results.presets.empty(),
+    check(results.files.empty() && results.builtins.empty() && results.plugins.empty() && results.presets.empty(),
           "SC-120: a repeated query replaces results when input publications are absent");
 }
 
@@ -76,11 +76,14 @@ void unicodeWords() {
 }
 
 void currentProjectOrdering() {
+    using Kind = LibraryFile::Kind;
     const BrowserLibrarySnapshot shared({{}, {{"Alpha Kick.wav", "a.wav", {}},
                                               {"Other.wav", "same.wav", {}},
                                               {"Middle Kick.wav", "middle.wav", {}},
                                               {"Shared Kick.wav", "same.wav", {}},
-                                              {"Late Kick.wav", "late.wav", {}}}, {}});
+                                              {"Late Kick.wav", "late.wav", {}},
+                                              {"Shared Kick.adi", "same.adi", {}, Kind::Project},
+                                              {"Late Kick.mid", "late.mid", {}, Kind::Midi}}, {}});
     const BrowserLibrarySnapshot project({{}, {{"Project Alias Kick.wav", "same.wav", {}},
                                                {"Extra Kick.wav", "extra.wav", {}},
                                                {"Project Late Kick.wav", "late.wav", {}},
@@ -88,12 +91,13 @@ void currentProjectOrdering() {
                                                {"Repeated Alias Kick.wav", "same.wav", {}}}, {}});
     LibraryQueryResults results;
     queryLibrary(LibraryQuery{"kick"}, {&shared, {}, {}, nullptr, &project}, results);
-    const auto &indexed = shared.listing().samples;
-    const auto &local = project.listing().samples;
-    check(results.samples == std::vector{&indexed[0], &indexed[2], &local[0], &local[2], &local[1], &local[3]},
-          "SC-134: project names replace the first matching shared paths in place and extra files keep project order");
+    const auto &indexed = shared.listing().files;
+    const auto &local = project.listing().files;
+    check(results.files == std::vector{&indexed[0], &indexed[2], &local[0], &local[2], &indexed[5], &indexed[6],
+                                      &local[1], &local[3]},
+          "SC-137: project assets replace exact shared paths in place alongside distinct project and MIDI files");
     queryLibrary(LibraryQuery{"alias project"}, {&shared, {}, {}, nullptr, &project}, results);
-    check(results.samples == std::vector{&local[0]}, "SC-134: a project display name can match by itself");
+    check(results.files == std::vector{&local[0]}, "SC-134: a project display name can match by itself");
 }
 
 void currentProjectAudio() {
@@ -124,7 +128,7 @@ void currentProjectAudio() {
 
     ProjectLibrary project;
     const auto before = project.update(*store);
-    check(before->listing().samples.empty(), "SC-134: existing files in a shared project folder do not imply ownership");
+    check(before->listing().files.empty(), "SC-134: existing files in a shared project folder do not imply ownership");
     const auto publish = [&](const fs::path &file, std::int64_t id) {
         OpRequest request;
         const auto prepared = media::prepareImport(*store, file, id, 0, request);
@@ -132,11 +136,11 @@ void currentProjectAudio() {
     };
     check(publish(take, 101) && publish(oldTake, 102) && publish(linked, 103), "SC-134: commit two takes and one external link");
     const auto takes = project.update(*store);
-    check(takes != before && takes->listing().samples.size() == 2 && project.update(*store) == takes,
+    check(takes != before && takes->listing().files.size() == 2 && project.update(*store) == takes,
           "SC-134: the media commit refreshes the publisher and an unchanged store reuses its publication");
-    if (takes->listing().samples.size() != 2)
+    if (takes->listing().files.size() != 2)
         return;
-    check(takes->listing().samples[0].path == take && takes->listing().samples[1].path == oldTake,
+    check(takes->listing().files[0].path == take && takes->listing().files[1].path == oldTake,
           "SC-134: the project lists current and legacy recordings with their owned paths");
 
     const auto model = rows::readModel(*store);
@@ -157,19 +161,19 @@ void currentProjectAudio() {
     const auto committed = clip_edit::commitMaterial(*store, pending);
     check(committed.ok, committed.ok ? "SC-134: commit the bounced file" : committed.error.c_str());
     const auto bounced = project.update(*store);
-    check(bounced != takes && bounced->listing().samples.size() == 3 && bounced->listing().samples.front().name == "bounce.wav" &&
-              bounced->listing().samples.front().path.parent_path() == legacy,
+    check(bounced != takes && bounced->listing().files.size() == 3 && bounced->listing().files.front().name == "bounce.wav" &&
+              bounced->listing().files.front().path.parent_path() == legacy,
           "SC-134: the same publisher lists the prepared bounce by original name after commit");
-    if (bounced->listing().samples.size() != 3)
+    if (bounced->listing().files.size() != 3)
         return;
 
     const BrowserLibrarySnapshot shared({{}, {{"Lead 0001.wav", take, "shared"}}, {}});
     LibraryQueryResults results;
     queryLibrary(LibraryQuery{"0001 LEAD"}, {&shared, {}, {}, nullptr, bounced.get()}, results);
-    check(results.samples == std::vector{&bounced->listing().samples[1]},
+    check(results.files == std::vector{&bounced->listing().files[1]},
           "SC-134: All searches project recordings and deduplicates their paths against the shared library");
     auto other = Store::createNewProject(folder / "Other.adi", error);
-    check(other && project.update(*other)->listing().samples.empty(),
+    check(other && project.update(*other)->listing().files.empty(),
           "SC-134: a different song sharing the same disk folder does not expose the first song's assets");
 }
 } // namespace

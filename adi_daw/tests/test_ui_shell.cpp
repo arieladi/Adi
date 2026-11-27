@@ -3661,7 +3661,7 @@ void browserPreview(const std::filesystem::path &dir) {
     const auto kick = dir / "Kick.wav";
     const auto snare = dir / "Snare.flac";
     LibraryListing listing;
-    listing.samples = {{"Kick.wav", kick, {}}, {"Snare.flac", snare, {}}};
+    listing.files = {{"Kick.wav", kick, {}}, {"Snare.flac", snare, {}}};
     browser.setListing(std::move(listing));
     for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
         if (browser.sidebar()[i].samples) {
@@ -3751,7 +3751,7 @@ void browserPreview(const std::filesystem::path &dir) {
     const auto nested = place / "Drums" / "Kick.wav";
     LibraryListing folders;
     folders.places = {{"Preview Place", place, "preview-test"}};
-    folders.samples = {{"Kick.wav", nested, "preview-test"}};
+    folders.files = {{"Kick.wav", nested, "preview-test"}};
     browser.setListing(std::move(folders));
     const auto label = std::ranges::find(browser.sidebar(), "preview-test", &BrowserPanel::Entry::place);
     check(label != browser.sidebar().end(), "SC-123: a Place for the folder and audition key regression");
@@ -6555,9 +6555,9 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
                                                  {"Drums", library / "Drums", false}};
         auto listing = scanLibrary(*index, folders, volumes);
-        check(listing.error.empty() && listing.places.size() == 3 && listing.samples.size() == 3 &&
-                  listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
-                  listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
+        check(listing.error.empty() && listing.places.size() == 3 && listing.files.size() == 3 &&
+                  listing.files[0].name == "Bass Hit.wav" && listing.files[1].name == "Clap.wav" &&
+                  listing.files[2].name == "Rim.wav" && listing.places[0].userLibrary,
               "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
         std::stop_source stopNow;
         stopNow.request_stop();
@@ -6805,7 +6805,7 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
                                                   "Clean Reverb", "Reverb", {}, {}});
     LibraryListing listing;
     listing.places = {{"Drums", dir, "local-drums"}};
-    listing.samples = {{"Dusty Keys.wav", dir / "Dusty Keys.wav", "local-drums"}};
+    listing.files = {{"Dusty Keys.wav", dir / "Dusty Keys.wav", "local-drums"}};
     browser.setListing(std::move(listing));
     browser.setDevicePresets(preset::list(libraryPath));
     const auto namesWithPlace = names();
@@ -6868,8 +6868,8 @@ void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir
                                        {"Drums", userDrums}, {"Starter Drums", installed, false, true}};
     auto listing = scanLibrary(*index, folders, markers);
     const auto readOnlyKit = [&](const LibraryListing &scanned) {
-        return scanned.error.empty() && scanned.places.size() == 3 && scanned.samples.size() == 17 &&
-               std::ranges::count(scanned.samples, std::string(kStarterDrumsVolumeId), &LibraryFile::volumeId) == 16 &&
+        return scanned.error.empty() && scanned.places.size() == 3 && scanned.files.size() == 17 &&
+               std::ranges::count(scanned.files, std::string(kStarterDrumsVolumeId), &LibraryFile::volumeId) == 16 &&
                markers.probed == std::vector{userDrums} && !fs::exists(installed / ".adi-volume-id") &&
                !fs::exists(hits / ".adi-volume-id") && index->entries().size() == 1;
     };
@@ -6940,7 +6940,7 @@ void browserFavorites(const std::filesystem::path &dir) {
     browser.restoreLabel(prefs);
     const auto a = dir / "Pack A" / "Pulse.wav", b = dir / "Pack B" / "Pulse.wav";
     LibraryListing files;
-    files.samples = {{"Pulse.wav", a, "pack-a"}, {"Pulse.wav", b, "pack-b"}};
+    files.files = {{"Pulse.wav", a, "pack-a"}, {"Pulse.wav", b, "pack-b"}};
     browser.setListing(files);
     const auto choose = [](BrowserPanel &panel, const char *name) {
         const auto found = std::ranges::find(panel.sidebar(), juce::String(name), &BrowserPanel::Entry::name);
@@ -6980,7 +6980,7 @@ void browserFavorites(const std::filesystem::path &dir) {
     if (!addFavorite)
         return;
     // Replacing the library invalidates the borrowed Row, and reorders the names.
-    std::swap(files.samples[0], files.samples[1]);
+    std::swap(files.files[0], files.files[1]);
     browser.setListing(files);
     browser.list.selectRow(0);
     addFavorite();
@@ -7071,7 +7071,7 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     const auto other = dir / "Search Other";
     LibraryListing library;
     library.places = {{"Search Drums", drums, "drums"}, {"Search Other", other, "other"}};
-    library.samples = {{"808 Kick.wav", drums / "808 Kick.wav", "drums"},
+    library.files = {{"808 Kick.wav", drums / "808 Kick.wav", "drums"},
                        {"808 Snare.wav", drums / "808 Snare.wav", "drums"},
                        {"909 Kick.wav", other / "909 Kick.wav", "other"},
                        {"Big Reverb.wav", other / "Big Reverb.wav", "other"}};
@@ -7179,7 +7179,7 @@ void browserContextMenus(AppCommands &commands, const std::filesystem::path &dir
     std::filesystem::create_directory(plug);
     LibraryListing listing;
     listing.places = {{"Context Library", place, "context-place", false, {}, {"Nested"}}};
-    listing.samples = {{"Test Kick.wav", wave, "context-place"}};
+    listing.files = {{"Test Kick.wav", wave, "context-place"}};
     browser.setListing(listing);
     browser.setDevicePresets({{preset::deviceKey({"internal", "org.adidaw.builtin.oneshot", {}}),
                                "Test Preset", presetPath}});
@@ -7287,7 +7287,7 @@ void browserClearSearch(AppCommands &commands, const std::filesystem::path &dir)
     root.setSize(1440, 900);
     auto &browser = root.browser;
     LibraryListing listing;
-    listing.samples = {{"Kick.wav", dir / "Kick.wav", {}}, {"Snare.wav", dir / "Snare.wav", {}}};
+    listing.files = {{"Kick.wav", dir / "Kick.wav", {}}, {"Snare.wav", dir / "Snare.wav", {}}};
     browser.setListing(std::move(listing));
     const auto samples = std::ranges::find(browser.sidebar(), true, &BrowserPanel::Entry::samples);
     const auto clearItem = std::ranges::find_if(browser.getChildren(), [](const auto *c) { return c->getTitle() == "Clear Search"; });
@@ -7527,7 +7527,7 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     library::Volume original, copy;
     check(volumes.identify(user, original, error) && volumes.identify(synced, copy, error) && original.id == copy.id &&
               syncedListing.places.size() == 2 && syncedListing.places[0].volumeId == original.id &&
-              syncedListing.places[1].volumeId != copy.id && syncedListing.samples.size() == 2,
+              syncedListing.places[1].volumeId != copy.id && syncedListing.files.size() == 2,
           "SC-132: a synced marker keeps its portable identity and both local folders remain browsable");
 }
 void browserLibraryRescan(AppCommands &commands, const std::filesystem::path &dir) {
@@ -7635,7 +7635,7 @@ void browserSampleFolders(AppCommands &commands, const std::filesystem::path &di
     LibraryListing listing;
     listing.places = {{"Sample Pack", place, "pack", false, {}, {"00 Empty"}},
                       {"Single Drums", place / "Drums", "drums"}};
-    listing.samples = {{"Clap.wav", drums, "pack"}, {"Clap.wav", loops, "pack"}, {"Top.wav", top, "pack"}};
+    listing.files = {{"Clap.wav", drums, "pack"}, {"Clap.wav", loops, "pack"}, {"Top.wav", top, "pack"}};
     browser.setListing(std::move(listing));
     const auto choose = [&](const char *volume) {
         const auto entry = std::ranges::find_if(browser.sidebar(), [volume](const auto &e) { return e.place == volume; });
@@ -7686,8 +7686,8 @@ void browserSampleFolders(AppCommands &commands, const std::filesystem::path &di
     dragged.addRange({3, 4});
     dragged.addRange({5, 6});
     check(BrowserPanel::droppedFiles(model.getDragSourceDescription(dragged)) ==
-              BrowserPanel::droppedFiles(BrowserPanel::dragDescription({&browser.listing().samples[0],
-                                                                         &browser.listing().samples[1]})),
+              BrowserPanel::droppedFiles(BrowserPanel::dragDescription({&browser.listing().files[0],
+                                                                         &browser.listing().files[1]})),
           "a mixed selection drags both sample paths in row order without the folders");
     browser.search.setText("clap", false);
     browser.search.onTextChange();
@@ -7718,7 +7718,7 @@ void browserNameAndHide(AppCommands &commands, const std::filesystem::path &dir)
     const auto middle = place / "Middle.wav";
     LibraryListing listing;
     listing.places = {{"Test Sounds", place, "order", false, {}, {"Alpha", "Zulu"}}};
-    listing.samples = {{"A Low.wav", low, "order"}, {"Z High.wav", high, "order"}, {"Middle.wav", middle, "order"}};
+    listing.files = {{"A Low.wav", low, "order"}, {"Z High.wav", high, "order"}, {"Middle.wav", middle, "order"}};
     browser.setListing(std::move(listing));
     const auto choice = std::ranges::find(browser.sidebar(), std::string("order"), &BrowserPanel::Entry::place);
     check(choice != browser.sidebar().end(), "SC-136: the folder fixture is in Places");
@@ -7756,6 +7756,122 @@ void browserNameAndHide(AppCommands &commands, const std::filesystem::path &dir)
     check(root.browserArea().isEmpty() && root.infoArea().isEmpty(),
           "SC-136: clicking the Browser's round button uses the Browser collapse command");
 }
+void browserProjectAndMidiFiles(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    using Kind = LibraryFile::Kind;
+    const auto base = dir / "browser-project-midi";
+    const auto indexed = base / "Song Files", readOnly = base / "Read-only Media";
+    const auto nested = indexed / "Session";
+    fs::create_directories(nested);
+    fs::create_directories(readOnly);
+    std::string error;
+    const auto project = nested / "Song Set.ADI";
+    auto target = ProjectDocument::open(project, true, {}, error);
+    auto document = ProjectDocument::open(base / "open.adi", true, {}, error);
+    check(target && document, "SC-137: create a real Browser project and a separate current project");
+    if (!target || !document)
+        return;
+    target.reset();
+    const auto kick = nested / "Kick.wav";
+    for (const auto &file : {kick, nested / "Old Pattern.SMF", nested / "Verse.mid", nested / "Ignored.txt",
+                             readOnly / "Raw Take.adi", readOnly / "Raw Take.MIDI"})
+        std::ofstream(file) << "fixture";
+    struct Volumes final : library::VolumeIdentityProvider {
+        fs::path readOnly;
+        library::MarkerVolumeProvider markers;
+        bool identify(const fs::path &root, library::Volume &volume, std::string &why) override {
+            if (root == readOnly) {
+                why = "Read-only fixture";
+                return false;
+            }
+            return markers.identify(root, volume, why);
+        }
+    } volumes;
+    volumes.readOnly = readOnly;
+    const auto database = base / "library.sqlite";
+    auto index = library::Index::open(database, error, false);
+    library::Volume volume;
+    check(index && volumes.identify(indexed, volume, error) && index->scan(volume).ok,
+          "SC-137: the existing index records project and MIDI paths without a migration");
+    index.reset();
+    index = library::Index::open(database, error, false);
+    if (!index)
+        return;
+    auto listing = scanLibrary(*index, {{"Song Files", indexed}, {"Read-only Media", readOnly}}, volumes);
+    check(listing.error.empty() && listing.files.size() == 6 && !fs::exists(readOnly / ".adi-volume-id") &&
+              std::ranges::count(listing.files, Kind::Project, &LibraryFile::kind) == 2 &&
+              std::ranges::count(listing.files, Kind::Midi, &LibraryFile::kind) == 3,
+          "SC-137: indexed and read-only Places publish the same supported file types");
+
+    settings::AppSettings prefs(appdata::App::Daw, base / "settings.json");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-project-midi");
+    auto &browser = root.browser;
+    auto &list = browser.list;
+    auto &model = *list.getListBoxModel();
+    browser.setSize(308, 443);
+    browser.restoreLabel(prefs);
+    browser.setListing(std::move(listing));
+    const auto choose = [&](const char *name) {
+        const auto &sidebar = browser.sidebar();
+        const auto entry = std::ranges::find(sidebar, juce::String(name), &BrowserPanel::Entry::name);
+        browser.choose(static_cast<int>(entry - sidebar.begin()));
+    };
+    juce::File opened;
+    root.openProjectFile = [&](const juce::File &file) { opened = file; };
+    int auditions = 0;
+    root.playSamplePreview = [&](const fs::path &, double) { ++auditions; };
+    choose("Song Files");
+    check(browser.rows().size() == 1 && browser.rows().front().folder != nullptr,
+          "SC-137: the new file types remain behind the same collapsed folder");
+    check(browser.load(0) && browser.rows().size() == 5 && model.getNameForRow(3) == "Song Set.ADI" &&
+              model.getNameForRow(4) == "Verse.mid" && browser.rows()[3].depth == 1 &&
+              list.getBounds() == juce::Rectangle<int>(119, 46, 185, 393) && list.getRowHeight() == 19,
+          "SC-137: audio, MIDI and projects keep the ordinary Browser geometry inside the expanded folder");
+    list.selectRow(3);
+    const bool projectUnmarked = !browser.canMarkSelection() && !browser.toggleSelectionMark(0);
+    model.listBoxItemDoubleClicked(3, pressAt(list, {45.f, 9.f}));
+    list.selectRow(4);
+    check(projectUnmarked && !browser.canMarkSelection() && !browser.toggleSelectionMark(0),
+          "SC-137: project and MIDI rows cannot be marked as samples");
+    model.listBoxItemDoubleClicked(4, pressAt(list, {45.f, 9.f}));
+    check(opened.existsAsFile() && fs::equivalent(media::pathFromUtf8(opened.getFullPathName().toStdString()), project) &&
+              !browser.selectedSample() && browser.previewArea().isEmpty() && !browser.previewSelected() && auditions == 0,
+          "SC-137: double-click hands the project to the app, and neither new file type can audition");
+    juce::SparseSet<int> dragged;
+    dragged.addRange({1, 5});
+    const auto audioDrag = BrowserPanel::droppedFiles(model.getDragSourceDescription(dragged));
+    check(audioDrag.size() == 1 && juce::File(audioDrag[0]).getFileName() == "Kick.wav",
+          "SC-137: mixed selection still drags its audio sample");
+    list.selectRow(3);
+    const auto clickName = [&] {
+        browser.mouseDown(pressAt(browser, browser.nameHeaderArea().getCentre().toFloat(),
+                                  juce::ModifierKeys::leftButtonModifier));
+    };
+    clickName();
+    check(model.getNameForRow(1) == "Verse.mid" && model.getNameForRow(2) == "Song Set.ADI" &&
+              list.getLastRowSelected() == 2 && browser.rows()[2].depth == 1,
+          "SC-137: mixed file sorting keeps the project inside its folder and selected");
+    clickName();
+    list.selectRow(1);
+    check(browser.canMarkSelection() && browser.toggleSelectionMark(0),
+          "SC-137: the audio row can still be marked as a sample");
+    choose("Samples");
+    check(browser.shown().size() == 1 && browser.shown()[0]->isSample(),
+          "SC-137: Samples stays audio-only");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(browser.shown().size() == 1 && browser.shown()[0]->isSample(),
+          "SC-137: the sample Hot-Swap list stays audio-only");
+    browser.setHotSwap(std::nullopt);
+    choose("Read-only Media");
+    check(browser.shown().size() == 2, "SC-137: projects and MIDI can be browsed from a read-only folder");
+    browser.searchAll();
+    browser.search.setText("take raw", false);
+    browser.search.onTextChange();
+    check(browser.shown().size() == 2 && model.getNameForRow(0) == "Raw Take.adi" &&
+              model.getNameForRow(1) == "Raw Take.MIDI",
+          "SC-137: All finds both file types through the existing word query");
+}
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
@@ -7778,7 +7894,7 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
     listing.places = {{"User Library", library, "library", true},
                       {"Drums", drums, "drums", false}, {"Archive", archive, "archive", false}};
     constexpr int sampleCount = 200000;
-    listing.samples.reserve(sampleCount);
+    listing.files.reserve(sampleCount);
     for (int i = 0; i < sampleCount; ++i) {
         auto name = "Take " + std::to_string(1000000 + i);
         switch (i) {
@@ -7796,7 +7912,7 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         const auto &folder = archived ? archivePacks : (i % 2 == 0 ? drumPacks : libraryPacks);
         auto path = (i == 205 ? pathOnlyMatch : folder) / media::pathFromUtf8(name);
         // A nested file can keep the outer volume ID after the library deduplicates it.
-        listing.samples.push_back({std::move(name), std::move(path), archived ? "archive" : "library"});
+        listing.files.push_back({std::move(name), std::move(path), archived ? "archive" : "library"});
     }
     const auto indexStart = std::chrono::steady_clock::now();
     auto publication = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));
@@ -7809,7 +7925,7 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         check(&browser.listing() == &publication->listing() && &secondBrowser.listing() == &browser.listing(),
               "Browser search: two windows use the same owning library listing");
         publication.reset();
-        check(&secondBrowser.listing() == &browser.listing() && browser.listing().samples.size() == sampleCount,
+        check(&secondBrowser.listing() == &browser.listing() && browser.listing().files.size() == sampleCount,
               "Browser search: the windows retain the listing after the producer releases it");
     }
     std::printf("Browser library: %.2f ms to build the search index, %.2f ms to hand it to the first window\n",
@@ -13166,7 +13282,7 @@ void browserStartupLabel(AppCommands &commands, const std::filesystem::path &dir
     const auto place = dir / "Samples";
     LibraryListing listing;
     listing.places = {{"Samples", place, "browser-startup-place"}};
-    listing.samples = {{"Kick.wav", place / "Kick.wav", "browser-startup-place"}};
+    listing.files = {{"Kick.wav", place / "Kick.wav", "browser-startup-place"}};
     {
         settings::AppSettings prefs(appdata::App::Daw, file);
         auto window = makeRoot("browser-new");
@@ -23911,7 +24027,7 @@ int main(int argc, char **argv) {
                   "the recent list survives restart, newest first, with reopened projects deduplicated");
             check(two.deleteFile(), "the second recent project is now unavailable");
             juce::File chosen;
-            window.root().openRecentProject = [&](const juce::File &file) { chosen = file; };
+            window.root().openProjectFile = [&](const juce::File &file) { chosen = file; };
             const auto recent = recentMenu();
             int firstId = 0, removeId = 0, clearId = 0;
             bool secondDisabled = false;
@@ -23935,7 +24051,7 @@ int main(int argc, char **argv) {
                   "Remove Unavailable Projects keeps the rest of the list");
             bar->menuItemSelected(clearId, fileIndex);
             check(recentMenu().getNumItems() == 0, "Clear List empties Open Recent");
-            window.root().openRecentProject = {};
+            window.root().openProjectFile = {};
         }
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
         // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
@@ -26592,6 +26708,7 @@ int main(int argc, char **argv) {
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserNameAndHide", [&] { browserNameAndHide(commands, temp.path()); });
+    trace("browserProjectAndMidiFiles", [&] { browserProjectAndMidiFiles(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });

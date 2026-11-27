@@ -21,7 +21,8 @@ std::shared_ptr<const BrowserLibrarySnapshot> ProjectLibrary::update(const Store
                                            "WHERE embedded = 0 AND rel_path IS NOT NULL ORDER BY id");
         while (query.executeStep()) {
             const auto path = media::pathFromUtf8(query.getColumn(0).getString()).lexically_normal();
-            if (!path.empty() && !path.has_root_path() && *path.begin() != ".." && isAudioFile(path))
+            if (!path.empty() && !path.has_root_path() && *path.begin() != ".." &&
+                libraryFileKind(path) == LibraryFile::Kind::Audio)
                 assets.emplace_back(path, query.getColumn(1).getString());
         }
         if (!sameProject || assets != assets_ || !snapshot_->listing().error.empty()) {
@@ -36,9 +37,9 @@ std::shared_ptr<const BrowserLibrarySnapshot> ProjectLibrary::update(const Store
                 if (error || local.empty() || *local.begin() == ".." || !fs::is_regular_file(path, error) ||
                     !seen.insert(path).second)
                     continue;
-                listing.samples.push_back({original.empty() ? media::pathUtf8(path.filename()) : original, path, {}});
+                listing.files.push_back({original.empty() ? media::pathUtf8(path.filename()) : original, path, {}});
             }
-            sortLibrarySamples(listing.samples);
+            sortLibraryFiles(listing.files);
             snapshot_ = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));
             assets_ = std::move(assets);
         }

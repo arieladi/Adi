@@ -52,6 +52,10 @@ void paintFavoriteMarks(juce::Graphics &g, unsigned marks, int width, int height
     }
 }
 
+juce::String nativeFilePath(const std::filesystem::path &path) {
+    const auto native = std::filesystem::path(path).make_preferred().u8string();
+    return juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size()));
+}
 bool presetNameLess(const preset::Entry &a, const preset::Entry &b) {
     const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
     return order != 0 ? order < 0 : a.path < b.path;
@@ -272,8 +276,10 @@ void BrowserPanel::PreviewToggle::paintButton(juce::Graphics &g, bool over, bool
 }
 const LibraryFile *BrowserPanel::selectedSample() const noexcept {
     const int row = list.getLastRowSelected();
-    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
-        ? rows_[static_cast<std::size_t>(row)].file : nullptr;
+    if (row < 0 || static_cast<std::size_t>(row) >= rows_.size())
+        return nullptr;
+    const auto *file = rows_[static_cast<std::size_t>(row)].file;
+    return file && file->isSample() ? file : nullptr;
 }
 void BrowserPanel::syncPreviewToggle() {
     const bool enabled = root_.commands().browserPreviewEnabled();
@@ -375,11 +381,10 @@ juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *
     juce::StringArray paths;
     // The native spelling, as a file dragged from the desktop arrives: JUCE names a file by its last
     // native separator, so a generic path on Windows would name the clip after the whole path.
-    for (const auto *f : files) {
-        const auto native = std::filesystem::path(f->path).make_preferred().u8string();
-        paths.add(juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size())));
-    }
-    return "adi-sample:" + paths.joinIntoString("\n");
+    for (const auto *file : files)
+        if (file->isSample())
+            paths.add(nativeFilePath(file->path));
+    return paths.isEmpty() ? juce::String{} : "adi-sample:" + paths.joinIntoString("\n");
 }
 juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
     if (!description.isString())
@@ -554,8 +559,8 @@ void BrowserPanel::appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folde
         if (expanded)
             appendPlaceRows(folders, child, depth + 1, open);
     }
-    for (const auto sample : parent.samples) {
-        const auto *file = &listing().samples[sample];
+    for (const auto index : parent.files) {
+        const auto *file = &listing().files[index];
         shown_.push_back(file);
         rows_.push_back({file, nullptr, {}, nullptr, depth});
     }
@@ -568,13 +573,13 @@ const BrowserPanel::Row *BrowserPanel::favoriteSelection() const noexcept {
     if (!labelSettings_ || index < 0 || static_cast<std::size_t>(index) >= rows_.size())
         return nullptr;
     const auto &row = rows_[static_cast<std::size_t>(index)];
-    return row.file || row.device || row.plugin ? &row : nullptr;
+    return (row.file && row.file->isSample()) || row.device || row.plugin ? &row : nullptr;
 }
 bool BrowserPanel::canMarkSelection() const noexcept {
     return favoriteSelection() != nullptr;
 }
 std::string BrowserPanel::favoriteKey(const Row &row) {
-    if (row.file)
+    if (row.file && row.file->isSample())
         return std::string(kSampleMarkPrefix) + media::pathUtf8(row.file->path);
     if (row.device)
         return "device:" + std::string(row.device->uid);
@@ -586,7 +591,7 @@ std::string BrowserPanel::favoriteKey(const Row &row) {
     return {};
 }
 unsigned BrowserPanel::favoriteMarks(const Row &row) const {
-    if (row.file) {
+    if (row.file && row.file->isSample()) {
         const auto found = sampleMarks_.find(row.file->path);
         return found == sampleMarks_.end() ? 0u : found->second;
     }
@@ -614,13 +619,13 @@ void BrowserPanel::updateMarkedSamples() {
         return;
     std::unordered_set<std::filesystem::path> projectMarks;
     if (projectLibrary_)
-        for (const auto &sample : projectLibrary_->listing().samples)
-            if (sampleMarks_.contains(sample.path)) {
+        for (const auto &sample : projectLibrary_->listing().files)
+            if (sample.isSample() && sampleMarks_.contains(sample.path)) {
                 markedSamples_.push_back(&sample);
                 projectMarks.insert(sample.path);
             }
-    for (const auto &sample : listing().samples)
-        if (sampleMarks_.contains(sample.path) && !projectMarks.contains(sample.path))
+    for (const auto &sample : listing().files)
+        if (sample.isSample() && sampleMarks_.contains(sample.path) && !projectMarks.contains(sample.path))
             markedSamples_.push_back(&sample);
 }
 bool BrowserPanel::toggleSelectionMark(unsigned slot) {
@@ -790,14 +795,14 @@ void BrowserPanel::refillRows() {
         return;
     }
     // Keep the typed results separate from how a panel groups them for display.
-    const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
+    const bool samples = hotSwap_ ? hotSwap_->samples : chosen.samples;
     const bool browsePlace = !samples && query.empty() && !chosen.place.empty();
     LibraryQueryResults hits;
     if (all) {
-        hits.samples.swap(shown_);
+        hits.files.swap(shown_);
         queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_,
                              projectLibrary_.get()}, hits);
-        hits.samples.swap(shown_);
+        hits.files.swap(shown_);
     } else if (chosen.glyph == Project && projectLibrary_) {
         projectLibrary_->appendSamples(query, nullptr, shown_);
     } else if (sounds) {
@@ -805,8 +810,10 @@ void BrowserPanel::refillRows() {
         std::ranges::sort(hits.presets, presetNameLess, [](const preset::Entry *entry) -> const preset::Entry & {
             return *entry;
         });
-    } else if (library_ && !browsePlace && (samples || !chosen.place.empty())) {
-        library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
+    } else if (library_ && samples) {
+        library_->appendSamples(query, nullptr, shown_);
+    } else if (library_ && !browsePlace && !chosen.place.empty()) {
+        library_->appendFiles(query, &chosen.place, shown_);
     }
     if (library_ && chosen.glyph == Drums) {
         static const std::string drumVolume{kStarterDrumsVolumeId};
@@ -1057,7 +1064,14 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     }
     const bool device = r.device != nullptr;
     const int indent = kFolderIndent * r.depth;
-    icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
+    int glyph = Samples;
+    if (device)
+        glyph = r.device->category == "Instruments" ? Instruments : AudioFx;
+    else if (r.file->kind == LibraryFile::Kind::Project)
+        glyph = Project;
+    else if (r.file->kind == LibraryFile::Kind::Midi)
+        glyph = Sounds;
+    icon(g, glyph,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
@@ -1090,7 +1104,8 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
             if (row.file != nullptr)
                 files.push_back(row.file);
         }
-    return files.empty() ? juce::var() : juce::var(dragDescription(files));
+    const auto description = dragDescription(files);
+    return description.isEmpty() ? juce::var{} : juce::var(description);
 }
 std::string BrowserPanel::unavailable(const BuiltinInfo &d) {
     if (d.available)
@@ -1208,7 +1223,7 @@ bool BrowserPanel::loadHotSwap(const Row &row) {
         return swapChoice({Kind::Plugin, {}, *row.plugin, {}});
     if (row.savedPreset)
         return swapChoice({Kind::Preset, {}, {}, row.savedPreset->path});
-    if (row.file)
+    if (row.file && row.file->isSample())
         return swapChoice({Kind::Sample, {}, {}, row.file->path});
     return false;
 }
@@ -1230,6 +1245,17 @@ bool BrowserPanel::load(int row) {
     }
     auto track = root_.arrangement.geometry.selection.track;
     if (entry.file) {
+        if (entry.file->kind == LibraryFile::Kind::Project) {
+            // The application can replace the root while opening the file.
+            auto open = root_.openProjectFile;
+            if (!open)
+                return false;
+            const juce::File file(nativeFilePath(entry.file->path));
+            open(file);
+            return true;
+        }
+        if (!entry.file->isSample())
+            return false;
         const auto &selection = root_.arrangement.geometry.selection;
         if (track == 0) {
             root_.say("Select a track to load " + entry.file->name + " onto.");
@@ -1698,10 +1724,12 @@ void BrowserPanel::choose(int i) {
                 root_.say(pluginScanStatus(pluginScan_));
         } else if (library && !ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
-        else if (library && rows_.empty())
+        else if (library && rows_.empty()) {
+            const bool audioOnly = entry.samples || entry.glyph == Drums;
             root_.say(entry.glyph != Drums && (listing().places.empty() || (!entry.samples && entry.place.empty()))
                           ? "Choose Add Folder in the Browser to list samples."
-                          : (entry.name + " holds no audio files.").toStdString());
+                          : (entry.name + (audioOnly ? " holds no audio files." : " holds no supported files.")).toStdString());
+        }
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {

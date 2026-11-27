@@ -34,7 +34,8 @@ struct WorkerStats { std::uint64_t hashed = 0, failed = 0; bool lowPriority = fa
 // File-index rows are rebuildable; authored annotations/sample defaults are user
 // data. Never delete this database as part of decoding/analysis-cache cleanup.
 // Public operations are serialized; hashing runs outside the database lock.
-// JSON metadata is keyed only by BLAKE3, never location. No .adi is accepted.
+// JSON metadata is keyed only by BLAKE3, never location. An ADI project is
+// refused as the index database; a scan can record its directory entry.
 class Index {
 public:
     static constexpr int applicationId = 0x4144494c; // ADIL, distinct from ADI project/registry

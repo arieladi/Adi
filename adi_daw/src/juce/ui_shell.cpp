@@ -5981,9 +5981,9 @@ class ShellMenu final : public juce::MenuBarModel {
             commands.clearRecentProjects(id == kRemoveUnavailableProjects);
             menuItemsChanged();
         } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);
-                   index < recentItems_.size() && root.openRecentProject) {
+                   index < recentItems_.size() && root.openProjectFile) {
             // Opening a project replaces the root and its menu. Keep a local copy of the action and path.
-            auto open = root.openRecentProject;
+            auto open = root.openProjectFile;
             const auto file = recentItems_[index];
             open(file);
         }
