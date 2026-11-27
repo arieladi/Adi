@@ -18189,6 +18189,21 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
         root.arrangement.onContextMenu = {};
     }
     choose(bar/2,bar);
+    {
+        auto &headers = root.arrangement.headers;
+        const auto title = juce::Point<int>{30, laneTop(root, 2) + 5}.toFloat();
+        const auto marker = geometry.selection.insert;
+        int headerMenus = 0;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &) { headerMenus += header ? 1 : 0; };
+        headers.mouseDown(pressAt(headers, title, juce::ModifierKeys::rightButtonModifier));
+        headers.mouseUp(pressAt(headers, title));
+        root.arrangement.onContextMenu = {};
+        check(headerMenus == 1 && !canvas.hasAutomationSelection() && geometry.selection.track == 2 &&
+                  geometry.selection.start == marker && geometry.selection.end == marker,
+              "the popup on a track title under an automation range selects the track and keeps the insert marker");
+    }
+    choose(bar/2,bar);
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),"Delete is handled in the automation time range");
     root.frame();
     check(clipIntact() && !point(volume,3*bar/4,-6) && point(volume,5*bar/4,-3),

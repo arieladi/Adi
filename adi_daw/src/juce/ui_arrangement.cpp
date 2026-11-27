@@ -2382,7 +2382,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
         focusIfShowing(*this);
         auto &sel = view.geometry.selection;
-        if (popup && sel.clip == 0 && sel.pickedClips.empty() &&
+        if (popup && sel.clip == 0 && sel.pickedClips.empty() && sel.start == sel.end &&
             view.geometry.inSelection(view.reader(), t->id)) {
             view.contextMenu(e.getScreenPosition(), true);
             return;
