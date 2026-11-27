@@ -368,23 +368,22 @@ class DeviceChainStrip final : public juce::Component,
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     juce::TextButton addTab{"+"};
-    // Moves the focus from a device to its neighbour; at either end it stays.
+    // Moves focus to a neighbour or past the last device to the insertion point.
     bool focusNext(std::int64_t from, bool forward);
     // Live's device clipboard (manual 23.2.1; N18): Cut, Copy, Paste and Duplicate on `device`, or
     // on the device with the focus. Paste goes in front of that device, or at the chain's end after
-    // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
+    // choosing the strip's empty space; Duplicate goes in front of the next device in its chain
     // and leaves the clipboard as it was. False when there is nothing to act on.
     enum class Clip { Cut, Copy, Paste, Duplicate };
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
     std::optional<std::int64_t> focusedDevice() const;
     bool deleteDevices(std::optional<std::int64_t> device = {});
-    // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
-    // last device.
+    // The strip itself has focus when the insertion point after the last device is chosen.
     bool endChosen() const { return hasKeyboardFocus(false); }
     // Where a device loaded from the browser goes (manual 4.10): in front of the device chosen
-    // last in the strip, though the browser now has the focus; at the chain's end after a click
-    // past the last device, or when none is chosen.
+    // last in the strip, though the browser now has the focus; at the chain's end when no device
+    // is chosen.
     std::optional<std::int64_t> insertPoint() const;
     void chose(std::int64_t device) { chosen_ = device; }
     // A browser device loads here. An existing device moves to this position in the chain.
@@ -402,9 +401,12 @@ class DeviceChainStrip final : public juce::Component,
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override { repaint(); }
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
+    // Optional presenter for the empty-space context menu.
+    std::function<void(juce::PopupMenu)> onEndMenu;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     // Publish native gestures already waiting when a Configure session opens.
     std::function<void()> pollParameterEdits;
@@ -472,6 +474,8 @@ class DeviceChainStrip final : public juce::Component,
     bool selectionActsOn(std::int64_t) const;
     void selectTitle(const DevicePanelView &, bool extend);
     void clearSelection();
+    void chooseEnd();
+    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
     DevicePanelView *moveSource(const SourceDetails &) const;
