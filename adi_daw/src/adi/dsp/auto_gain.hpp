@@ -44,6 +44,9 @@
 
 #include "adi/dsp/biquad.hpp"
 
+#include <cmath>
+#include <numbers>
+
 namespace adi::dsp {
 
 class AutoGain {
@@ -101,5 +104,20 @@ private:
     double gain_ = 1.0;
     bool enabled_ = true;
 };
+
+// BS.1770 RLB prototype from libebur128, with provenance and licence in auto_gain.cpp.
+inline Biquad AutoGain::kHighPass(double fs) noexcept {
+    const double f0 = 38.13547087602444;
+    const double q = 0.5003270373238773;
+    const double k = std::tan(std::numbers::pi * f0 / fs);
+    const double a0 = 1.0 + k / q + k * k;
+    Biquad c;
+    c.b0 = 1.0;
+    c.b1 = -2.0;
+    c.b2 = 1.0;
+    c.a1 = 2.0 * (k * k - 1.0) / a0;
+    c.a2 = (1.0 - k / q + k * k) / a0;
+    return c;
+}
 
 }  // namespace adi::dsp
