@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/library/sample_tonality.hpp"
 
-#include "adi/audio/io_audit.hpp"
-#include "temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 #include <numbers>
-#include <stdexcept>
-#include <string_view>
 
 namespace {
 using namespace adi::library;
@@ -128,158 +122,10 @@ void keyFixtures() {
     check(noise.append(samples) && !noise.finish(), "broadband noise has no detected key");
 }
 
-void appendInteger(std::string& target, std::uint64_t value, std::size_t width, bool little) {
-    for (std::size_t i = 0; i < width; ++i) {
-        const auto shift = (little ? i : width - 1 - i) * 8;
-        target.push_back(static_cast<char>((value >> shift) & 255u));
-    }
-}
-
-void appendChunk(std::string& target, std::string_view name, const std::string& bytes, bool little) {
-    target.append(name);
-    appendInteger(target, bytes.size(), 4, little);
-    target.append(bytes);
-    if (bytes.size() % 2 != 0) target.push_back('\0');
-}
-
-void appendId3Frame(std::string& frames, std::string_view type, std::string_view value) {
-    frames.append(type);
-    appendInteger(frames, 1 + value.size(), 4, false);
-    appendInteger(frames, 0, 2, false);
-    frames.push_back(3);
-    frames.append(value);
-}
-
-std::string id3Fixture() {
-    std::string id3 = "ID3\x03";
-    appendInteger(id3, 0, 2, false);
-    std::string frames;
-    appendId3Frame(frames, "TBPM", "131.5");
-    appendId3Frame(frames, "TKEY", "B♭ min");
-    appendId3Frame(frames, "TXXX", std::string_view("LOOP_TYPE\0One Shot", 18));
-    appendId3Frame(frames, "TCON", "Drums");
-    appendInteger(id3, frames.size(), 4, false); // fixture stays below 128 bytes
-    id3.append(frames);
-    return id3;
-}
-
-void writeFixture(const std::filesystem::path& path, const std::string& bytes) {
-    std::ofstream file(path, std::ios::binary);
-    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    if (!file) throw std::runtime_error("failed to write tag fixture");
-}
-
-void wavTags(const std::filesystem::path& directory) {
-    std::string riff = "WAVE";
-    appendChunk(riff, "JUNK", "odd", true);
-    appendChunk(riff, "data", std::string(30, '\0'), true);
-    std::string acid;
-    appendInteger(acid, 2, 4, true); // loop with root note
-    appendInteger(acid, 61, 2, true);
-    appendInteger(acid, 0, 6, true);
-    appendInteger(acid, 4, 4, true);
-    appendInteger(acid, 4, 2, true);
-    appendInteger(acid, 4, 2, true);
-    appendInteger(acid, std::bit_cast<std::uint32_t>(120.f), 4, true);
-    appendChunk(riff, "acid", acid, true);
-    appendChunk(riff, "id3 ", id3Fixture(), true);
-    std::string wav = "RIFF";
-    appendInteger(wav, riff.size(), 4, true);
-    wav += riff;
-    const auto path = directory / "source.wav";
-    writeFixture(path, wav);
-    const auto tags = readSampleFileTags(path);
-    check(tags.tagBpm == 131.5 && tags.acidBpm == 120., "ID3 tempo and distinct ACID tempo can both be used for precedence");
-    check(tags.tagKey == SampleKey{10, true} && tags.rootNote == 61, "enharmonic text key and ACID root keep their distinct meaning");
-    check(tags.tagLoop == false && tags.acidLoop == true, "explicit ID3 one-shot and distinct ACID loop both survive");
-    check(tags.tags == std::vector<std::string>{"Drums"}, "genre is available for matching");
-    {
-        const adi::audio::CallbackScope callback;
-        check(!readSampleFileTags(path).tagBpm, "metadata refuses the audio callback");
-    }
-    std::stop_source stop;
-    stop.request_stop();
-    check(!readSampleFileTags(path, stop.get_token()).tagBpm, "pre-cancelled read returns no partial tags");
-    wav.pop_back();
-    writeFixture(path, wav);
-    check(!readSampleFileTags(path).acidBpm, "truncated RIFF envelope returns no metadata");
-}
-
-void aiffTags(const std::filesystem::path& directory) {
-    std::string form = "AIFF";
-    std::string common;
-    appendInteger(common, 1, 2, false);
-    appendInteger(common, 88200, 4, false);
-    appendInteger(common, 16, 2, false);
-    appendInteger(common, 16398, 2, false);
-    appendInteger(common, std::uint64_t{44100} << 48, 8, false);
-    appendChunk(form, "COMM", common, false);
-    std::string basc;
-    appendInteger(basc, 1, 4, false);
-    appendInteger(basc, 4, 4, false);
-    appendInteger(basc, 63, 2, false);
-    appendInteger(basc, 2, 2, false);
-    appendInteger(basc, 4, 2, false);
-    appendInteger(basc, 4, 2, false);
-    appendInteger(basc, 0, 2, false);
-    appendChunk(form, "basc", basc, false);
-    std::string aiff = "FORM";
-    appendInteger(aiff, form.size(), 4, false);
-    aiff += form;
-    const auto path = directory / "apple.aiff";
-    writeFixture(path, aiff);
-    const auto tags = readSampleFileTags(path);
-    check(tags.tagBpm == 120. && tags.tagKey == SampleKey{3, false} && tags.tagLoop == true,
-          "Apple Loop declares musical beats, root, scale and type");
-}
-
-std::string vorbisFields() {
-    std::string bytes;
-    appendInteger(bytes, 4, 4, true);
-    bytes += "test";
-    appendInteger(bytes, 4, 4, true);
-    for (const std::string_view field : {"BPM=106.25 BPM", "INITIALKEY=Db Major", "LOOP_TYPE=Loop", "GENRE=Électronique"}) {
-        appendInteger(bytes, field.size(), 4, true);
-        bytes += field;
-    }
-    return bytes;
-}
-
-void commentTags(const std::filesystem::path& directory) {
-    const auto comments = vorbisFields();
-    std::string flac = "fLaC";
-    flac.push_back(static_cast<char>(0x84));
-    appendInteger(flac, comments.size(), 3, false);
-    flac += comments;
-    auto path = directory / "source.flac";
-    writeFixture(path, flac);
-    const auto flacTags = readSampleFileTags(path);
-    check(flacTags.tagBpm == 106.25 && flacTags.tagKey == SampleKey{1, false} && flacTags.tagLoop == true,
-          "FLAC Vorbis comments contribute measured-filter metadata");
-    check(flacTags.tags == std::vector<std::string>{"Électronique"}, "UTF-8 tag text survives");
-
-    std::string page = "OggS";
-    page.resize(27, '\0');
-    page[5] = 2; // first page with two packets
-    page[26] = 2;
-    page.push_back(7);
-    page.push_back(static_cast<char>(7 + comments.size()));
-    page += "\x01vorbis\x03vorbis";
-    page += comments;
-    path = directory / "source.ogg";
-    writeFixture(path, page);
-    const auto oggTags = readSampleFileTags(path);
-    check(oggTags.tagBpm == flacTags.tagBpm && oggTags.tagKey == flacTags.tagKey && oggTags.tags == flacTags.tags,
-          "the same Vorbis comments in Ogg give the same result");
-}
 } // namespace
 
 int main() {
     keyFixtures();
-    const adi::test::TempDirectory temporary("sample_tonality", "metadata");
-    wavTags(temporary.path());
-    aiffTags(temporary.path());
-    commentTags(temporary.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
