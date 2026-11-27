@@ -11,6 +11,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-126 | `basics/browser-chain` at `2a3da1da4` | Show a Place as a directory tree while typed searches stay flat. Browser and library seats. | Peerless keyboard, folder, duplicate name and search checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-123 | `basics/browser-chain` at `7a1e22ab9` | Audition a sample through the app-owned streaming Cue player with keyboard and waveform control. Browser, application and engine seats. | Headless streaming, Cue, live recording isolation, key rebinding and waveform seek passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-429 | `basics/browser-chain` at `f2c761cd8` | Reveal preview from the first eligible sample selection and retain the current list height. Browser seat. | The headless visibility, reservation, folder and hidden-command checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-431 | `basics/browser-chain` at `f23561dc8` | Report missing physical Cue outputs and map sparse device grants consistently. Engine and window seats. | Headless status, sparse stereo, failed restart, metronome and preview tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -107,6 +108,23 @@ Preview on/off and Preview Selected are app commands `browser.toggle-preview` (2
 At 256 × 320 Compact, the list previously used `(119,46,133,243)` and the preview row was always visible. An unselected list now uses `(119,46,133,270)` and the preview has no bounds. Selecting an audio file with the player available restores the list to `(119,46,133,243)` and the existing preview to `(24,295,228,21)`. The list keeps that height as selection moves or clears. A folder selection in a newly shown list leaves the preview hidden. Preview on/off remains available in the key map while the row is hidden.
 
 The software-rendered root comparisons changed only the bottom of the Browser list and former preview row. At 960 × 540 the changed region runs from `(8,267)` to `(316,298)`, or `(644,267)` to `(952,298)` after Swap Sides. At 1200 × 720 it runs from `(8,447)` to `(316,478)` and at 1440 × 900 from `(8,627)` to `(316,658)`. End coordinates are exclusive.
+
+# SC-431 missing Cue Out
+
+The preview-integrated patch is `9b0fe92b5` on `9535a8a8d`. The version prepared without the SC-123 preview sources is `da61c5eb0` on `906a2dd8d`.
+
+| State at 1000 × 650, 100% | Status Bar rectangle | Message field | Text rectangle with no action or progress |
+|---|---|---|---|
+| Before | `(0,612) 1000 × 38 px` | `(35,620) 581 × 22 px` | `(43,620) 565 × 22 px` |
+| After | `(0,612) 1000 × 38 px` | `(35,620) 581 × 22 px` | `(43,620) 565 × 22 px` |
+
+The positions follow the existing `StatusBar::paint` and root layout. The peerless Status Bar fixture checks the same field bounds. Before, the field carried the existing project message or selection text. After, it also says `Cue Out 3/4 unavailable. Metronome and sample preview are silent.` when the running device lacks that saved pair. Hovering the Status Bar can show the complete notice at narrow widths. The saved pair and any unrelated Status Bar message remain intact.
+
+The driver grant and the two Cue renderers now agree on physical channel numbers. With physical 1/2 and 7/8 enabled, the older renderer could send a 3/4 request into the packed buffers for 7/8. The amended map identifies 3/4 as absent and directs a 7/8 request to those buffers. A single available side of a stereo pair is treated as missing. The chooser uses the same map.
+
+The strict display-free DeviceCore and fake JUCE DeviceBridge checks passed. The sample-preview suite passed all 17 checks, including playback through a sparse map and silence for the missing pair. Warnings-as-errors syntax checks covered the touched engine and window sources. The exact integrated Cue and peerless Status Bar fixtures are ready for the Browser chain build.
+
+The display-free fake DeviceBridge check also exercised a failed restart after a stop. The fake stayed closed while reporting its old sparse 1/2 and 7/8 grant and a 256-frame buffer. The check failed on `7407dc332`, which reopened the bridge, and passed on `16e23564c` with the closed-device guard. With the guard, the bridge stayed closed, made no additional prepare call, published no output map, retained the stop notice and silenced a stray callback.
 
 ## For the director
 
