@@ -123,7 +123,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         juce::String tooltip{};
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
-    // Loads a row (double-click, Enter), or says why it cannot.
+    // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
     bool load(int row);
     void setDevicePresets(std::vector<preset::Entry>);
     std::function<bool(const std::filesystem::path &)> loadDevicePreset;

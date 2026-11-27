@@ -14,13 +14,14 @@ MidiCaptureState MidiInputCapture::state() const noexcept {
 std::uint64_t MidiInputCapture::epoch() const noexcept {
     return epoch_.load(std::memory_order_acquire);
 }
-bool MidiInputCapture::start(std::vector<std::int64_t> targets, double sampleRate) {
+bool MidiInputCapture::start(std::vector<std::int64_t> targets, double sampleRate, bool overdub) {
     const auto previous = state();
     if (previous == MidiCaptureState::Waiting || previous == MidiCaptureState::Recording ||
         read_.load(std::memory_order_relaxed) != written_.load(std::memory_order_acquire) ||
         epoch() == std::numeric_limits<std::uint64_t>::max())
         return false;
     tracks_ = std::move(targets);
+    overdub_ = overdub;
     sampleRate_ = sampleRate;
     const auto next = epoch() + 1;
     state_.store(MidiCaptureState::Waiting, std::memory_order_relaxed);
@@ -42,6 +43,10 @@ std::size_t MidiInputCapture::drain(std::span<MidiCapturePacket> out, RecordingP
     read_.store(first + count, std::memory_order_release);
     return count;
 }
+bool MidiInputCapture::overdubs(std::int64_t track) const noexcept {
+    return transport_ && overdub_ && std::find(tracks_.begin(), tracks_.end(), track) != tracks_.end();
+}
+
 void MidiInputCapture::finish(MidiCaptureState state) noexcept {
     active_ = false;
     transport_ = nullptr;

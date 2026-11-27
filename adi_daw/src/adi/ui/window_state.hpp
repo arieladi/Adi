@@ -46,7 +46,7 @@ struct WindowState {
     // The Note Editor's own settings, kept with the window: its editing grid (manual 10.2.1),
     // Highlight Scale (10.6), what its notes are coloured by (ADR-0242 d1), and the Quantize
     // settings (10.5.11) with ADI's swing.
-    bool noteGridSnap = true, noteGridFixed = false, noteGridTriplet = false;
+    bool noteGridSnap = true, noteGridFixed = true, noteGridTriplet = false;
     int noteGridNarrow = 0;
     double noteGridFixedQuarters = .25;
     bool highlightScale = true;

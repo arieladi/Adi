@@ -7,11 +7,13 @@
 #include "adi/engine/clip_details.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "juce/builtin_host.hpp"
@@ -29,6 +31,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iterator>
 #include <optional>
 #include <string_view>
@@ -155,7 +158,7 @@ double bin(const std::array<float, 2048> &data, int k) {
 
 // A declared nonzero runtime latency prevents the publication test from passing merely because
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
-class SurfaceKnobs final : public device::DeviceInstance {
+class SurfaceKnobs : public device::DeviceInstance {
   public:
     explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
         : reportedLatency(initialLatency), flow_(flow) {}
@@ -176,6 +179,203 @@ class SurfaceKnobs final : public device::DeviceInstance {
   private:
     engine::EventFlow flow_;
 };
+
+class SilentStateKnobs final : public SurfaceKnobs {
+  public:
+    SilentStateKnobs() : SurfaceKnobs(0) {}
+    std::uint64_t stateEpoch() const noexcept override { return epoch_; }
+    std::vector<std::string> stateRoles() const override { return {"chunk"}; }
+    std::vector<std::uint8_t> saveState(const std::string &role) const override {
+        if (role != "chunk" || refuseSave)
+            return {};
+        return {patch};
+    }
+    bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
+        if (role != "chunk" || bytes.size() != 1)
+            return false;
+        patch = bytes.front();
+        return true;
+    }
+    void nativeDragWithoutEnd(double value) {
+        broadcastParam(1, engine::ParamEventKind::Begin, 0);
+        controls.setParam("gain", device::ParamValue::fromNormalized(value));
+        broadcastParam(1, engine::ParamEventKind::Value, value);
+    }
+    void signalChangedState() {
+        const auto announced = beginStateSignal();
+        ++epoch_;
+    }
+    std::uint8_t patch = 1;
+    bool refuseSave = false;
+  private:
+    std::uint64_t epoch_ = 0;
+};
+
+void capturedPluginState(const std::filesystem::path &dir) {
+    bool refuseAtOpen = false;
+    const auto loader = [&](const engine::DeviceRequest &request, std::string &)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && (request.ref->uid == "test.silent-state" || request.ref->uid == "test.second-state")) {
+            auto device = std::make_unique<SilentStateKnobs>();
+            device->refuseSave = refuseAtOpen && request.ref->uid == "test.silent-state";
+            return device;
+        }
+        return {};
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "silent.adi", true, loader, error);
+    check(document != nullptr, "SC-09: open a document for a plug-in with silent state changes");
+    if (!document)
+        return;
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = "test.silent-state";
+    plugin.name = "Silent sampler";
+    plugin.subtype = "effect";
+    const bool inserted = document->insertPlugin(plugin, 4);
+    const auto &devices = document->session().model().devices;
+    const auto samplerRow = std::find_if(devices.begin(), devices.end(),
+                                        [&](const auto &device) { return device.name == plugin.name; });
+    check(inserted && samplerRow != devices.end(), "SC-09: insert the sampler");
+    if (!inserted || samplerRow == devices.end())
+        return;
+    const auto id = samplerRow->id;
+    const auto instance = [&](ui::ProjectDocument &doc) {
+        return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(id));
+    };
+    auto *sampler = instance(*document);
+    check(sampler && sampler->stateEpoch() == 0, "SC-09: fixture gives no state-change signal");
+    if (!sampler)
+        return;
+
+    auto snapshot = document->takeSnapshot("Baseline", 1'000'000, 0);
+    check(snapshot.ok, "SC-09: save the first opaque state with a snapshot");
+    sampler->patch = 2;
+    const auto before = History(document->store()).head();
+    snapshot = document->takeSnapshot("Changed patch", 2'000'000, 0);
+    const auto history = History(document->store()).readTimeline();
+    const auto head = History(document->store()).head();
+    check(snapshot.ok && head != before && !history.snapshots.empty() && history.snapshots.front().opSeq == head,
+          "SC-09: a named snapshot follows the new opaque state in history");
+    check(document->takeSnapshot("Same patch", 3'000'000, 0).ok && History(document->store()).head() == head,
+          "SC-09: capturing unchanged state appends no undo step");
+
+    plugin.uid = "test.second-state";
+    plugin.name = "Other sampler";
+    const bool insertedSecond = document->insertPlugin(plugin, 4);
+    const auto &currentDevices = document->session().model().devices;
+    const auto secondRow = std::find_if(currentDevices.begin(), currentDevices.end(),
+                                       [&](const auto &device) { return device.name == plugin.name; });
+    check(insertedSecond && secondRow != currentDevices.end(), "SC-430: insert an independent second sampler");
+    if (!insertedSecond || secondRow == currentDevices.end()) return;
+    const auto secondId = secondRow->id;
+    const auto secondInstance = [secondId](ui::ProjectDocument &doc) {
+        return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(secondId));
+    };
+    sampler = instance(*document);
+    auto *second = secondInstance(*document);
+    if (!sampler || !second) return;
+
+    const auto markedStale = [id, secondId](Store &store) {
+        SQLite::Statement read(store.db(), "SELECT value FROM session_state WHERE key='devices.stale_state'");
+        if (!read.executeStep()) return false;
+        const auto marks = Payload::parse(read.getColumn(0).getString());
+        return marks.contains(std::to_string(id)) && !marks.contains(std::to_string(secondId));
+    };
+    const auto namesStaleSampler = [](const std::string &warning) {
+        return warning.find("Silent sampler") != std::string::npos && warning.find("stale") != std::string::npos &&
+               warning.find("Other sampler") == std::string::npos;
+    };
+    sampler->patch = 3;
+    sampler->refuseSave = true;
+    check(!document->capturePluginState(id) && document->error().find("Silent sampler") != std::string::npos,
+          "SC-430: a structural per-device capture still refuses unreadable state");
+    sampler->signalChangedState();
+    second->patch = 7;
+    check(document->takeSnapshot("Sampler did not answer", 4'000'000, 0).ok &&
+          namesStaleSampler(document->pluginStateWarning()) && markedStale(document->store()),
+          "SC-430: a signalled but unreadable plug-in does not hold Take Snapshot");
+    const auto copy = dir / "silent-copy.adi";
+    check(document->saveCopy(copy) && namesStaleSampler(document->warning()),
+          "SC-430: Save a Copy names the device and uses its last saved state");
+    refuseAtOpen = true;
+    auto reopened = ui::ProjectDocument::open(copy, false, loader, error);
+    refuseAtOpen = false;
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 2 &&
+          secondInstance(*reopened) && secondInstance(*reopened)->patch == 7 && markedStale(reopened->store()),
+          "SC-430: the copy keeps old failed bytes, fresh healthy bytes, and just the failed device's stale mark");
+    check(reopened && reopened->capturePluginState() && namesStaleSampler(reopened->pluginStateWarning()),
+          "SC-430: a device already unreadable when the project opens does not block capture");
+    reopened.reset();
+
+    sampler->signalChangedState();
+    const auto staleSave = dir / "silent-stale-save.adi";
+    check(document->saveAs(staleSave) && namesStaleSampler(document->warning()) && markedStale(document->store()),
+          "SC-430: synchronous Save As switches projects with the stale state marked");
+    sampler = instance(*document);
+    if (!sampler) return;
+    sampler->signalChangedState();
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    const auto asyncSave = dir / "silent-stale-async.adi";
+    check(document->startSave(asyncSave, ui::ProjectDocument::SaveKind::as), "SC-430: begin staged Save As");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    auto progress = document->saveProgress();
+    while (progress && progress->phase != Phase::succeeded && progress->phase != Phase::failed &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        document->advanceSave();
+        progress = document->saveProgress();
+    }
+    check(progress && progress->phase == Phase::succeeded && namesStaleSampler(document->warning()) &&
+          markedStale(document->store()), "SC-430: staged Save As publishes with the warning saved alongside its result");
+    document->clearSave();
+
+    ui::ProjectDocument::ExportJob exportJob;
+    const auto zip = dir / "silent-stale.zip";
+    if (document->prepareCollectAndExport(zip, exportJob)) {
+        const auto exported = ui::ProjectDocument::runCollectAndExport(exportJob);
+        check(exported.ok && std::filesystem::is_regular_file(zip) && namesStaleSampler(exported.warning),
+              "SC-430: Collect and Export finishes and carries the stale state warning");
+    } else {
+        check(false, "SC-430: Collect and Export prepares despite unreadable device state");
+    }
+
+    sampler = instance(*document);
+    if (!sampler) return;
+    sampler->refuseSave = false;
+    const auto recoveredCopy = dir / "silent-recovered.adi";
+    check(document->saveCopy(recoveredCopy) && document->warning().empty() && !markedStale(document->store()),
+          "SC-430: successful retry captures the device and clears the stale mark");
+    reopened = ui::ProjectDocument::open(recoveredCopy, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 3,
+          "SC-09: opening Save a Copy restores the patch that made no callback");
+    reopened.reset();
+
+    sampler->patch = 4;
+    const auto saved = dir / "silent-saved.adi";
+    check(document->saveAs(saved), "SC-09: Save As captures silent state before it switches");
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 4,
+          "SC-09: opening Save As restores the latest patch");
+    reopened.reset();
+    sampler = instance(*document);
+    if (!sampler)
+        return;
+
+    sampler->patch = 5;
+    using engine::ParamEventKind;
+    check(document->parameterGesture(id, "cutoff", ParamEventKind::Begin, .5) &&
+              document->parameterGesture(id, "cutoff", ParamEventKind::Value, .8),
+          "SC-09: the strip has an unfinished knob drag");
+    sampler->nativeDragWithoutEnd(.6);
+    check(document->capturePluginState(), "SC-09: close captures both open knob drags and the silent patch");
+    document.reset();
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    const auto *closed = reopened ? instance(*reopened) : nullptr;
+    check(closed && closed->patch == 5 && std::abs(closed->getParam("cutoff").normalized - .8) < 1e-12 &&
+              std::abs(closed->getParam("gain").normalized - .6) < 1e-12,
+          "SC-09: reopening restores the silent patch and each drag's last value");
+}
 
 Payload readLatencyReport(Store &store) {
     SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
@@ -777,6 +977,83 @@ void rememberedRouteStartsANewInstance(const std::filesystem::path &dir) {
           "route: one undo step takes the device and its route away together");
 }
 
+void pluginTouchPublication(const std::filesystem::path &file) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, test::knobsLoader("0000001f", "clap"), error);
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    if (!document || !document->insertPlugin(plugin, 2) || !document->insertPlugin(plugin, 2)) {
+        check(false, "SC-317: two hosted plug-ins to observe in the document feed");
+        return;
+    }
+    const auto fixtureDevices = [](const ui::ParameterPublication &publication) {
+        std::vector<const ui::DevicePanelData *> devices;
+        for (const auto &device : publication)
+            if (device.track == 2 && device.uid == test::kKnobsUid)
+                devices.push_back(&device);
+        return devices;
+    };
+    const auto untapped = document->parameterFeed().current();
+    const auto initial = fixtureDevices(*untapped);
+    if (initial.size() != 2) {
+        check(false, "SC-317: two identities are published without parameter demand");
+        return;
+    }
+    const auto id = initial.front()->id;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(id));
+    if (!knobs) {
+        check(false, "SC-317: the editor's fixture callback producer exists");
+        return;
+    }
+    check(!initial.front()->pluginTouch && initial.front()->declarations().empty(),
+          "SC-317: there is no initial touch on the identity-only publication");
+    knobs->windowGesture(0, .625);
+    document->tick(0);
+    const auto touched = document->parameterFeed().current();
+    const auto targetsAfterTouch = fixtureDevices(*touched);
+    const auto touch = targetsAfterTouch.front()->pluginTouch;
+    check(touch && touch->parameter == "0000001f" && touch->sequence != 0 &&
+              targetsAfterTouch.front()->declarations().empty() && !targetsAfterTouch.back()->pluginTouch &&
+              targetsAfterTouch.front()->runtime.sameInstance(initial.front()->runtime),
+          "SC-317: the editor touch has the exact stable parameter ID and instance without panel demand");
+    knobs->windowGesture(0, .75);
+    document->tick(1);
+    const auto repeated = document->parameterFeed().current();
+    const auto again = fixtureDevices(*repeated).front()->pluginTouch;
+    check(touch && again && again->parameter == touch->parameter && again->sequence > touch->sequence,
+          "SC-317: another gesture on the same parameter publishes a new touch sequence");
+    document->tick(2);
+    check(document->parameterFeed().current() == repeated,
+          "SC-317: an idle tick reuses the shared touch publication");
+    document->setParameterDemand(document.get(), {id, initial.back()->id});
+    const auto available = document->parameterFeed().current();
+    const auto targets = ui::automationChoices(*document->view().current(), 2, available.get());
+    const auto first = std::find_if(targets.begin(), targets.end(), [&](const auto &target) {
+        return target.ownerKind == "device" && target.ownerId == id;
+    });
+    check(first != targets.end() && first->lastTouched && first->paramRef == "31" &&
+              std::count_if(targets.begin(), targets.end(), [](const auto &target) { return target.lastTouched; }) == 1,
+          "SC-317: Automation offers the touched parameter first for its exact device");
+
+    knobs->windowGesture(1, .625);
+    knobs->windowGesture(0, .875);
+    document->pollParameterEdits();
+    const auto burst = document->parameterFeed().current();
+    const auto *burstDevice = fixtureDevices(*burst).front();
+    const auto history = burstDevice->recentPluginTouches;
+    check(history && history->size() >= 2 && burstDevice->pluginTouch &&
+              (*history)[history->size() - 2].parameter == "gain" &&
+              history->back() == *burstDevice->pluginTouch && history->back().parameter == "0000001f" &&
+              (*history)[history->size() - 2].sequence < history->back().sequence,
+          "SC-317: polling the Configure baseline publishes both editor touches in order");
+    document->tick(3);
+    check(fixtureDevices(*document->parameterFeed().current()).front()->recentPluginTouches == history,
+          "SC-317: unchanged history stays shared across publications");
+}
+
 void moveOrdinaryDevice(const std::filesystem::path &file) {
     std::string error;
     auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
@@ -1290,8 +1567,8 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     const auto recallHead = OpJournal(recall->store()).headSeq();
     const auto originalAudio = renderNote(*recall);
     const auto originalAutomation = [&] {
-        const auto snapshot = recall->view().current();
-        const auto *row = snapshot->findAutomationLane(lane.id);
+        const auto recallSnapshot = recall->view().current();
+        const auto *row = recallSnapshot->findAutomationLane(lane.id);
         return row && row->ownerId == device && row->paramRef == lane.paramRef;
     };
     auto unsupported = values;
@@ -1908,6 +2185,123 @@ void recordingBitDepth(const std::filesystem::path &dir) {
     }
 }
 
+void arrangementAutomation(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc=ui::ProjectDocument::open(dir/"automation-record.adi",true,test::knobsLoader("7"),error);
+    check(doc!=nullptr,"a project for Arrangement automation");
+    if(!doc)return;
+    doc->prepare(48000,64);
+    const bool started=doc->startRecording(0,0,false);
+    check(started && doc->recording() && doc->session().automationRecording(),
+          "Arrangement Record starts automation with no armed tracks or audio inputs");
+    if(!started)return;
+    std::array<float,64> l{},r{};
+    float *outputs[]{l.data(),r.data()};
+    engine::AudioIo io;
+    io.out=outputs;io.numOut=2;io.frames=64;
+    auto block=[&] {doc->process(io);};
+    block();
+    const auto before=OpJournal(doc->store()).headSeq();
+    const gesture::RelativeScalarSelection volume{gesture::ScalarKind::TrackVolume,4,{}, {-70,6,-150}};
+    const bool touched=doc->beginMixerDrag(volume,std::nullopt,"Change Track Volume");
+    const bool first=doc->mixerDrag(-6);
+    block();
+    const bool second=doc->mixerDrag(-12);
+    block();
+    const bool ended=doc->endMixerDrag();
+    check(touched && first && second && ended,"a touched fader previews and releases during Arrangement Record");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE owner_kind='track'"
+                                        " AND owner_id=4 AND param_ref='volume'").getInt()==1,
+          "first recorded touch creates a Volume envelope");
+    const auto lane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                " WHERE owner_kind='track' AND owner_id=4 AND param_ref='volume'").getInt64();
+    bool firstWritten=false,secondWritten=false;
+    if(const auto data=doc->store().getAutomationData(lane,{})) {
+        StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)if(const auto point=points.at(i)) {
+            firstWritten=firstWritten || std::abs(point->value + 6) < 1e-9;
+            secondWritten=secondWritten || std::abs(point->value + 12) < 1e-9;
+        }
+    }
+    check(firstWritten && secondWritten && !doc->session().automationOverridden(),
+          "the written pass keeps both played values and follows automation on release");
+    doc->stopRecording();
+    check(!doc->recording() && !doc->session().automationRecording() && !doc->landingTake(),
+          "stopping automation alone has no audio take to land");
+    check(History(doc->store()).undo().ok && OpJournal(doc->store()).headSeq()==before &&
+              doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE id="+std::to_string(lane)).getInt()==0,
+          "one Undo restores the curve and its absence before recording");
+
+    doc->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','")+
+        test::kKnobsUid+"','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType="chain.create";
+    make[0].payload={{"id",3},{"track",2},{"ord",0},{"name","Devices"}};
+    make[1].opType="device.insert";
+    make[1].payload={{"id",3},{"chain",3},{"ord",0},{"ref",3},{"name","UI knobs"},{"latency",0}};
+    check(doc->ops().submit(make).ok && doc->synchronise(),"a device to write while Arrangement Record is on");
+    check(doc->startRecording(0,0,true),"automation can punch in while playing without an armed track");
+    const auto beforeKnob=OpJournal(doc->store()).headSeq();
+    using Event=engine::ParamEventKind;
+    check(doc->parameterGesture(3,"7",Event::Begin,.5) &&
+              doc->parameterGesture(3,"7",Event::Value,.7),"a device strip knob can be touched");
+    block();
+    check(doc->parameterGesture(3,"7",Event::End,.7),"releasing the knob completes the touch");
+    const auto knobLane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                    " WHERE owner_kind='device' AND owner_id=3 AND param_ref='7'").getInt64();
+    const auto wrote=[&](double value) {
+        const auto data=doc->store().getAutomationData(knobLane,{});
+        if(!data)return false;
+        const StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)
+            if(const auto point=points.at(i);point && std::abs(point->value - value) < 1e-9)return true;
+        return false;
+    };
+    check(wrote(.7) && !doc->session().automationOverridden() &&
+              doc->store().db().execAndGet("SELECT count(*) FROM plugin_params WHERE device_id=3").getInt()==0,
+          "device touch records normalized automation and leaves the manual parameter row untouched");
+    const auto beforeNative=OpJournal(doc->store()).headSeq();
+    block();
+    if(auto *knobs=dynamic_cast<test::Knobs*>(doc->session().instanceFor(3))) {
+        knobs->windowGesture(0,.35);
+        knobs->windowGesture(0,.4);
+    } else check(false,"the hosted editor is attached");
+    doc->tick(1);
+    doc->tick(2);
+    check(wrote(.4) && !doc->session().automationOverridden(),
+          "two gestures in one hosted-editor drain preserve the last pass");
+    doc->stopRecording();
+    check(doc->ops().undo().ok && wrote(.35),"the first Undo restores the previous hosted-editor pass");
+    check(doc->ops().undo().ok && OpJournal(doc->store()).headSeq()==beforeNative && !wrote(.35),
+          "the next Undo reverses the first hosted-editor pass");
+    check(doc->ops().undo().ok && OpJournal(doc->store()).headSeq()==beforeKnob,
+          "one Undo reverses the device strip pass");
+
+    OpRequest loop;loop.opType="transport.setLoop";loop.payload={{"on",true},{"start",0},{"end",61501}};
+    check(doc->ops().submit(loop).ok && doc->synchronise(),"a short loop for a held touch");
+    doc->mailbox().post(ui::TransportMailbox::Command::Locate,0);
+    block();
+    check(doc->startRecording(0,0,true) &&
+          doc->beginMixerDrag(volume,std::nullopt,"Change Track Volume") && doc->mixerDrag(-9),
+          "an automation-only touch can record with looping enabled");
+    for(int i=0;i<6;++i){block();doc->tick(i+2);}
+    check(doc->endMixerDrag(),"release a touch held across a loop wrap");
+    const auto loopLane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                    " WHERE owner_kind='track' AND owner_id=4").getInt64();
+    bool carried=false;
+    if(const auto data=doc->store().getAutomationData(loopLane,{})) {
+        const StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)
+            if(const auto point=points.at(i);point && point->time==0 && std::abs(point->value + 9) < 1e-9)carried=true;
+    }
+    check(carried,"the held value is recorded at the next loop start");
+    check(doc->recording() && doc->session().automationRecording() && !doc->landingTake(),
+          "polling keeps an automation-only recording open");
+    doc->release();
+    doc->tick(9);
+    check(!doc->recording() && !doc->session().automationRecording() && !doc->landingTake(),
+          "device release stops an automation-only recording without trying to land a take");
+}
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -1921,8 +2315,10 @@ void arrangementRecord(const std::filesystem::path &dir) {
         r.payload = {{"id", id}, {"armed", on}};
         return doc->ops().submit(r).ok && doc->synchronise();
     };
+    doc->setAutomationArmed(false);
     check(!doc->startRecording(0, 2, false) && doc->error() == "Arm a track to record into it.",
           "with nothing armed, Record says to arm a track");
+    doc->setAutomationArmed(true);
     check(armed(4, true), "3 Audio armed");
     check(!doc->startRecording(0, 0, false) && doc->error().find("no inputs") != std::string::npos,
           "a device with no inputs is refused");
@@ -2308,7 +2704,11 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
     OpRequest arm;
     arm.opType = "track.setArm";
     arm.payload = {{"id", 4}, {"armed", true}};
-    check(doc->ops().submit(arm).ok && doc->synchronise(), "SC-22: arm the audio track");
+    OpRequest monitor;
+    monitor.opType = "track.setMonitorMode";
+    monitor.payload = {{"id", 4}, {"mode", 0}};
+    check(doc->ops().submit(arm).ok && doc->ops().submit(monitor).ok && doc->synchronise(),
+          "SC-22: arm the audio track with Monitor Off for loopback compensation");
 
     constexpr int rate = 48000, frames = 64;
     constexpr int startSample = rate, referenceClick = 256;
@@ -2370,6 +2770,91 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
               audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
 }
+void mixedRecordingLatency(const std::filesystem::path &dir) {
+    constexpr int rate = 48000, frames = 64, reportedSamples = 32;
+    constexpr const char *setting = "audio.driverErrorCompensationMs";
+    settings::AppSettings preferences(appdata::App::Daw, dir / "device-dec.json");
+    std::string error;
+    check(preferences.set(setting, 150.0, {}, error) && preferences.set(setting, -150.0, {}, error) &&
+              !preferences.set(setting, 150.01, {}, error),
+          "SC-255: Settings accepts both 150 ms bounds and refuses values outside them");
+    check(engine::recordingLatencyCorrection(reportedSamples, rate, 150.0) == 7232 &&
+              engine::recordingLatencyCorrection(reportedSamples, rate, -150.0) == -7168 &&
+              engine::recordingLatencyCorrection(reportedSamples, rate, 150.01) == reportedSamples,
+          "SC-255: the 48 kHz correction uses the same bounds as Settings");
+    struct Case { double milliseconds; int capturedAt; std::int64_t correctedStart; const char *file; };
+    const std::array examples{Case{1.25, 128, 36, "positive-dec.adi"},
+                              Case{-1.25, 128, 156, "negative-dec.adi"},
+                              Case{111.90, 8192, 2789, "calibrated-dec.adi"}};
+    for (const auto &example : examples) {
+        if (!preferences.set(setting, example.milliseconds, {}, error))
+            throw std::runtime_error(error);
+        auto doc = ui::ProjectDocument::open(dir / example.file, true, {}, error);
+        if (!doc)
+            throw std::runtime_error(error);
+        const auto set = [&](const char *type, Payload payload) {
+            OpRequest request;
+            request.opType = type;
+            request.payload = std::move(payload);
+            if (!doc->ops().submit(request).ok)
+                throw std::runtime_error("could not configure the latency fixture");
+        };
+        struct Target { int id, mode; bool keep; std::int64_t start; };
+        const std::array targets{Target{4, 0, true, example.correctedStart}, Target{5, 2, true, example.capturedAt},
+                                 Target{8, 1, false, example.correctedStart}};
+        set("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Monitored"}});
+        for (const auto &track : targets) {
+            set("track.setArm", {{"id", track.id}, {"armed", true}});
+            set("track.setMonitorMode", {{"id", track.id}, {"mode", track.mode}});
+            set("track.setKeepMonitoringLatency", {{"id", track.id}, {"on", track.keep}});
+        }
+        if (!doc->synchronise())
+            throw std::runtime_error(doc->error());
+        doc->prepare(rate, frames);
+        const auto tempo = doc->view().current()->tempo;
+        const auto tick = tempo->secondsToTicks(static_cast<double>(example.capturedAt) / rate);
+        const auto correction = engine::recordingLatencyCorrection(
+            reportedSamples, rate, preferences.get(setting).get<double>());
+        if (example.milliseconds == 111.90)
+            check(correction - reportedSamples == 5371, "SC-255: 111.90 ms adds 5371 samples at 48 kHz");
+        if (!doc->startRecording(tick, 1, false, correction))
+            throw std::runtime_error(doc->error());
+        // The job keeps the choices it read when Record was pressed.
+        set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", false}});
+        set("track.setKeepMonitoringLatency", {{"id", 8}, {"on", true}});
+        if (!doc->synchronise())
+            throw std::runtime_error(doc->error());
+        std::array<float, frames> input{}, left{}, right{};
+        input[7] = .5f;
+        const float *inputs[]{input.data()};
+        float *outputs[]{left.data(), right.data()};
+        doc->process({outputs, inputs, 2, 1, frames, 0});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto preview = doc->session().recording().preview();
+        while (!preview && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            preview = doc->session().recording().preview();
+        }
+        doc->release();
+        check(doc->settleRecording(), "SC-255: settle simultaneous takes with different monitoring timing");
+        const auto landed = doc->takeLanded();
+        check(landed && landed->ok && landed->clips.size() == targets.size(), "SC-255: the armed tracks all land");
+        if (!preview)
+            throw std::runtime_error("the recording preview did not arrive");
+        const auto snapshot = doc->view().current();
+        for (const auto &target : targets) {
+            const auto *track = snapshot->findTrack(target.id);
+            const auto item = std::find_if(preview->tracks.begin(), preview->tracks.end(),
+                                           [&](const auto &entry) { return entry.trackId == target.id; });
+            check(track && track->clips.size() == 1 && item != preview->tracks.end() &&
+                      preview->latestPass(preview->peaks.frames, item->placementOffsetSamples).startSample == target.start &&
+                      track->clips.front()->audio && track->clips.front()->audio->warpEnabled &&
+                      std::llround(tempo->ticksToSeconds(track->clips.front()->posTicks) * rate) == target.start,
+                  "SC-255: the per-track preview and warped clip share the start from its latched timing");
+        }
+    }
+}
+
 void countInPositionFeedback(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "count-in.adi", true, {}, error);
@@ -2836,7 +3321,7 @@ void longTakeStopResponse(const std::filesystem::path &dir) {
           "long take: one Undo removes all four clips");
     doc->release();
 }
-void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool quantize = false) {
     std::string error;
     constexpr std::int32_t upstreamLatency = 16;
     auto doc = ui::ProjectDocument::open(path, true,
@@ -2865,9 +3350,11 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
                   set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
               "the monitored track has an instrument after a device with latency");
     }
-    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+    check(set("track.setRecordQuantize", {{"id", 2}, {"on", quantize}, {"grid", "1/16"}}) &&
+              set("track.setArm", {{"id", 2}, {"armed", true}}) &&
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
-              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
+              (!mixed || (set("track.setRecordQuantize", {{"id", 3}, {"on", quantize}, {"grid", "1/32"}}) &&
+                          set("track.setArm", {{"id", 3}, {"armed", true}}) &&
                           set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
                           set("track.setArm", {{"id", 4}, {"armed", true}}) &&
                           set("track.rename", {{"id", 4}, {"name", "# Audio"}}))) && doc->synchronise(),
@@ -2894,22 +3381,26 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         io.streamTimeSamples += io.frames;
         doc->tick(io.streamTimeSamples);
     };
-    block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
+    const std::int64_t lead = quantize ? 4096 : 0;
+    while (io.streamTimeSamples < lead + 64)
+        block();
+    check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88),
           "one held note with bend, slide and pressure and separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
               clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
+    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128),
           "the held note releases");
     block();
+    while (quantize && io.streamTimeSamples < 6400)
+        block();
     doc->stopRecording();
     block();
     doc->release();
@@ -2922,8 +3413,6 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         return;
     if (mixed) {
         const auto relative = doc->store().db().execAndGet("SELECT rel_path FROM media_files").getString();
-        if (relative != "Samples/Recorded/3 Audio 0001.wav")
-            std::printf("Mixed take path: %s\n", relative.c_str());
         check(relative == "Samples/Recorded/3 Audio 0001.wav" &&
                   std::filesystem::is_regular_file(media::projectFolder(doc->store()) / media::pathFromUtf8(relative)),
               "the mixed take publishes under the displayed audio track name");
@@ -2932,13 +3421,29 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     } else {
         check(!std::filesystem::exists(workFolder), "MIDI-only recording does not create an audio work folder");
     }
+    if (quantize) {
+        for (const auto id : landed->clips) {
+            const auto read = engine::readClipDetails(doc->store(), id, true, true);
+            if (!read.clip || read.clip->kind != "midi")
+                continue;
+            const auto &clip = *read.clip;
+            const auto expectedTick = textproj::kPPQ / (clip.trackId == 2 ? 4 : 8);
+            check(clip.notes.size() == 1 && clip.notes.front().startTicks == expectedTick &&
+                      clip.noteExpressions.curves.size() == 3,
+                  "each track's Rec-Q grid moves its recorded note and retains note expression");
+        }
+        const auto step = doc->ops().nextUndo();
+        check(step && step->label == "Record Quantize" && step->opCount == 2 &&
+                  doc->ops().undo().ok && clipCount() == before + expected,
+              "one Record Quantize undo restores both tracks and leaves the raw mixed take");
+    }
     for (const auto id : landed->clips) {
         const auto read = engine::readClipDetails(doc->store(), id, true, true);
         if (!read.clip || read.clip->kind != "midi")
             continue;
         const auto &clip = *read.clip;
-        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
-        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
+        const double samples = clip.trackId == 2 && mixed ? 112.0 - upstreamLatency : 80.0;
+        const auto ticks = static_cast<std::int64_t>(std::lround((static_cast<double>(lead) + samples) * textproj::kPPQ / 24000.0));
         check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
               "monitored notes land where heard and unmonitored notes where played");
         const auto &curves = clip.noteExpressions.curves;
@@ -2949,8 +3454,95 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
+    if (quantize)
+        check(doc->ops().redo().ok && doc->ops().nextUndo()->label == "Record Quantize" && clipCount() == before + expected,
+              "redo reapplies Record Quantize as a separate step");
 }
-void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
+void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) {
+    std::string error;
+    constexpr int upstream = 16;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.delay") return std::make_unique<SurfaceKnobs>(16);
+            if (request.ref->uid == "record.test.keys") return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
+    check(doc != nullptr, "a project for Monitor Auto MIDI timing");
+    if (!doc) return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    const auto tick = [](int sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * textproj::kPPQ / 24000.));
+    };
+    doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                          "(30,'clap','record.test.delay','Delay','effect'),"
+                          "(31,'clap','record.test.keys','Keys','instrument')");
+    for (const int track : {2, 3}) {
+        const auto chain = track * 10;
+        check(set("chain.create", {{"id", chain}, {"track", track}, {"ord", 0}, {"name", "Devices"}}) &&
+                  set("device.insert", {{"id", chain}, {"chain", chain}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
+                  set("device.insert", {{"id", chain + 1}, {"chain", chain}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}) &&
+                  set("track.setRecordQuantize", {{"id", track}, {"on", false}}) &&
+                  set("track.setArm", {{"id", track}, {"armed", true}}) &&
+                  set("track.setMonitorMode", {{"id", track}, {"mode", 2}}), "arm two Monitor Auto instruments with the same latency");
+    }
+    check(set("clip.create", {{"id", 100}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", tick(128)}}) &&
+              doc->synchronise(), "a playing clip covers the onset on only one track");
+    doc->prepare(48000, 64);
+    check(doc->session().midiRecordMonitor(2) && doc->session().midiRecordMonitor(3),
+          "both tracks have an actual published live instrument route");
+    if (!doc->startRecording(0, 0, false, 0, {}, audio::WavFormat::Float32, overdub)) {
+        check(false, "record MIDI through Monitor Auto");
+        return;
+    }
+    std::array<float, 64> left{}, right{};
+    float *output[]{left.data(), right.data()};
+    engine::AudioIo io{output, nullptr, 2, 0, 64, 0};
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+              doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0}, 128),
+          "record the same event on each track across the first track's suppression boundary");
+    block();
+    block();
+    const auto expected = [&](std::int64_t track) {
+        const bool heard = track == 3 || overdub;
+        return std::pair{tick(heard ? 112 - upstream : 80), tick(heard ? 160 - upstream : 128)};
+    };
+    const auto preview = doc->liveMidiTakes();
+    check(preview.size() == 2 && std::all_of(preview.begin(), preview.end(), [&](const auto &take) {
+        const auto [start, end] = expected(take.track);
+        return take.notes.size() == 1 && take.notes.front().start == start && take.notes.front().end == end;
+    }), overdub ? "overdub bypasses Auto suppression for the armed tracks" :
+                  "Auto suppression uses raw onset and release while the other armed track uses heard time");
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "settle the Monitor Auto MIDI recording");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "the Monitor Auto take lands on both tracks");
+    if (!landed || !landed->ok) return;
+    for (const auto id : landed->clips) {
+        const auto read = engine::readClipDetails(doc->store(), id, true, true);
+        if (!read.clip || read.clip->notes.size() != 1 || !read.clip->posTicks) {
+            check(false, "read the landed Monitor Auto note");
+            continue;
+        }
+        const auto [start, end] = expected(read.clip->trackId);
+        const auto &note = read.clip->notes.front();
+        check(*read.clip->posTicks + note.startTicks == start && note.durationTicks == end - start,
+              "the landed note preserves both endpoints from its track's selected clock");
+    }
+}
+void mixedPunchKeepsMidi(const std::filesystem::path &dir, bool keepSecondAudio = false) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "mixed-punch.adi", true, {}, error);
     check(doc != nullptr, "SC-26: a project for a mixed punch take");
@@ -2972,6 +3564,9 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
         !set("track.setArm", {{"id", 4}, {"armed", true}}) ||
         !set("track.setMonitorMode", {{"id", 2}, {"mode", 0}}) ||
         !set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) ||
+        (keepSecondAudio && (!set("track.setArm", {{"id", 5}, {"armed", true}}) ||
+                             !set("track.setMonitorMode", {{"id", 5}, {"mode", 1}}) ||
+                             !set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", true}}))) ||
         !set("transport.setLoop", {{"on", false}, {"start", start}, {"end", end}}) ||
         !set("transport.setPunch", {{"in", true}, {"out", true}}) || !doc->synchronise())
         throw std::runtime_error("could not configure the mixed punch take");
@@ -3014,25 +3609,41 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
         if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
             capture = entry.path();
     const auto landed = doc->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 1 &&
+    const int expectedClips = keepSecondAudio ? 2 : 1;
+    check(landed && landed->ok && landed->clips.size() == static_cast<std::size_t>(expectedClips) &&
               landed->message.find("compensated punch range") != std::string::npos && !capture.empty() &&
               landed->message.find(media::pathUtf8(capture)) != std::string::npos,
-          "SC-26: preserve the MIDI take and report the rejected audio's full directory");
-    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
-          "SC-26: the retained audio is not added to the project's media pool");
-    if (landed && landed->clips.size() == 1) {
-        const auto detail = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);
+          "preserve the placeable tracks and report the rejected audio's full directory");
+    auto &db = doc->store().db();
+    check(db.execAndGet("SELECT count(*) FROM media_files").getInt() == (keepSecondAudio ? 1 : 0) &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=4").getInt() == 0,
+          "the fully clipped track has no clip or imported audio");
+    if (landed && landed->clips.size() == static_cast<std::size_t>(expectedClips)) {
+        if (keepSecondAudio) {
+            SQLite::Statement kept(db, "SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames,a.warp_enabled "
+                                       "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=? AND c.track_id=5");
+            kept.bind(1, landed->clips.front());
+            check(kept.executeStep() && kept.getColumn(0).getInt64() == start &&
+                      kept.getColumn(1).getInt64() == end - start && kept.getColumn(2).getInt64() == 0 &&
+                      kept.getColumn(3).getInt64() == 2 * frames && kept.getColumn(4).getInt() == 1,
+                  "SC-255: the monitored track keeps its own authored, sample-exact Warp interval");
+            kept.reset();
+        }
+        const auto detail = engine::readClipDetails(doc->store(), landed->clips.back(), true, true);
         check(detail.clip && detail.clip->kind == "midi" && detail.clip->trackId == 2 &&
                   detail.clip->posTicks == start && detail.clip->lengthTicks == end - start &&
                   detail.clip->notes.size() == 1 && detail.clip->notes.front().key == 64,
               "SC-26: the MIDI clip lands at the authored brace without overwriting either side");
-        check(doc->ops().undo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
-                  doc->ops().redo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 1,
-              "SC-26: the MIDI take can be undone and redone as one edit");
+        check(doc->ops().undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+                  doc->ops().redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == expectedClips,
+              "the landed tracks are undone and redone as one edit");
     }
     const auto wav = capture / "take-0.wav";
     const bool retained = !capture.empty() && std::filesystem::is_regular_file(wav);
     check(retained, "SC-26: the private WAV remains available for recovery");
+    if (keepSecondAudio)
+        check(!capture.empty() && std::filesystem::is_regular_file(capture / "take-1.wav"),
+              "SC-255: partial publication retains the entire original recording directory");
     if (retained) {
         audio::WavReader reader(wav);
         std::array<float, 2 * frames> samples{};
@@ -3870,6 +4481,10 @@ void punchedWaveformBounds() {
           "SC-26: preview uses the exact authored Punch-Out tick and stops at the trimmed source end");
     punch.offsetSamples = 256;
     check(!ui::punchedPreviewRange(punch, 128, rate, tempo), "SC-26: a fully clipped preview draws no take");
+    const auto kept = ui::punchedPreviewRange(punch, 128, rate, tempo, 0);
+    check(kept && kept->startTicks == punch.window.in->tick && kept->endTicks == punch.window.out->tick &&
+              kept->sourceStartFrame == 0 && kept->sourceEndFrame == 128,
+          "SC-255: an armed monitored lane previews its own unshifted interval");
 }
 void recordedWaveformHandoff() {
     auto clip = std::make_shared<engine::ClipNode>();
@@ -4182,6 +4797,195 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
           "as one Record Audio step in the saved file, the file it was saved from untouched");
     doc->release();
 }
+void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = false) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    fs::create_directory(staging);
+    const auto source = staging / "Untitled.adi";
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "first save starts with an unnamed project");
+    if (!doc)
+        return;
+
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "first-save fixture arms its audio track");
+    if (!doc->startRecording(0, 1, false)) {
+        check(false, "first-save fixture records");
+        return;
+    }
+    std::array<float, 64> in{}, left{}, right{};
+    in.fill(0.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    for (int block = 0; block < 16; ++block) {
+        io.streamTimeSamples = block * 64;
+        doc->process(io);
+    }
+    doc->release();
+    check(doc->settleRecording(), "the unnamed project's recording lands");
+    const auto take = doc->takeLanded();
+    check(take && take->ok, "the unnamed project has a recorded clip");
+    if (!take || !take->ok)
+        return;
+    const auto id = doc->store().db().execAndGet("SELECT id FROM media_files").getInt64();
+    const auto mediaPath = [&] {
+        return media::resolveMedia(media::projectFolder(doc->store()), media::mediaRow(doc->store().db(), id), error);
+    };
+    const auto originalAudio = mediaPath();
+    check(!originalAudio.empty(), "the take resolves in unnamed staging");
+    if (originalAudio.empty())
+        return;
+
+    const auto occupied = dir / "Occupied.adi";
+    fs::create_directory(occupied);
+    check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
+              !originalAudio.empty() && fs::is_regular_file(originalAudio),
+          "a refused first save retains the original project and its recording");
+
+    const auto destination = dir / "Song";
+    fs::create_directory(destination);
+    const auto named = destination / "Song.adi";
+    const auto relativeAudio = originalAudio.lexically_relative(fs::canonical(staging));
+    const auto existingAudio = destination / relativeAudio;
+    std::optional<media::FileIdentity> replacementIdentity;
+    if (replace) {
+        StoreError openError{};
+        auto existing = Store::createNewProject(named, openError);
+        check(existing && existing->close(), "the first-save replacement fixture is a closed project");
+        if (!existing)
+            return;
+        existing.reset();
+        fs::create_directories(existingAudio.parent_path());
+        std::ofstream(existingAudio) << "An existing take in the destination folder";
+        std::error_code identityError;
+        replacementIdentity = media::readFileIdentity(named, identityError);
+        const auto wrongIdentity = media::readFileIdentity(source, identityError);
+        check(replacementIdentity && wrongIdentity, "identify both projects in the replacement fixture");
+        if (!replacementIdentity || !wrongIdentity)
+            return;
+        check(!doc->saveAs(named, true) && fs::exists(originalAudio),
+              "a named destination keeps the first save pending until replacement is confirmed");
+        check(!doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed, &*wrongIdentity) &&
+                  doc->store().path() == source && fs::exists(originalAudio) &&
+                  media::readFileIdentity(named, identityError) == replacementIdentity &&
+                  std::distance(fs::directory_iterator(existingAudio.parent_path()), fs::directory_iterator{}) == 1,
+              "a stale confirmation leaves both projects and their media in place");
+    }
+    const auto existingHash = replace ? media::blake3File(existingAudio).hex : std::string{};
+    bool saved = false;
+    if (replacementIdentity) {
+        saved = doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed, &*replacementIdentity);
+    } else {
+        using SaveKind = ui::ProjectDocument::SaveKind;
+        using SavePhase = ui::ProjectDocument::SaveProgress::Phase;
+        using namespace std::chrono_literals;
+        if (doc->startSave(named, SaveKind::firstSave)) {
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            do {
+                doc->advanceSave();
+                const auto progress = doc->saveProgress();
+                if (!progress || progress->phase == SavePhase::failed || progress->phase == SavePhase::cancelled)
+                    break;
+                saved = progress->phase == SavePhase::succeeded && progress->switched;
+                if (saved)
+                    break;
+                std::this_thread::sleep_for(1ms);
+            } while (std::chrono::steady_clock::now() < deadline);
+        }
+        doc->clearSave();
+    }
+    check(saved && doc->name() == "Song" && doc->store().path() == named,
+          "first save names the active project");
+    if (!saved) {
+        std::printf("first save: %s\n", doc->error().c_str());
+        return;
+    }
+    const auto newAudio = mediaPath();
+    const auto localAudio = newAudio.lexically_relative(media::projectFolder(doc->store()));
+    check(!newAudio.empty() && newAudio != originalAudio && localAudio.parent_path() == relativeAudio.parent_path() &&
+              (replace ? localAudio != relativeAudio : localAudio == relativeAudio),
+          "first save keeps the take in the destination's media folder");
+    if (replace)
+        check(!existingHash.empty() && media::blake3File(existingAudio).hex == existingHash,
+              "a first-save replacement leaves the other recording at the conflicting name intact");
+    const auto undoStep = doc->ops().nextUndo();
+    check(undoStep && undoStep->label == "Record Audio", "first save preserves the recording's undo step");
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    check(undone, "the relocated project's recording can be undone");
+    const bool redone = undone && doc->ops().redo().ok && doc->synchronise();
+    check(redone && mediaPath() == newAudio, "redo restores the recording at its relocated path");
+    check(doc->takeSnapshot("First snapshot", 1, 0).ok,
+          "after naming, the project can take a snapshot");
+    doc.reset();
+    check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
+          "the closed named project retains the take and leaves no unnamed copy");
+    if (!redone)
+        return;
+
+    StoreError openError{};
+    const auto reopened = Store::open(named, openError, true);
+    engine::Session playback;
+    engine::SessionSpec spec;
+    spec.sampleRate = 48000;
+    spec.maxFrames = 64;
+    const bool loaded = reopened && playback.load(*reopened, {}, spec);
+    check(loaded, "the named project reopens for playback");
+    if (!loaded)
+        return;
+    playback.transport().locate(0);
+    playback.transport().play();
+    auto *clips = playback.clips();
+    check(clips && clips->prime(), "the relocated take's audio is ready");
+    io.in = nullptr;
+    io.numIn = 0;
+    io.streamTimeSamples = 0;
+    left.fill(0);
+    right.fill(0);
+    playback.process(io);
+    const auto renderedTake = [](float sample) { return std::abs(sample - 0.25f) < 0.01f; };
+    check(std::all_of(left.begin(), left.end(), renderedTake) && std::all_of(right.begin(), right.end(), renderedTake),
+          "the reopened, redone clip plays the recorded PCM with no audio input");
+}
+void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    const auto song = dir / "Song";
+    fs::create_directory(staging);
+    fs::create_directory(song);
+    const auto unnamed = staging / "Untitled.adi";
+    StoreError error{};
+    auto active = Store::create(unnamed, error);
+    auto other = Store::open(unnamed, error);
+    check(active && other, "first-save cleanup has an independent source writer");
+    if (!active || !other)
+        return;
+    const auto named = song / "Song.adi";
+    const auto result = active->saveUntitledAs(named);
+    check(result.ok && active->path() == named && fs::exists(unnamed),
+          "first save publishes the destination while the source writer's lease protects the original");
+    if (!result.ok)
+        return;
+    OpRequest late;
+    late.opType = "project.setName";
+    late.payload = {{"name", "A later source edit"}};
+    check(OpJournal(*other).commit(late).ok && other->close(), "the other writer commits and closes before cleanup");
+    other.reset();
+    active->finishUntitledSave();
+    auto original = Store::open(unnamed, error, true);
+    check(original && original->db().execAndGet("SELECT name FROM project").getString() == "A later source edit" &&
+              active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
+          "first-save cleanup preserves a newer source revision after its writer closes");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -4249,6 +5053,10 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
         recordingBitDepth(bitDepthDir.path());
+    }
+    {
+        test::TempDirectory automationDir("ui_document", "automation-record");
+        arrangementAutomation(automationDir.path());
         test::TempDirectory recordDir("ui_document", "record");
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());
@@ -4259,8 +5067,12 @@ int main(int argc, char **argv) {
         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
         mixedPunchKeepsMidi(punchRecoveryDir.path());
+        test::TempDirectory partialPunchDir("ui_document", "mixed-punch-partial");
+        mixedPunchKeepsMidi(partialPunchDir.path(), true);
         test::TempDirectory latencyDir("ui_document", "latency");
         recordWithDeviceLatency(latencyDir.path());
+        test::TempDirectory mixedLatencyDir("ui_document", "mixed-latency");
+        mixedRecordingLatency(mixedLatencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
         refusedRecordingKeepsAudio(refusedPublicationDir.path());
         test::TempDirectory loopClockDir("ui_document", "loop-clock-admission");
@@ -4273,10 +5085,20 @@ int main(int argc, char **argv) {
         refusedRecordingKeepsAudio(refusedLoopDir.path(), true);
         test::TempDirectory countInDir("ui_document", "count-in");
         countInPositionFeedback(countInDir.path());
+        test::TempDirectory quantizedMixedDir("ui_document", "quantized-mixed");
+        arrangementMidiRecord(quantizedMixedDir.path() / "quantized-mixed.adi", true, true);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto.adi", false);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto-overdub.adi", true);
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        test::TempDirectory firstSaveDir("ui_document", "first-save");
+        firstSaveMovesTheTake(firstSaveDir.path());
+        test::TempDirectory firstSaveReplacement("ui_document", "first-save-replacement");
+        firstSaveMovesTheTake(firstSaveReplacement.path(), true);
+        test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
+        firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
@@ -4705,6 +5527,18 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+            std::error_code identityError;
+            const auto wrongTarget = media::readFileIdentity(after, identityError);
+            const auto target = media::readFileIdentity(before, identityError);
+            check(wrongTarget && target && !saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*wrongTarget) &&
+                      std::filesystem::equivalent(saving->store().path(), after) &&
+                      media::readFileIdentity(before, identityError) == target,
+                  "the dialog's approval cannot replace a different file at the chosen path");
+            check(saving->ops().submit(second).ok && saving->synchronise(), "an edit to distinguish the replacement");
+            check(target && saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*target) &&
+                      std::filesystem::equivalent(saving->store().path(), before) && saving->name() == "before" &&
+                      saving->store().db().execAndGet("SELECT count(*) FROM tracks").getInt() == 9,
+                  "confirmed Save As replaces the approved closed project and switches the current document");
         }
     }
     {
@@ -4839,26 +5673,47 @@ int main(int argc, char **argv) {
                                      "device_chains.id = devices.chain_id WHERE device_chains.track_id = " +
                                      std::to_string(track)).getInt64();
             };
+            const auto setArmed = [&](std::int64_t track, bool armed) {
+                OpRequest op;
+                op.opType = "track.setArm";
+                op.payload = {{"id", track}, {"armed", armed}};
+                return live->ops().submit(std::move(op)).ok && live->synchronise();
+            };
             rows::PluginRef synth;
             synth.format = "clap";
             synth.uid = test::kKnobsUid;
             synth.name = "First synth";
             synth.subtype = "instrument";
             const auto opsHeld = db.execAndGet("SELECT count(*) FROM ops").getInt();
-            check(!live->loadPlugin(synth, 4) &&
+            check(!live->loadPlugin(synth, 4, {}, nullptr, true) &&
                       live->error() == "First synth is an instrument: load it onto a MIDI track" && onTrack(4) == 0 &&
                       db.execAndGet("SELECT count(*) FROM ops").getInt() == opsHeld,
                   "a plug-in instrument is refused on an audio track, and nothing is written");
-            check(!live->loadPlugin(synth, 1) && onTrack(1) == 0, "and on Main");
-            check(live->loadPlugin(synth, 2) && onTrack(2) == 1, "it loads onto a MIDI track");
+            check(!live->loadPlugin(synth, 1, {}, nullptr, true) && onTrack(1) == 0, "and on Main");
+            check(setArmed(4, true), "arm the audio track before inserting the first instrument");
+            check(live->loadPlugin(synth, 2, {}, nullptr, true) && onTrack(2) == 1 &&
+                      live->recordStates().at(2).armed && !live->recordStates().at(4).armed &&
+                      live->ops().nextUndo() && live->ops().nextUndo()->label == "Insert First synth",
+                  "with Exclusive Arm, the first instrument arms its MIDI track and disarms the audio track in the insert step");
+            check(live->ops().undo().ok && live->synchronise() && onTrack(2) == 0 &&
+                      !live->recordStates().at(2).armed && live->recordStates().at(4).armed,
+                  "one Undo removes the instrument and restores both arms");
+            check(live->ops().redo().ok && live->synchronise() && onTrack(2) == 1 &&
+                      live->recordStates().at(2).armed && !live->recordStates().at(4).armed,
+                  "one Redo loads the instrument and restores its exclusive arm");
             const auto first = deviceOn(2);
+            check(setArmed(2, false) && setArmed(4, true), "disarm the instrument to test its replacement");
             auto second = synth;
             second.name = "Second synth";
-            check(live->loadPlugin(second, 2) && live->synchronise() && onTrack(2) == 1 && deviceOn(2) != first &&
+            check(live->loadPlugin(second, 2, {}, nullptr, true) && live->synchronise() && onTrack(2) == 1 && deviceOn(2) != first &&
+                      !live->recordStates().at(2).armed && live->recordStates().at(4).armed &&
                       live->ops().nextUndo() && live->ops().nextUndo()->label == "Insert Second synth",
-                  "a second instrument takes the first one's place, in one step named for it");
+                  "replacing an instrument leaves Arm unchanged and keeps one step named for the replacement");
             check(live->ops().undo().ok && live->synchronise() && onTrack(2) == 1 && deviceOn(2) == first,
                   "one Undo brings the first instrument back");
+            check(live->loadPlugin(synth, 3, {}, nullptr, false) && onTrack(3) == 1 &&
+                      !live->recordStates().at(3).armed && live->recordStates().at(4).armed,
+                  "with Exclusive Arm off, the first instrument leaves Arm unchanged");
             live->release();
         }
         auto fx = ui::ProjectDocument::open(temp.path() / "load-effect.adi", true, test::knobsLoader(), error);
@@ -4869,11 +5724,12 @@ int main(int argc, char **argv) {
             effect.uid = test::kKnobsUid;
             effect.name = "An effect";
             effect.subtype = "effect";
-            const bool loaded = fx->loadPlugin(effect, 4) && fx->loadPlugin(effect, 4);
+            const bool loaded = fx->loadPlugin(effect, 4, {}, nullptr, true) && fx->loadPlugin(effect, 4, {}, nullptr, true);
             // Counted on its track: the default Set's returns hold devices of their own.
             check(loaded && fx->store().db().execAndGet(
                                 "SELECT count(*) FROM devices JOIN device_chains ON device_chains.id = "
-                                "devices.chain_id WHERE device_chains.track_id = 4").getInt() == 2,
+                                "devices.chain_id WHERE device_chains.track_id = 4").getInt() == 2 &&
+                      !fx->recordStates().at(4).armed,
                   ("an effect loads onto an audio track, and a second one beside it, as before: " + fx->error()).c_str());
             fx->release();
         }
@@ -5272,12 +6128,14 @@ int main(int argc, char **argv) {
     heldOffAfterACrash(temp.path());
     rememberedRouteStartsANewInstance(temp.path());
     importWithChoices(temp.path());
+    pluginTouchPublication(temp.path() / "plugin-touch.adi");
     moveOrdinaryDevice(temp.path() / "move-device.adi");
     deviceRangeEdits(temp.path() / "device-range.adi");
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
     devicePresetRoundTrip(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
+    capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());
     slowProjectOpen(temp.path());
     manyDeviceTickSpeed(temp.path());
