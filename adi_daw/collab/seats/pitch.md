@@ -7,7 +7,7 @@
 - Installed-DAW reference runs C5V-001 through C5V-030. The documentary matrix is available on the research branch. [C5V-001–030](https://github.com/arieladi/Adi/blob/58b42d6037d1b2ea9e50a166379312ecb6a5a84f/adi_daw/docs/daws/cubase-15.md#L273-L451)
 - Chord-event quantization needs a chord-event model. The Standard MIDI File encoder carries channel bends. Native clip import still needs to reconstruct them.
 - Durable MIDI extraction provenance, native storage and playback of channel-wide pitch bend, and plug-in-specific extraction modes. Static and continuous bend-word projection is available.
-- Generic Reverse with Warp for clips without pitch edits, phase linkage for files wider than stereo, and reference rulings for selected-segment flattening and timing inheritance. Pitch-edited Reverse plus Warp and whole-event pitch-only flatten are built.
+- Reference decisions for selected-segment flattening and timing inheritance. Pitch-edited Reverse plus Warp and whole-event pitch-only flatten are built.
 
 ## For win, 27 November continuation
 
@@ -114,3 +114,4 @@ B. Preserve exact compatible controls by default on split or merge. When a conto
 | Editable row registry after merge | Infer array length from its entries so main’s new row and the pitch edit row both remain registered. | The initial merged GCC build rejected the fixed count. `edit_rows.cpp` now compiles under the same strict flags. | Pushed `2b2588e6`. |
 | Pitch-owned Reverse and Warp | The worker shares the MIDI projection order. Apply source-frame edits, trim and reverse the source window, then apply Warp in playback order. Whole-event pitch flatten keeps that Warp map. | 26 worker and 24 Session/flatten checks passed. An asymmetric marker moved from reversed frame 1,600 to Warp frame 4,800 on the original and corrected lanes. Nonlinear Re-Pitch measured 279.06386 Hz before and after flatten, identical across all 6,144 samples. The previous Session path named the reversed clip silent. | Pushed `6b5ea20e`. Generic reversed Warp without pitch keeps the existing refusal. |
 | MSVC Debug worker allocation path | Use the repository’s counted construction when releasing temporary vectors in pitch render and comparison. Iterator-proxy allocation failure can reach normal resource handling. | Source audit matched the existing `publisher.hpp` workaround. The exact head’s native Windows rerun remains open. | Pushed `fc4c1eee`. |
+| MSVC shadow review of MIDI fixtures | Give the bend fixture helper and its return record distinct names. The sustained-note test now uses the renamed helper too. | The strict syntax review found the shadow. GCC compiled the corrected fixture with `-Wshadow` and warnings as errors. | Pushed `46c9288c`. |
