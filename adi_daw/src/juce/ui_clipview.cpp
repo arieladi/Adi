@@ -3615,11 +3615,19 @@ bool SampleEditor::command(int id) {
     case AppCommands::ZoomBack:
         time.back();
         break;
-    case AppCommands::Quantize:
+    case AppCommands::Quantize: {
         if (!canQuantize())
             return false;
+        const bool straight = markers_.size() == 2;
+        const auto onsets = straight ? transients() : nullptr;
+        if (straight && (!onsets || onsets->empty())) {
+            panel.root.say("Quantize Audio needs detected transients.");
+            return true;
+        }
+        const auto frames = onsets ? std::span<const std::uint64_t>(*onsets) : std::span<const std::uint64_t>{};
         return panel.root.commitEdit(clip_edit::prepareQuantizeWarpMarkers(panel.root.editStore(), clip->id,
-            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate()));
+            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate(), frames));
+    }
     case AppCommands::InsertSilence:
         return true;
     default:
@@ -3629,7 +3637,7 @@ bool SampleEditor::command(int id) {
     repaint();
     return true;
 }
-bool SampleEditor::canQuantize() const noexcept { return markers_.size() > 2; }
+bool SampleEditor::canQuantize() const noexcept { return markers_.size() >= 2; }
 std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
@@ -5257,14 +5265,8 @@ void ClipViewPanel::editSample() {
         root.say("Stop playback before editing the sample.");
         return;
     }
-    std::string error;
-    const auto source = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
-    if (source.empty()) {
-        root.say("The sample could not be opened: " + error);
-        return;
-    }
     const bool copy = settings.get("files.sampleEditorOpens") == "copy";
-    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, source, copy))
+    if (!root.launchSampleEditor || !root.launchSampleEditor(editor, node_->audio->mediaId, copy))
         root.say("The configured Sample Editor could not be started.");
 }
 juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
@@ -5384,6 +5386,19 @@ bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
     if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
+    if (unwarpedTimeField(field)) {
+        const bool start = field == Field::Start;
+        const auto pin = start ? node_->contentOffsetNs : node_->sourceEndNs;
+        const auto current = pin ? sample.sourceSecondsToTicks(static_cast<double>(*pin) * 1e-9) : fieldTicks(field);
+        if (ticks == current)
+            return true;
+        // The marker op validates against the other marker's physical pin. The
+        // stored ticks can still reflect the tempo from when the pin was set.
+        TrackEdit edit;
+        edit.ops.push_back(track_edits_detail::op(start ? "clip.setStartMarker" : "clip.setEndMarker",
+                                                  {{"id", d.id}, {"ticks", ticks}}, start ? "Set Clip Start" : "Set Clip End"));
+        return commit(std::move(edit));
+    }
     switch (field) {
     case Field::Start:
         return commit(setClipStart(d, ticks));

@@ -14040,8 +14040,8 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
     std::string why;
     check(settings.set("files.sampleEditor", media::pathUtf8(editor), {}, why), "configure an external editor path with spaces");
     std::vector<bool> copied;
-    root.launchSampleEditor = [&](const auto &application, const auto &source, bool copy) {
-        if (application != editor || source != std::filesystem::weakly_canonical(wav))
+    root.launchSampleEditor = [&](const auto &application, std::int64_t mediaId, bool copy) {
+        if (application != editor || mediaId != imported.mediaId)
             return false;
         copied.push_back(copy);
         return true;
@@ -14107,6 +14107,22 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
         root.frame();
         check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
               "a tempo change preserves both unwarped source clock readings");
+        const bool changedEnd = panel.typeField(Field::End, "0:01.100");
+        root.frame();
+        check(changedEnd && panel.readings().start == "0:01.000" && panel.readings().end == "0:01.100",
+              "after a tempo change, End can move just past the pinned Start");
+        if (root.undoTitle(false) == "Undo Set Clip End") {
+            check(root.command(AppCommands::Undo), "undo the new End and keep the tempo change");
+            root.frame();
+        }
+        const bool changedStart = panel.typeField(Field::Start, "0:01.200");
+        root.frame();
+        check(changedStart && panel.readings().start == "0:01.200" && panel.readings().end == "0:03.000",
+              "after a tempo change, Start can move to the old marker's now different timestamp");
+        if (root.undoTitle(false) == "Undo Set Clip Start") {
+            check(root.command(AppCommands::Undo), "undo the new Start and keep the tempo change");
+            root.frame();
+        }
         check(root.command(AppCommands::Undo), "undo the tempo change before the Sample Editor gestures");
         root.frame();
     } else {
@@ -14186,6 +14202,33 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
     if (movedStart)
         check(root.command(AppCommands::Undo), "undo the start marker shortcut");
     root.frame();
+
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+    const auto beforeFollow = edit.time.left;
+    edit.time.left = 50.;
+    engine::Transport followDriver;
+    constexpr auto ordinaryProbe = 4 * beat + beat / 2;
+    followDriver.locate(std::llround(root.reader().tempo()->ticksToSeconds(ordinaryProbe) * mailbox.sampleRate()));
+    followDriver.play(true);
+    mailbox.publish(followDriver);
+    root.frame();
+    const auto at = edit.time.x(edit.sourceTick(ordinaryProbe));
+    check(root.timelineTick() == ordinaryProbe && root.playing() && root.state().follow &&
+              edit.playhead.isVisible() && std::abs(at - edit.playhead.getX()) < 1.,
+          "Follow pages the Sample Editor to the audio clip's playhead");
+    edit.time.left = 50.;
+    edit.mouseWheelMove(pressAt(edit, insertPoint, juce::ModifierKeys::shiftModifier),
+                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+    const auto parked = edit.time.left;
+    root.frame();
+    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
+    followDriver.play(false);
+    mailbox.publish(followDriver);
+    root.frame();
+    edit.time.left = beforeFollow;
+
     clip_edit::WarpOptions warp;
     warp.analysis.sourceBpm = 120;
     warp.analysis.fromFirstBeat = false;
@@ -14314,28 +14357,6 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
         root.frame();
     }
 
-    if (!root.state().follow)
-        root.command(AppCommands::Follow);
-    root.arrangement.followPaused = false;
-    edit.time.left = 50.;
-    engine::Transport followDriver;
-    followDriver.locate(3 * 48000);
-    followDriver.play(true);
-    document->mailbox().publish(followDriver);
-    root.frame();
-    const auto at = edit.time.x(edit.sourceTick(root.timelineTick()));
-    check(root.playing() && root.state().follow && edit.playhead.isVisible() && at >= -.001 && at < edit.getWidth(),
-          "Follow pages the Sample Editor to the audio clip's playhead");
-    edit.time.left = 50.;
-    edit.mouseWheelMove(pressAt(edit, point, juce::ModifierKeys::shiftModifier),
-                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
-    const auto parked = edit.time.left;
-    root.frame();
-    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
-    followDriver.play(false);
-    document->mailbox().publish(followDriver);
-    root.frame();
-
     if (const auto *clip = panel.node()) {
         const auto id = clip->id, start = clip->posTicks;
         const auto changeAt = start + 8 * beat;
@@ -14393,9 +14414,17 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
         check(false, "place a sample on the audio track");
         return;
     }
+    WaveformCache waveforms(
+        [](std::optional<std::int64_t>, const std::string &, std::stop_token) -> media::PeakResult {
+            return {media::PeakProblem::invalidSource, {}, {}};
+        },
+        [](std::int64_t, const std::string &, std::stop_token) {
+            return std::vector<std::uint64_t>{0, 30000, 66000};
+        });
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "clip-warp-onsets");
     root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &waveforms;
     root.setSize(1440, 900);
     root.frame();
     commands.activate(root);
@@ -14420,6 +14449,33 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
     };
     const auto button = panel.warpBox();
     check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
+    if (warped()) {
+        const auto markers = [&] {
+            const auto &source = *panel.node()->audio;
+            return audio::readWarpMap(*source.warpMarkers, static_cast<std::uint64_t>(source.sourceLengthFrames)).markers;
+        };
+        const auto original = markers();
+        waveforms.transients(*panel.node()->audio);
+        for (int i = 0; i < 1000 && !waveforms.idle(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(original.size() == 2 && waveforms.transients(*panel.node()->audio),
+              "the warped clip has only its two fixed anchors and a cached onset map");
+        panel.sample.time.grid.fixed = true;
+        panel.sample.time.grid.fixedQuarters = 1.;
+        const bool quantized = panel.sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
+        root.frame();
+        constexpr auto beat = textproj::kPPQ;
+        const auto result = markers();
+        check(quantized && original.size() == 2 && result.size() == 4 && result.front() == original.front() &&
+                  result[1] == WarpMarker{30000, beat} && result[2] == WarpMarker{66000, 3 * beat} &&
+                  result.back() == original.back() && root.undoTitle(false) == "Undo Quantize Audio",
+              "Quantize Audio snaps cached transients while retaining the straight Warp map's fixed anchors");
+        if (quantized) {
+            check(root.command(AppCommands::Undo), "undo transient promotion and quantizing together");
+            root.frame();
+            check(markers() == original, "one Undo restores the original two anchors");
+        }
+    }
     if (!button.isEmpty()) {
         const auto click = [&] {
             panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
