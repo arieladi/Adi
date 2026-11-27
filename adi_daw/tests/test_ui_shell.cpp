@@ -12974,10 +12974,10 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
         root.command(AppCommands::Follow);
     root.arrangement.followPaused = false;
     edit.time.left = 50.;
-    engine::Transport driver;
-    driver.locate(3 * 48000);
-    driver.play(true);
-    document->mailbox().publish(driver);
+    engine::Transport followDriver;
+    followDriver.locate(3 * 48000);
+    followDriver.play(true);
+    document->mailbox().publish(followDriver);
     root.frame();
     const auto at = edit.time.x(edit.sourceTick(root.timelineTick()));
     check(root.playing() && root.state().follow && edit.playhead.isVisible() && at >= -.001 && at < edit.getWidth(),
@@ -12988,8 +12988,8 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     const auto parked = edit.time.left;
     root.frame();
     check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
-    driver.play(false);
-    document->mailbox().publish(driver);
+    followDriver.play(false);
+    document->mailbox().publish(followDriver);
     root.frame();
 
     if (const auto *clip = panel.node()) {
@@ -13006,9 +13006,9 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
             const auto rate = document->mailbox().sampleRate() > 0 ? document->mailbox().sampleRate()
                                                                    : root.reader().sampleRate();
             const auto probe = changeAt + beat / 4;
-            driver.locate(std::llround(tempo->ticksToSeconds(probe) * rate));
-            driver.play(true);
-            document->mailbox().publish(driver);
+            followDriver.locate(std::llround(tempo->ticksToSeconds(probe) * rate));
+            followDriver.play(true);
+            document->mailbox().publish(followDriver);
             root.arrangement.followPaused = false;
             edit.time.left = 50.;
             root.frame();
@@ -13017,8 +13017,8 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
             check(edit.sourceTick(root.timelineTick()) > 8 * beat && edit.playhead.isVisible() &&
                       std::abs(pixel - edit.playhead.getX()) < 1.,
                   "Follow pages to the audible repeat after a tempo change, beyond the unrolled source end");
-            driver.play(false);
-            document->mailbox().publish(driver);
+            followDriver.play(false);
+            document->mailbox().publish(followDriver);
             root.frame();
         }
     }
