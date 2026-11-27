@@ -4,6 +4,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
+#include "adi/dsp/loudness.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
 #include <algorithm>
@@ -14,13 +15,69 @@
 namespace adi::library {
 namespace {
 const std::string sectionTag = "ALIB";
-constexpr std::uint32_t sectionVersion = 1;
+constexpr std::uint32_t sectionVersion = 2; // Adds measured integrated loudness.
 constexpr std::uint32_t configuration = 0;
 constexpr std::size_t maximumTagBytes = 32768;
+constexpr std::uint32_t blockFrames = 4096;
 
 using Kind = audio::SampleKind;
 using Source = audio::SampleKindSource;
 bool validTempo(double bpm) { return std::isfinite(bpm) && bpm > 0 && bpm <= 1000; }
+
+class SampleLoudness {
+public:
+    explicit SampleLoudness(const audio::WavReader& wav) {
+        const auto rate = wav.sampleRate();
+        const auto channels = static_cast<std::size_t>(wav.channels());
+        if (rate < 8000 || wav.frames() < (static_cast<std::uint64_t>(rate) * 2 + 4) / 5) return;
+        const auto speakers = wav.speakerMask();
+        constexpr std::uint32_t lfe = 0x8;
+        constexpr std::uint32_t surround = 0x730; // Back left/right/centre and side left/right.
+        constexpr std::uint32_t horizontalRoles = 0x7ff;
+        if ((speakers == 0 && channels > 2) || (speakers != 0 &&
+            (((speakers & ~horizontalRoles) != 0) || static_cast<std::size_t>(std::popcount(speakers)) != channels)))
+            return;
+        std::vector<double> weights(channels, 1);
+        if (speakers != 0) {
+            std::size_t channel = 0;
+            for (std::uint32_t bit = 1; bit <= horizontalRoles; bit <<= 1) {
+                if ((speakers & bit) == 0) continue;
+                if (bit == lfe) weights[channel] = 0;
+                else if (bit & surround) weights[channel] = dsp::LoudnessMeter::kSurroundWeight;
+                ++channel;
+            }
+        }
+        meter_.emplace();
+        meter_->prepare(rate, weights);
+        planar_.resize(channels * blockFrames);
+        inputs_.resize(channels);
+        for (std::size_t channel = 0; channel < channels; ++channel)
+            inputs_[channel] = planar_.data() + channel * blockFrames;
+    }
+
+    void append(std::span<const float> pcm, std::uint32_t frames) {
+        if (!meter_) return;
+        for (std::size_t channel = 0; channel < inputs_.size(); ++channel) {
+            auto* plane = planar_.data() + channel * blockFrames;
+            for (std::size_t frame = 0; frame < frames; ++frame) {
+                const auto sample = pcm[frame * inputs_.size() + channel];
+                plane[frame] = std::isfinite(sample) ? std::clamp(sample, -1e12f, 1e12f) : 0.0f;
+            }
+        }
+        meter_->process(inputs_.data(), static_cast<int>(frames));
+    }
+
+    [[nodiscard]] std::optional<float> read() const {
+        if (!meter_) return {};
+        const auto lufs = meter_->readings().integrated;
+        if (!std::isfinite(lufs)) return {};
+        return static_cast<float>(lufs);
+    }
+private:
+    std::optional<dsp::LoudnessMeter> meter_;
+    std::vector<float> planar_;
+    std::vector<const float*> inputs_;
+};
 
 template<class UInt>
 void put(std::vector<std::byte>& bytes, UInt value) {
@@ -76,6 +133,8 @@ media::AnalysisSection encode(const SampleAnalysis& value, const media::Analysis
     put(bytes, std::bit_cast<std::uint64_t>(value.tempoBpm.value_or(0)));
     put(bytes, std::bit_cast<std::uint64_t>(value.classification.bpm.value_or(0)));
     putFloat(value.keyStrength);
+    put(bytes, static_cast<std::uint8_t>(value.integratedLufs.has_value()));
+    if (value.integratedLufs) putFloat(*value.integratedLufs);
     const auto putDescriptors = [&](const SampleDescriptors& descriptors) {
         putFloat(descriptors.brightnessHz);
         putFloat(descriptors.hitDensityHz);
@@ -108,7 +167,7 @@ std::optional<SampleAnalysis> decode(const media::SampleAnalysis& cache) {
     const auto section = cache.sections.find(sectionTag);
     if (section == cache.sections.end() || section->second.version != sectionVersion ||
         section->second.configuration != configuration ||
-        section->second.bytes.size() > maximumTagBytes + 1024) return {};
+        section->second.bytes.size() > maximumTagBytes + 2048) return {};
     try {
         SectionReader data(section->second.bytes);
         if (data.get<std::uint32_t>() != cache.identity.sampleRate ||
@@ -147,6 +206,9 @@ std::optional<SampleAnalysis> decode(const media::SampleAnalysis& cache) {
         }
         value.keyStrength = data.getFloat();
         if (value.keyStrength < 0 || value.keyStrength > 1) return {};
+        const auto loudnessPresent = data.get<std::uint8_t>();
+        if (loudnessPresent > 1) return {};
+        if (loudnessPresent) value.integratedLufs = data.getFloat();
         const auto getDescriptors = [&]() {
             SampleDescriptors descriptors;
             descriptors.brightnessHz = data.getFloat();
@@ -298,6 +360,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
         audio::TransientAnalyzer transients(identity.sampleRate, identity.channels);
         SampleDescriptorAnalyzer descriptors(identity.sampleRate, identity.channels);
+        SampleLoudness loudness(pcm);
         std::optional<SampleKeyAnalyzer> tonality;
         if (identity.sampleRate >= 1000 && !metadata.tagKey) tonality.emplace(identity.sampleRate, identity.channels);
         const auto prefixFrames = static_cast<std::uint64_t>(identity.sampleRate) * sampleSimilarityWindowSeconds;
@@ -305,13 +368,13 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         if (identity.frames > prefixFrames &&
             identity.frames <= static_cast<std::uint64_t>(identity.sampleRate) * sampleSimilarityMaximumSeconds)
             prefix.emplace(identity.sampleRate, identity.channels);
-        constexpr std::uint32_t blockFrames = 4096;
         std::vector<float> block(static_cast<std::size_t>(blockFrames) * identity.channels);
         for (std::uint64_t left = identity.frames; left != 0;) {
             if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
             const auto frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, blockFrames));
             if (pcm.read(block.data(), frames) != frames) return failure(SampleAnalysisProblem::Read);
             const auto samples = std::span(block).first(static_cast<std::size_t>(frames) * identity.channels);
+            loudness.append(samples, frames);
             if (!transients.append(samples) || !descriptors.append(samples) || (tonality && !tonality->append(samples)))
                 return failure(SampleAnalysisProblem::Read);
             const auto offset = identity.frames - left;
@@ -332,6 +395,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         SampleAnalysis value{};
         value.contentHash = identity.hash;
         value.lengthSeconds = static_cast<double>(identity.frames) / identity.sampleRate;
+        value.integratedLufs = loudness.read();
         value.classification = audio::classifySample(onsets.frames, identity.frames, identity.sampleRate, hints);
         value.descriptors = *measured;
         if (prefix) {

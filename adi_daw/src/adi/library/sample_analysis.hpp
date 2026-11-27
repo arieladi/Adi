@@ -26,6 +26,7 @@ struct SampleAnalysis {
     audio::SampleKindSource tempoSource = audio::SampleKindSource::Detection;
     audio::SampleKindSource keySource = audio::SampleKindSource::Detection;
     float keyStrength = 0;
+    std::optional<float> integratedLufs;
     std::vector<std::string> tags;
     std::string contentHash; // Preserved for read-only Places before ADIL has a hash.
 };

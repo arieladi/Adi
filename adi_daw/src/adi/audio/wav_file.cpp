@@ -190,7 +190,7 @@ WavReader::WavReader(const std::filesystem::path& path) {
             auto actual=encoding;
             if(encoding==0xfffe) {
                 require(size>=40); const auto extension=get(file_,2); require(extension>=22 && extension<=size-18);
-                require(get(file_,2)==bits); (void)get(file_,4); actual=get(file_,4);
+                require(get(file_,2)==bits); speakerMask_=static_cast<std::uint32_t>(get(file_,4)); actual=get(file_,4);
                 for(auto expected:guidTail) require(get(file_,1)==expected);
             } else if(size>16) { require(size>=18); require(get(file_,2)<=size-18); }
             require((actual==1 && (bits==16||bits==24))||(actual==3 && bits==32));

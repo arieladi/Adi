@@ -196,6 +196,54 @@ void catalogAndRevision(Fixture& fixture) {
           "a stale published hash cannot receive another source's measurements");
 }
 
+void gatedLoudness(Fixture& fixture) {
+    constexpr auto frames = rate;
+    std::vector<float> mono(frames), surround(frames * 6);
+    for (std::uint32_t frame = 0; frame < frames; ++frame) {
+        const auto tone = static_cast<float>(std::sin(2 * std::numbers::pi * 1000 * frame / rate));
+        mono[frame] = 0.25f * tone;
+        surround[static_cast<std::size_t>(frame) * 6] = mono[frame];
+        surround[static_cast<std::size_t>(frame) * 6 + 3] = 0.95f * tone;
+    }
+    const auto monoFile = fixture.temp.path() / "loudness-mono.wav";
+    const auto surroundFile = fixture.temp.path() / "loudness-51.wav";
+    {
+        audio::WavWriter writer(monoFile, rate, 1, audio::WavFormat::Pcm24);
+        writer.write(mono.data(), frames);
+        writer.close();
+    }
+    {
+        audio::WavWriter writer(surroundFile, rate, 6, audio::WavFormat::Pcm24);
+        writer.write(surround.data(), frames);
+        writer.close();
+    }
+    const auto shortHit = fixture.analysis.analyze(fixture.kick);
+    const auto unlabelled = fixture.analysis.analyze(surroundFile);
+    check(shortHit && !shortHit.analysis->integratedLufs, "sub-400 ms hits have no integrated gated loudness");
+    check(unlabelled && !unlabelled.analysis->integratedLufs, "six unlabeled channels have no guessed speaker weights");
+    {
+        std::fstream file(surroundFile, std::ios::in | std::ios::out | std::ios::binary);
+        constexpr std::streamoff maskOffset = 12 + 8 + 28 + 8 + 20;
+        file.seekp(maskOffset);
+        file.put(static_cast<char>(0x3f)); // FL, FR, FC, LFE, BL, BR.
+        file.close();
+    }
+    const auto plain = fixture.analysis.analyze(monoFile);
+    const auto lfe = fixture.analysis.analyze(surroundFile);
+    check(plain && lfe && plain.analysis->integratedLufs && lfe.analysis->integratedLufs,
+          "shared BS.1770 meter measures one second of mono and labelled 5.1");
+    if (!plain || !lfe || !plain.analysis->integratedLufs || !lfe.analysis->integratedLufs) return;
+    const auto monoLufs = *plain.analysis->integratedLufs;
+    const auto lfeLufs = *lfe.analysis->integratedLufs;
+    const auto readBack = fixture.analysis.read(lfe.hash);
+    std::printf("1 kHz tone %.4f LUFS, with independent LFE %.4f LUFS\n",
+                static_cast<double>(monoLufs), static_cast<double>(lfeLufs));
+    check(std::abs(monoLufs + 15.05f) < 0.1f && std::abs(monoLufs - lfeLufs) < 0.0001f,
+          "a measured tone is within 0.1 LU of its reference and LFE leaves loudness unchanged");
+    check(readBack && readBack.fromCache && readBack.analysis->integratedLufs == lfeLufs,
+          "integrated loudness round-trips through the versioned ADIA section");
+}
+
 void warpUsesPublishedAnswer(Fixture& fixture) {
     auto loop = fixture.analysis.analyze(fixture.loop);
     auto kick = fixture.analysis.analyze(fixture.kick);
@@ -270,6 +318,7 @@ int main() {
         Fixture fixture;
         measureAndRead(fixture);
         catalogAndRevision(fixture);
+        gatedLoudness(fixture);
         warpUsesPublishedAnswer(fixture);
     } catch (const std::exception& exception) {
         check(false, exception.what());
