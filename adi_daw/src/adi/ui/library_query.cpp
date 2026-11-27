@@ -212,10 +212,11 @@ void BrowserLibrarySnapshot::appendFiles(const LibraryQuery &query, const std::s
 
 const LibraryFile *BrowserLibrarySnapshot::matchingFileAtPath(const std::filesystem::path &path,
                                                               const LibraryQuery &query) const {
-    const auto candidates = std::ranges::equal_range(paths_, std::filesystem::hash_value(path), {}, &PathEntry::hash);
-    for (const auto &candidate : candidates) {
-        const auto &file = listing_.files[candidate.index];
-        if (file.path == path && query.matchesFolded(foldedNames_[candidate.index]))
+    const auto hash = std::filesystem::hash_value(path);
+    for (auto candidate = std::ranges::lower_bound(paths_, hash, {}, &PathEntry::hash);
+         candidate != paths_.end() && candidate->hash == hash; ++candidate) {
+        const auto &file = listing_.files[candidate->index];
+        if (file.path == path && query.matchesFolded(foldedNames_[candidate->index]))
             return &file;
     }
     return nullptr;
