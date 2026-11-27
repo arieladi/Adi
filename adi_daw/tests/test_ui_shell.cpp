@@ -2158,8 +2158,8 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
     check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
           "loop length drag, arrows and wheel preserve the brace's start");
 
-    BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize, &bar.overdub,
-                                    &bar.capture, &bar.sessionRecord, &bar.keyboard,
+    BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize,
+                                    &bar.sessionRecord,
                                     &bar.key, &bar.midi};
     for (auto *item : unavailable)
         check(!item->isEnabled() && item->getAlpha() < 1.f && !item->onClick && !item->onDropdown &&
@@ -5831,6 +5831,87 @@ void deviceDropInstructions(AppCommands &commands, const std::filesystem::path &
     check(paints(0, "Select a Track to Add Devices"),
           "the empty Device View asks for a destination when there is no selected track");
 }
+void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "Scale.mid";
+    constexpr std::array<unsigned char, 34> bytes{
+        'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
+        'M', 'T', 'r', 'k', 0, 0, 0, 12,
+        0, 0x90, 60, 100, 96, 0x80, 60, 0, 0, 0xff, 0x2f, 0};
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        check(file.good(), "make a MIDI file to drop");
+    }
+    std::string error;
+    auto document = ProjectDocument::open(dir / "midi-file-drop.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI file drop");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-file-drop");
+    root.setSize(1400, 900);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    const auto pathUtf8 = path.u8string();
+    constexpr auto beat = textproj::kPPQ;
+    const auto x = static_cast<int>(std::lround(arrangement.geometry.x(beat)));
+    arrangement.canvas.filesDropped(juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))},
+                                    x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto selected = root.midiClipForExport();
+    const auto details = engine::readClipDetails(document->store(), selected);
+    check(selected > 0 && details.clip && details.clip->trackId == 2 && details.clip->name == "Scale" &&
+              details.clip->notes.size() == 1 && details.clip->notes.front().key == 60,
+          "the Arrangement drop imports and selects a MIDI clip on the dropped track");
+    int command = 0;
+    root.applicationCommand = [&](int id) { command = id; return true; };
+    check(root.command(AppCommands::ExportMidiClip) && command == AppCommands::ExportMidiClip,
+          "Export MIDI Clip dispatches the selected MIDI clip to the application");
+    check(root.command(AppCommands::ImportMidiFile) && command == AppCommands::ImportMidiFile,
+          "Import MIDI File dispatches the chooser command");
+    const auto drop = juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))};
+    const auto count = [&] {
+        return document->store().db().execAndGet("SELECT count(*) FROM clips WHERE track_id=2").getInt();
+    };
+    arrangement.canvas.filesDropped(drop, x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto replacement = root.midiClipForExport();
+    check(replacement > 0 && replacement != selected && count() == 1 &&
+              !engine::readClipDetails(document->store(), selected).clip,
+          "repeated MIDI drop replaces the old span instead of leaving an overlapping clip");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              engine::readClipDetails(document->store(), selected).clip &&
+              !engine::readClipDetails(document->store(), replacement).clip,
+          "one Undo removes the replacement and restores the previous import");
+    check(root.command(AppCommands::Undo) && !engine::readClipDetails(document->store(), selected).clip,
+          "undo removes the file import in one step");
+
+    if (!root.insertMidiClips({2}, 0, 4 * beat)) {
+        check(false, "set up a clip that extends on both sides of the MIDI drop");
+        return;
+    }
+    const auto original = arrangement.geometry.selection.clip;
+    check(root.dropMidiFiles({{drop[0].toStdString(), "Scale"}}, 2, beat, false),
+          "import into the middle of an existing clip");
+    const auto snapshot = document->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    const auto placed = root.midiClipForExport();
+    const auto hasSpan = [&](std::int64_t start, std::int64_t length) {
+        return track != nullptr && std::any_of(track->clips.begin(), track->clips.end(), [&](const auto &clip) {
+            return clip != nullptr && clip->posTicks == start && clip->lengthTicks == length;
+        });
+    };
+    check(count() == 3 && hasSpan(0, beat) && hasSpan(beat, beat) && hasSpan(2 * beat, 2 * beat) &&
+              placed != 0 && placed != original,
+          "only the landed interval is replaced, with the before and after fragments retained");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              !engine::readClipDetails(document->store(), placed).clip,
+          "one Undo removes the import and recombines both fragments");
+    const auto restored = engine::readClipDetails(document->store(), original);
+    check(restored.clip && restored.clip->posTicks == 0 && restored.clip->lengthTicks == 4 * beat,
+          "Undo restores the exact original MIDI clip interval");
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -6907,6 +6988,7 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
         return;
     editor.time.left = 0;
     editor.time.scale = 64;
+    check(panel.chooseGrid(3), "select Medium Adaptive Grid for the Note Editor");
     check(!editor.time.grid.fixed && editor.gridTicks() == beat / 4 && panel.readings().grid == "1/16",
           "the adaptive Note Editor has a sixteenth grid at 64 px per quarter");
     const auto notes = editor.notesArea();
@@ -7189,6 +7271,446 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
 }
+void clipViewPlayFromMarker(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-play-from-marker.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor playback");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-play-marker");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 2 * beat, 6 * beat) && root.showClipView(), "open a later Arrangement clip in the Note Editor");
+    root.resizeClipView(360);
+    root.frame();
+    auto& editor = root.clipView.notes;
+    const juce::KeyPress space(juce::KeyPress::spaceKey);
+    check(!editor.keyPressed(space), "without a local marker, Space reaches the global transport");
+    auto& mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport transport;
+    root.arrangement.geometry.selection.insert = beat;
+    const auto area = editor.notesArea();
+    const auto click = juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(4 * beat) + 2),
+                                          static_cast<float>(area.getCentreY()));
+    editor.mouseDown(pressAt(editor, click));
+    editor.mouseUp(pressAt(editor, click));
+    mailbox.drain(transport);
+    check(editor.insertMarker() == 4 * beat && root.arrangement.geometry.selection.insert == beat &&
+              !transport.playing() && transport.position() == 0,
+          "an empty editor click places the local marker without moving the Arrangement marker or transport");
+    check(editor.keyPressed(space), "focused Space starts at the editor marker");
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 96000 && root.arrangement.geometry.selection.insert == beat,
+          "the driver starts at the clicked beat in song time");
+    check(editor.keyPressed(space), "focused Space also stops playback");
+    mailbox.drain(transport);
+    check(!transport.playing() && transport.position() == 96000, "Space stops at the current playhead without seeking");
+    check(editor.keyPressed(space) && editor.keyPressed(space) && !mailbox.desiredPlaying(),
+          "two Space presses before the next driver block cancel the pending start");
+}
+void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-note-preview.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor preview");
+    if (!document)
+        return;
+    struct Press {
+        std::int64_t track;
+        int key, velocity;
+        bool held;
+        bool operator==(const Press &) const = default;
+    };
+    std::vector<Press> heard;
+    std::array<std::uint64_t, 2> playing{};
+    int stops = 0;
+    std::int64_t maskTrack = 0;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-preview");
+    root.setSize(1400, 900);
+    root.previewMidiNote = [&](std::int64_t track, int key, int velocity, bool held) {
+        heard.push_back({track, key, velocity, held});
+        return true;
+    };
+    root.stopMidiPreview = [&] { ++stops; };
+    root.midiKeysSounding = [&](std::int64_t track) {
+        maskTrack = track;
+        return playing;
+    };
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 4 * beat), "create a MIDI clip on an unarmed track for preview");
+    check(root.showClipView(), "open the Note Editor before driving its piano and note gestures");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &editor = panel.notes;
+    check(panel.midi() && editor.previewButton().getToggleState(), "the Preview switch above the unarmed track's piano is on");
+    if (!panel.midi())
+        return;
+    editor.fitWidth();
+    editor.fitHeight();
+    const auto area = editor.notesArea();
+    const auto point = [&](int key, float x) {
+        return juce::Point<float>{x, static_cast<float>(area.getY() + editor.keys.y(key).value_or(0) + editor.keys.keyHeight / 2)};
+    };
+    const auto xAt = [&](std::int64_t tick) {
+        return static_cast<float>(area.getX()) + static_cast<float>(editor.time.x(tick)) + 8.f;
+    };
+    const auto piano = point(60, 12.f);
+    const auto beforePiano = OpJournal(document->store()).headSeq();
+    editor.mouseDown(pressAt(editor, piano));
+    check(heard == std::vector<Press>{{2, 60, 100, true}} && stops == 0,
+          "a piano key starts a held note on the clip's track without arming the track");
+    editor.mouseUp(pressAt(editor, piano));
+    check(stops == 1 && OpJournal(document->store()).headSeq() == beforePiano,
+          "releasing the piano key stops the note without a project edit");
+
+    editor.mouseDoubleClick(pressAt(editor, point(64, xAt(beat))));
+    root.frame();
+    check(heard.size() == 2 && heard.back() == Press{2, 64, 100, false} && panel.details()->notes.size() == 1,
+          "adding a note sounds it and preserves the normal clip edit");
+    if (panel.details()->notes.empty())
+        return;
+    const auto box = editor.boxOf(panel.details()->notes.front());
+    if (!box)
+        return;
+    const auto from = point(64, static_cast<float>(box->x + box->width / 2));
+    const auto to = point(66, from.x);
+    editor.mouseDown(pressAt(editor, from));
+    check(heard.size() == 3 && heard.back() == Press{2, 64, 100, false}, "clicking the note sounds its original pitch");
+    editor.mouseDrag(dragAt(editor, from, to));
+    editor.mouseDrag(dragAt(editor, from, to));
+    check(heard.size() == 4 && heard.back() == Press{2, 66, 100, false}, "dragging to a new pitch sounds it once");
+    editor.mouseUp(pressAt(editor, to));
+    root.frame();
+    check(panel.details()->notes.front().key == 66, "preview does not change how the drag is committed");
+
+    editor.setDrawMode(true);
+    const auto draw = point(67, xAt(2 * beat));
+    editor.mouseDown(pressAt(editor, draw));
+    check(heard.size() == 5 && heard.back() == Press{2, 67, 100, false}, "Draw Mode sounds the new note at the start of a stroke");
+    editor.mouseUp(pressAt(editor, draw));
+    root.frame();
+    editor.setDrawMode(false);
+
+    editor.previewButton().onClick();
+    check(!editor.previewButton().getToggleState() && stops == 2, "turning Preview off releases any audition");
+    editor.mouseDown(pressAt(editor, piano));
+    editor.mouseUp(pressAt(editor, piano));
+    check(heard.size() == 5 && stops == 2, "the piano remains silent with Preview off");
+    playing = {std::uint64_t{1} << 60, std::uint64_t{1} << (66 - 64)};
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0 && maskTrack == 2 && editor.keySounding(60) && editor.keySounding(66) && !editor.keySounding(65),
+          "the frame borrows both halves of the track's sounding-note mask without allocating, even with Preview off");
+    juce::Image image(juce::Image::ARGB, editor.getWidth(), editor.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics graphics(image);
+        editor.paintEntireComponent(graphics, true);
+    }
+    check(image.getPixelAt(12, static_cast<int>(point(66, 12.f).y)) == look::accent,
+          "a sounding pitch paints its piano key in the active colour");
+    playing = {};
+    root.frame();
+    check(!editor.keySounding(60) && !editor.keySounding(66), "released notes clear their piano keys");
+    check(root.insertMidiClips({3}, 5 * beat, 9 * beat), "open another MIDI clip in the same Set");
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->trackId == 3 && maskTrack == 3 && !editor.previewButton().getToggleState(),
+          "the same Preview switch applies across clips, and playback lights follow the new track");
+}
+void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-grid.adi", true, {}, error);
+    check(document != nullptr, "a project for the Note Editor grid");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-grid");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ, step = beat / 4, clipStart = beat + beat / 8;
+    check(root.insertMidiClips({2}, clipStart, clipStart + 4 * beat) && root.showClipView(),
+          "open a MIDI clip whose position is off the sixteenth grid");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    if (panel.details() == nullptr)
+        return;
+
+    auto &arrangement = root.arrangement.geometry;
+    arrangement.scale = 24.;
+    const auto arrangementGrid = arrangement.grid;
+    const auto key = [](int code) { return juce::KeyPress(code, juce::ModifierKeys::commandModifier, 0); };
+    ed.time.left = 1.;
+    ed.time.scale = 64.;
+    check(ed.time.grid.fixed && ed.gridTicks() == step && panel.readings().grid == "1/16",
+          "a new window opens with a fixed sixteenth editing grid");
+    check(ed.keyPressed(key('5')), "the grid can switch to Adaptive");
+    check(!ed.time.grid.fixed && ed.gridTicks() == step && panel.readings().grid == "1/16",
+          "the adaptive editor has a sixteenth grid at this zoom");
+    ed.time.zoomAround(2., beat);
+    check(ed.gridTicks() == step / 2 && panel.readings().grid == "1/32" &&
+              ed.keyPressed(key('2')) && ed.gridTicks() == step &&
+              ed.keyPressed(key('1')) && ed.gridTicks() == step / 2,
+          "zoom reaches thirty-seconds and the wider and narrower commands still apply");
+    check(arrangement.scale == 24. && arrangement.grid == arrangementGrid && arrangement.gridQuarters() == 1.,
+          "the editor's finer adaptive grid leaves Arrangement's zoom and grid unchanged");
+
+    ed.time.zoomAround(2., beat);
+    const auto ruler = ed.rulerArea();
+    const auto rulerX = [&](std::int64_t tick) { return ruler.getX() + static_cast<int>(ed.time.x(tick)); };
+    juce::Image image(juce::Image::ARGB, ed.getWidth(), ed.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics graphics(image);
+    ed.paint(graphics);
+    check(image.getPixelAt(rulerX(beat + 3 * beat / 8), ruler.getBottom() - 4) == look::rulerLabel &&
+              image.getPixelAt(rulerX(beat + step), ruler.getBottom() - 8) == look::rulerLabel,
+          "the ruler marks a thirty-second and gives a sixteenth room for a position label");
+
+    ed.time.scale = 64.;
+    const auto area = ed.notesArea();
+    const auto at = [&](std::int64_t tick, int pitch) {
+        return juce::Point<float>{static_cast<float>(area.getX() + ed.time.x(tick)),
+                                  static_cast<float>(area.getY() + ed.keys.y(pitch).value_or(0) + ed.keys.keyHeight / 2)};
+    };
+    const auto window = ClipWindow::of(*panel.details());
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : panel.details()->notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    const auto add = [&](std::uint64_t id, std::int64_t start, std::int64_t duration, int pitch) {
+        OpRequest request;
+        request.opType = "note.insert";
+        request.payload = {{"clip", panel.clip()}, {"note", id}, {"start", window.toSource(start)}, {"dur", duration}, {"key", pitch}};
+        request.label = "Add Note";
+        const bool inserted = document->ops().submit(std::move(request)).ok;
+        root.frame();
+        return inserted;
+    };
+    ed.setDrawMode(true);
+    const auto draw = at(2 * beat + beat / 16, 60);
+    ed.mouseDown(pressAt(ed, draw));
+    ed.mouseUp(pressAt(ed, draw));
+    ed.setDrawMode(false);
+    check(panel.details()->notes.size() == 1 && panel.details()->notes.front().startTicks == window.toSource(2 * beat) &&
+              panel.details()->notes.front().durationTicks == step,
+          "Draw Mode makes a sixteenth aligned on the song grid inside the off-grid clip");
+    if (panel.details()->notes.empty())
+        return;
+    const auto drawn = panel.details()->notes.front().id;
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && note(drawn).startTicks == window.toSource(2 * beat + step),
+          "Right moves the selected note a sixteenth");
+
+    check(add(20, 2 * beat + 3 * step / 4, beat, 66), "a beat-long note just before a sixteenth");
+    ed.select({20});
+    check(ed.keyPressed(key('u')) && note(20).startTicks == window.toSource(2 * beat + step) && note(20).durationTicks == beat,
+          "Ctrl/Cmd+U quantizes to the sixteenth while keeping the note's length");
+    check(ed.keyPressed(key('e')) && ed.selected().size() == 4 && note(20).durationTicks == step,
+          "Chop divides the beat-long note into four pieces at the same grid");
+
+    constexpr auto offGrid = 2 * beat + beat / 8;
+    check(add(30, offGrid, beat, 62) && add(31, offGrid + step / 2, beat, 64),
+          "two notes at different offsets from the grid");
+    const auto box = ed.boxOf(note(30));
+    if (!box)
+        return;
+    const auto grab = juce::Point<float>{static_cast<float>(box->x + box->width / 2),
+                                         static_cast<float>(box->y + box->height / 2)};
+    ed.select({30, 31});
+    ed.mouseDown(pressAt(ed, grab));
+    ed.mouseDrag(dragAt(ed, grab, grab.translated(2.f, 0.f)));
+    check(ed.shown(note(30)).startTicks == window.toSource(offGrid + beat / 32),
+          "before the first grid line is near, an off-grid note follows the mouse");
+    const auto near = grab.translated(6.f, 0.f);
+    ed.mouseDrag(dragAt(ed, grab, near));
+    check(ed.shown(note(30)).startTicks == window.toSource(2 * beat + step) &&
+              ed.shown(note(31)).startTicks - ed.shown(note(30)).startTicks == step / 2,
+          "the grabbed start snaps and the other note keeps its timing relative to it");
+    ed.mouseUp(pressAt(ed, near));
+    check(note(30).startTicks == window.toSource(2 * beat + step) &&
+              note(31).startTicks - note(30).startTicks == step / 2,
+          "release commits the previewed move for both notes");
+
+    const auto end = ed.boxOf(note(31));
+    if (!end)
+        return;
+    const auto edge = juce::Point<float>{static_cast<float>(end->x + end->width - 2.),
+                                         static_cast<float>(end->y + end->height / 2)};
+    const auto before = note(31);
+    ed.select({31});
+    ed.mouseDown(pressAt(ed, edge));
+    ed.mouseDrag(dragAt(ed, edge, edge.translated(-6.f, 0.f)));
+    const auto expectedEnd = window.toSource(3 * beat + step);
+    check(ed.shown(before).startTicks + ed.shown(before).durationTicks == expectedEnd,
+          "a leftward resize snaps the off-grid end to the line");
+    ed.mouseUp(pressAt(ed, edge.translated(-6.f, 0.f)));
+    check(note(31).startTicks == before.startTicks && note(31).startTicks + note(31).durationTicks == expectedEnd,
+          "resizing commits the snapped end and preserves the start");
+
+    const auto boxAfter = ed.boxOf(note(31));
+    if (!boxAfter)
+        return;
+    const auto startEdge = juce::Point<float>{static_cast<float>(boxAfter->x + 1.),
+                                              static_cast<float>(boxAfter->y + boxAfter->height / 2)};
+#if JUCE_MAC
+    const juce::ModifierKeys bypass(juce::ModifierKeys::commandModifier);
+#else
+    const juce::ModifierKeys bypass(juce::ModifierKeys::altModifier);
+#endif
+    ed.mouseDown(pressAt(ed, startEdge));
+    ed.mouseDrag(dragAt(ed, startEdge, startEdge.translated(6.f, 0.f), bypass));
+    ed.mouseUp(pressAt(ed, startEdge.translated(6.f, 0.f), bypass));
+    check(note(31).startTicks == before.startTicks + 3 * beat / 32 &&
+              note(31).startTicks + note(31).durationTicks == expectedEnd,
+          "the temporary bypass keeps a resized start off the grid and preserves the end");
+}
+
+void clipViewLoopPlayhead(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-loop-playhead.adi", true, {}, error);
+    check(document != nullptr, "open a project for the clip playhead");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-loop-playhead");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 2 * beat, 14 * beat) && root.showClipView(), "open a long MIDI clip");
+    root.resizeClipView(360);
+    root.frame();
+    const auto id = root.clipView.clip();
+    OpRequest loop;
+    loop.opType = "clip.setLoop";
+    loop.payload = {{"id", id}, {"on", true}, {"start", beat}, {"length", 2 * beat}};
+    loop.label = "Set Loop";
+    check(document->ops().submit(std::move(loop)).ok, "shorten the source loop inside the long Arrangement clip");
+    root.frame();
+    auto &editor = root.clipView.notes;
+    editor.time.left = 2.;
+    editor.time.scale = static_cast<double>(editor.notesArea().getWidth()) / 4.;
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+
+    engine::Transport clock;
+    const auto playAt = [&](std::int64_t tick) {
+        const auto tempo = document->view().current()->tempo;
+        clock.locate(static_cast<std::int64_t>(std::llround(tempo->ticksToSeconds(tick) * 48000)));
+        clock.play(true);
+        document->mailbox().publish(clock);
+        root.frame();
+    };
+    playAt(4 * beat);
+    const int first = editor.playhead.getX();
+    check(editor.playhead.isVisible() && first > editor.notesArea().getX(), "the first pass has an editor playhead");
+    playAt(8 * beat);
+    check(root.timelineTick() == 8 * beat && editor.playhead.isVisible() && editor.playhead.getX() == first &&
+              editor.time.left == 2., "a later repeat draws the same source position and keeps Follow on the notes");
+}
+
+void clipViewNoteCursors(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-cursors.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor cursors");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-cursors");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 4 * beat) && root.showClipView(), "open a looping MIDI clip");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    if (panel.details() == nullptr)
+        return;
+    const auto add = [&](std::uint64_t id, std::int64_t start, std::int64_t length, int pitch) {
+        OpRequest request;
+        request.opType = "note.insert";
+        request.payload = {{"clip", panel.clip()}, {"note", id}, {"start", start}, {"dur", length}, {"key", pitch}};
+        request.label = "Add Note";
+        return document->ops().submit(std::move(request)).ok;
+    };
+    check(add(11, beat, beat / 2, 60) && add(12, 2 * beat, beat / 2, 64) && add(13, 3 * beat, beat / 32, 67),
+          "the clip has wide and narrow notes");
+    root.frame();
+    if (!panel.details() || panel.details()->notes.size() != 3)
+        return;
+    ed.time.left = 0.;
+    ed.time.scale = 128.;
+    const auto wide = ed.boxOf(panel.details()->notes.front()), narrow = ed.boxOf(panel.details()->notes.back());
+    check(wide.has_value() && narrow.has_value(), "the notes have pointer hit boxes");
+    if (!wide || !narrow)
+        return;
+
+    using Cursor = juce::MouseCursor;
+    const auto hover = [&](juce::Point<int> point, Cursor::StandardCursorType cursor) {
+        ed.mouseMove(pressAt(ed, point.toFloat()));
+        return ed.getMouseCursor() == cursor;
+    };
+    const auto edge = [&](const NoteBox &box, bool right) {
+        return juce::Point<int>{static_cast<int>(right ? box.x + box.width - 2 : box.x + 1), box.y + box.height / 2};
+    };
+    const auto left = edge(*wide, false), right = edge(*wide, true);
+    const auto body = juce::Point<int>{static_cast<int>(wide->x + wide->width / 2), left.y};
+    check(hover(left, Cursor::LeftRightResizeCursor) && hover(right, Cursor::LeftRightResizeCursor) &&
+              hover(body, Cursor::NormalCursor) && hover(edge(*narrow, false), Cursor::NormalCursor),
+          "only the actual resize zones show the horizontal resize cursor");
+
+    check(hover(right, Cursor::LeftRightResizeCursor), "hover a note edge before changing tools");
+    ed.setDrawMode(true);
+    check(ed.getMouseCursor() == Cursor::CrosshairCursor, "Draw changes a stationary note-edge cursor to the crosshair");
+    const auto divider = ed.laneDivider();
+    check(hover(divider.getCentre(), Cursor::UpDownResizeCursor) &&
+              hover({4, divider.getY()}, Cursor::NormalCursor),
+          "the velocity divider shows vertical resize except where the piano handles the press");
+    check(hover(left, Cursor::CrosshairCursor), "Draw keeps its crosshair over editable notes");
+    ed.setTrimMode(true);
+    check(ed.getMouseCursor() == Cursor::CrosshairCursor, "Trim also uses a crosshair over the note");
+    ed.setTrimMode(false);
+    check(ed.getMouseCursor() == Cursor::LeftRightResizeCursor, "leaving Trim restores the edge cursor");
+#if JUCE_MAC
+    ed.modifierKeysChanged(juce::ModifierKeys::commandModifier);
+#else
+    ed.modifierKeysChanged(juce::ModifierKeys::altModifier);
+#endif
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "a modifier that makes the edge a velocity drag removes the resize cue");
+    ed.modifierKeysChanged({});
+    check(ed.getMouseCursor() == Cursor::LeftRightResizeCursor, "releasing the modifier restores the resize cue");
+
+    ed.select({11, 12});
+    const auto stretch = ed.stretchArea();
+    const auto stretchAt = [&](std::int64_t tick) {
+        return juce::Point<int>{stretch.getX() + static_cast<int>(ed.time.x(tick)), stretch.getCentreY()};
+    };
+    check(hover(stretchAt(beat), Cursor::LeftRightResizeCursor) &&
+              hover(stretchAt(5 * beat / 2), Cursor::LeftRightResizeCursor) &&
+              hover(stretchAt(2 * beat), Cursor::LeftRightResizeCursor),
+          "the stretch handles and the span between them use the horizontal cursor");
+    ed.select({});
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "deselecting removes the stretch cursor without waiting for movement");
+
+    const auto ruler = ed.rulerArea();
+    const auto loop = ed.loopBrace();
+    check(loop.has_value(), "the clip has an editable loop brace");
+    if (!loop)
+        return;
+    check(hover({loop->getStart(), ruler.getY() + 2}, Cursor::LeftRightResizeCursor) &&
+              hover({loop->getEnd(), ruler.getY() + 2}, Cursor::LeftRightResizeCursor) &&
+              hover({loop->getStart() + loop->getLength() / 2, ruler.getY() + 2}, Cursor::DraggingHandCursor),
+          "loop edges resize and the body shows a hand for moving the whole brace");
+    check(hover({ed.markerX(false), ruler.getBottom() - 2}, Cursor::LeftRightResizeCursor) &&
+              hover({ed.markerX(true), ruler.getBottom() - 2}, Cursor::LeftRightResizeCursor),
+          "the Start and End flags use the horizontal cursor");
+    ed.mouseExit(pressAt(ed, right.toFloat()));
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "leaving the Note Editor clears the affordance cursor");
+}
+
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -7592,6 +8114,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
         low = std::min(low, static_cast<int>(n.key));
     check(low == 55 && undoIs("Drop 2", 1), "Drop 2 takes the G down an octave");
     panel.setToolsTab(0);
+    check(panel.chooseGrid(15), "use quarter notes for the length and overlap checks");
     click(panel.toolBox(Tool::FixedLength));
     bool allStep = true;
     for (const auto &n : panel.details()->notes)
@@ -7744,6 +8267,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(0)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
     root.frame();
     check(panel.clip() == 11 && panel.details()->notes.size() == 2, "the clip is open with its two notes");
+    check(panel.chooseGrid(15), "use a fixed quarter-note grid for the editing gestures below");
     const auto note = [&](std::uint64_t id) {
         for (const auto &n : panel.details()->notes)
             if (n.id == id)
@@ -8106,6 +8630,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.details() != nullptr && panel.details()->notes.size() == 4, "the clip is open in the Note Editor");
     if (panel.details() == nullptr)
         return;
+    check(panel.chooseGrid(15), "use a fixed quarter-note grid for the time and marker gestures");
     const auto area = ed.notesArea();
     const auto g = ed.gridTicks();
     const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX()) + static_cast<float>(ed.time.x(tick)); };
@@ -8807,6 +9332,9 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
               "with Ctrl, a page sideways and back");
         // The grid's keys act on the editor's own grid.
         const auto arrangementGrid = geo.grid;
+        const double scaleBeforeGrid = ed.time.scale;
+        ed.time.scale = 64.;
+        check(panel.chooseGrid(3), "switch to the adaptive grid at this zoom");
         const auto grid = ed.gridTicks();
         check(ed.keyPressed(key('1', command)) && ed.gridTicks() == grid / 2 && ed.keyPressed(key('2', command)) && ed.gridTicks() == grid,
               "Ctrl+1 narrows the editing grid and Ctrl+2 widens it");
@@ -8826,6 +9354,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
                   panel.chooseGrid(3) && !ed.time.grid.fixed && ed.time.grid.narrow == 0 && ed.gridTicks() == grid && !panel.chooseGrid(99),
               "its Triplet Grid and Snap to Grid; and the adaptive grid's Medium, as it was");
         // Zoom in time; W and H.
+        ed.time.scale = scaleBeforeGrid;
         const double scale = ed.time.scale;
         check(ed.keyPressed(key('+')) && ed.time.scale > scale && ed.keyPressed(key('-')) && std::abs(ed.time.scale - scale) < 1e-6,
               "+ zooms in time and - out again");
@@ -9208,6 +9737,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         const auto kept = [&] { return ViewStateStore(*store).load("clip-view-clip-time"); };
         check(kept().noteGridNarrow == 0 && kept().highlightScale && kept().noteColours == 0 && kept().quantizeAmount == 100 && kept().quantizeStarts,
               "a window that changed none of the editor's settings holds their defaults");
+        ed.time.grid.fixed = false;
         check(ed.keyPressed(key('1', command)) && kept().noteGridNarrow == 1 && ed.keyPressed(key('3', command)) && kept().noteGridTriplet &&
                   ed.keyPressed(key('4', command)) && !kept().noteGridSnap,
               "the grid's keys in the editor are kept as they are pressed");
@@ -14719,9 +15249,9 @@ void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, 
     root.afterEdit = [&] { document->synchronise(); };
     root.readRecordStates = [&] { return document->recordStates(); };
     int starts = 0;
-    root.startRecording = [&](std::int64_t insertTick, bool playing) {
+    root.startRecording = [&](std::int64_t insertTick, bool playing, bool overdub) {
         ++starts;
-        const bool ok = document->startRecording(insertTick, 2, playing);
+        const bool ok = document->startRecording(insertTick, 2, playing, 0, {}, audio::WavFormat::Float32, overdub);
         if (!ok)
             root.say(document->error());
         return ok;
@@ -14888,6 +15418,57 @@ void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, 
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
+void selectionArmsTrack(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "selection-arming.adi", true, {}, error);
+    check(document != nullptr, "a project for selection arming");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record");
+    commands.activate(root);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.setSelectionArmedTrack = [&](std::int64_t track) { return document->session().setSelectionArmedTrack(track); };
+    const auto select = [&](std::int64_t track) {
+        root.arrangement.geometry.selection.track = track;
+        root.publishSelection();
+    };
+    const auto armed = [&](std::int64_t track) { return document->recordStates().at(track).armed; };
+    const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+    auto &prefs = commands.writableSettings();
+    const auto saved = prefs.get("record.autoArmOnSelect");
+    const auto mode = [&](const settings::Value &value) {
+        check(prefs.set("record.autoArmOnSelect", value, {}, error), "the setting accepts an arming choice");
+        commands.reload();
+    };
+    mode("none");
+    select(2);
+    check(!armed(2), "selection arming is off by default");
+    mode("instrumentAndMidi");
+    check(armed(2) && root.recordState(2).armed &&
+              document->store().db().execAndGet("SELECT record_armed FROM tracks WHERE id=2").getInt() == 0,
+          "selection arms the MIDI track in the session and UI without writing its manual arm");
+    const auto originalHead = head();
+    check(root.armTrack(2, false) && !armed(2) && head() == originalHead,
+          "the Arm switch can clear a selection arm without adding an undo step");
+    select(2);
+    check(!armed(2), "a click on the same track leaves a cleared selection arm off");
+    select(3);
+    const std::array<std::int64_t, 1> captureTrack{3};
+    check(armed(3) && document->session().startMidiInputCapture(captureTrack, error),
+          "selecting another MIDI track switches the arm and admits driver capture");
+    select(4);
+    check(!armed(3) && !armed(4) && head() == originalHead,
+          "selecting an audio track in MIDI-only mode clears the temporary arm without an edit");
+    mode("all");
+    check(armed(4) && head() == originalHead, "all tracks mode also arms a selected audio track");
+    mode("none");
+    check(!armed(4) && head() == originalHead, "switching off selection arming clears it immediately");
+    mode(saved);
+    document->release();
+}
 void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "arm-record.adi", true, {}, error);
@@ -14904,8 +15485,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.readRecordStates = [&] { return document->recordStates(); };
-    root.startRecording = [&](std::int64_t insertTick, bool playing) {
-        const bool ok = document->startRecording(insertTick, 2, playing);
+    root.startRecording = [&](std::int64_t insertTick, bool playing, bool overdub) {
+        const bool ok = document->startRecording(insertTick, 2, playing, 0, {}, audio::WavFormat::Float32, overdub);
         if (!ok)
             root.say(document->error());
         return ok;
@@ -15231,10 +15812,63 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.startRecording = nullptr;
     check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,
           "outside the application Record says it records there");
-    check(!root.transport.overdub.isEnabled() && !root.midiOverdub() &&
-              root.transport.overdub.getTooltip().contains("Arrangement Record can overdub MIDI clips"),
-          "MIDI Arrangement Overdub is unavailable while the recorder has no overdub support");
+    check(root.transport.overdub.isEnabled() && !root.midiOverdub() && root.transport.overdub.onClick,
+          "MIDI Arrangement Overdub is available and starts off");
+    root.transport.overdub.onClick();
+    check(root.midiOverdub(), "MIDI Arrangement Overdub toggles the recording mode");
     document->release();
+}
+void captureMidiButton(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "capture-midi-button.adi", true, {}, error);
+    check(document != nullptr, "a project for the Capture MIDI button");
+    if (!document) return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "capture-midi");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    ProjectDocument::TakeLanded captured;
+    bool stopped = false;
+    root.captureRecentMidi = [&](std::int64_t tick, bool playing) {
+        stopped = !playing;
+        captured = document->captureRecentMidi(tick, playing);
+    };
+    check(!root.transport.capture.isEnabled() && !document->canCaptureMidi(), "Capture remains disabled without input");
+    check(root.armTrack(2, true) && root.setMonitor(2, Monitor::Off) && root.setMonitor(3, Monitor::In),
+          "one muted-monitor armed track and one unarmed input-monitored track");
+    root.arrangement.geometry.selection.insert = textproj::kPPQ;
+    using engine::EventType;
+    constexpr auto pressure = static_cast<std::uint16_t>(ExpressionDim::Pressure);
+    auto& session = document->session();
+    check(session.enqueueMidiInput(8, {0, EventType::NoteOn, 1, 60, 17, 0, 1}) &&
+          session.enqueueMidiInput(12, {0, EventType::NoteExpression, 1, pressure, 17, 0, .5}) &&
+          session.enqueueMidiInput(32, {0, EventType::NoteOff, 1, 60, 17, 0, 0}),
+          "typed keyboard notes and expression reach the live MIDI queue without recording");
+    std::array<float, 64> left{}, right{};
+    float* out[]{left.data(), right.data()};
+    document->process({out, nullptr, 2, 0, 64, 0});
+    root.transport.capture.setEnabled(document->canCaptureMidi());
+    check(root.transport.capture.isEnabled() && !document->recording(), "live input enables the Capture button while stopped");
+    root.transport.capture.onClick();
+    check(captured.ok && stopped && captured.clips.size() == 2 && !document->canCaptureMidi(),
+          "the Capture button commits both eligible tracks and consumes the captured history");
+    if (!captured.ok || captured.clips.size() != 2) return;
+    for (const auto clip : captured.clips) {
+        const auto bytes = document->store().getNoteExpression(clip, 17, pressure);
+        bool expression = false;
+        if (bytes) {
+            const StreamReader<ExpressionPoint> reader(*bytes, FourCC::Expression);
+            expression = reader.ok() && reader.count() == 1 && reader.at(0)->time_ticks > 0 && reader.at(0)->value == .5f;
+        }
+        check(expression, "the Capture button saves the actual MPE expression with its note");
+    }
+    check(document->store().db().execAndGet("SELECT count(*) FROM clips WHERE pos_ticks=" +
+              std::to_string(textproj::kPPQ) + " AND loop_enabled=1").getInt() == 2,
+          "stopped Capture makes looped clips at the insert marker");
+    check(History(document->store()).nextUndo()->label == "Capture MIDI" && document->ops().undo().ok &&
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0,
+          "one Capture MIDI undo removes both captured clips");
 }
 void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -15294,6 +15928,103 @@ void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
     takes.clear();
     root.frame();
     check(snapshot().getPixelAt(firstNote, top) != look::record, "the preview disappears when the take ends");
+}
+void computerMidiKeyboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "computer-midi.adi", true, {}, error);
+    check(document != nullptr, "a project for the computer MIDI keyboard");
+    if (!document)
+        return;
+    std::vector<engine::Event> events;
+    std::array<bool, 26> held{};
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "computer-midi");
+    UiPeerRoot surface;
+    surface.setSize(1200, 800);
+    surface.addAndMakeVisible(root);
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.setSize(1200, 800);
+    root.sendComputerMidi = [&](const engine::Event &event) { events.push_back(event); };
+    root.input.keyDown = [&](int key) {
+        if (key >= 'A' && key <= 'Z')
+            key += 'a' - 'A';
+        return key >= 'a' && key <= 'z' && held[static_cast<std::size_t>(key - 'a')];
+    };
+    const auto down = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = true;
+        return root.keyPressed(juce::KeyPress(key, 0, key));
+    };
+    const auto up = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = false;
+        root.keyStateChanged(false);
+    };
+    const auto head = OpJournal(document->store()).headSeq();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState(), "the computer MIDI keyboard starts off");
+    check(down('m') && down('m') && root.computerMidiEnabled() && root.transport.keyboard.getToggleState(),
+          "M lights the keyboard switch once even if the OS repeats it");
+    up('m');
+    juce::ApplicationCommandInfo command(AppCommands::ComputerMidiKeyboard);
+    commands.getCommandInfo(AppCommands::ComputerMidiKeyboard, command);
+    check(command.defaultKeypresses.contains(juce::KeyPress('m')) &&
+              (command.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+          "the Options command shows the M shortcut and the same active state");
+    check(down('a') && down('a') && down('w') && down('k') && events.size() == 3 &&
+              events[0].type == engine::EventType::NoteOn && events[0].dim == 60 && events[1].dim == 61 && events[2].dim == 72 &&
+              events[0].noteId != events[1].noteId && events[1].noteId != events[2].noteId,
+          "white and black keys play the Live layout and a held key sends one note-on");
+    check(down('x') && down('v'), "X raises the octave and V raises velocity");
+    up('x');
+    up('v');
+    check(down('a') && down('s') && events.size() == 4 && events[3].dim == 74 && events[3].value == 120.0 / 127.0,
+          "the octave and velocity affect new notes only");
+    up('a');
+    check(events.size() == 5 && events[4].type == engine::EventType::NoteOff &&
+              events[4].dim == 60 && events[4].noteId == events[0].noteId,
+          "releasing after an octave change preserves the held note's pitch and identity");
+    up('w');
+    up('k');
+    up('s');
+
+    auto &canvas = root.arrangement.canvas;
+    held['f' - 'a'] = true;
+    check(canvas.keyPressed(juce::KeyPress('f')) && !canvas.showFades && events.size() == 9 && events.back().dim == 77,
+          "the keyboard claims F before the Arrangement's fade shortcut");
+    up('f');
+    check(canvas.keyPressed(juce::KeyPress('f', juce::ModifierKeys::shiftModifier, 0)) && canvas.showFades &&
+              root.computerMidiShortcut(juce::KeyPress('s', juce::ModifierKeys::shiftModifier, 0)) == juce::KeyPress('s') &&
+              events.size() == 10,
+          "Shift keeps the Arrangement and application shortcuts available without playing notes");
+    const bool pluginToggle = commands.key(juce::KeyPress('m'), root, false);
+    (void)commands.key(juce::KeyPress('w'), root, false);
+    check(!pluginToggle && root.computerMidiEnabled() && events.size() == 10,
+          "forwarded plug-in window keys cannot toggle the keyboard or sound a note");
+
+    {
+        juce::TextEditor field;
+        root.addAndMakeVisible(field);
+        field.setBounds(10, 10, 140, 22);
+        field.grabKeyboardFocus();
+        auto *peer = surface.getPeer();
+        check(field.hasKeyboardFocus(false) && peer != nullptr &&
+                  peer->handleKeyPress(juce::KeyPress('a', 0, 'a')) && peer->handleKeyPress(juce::KeyPress('m', 0, 'm')) &&
+                  field.getText() == "am" && root.computerMidiEnabled() && events.size() == 10,
+              "a focused text field owns the typing keys even when MIDI keyboard mode is on");
+    }
+    root.grabKeyboardFocus();
+    check(down('j'), "a note plays after returning focus to the Arrangement");
+    root.releaseComputerMidiKeys();
+    check(root.computerMidiEnabled() && events.size() == 12 && events.back().type == engine::EventType::NoteOff &&
+              events.back().noteId == events[10].noteId,
+          "the focus-loss release path silences held notes and leaves the mode enabled");
+    up('j');
+    check(down('k'), "hold another note before turning the keyboard off");
+    root.transport.keyboard.onClick();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState() && events.size() == 14 &&
+              events.back().type == engine::EventType::NoteOff && events.back().noteId == events[12].noteId &&
+              OpJournal(document->store()).headSeq() == head,
+          "turning the Control Bar switch off releases the held note without an Undo item");
+    up('k');
 }
 // EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
 // yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
@@ -20891,28 +21622,29 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio,
+                                                C::ExportMidiClip},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac [P:export#1]");
+              "Collect and Export after them, then audio/video and MIDI clip export. Quit is in the Mac application menu [P:export#1]");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+              "Collect and Export after them, then audio/video and MIDI clip export. It ends with Quit [P:export#1]");
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), Solo in "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, Solo in "
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
@@ -20962,13 +21694,16 @@ int main(int argc, char **argv) {
                       C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters" &&
                       C::SwitchDetailView == C::ToggleTrackMixer + 1 &&
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
-                      C::LastId == C::ArrangementRecordAlternate,
+                      C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
+                      C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
+                      C::LastId == C::ExportMidiClip,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
-                  "Volume, Pan and Meters, Switch Clip and Device Views, and Arrangement Record (Alternate Start)");
+                  "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
+                  "Computer MIDI Keyboard, MIDI import and MIDI export");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -21068,9 +21803,9 @@ int main(int argc, char **argv) {
                   "and undo brings the track back");
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
-                                                  C::InsertMidiClip, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
+                                                  C::InsertMidiClip, C::ImportMidiFile, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
                                                   C::DeleteLocator, 0, C::CreateFade, C::DeleteFades},
-              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, then a time signature "
+              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip or a MIDI file, then a time signature "
               "change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
               "Fades/Crossfades (§6.8)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement, C::FocusClipView,
@@ -23502,9 +24237,12 @@ int main(int argc, char **argv) {
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
+    trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("recordWaitsForPlay", [&] { recordWaitsForPlay(commands, settings, temp.path()); });
+    trace("captureMidiButton", [&] { captureMidiButton(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
+    trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
@@ -23516,6 +24254,7 @@ int main(int argc, char **argv) {
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
+    trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
@@ -23537,6 +24276,11 @@ int main(int argc, char **argv) {
     trace("detailViewSwitch", [&] { detailViewSwitch(commands, temp.path()); });
     trace("adaptiveSubQuarterGrid", [&] { adaptiveSubQuarterGrid(commands, temp.path()); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewPlayFromMarker", [&] { clipViewPlayFromMarker(commands, temp.path()); });
+    trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
+    trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
+    trace("clipViewLoopPlayhead", [&] { clipViewLoopPlayhead(commands, temp.path()); });
+    trace("clipViewNoteCursors", [&] { clipViewNoteCursors(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });

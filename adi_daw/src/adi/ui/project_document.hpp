@@ -34,6 +34,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+namespace adi::recording { struct RecordingEdit; }
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -221,7 +222,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                         std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},
-                        audio::WavFormat format = audio::WavFormat::Float32);
+                        audio::WavFormat format = audio::WavFormat::Float32, bool overdub = false);
     // The application replaces these routes when the device or its channel config changes.
     // An empty list means the device has no enabled inputs. The view lasts until the next set.
     void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
@@ -249,6 +250,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::vector<std::int64_t> clips;
         std::string message;
     };
+    [[nodiscard]] bool canCaptureMidi() const noexcept;
+    TakeLanded captureRecentMidi(std::int64_t positionTick, bool playing);
     std::optional<TakeLanded> takeLanded();
     // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
     // knob, on its track or, when that track is among the selected, on every selected track by the same
@@ -300,7 +303,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // A drop below the tracks passes track 0 and creates and selects the appropriate track.
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
-                       const RecordingDefaults *defaults = nullptr);
+                       const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
@@ -308,7 +311,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
-                    const RecordingDefaults *defaults = nullptr);
+                    const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
                           const std::string &name, std::filesystem::path &saved);
     std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
@@ -476,6 +479,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     void pollRecording(bool deviceStopped);
     void landTake();
     TakeLanded commitMidiTake(MidiRecording &, const std::string &audioProblem, const std::string &audioLocation);
+    void finishMidiTake(const MidiRecording &, const recording::RecordingEdit &, const SubmitResult &, TakeLanded &);
     void pollTakePublication();
     bool waitForTake(bool forceDetached);
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.

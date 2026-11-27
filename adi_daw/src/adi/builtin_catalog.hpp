@@ -39,10 +39,11 @@ struct PreparedBuiltinInsert {
 // drop onto a new track, the track-creation requests start the same batch.
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
     std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0,
-    std::span<const OpRequest> newTrack={});
+    std::span<const OpRequest> newTrack={},bool exclusiveArm=false);
 struct PluginInsertOptions {
     bool replaceInstrument = false;
     std::optional<engine::RouteChoice> expressionRoute;
+    bool exclusiveArm = false;
 };
 [[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},

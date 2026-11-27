@@ -224,6 +224,7 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
     }
     if (glyph != Glyph::None)
         paintGlyph(g, glyph, content,
+                   !isEnabled() ? look::text.withMultipliedAlpha(.4f) :
                    getToggleState() ? (boxed ? look::ink : look::accent) : look::text);
     if (countIn_.bar < 0) {
         char position[48];
@@ -407,11 +408,11 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback. Press while stopped to return to the start."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
-        {&overdub, "MIDI Arrangement Overdub", "Unavailable until Arrangement Record can overdub MIDI clips.", false},
+        {&overdub, "MIDI Arrangement Overdub", "Adds notes to MIDI clips during Arrangement Record."},
         {&automationArm, "Automation Arm", "While on, moving a control during Arrangement Record writes automation."},
         {&reEnable, "Re-Enable Automation", "Lit while a control you moved overrides its automation. "
                                             "Click to follow every envelope again."},
-        {&capture, "Capture MIDI", "Unavailable until the app can turn recently played MIDI into a clip.", false},
+        {&capture, "Capture MIDI", "Turns recently played MIDI into clips."},
         {&sessionRecord, "Session Record", "Unavailable until Session View can record clips.", false},
         {&loopStart, "Loop Start", "Drag, scroll or use Up and Down on a number to move the loop without changing "
                                    "its length. Click to type a start such as 5.1.1."},
@@ -421,7 +422,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&loopLength, "Loop Length", "Drag, scroll or use Up and Down on a number to move the loop's end. "
                                      "Click to type a length such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
-        {&keyboard, "Computer MIDI Keyboard", "Unavailable until computer keys can send MIDI notes.", false},
+        {&keyboard, "Computer MIDI Keyboard", "Plays MIDI notes from the computer keyboard (M). Z and X change the octave. C and V change velocity."},
         {&key, "Key Map Mode", "Unavailable until controls can be mapped to computer keys.", false},
         {&midi, "MIDI Map Mode", "Unavailable until the app can act on MIDI controller mappings.", false},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
@@ -524,6 +525,22 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
                                               : AppCommands::ArrangementRecord);
     };
     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };
+    capture.setEnabled(false);
+    capture.onClick = [this] {
+        const bool playing = root_.playing();
+        const auto tick = playing ? root_.timelineTick() : root_.arrangement.geometry.selection.insert;
+        if (root_.captureRecentMidi) root_.captureRecentMidi(tick, playing);
+    };
+    keyboard.onClick = [this] { root_.command(AppCommands::ComputerMidiKeyboard); };
+    // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
+    // does to the notes already there.
+    overdub.onClick = [this] {
+        const bool on = !root_.midiOverdub();
+        root_.setMidiOverdub(on);
+        overdub.setToggleState(on, juce::dontSendNotification);
+        root_.say(on ? "MIDI Arrangement Overdub on: a MIDI recording will add to the notes already there."
+                     : "MIDI Arrangement Overdub off: a MIDI recording will replace the notes it records over.");
+    };
     // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
     indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
     onCpuMenu = [this](juce::PopupMenu menu) {
@@ -677,6 +694,8 @@ void TransportBar::refresh() {
     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);
+    overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
+    keyboard.setToggleState(root_.computerMidiEnabled(), juce::dontSendNotification);
     const bool canArmAutomation = root_.automationArmed && root_.armAutomation;
     automationArm.setEnabled(canArmAutomation);
     automationArm.setAlpha(canArmAutomation ? 1.f : .45f);

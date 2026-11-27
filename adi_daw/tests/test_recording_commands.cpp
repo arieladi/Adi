@@ -166,6 +166,70 @@ void midiLinearTakes() {
           "Redo restores the exact captured expression bytes");
 }
 
+void midiOverdub() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','One period'),(24,'midi','Repeated')");
+    const std::array<notes::NoteValues, 1> oldNotes{{{.start=100, .duration=60, .id=17, .key=60, .velocity=80}}};
+    const std::array<recording::MidiLinearTake, 2> original{{
+        {23, 7, 960, 960, "One period", oldNotes, {}},
+        {24, 8, 960, 960, "Repeated", oldNotes, {}},
+    }};
+    auto seed = recording::prepareMidiLinearCommit(store, original, 48000);
+    if (!seed.ok || !recording::commit(store, seed).ok)
+        throw std::runtime_error("seed the overdub's original clips");
+    db.exec("UPDATE clips SET length_ticks=1920 WHERE id=8");
+    const auto before = digestProject(store).text;
+
+    const std::array<notes::NoteValues, 1> input{{{.start=120, .duration=90, .id=17, .key=67, .velocity=90}}};
+    const std::array<ExpressionPoint, 1> bend{{{0, 2.f, 0.f, 0, 0, {}}}};
+    const std::array<recording::MidiExpressionLane, 1> expression{{{17, ExpressionDim::Pitch, bend}}};
+    const std::array<recording::MidiLinearTake, 2> overdub{{
+        {23, 9, 1200, 240, "Merge", input, expression, true},
+        {24, 10, 2160, 240, "Repeat Safety", input, expression, true},
+    }};
+    auto edit = recording::prepareMidiLinearCommit(store, overdub, 48000);
+    check(edit.ok && edit.midiLandings.size() == 2 && digestProject(store).text == before,
+          "planning an overdub leaves both Arrangement clips unchanged");
+    if (!edit.ok || edit.midiLandings.size() != 2)
+        return;
+    const auto committed = recording::commit(store, edit);
+    check(committed.ok, "the in-place overdub and safe take lane land in one recording transaction");
+    if (!committed.ok)
+        return;
+    const auto& merge = edit.midiLandings[0];
+    const auto& fallback = edit.midiLandings[1];
+    const auto one = readClipDetails(store, 7, true, true);
+    const auto repeat = readClipDetails(store, 8, true, true);
+    const auto saved = readClipDetails(store, 10, true, true);
+    check(merge.clip == 7 && merge.sourceStart == 240 && !merge.inTakeLane && merge.noteIds == std::vector<std::uint64_t>{18} &&
+              one.clip && one.clip->notes.size() == 2 && one.clip->notes[0].id == 17 && one.clip->notes[0].startTicks == 100 &&
+              one.clip->notes[1].id == 18 && one.clip->notes[1].startTicks == 360 &&
+              one.clip->noteExpressions.curves.size() == 1 && one.clip->noteExpressions.curves[0].noteId == 18 &&
+              one.clip->noteExpressions.curves[0].points.size() == 1 && one.clip->noteExpressions.curves[0].points[0].value == 2.,
+          "overdub retains the original note and clip, and assigns the new note and curve a fresh identity");
+    check(fallback.clip == 10 && fallback.inTakeLane && saved.clip && saved.clip->laneId &&
+              saved.clip->notes.size() == 1 && saved.clip->noteExpressions.curves.size() == 1 &&
+              repeat.clip && repeat.clip->lengthTicks == 1920 && repeat.clip->notes.size() == 1,
+          "taking a later loop occurrence preserves the recorded notes and leaves the repeating clip intact");
+
+    const std::array<recording::MidiRecordQuantize, 1> targets{{{7, merge.sourceStart, 1200, 240, 240, merge.noteIds}}};
+    const auto quantize = recording::prepareRecordQuantize(store, targets);
+    check(quantize.ok && notes::commitDiff(store, quantize).ok, "quantize the newly overdubbed identity");
+    const auto snapped = readClipDetails(store, 7, true, true);
+    check(snapped.clip && snapped.clip->notes.size() == 2 && snapped.clip->notes[0].startTicks == 100 &&
+              snapped.clip->notes[1].startTicks == 240 && snapped.clip->notes[1].durationTicks == 90 &&
+              snapped.clip->noteExpressions.curves.size() == 1 && snapped.clip->noteExpressions.curves[0].noteId == 18,
+          "record quantization preserves the old note, overdub duration, and expression attachment");
+    History history(store);
+    check(history.undo().ok, "undo the overdub quantization");
+    const auto raw = readClipDetails(store, 7);
+    check(raw.clip && raw.clip->notes.size() == 2 && raw.clip->notes[1].startTicks == 360 &&
+              history.undo().ok && digestProject(store).text == before,
+          "Undo first restores the raw overdub, then removes the new note and the separate take lane");
+}
+
 void mixedLinearTake() {
     Fixture fixture;
     auto& store = *fixture.store;
@@ -1217,7 +1281,7 @@ int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
     recordedTakeFollowsTempo();
     latencyCompensationKeepsPunchProtection();
-    midiLinearTakes();mixedLinearTake();
+    midiLinearTakes();midiOverdub();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();

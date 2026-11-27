@@ -4653,7 +4653,10 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
         view.geometry.zoom(factor, e.position.x);
     view.changed();
 }
-bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
+bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
+    if (view.root.playComputerMidiKey(pressed))
+        return true;
+    const auto k = view.root.computerMidiShortcut(pressed);
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     if (automationStroke_ && code == juce::KeyPress::escapeKey) {
@@ -5121,7 +5124,22 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, audioDropTick(x),
-                            juce::ModifierKeys::currentModifiers.isCommandDown());
+    juce::StringArray audio;
+    std::vector<std::pair<std::string, std::string>> midi;
+    for (const auto &path : files) {
+        const auto file = juce::File::createFileWithoutCheckingPath(path);
+        if (file.hasFileExtension("mid;smf"))
+            midi.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
+        else
+            audio.add(path);
+    }
+    const auto on = track != nullptr ? track->id : 0;
+    const bool onMidi = track != nullptr && isMidiTrack(*track);
+    const auto at = audioDropTick(x);
+    const bool separate = juce::ModifierKeys::currentModifiers.isCommandDown();
+    if (!audio.isEmpty())
+        view.root.dropAudioPaths(audio, !midi.empty() && onMidi ? 0 : on, at, separate);
+    if (!midi.empty())
+        view.root.dropMidiFiles(midi, !audio.isEmpty() && !onMidi ? 0 : on, at, separate);
 }
 } // namespace adi::ui

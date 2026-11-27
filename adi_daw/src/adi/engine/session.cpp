@@ -25,6 +25,7 @@
 #include <limits>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <functional>
@@ -350,6 +351,14 @@ bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std
     options.loop = std::move(loop);
     return true;
 }
+bool Session::setSelectionArmedTrack(std::int64_t track) {
+    if (track == selectionArmedTrack_) return true;
+    const auto previous = std::exchange(selectionArmedTrack_, track);
+    if (!loaded_ || rebuild()) return true;
+    selectionArmedTrack_ = previous;
+    return false;
+}
+
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
     if(!live_){error="No active audio session for recording";return false;}
     if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
@@ -357,7 +366,7 @@ bool Session::startRecording(const AudioRecordingSpec& options,std::string& erro
     }
     for(const auto& target:options.targets) {
         const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
-        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+        if(track==model_.tracks.end() || !recordArmed(*track) || (track->kind!="audio" && track->kind!="midi")) {
             error="Recording target must be an armed audio or MIDI track";return false;
         }
     }
@@ -908,8 +917,8 @@ void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model,
             frozenGroupChildren_.contains(track.id))
             continue;
         const bool inputOnly = track.monitorMode == 1;
-        const bool armedAuto = track.monitorMode == 2 && track.recordArmed;
-        const bool armedOff = track.monitorMode == 0 && track.recordArmed;
+        const bool armedAuto = track.monitorMode == 2 && recordArmed(track);
+        const bool armedOff = track.monitorMode == 0 && recordArmed(track);
         if (armedAuto || (armedOff && kMonitorOffMutesPreviousTake))
             clips.muteWhileRecording(track.id, recordingAudioTracks_);
         if (!inputOnly && !armedAuto) continue;
@@ -1074,10 +1083,27 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         std::span<const MidiMonitorRange> blockedRanges;
     };
     std::map<const Node*, Target> monitored;
+    decltype(midiHistories_) histories;
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
-        const bool monitorMidi = midi && (track.monitorMode == 1 || (track.monitorMode == 2 && track.recordArmed));
-        if (!monitorMidi && !(track.kind == "audio" && track.recordArmed))
+        const bool armed = recordArmed(track);
+        if (midi && !track.locked && !track.frozen && !frozenGroupChildren_.contains(track.id) &&
+            (armed || track.monitorMode == 1) && timing.sampleRate >= 8000 && timing.sampleRate <= 768000) {
+            const auto rate = static_cast<std::uint32_t>(std::lround(timing.sampleRate));
+            const auto found = midiHistories_.find(track.id);
+            std::shared_ptr<LiveMidiInput::History> history;
+            if (found != midiHistories_.end() && found->second->sampleRate == rate) {
+                history = found->second;
+            } else {
+                if (lastMidiHistoryId_ == std::numeric_limits<std::int64_t>::max())
+                    throw std::overflow_error("MIDI history identifiers exhausted");
+                history = std::make_shared<LiveMidiInput::History>(++lastMidiHistoryId_, track.id, rate);
+            }
+            timing.midiHistories.push_back(history);
+            histories.emplace(track.id, std::move(history));
+        }
+        const bool monitorMidi = midi && (track.monitorMode == 1 || (track.monitorMode == 2 && armed));
+        if (!monitorMidi && !(track.kind == "audio" && armed))
             continue;
         const auto blocked = midi && track.monitorMode == 2 ? clips.monitorRanges(track.id)
                                                            : std::span<const MidiMonitorRange>{};
@@ -1114,6 +1140,29 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
                 route.blockedRanges.assign(ranges.begin(), ranges.end());
         }
         timing.midiInputRoutes.push_back(std::move(route));
+    }
+    midiHistories_.swap(histories);
+    prepareMidiPreview(timing, model);
+}
+
+void Session::prepareMidiPreview(TimingView& timing, const rows::Model& model) {
+    std::map<const Node*, std::int64_t> targets;
+    for (const auto& track : model.tracks) {
+        if ((track.kind != "midi" && track.kind != "instrument" && track.kind != "audio") ||
+            track.frozen || frozenGroupChildren_.contains(track.id))
+            continue;
+        for (const auto* node : chainFor(track.id)) {
+            if (node->eventFlow() != EventFlow::Consume)
+                continue;
+            targets.emplace(node, track.id);
+            midiPreviewVoices_.try_emplace(node);
+            break;
+        }
+    }
+    timing.midiPreviewRoutes.reserve(midiPreviewVoices_.size());
+    for (auto& [node, voice] : midiPreviewVoices_) {
+        const auto target = targets.find(node);
+        timing.midiPreviewRoutes.push_back({node, &voice, target == targets.end() ? 0 : target->second});
     }
 }
 
@@ -2386,6 +2435,7 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work
         recording_->stop();
         midiInputCapture_->deviceStopped();
         resetMidiInput();
+        clearMidiPreviewDevice();
         if (transport_.countInRemaining() > 0)
             transport_.play(false);
         countInTail_ = false;
@@ -2860,7 +2910,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
-        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture, punch, punchWindow);
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories,
+                                    session_.transport_, capture, punch, punchWindow);
+        session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
     if (inputMonitors) {
@@ -2922,7 +2974,102 @@ bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int
 void Session::resetMidiInput() noexcept {
     midiInput_->reset();
 }
-bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error) {
+
+std::optional<Session::MidiRecordMonitor> Session::midiRecordMonitor(std::int64_t track) const {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    const auto* graph = graph_.currentGraph();
+    if (!live_ || !timing || !graph || track <= 0) return std::nullopt;
+    for (const auto& route : timing->midiInputRoutes) {
+        if (route.monitorTrack != track || !route.processes) continue;
+        const auto instrument = graph->find(*route.node);
+        if (instrument != kInvalidNode)
+            return MidiRecordMonitor{std::max(0, graph->arrivalOf(instrument)), route.blockedRanges};
+    }
+    return std::nullopt;
+}
+
+bool Session::midiHistoryAvailable() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!live_ || !timing) return false;
+    return std::any_of(timing->midiHistories.begin(), timing->midiHistories.end(), [](const auto& history) {
+        return history->memory.hasEventsAfter(history->consumed);
+    });
+}
+
+bool Session::readMidiHistories(std::vector<MidiMemorySnapshot>& output, std::string& error) const {
+    output.clear();
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (live_ && timing) {
+        const auto before = midiInput_->historyRevision();
+        if ((before & 1) != 0) {
+            error = "A MIDI input block is arriving. Try Capture MIDI again.";
+            return false;
+        }
+        for (const auto& history : timing->midiHistories) {
+            if (!history->memory.hasEventsAfter(history->consumed)) continue;
+            MidiMemorySnapshot snapshot;
+            if (!history->memory.snapshot(snapshot, error)) {
+                output.clear();
+                return false;
+            }
+            std::erase_if(snapshot.events, [&](const auto& event) { return event.serial < history->consumed; });
+            if (!snapshot.events.empty()) output.push_back(std::move(snapshot));
+        }
+        if (midiInput_->historyRevision() != before) {
+            output.clear();
+            error = "MIDI input changed during Capture. Try Capture MIDI again.";
+            return false;
+        }
+    }
+    if (!output.empty()) return true;
+    error = "No recent MIDI input on an armed or input-monitored track.";
+    return false;
+}
+
+void Session::consumeMidiHistories(std::span<const MidiMemorySnapshot> snapshots) noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing) return;
+    for (const auto& snapshot : snapshots) {
+        if (snapshot.events.empty()) continue;
+        const auto found = std::find_if(timing->midiHistories.begin(), timing->midiHistories.end(), [&](const auto& history) {
+            return history->inputId == snapshot.inputId;
+        });
+        if (found != timing->midiHistories.end())
+            (*found)->consumed = std::max((*found)->consumed, snapshot.events.back().serial + 1);
+    }
+}
+
+const LiveMidiInput::PreviewRoute* Session::midiPreviewRoute(std::int64_t track) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!live_ || !timing || track <= 0)
+        return nullptr;
+    for (const auto& route : timing->midiPreviewRoutes)
+        if (route.track == track)
+            return &route;
+    return nullptr;
+}
+
+bool Session::previewMidiNote(std::int64_t track, int key, int velocity, bool held) noexcept {
+    const auto* route = midiPreviewRoute(track);
+    return route && midiInput_->preview(*route, key, velocity, held);
+}
+
+void Session::stopMidiPreview() noexcept { midiInput_->stopPreview(); }
+
+std::array<std::uint64_t, 2> Session::midiKeysSounding(std::int64_t track) const noexcept {
+    const auto* route = midiPreviewRoute(track);
+    return route ? route->node->heldNotes().keyMask() : std::array<std::uint64_t, 2>{};
+}
+
+void Session::clearMidiPreviewDevice() noexcept {
+    midiInput_->clearPreviewDevice();
+    for (auto& [node, voice] : midiPreviewVoices_) {
+        (void)node;
+        voice = {};
+    }
+}
+
+bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub) {
     if (!loaded_ || !spec_.performanceState || spec_.exporting || tracks.empty() || tracks.size() > 256) {
         error = "MIDI capture needs a live project and between 1 and 256 armed tracks";
         return false;
@@ -2931,13 +3078,13 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
     for (const auto id : tracks) {
         const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
             [id](const rows::Track& t) { return t.id == id; });
-        if (id <= 0 || track == model_.tracks.end() || !track->recordArmed ||
+        if (id <= 0 || track == model_.tracks.end() || !recordArmed(*track) ||
             (track->kind != "midi" && track->kind != "instrument") || !seen.insert(id).second) {
             error = "MIDI capture needs distinct armed MIDI or instrument tracks";
             return false;
         }
     }
-    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate)) {
+    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate, overdub)) {
         error = "finish and drain the previous MIDI capture first";
         return false;
     }
@@ -3110,6 +3257,7 @@ void Session::release() {
     recording_->stop();
     midiInputCapture_->deviceStopped();
     resetMidiInput();
+    clearMidiPreviewDevice();
     // A device stop cancels a pending lead-in, as a format change does in
     // prepare(): the recorder it was counting in for has just stopped, so a
     // same-format restart must not resume clicking and then start the

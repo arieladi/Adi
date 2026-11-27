@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/computer_midi_keyboard.hpp"
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
@@ -34,6 +35,7 @@
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -178,7 +180,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleTrackMixer,
         SwitchDetailView,
         ArrangementRecordAlternate, // Shift+F9: the other Start Playback with Record behavior
-        LastId = ArrangementRecordAlternate
+        ComputerMidiKeyboard, // the Control Bar and Options menu's Computer MIDI Keyboard, M
+        ImportMidiFile,
+        ExportMidiClip,
+        LastId = ExportMidiClip
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -196,7 +201,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // they differ from what it holds (false with why when the write fails).
     settings::Value userKeys() const;
     bool storeUserKeys(std::string &why);
-    bool key(const juce::KeyPress &, AdiRootComponent &);
+    bool key(const juce::KeyPress &, AdiRootComponent &, bool allowComputerMidi = true);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
     juce::ApplicationCommandTarget *getNextCommandTarget() override { return nullptr; }
@@ -241,6 +246,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Ctrl/Cmd is held.
     bool exclusiveArm() const noexcept { return exclusiveArm_; }
     bool startPlaybackWithRecord() const noexcept { return startPlaybackWithRecord_; }
+    enum class SelectionArm { None, Midi, All };
+    SelectionArm selectionArm() const noexcept { return selectionArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -308,6 +315,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool exclusiveSolo_ = true;
     bool exclusiveArm_ = true;
     bool startPlaybackWithRecord_ = true;
+    SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -416,6 +424,15 @@ class AdiRootComponent final : public juce::Component,
         }
     }
     bool midiIn() const noexcept { return midiIn_; }
+    bool computerMidiEnabled() const noexcept { return computerMidiEnabled_; }
+    bool playComputerMidiKey(const juce::KeyPress &);
+    juce::KeyPress computerMidiShortcut(const juce::KeyPress &) const;
+    bool pressComputerMidiToggle(int key);
+    void releaseComputerMidiKeys();
+    std::function<void(const engine::Event &)> sendComputerMidi;
+    std::function<bool(std::int64_t, int, int, bool)> previewMidiNote;
+    std::function<void()> stopMidiPreview;
+    std::function<std::array<std::uint64_t, 2>(std::int64_t)> midiKeysSounding;
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }
@@ -531,15 +548,18 @@ class AdiRootComponent final : public juce::Component,
     // `recording` reads whether it runs. A refusal comes back as false and the application has said
     // why. Unset outside the application.
     std::function<RecordStates()> readRecordStates;
+    std::function<bool(std::int64_t)> setSelectionArmedTrack;
+    void refreshSelectionArming();
     void setRecordStates(RecordStates states) {
         if (states != recordStates_)
             recordStates_ = std::move(states);
     }
-    std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
+    std::function<bool(std::int64_t insertTick, bool playing, bool overdub)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording, capturingAudioTake;
     std::function<bool()> landingRecording;
     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
+    std::function<void(std::int64_t positionTick, bool playing)> captureRecentMidi;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }
@@ -554,6 +574,9 @@ class AdiRootComponent final : public juce::Component,
     // the new clip and its track are selected. A refusal goes to the Status Bar.
     bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
     bool dropAudioPaths(const juce::StringArray &, std::int64_t track, std::int64_t pos, bool separate = false);
+    bool dropMidiFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                       std::int64_t track, std::int64_t position, bool separate);
+    std::int64_t midiClipForExport() const noexcept;
     // Several files dropped at once, each a (path, clip name): one after another on that track, or
     // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
     // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
@@ -589,6 +612,7 @@ class AdiRootComponent final : public juce::Component,
     bool locate(std::int64_t tick, bool fromInsertMarker = false);
     // Plays from a point: starts the transport there, or jumps there while it plays.
     bool playFrom(std::int64_t tick);
+    bool playOrStopFrom(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
     BrowserPanel browser{*this};
@@ -942,7 +966,6 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
-    void globalFocusChanged(juce::Component *) override;
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);
@@ -991,9 +1014,15 @@ class AdiRootComponent final : public juce::Component,
     bool recordPending_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    std::int64_t selectionArmedTrack_ = 0;
+    bool changeSelectionArming(std::int64_t track);
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool toggleArm(std::optional<std::int64_t> clicked, bool add);
     bool midiIn_ = false;
+    bool computerMidiEnabled_ = false;
+    ComputerMidiKeyboard computerMidi_;
+    std::optional<int> computerMidiToggleKey_;
+    void globalFocusChanged(juce::Component *) override;
     bool automationMode_ = false;
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     bool infoShown_ = true;
@@ -1106,6 +1135,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
     void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void activeWindowStatusChanged() override;
     void broughtToFront() override;
     // Where the window stands, saved after each move or size once it stands still (WIN-02).
     PlaceWatch place;

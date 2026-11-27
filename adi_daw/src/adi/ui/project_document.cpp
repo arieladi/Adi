@@ -9,6 +9,7 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
@@ -31,6 +32,7 @@
 #include <future>
 #include <mutex>
 #include <system_error>
+#include <set>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -44,17 +46,21 @@ struct WaveformSource {
 };
 struct ProjectDocument::MidiRecording {
     struct Track {
-        bool monitored = false;
-        std::int32_t instrumentArrival = 0;
+        struct Held {
+            std::size_t index = 0;
+            bool monitored = false;
+        };
+        std::optional<engine::Session::MidiRecordMonitor> monitor;
+        std::int64_t quantizeGrid = 0;
         std::vector<notes::NoteValues> notes;
-        std::map<std::uint64_t, std::size_t> held;
+        std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
     std::vector<Track> tracks;
     std::vector<LiveMidiTake> preview;
-    bool started = false;
+    bool started = false, overdub = false;
     std::int64_t firstStreamSample = 0;
     engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
     engine::RecordingPunchWindow punchWindow;
@@ -94,22 +100,29 @@ struct ProjectDocument::MidiRecording {
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             auto &take = preview[i];
-            // Live input goes directly to the instrument. A replayed clip passes through the
-            // upstream nodes first, so place it on the clock at the instrument's input.
-            const auto heard = tickAt(packet.timelineSample - track.instrumentArrival);
-            const auto at = std::clamp(track.monitored ? heard : played, take.start, take.end - 1);
             const auto held = track.held.find(event.noteId);
+            // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
+            bool monitored = held != track.held.end() && held->second.monitored;
+            if (event.type == engine::EventType::NoteOn && track.monitor) {
+                const auto& ranges = track.monitor->blockedRanges;
+                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
+                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
+                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
+            }
+            // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
+            const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
+            const auto at = std::clamp(tick, take.start, take.end - 1);
             if (event.type == engine::EventType::NoteOn) {
-                if (held != track.held.end() || (!track.monitored && packet.inputSample < firstStreamSample))
+                if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
                 const auto velocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
-                track.held.emplace(event.noteId, index);
+                track.held.emplace(event.noteId, Track::Held{index, monitored});
                 track.notes.push_back({at - take.start, 1, index + 1, event.dim, std::max(1, velocity), 0, event.channel});
                 take.notes.push_back({at, take.end, event.dim});
             } else if (held != track.held.end()) {
-                auto &note = track.notes[held->second];
-                auto &shown = take.notes[held->second];
+                auto &note = track.notes[held->second.index];
+                auto &shown = take.notes[held->second.index];
                 if (event.type == engine::EventType::NoteOff) {
                     shown.end = std::max(shown.start + 1, at);
                     note.duration = shown.end - shown.start;
@@ -145,9 +158,9 @@ struct ProjectDocument::MidiRecording {
                 ingest(packet);
         for (std::size_t i = 0; i < tracks.size(); ++i)
             for (const auto &item : tracks[i].held) {
-                auto &shown = preview[i].notes[item.second];
+                auto &shown = preview[i].notes[item.second.index];
                 shown.end = preview[i].end;
-                tracks[i].notes[item.second].duration = shown.end - shown.start;
+                tracks[i].notes[item.second.index].duration = shown.end - shown.start;
             }
     }
 
@@ -175,7 +188,7 @@ struct ProjectDocument::MidiRecording {
             auto name = shownTrackName(current, span.track);
             placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
                                        name.empty() ? std::string("Take") : std::move(name),
-                                       track.notes, placement.expressions[i]});
+                                       track.notes, placement.expressions[i], overdub});
         }
         return placement;
     }
@@ -1528,13 +1541,13 @@ PreparedBuiltinInsert prepareDeviceDrop(Store &store, bool midi, const Recording
 }
 } // namespace
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
-                                    const RecordingDefaults *defaults) {
+                                    const RecordingDefaults *defaults, bool exclusiveArm) {
     if (track != 0)
-        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId(), {}, exclusiveArm));
     const auto *info = findBuiltin(uid);
     return finishInsert(prepareDeviceDrop(*store_, info && info->instrument, defaults,
         [&](std::int64_t id, std::span<const OpRequest> newTrack) {
-            return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack);
+            return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack, exclusiveArm);
         }));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
@@ -1542,8 +1555,9 @@ bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t trac
     return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
 bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
-                                 const RecordingDefaults *defaults) {
+                                 const RecordingDefaults *defaults, bool exclusiveArm) {
     PluginInsertOptions options;
+    options.exclusiveArm = exclusiveArm;
     if (pluginRouteDefault)
         options.expressionRoute = pluginRouteDefault(ref.format, ref.uid);
     if (track == 0)
@@ -2828,12 +2842,12 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
 RecordStates ProjectDocument::recordStates() const {
     RecordStates out;
     for (const auto &t : session_.model().tracks)
-        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+        out[t.id] = {session_.recordArmed(t), t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                                      std::int64_t deviceLatencySamples, const std::string &recordFolder,
-                                     audio::WavFormat format) {
+                                     audio::WavFormat format, bool overdub) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -2890,23 +2904,18 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     if (!armed.midi.empty()) {
         midi = std::make_unique<MidiRecording>();
         midi->tempo = current->tempo;
+        midi->overdub = overdub;
         midi->sampleRate = engineRate_;
         midi->tracks.resize(armed.midi.size());
         midi->preview.resize(armed.midi.size());
-        const auto *graph = session_.graph().currentGraph();
+        const SnapshotReader source(current);
         for (std::size_t i = 0; i < armed.midi.size(); ++i) {
             const auto track = armed.midi[i];
             midi->preview[i].track = track;
             auto &timing = midi->tracks[i];
-            timing.monitored = recordState(states, track).monitor != Monitor::Off;
-            if (timing.monitored && graph) {
-                const auto chain = session_.chainFor(track);
-                const auto instrument = std::find_if(chain.begin(), chain.end(), [](const auto *node) {
-                    return node->eventFlow() == engine::EventFlow::Consume;
-                });
-                if (instrument != chain.end())
-                    timing.instrumentArrival = std::max(0, graph->arrivalOf(graph->find(**instrument)));
-            }
+            if (const auto *node = source.findTrack(track); node && node->recording.recordEnabled)
+                timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            timing.monitor = session_.midiRecordMonitor(track);
         }
     }
     spec.workFolder = media::projectFolder(*store_);
@@ -2950,7 +2959,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     recordingAudio_ = !spec.targets.empty();
-    if (midi && !session_.startMidiInputCapture(armed.midi, why)) {
+    if (midi && !session_.startMidiInputCapture(armed.midi, why, overdub)) {
         if (recordingAudio_) {
             session_.recording().stop(true);
             cancelTake_ = true;
@@ -3100,6 +3109,40 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory()) + ".";
 }
+void ProjectDocument::finishMidiTake(const MidiRecording &midi, const recording::RecordingEdit &edit,
+                                      const SubmitResult &committed, TakeLanded &outcome) {
+    std::vector<recording::MidiRecordQuantize> targets;
+    bool keptInTakeLane = false;
+    for (std::size_t i = 0; i < edit.midiLandings.size(); ++i) {
+        const auto &landing = edit.midiLandings[i];
+        const auto &span = midi.preview[i];
+        outcome.clips.push_back(landing.clip);
+        keptInTakeLane = keptInTakeLane || landing.inTakeLane;
+        const auto grid = midi.tracks[i].quantizeGrid;
+        if (grid != 0 && !landing.noteIds.empty())
+            targets.push_back({landing.clip, landing.sourceStart, span.start, span.end - span.start, grid, landing.noteIds});
+    }
+    if (keptInTakeLane)
+        outcome.message += " Kept overdub notes in a Take Lane where merging would change other material.";
+    if (targets.empty())
+        return;
+    auto quantized = recording::prepareRecordQuantize(*store_, targets);
+    std::string problem;
+    if (!quantized.ok) {
+        problem = std::move(quantized.error);
+    } else if (!quantized.requests.empty()) {
+        if (committed.seqs.empty() || !quantized.options.expectHead ||
+            *quantized.options.expectHead != committed.seqs.back()) {
+            problem = "the project changed after recording";
+        } else {
+            const auto snapped = ops_.commitPrepared(std::move(quantized), notes::commitDiff);
+            if (!snapped)
+                problem = snapped.error;
+        }
+    }
+    if (!problem.empty())
+        outcome.message += " Record Quantize could not be applied: " + problem + ".";
+}
 ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi, const std::string &audioProblem,
                                                             const std::string &audioLocation) {
     const auto fail = [&](const std::string &why) -> TakeLanded {
@@ -3113,15 +3156,14 @@ ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi,
         if (!edit.ok)
             return fail(edit.error);
         outcome.clips.reserve(placement.takes.size());
-        for (const auto &take : placement.takes)
-            outcome.clips.push_back(take.clip);
-        outcome.message = recordedTakeMessage(outcome.clips.size(), audioProblem,
+        outcome.message = recordedTakeMessage(edit.midiLandings.size(), audioProblem,
                                                midiRecordingFailure(midi.state), false, true, audioLocation);
         const auto committed = ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) {
             return recording::commit(store, edit, actor);
         });
         if (!committed)
             return fail(committed.error);
+        finishMidiTake(midi, edit, committed, outcome);
     } catch (const std::exception &error) {
         return fail(error.what());
     }
@@ -3129,6 +3171,83 @@ ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi,
     synchronise();
     return outcome;
 }
+bool ProjectDocument::canCaptureMidi() const noexcept {
+    return !store_->readOnly() && !recording_ && !landing_ && session_.midiHistoryAvailable();
+}
+
+ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t positionTick, bool playing) {
+    TakeLanded outcome;
+    if (recording_ || landing_) {
+        outcome.message = "Finish Arrangement Record before using Capture MIDI.";
+        return outcome;
+    }
+    std::vector<engine::MidiMemorySnapshot> histories;
+    if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
+    std::erase_if(histories, [this](const auto& history) {
+        if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+            })) return false;
+        session_.consumeMidiHistories(std::span(&history, 1));
+        return true;
+    });
+    if (histories.empty()) {
+        outcome.message = "No new MIDI notes or controllers to capture.";
+        return outcome;
+    }
+    try {
+        const auto first = std::min_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.events.front().sample < b.events.front().sample;
+        })->events.front().sample;
+        const auto latest = std::max_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.endSample < b.endSample;
+        })->endSample;
+        auto start = std::max<std::int64_t>(0, positionTick);
+        if (playing) {
+            const edit::TimeMap time(store_->db());
+            const auto now = time.nanos(start);
+            const double ago = static_cast<double>(latest - first) * 1e9 / histories.front().sampleRate;
+            start = ago >= static_cast<double>(now) ? 0 : time.ticks(now - std::llround(ago));
+        }
+        RowIds rows(store_->db());
+        const SnapshotReader current(view_.current());
+        std::vector<capture::MidiSpec> specs;
+        for (const auto& history : histories) {
+            std::set<std::uint64_t> held;
+            for (const auto& remembered : history.events) {
+                const auto& event = remembered.event;
+                if (event.type == engine::EventType::NoteOn) held.insert(event.noteId);
+                else if (event.type == engine::EventType::NoteOff) held.erase(event.noteId);
+            }
+            auto name = shownTrackName(current, history.trackId);
+            auto& spec = specs.emplace_back();
+            spec.clip = rows.next("clips");
+            spec.positionTicks = start;
+            spec.firstSample = first;
+            spec.endSample = held.empty() ? history.events.back().sample + 1 : history.endSample;
+            if (!name.empty()) spec.name = std::move(name);
+            spec.liveHistory = true;
+        }
+        auto prepared = capture::prepareMidiBatch(*store_, histories, specs, outcome.message);
+        if (!prepared) return outcome;
+        const auto committed = ops_.commitPrepared(prepared->requests, [&](Store& store, Actor) {
+            return capture::commitMidi(store, *prepared);
+        });
+        if (!committed) {
+            outcome.message = committed.error;
+            return outcome;
+        }
+        session_.consumeMidiHistories(histories);
+        synchronise();
+        for (const auto& spec : specs) outcome.clips.push_back(spec.clip);
+        outcome.ok = true;
+        outcome.message = outcome.clips.size() == 1 ? "Captured one MIDI clip." :
+            "Captured " + std::to_string(outcome.clips.size()) + " MIDI clips.";
+    } catch (const std::exception& exception) {
+        outcome.message = exception.what();
+    }
+    return outcome;
+}
+
 void ProjectDocument::landTake() {
     auto audio = std::move(audioTake_);
     audioTake_.reset();
@@ -3283,8 +3402,6 @@ void ProjectDocument::pollTakePublication() {
         auto midi = take.midi ? take.midi->placements(rows, current) : MidiRecording::Placement{};
         take.outcome.clips.clear();
         take.outcome.clips.reserve(take.ids.size() + midi.takes.size());
-        for (const auto &placement : midi.takes)
-            take.outcome.clips.push_back(placement.clip);
         return midi;
     };
     try {
@@ -3343,7 +3460,7 @@ void ProjectDocument::pollTakePublication() {
             return;
         }
         take.outcome.clips.insert(take.outcome.clips.begin(), edit.placedAudioClips.begin(), edit.placedAudioClips.end());
-        take.outcome.message = recordedTakeMessage(take.outcome.clips.size(), recordingFailure(take.recorded),
+        take.outcome.message = recordedTakeMessage(take.outcome.clips.size() + edit.midiLandings.size(), recordingFailure(take.recorded),
                                                    take.midiProblem, true, take.midi != nullptr);
         const auto skippedAudioTracks = take.ids.size() - edit.placedAudioClips.size();
         if (skippedAudioTracks > 0) {
@@ -3359,6 +3476,8 @@ void ProjectDocument::pollTakePublication() {
             return;
         }
         take.outcome.ok = true;
+        if (take.midi)
+            finishMidiTake(*take.midi, edit, committed, take.outcome);
         synchronise();
         if (const auto snapshot = view_.current(); snapshot && take.recorded.preview) {
             try {

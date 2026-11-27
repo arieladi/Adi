@@ -22,6 +22,12 @@ struct MidiLinearTake {
     std::string name;
     std::span<const notes::NoteValues> notes; // relative to the clip's start
     std::span<const MidiExpressionLane> expression;
+    bool overdub = false;
+};
+struct MidiLinearLanding {
+    std::int64_t clip = 0, sourceStart = 0;
+    std::vector<std::uint64_t> noteIds;
+    bool inTakeLane = false;
 };
 struct RecordingEdit;
 enum class StagedRefresh { ready, restage, refused };
@@ -70,6 +76,7 @@ struct RecordingEdit {
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;
+    std::vector<MidiLinearLanding> midiLandings;
     // Test support, off-callback: hooks for each project-side AtomicOnly
     // publication at commit. Null hooks use the real OS.
     media::PublishHooks publicationHooks{};
@@ -165,6 +172,14 @@ private:
 /// Prepare the recorder's explicit quantize diff after the captured take has
 /// committed. The caller commits it with notes::commitDiff as its own Undo.
 [[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::int64_t clip,const notes::Diff&);
+struct MidiRecordQuantize {
+    std::int64_t clip = 0;
+    std::int64_t sourceStart = 0, timelineStart = 0, length = 0;
+    std::int64_t grid = 0;
+    std::span<const std::uint64_t> noteIds;
+};
+// Quantize only the newly recorded identities, sharing one Undo across all armed tracks.
+[[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::span<const MidiRecordQuantize>);
 /// Linear captures have one Undo. Loop captures have one per pass. Failure rolls
 /// back project rows, cleans only identity-verified publications where supported,
 /// and leaves private takes for retry.
