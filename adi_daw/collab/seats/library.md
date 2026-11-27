@@ -2,7 +2,7 @@ Codex took the library seat on 27 November 2026.
 
 # Library engine seat
 
-Engine chain `seats/library-chain` at `5bb8fdd5e`, based on `origin/main` at `17a688803`. Twelve focused Debug suites passed with GCC warnings as errors and all five validators passed. The full headless CTest run is in progress.
+Engine chain `seats/library-chain` at `5bb8fdd5e`, based on `origin/main` at `17a688803`. GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled, built successfully. Headless CTest passed all 288 suites in 261.50 s, including the real-time stress suite and both acceptance suites. Schema, ops, parity, Pd and CI validation all passed.
 
 | Row | What changed | Proof | State |
 |---|---|---|---|
