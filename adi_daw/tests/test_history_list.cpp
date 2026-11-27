@@ -8,6 +8,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 
@@ -138,6 +139,64 @@ void timeline() {
     const auto readonly = History(*f.store).readTimeline();
     check(readonly.error.empty() && readonly.steps.size() == 4 && readonly.headSeq == c.seqs.back() &&
               readonly.snapshots.size() == 3, "history list reads persisted metadata from a read-only project");
+}
+
+void largeTimeline() {
+    const auto measure = [](int rows) {
+        Fixture f("large_timeline");
+        auto& db = f.store->db();
+        constexpr int batchSize = 5;
+        const auto fork = rows / 2;
+        const auto currentHead = rows - 2 * batchSize;
+        {
+            SQLite::Transaction write(db);
+            // List metadata only: use one insert to build whole five-op
+            // transactions below the transaction retention cap.
+            SQLite::Statement ops(db,
+                "WITH RECURSIVE journal(seq) AS (SELECT 1 UNION ALL SELECT seq+1 FROM journal WHERE seq<?) "
+                "INSERT INTO ops(seq,txn_id,parent_seq,ts_utc,actor,op_type,label) "
+                "SELECT seq,(seq-1)/?+1,CASE WHEN seq=1 THEN NULL WHEN seq=? THEN ? ELSE seq-1 END,"
+                "seq,'user','project.setName','Rename' FROM journal");
+            ops.bind(1, rows);
+            ops.bind(2, batchSize);
+            ops.bind(3, rows - batchSize + 1);
+            ops.bind(4, fork);
+            ops.exec();
+            SQLite::Statement head(db, "UPDATE op_branches SET head_seq=? WHERE id=1");
+            head.bind(1, currentHead);
+            head.exec();
+            SQLite::Statement other(db, "INSERT INTO op_branches(id,name,head_seq,created_utc) VALUES(2,'Other',?,1)");
+            other.bind(1, rows);
+            other.exec();
+            SQLite::Statement anchor(db,
+                "INSERT INTO history_snapshots(id,name,op_seq,branch_id,created_utc) VALUES(1,'Alternate tip',?,2,1)");
+            anchor.bind(1, rows);
+            anchor.exec();
+            write.commit();
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const auto view = History(*f.store).readTimeline();
+        const auto millis = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        std::printf("SC-413 %d retained ops / %zu undo steps: %.2f ms\n", rows, view.steps.size(), millis);
+        check(view.error.empty() && view.headSeq == currentHead && view.branches.size() == 2 &&
+                  view.steps.size() == static_cast<std::size_t>(rows / batchSize) && view.snapshots.size() == 1 &&
+                  std::all_of(view.steps.begin(), view.steps.end(), [](const auto& step) {
+                      return step.step.opCount == batchSize &&
+                             step.step.lastSeq - step.step.firstSeq + 1 == batchSize;
+                  }), "large history returns whole transactions and both branch heads");
+        const auto* alternate = find(view, rows / batchSize);
+        const auto* redo = find(view, rows / batchSize - 1);
+        const auto* common = find(view, fork / batchSize);
+        check(alternate && !alternate->applied && !alternate->onCurrentLine && alternate->branchIds == std::vector<std::int64_t>{2} &&
+                  alternate->snapshotIds == std::vector<std::int64_t>{1} && alternate->parentSeq == fork &&
+                  redo && !redo->applied && redo->onCurrentLine && redo->branchIds == std::vector<std::int64_t>{1} &&
+                  common && common->applied && common->onCurrentLine && common->branchIds == std::vector<std::int64_t>{1, 2},
+              "large history retains alternate snapshot, redo and shared transaction memberships");
+        return millis;
+    };
+    const auto small = measure(2000);
+    const auto large = measure(8000);
+    check(large < 9 * small + 25, "four times the history rows take less than nine times the read time");
 }
 
 void compactedTimeline() {
@@ -381,7 +440,7 @@ void errors() {
 }
 } // namespace
 int main() {
-    try { timeline(); compactedTimeline(); compactedTransactions(); compactedAnchors(); compactedFork(); checkpointErrors(); errors(); }
+    try { timeline(); largeTimeline(); compactedTimeline(); compactedTransactions(); compactedAnchors(); compactedFork(); checkpointErrors(); errors(); }
     catch (const std::exception& error) { check(false, std::string("exception: ") + error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
