@@ -24,7 +24,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -148,6 +150,85 @@ struct ProjectDocument::MidiRecording {
     bool finished() const noexcept {
         return state != engine::MidiCaptureState::Waiting && state != engine::MidiCaptureState::Recording;
     }
+
+    struct Placement {
+        std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+        std::vector<recording::MidiLinearTake> takes;
+    };
+    Placement placements(RowIds &rows, const SnapshotReader &current) {
+        Placement placement;
+        placement.expressions.resize(tracks.size());
+        placement.takes.reserve(tracks.size());
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            auto &track = tracks[i];
+            const auto &span = preview[i];
+            for (auto &[key, points] : track.expression) {
+                const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
+                std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
+                if (!points.empty())
+                    placement.expressions[i].push_back({key.first, key.second, points});
+            }
+            auto name = shownTrackName(current, span.track);
+            placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
+                                       name.empty() ? std::string("Take") : std::move(name),
+                                       track.notes, placement.expressions[i]});
+        }
+        return placement;
+    }
+};
+
+struct ProjectDocument::TakePublication {
+    engine::AudioRecordingResult recorded;
+    std::unique_ptr<MidiRecording> midi;
+    std::string midiProblem;
+    std::stop_source stop;
+    std::future<recording::StagedTake> staging;
+    recording::StagedTake staged;
+    std::future<recording::RecordingEdit> publication;
+    std::future<std::string> cleanup;
+    TakeLanded outcome;
+    std::vector<recording::ClipIds> ids;
+    bool retried = false;
+
+    ~TakePublication() { stop.request_stop(); }
+    void startStaging(const std::filesystem::path &folder) {
+        staged = {};
+        staging = std::async(std::launch::async, [recorded = recorded, folder, stop = stop.get_token()] {
+            return recording::stageTake(recorded, folder, stop);
+        });
+    }
+};
+
+struct ProjectDocument::SaveJob {
+    using Phase = SaveProgress::Phase;
+    std::filesystem::path path;
+    SaveKind kind;
+    Phase phase = Phase::waitingForRecording;
+    bool wasRecording;
+    bool keptTake = false;
+    bool switched = false;
+    std::string adoptionWarning;
+    std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    std::stop_source stop;
+    StoreFileSave file;
+    mutable std::mutex progressMutex;
+    StoreSaveProgress progress;
+    std::future<StoreFileResult> copy;
+    std::future<std::string> retirement;
+
+    SaveJob(std::filesystem::path output, SaveKind operation, bool recording)
+        : path(std::move(output)), kind(operation), wasRecording(recording) {}
+    ~SaveJob() { stop.request_stop(); }
+    bool terminal() const noexcept {
+        return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
+    }
+    SaveProgress status() const {
+        std::lock_guard lock(progressMutex);
+        auto display = phase;
+        if (phase == Phase::copying && progress.phase != StoreSavePhase::copying)
+            display = progress.phase == StoreSavePhase::relocating ? Phase::relocating : Phase::finishing;
+        return {display, progress.pagesCopied, progress.totalPages, switched};
+    }
 };
 struct ProjectDocument::TrackRenderWork {
     using Result = std::variant<std::string, freeze::FreezeEdit, clip_edit::TrackBounce>;
@@ -270,41 +351,111 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
     try {
-        StoreError result{};
-        // New is the store's: the project row, Main and Live's default Set (two MIDI and two audio
-        // tracks), their strips and the 120 BPM, 4/4 maps, written as the history's root, not an
-        // undo step (#307, N2; Live 12 manual 5.4.2; ADR-0209 §10 d10).
-        auto store = !create          ? Store::open(path, result)
-                     : defaults != nullptr ? Store::createNewProject(path, result, defaults->quantize,
-                                                                     defaults->keepMonitoringLatency)
-                                           : Store::createNewProject(path, result);
-        if (!store) {
-            error = "Cannot open project: " + std::string(toString(result));
-            return {};
-        }
-        const auto stem = path.stem().u8string();
-        auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
-            std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
-        document->view_.refresh(*document->store_);
-        // A project made by an earlier build began its history with a "New project" step that made
-        // Main; that step stays the floor undo stops at. A project made now has no such step.
-        document->ops_.protectRoot(kNewProjectLabel);
-        engine::SessionSpec spec;
-        spec.sampleRate = document->view_.current()->sampleRate;
-        document->renderLoader_ = loader;
-        if (!document->session_.load(*document->store_, std::move(loader), spec)) {
-            error = document->session_.error();
-            return {};
-        }
-        document->realisedGeneration_ = document->view_.generation();
-        document->parameterOps_.attachSession(document->session_);
-        document->feed_.publish(document->session_, document->realisedGeneration_);
-        document->persistReportedLatencies();
-        error.clear();
-        return document;
+        auto job = startOpen(path, create, std::move(loader), defaults);
+        while (job->phase() != OpenJob::Phase::ready && job->phase() != OpenJob::Phase::failed)
+            job->advance();
+        error = job->error();
+        return job->takeDocument();
     } catch (const std::exception &e) {
         error = e.what();
         return {};
+    }
+}
+
+ProjectDocument::OpenJob::OpenJob(std::filesystem::path path, bool create, engine::DeviceLoader loader,
+                                 const RecordingDefaults *defaults)
+    : path_(std::move(path)), create_(create), loader_(std::move(loader)) {
+    if (defaults) defaults_ = *defaults;
+}
+
+ProjectDocument::OpenJob::~OpenJob() = default;
+
+std::unique_ptr<ProjectDocument::OpenJob> ProjectDocument::startOpen(const std::filesystem::path &path,
+                                                                    bool create, engine::DeviceLoader loader,
+                                                                    const RecordingDefaults *defaults) {
+    return std::unique_ptr<OpenJob>(new OpenJob(path, create, std::move(loader), defaults));
+}
+
+std::unique_ptr<ProjectDocument> ProjectDocument::OpenJob::takeDocument() {
+    return phase_ == Phase::ready ? std::move(document_) : nullptr;
+}
+
+void ProjectDocument::OpenJob::fail(std::string reason) {
+    error_ = std::move(reason);
+    phase_ = Phase::failed;
+    document_.reset();
+}
+
+void ProjectDocument::OpenJob::prepare() {
+    StoreError result{};
+    // New starts from the store's default Set and history root.
+    auto store = !create_ ? Store::open(path_, result)
+                 : defaults_ ? Store::createNewProject(path_, result, defaults_->quantize, defaults_->keepMonitoringLatency)
+                             : Store::createNewProject(path_, result);
+    if (!store) {
+        fail("Cannot open project: " + std::string(toString(result)));
+        return;
+    }
+    const auto stem = path_.stem().u8string();
+    document_.reset(new ProjectDocument(std::move(store),
+                                       std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
+    auto &doc = *document_;
+    doc.view_.refresh(*doc.store_);
+    // Legacy projects can keep their initial New project history floor.
+    doc.ops_.protectRoot(kNewProjectLabel);
+    if (!doc.view_.storeCurrent(*doc.store_)) {
+        fail("The project changed while opening. Open it again to load the current version.");
+        return;
+    }
+    engine::SessionSpec spec;
+    spec.sampleRate = doc.view_.current()->sampleRate;
+    doc.renderLoader_ = loader_;
+    if (!doc.session_.beginLoad(*doc.store_, std::move(loader_), spec)) {
+        fail(doc.session_.error());
+        return;
+    }
+    totalDevices_ = doc.session_.loadProgress().totalDevices;
+    phase_ = totalDevices_ ? Phase::loadingDevices : Phase::buildingGraph;
+}
+
+void ProjectDocument::OpenJob::advance() {
+    try {
+        if (phase_ == Phase::preparing) {
+            prepare();
+            return;
+        }
+        if (phase_ == Phase::ready || phase_ == Phase::failed)
+            return;
+        auto &doc = *document_;
+        if (phase_ == Phase::loadingDevices) {
+            if (!doc.session_.loadNextDevice(*doc.store_)) {
+                fail(doc.session_.error());
+                return;
+            }
+            completedDevices_ = doc.session_.loadProgress().completedDevices;
+            if (completedDevices_ == totalDevices_)
+                phase_ = Phase::buildingGraph;
+            return;
+        }
+        if (!doc.view_.storeCurrent(*doc.store_)) {
+            fail("The project changed while opening. Open it again to load the current version.");
+            return;
+        }
+        if (!doc.session_.finishLoad(*doc.store_)) {
+            fail(doc.session_.error());
+            return;
+        }
+        if (!doc.view_.storeCurrent(*doc.store_)) {
+            fail("The project changed while opening. Open it again to load the current version.");
+            return;
+        }
+        doc.realisedGeneration_ = doc.view_.generation();
+        doc.parameterOps_.attachSession(doc.session_);
+        doc.feed_.publish(doc.session_, doc.realisedGeneration_);
+        doc.persistReportedLatencies();
+        phase_ = Phase::ready;
+    } catch (const std::exception &error) {
+        fail(error.what());
     }
 }
 History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
@@ -351,9 +502,13 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         error_ = "Save As failed: " + result.error;
         return false;
     }
+    followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    return true;
+}
+void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
     warning_ = result.warning;
     // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
-    if (wasRecording && landed_ && landed_->ok)
+    if (keptTake)
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
@@ -366,14 +521,19 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
     // on a save that stands, and the next synchronise() tries again.
     // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
-    view_.refresh(*store_, session_.overriddenLanes());
-    if (!synchronise()) {
+    std::string refreshError;
+    try {
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (!synchronise()) refreshError = error_;
+    } catch (const std::exception &error) {
+        refreshError = error.what();
+    }
+    if (!refreshError.empty()) {
         if (!warning_.empty())
             warning_ += ' ';
-        warning_ += "Saved, but the session did not re-read the file: " + error_;
+        warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
     error_.clear();
-    return true;
 }
 namespace {
 // The store never replaces a file; the Status Bar says so in the window's words, with the name.
@@ -402,6 +562,145 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     error_.clear();
     return true;
 }
+
+bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind) {
+    if (saveJob_) return false;
+    warning_.clear();
+    const bool switching = kind == SaveKind::as;
+    if (refuseExisting(path, switching ? "Save As" : "Save a Copy", error_)) return false;
+    error_.clear();
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_);
+    if (saveJob_->wasRecording) stopRecording();
+    advanceSave();
+    return true;
+}
+
+std::optional<ProjectDocument::SaveProgress> ProjectDocument::saveProgress() const {
+    return saveJob_ ? std::optional{saveJob_->status()} : std::nullopt;
+}
+
+void ProjectDocument::cancelSave() {
+    if (saveJob_ && !saveJob_->terminal()) saveJob_->stop.request_stop();
+}
+
+void ProjectDocument::clearSave() {
+    if (saveJob_ && saveJob_->terminal()) saveJob_.reset();
+}
+
+void ProjectDocument::advanceSave() {
+    if (!saveJob_ || saveJob_->terminal()) return;
+    using Phase = SaveProgress::Phase;
+    using namespace std::chrono_literals;
+    auto &job = *saveJob_;
+    const bool switching = job.kind == SaveKind::as;
+    const auto fail = [&](std::string why, std::string warning = {}) {
+        error_ = std::string(switching ? "Save As failed: " : "Save a Copy failed: ") + why;
+        warning_ = std::move(warning);
+        job.phase = Phase::failed;
+    };
+    const auto finish = [&] {
+        error_.clear();
+        job.phase = Phase::succeeded;
+    };
+    const auto finishRetirement = [&](std::string warning) {
+        warning_ = std::move(job.adoptionWarning);
+        if (!warning.empty()) {
+            if (!warning_.empty()) warning_ += ' ';
+            warning_ += warning;
+        }
+        finish();
+    };
+    try {
+        // Like synchronous Save As, detach the render from this Store before
+        // switching files. The next ticks service its host calls and cancellation.
+        if (switching && trackRender_ && !job.stop.stop_requested() &&
+            (job.phase == Phase::waitingForRecording || job.phase == Phase::copying)) {
+            trackRender_->worker.request_stop();
+            return;
+        }
+        if (job.phase == Phase::waitingForRecording) {
+            if (job.stop.stop_requested()) {
+                job.phase = Phase::cancelled;
+                return;
+            }
+            if (switching && (recording_ || landing_)) {
+                if (!takePublication_ && std::chrono::steady_clock::now() >= job.recordingDeadline)
+                    fail("The take is still being saved. Try Save As again in a moment.");
+                return;
+            }
+            job.keptTake = job.wasRecording && landed_ && landed_->ok;
+            refreshReportedLatenciesForSave();
+            const auto kind = switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
+            const auto prepared = store_->prepareFileSave(job.path, kind, job.file);
+            if (!prepared.ok) {
+                fail(prepared.error, prepared.warning);
+                return;
+            }
+            job.copy = std::async(std::launch::async, [job = &job] {
+                return job->file.write(job->stop.get_token(), [job](StoreSaveProgress progress) {
+                    std::lock_guard lock(job->progressMutex);
+                    job->progress = progress;
+                });
+            });
+            job.phase = Phase::copying;
+            return;
+        }
+        if (job.phase == Phase::finishing) {
+            if (job.retirement.wait_for(0ms) == std::future_status::ready)
+                finishRetirement(job.retirement.get());
+            return;
+        }
+        if (job.copy.wait_for(0ms) != std::future_status::ready) return;
+        const auto result = job.copy.get();
+        if (!result.ok) {
+            if (job.file.cancelled()) {
+                warning_.clear();
+                error_.clear();
+                job.phase = Phase::cancelled;
+            } else {
+                fail(result.error, result.warning);
+            }
+            return;
+        }
+        if (!switching) {
+            warning_ = result.warning;
+            finish();
+            return;
+        }
+        if (job.stop.stop_requested()) {
+            warning_ = "A copy was saved. The original project remains active.";
+            error_.clear();
+            job.phase = Phase::cancelled;
+            return;
+        }
+        if (recording_ || landing_) {
+            fail("A take is recording or still being saved. A copy was saved and the original project remains active.",
+                 result.warning);
+            return;
+        }
+        const auto adopted = store_->adoptFileSave(job.file);
+        if (!adopted.ok) {
+            fail(adopted.error, adopted.warning);
+            return;
+        }
+        job.switched = true;
+        job.phase = Phase::finishing;
+        followSaveAs(adopted, job.keptTake);
+        job.adoptionWarning = std::move(warning_);
+        try {
+            job.retirement = std::async(std::launch::async, [job = &job] { return job->file.closeReplacedProject(); });
+        } catch (const std::system_error &) {
+            finishRetirement(job.file.closeReplacedProject());
+        }
+    } catch (const std::exception &error) {
+        if (job.phase == Phase::finishing) {
+            finishRetirement(std::string("Saved, but could not close the old project: ") + error.what());
+        } else {
+            fail(error.what());
+        }
+    }
+}
+
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
     refreshReportedLatenciesForSave();
@@ -432,33 +731,39 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     error_.clear();
     return true;
 }
-StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        const auto result = media::collectExport(job.project, job.zip);
+        const auto result = media::collectExport(job.project, job.zip, control);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
     }
 }
+void ProjectDocument::refreshSessionSources() {
+    refreshLimiterReductionSources();
+    realisedGeneration_ = view_.generation();
+    // A retained retiree can share its row ID with a newer instance.
+    // Detach by ID only while the retiree still owns the session's binding.
+    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+        const auto &entry = session_.entryAt(i);
+        if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
+            parameterOps_.detach(entry.deviceId);
+    }
+    parameterOps_.attachSession(session_);
+    analysis_->refreshSources();
+}
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
+        const auto &edit = view_.localEdit();
+        const auto local = edit && edit->fromGeneration == realisedGeneration_ ? session_.refreshLocalEdit(*store_, view_) : std::nullopt;
+        const auto keyed = local ? local : session_.refreshDeviceKeys(*store_, view_.committedImage());
         const bool refreshed = keyed ? *keyed : session_.refresh(*store_);
-        refreshLimiterReductionSources();
         if (!refreshed) {
+            refreshLimiterReductionSources();
             error_ = session_.error();
             return false;
         }
-        realisedGeneration_ = view_.generation();
-        // A retained retiree can share its row ID with a newer instance.
-        // Detach by ID only while the retiree still owns the session's binding.
-        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
-            const auto &entry = session_.entryAt(i);
-            if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
-                parameterOps_.detach(entry.deviceId);
-        }
-        parameterOps_.attachSession(session_);
-        analysis_->refreshSources();
+        refreshSessionSources();
         error_.clear();
     }
     // The session re-read the rows after the submitter's refresh, so an override it found there,
@@ -524,6 +829,10 @@ void ProjectDocument::syncMonitorInputs() {
 void ProjectDocument::followOverrides() {
     const auto snapshot = view_.current();
     if (!snapshot)
+        return;
+    // A held preview publishes its own temporarily suspended lanes. Only the
+    // committed view follows the Session's durable override set.
+    if (mixerDrag_ && snapshot != view_.committed())
         return;
     const auto &lanes = session_.overriddenLanes();
     bool agree = snapshot->automationOverridden == !lanes.empty();
@@ -618,6 +927,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
+    advanceSave();
     pollTrackRender();
 }
 void ProjectDocument::refreshReportedLatenciesForSave() {
@@ -659,11 +969,13 @@ void ProjectDocument::persistReportedLatencies() {
                                {"format", entry->resolvedFormat}, {"uid", entry->resolvedUid},
                                {"latency_samples", device.latency}});
         }
-        SQLite::Statement write(store_->db(), "INSERT INTO session_state(key,value) "
+        SQLite::Statement write(store_->db(), "INSERT INTO main.session_state(key,value) "
             "VALUES('devices.reported_latency',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value "
             "WHERE session_state.value<>excluded.value");
         write.bind(1, report.dump());
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
         write.exec();
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
         reportedLatencyFeed_ = current;
         reportedLatencySequence_ = sequence;
         reportedLatencyRate_ = rate;
@@ -673,6 +985,9 @@ void ProjectDocument::persistReportedLatencies() {
 }
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
+}
+std::shared_ptr<const ParameterPublication> ProjectDocument::automationParameters(std::int64_t track) {
+    return ParameterFeed::describeForAutomation(session_, track);
 }
 device::DeviceInstance* ProjectDocument::limiterReductionTarget(
     std::int64_t id, const engine::DeviceRuntimeToken& expected) {
@@ -887,6 +1202,10 @@ void ProjectDocument::pollTrackRender() {
     if (trackRender_->completion.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
         return;
     auto work = std::move(trackRender_);
+    if (work->worker.get_stop_token().stop_requested()) {
+        trackRenderStatus_ = "Track render cancelled for Save As.";
+        return;
+    }
     try {
         auto prepared = work->completion.get();
         const auto source = appliedSource(*store_);
@@ -2014,35 +2333,33 @@ void ProjectDocument::release() {
     deviceStopped_.store(true, std::memory_order_release);
 }
 bool ProjectDocument::landTakeHere() {
-    if (!recording_ && !landing_)
-        return true;
-    if (recording_)
-        stopRecording();
-    // The device's callback moves the capture past its end while it runs; a stopped device settles it
-    // here, as `settleRecording` does. Up to ten seconds for the recorder's worker.
-    for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        pollRecording(deviceStopped_.load(std::memory_order_acquire));
-        if (landing_)
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return !landing_;
+    return waitForTake(false);
 }
 bool ProjectDocument::settleRecording() {
-    // The driver is detached: nothing will move the callback past the capture, so it is settled here.
+    return waitForTake(true);
+}
+bool ProjectDocument::waitForTake(bool forceDetached) {
     if (recording_)
         stopRecording();
-    // The recorder's worker finishes writing on its own thread: wait for it, up to ten seconds.
-    for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        pollRecording(true);
-        if (landing_)
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    // Allow ten seconds for the callback and recorder to finish. A completed capture
+    // belongs to this Store, so wait for its publication before switching or closing it.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (landing_) {
+        pollRecording(forceDetached || deviceStopped_.load(std::memory_order_acquire));
+        if (!landing_)
+            break;
+        if (!takePublication_ && std::chrono::steady_clock::now() >= deadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    return !landing_;
+    return true;
 }
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)
         endMixerDrag();
+    const bool realised = realisedGeneration_ == view_.generation() && view_.storeCurrent(*store_);
+    const auto sequence = session_.realisedAppliedSequence();
     // The live values are the session's and the view's. Attached on every drag: Save As replaces the
     // store's gesture domain, and a coordinator kept from before would refuse.
     auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
@@ -2060,6 +2377,13 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
         return false;
     }
     mixerDrag_ = std::move(begun.session);
+    if (realised && realisedGeneration_ != view_.generation() && session_.realisedAppliedSequence() == sequence &&
+        appliedSource(*store_).sequence() == sequence) {
+        // Beginning may have adopted a newer committed image for the preview.
+        // Its graph has already been realized; reconnect the document feeds.
+        refreshSessionSources();
+        syncMonitorInputs();
+    }
     if (!coordinate) {
         error_.clear();
         return true;
@@ -2075,11 +2399,15 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
 bool ProjectDocument::mixerDrag(double coordinate) {
     if (!mixerDrag_)
         return false;
+    const bool realised = realisedGeneration_ == view_.generation();
+    const auto committed = view_.committedGeneration();
     const auto updated = mixerDrag_->update(std::make_unique<gesture::RelativeScalarInput>(coordinate));
     if (!updated.status.ok()) {
         error_ = updated.status.message;
         return false;
     }
+    if (realised && committed == view_.committedGeneration())
+        realisedGeneration_ = view_.generation();
     error_.clear();
     return true;
 }
@@ -2087,6 +2415,9 @@ bool ProjectDocument::endMixerDrag() {
     if (!mixerDrag_)
         return false;
     auto drag = std::move(mixerDrag_);
+    const bool realised = realisedGeneration_ == view_.generation();
+    const auto sequence = session_.realisedAppliedSequence();
+    const auto graph = session_.graph().stats().published;
     const auto outcome = drag->commit();
     if (!outcome.status.ok()) {
         error_ = outcome.status.message;
@@ -2094,9 +2425,16 @@ bool ProjectDocument::endMixerDrag() {
         synchronise();
         return false;
     }
-    // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_, session_.overriddenLanes());
-    synchronise();
+    const auto currentSequence = session_.realisedAppliedSequence();
+    const bool direct = outcome.semanticNoOp ? currentSequence == sequence : currentSequence == sequence + 1;
+    if (realised && direct && outcome.presentation.state == gesture::PresentationState::Current &&
+        currentSequence == appliedSource(*store_).sequence() && session_.graph().stats().published == graph) {
+        // Native promotion already installed the committed rows and view.
+        realisedGeneration_ = view_.generation();
+    } else {
+        view_.refresh(*store_, session_.overriddenLanes());
+        synchronise();
+    }
     error_.clear();
     return true;
 }
@@ -2269,13 +2607,20 @@ void ProjectDocument::stopRecording() {
     landing_ = true;
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
-    if (!midiRecording_ || !midiRecording_->started || cancelTake_)
+    const auto *midi = midiRecording_.get();
+    if (!midi && takePublication_ && !takePublication_->outcome.ok)
+        midi = takePublication_->midi.get();
+    if (!midi || !midi->started || cancelTake_)
         return {};
-    return midiRecording_->preview;
+    return midi->preview;
 }
 void ProjectDocument::pollRecording(bool deviceStopped) {
     if (!recording_ && !landing_)
         return;
+    if (takePublication_) {
+        pollTakePublication();
+        return;
+    }
     if (deviceStopped && midiRecording_)
         session_.finishMidiInputCapture();
     if (midiRecording_)
@@ -2290,7 +2635,6 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
         captureReady_.store(false, std::memory_order_release);
         recording_ = false;
         session_.setRecordingForDevices(false);
-        landing_ = false;
         landTake();
     }
 }
@@ -2316,8 +2660,46 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     }
     return r.error;
 }
+std::string midiRecordingFailure(engine::MidiCaptureState state) {
+    using State = engine::MidiCaptureState;
+    switch (state) {
+    case State::InputReset: return "the MIDI input was reset";
+    case State::Discontinuity: return "the MIDI recording clock jumped";
+    case State::Overflow: return "the MIDI recording buffer filled";
+    case State::DeviceStopped: return "the MIDI recording device stopped";
+    default: return {};
+    }
+}
 std::string retainedCaptureLocation(const engine::AudioRecordingResult &result) {
     return " Look for the recorded WAV files in " + media::pathUtf8(result.directory()) + ".";
+}
+std::string recordedTakeMessage(std::size_t clips, const std::string &audioProblem,
+                                const std::string &midiProblem, bool hasAudio, bool hasMidi,
+                                const std::string &audioLocation = {}) {
+    auto message = clips == 1 ? std::string("Recorded one take.")
+                              : "Recorded " + std::to_string(clips) + " takes.";
+    if (!audioProblem.empty())
+        message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
+                           : message + " Audio recording ended: " + audioProblem + "." + audioLocation;
+    if (!midiProblem.empty())
+        message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";
+    return message;
+}
+std::string attachmentFailure(const engine::AudioRecordingResult &recorded, const std::string &error) {
+    return "Could not add the recorded take. " + error + "." + retainedCaptureLocation(recorded);
+}
+std::vector<recording::ClipIds> takeClipIds(RowIds &rows, const SnapshotReader &current,
+                                           const engine::AudioRecordingResult &take) {
+    // The displayed track name supplies both the clip name and the audio filename.
+    // Allocate past the IDs still held by remarks as well as existing rows (DF-E16).
+    std::vector<recording::ClipIds> ids;
+    ids.reserve(take.tracks.size());
+    for (const auto &track : take.tracks) {
+        auto name = shownTrackName(current, track.trackId);
+        ids.push_back({rows.next("clips"), rows.next("media_files"),
+                       name.empty() ? std::string("Take") : name, std::move(name)});
+    }
+    return ids;
 }
 } // namespace
 // For an empty or cancelled capture, report if the system refuses to remove its private directory.
@@ -2328,12 +2710,42 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory()) + ".";
 }
+ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi, const std::string &audioProblem,
+                                                            const std::string &audioLocation) {
+    const auto fail = [&](const std::string &why) -> TakeLanded {
+        return {false, {}, "Could not add the recorded take. " + why + "." + audioLocation};
+    };
+    TakeLanded outcome;
+    try {
+        RowIds rows(store_->db());
+        const auto placement = midi.placements(rows, SnapshotReader(view_.current()));
+        auto edit = recording::prepareMidiLinearCommit(*store_, placement.takes, midi.sampleRate);
+        if (!edit.ok)
+            return fail(edit.error);
+        outcome.clips.reserve(placement.takes.size());
+        for (const auto &take : placement.takes)
+            outcome.clips.push_back(take.clip);
+        outcome.message = recordedTakeMessage(outcome.clips.size(), audioProblem,
+                                               midiRecordingFailure(midi.state), false, true, audioLocation);
+        const auto committed = ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) {
+            return recording::commit(store, edit, actor);
+        });
+        if (!committed)
+            return fail(committed.error);
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
+    outcome.ok = true;
+    synchronise();
+    return outcome;
+}
 void ProjectDocument::landTake() {
     auto audio = std::move(audioTake_);
     audioTake_.reset();
     auto midi = std::move(midiRecording_);
     recordingAudio_ = false;
     if (std::exchange(cancelTake_, false)) {
+        landing_ = false;
         if (audio) {
             const auto kept = discardTake(*audio);
             if (!kept.empty())
@@ -2341,48 +2753,26 @@ void ProjectDocument::landTake() {
         }
         return;
     }
-    TakeLanded outcome;
+
     const auto audioProblem = audio ? recordingFailure(*audio) : std::string{};
-    std::string midiProblem;
-    if (midi) {
-        using State = engine::MidiCaptureState;
-        switch (midi->state) {
-        case State::InputReset: midiProblem = "the MIDI input was reset"; break;
-        case State::Discontinuity: midiProblem = "the MIDI recording clock jumped"; break;
-        case State::Overflow: midiProblem = "the MIDI recording buffer filled"; break;
-        case State::DeviceStopped: midiProblem = "the MIDI recording device stopped"; break;
-        default: break;
-        }
-    }
-    bool hasAudio = audio && audio->hasAttachableAudio();
+    auto midiProblem = midi ? midiRecordingFailure(midi->state) : std::string{};
+    const bool hasAudio = audio && audio->hasAttachableAudio();
     const bool hasMidi = midi && midi->started;
-    using Failure = engine::RecordingFailure;
-    const bool discardAudio = audio && (audio->failure == Failure::Cancelled || audio->failure == Failure::NoFrames);
-    const bool retainAudio = audio && !discardAudio && !audio->directory().empty();
-    const auto audioLocation = discardAudio ? discardTake(*audio) :
-                               retainAudio ? retainedCaptureLocation(*audio) : std::string{};
-    if (!hasAudio && !hasMidi) {
-        const std::string reason = !audioProblem.empty() ? audioProblem : !midiProblem.empty() ? midiProblem : "nothing was recorded";
-        outcome.message = (retainAudio ? "Recording stopped because " : "The take was not kept: ") +
-                          reason + "." + audioLocation;
-        landed_ = std::move(outcome);
-        return;
-    }
-    // The clips and their media take the next free ids, named after their tracks as their headers show
-    // them (Live names a take by its track, "5 Audio"; a stored "# Audio" shows its number, walk-B B3).
-    // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
-    // remark still holds.
-    const bool loopTake = hasAudio && audio->loopSpec();
-    std::vector<std::int64_t> lastPassClips;
-    recording::RecordingEdit edit;
-    std::string unplacedAudio;
-    try {
-        RowIds rows(store_->db());
-        std::vector<recording::ClipIds> ids;
-        const SnapshotReader current(view_.current());
-        if (loopTake) {
+    if (hasAudio && audio->loopSpec()) {
+        // Loop recording uses its per-pass Undo groups. The staged linear
+        // publisher cannot build the rolling main-lane and take-lane images.
+        landing_ = false;
+        TakeLanded outcome;
+        std::vector<std::int64_t> lastPassClips;
+        const auto refuse = [&](const std::string &reason) {
+            landed_ = TakeLanded{false, {}, attachmentFailure(*audio, reason)};
+        };
+        try {
+            RowIds rows(store_->db());
+            const SnapshotReader current(view_.current());
             std::vector<recording::LoopTrackIds> loopIds;
             loopIds.reserve(audio->tracks.size());
+            lastPassClips.reserve(audio->tracks.size());
             for (const auto &track : audio->tracks) {
                 auto name = shownTrackName(current, track.trackId);
                 const auto clipName = name.empty() ? std::string("Take") : name;
@@ -2394,69 +2784,25 @@ void ProjectDocument::landTake() {
                     lastPassClips.push_back(target.passes.back().clip);
                 loopIds.push_back(std::move(target));
             }
-            edit = recording::prepareLoopCommit(*store_, *audio, loopIds);
-        } else if (hasAudio) {
-            for (const auto &track : audio->tracks) {
-                auto name = shownTrackName(current, track.trackId);
-                const auto clip = rows.next("clips");
-                ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : name, std::move(name)});
-                outcome.clips.push_back(clip);
+            auto edit = recording::prepareLoopCommit(*store_, *audio, loopIds);
+            if (!edit.ok) {
+                refuse(edit.error);
+                return;
             }
-        }
-        std::vector<recording::MidiLinearTake> takes;
-        std::vector<std::vector<recording::MidiExpressionLane>> expressions;
-        if (hasMidi) {
-            expressions.resize(midi->tracks.size());
-            takes.reserve(midi->tracks.size());
-            for (std::size_t i = 0; i < midi->tracks.size(); ++i) {
-                auto &track = midi->tracks[i];
-                const auto &span = midi->preview[i];
-                for (auto &[key, points] : track.expression) {
-                    const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
-                    std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
-                    if (!points.empty())
-                        expressions[i].push_back({key.first, key.second, points});
-                }
-                const auto clip = rows.next("clips");
-                auto name = shownTrackName(current, span.track);
-                takes.push_back({span.track, clip, span.start, span.end - span.start,
-                                 name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});
-                outcome.clips.push_back(clip);
+            const auto committed = ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) {
+                return recording::commit(store, edit, actor);
+            });
+            if (!committed) {
+                refuse(committed.error);
+                return;
             }
+        } catch (const std::exception &error) {
+            refuse(error.what());
+            return;
         }
-        if (!loopTake) {
-            edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes, audio->placementOffsetSamples)
-                            : recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
-            if (edit.audioOutsidePunch && hasMidi) {
-                unplacedAudio = std::move(edit.error);
-                hasAudio = false;
-                outcome.clips.clear();
-                for (const auto &take : takes)
-                    outcome.clips.push_back(take.clip);
-                edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
-            }
-        }
-    } catch (const std::exception &error) {
-        edit.error = error.what();
-    }
-    if (!edit.ok) {
-        outcome.clips.clear();
-        outcome.message = "Could not add the recorded take. " + edit.error + "." + audioLocation;
-        landed_ = std::move(outcome);
-        return;
-    }
-    const auto committed =
-        ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
-    if (!committed) {
-        outcome.clips.clear();
-        outcome.message = "Could not add the recorded take. " + committed.error + "." + audioLocation;
-        landed_ = std::move(outcome);
-        return;
-    }
-    synchronise();
-    if (loopTake) {
-        // Select the audible copy with the same range and source as the last pass.
-        // A partial pass can leave several other clips on the track's main lane.
+        synchronise();
+        // The last partial pass may have left other main-lane clips. Select
+        // its audible copy by the same placement and source range as the take.
         try {
             SQLite::Statement main(store_->db(),
                                    "SELECT c.id FROM clips p JOIN audio_clips pa ON pa.clip_id=p.id "
@@ -2471,34 +2817,173 @@ void ProjectDocument::landTake() {
                 main.reset();
             }
         } catch (const SQLite::Exception &) {
-            // The takes have already landed. Failure to select them leaves the recording intact.
+            // The take is committed even if finding its selection fails.
         }
-    }
-    if (const auto snapshot = view_.current(); snapshot && hasAudio && audio->preview) {
-        try {
-            waveforms_.seedRecording(*snapshot, outcome.clips, *audio->preview);
-        } catch (const std::exception &) {
-            // The clip is already saved. Its waveform can be read from the file.
+        if (const auto snapshot = view_.current(); snapshot && audio->preview) {
+            try {
+                waveforms_.seedRecording(*snapshot, outcome.clips, *audio->preview);
+            } catch (const std::exception &) {
+                // The committed clip's waveform can still be read from the file.
+            }
         }
-    }
-    outcome.ok = true;
-    if (loopTake) {
+        outcome.ok = true;
         const auto passes = audio->passes().size();
         outcome.message = passes == 1 ? "Recorded one pass of the loop."
                                       : "Recorded " + std::to_string(passes) + " passes of the loop, a take each.";
         if (!audioProblem.empty())
             outcome.message += " Capture stopped because " + audioProblem + ".";
-    } else {
-        outcome.message = outcome.clips.size() == 1 ? "Recorded one take."
-                                                   : "Recorded " + std::to_string(outcome.clips.size()) + " takes.";
-        if (!unplacedAudio.empty())
-            outcome.message += " Audio stayed in the recording folder because " + unplacedAudio + "." + audioLocation;
-        else if (!audioProblem.empty())
-            outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
-                                       : outcome.message + " Audio recording ended: " + audioProblem + "." + audioLocation;
+        landed_ = std::move(outcome);
+        return;
     }
-    if (!midiProblem.empty())
-        outcome.message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";
-    landed_ = std::move(outcome);
+    if (hasAudio) {
+        landing_ = true;
+        try {
+            takePublication_ = std::make_unique<TakePublication>();
+            auto &take = *takePublication_;
+            take.recorded = std::move(*audio);
+            if (hasMidi)
+                take.midi = std::move(midi);
+            take.midiProblem = std::move(midiProblem);
+            take.startStaging(media::projectFolder(*store_));
+        } catch (const std::exception &error) {
+            const auto &recorded = takePublication_ ? takePublication_->recorded : *audio;
+            landed_ = TakeLanded{false, {}, attachmentFailure(recorded, error.what())};
+            takePublication_.reset();
+            landing_ = false;
+        }
+        return;
+    }
+
+    landing_ = false;
+    using Failure = engine::RecordingFailure;
+    const bool discardAudio = audio && (audio->failure == Failure::Cancelled || audio->failure == Failure::NoFrames);
+    const bool retainAudio = audio && !discardAudio && !audio->directory().empty();
+    const auto audioLocation = discardAudio ? discardTake(*audio) :
+                               retainAudio ? retainedCaptureLocation(*audio) : std::string{};
+    if (hasMidi) {
+        landed_ = commitMidiTake(*midi, audioProblem, audioLocation);
+        return;
+    }
+    const auto reason = !audioProblem.empty() ? audioProblem : !midiProblem.empty() ? midiProblem : "nothing was recorded";
+    landed_ = TakeLanded{false, {}, (retainAudio ? "Recording stopped because " : "The take was not kept: ") +
+                                  reason + "." + audioLocation};
+}
+void ProjectDocument::pollTakePublication() {
+    auto &take = *takePublication_;
+    const auto finish = [&](TakeLanded outcome) {
+        landed_ = std::move(outcome);
+        takePublication_.reset();
+        landing_ = false;
+    };
+    const auto refuse = [&](const std::string &error) {
+        finish({false, {}, attachmentFailure(take.recorded, error)});
+    };
+    const auto keepPunchedMidi = [&](const std::string &reason) {
+        const auto location = retainedCaptureLocation(take.recorded);
+        auto outcome = commitMidiTake(*take.midi, {}, location);
+        if (outcome.ok)
+            outcome.message += " Audio stayed in the recording folder because " + reason + "." + location;
+        finish(std::move(outcome));
+    };
+    const auto ready = [](auto &task) { return task.wait_for(std::chrono::seconds(0)) == std::future_status::ready; };
+    const auto preparePlacement = [&] {
+        RowIds rows(store_->db());
+        const SnapshotReader current(view_.current());
+        take.ids = takeClipIds(rows, current, take.recorded);
+        auto midi = take.midi ? take.midi->placements(rows, current) : MidiRecording::Placement{};
+        take.outcome.clips.clear();
+        take.outcome.clips.reserve(take.ids.size() + midi.takes.size());
+        for (const auto &ids : take.ids)
+            take.outcome.clips.push_back(ids.clip);
+        for (const auto &placement : midi.takes)
+            take.outcome.clips.push_back(placement.clip);
+        return midi;
+    };
+    try {
+        if (take.cleanup.valid()) {
+            if (!ready(take.cleanup))
+                return;
+            const auto warning = take.cleanup.get();
+            if (!warning.empty())
+                take.outcome.message += " " + warning;
+            finish(std::move(take.outcome));
+            return;
+        }
+        if (take.staging.valid()) {
+            if (!ready(take.staging))
+                return;
+            take.staged = take.staging.get();
+            if (!take.staged.ok) {
+                refuse(take.staged.error);
+                return;
+            }
+            const auto midi = preparePlacement();
+            auto edit = recording::prepareStagedCommit(*store_, take.staged, take.ids, midi.takes,
+                                                       take.recorded.placementOffsetSamples);
+            if (!edit.ok) {
+                if (edit.audioOutsidePunch && take.midi)
+                    keepPunchedMidi(edit.error);
+                else
+                    refuse(edit.error);
+                return;
+            }
+            take.publication = std::async(std::launch::async, [edit = std::move(edit), stop = take.stop.get_token()]() mutable {
+                edit.ok = recording::publishStagedTake(edit, stop);
+                return std::move(edit);
+            });
+            return;
+        }
+        if (!ready(take.publication))
+            return;
+        auto edit = take.publication.get();
+        if (edit.ok && edit.options.expectHead && *edit.options.expectHead != OpJournal(*store_).headSeq()) {
+            const auto midi = preparePlacement();
+            const auto refreshed = recording::refreshStagedCommit(*store_, take.staged, edit, take.ids, midi.takes,
+                                                                  take.recorded.placementOffsetSamples);
+            if (refreshed == recording::StagedRefresh::restage && !take.retried) {
+                take.retried = true;
+                take.startStaging(media::projectFolder(*store_));
+                return;
+            }
+            edit.ok = refreshed == recording::StagedRefresh::ready;
+        }
+        if (!edit.ok) {
+            if (edit.audioOutsidePunch && take.midi)
+                keepPunchedMidi(edit.error);
+            else
+                refuse(edit.error);
+            return;
+        }
+        take.outcome.message = recordedTakeMessage(take.outcome.clips.size(), recordingFailure(take.recorded),
+                                                   take.midiProblem, true, take.midi != nullptr);
+        const auto committed =
+            ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) { return recording::commit(store, edit, actor); });
+        if (!committed) {
+            refuse(committed.error);
+            return;
+        }
+        take.outcome.ok = true;
+        synchronise();
+        if (const auto snapshot = view_.current(); snapshot && take.recorded.preview) {
+            try {
+                waveforms_.seedRecording(*snapshot, take.outcome.clips, *take.recorded.preview);
+            } catch (const std::exception &) {
+                // The committed clip's waveform can still be read from the file.
+            }
+        }
+        take.staged = {}; // The edit still owns staging until the cleanup worker releases it.
+        take.cleanup = std::async(std::launch::async, [edit = std::move(edit)]() mutable {
+            auto warning = recording::cleanupStagedTake(edit);
+            edit = {};
+            return warning;
+        });
+    } catch (const std::exception &error) {
+        if (!take.outcome.ok) {
+            refuse(error.what());
+            return;
+        }
+        take.outcome.message += " Could not clean up the private recording." + retainedCaptureLocation(take.recorded);
+        finish(std::move(take.outcome));
+    }
 }
 } // namespace adi::ui
