@@ -2,6 +2,7 @@
 #include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_compare.hpp"
 #include "adi/audio/pitch_segments.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -55,10 +56,26 @@ void writeTone(const std::filesystem::path& file, double hz) {
     output.close();
 }
 
-void load(engine::Session& session, const Store& store) {
+void load(engine::Session& session, const Store& store, bool exporting = false) {
     session.graph().setFadeFrames(0);
     engine::SessionSpec spec{2, rate, blockFrames};
+    spec.exporting = exporting;
     if (!session.load(store, {}, spec)) throw std::runtime_error(session.error());
+}
+
+std::array<float, blockFrames> renderBlock(engine::Session& session) {
+    if (!session.clips()->prime(std::chrono::seconds(10))) throw std::runtime_error("prime clip");
+    std::array<float, blockFrames> left{}, right{};
+    float* out[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.frames = blockFrames;
+    io.out = out;
+    io.numOut = 2;
+    {
+        audio::CallbackScope callback;
+        session.process(io);
+    }
+    return left;
 }
 
 std::vector<float> render(engine::Session& session, std::int64_t start) {
@@ -66,20 +83,55 @@ std::vector<float> render(engine::Session& session, std::int64_t start) {
     session.transport().play();
     std::vector<float> result;
     for (int block = 0; block < 8; ++block) {
-        if (!session.clips()->prime(std::chrono::seconds(10))) throw std::runtime_error("prime clip");
-        std::array<float, blockFrames> left{}, right{};
-        float* out[]{left.data(), right.data()};
-        engine::AudioIo io;
-        io.frames = blockFrames;
-        io.out = out;
-        io.numOut = 2;
-        {
-            audio::CallbackScope callback;
-            session.process(io);
-        }
+        const auto left = renderBlock(session);
         result.insert(result.end(), left.begin(), left.end());
     }
     return result;
+}
+
+void checkComparison(engine::Session& session, const Store& store, std::span<const float> original,
+                     std::span<const float> shifted) {
+    using audio::PitchCompareSide;
+    auto& transport = session.transport();
+    auto& clips = *session.clips();
+    std::string error;
+    if (!clips.preparePitchComparison(7, PitchCompareSide::Original, error)) throw std::runtime_error(error);
+    transport.locate(6000);
+    transport.play();
+    const auto first = renderBlock(session);
+    check(std::equal(first.begin(), first.end(), original.begin()), "comparison plays the original at the running playhead");
+    const auto before = transport.position();
+    const auto revision = transport.revision();
+    check(!clips.selectPitchComparison(8, PitchCompareSide::Corrected) &&
+          clips.selectPitchComparison(7, PitchCompareSide::Corrected) &&
+          transport.position() == before && transport.revision() == revision && before == 6000 + blockFrames,
+          "selection keeps the existing clip and transport clock");
+    const auto second = renderBlock(session);
+    check(std::equal(second.begin(), second.end(), shifted.begin() + blockFrames),
+          "the corrected side starts at the next running sample, with exact PCM");
+    transport.loop(6000, 8000);
+    transport.locate(7700);
+    check(clips.selectPitchComparison(7, PitchCompareSide::Original), "switch back before a loop wrap");
+    const auto wrapped = renderBlock(session);
+    check(std::equal(wrapped.begin(), wrapped.begin() + 300, original.begin() + 1700) &&
+          std::equal(wrapped.begin() + 300, wrapped.end(), original.begin()) && transport.position() == 6724,
+          "A/B shares the transport's half-open loop down to the wrapping sample");
+    transport.play(false);
+    check(renderBlock(session) == std::array<float, blockFrames>{}, "the comparison is silent while transport is stopped");
+    transport.loop(0, 0, false);
+    clips.endPitchComparison();
+    const auto resumed = render(session, 6000);
+    check(!clips.selectPitchComparison(7, PitchCompareSide::Original) &&
+          std::equal(resumed.begin(), resumed.end(), shifted.begin(), shifted.end()),
+          "ending comparison returns to the ordinary corrected clip");
+
+    engine::Session exportSession;
+    load(exportSession, store, true);
+    if (!exportSession.clips()->preparePitchComparison(7, PitchCompareSide::Original, error))
+        throw std::runtime_error(error);
+    const auto exported = render(exportSession, 6000);
+    check(std::equal(exported.begin(), exported.end(), shifted.begin(), shifted.end()),
+          "export keeps the committed correction during comparison");
 }
 
 double frequency(std::span<const float> pcm) {
@@ -144,6 +196,7 @@ void run() {
           "undo restores bit-identical ordinary clip playback");
     check(history.redo().ok && session.refresh(*store) && render(session, 6000) == shifted,
           "redo restores bit-identical edited playback");
+    checkComparison(session, *store, original, shifted);
 
     const auto markers = audio::writeWarpMap(
         std::vector<WarpMarker>{{0, 0}, {sourceFrames, 2 * textproj::kPPQ}}, sourceFrames);

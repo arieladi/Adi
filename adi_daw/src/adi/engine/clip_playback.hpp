@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 namespace adi { class Store; }
-namespace adi::audio { class ProgressiveDecoder; }
+namespace adi::audio { class ProgressiveDecoder; enum class PitchCompareSide; }
 namespace adi::engine {
 struct ClipProject;
 struct NoteExpressionsRead;
@@ -47,6 +47,15 @@ public:
     // a promise about plugin-owned samples. Muted/unopened clips are absent.
     // Immutable for this generation's lifetime; callback use returns empty.
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
+    // Off-callback owner controls. One edited clip can be compared at a time
+    // in this source generation. Preparation leaves an existing comparison
+    // intact on failure. Both sides use the live Arrangement transport.
+    bool preparePitchComparison(std::int64_t clipId, audio::PitchCompareSide initial,
+                                std::string& error, std::uint32_t crossfadeFrames = 0,
+                                std::stop_token stop = {});
+    bool selectPitchComparison(std::int64_t clipId, audio::PitchCompareSide) noexcept;
+    void endPitchComparison();
+    void collectPitchComparisons();
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});

@@ -2347,6 +2347,7 @@ bool Session::tick(std::int64_t nowMs) {
     }
     collectScopeTaps();
     if(gestureAudio_)gestureAudio_->collect();
+    if(auto* playback=clips())playback->collectPitchComparisons();
     mainLoudness_.collect();
     cueMonitor_.collect();
     const auto clients=runtimeClients_;

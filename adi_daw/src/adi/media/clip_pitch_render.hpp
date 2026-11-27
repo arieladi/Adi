@@ -10,6 +10,7 @@
 #include <string>
 
 namespace adi::clip_edit { struct ClipPitchEdits; }
+namespace adi::audio { class PitchComparePcm; }
 
 namespace adi::media {
 
@@ -59,6 +60,23 @@ class AnalysisCache;
 [[nodiscard]] ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan&, std::stop_token = {});
 [[nodiscard]] ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan&, std::stop_token,
                                                            audio::DecodeCache*, AnalysisCache*);
+
+struct ClipPitchCompareResult {
+    ClipPitchRenderProblem problem = ClipPitchRenderProblem::None;
+    std::optional<std::string> detail;
+    std::shared_ptr<const audio::PitchComparePcm> prepared;
+    explicit operator bool() const noexcept { return problem == ClipPitchRenderProblem::None && prepared != nullptr; }
+};
+
+/// Opt-in worker comparison, from a single verified source capture. Both
+/// sides have the same trim, direction and optional project Warp clock. The
+/// original bypasses all segment edits. A nonzero desired rate can convert an
+/// unwarped source, or must match the rate of the captured project Warp plan.
+[[nodiscard]] ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan&, std::stop_token = {},
+                                                             std::uint32_t outputRate = 0);
+[[nodiscard]] ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan&, std::stop_token,
+                                                             audio::DecodeCache*, AnalysisCache*,
+                                                             std::uint32_t outputRate = 0);
 
 class ClipPitchRenderTask {
 public:

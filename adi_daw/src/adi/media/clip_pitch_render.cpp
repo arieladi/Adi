@@ -3,12 +3,14 @@
 
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_compare.hpp"
 #include "adi/audio/pitch_render.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/clip_pitch.hpp"
 #include "adi/pitch_edit_store.hpp"
 
+#include <samplerate.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -205,16 +207,111 @@ void writeWindow(audio::WavWriter& writer, std::span<const float> samples, std::
     writer.close();
 }
 
-} // namespace
-
-ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, std::stop_token stop) {
-    if (audio::onAudioThread) return fail(ClipPitchRenderProblem::Realtime);
-    if (stop.stop_requested()) return fail(ClipPitchRenderProblem::Cancelled);
-    return prepareClipPitchRender(plan, stop, nullptr, &defaultAnalysisCache());
+ClipPitchRenderResult prepareWindow(const ClipPitchRenderPlan& plan, std::span<const float> window,
+                                    const audio::WavReader& reader, const std::optional<audio::WarpRenderPlan>& warp,
+                                    std::stop_token stop) {
+    checkCancelled(stop);
+    const auto folder = plan.workFolder.empty() ? fs::temp_directory_path() / "adi-pitch" : plan.workFolder;
+    PrivateStage stage(folder);
+    {
+        audio::WavWriter writer(stage.file, reader.sampleRate(), reader.channels(), audio::WavFormat::Float32);
+        writeWindow(writer, window, reader.channels(), plan.reverse, stop);
+    }
+    checkCancelled(stop);
+    if (warp) {
+        auto recipe = *warp;
+        recipe.source = stage.file;
+        recipe.workFolder = stage.directory;
+        recipe.sourceStart = 0;
+        recipe.sourceFrames = plan.sourceFrames;
+        auto warped = audio::prepareWarp(recipe, stop);
+        checkCancelled(stop);
+        if (!warped) return fail(ClipPitchRenderProblem::Dsp, warped.detail.c_str());
+        fs::remove(stage.file);
+        auto prepared = ClipPitchPreparation::warped(stage.file, std::move(warped.prepared));
+        stage.keep = true;
+        return {ClipPitchRenderProblem::None, {}, std::move(prepared)};
+    }
+    auto prepared = ClipPitchPreparation::stage(stage.file, reader, plan.sourceFrames);
+    stage.keep = true;
+    return {ClipPitchRenderProblem::None, {}, std::move(prepared)};
 }
 
-ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, std::stop_token stop,
-                                              audio::DecodeCache* decodeCache, AnalysisCache* analysisCache) {
+struct ComparisonResampleInput {
+    audio::WavReader& reader;
+    std::stop_token stop;
+    std::vector<float> samples;
+    std::uint64_t remaining;
+    std::uint32_t padding;
+    bool failed = false;
+
+    static long supply(void* opaque, float** buffer) noexcept {
+        auto& input = *static_cast<ComparisonResampleInput*>(opaque);
+        *buffer = input.samples.data();
+        if (input.stop.stop_requested() || input.failed) return 0;
+        try {
+            const auto channels = input.reader.channels();
+            if (input.remaining != 0) {
+                const auto count = static_cast<std::uint32_t>(std::min<std::uint64_t>(input.remaining, blockFrames));
+                if (input.reader.read(input.samples.data(), count) != count) {
+                    input.failed = true;
+                    return 0;
+                }
+                for (std::size_t index = 0; index < static_cast<std::size_t>(count) * channels; ++index)
+                    if (!std::isfinite(input.samples[index])) input.samples[index] = 0.0f;
+                input.remaining -= count;
+                return static_cast<long>(count);
+            }
+            const auto count = std::min(input.padding, blockFrames);
+            std::fill_n(input.samples.data(), static_cast<std::size_t>(count) * channels, 0.0f);
+            input.padding -= count;
+            return static_cast<long>(count);
+        } catch (...) {
+            input.failed = true;
+            return 0;
+        }
+    }
+};
+
+std::vector<float> readComparisonSide(const PreparedClipPitch& prepared, std::uint32_t rate,
+                                      std::uint64_t frames, std::stop_token stop) {
+    audio::WavReader reader(prepared.file);
+    if (reader.sampleRate() != prepared.rate || reader.channels() != prepared.channels || reader.frames() != prepared.frames)
+        throw Failure{ClipPitchRenderProblem::Io, "prepared Pitch Editor comparison side changed"};
+    if (rate == prepared.rate) return readPcm(reader, stop);
+
+    // Use the exact device/source ratio. Round only the number of requested
+    // frames, so the fractional sample clock does not drift to meet an end
+    // anchor. Zero extension keeps sinc context beyond the trimmed boundary.
+    const double ratio = static_cast<double>(rate) / prepared.rate;
+    if (!src_is_valid_ratio(ratio))
+        throw Failure{ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison sample-rate ratio is unsupported"};
+    const auto channels = prepared.channels;
+    const auto padding = blockFrames * static_cast<std::uint32_t>(std::ceil(std::max(1.0, 1 / ratio)));
+    ComparisonResampleInput input{reader, stop, std::vector<float>(static_cast<std::size_t>(blockFrames) * channels),
+                                  prepared.frames, padding};
+    int error = 0;
+    const std::unique_ptr<SRC_STATE, decltype(&src_delete)> state(
+        src_callback_new(&ComparisonResampleInput::supply, SRC_SINC_BEST_QUALITY, channels, &error, &input), &src_delete);
+    if (!state || src_set_ratio(state.get(), ratio) != 0)
+        throw Failure{ClipPitchRenderProblem::Dsp, "cannot prepare Pitch Editor comparison resampler"};
+    std::vector<float> output(static_cast<std::size_t>(frames) * channels);
+    for (std::uint64_t frame = 0; frame < frames;) {
+        checkCancelled(stop);
+        const auto count = static_cast<long>(std::min<std::uint64_t>(frames - frame, blockFrames));
+        const auto read = src_callback_read(state.get(), ratio, count, output.data() + static_cast<std::size_t>(frame) * channels);
+        checkCancelled(stop);
+        if (input.failed) throw Failure{ClipPitchRenderProblem::Io, "cannot read Pitch Editor comparison resample input"};
+        if (read != count) throw Failure{ClipPitchRenderProblem::Dsp, "Pitch Editor comparison resampler ended early"};
+        frame += static_cast<std::uint64_t>(count);
+    }
+    return output;
+}
+
+ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_token stop,
+                                   audio::DecodeCache* decodeCache, AnalysisCache* analysisCache,
+                                   std::shared_ptr<const audio::PitchComparePcm>* comparison = nullptr,
+                                   std::uint32_t outputRate = 0) {
     if (audio::onAudioThread) return fail(ClipPitchRenderProblem::Realtime);
     if (stop.stop_requested()) return fail(ClipPitchRenderProblem::Cancelled);
     if (!plan.edits || (plan.edits->rows.empty() && !plan.edits->segmentation))
@@ -225,6 +322,9 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
         return fail(ClipPitchRenderProblem::Source, "Pitch Editor playback window exceeds source");
     if (plan.reverse && plan.warp)
         return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor playback cannot combine reverse and Warp");
+    if ((outputRate && (outputRate < 44100 || outputRate > 768000)) ||
+        (outputRate && plan.warp && outputRate != plan.warp->outputRate))
+        return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison rate differs from the Warp clock or device range");
     if (saved.analysisVersion != kPitchAnalysisVersion || saved.analysisConfiguration != kPitchAnalysisConfiguration)
         return fail(ClipPitchRenderProblem::Edits, "Pitch Editor edit analysis version is unavailable");
     try {
@@ -236,10 +336,19 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
         const auto channels = reader.channels();
         const auto rate = reader.sampleRate();
         const auto frames = reader.frames();
-        if (channels == 0 || channels > audio::kMaxDecodeChannels || rate != saved.sampleRate || frames != saved.sourceFrames)
+        if (channels == 0 || channels > audio::kMaxDecodeChannels || rate == 0 || rate != saved.sampleRate || frames != saved.sourceFrames)
             return fail(ClipPitchRenderProblem::Source, "Pitch Editor source dimensions differ from saved edits");
         if (frames > maxSourceSamples / channels)
             return fail(ClipPitchRenderProblem::Resource, "Pitch Editor source exceeds render PCM budget");
+
+        const auto comparisonRate = plan.warp ? plan.warp->outputRate : outputRate ? outputRate : rate;
+        const auto comparisonFrames = plan.warp && !plan.warp->anchors.empty() ? plan.warp->anchors.back().outputFrame :
+            (plan.sourceFrames * comparisonRate + rate / 2) / rate;
+        if (comparison) {
+            if (comparisonFrames == 0) return fail(ClipPitchRenderProblem::Source, "Pitch Editor comparison has no output frames");
+            if (comparisonFrames > audio::kPitchCompareMaxResidentSamples / (2 * static_cast<std::uint64_t>(channels)))
+                return fail(ClipPitchRenderProblem::Resource, "Pitch Editor comparison exceeds resident PCM budget");
+        }
 
         auto pcm = readPcm(reader, stop);
         verifySource(plan.source, saved.sourceHash, stop);
@@ -264,6 +373,12 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
 
         const auto first = static_cast<std::size_t>(plan.sourceStart);
         const auto count = static_cast<std::size_t>(plan.sourceFrames);
+        ClipPitchRenderResult original;
+        if (comparison) {
+            original = prepareWindow(plan, std::span<const float>(pcm).subspan(first * channels, count * channels),
+                                     reader, plan.warp, stop);
+            if (!original) return original;
+        }
         std::unique_ptr<const std::vector<float>> renderedMono;
         std::span<const float> window;
         if (channels == 1) {
@@ -286,31 +401,24 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
             window = std::span(pcm).subspan(first * channels, count * channels);
         }
 
+        auto corrected = prepareWindow(plan, window, reader, plan.warp, stop);
+        if (!comparison || !corrected) return corrected;
+        if (original.prepared->rate != corrected.prepared->rate || original.prepared->channels != corrected.prepared->channels ||
+            original.prepared->frames != corrected.prepared->frames)
+            return fail(ClipPitchRenderProblem::Dsp, "Pitch Editor comparison clocks do not match");
+
+        std::vector<float>().swap(pcm);
+        std::vector<float>().swap(mono);
+        renderedMono.reset();
+        auto dry = readComparisonSide(*original.prepared, comparisonRate, comparisonFrames, stop);
+        auto edited = readComparisonSide(*corrected.prepared, comparisonRate, comparisonFrames, stop);
         checkCancelled(stop);
-        const auto folder = plan.workFolder.empty() ? fs::temp_directory_path() / "adi-pitch" : plan.workFolder;
-        PrivateStage stage(folder);
-        {
-            audio::WavWriter writer(stage.file, rate, channels, audio::WavFormat::Float32);
-            writeWindow(writer, window, channels, plan.reverse, stop);
-        }
+        auto pair = audio::PitchComparePcm::prepare(comparisonRate, corrected.prepared->channels,
+                                                     std::move(dry), std::move(edited), stop);
         checkCancelled(stop);
-        if (plan.warp) {
-            auto recipe = *plan.warp;
-            recipe.source = stage.file;
-            recipe.workFolder = stage.directory;
-            recipe.sourceStart = 0;
-            recipe.sourceFrames = plan.sourceFrames;
-            auto warped = audio::prepareWarp(recipe, stop);
-            checkCancelled(stop);
-            if (!warped) return fail(ClipPitchRenderProblem::Dsp, warped.detail.c_str());
-            fs::remove(stage.file);
-            auto prepared = ClipPitchPreparation::warped(stage.file, std::move(warped.prepared));
-            stage.keep = true;
-            return {ClipPitchRenderProblem::None, {}, std::move(prepared)};
-        }
-        auto prepared = ClipPitchPreparation::stage(stage.file, reader, plan.sourceFrames);
-        stage.keep = true;
-        return {ClipPitchRenderProblem::None, {}, std::move(prepared)};
+        if (!pair) return fail(ClipPitchRenderProblem::Dsp, "cannot assemble Pitch Editor comparison pair");
+        *comparison = std::move(pair);
+        return corrected;
     } catch (const Failure& failure) {
         return fail(failure.problem, failure.detail);
     } catch (const std::bad_alloc&) {
@@ -323,6 +431,34 @@ ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, st
     } catch (const std::exception& error) {
         return fail(ClipPitchRenderProblem::Io, error.what());
     }
+}
+
+} // namespace
+
+ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, std::stop_token stop) {
+    if (audio::onAudioThread) return fail(ClipPitchRenderProblem::Realtime);
+    if (stop.stop_requested()) return fail(ClipPitchRenderProblem::Cancelled);
+    return preparePitch(plan, stop, nullptr, &defaultAnalysisCache());
+}
+
+ClipPitchRenderResult prepareClipPitchRender(const ClipPitchRenderPlan& plan, std::stop_token stop,
+                                              audio::DecodeCache* decodeCache, AnalysisCache* analysisCache) {
+    return preparePitch(plan, stop, decodeCache, analysisCache);
+}
+
+ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan& plan, std::stop_token stop,
+                                               std::uint32_t outputRate) {
+    if (audio::onAudioThread) return {ClipPitchRenderProblem::Realtime, {}, {}};
+    if (stop.stop_requested()) return {ClipPitchRenderProblem::Cancelled, {}, {}};
+    return prepareClipPitchCompare(plan, stop, nullptr, &defaultAnalysisCache(), outputRate);
+}
+
+ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan& plan, std::stop_token stop,
+                                               audio::DecodeCache* decodeCache, AnalysisCache* analysisCache,
+                                               std::uint32_t outputRate) {
+    std::shared_ptr<const audio::PitchComparePcm> pair;
+    auto rendered = preparePitch(plan, stop, decodeCache, analysisCache, &pair, outputRate);
+    return {rendered.problem, std::move(rendered.detail), std::move(pair)};
 }
 
 struct ClipPitchRenderTask::State {

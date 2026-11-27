@@ -9,6 +9,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/pitch_compare.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/media/clip_pitch_render.hpp"
@@ -177,6 +178,7 @@ struct Clip {
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
     std::shared_ptr<PreparedSource> prepared;
+    std::optional<media::ClipPitchRenderPlan> pitchComparisonPlan;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
@@ -526,6 +528,15 @@ struct Clip {
         return worked;
     }
 };
+struct PitchComparison : Sequenced {
+    const Clip* clip = nullptr;
+    mutable audio::PitchComparePlayback playback;
+
+    PitchComparison(const Clip* target, std::shared_ptr<const audio::PitchComparePcm> pcm,
+                    std::uint32_t fadeFrames)
+        : clip(target), playback(std::move(pcm), fadeFrames) {}
+};
+
 class TrackSource final : public Node {
 public:
     Transport& transport;
@@ -535,6 +546,7 @@ public:
     const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
+    SnapshotPublisher<PitchComparison>& pitchComparisons;
     // ADR-0207 d2: the clips of one track are a mix point, summed in double
     // and converted once. Sized here, on the message thread, at the shape the
     // session builds this rebuild's graph at, and never resized after.
@@ -542,8 +554,9 @@ public:
     std::shared_ptr<void> sourceLifetime() const override { return owner.lock(); }
     /// ADR-0092: new at every rebuild, the same track's clips all the same.
     std::uint64_t historyName() const noexcept override { return 1; }
-    TrackSource(Transport& t,std::int32_t f,std::int32_t ch,std::int64_t id)
-        :transport(t),maxFrames(f),channels(ch),track(id),
+    TrackSource(Transport& t,std::int32_t f,std::int32_t ch,std::int64_t id,
+                SnapshotPublisher<PitchComparison>& comparisonPublisher)
+        :transport(t),maxFrames(f),channels(ch),track(id),pitchComparisons(comparisonPublisher),
          wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}
     bool processesDouble() const noexcept override { return true; }
     void process(const NodeIo& io) noexcept override {
@@ -552,6 +565,8 @@ public:
     }
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
+        SnapshotPublisher<PitchComparison>::AudioRead comparison(pitchComparisons);
+        const auto* activeComparison = io.exporting ? nullptr : comparison.get();
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
         const bool recording = recordingTracks && !recordingTracks->empty() &&
             std::binary_search(recordingTracks->data(), recordingTracks->data() + recordingTracks->size(), track);
@@ -602,26 +617,35 @@ public:
         // Raw indices avoid MSVC Debug vector-iterator ownership locks.
         for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
             auto* clip=clips[clipIndex];
+            auto* compare = activeComparison && activeComparison->clip == clip ? &activeComparison->playback : nullptr;
             if(io.blockOffset==0){
                 const auto required=clip->wanted(transport,maxFrames,false);
                 clip->trimAdmission(required);
                 clip->request(clip->wanted(transport,maxFrames));
                 for(const auto number:required)if(number>=0)(void)clip->reserve(number);
             }
-            if(clip->preparationPending() ||
+            if((!compare && clip->preparationPending()) ||
                (!intersects(*clip, firstSample, firstFrames) && !intersects(*clip, wrappedSample, wrappedFrames)))
                 continue;
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
+            std::array<float,64> comparisonFrame;
+            const std::span<float> comparisonSamples{comparisonFrame.data(),clip->channels};
             for(std::int32_t i=0;i<io.frames;++i) {
                 const auto time=transport.sampleAt(io.blockOffset+i);
                 const auto n=clip->sourceAt(time);
                 if(n<0) continue;
-                if(n/clip->pageFrames!=number) {
-                    if(page) clip->release(page);
-                    number=n/clip->pageFrames; page=clip->acquire(number);
+                const float* sample;
+                if(compare) {
+                    if(!compare->readAt(static_cast<std::uint64_t>(n),comparisonSamples)) continue;
+                    sample=comparisonFrame.data();
+                } else {
+                    if(n/clip->pageFrames!=number) {
+                        if(page) clip->release(page);
+                        number=n/clip->pageFrames; page=clip->acquire(number);
+                    }
+                    if(!page) { ++missing; continue; }
+                    sample=page->data.get()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 }
-                if(!page) { ++missing; continue; }
-                const auto* sample=page->data.get()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 if constexpr (std::is_same_v<T,float>) {
                     const float gain=clip->envelope(time);
                     for(std::int32_t c=0;c<io.channels;++c) {
@@ -649,6 +673,7 @@ struct ClipPlayback::Impl {
     std::int32_t maxFrames;
     const bool synchronousReads;
     std::vector<std::unique_ptr<Clip>> clips;
+    SnapshotPublisher<PitchComparison> pitchComparisons;
     std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
@@ -887,14 +912,18 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     std::make_shared<const clip_edit::ClipPitchEdits>(*pitch),
                     static_cast<std::uint64_t>(a->srcStartFrames), static_cast<std::uint64_t>(a->srcLenFrames),
                     a->reverse, std::move(pitchWarp)};
-                auto task = media::requestClipPitchRender(std::move(plan));
+                auto task = media::requestClipPitchRender(plan);
                 if (!task) throw std::runtime_error("cannot request pitch preparation");
+                clip->pitchComparisonPlan = std::move(plan);
                 clip->prepared = std::make_shared<PreparedSource>(std::move(task));
                 clip->sourceStart = 0;
                 clip->reader.reset();
             }
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
-            if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
+            if(track==impl_->tracks.end()) {
+                impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId,impl_->pitchComparisons));
+                track=impl_->tracks.end()-1;
+            }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
@@ -935,6 +964,58 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     }
 }
 ClipPlayback::~ClipPlayback()=default;
+bool ClipPlayback::preparePitchComparison(std::int64_t id, audio::PitchCompareSide initial,
+                                          std::string& error, std::uint32_t crossfadeFrames,
+                                          std::stop_token stop) {
+    if(audio::onAudioThread) return false;
+    error.clear();
+    const auto clip = std::find_if(impl_->clips.begin(),impl_->clips.end(),
+                                   [id](const auto& item) { return item->clipId == id; });
+    if(clip==impl_->clips.end() || !(*clip)->pitchComparisonPlan) {
+        error="no prepared recipe for an edited audio clip";
+        return false;
+    }
+    try {
+        impl_->pitchComparisons.collect();
+        if(impl_->pitchComparisons.retainedCount()>=2) {
+            error="audio driver has not released previous pitch comparisons";
+            return false;
+        }
+        auto ready=media::prepareClipPitchCompare(*(*clip)->pitchComparisonPlan,stop,(*clip)->rate);
+        if(!ready) {
+            error=ready.detail.value_or("cannot prepare pitch comparison");
+            return false;
+        }
+        if(ready.prepared->channels()!=(*clip)->channels || ready.prepared->rate()!=(*clip)->rate ||
+           ready.prepared->frames()<static_cast<std::uint64_t>((*clip)->length)) {
+            error="prepared pitch comparison disagrees with the clip clock";
+            return false;
+        }
+        auto next=std::make_unique<PitchComparison>(clip->get(),std::move(ready.prepared),crossfadeFrames);
+        next->playback.select(initial);
+        impl_->pitchComparisons.publish(std::move(next));
+        return true;
+    } catch(const std::exception& failure) {
+        error=failure.what();
+        return false;
+    }
+}
+bool ClipPlayback::selectPitchComparison(std::int64_t id, audio::PitchCompareSide side) noexcept {
+    if(audio::onAudioThread) return false;
+    const auto* comparison=impl_->pitchComparisons.peek();
+    if(!comparison || !comparison->clip || comparison->clip->clipId!=id) return false;
+    comparison->playback.select(side);
+    return true;
+}
+void ClipPlayback::endPitchComparison() {
+    if(audio::onAudioThread) return;
+    const auto* current=impl_->pitchComparisons.peek();
+    if(current && current->clip)
+        impl_->pitchComparisons.publish(std::make_unique<PitchComparison>(nullptr,nullptr,0));
+}
+void ClipPlayback::collectPitchComparisons() {
+    if(!audio::onAudioThread) impl_->pitchComparisons.collect();
+}
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
