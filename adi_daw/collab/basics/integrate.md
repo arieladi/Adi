@@ -23,6 +23,11 @@ The full run caught an obsolete placeholder diagnostic after plug-in recovery an
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
 The original Export tip is included. The Edit report at `fd5eb152e8fd495fb7fa401844ae488bf9f97514` still lists local implementation branches, so the Edit merge is pending publication.
+## Follow-up fixes
+
+| Queue item | Integration head | Change and verification |
+|---|---|---|
+| SC-121 Browser on `basics/integrate-2` | `37ab62ec1f0f852f9c5d3cbcac6b430532bc0a70` | The shared app initialization shows the Instruments list at launch, New and Open, including while library indexing is pending. Keeps explicit label choices. The red peerless suite reproduced both empty-list assertions. Linux Debug JUCE/Pd Werror built the app, and all 18 no-display window suites and all three acceptance suites passed. |
 
 ## For the director
 
