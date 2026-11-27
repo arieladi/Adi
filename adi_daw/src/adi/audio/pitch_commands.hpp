@@ -45,6 +45,14 @@ struct PitchMidiAssignment {
                                                    std::span<const std::size_t> selection,
                                                    const PitchQuantize& capture, double amount);
 
+// Apply one half-open fractional range to the selected notes on their source
+// clock. Endpoints round to the nearest frame, with half frames rounding later.
+// An empty result in any selected note refuses the batch. [0,1] uses each
+// entire note. Straightening amount and destination timing remain independent.
+[[nodiscard]] PitchEditError setPitchStraightenRangeForSelection(const PitchAnalysis&, PitchEditState&,
+                                                                std::span<const std::size_t> selection,
+                                                                double startFraction, double endFraction);
+
 // A shared destination boundary moves both contiguous notes in one batch.
 // Other notes remain stationary. A crossing or empty span fails atomically.
 [[nodiscard]] PitchEditError retimePitchBoundary(const PitchAnalysis&, PitchEditState&, std::size_t noteIndex,

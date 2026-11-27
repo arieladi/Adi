@@ -168,6 +168,67 @@ void partialCorrection() {
           near(nominal(analysis, state, 0), 6000), "captured scale resolves an equal distance to its lower degree");
 }
 
+void normalizedStraightenRange() {
+    const PitchAnalysis analysis{48000, 4000, {
+        {100, 500, 6100, 0, 0, {{100, 6090}, {300, 6140}, {499, 6130}}},
+        {900, 1702, 6400, 0, 0, {{900, 6380}, {1300, 6440}, {1701, 6420}}},
+        {3000, 3001, 6500, 0, 0, {{3000, 6500}}},
+    }};
+    PitchEditState state;
+    const std::array initial{PitchEditCommand{0, PitchSetStraighten{0.5}}, PitchEditCommand{1, PitchSetStraighten{1}},
+                             PitchEditCommand{1, PitchSetTiming{2500, 2800}}, PitchEditCommand{2, PitchSetGain{-3}}};
+    check(applyPitchEdits(analysis, state, initial) == PitchEditError::None, "fixture has distinct amounts and retimed destination geometry");
+    const std::array<std::size_t, 3> selection{1, 0, 1};
+    const auto before = state.notes;
+    if (before.size() != 3) return;
+    check(setPitchStraightenRangeForSelection(analysis, state, selection, 0.25, 0.75) == PitchEditError::None,
+          "one normalized range maps atomically onto multiple selected source durations");
+    auto first = before[0];
+    auto second = before[1];
+    first.straightenRange = PitchStraightenRange{200, 400};
+    second.straightenRange = PitchStraightenRange{1101, 1502};
+    check(state.notes == std::vector{first, second, before[2]},
+          "nearest-frame, half-up mapping changes ranges only, even with a repeated selected index");
+    const auto firstResolved = resolvePitchNoteEdit(analysis, state, 0);
+    const auto secondResolved = resolvePitchNoteEdit(analysis, state, 1);
+    const auto firstCorrection = pitchCorrectionCents(analysis.notes[0], firstResolved, 300);
+    const auto secondCorrection = pitchCorrectionCents(analysis.notes[1], secondResolved, 1300);
+    check(near(firstCorrection, -20) && near(secondCorrection, -40) &&
+          near(pitchCorrectionCents(analysis.notes[0], firstResolved, 150), 0) &&
+          near(pitchCorrectionCents(analysis.notes[1], secondResolved, 1502), 0),
+          "both ranges shape their own interior and leave the contour outside unchanged");
+    if (firstResolved.straightenRange && secondResolved.straightenRange) {
+        const auto firstRange = *firstResolved.straightenRange;
+        const auto secondRange = *secondResolved.straightenRange;
+        std::printf("Normalized 25–75%% selected source ranges [%llu,%llu) and [%llu,%llu), interior correction %+.2f/%+.2f cents\n",
+                    static_cast<unsigned long long>(firstRange.startFrame), static_cast<unsigned long long>(firstRange.endFrame),
+                    static_cast<unsigned long long>(secondRange.startFrame), static_cast<unsigned long long>(secondRange.endFrame),
+                    firstCorrection, secondCorrection);
+    }
+
+    const auto ranged = state.notes;
+    const std::array<std::size_t, 2> collapsed{0, 2}, unknown{0, 3};
+    check(setPitchStraightenRangeForSelection(analysis, state, collapsed, 0.1, 0.2) == PitchEditError::InvalidValue &&
+          state.notes == ranged, "a later note whose selected range collapses rolls back the whole gesture");
+    check(setPitchStraightenRangeForSelection(analysis, state, unknown, 0.25, 0.5) == PitchEditError::UnknownNote &&
+          state.notes == ranged, "an unknown selected index cannot partially update mapped notes");
+    auto missingCurve = analysis;
+    missingCurve.notes[1].curve.clear();
+    check(setPitchStraightenRangeForSelection(missingCurve, state, selection, 0.25, 0.5) == PitchEditError::InvalidAnalysis &&
+          state.notes == ranged, "a selected note without an analysis curve refuses before any mutation");
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    check(setPitchStraightenRangeForSelection(analysis, state, selection, nan, 0.5) == PitchEditError::InvalidValue &&
+          setPitchStraightenRangeForSelection(analysis, state, selection, 0.5, 0.5) == PitchEditError::InvalidValue &&
+          setPitchStraightenRangeForSelection(analysis, state, selection, 0.75, 0.25) == PitchEditError::InvalidValue &&
+          setPitchStraightenRangeForSelection(analysis, state, selection, -0.1, 1) == PitchEditError::InvalidValue &&
+          setPitchStraightenRangeForSelection(analysis, state, selection, 0, 1.1) == PitchEditError::InvalidValue &&
+          state.notes == ranged, "invalid or reversed normalized bounds leave captured edits untouched");
+    check(setPitchStraightenRangeForSelection(analysis, state, {}, 0.25, 0.5) == PitchEditError::None &&
+          state.notes == ranged, "empty selection leaves authored ranges unchanged");
+    check(setPitchStraightenRangeForSelection(analysis, state, selection, 0, 1) == PitchEditError::None &&
+          state.notes == before, "the full normalized range restores whole-note straightening without touching amounts");
+}
+
 void boundaryRetime() {
     const auto analysis = fixture();
     PitchEditState state;
@@ -310,6 +371,7 @@ void workerOnly() {
           retimePitchBoundary(analysis, state, 0, PitchBoundary::End, 3200) == PitchEditError::Realtime &&
           nudgePitchSelection(analysis, state, one, 0) == PitchEditError::Realtime &&
           nudgePitchBoundary(analysis, state, 0, PitchBoundary::End, 0) == PitchEditError::Realtime &&
+          setPitchStraightenRangeForSelection(analysis, state, one, 0.25, 0.75) == PitchEditError::Realtime &&
           resetPitchSelection(analysis, state, {}, PitchResetDimension::All) == PitchEditError::Realtime &&
           state.notes == before, "callback refusal occurs before staging any commands");
 }
@@ -321,6 +383,7 @@ int main() {
     pitchNudge();
     midiAssignment();
     partialCorrection();
+    normalizedStraightenRange();
     boundaryRetime();
     boundaryNudge();
     dimensionReset();

@@ -32,6 +32,14 @@ double currentPitch(const PitchAnalysis& analysis, const PitchEditState& state, 
     return analysis.notes[index].pitchCents + resolvePitchNoteEdit(analysis, state, index).pitchShiftCents;
 }
 
+std::uint64_t frameAtFraction(const PitchNote& note, double fraction) noexcept {
+    const auto length = static_cast<long double>(note.endFrame - note.startFrame);
+    const auto offset = std::round(length * static_cast<long double>(fraction));
+    // Clamp before integer conversion, even on platforms where long double
+    // can round a very large source extent up to the first invalid integer.
+    return offset >= length ? note.endFrame : note.startFrame + static_cast<std::uint64_t>(offset);
+}
+
 PitchEditError applyDisplacement(const PitchAnalysis& analysis, PitchEditState& state,
                                  std::span<const std::size_t> selection, double displacement, bool snap) {
     if (!snap && displacement == 0) return PitchEditError::None;
@@ -154,6 +162,24 @@ PitchEditError correctPitchSelection(const PitchAnalysis& analysis, PitchEditSta
         const auto target = capture.scale.nearest(original + shift, capture.tonicCents, true);
         if (!target) return PitchEditError::InvalidScale;
         commands.push_back({index, PitchSetShift{std::lerp(shift, target->cents - original, amount)}});
+    }
+    return applyPitchEdits(analysis, state, commands);
+}
+
+PitchEditError setPitchStraightenRangeForSelection(const PitchAnalysis& analysis, PitchEditState& state,
+                                                   std::span<const std::size_t> selection,
+                                                   double startFraction, double endFraction) {
+    const auto current = validateSelection(analysis, state, selection);
+    if (current != PitchEditError::None || selection.empty()) return current;
+    if (!(0 <= startFraction && startFraction < endFraction && endFraction <= 1)) return PitchEditError::InvalidValue;
+
+    std::vector<PitchEditCommand> commands;
+    commands.reserve(selection.size());
+    for (const auto index : selection) {
+        const auto& note = analysis.notes[index];
+        const PitchStraightenRange range{frameAtFraction(note, startFraction), frameAtFraction(note, endFraction)};
+        if (range.startFrame >= range.endFrame) return PitchEditError::InvalidValue;
+        commands.push_back({index, PitchSetStraightenRange{range}});
     }
     return applyPitchEdits(analysis, state, commands);
 }
