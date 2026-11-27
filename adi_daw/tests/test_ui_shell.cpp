@@ -20601,6 +20601,22 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
               available("export.truePeakCeilingDb"), "the export defaults used by the Export page are editable");
     panel.showPage("File & Folder");
     check(available("files.renderFolder"), "the render folder used by Export is editable");
+    const auto *recordFolder = settings::find("files.recordFolder");
+    const auto recordPath = media::pathUtf8(dir / "Recorded");
+    check(recordFolder && available(recordFolder->key) && panel.change(*recordFolder, recordPath) &&
+              settings.get(recordFolder->key) == recordPath,
+          "the recording folder is editable on File & Folder");
+    panel.defaults.onClick();
+    check(recordFolder && settings.get(recordFolder->key) == recordFolder->defaultValue,
+          "File & Folder Restore Defaults resets the recording folder");
+    panel.showPage("Devices");
+    const auto *freezeTail = settings::find("devices.freezeTailSeconds");
+    check(freezeTail && available(freezeTail->key) && panel.change(*freezeTail, 7.0) &&
+              settings.get(freezeTail->key) == 7.0,
+          "the freeze tail is editable on Devices");
+    panel.defaults.onClick();
+    check(freezeTail && settings.get(freezeTail->key) == freezeTail->defaultValue,
+          "Devices Restore Defaults resets the freeze tail");
     panel.showPage("Licenses & Updates");
     const auto *diagnostics = rowFor("privacy.diagnosticLog");
     check(diagnostics && diagnostics->control->isEnabled(), "the diagnostic logging setting remains editable");
