@@ -18249,6 +18249,36 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     canvas.mouseDown(pressAt(canvas,{at(bar/2).x,body->top-6}));
     canvas.mouseUp(pressAt(canvas,{at(bar/2).x,body->top-6}));
     check(root.arrangement.geometry.selection.clip==81,"a title click still chooses the material clip");
+
+    check(root.command(AppCommands::ToggleMixerView), "open Mixer View to choose a channel over an automation range");
+    root.resizeMixerView(320);
+    root.frame();
+    choose(bar/2,bar);
+    // The Mixer changes which Arrangement lanes fit. Use the strip on the
+    // track that owns this range so selection identity alone cannot clear it.
+    const auto selectedTrack = geometry.selection.track;
+    const auto &strips = root.mixerView.strips();
+    const auto mixerTrack = std::find_if(strips.begin(), strips.end(), [selectedTrack](const auto &strip) {
+        return strip->isVisible() && strip->track() == selectedTrack;
+    });
+    check(mixerTrack != strips.end(), "the automation range's track has a visible Mixer strip");
+    if (mixerTrack != strips.end()) {
+        auto &strip = **mixerTrack;
+        const juce::Point<float> title{20.f, 8.f};
+        strip.mouseDown(pressAt(strip, title, juce::ModifierKeys::leftButtonModifier));
+        strip.mouseUp(pressAt(strip, title));
+        check(!canvas.hasAutomationSelection() && geometry.selection.start == geometry.selection.end,
+              "a primary Mixer title click clears the automation range");
+        choose(bar/2,bar);
+        check(geometry.selection.track == selectedTrack, "click again on the Mixer strip for the same automation lane");
+        int trackMenus = 0;
+        root.mixerView.contextMenuPresenter = [&](juce::PopupMenu) { ++trackMenus; };
+        strip.mouseDown(pressAt(strip, title, juce::ModifierKeys::rightButtonModifier));
+        strip.mouseUp(pressAt(strip, title));
+        root.mixerView.contextMenuPresenter = {};
+        check(trackMenus == 1 && !canvas.hasAutomationSelection() && geometry.selection.start == geometry.selection.end,
+              "a Mixer title popup clears the automation range before presenting track commands");
+    }
     document->release();
 }
 
