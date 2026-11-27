@@ -1732,8 +1732,10 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
 }
 bool ProjectDocument::captureImport(const std::filesystem::path &project, const std::string &utf8Path,
                                     std::int64_t nowUtc, AudioImport &out, std::string &why, std::stop_token stop) {
+    // A connection of the worker's own (SPEC 3.8), opened as prepareMaterial opens it: the capture only reads
+    // the project, but media::prepareImport refuses a read-only store.
     StoreError error{};
-    auto store = Store::open(project, error, true);
+    auto store = Store::open(project, error, false);
     if (!store) {
         why = "The project could not be read for the import: " + std::string(toString(error));
         return false;

@@ -309,7 +309,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
-    // SC-377: the same capture on a worker: a read-only connection of its own on `project`, and a stop.
+    // SC-377: the same capture on a worker: a connection of its own on `project` (it only reads), and a stop.
     // A 2 GB file is hashed and decoded here, never on the message thread. False, with `why`, when the
     // file cannot be imported or the stop was asked.
     static bool captureImport(const std::filesystem::path &project, const std::string &utf8Path, std::int64_t nowUtc,
