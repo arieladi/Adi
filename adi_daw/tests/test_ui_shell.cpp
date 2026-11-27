@@ -5970,6 +5970,75 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     // Nothing selected: the …Time commands say what to do.
     select(bar, bar);
     check(!root.command(AppCommands::DeleteTime) && !root.error().empty(), "Delete Time with no time selected says so");
+
+    // SC-176: the two menus offer the commands that can act on their selections.
+    commands.clipClipboard().held = std::monostate{};
+    auto &arrangement = root.arrangement;
+    auto &canvas = arrangement.canvas;
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(arrangement.geometry.x(tick)); };
+    const auto item = [](const juce::PopupMenu &menu, const juce::String &caption) -> const juce::PopupMenu::Item * {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == caption)
+                return &it.getItem();
+        return nullptr;
+    };
+    const auto enabled = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        const auto *entry = item(menu, caption);
+        return entry != nullptr && entry->isEnabled;
+    };
+    const auto invoke = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        if (const auto *entry = item(menu, caption); entry != nullptr && entry->isEnabled && entry->action) {
+            entry->action();
+            return true;
+        }
+        return false;
+    };
+    const auto y = static_cast<float>(laneTop(root, 2));
+    const juce::Point<float> clipTitle{x(2 * bar) + 5.f, y + 5.f};
+    canvas.mouseDown(pressAt(canvas, clipTitle));
+    canvas.mouseUp(pressAt(canvas, clipTitle));
+    check(sel.clip == 50, "SC-176 fixture selects the MIDI clip by its title");
+    const auto clipMenu = arrangement.contextMenuItems(false);
+    check(enabled(clipMenu, "Delete") && enabled(clipMenu, "Deactivate") && enabled(clipMenu, "Loop Selection"),
+          "SC-176: a MIDI clip's menu offers Delete, Deactivate and Loop Selection");
+    const auto *colour = item(clipMenu, "Clip Colour");
+    check(colour != nullptr && colour->customComponent != nullptr, "SC-176: the clip menu offers individual colour");
+    if (colour != nullptr && colour->customComponent != nullptr) {
+        auto *palette = colour->customComponent.get();
+        palette->mouseUp(pressAt(*palette, {4.f + 3.f * 17.f + 2.f, 8.f}));
+        root.frame();
+        check(root.reader().findTrack(2)->clips.front()->color == 3,
+              "SC-176: choosing a swatch changes the clip's colour");
+    }
+    juce::StringArray inapplicable;
+    for (juce::PopupMenu::MenuItemIterator it(clipMenu); it.next();)
+        for (const auto *word : {"Crop", "Consolidate", "Fade"})
+            if (it.getItem().text.containsIgnoreCase(word))
+                inapplicable.add(it.getItem().text);
+    check(inapplicable.isEmpty(), "SC-176: a MIDI clip's menu omits Crop, Consolidate and audio fades");
+    check(invoke(clipMenu, "Deactivate"), "SC-176: choose Deactivate from the clip's menu");
+    root.frame();
+    const auto &midi = root.reader().findTrack(2)->clips;
+    check(midi.size() == 1 && midi.front()->id == 50 && midi.front()->muted &&
+              !root.reader().findTrack(3)->clips.front()->muted,
+          "SC-176: Deactivate acts on the selected clip");
+
+    const juce::Point<float> from{x(2 * bar) + 1.f, y + 20.f}, to{x(3 * bar) - 1.f, y + 20.f};
+    canvas.mouseDown(pressAt(canvas, from));
+    canvas.mouseDrag(dragAt(canvas, from, to));
+    canvas.mouseUp(dragAt(canvas, from, to));
+    check(sel.clip == 0 && sel.start == 2 * bar && sel.end == 3 * bar, "SC-176 fixture selects time over the MIDI clip");
+    const auto timeMenu = arrangement.contextMenuItems(false);
+    for (const auto *caption : {"Cut", "Copy", "Delete", "Duplicate", "Cut Time", "Copy Time", "Delete Time",
+                                "Duplicate Time", "Insert Silence"})
+        check(enabled(timeMenu, caption), ("SC-176: the time selection's menu offers " + juce::String(caption)).toRawUTF8());
+    check(item(timeMenu, "Paste Time") == nullptr, "SC-176: Paste Time is absent with an empty clipboard");
+    check(root.command(AppCommands::CopyTime) && enabled(arrangement.contextMenuItems(false), "Paste Time"),
+          "SC-176: a time copy makes Paste Time available");
+    check(invoke(timeMenu, "Delete"), "SC-176: choose Delete from the time selection's menu");
+    root.frame();
+    check(clipsOf(2).empty() && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar,
+          "SC-176: Delete removes selected material without deleting time");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();
@@ -16561,14 +16630,26 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
     root.exportAudio = [&](const ExportChoices &c) { asked = c; };
-    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
-    // at the project's rate.
-    const auto &transport = root.reader().transport();
+    // R36: leave the loop off and place the insert marker beyond a song longer than its brace.
+    const auto songLength = 11 * textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 20}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", songLength}};
+    check(document->ops().submit(std::move(clip)).ok && document->synchronise(), "SC-394 fixture creates an eleven-bar song");
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.insert = selection.start = selection.end = 19 * textproj::kWhole;
+    selection.marked = true;
+    const auto transport = root.reader().transport();
     check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
-              asked->startTicks == transport.loopStartTicks &&
-              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->startTicks == 0 && asked->lengthTicks == songLength &&
               asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
-          "the loop brace with the loop off, Main, at the project's rate");
+          "SC-394: with no range and looping off, export defaults to the whole song");
+    check(root.toggleLoop() && root.command(AppCommands::ExportAudio) &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks,
+          "SC-394: with looping on, export still defaults to the brace");
+    check(root.toggleLoop(), "SC-394 fixture turns looping off again");
     auto &sel = root.arrangement.geometry.selection;
     sel.start = 3840;
     sel.end = 3840 * 5;
@@ -19120,6 +19201,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "legacy Overview opens the Spectrum subpage of Analysers");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
+    panel.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::Compare) + 2, juce::sendNotificationSync);
+    check(panel.analysis.pageBox.getText() == "Bands" && panel.analysis.detail.view.getTitle() == "Third-Octave Bands",
+          "the Analysers picker opens the third-octave bands and their period scope");
+    panel.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::ThirdOctaveBands) + 2,
+                                         juce::sendNotificationSync);
+    check(panel.analysis.pageBox.getText() == "Waveform" && panel.analysis.detail.view.getTitle() == "Colour Waveform",
+          "the Analysers picker opens the colour waveform");
     panel.analysis.setPage(MixAnalysers::Page::Phase);
     root.state().mixViewTab = persistence.load("mix").mixViewTab;
     panel.adoptViewState(); root.frame();
@@ -20233,6 +20321,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                       "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
                 actual.state().zoom = oldZoom;
                 mix.analysis.detail.view.freeze(false); mix.analysis.setMode(SharedSpectrumView::Mode::Spectrum);
+                mix.analysis.detail.setMode(SharedSpectrumView::Mode::Spectrum);
                 mix.analysis.detail.slopeBox.setSelectedId(2, juce::sendNotificationSync);
                 mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
                 broker->pump(); mix.frame(actual.reader()); mix.analysis.detail.view.freeze(true);
@@ -20310,6 +20399,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                               mix.analysis.page() == MixAnalysers::Page::Spectrum && actual.state().mixViewTab == 0 &&
                               actual.state().mixAnalyzerDock && !dock.isShowing() && broker->stats().consumers == visibleConsumers,
                           "Overview folds into Spectrum once and only the visible consumers retain demand");
+                    mix.analysis.detail.setMode(SharedSpectrumView::Mode::Spectrum);
                     auto detached = std::make_unique<AnalysisPane>();
                     auto &spectrum = mix.analysis.detail.view;
                     detached->setSpectrumSlope(spectrum.spectrumSlope());
@@ -22338,8 +22428,8 @@ int main(int argc, char **argv) {
         };
 
         pick(1, "Spectrogram");
-        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Extended,
-              "the filled spectrum uses the existing filled display");
+        check(infoView.getTitle() == "Filled Spectrum",
+              "the Info choice activates the filled spectrum with its own worker profile");
         pick(2, "Filled Spectrum");
         check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Device,
               "the line spectrum uses the existing line display");
@@ -22356,6 +22446,11 @@ int main(int argc, char **argv) {
         }
         pick(0, "Classic Scope");
         a.mixViewPanel.analysis.setMode(Mode::Spectrum);
+        const auto &analysis = a.mixViewPanel.analysis;
+        check(analysis.detail.view.getTitle() == "Filled Spectrum" &&
+                  analysis.spectrumTraceBox.getNumItems() == 4 &&
+                  analysis.spectrumTraceBox.getText() == "Realtime Maximum",
+              "the Mix Spectrum opens Filled Spectrum with four curves and Realtime Maximum selected");
         a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
         a.mouseUp(dragAt(a, centre, centre));
         check(!a.state().mixView, "dragging across the Info box does not open Analysers");
