@@ -512,6 +512,32 @@ bool PluginRegistry::unblockScan(const std::string& format, const std::string& p
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 
+std::optional<std::size_t> PluginRegistry::unblockBlockedScans(std::string& error) {
+    if (audio::onAudioThread) return std::nullopt;
+    error.clear();
+    try {
+        SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
+        std::vector<std::pair<std::string,std::string>> blocked;
+        {
+            // The scanner's own blocks only: the failure row that placed it still owns it, as admission
+            // reads ownership. A manual block, or one a writer has touched since, stays.
+            SQLite::Statement query(*db_,"SELECT b.format,b.path FROM plugin_scan_blocks b "
+                "JOIN plugin_scan_failures f ON f.block_id=b.id AND f.format=b.format AND f.path=b.path "
+                "AND f.reason=b.reason AND f.updated_utc=b.updated_utc WHERE b.state='blocked'");
+            while(query.executeStep())
+                blocked.emplace_back(query.getColumn(0).getString(),query.getColumn(1).getString());
+        }
+        for(const auto& [format,path]:blocked) {
+            SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_blocks WHERE format=? AND path=? AND state='blocked'");
+            remove.bind(1,format);remove.bind(2,path);remove.exec();
+            SQLite::Statement cache(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+            cache.bind(1,format);cache.bind(2,path);cache.exec();
+            removeFailure(*db_,format,path);
+        }
+        transaction.commit();return blocked.size();
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+
 std::optional<std::vector<ScanBlock>> PluginRegistry::scanBlocks(std::string& error,
                                                                 std::size_t maximumRows) const {
     if (audio::onAudioThread) return std::nullopt;

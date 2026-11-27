@@ -282,15 +282,14 @@ struct ArrangementGeometry {
     static constexpr std::array<const char *, 5> kAdaptiveNames{"Widest", "Wide", "Medium", "Narrow",
                                                                 "Narrowest"};
     static constexpr int kGridNarrowest = 2;
-    // The step between grid lines, in quarter notes. The adaptive grid at its default keeps
-    // lines at least 14 pixels apart and never finer than a quarter, as it is drawn.
+    // The step between grid lines, in quarter notes. The default adaptive width
+    // aims for at least 14 pixels between lines until it reaches a thirty-second.
     double gridQuarters() const noexcept {
         return grid.triplet ? plainGridQuarters() * 2 / 3 : plainGridQuarters();
     }
     // The same step before triplets.
     double plainGridQuarters() const noexcept {
-        const double adaptive = std::max(1., std::pow(2., std::ceil(std::log2(14. / scale)))) *
-                                std::pow(2., -grid.narrow);
+        const double adaptive = std::exp2(std::ceil(std::log2(14. / scale)) - grid.narrow);
         return std::clamp(grid.fixed ? grid.fixedQuarters : adaptive, kFinestGrid, kWidestGrid);
     }
     // The project's meters (#299), for a grid in the meter in force: set by the view for each
@@ -352,6 +351,39 @@ struct ArrangementGeometry {
                 return;
             line = next;
         }
+    }
+    // Sub-beat grid lines get a short ruler mark. Label the eighths and sixteenths
+    // the grid lands on when there is room for a bar.beat.sixteenth label.
+    static constexpr double kRulerLabelSpacing = 56.;
+    template <class Visit>
+    void forEachRulerSubdivision(std::int64_t from, std::int64_t to,
+                                 const std::vector<textproj::Meter> &songMeters, Visit &&visit) const {
+        const double step = gridQuarters();
+        if (step >= 1. || step * scale < 4.)
+            return;
+        constexpr auto sixteenth = textproj::kWhole / 16;
+        const auto labelStep = scale / 4 >= kRulerLabelSpacing ? sixteenth :
+                               scale / 2 >= kRulerLabelSpacing ? 2 * sixteenth : 0;
+        forEachBar(from - meterAt(from, songMeters).barTicks(), to, songMeters,
+                   [&](std::int64_t start, std::int64_t bar) {
+            const auto &meter = meterAt(start, songMeters);
+            const auto next = std::upper_bound(songMeters.begin(), songMeters.end(), start,
+                                               [](auto at, const auto &m) { return at < m.start_ticks; });
+            const auto end = next == songMeters.end() ? start + meter.barTicks() :
+                                                        std::min(start + meter.barTicks(), next->start_ticks);
+            const auto beat = textproj::kWhole / std::max<std::int64_t>(1, meter.denominator);
+            forEachGridLine(std::max(from, start), std::min(to, end - 1), [&](std::int64_t line) {
+                const auto intoBar = line - start;
+                const auto intoBeat = intoBar % beat;
+                if (intoBeat == 0)
+                    return;
+                std::optional<BarPosition> label;
+                if (labelStep != 0 && intoBeat % labelStep == 0 &&
+                    x(std::min(end, line + beat - intoBeat)) - x(line) >= kRulerLabelSpacing)
+                    label = BarPosition{bar, intoBar / beat + 1, intoBeat / sixteenth + 1};
+                visit(line, label);
+            });
+        });
     }
     // The grid line after `tick`, or the one before it: where an arrow key takes the insert
     // marker, a clip or a selection's edge (online §41.4.1.3). Never before the start.
@@ -491,10 +523,9 @@ struct ArrangementGeometry {
     // The most the tracks scroll: the foot never scrolls, and the last track keeps a sliver in
     // sight.
     int maxScroll(const SnapshotReader &r) const noexcept { return std::max(0, tracksHeight(r) - kMinTrackHeight); }
-    // Scrolls the tracks just enough to show track `id` whole above the foot, as Live brings a newly
-    // inserted track into sight (manual 18.2). A row of the foot is always shown; a geometry without
-    // its view has nothing to scroll. True when the scroll moved.
-    bool reveal(const SnapshotReader &r, std::int64_t id) noexcept {
+    // Scrolls to show track `id` above the foot. Pointer selection can leave a partly visible row in place.
+    // The foot is pinned and a geometry without its view has nothing to scroll. True when the scroll moved.
+    bool reveal(const SnapshotReader &r, std::int64_t id, bool fully = true) noexcept {
         const auto all = rows(r);
         const auto i = all.find(id);
         const int h = heightFor(id);
@@ -504,8 +535,11 @@ struct ArrangementGeometry {
         for (std::size_t k = 0; k < i; ++k)
             top += heightFor(all[k].track->id);
         const int before = scrollY;
-        if (top + h - scrollY > footTop(r))
-            scrollY = top + h - footTop(r);
+        const int footY = footTop(r);
+        if (!fully && top + h > scrollY && top < scrollY + footY)
+            return false;
+        if (top + h - scrollY > footY)
+            scrollY = top + h - footY;
         if (top < scrollY)
             scrollY = top;
         scrollY = std::clamp(scrollY, 0, maxScroll(r));

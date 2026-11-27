@@ -740,17 +740,26 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
                 if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
                 spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
-                clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
-                clip->length=static_cast<std::int64_t>(clip->sourceLength);
-                auto task = audio::requestWarp(std::move(spec));
-                if(!task)throw std::runtime_error("cannot request Warp preparation here");
-                auto& shared = warpedReaders[task.get()];
-                clip->warp = shared.lock();
-                if(!clip->warp) {
-                    clip->warp = std::make_shared<WarpSource>(std::move(task));
-                    shared = clip->warp;
+                // Page an unchanged take from its original WAV window. A source that needs
+                // decoding still goes through the Warp worker, even with an identity map.
+                const bool nativeIdentity = clip->reader && spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
+                    spec.transposeSemis == 0 && spec.formantScale == 1 &&
+                    std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
+                        return anchor.sourceFrame == anchor.outputFrame;
+                    });
+                if (!nativeIdentity) {
+                    clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
+                    clip->length=static_cast<std::int64_t>(clip->sourceLength);
+                    auto task = audio::requestWarp(std::move(spec));
+                    if(!task)throw std::runtime_error("cannot request Warp preparation here");
+                    auto& shared = warpedReaders[task.get()];
+                    clip->warp = shared.lock();
+                    if(!clip->warp) {
+                        clip->warp = std::make_shared<WarpSource>(std::move(task));
+                        shared = clip->warp;
+                    }
+                    clip->reader.reset();
                 }
-                clip->reader.reset();
             }
             std::int64_t endTicks=origin;
             if(row.timeBase==0) {

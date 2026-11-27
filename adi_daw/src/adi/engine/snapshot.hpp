@@ -117,6 +117,7 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::optional<std::int64_t> color{}; // absent inherits the track colour
     std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
     std::optional<double> fadeInTension,fadeOutTension;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
@@ -197,9 +198,9 @@ struct RemarkNode {
 struct SampleSlotNode {
     std::int64_t deviceId=0;
     std::int32_t slot=0;
-    std::string name,uid,mediaHash,stateHash,problem;
+    std::string name,uid,mediaHash,stateHash,problem,fileName;
     std::optional<std::int64_t> mediaId;
-    bool empty=true,missing=false,hasDerivedState=false;
+    bool empty=true,missing=false,hasDerivedState=false,filePresent=false;
     friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
 };
 

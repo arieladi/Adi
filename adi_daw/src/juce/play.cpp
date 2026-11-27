@@ -841,7 +841,7 @@ int main(int argc, char** argv) {
         receipt["closed_ticks"]=adi_play::measurementTicks();
         receipt["callbacks"]={{"device_core",core.callbacks()},{"graph_host_blocks",gs.blocks},
             {"oversize_refusals",core.oversizeRefusals()},{"device_reconfigurations",core.reconfigurations()},
-            {"stop_notifications",measured.stops},{"device_error",deviceProblem.toStdString()}};
+            {"stop_notifications",measured.stops},{"device_error",bridge.lastError().toStdString()}};
         receipt["graph"]={{"published",gs.published},{"worker_count_before_release",measured.workersAtStop},
             {"blocks",measured.finalGraph.blocks},{"parallel_levels",measured.finalGraph.parallelLevels},
             {"worker_node_blocks",measured.finalGraph.workerNodeBlocks},{"worker_fallbacks",measured.finalGraph.workerFallbacks}};

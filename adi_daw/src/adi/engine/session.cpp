@@ -316,6 +316,40 @@ void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) 
 }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std::string& error) const {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing || !timing->settings.loopEnabled || !timing->settings.hasLoop) {
+        error = "The loop brace is not ready for recording.";
+        return false;
+    }
+
+    TempoMap authored;
+    for (const auto& point : model_.tempo)
+        authored.events.push_back({point.posTicks, point.bpm, static_cast<int>(point.curve)});
+    if (authored.events.empty())
+        authored.events.push_back({0, 120.0, 0});
+    if (timing->spec.externalTempoBpm || timing->tempo.events != authored.events) {
+        error = "Loop recording needs playback to follow the project's authored tempo.";
+        return false;
+    }
+
+    const auto begin = timing->loopBegin;
+    const auto end = timing->loopEnd;
+    const auto representable = [&](std::int64_t sample) {
+        const auto tick = timing->tempo.secondsToTicks(static_cast<double>(sample) / timing->sampleRate);
+        return timing->sampleForTick(tick) == sample;
+    };
+    if (begin < 0 || end <= begin || end > (std::int64_t{1} << 50) ||
+        end != timing->punchOutSample || !representable(begin) || !representable(end)) {
+        error = "Set a loop brace with a duration that can be recorded at this sample rate.";
+        return false;
+    }
+
+    AudioRecordingLoop loop{begin, end};
+    loop.tempo = std::make_shared<const TempoMap>(std::move(authored));
+    options.loop = std::move(loop);
+    return true;
+}
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
     if(!live_){error="No active audio session for recording";return false;}
     if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
@@ -490,7 +524,8 @@ void Session::restoreState(const Store& store, const rows::Device& row,
     }
 }
 
-void Session::resolveOne(const Store& store, const rows::Device& row) {
+void Session::resolveOne(const Store& store, const rows::Device& row,
+                         std::unique_ptr<device::DeviceInstance> preloaded) {
     const rows::DeviceChain* chain = chainOf(row.chainId);
     if (chain == nullptr) {
         sessionProblems_.push_back(deviceRef(row) + ": its chain " +
@@ -529,9 +564,11 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
            : (ref != nullptr && !ref->name.empty()) ? ref->name
            : "devices#" + std::to_string(row.id);
 
-    std::unique_ptr<device::DeviceInstance> inst;
+    std::unique_ptr<device::DeviceInstance> inst = std::move(preloaded);
     std::string err;
-    if (ref == nullptr) {
+    if (inst != nullptr) {
+        // SC-318: a placeholder's plug-in the loader has just provided.
+    } else if (ref == nullptr) {
         err = "no plugin reference";
     } else if (!loader_) {
         err = "no device loader";
@@ -638,6 +675,48 @@ void Session::resolveNewRows(const Store& store) {
     // A newly opened Session prepares its first graph straight after
     // resolving the devices. Give those preparations the saved key intent.
     if (!live_) syncFlags();
+}
+
+std::size_t Session::retryPlaceholders(const Store& store) {
+    if (!loaded_ || !loader_ || audio::onAudioThread) return 0;
+    std::size_t woke = 0;
+    for (const rows::Device& row : model_.devices) {
+        if (parkedDevice(row)) continue;
+        const auto mapped = byId_.find(row.id);
+        if (mapped == byId_.end()) continue;
+        const std::size_t previous = mapped->second;
+        if (!entries_[previous].placeholder || entries_[previous].retired) continue;
+        const rows::PluginRef* ref = refFor(row);
+        if (ref == nullptr) continue;
+        DeviceRequest rq;
+        rq.device = &row;
+        rq.ref = ref;
+        rq.sampleRate = spec_.sampleRate;
+        rq.maxFrames = spec_.maxFrames;
+        rq.channels = spec_.channels;
+        rq.exporting = spec_.exporting;
+        std::string err;
+        auto inst = loader_(rq, err);
+        if (inst == nullptr) {
+            if (!err.empty()) entries_[previous].error = err;
+            continue;
+        }
+        // The open's "kept as a placeholder" line goes with the placeholder.
+        const std::string said = deviceRef(row) + ": kept as a placeholder (ADR-0011): ";
+        std::erase_if(sessionProblems_, [&](const std::string& p) { return p.rfind(said, 0) == 0; });
+        resolveOne(store, row, std::move(inst));
+        Entry& old = entries_[previous];  // resolveOne may have grown entries_
+        old.retired = true;
+        old.trackId = 0;
+        ++stats_.retired;
+        --stats_.placeholders;
+        ++woke;
+    }
+    if (woke != 0) {
+        syncFlags();
+        (void)rebuild();
+    }
+    return woke;
 }
 
 void Session::retireDepartedRows() {
@@ -2440,6 +2519,7 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     result.bpm = tempo.bpmAt(tick);
     const auto& transport = session->transport_;
     result.playing = transport.playing();
+    result.recording = result.playing && session->recordingForDevices_.load(std::memory_order_acquire);
     result.looping = transport.looping();
     if (result.looping) {
         result.loopBegin = transport.loopBegin();
@@ -2702,13 +2782,18 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     RecordingPunchWindow punchWindow;
     if (remaining > 0 && remaining < prefix && timing)
         prefix = static_cast<std::int32_t>(remaining);
-    if (timing && captureRecording && !session_.transport_.looping() && !timing->settings.loopEnabled) {
-        if (timing->settings.punchIn)
-            punchWindow.in = RecordingPunchWindow::Boundary{timing->loopBegin, timing->settings.loopStartTicks};
-        if (timing->settings.punchOut)
+    const auto &transport = session_.transport_;
+    if (timing && captureRecording) {
+        const bool looping = transport.looping();
+        if (timing->settings.punchIn) {
+            const auto begin = looping ? transport.loopBegin() : timing->loopBegin;
+            punchWindow.in = RecordingPunchWindow::Boundary{begin, timing->settings.loopStartTicks};
+        }
+        // Loop already wraps at this end. Let the recorder keep every pass.
+        if (timing->settings.punchOut && !looping)
             punchWindow.out = RecordingPunchWindow::Boundary{timing->punchOutSample, timing->settings.loopEndTicks};
-        if (session_.transport_.playing() && punchWindow.active()) {
-            const auto position = session_.transport_.position();
+        if (transport.playing() && punchWindow.active()) {
+            const auto position = transport.sampleAt(0);
             if (punchWindow.out && position >= punchWindow.out->sample)
                 punch = RecordingPunch::After;
             else if (punchWindow.in && position < punchWindow.in->sample)
@@ -2717,6 +2802,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
             if (boundary && boundary->sample > position && boundary->sample - position < prefix)
                 prefix = static_cast<std::int32_t>(boundary->sample - position);
         }
+        if (looping || timing->settings.loopEnabled)
+            punchWindow = {}; // only linear takes use these bounds for placement
     }
     if ((remaining > 0 || prefix < io.frames) && timing &&
         (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
@@ -2752,7 +2839,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         return process(tail, captureRecording);
     }
     session_.recordingAudioTracks_ = captureRecording
-        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow)
+        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow,
+                                       timing ? &timing->tempo : nullptr, graph_.generation())
         : std::span<const std::int64_t>{};
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;

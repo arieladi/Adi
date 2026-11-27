@@ -15,6 +15,7 @@
 namespace adi::engine {
 class Transport;
 struct AudioMemorySnapshot;
+struct TempoMap;
 struct AudioMemoryTakeSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // resolved by recording::captureMemory on the owner
@@ -29,6 +30,7 @@ struct RecordingTarget {
 struct AudioRecordingLoop {
     std::int64_t beginSample=0,endSample=0;
     std::uint32_t maxPasses=1024; // 1..65536; exhaustion refuses a whole callback
+    std::shared_ptr<const TempoMap> tempo{}; // authored and playback clocks agreed at Arrangement admission
 };
 struct RecordedPass {
     std::uint64_t sourceStartFrame=0,frames=0;
@@ -69,6 +71,12 @@ struct AudioRecordingPreview {
         RecordingPunchWindow window;
     };
     std::optional<PunchedPlacement> punchedPlacement;
+    std::optional<AudioRecordingLoop> loop; // bounds frozen when the recording starts
+    struct Range {
+        std::int64_t startSample;
+        std::uint64_t sourceStartFrame, frames;
+    };
+    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames) const noexcept;
 };
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.
@@ -138,7 +146,8 @@ public:
     // this slice. The view is valid until the next capture call on the driver.
     std::span<const std::int64_t> capture(const AudioIo&,const Transport&,
                                          RecordingPunch=RecordingPunch::Within,
-                                         const RecordingPunchWindow& = {})noexcept;
+                                         const RecordingPunchWindow& = {}, const TempoMap* clock=nullptr,
+                                         std::uint64_t clockGeneration=0)noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

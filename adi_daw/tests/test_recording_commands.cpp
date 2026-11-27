@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/recording_commands.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
@@ -487,6 +488,72 @@ void numberedRecordingFiles() {
           !fs::exists(folder/"Another Track 0001.wav"),
           "identical recorded content keeps the existing owned WAV and its first name");
 }
+
+void recordedTakeFollowsTempo() {
+    Fixture f;
+    constexpr std::int64_t changeTick = 48048;
+    constexpr std::int64_t firstTick = 24024;
+    constexpr std::int64_t lastTick = 60060;
+    f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(48048,60)");
+    auto recorded = f.capture(false, Precision::Float32, false, 200, {}, 131);
+    const auto sourceHash = media::blake3File(recorded.tracks.front().file);
+    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Follow tempo"}}};
+    auto prepared = recording::prepareCommit(*f.store, recorded, ids, 31);
+    if (!recording::commit(*f.store, prepared).ok)
+        throw std::runtime_error("could not publish the tempo-following recording");
+    const auto original = SnapshotBuilder::fromStore(*f.store);
+    const auto& clip = *original->findTrack(21)->clips.front();
+    check(clip.posTicks == firstTick && clip.lengthTicks == lastTick - firstTick && clip.audio &&
+              clip.audio->warpEnabled && clip.audio->warpMarkers && clip.audio->sourceStartFrames == 0 &&
+              clip.audio->sourceLengthFrames == 200,
+          "SC-248: a compensated recording starts at its original musical position with Warp on");
+    if (!clip.audio || !clip.audio->warpMarkers)
+        return;
+    const auto map = audio::readWarpMap(*clip.audio->warpMarkers, 200);
+    check(map && map.markers == std::vector<WarpMarker>{{0, 0}, {100, changeTick - firstTick},
+                                                        {200, lastTick - firstTick}},
+          "SC-248: the take's warp map retains the tempo change inside its captured source");
+    const auto landed = f.play(Precision::Float32);
+    bool unchanged = true;
+    for (std::size_t frame = 0; frame < landed.size(); ++frame)
+        unchanged = unchanged && landed[frame] == (frame >= 100 && frame < 300 ? Fixture::sample(frame - 100) : 0.f);
+    check(unchanged, "SC-248: at the capture tempo the entire WAV plays at its compensated sample positions");
+
+    struct TempoCase { int first, second; std::size_t begin, middle, end; };
+    for (const auto example : {TempoCase{240, 120, 50, 100, 150}, TempoCase{60, 30, 200, 400, 600}}) {
+        SQLite::Statement set(f.store->db(), "UPDATE tempo_map SET bpm=? WHERE pos_ticks=?");
+        set.bind(1, example.first);
+        set.bind(2, 0);
+        set.exec();
+        set.reset();
+        set.bind(1, example.second);
+        set.bind(2, changeTick);
+        set.exec();
+        const auto current = SnapshotBuilder::fromStore(*f.store);
+        const auto& take = *current->findTrack(21)->clips.front();
+        const auto sampleAt = [&](std::int64_t tick) {
+            return static_cast<std::size_t>(std::llround(current->tempo->ticksToSeconds(tick) * 48000));
+        };
+        const auto heard = f.play(Precision::Float32);
+        const bool silentOutside = std::all_of(heard.begin(), heard.begin() + static_cast<std::ptrdiff_t>(example.begin),
+                                               [](double value) { return value == 0; }) &&
+            std::all_of(heard.begin() + static_cast<std::ptrdiff_t>(example.end), heard.end(),
+                        [](double value) { return value == 0; });
+        const bool audibleTail = std::any_of(heard.begin() + static_cast<std::ptrdiff_t>(example.end - 8),
+                                             heard.begin() + static_cast<std::ptrdiff_t>(example.end),
+                                             [](double value) { return value != 0; });
+        check(sampleAt(take.posTicks) == example.begin && sampleAt(changeTick) == example.middle &&
+                  sampleAt(take.posTicks + take.lengthTicks) == example.end &&
+                  heard[example.begin] != 0 && audibleTail && silentOutside,
+              "SC-248: the take keeps its musical extent and audible tail at faster and slower tempos");
+    }
+    std::string why;
+    const auto file = media::resolveMedia(media::projectFolder(*f.store), media::mediaRow(f.store->db(), 8), why);
+    const auto publishedHash = media::blake3File(file);
+    check(sourceHash && publishedHash && sourceHash.hex == publishedHash.hex,
+          "SC-248: changing tempo leaves the shared recording file byte-identical");
+}
+
 // walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
 // take's one Undo step; nothing is left under it to play.
 void linearTakeReplacesWhatItCovers() {
@@ -563,13 +630,25 @@ void latencyCompensationKeepsPunchProtection() {
         if(!committed.ok)
             throw std::runtime_error("cannot land the punched take: "+committed.error);
         auto &db=f.store->db();
-        SQLite::Statement clip(db,"SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames "
+        SQLite::Statement clip(db,"SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames, "
+                                  "a.warp_enabled,a.warp_mode,a.warp_markers "
                                   "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=17");
         const auto startTick=tempo->secondsToTicks(static_cast<double>(placement.start)/48000);
         const auto endTick=tempo->secondsToTicks(static_cast<double>(placement.end)/48000);
-        check(clip.executeStep() && clip.getColumn(0).getInt64()==startTick && clip.getColumn(1).getInt64()==endTick-startTick &&
-                  clip.getColumn(2).getInt64()==placement.source && clip.getColumn(3).getInt64()==placement.end-placement.start,
+        const auto length=placement.end-placement.start;
+        const bool hasClip=clip.executeStep();
+        check(hasClip && clip.getColumn(0).getInt64()==startTick && clip.getColumn(1).getInt64()==endTick-startTick &&
+                  clip.getColumn(2).getInt64()==placement.source && clip.getColumn(3).getInt64()==length,
               "the clip uses the compensated intersection and its exact source interval");
+        bool hasClippedWarp=false;
+        if (hasClip && clip.getColumn(4).getInt()==1 && clip.getColumn(5).getString()=="beats" && !clip.getColumn(6).isNull()) {
+            const auto blob=clip.getColumn(6);
+            const auto map=audio::readWarpMap({static_cast<const std::byte*>(blob.getBlob()),
+                                               static_cast<std::size_t>(blob.getBytes())},
+                                              static_cast<std::uint64_t>(length));
+            hasClippedWarp=map && map.markers==std::vector<WarpMarker>{{0,0},{length,endTick-startTick}};
+        }
+        check(hasClippedWarp,"Beats Warp anchors are relative to the clipped source window");
         clip.reset();
         std::string why;
         const auto saved=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(db,18),why);
@@ -895,14 +974,16 @@ void loopPassesAndHistory(const std::filesystem::path& workFolder={}) {
         auto& db=fixture.store->db();
         check(db.execAndGet("SELECT count(*) FROM media_files").getInt()==1 && db.execAndGet("SELECT count(*) FROM clips WHERE lane_id IS NOT NULL").getInt()==4,
             "four takes share exactly one media row");
-        SQLite::Statement windows(db,"SELECT c.name,a.src_start_frames,a.src_len_frames FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.lane_id IS NOT NULL ORDER BY c.id");
+        SQLite::Statement windows(db,"SELECT c.name,a.src_start_frames,a.src_len_frames FROM clips c "
+            "JOIN audio_clips a ON a.clip_id=c.id WHERE c.lane_id IS NOT NULL "
+            "AND a.warp_enabled=1 AND a.warp_mode='beats' ORDER BY c.id");
         bool exactWindows=true;std::size_t pass=0;
         while(windows.executeStep()) {
             const auto expectedName=pass==0?std::string("Audio"):"Audio "+std::to_string(pass+1);
             exactWindows=exactWindows && pass<4 && windows.getColumn(0).getString()==expectedName &&
                 windows.getColumn(1).getInt64()==static_cast<std::int64_t>(pass*128) && windows.getColumn(2).getInt64()==(pass==3?64:128);++pass;
         }
-        check(exactWindows && pass==4 && db.execAndGet("SELECT count(*) FROM lanes WHERE name='Lane'").getInt()==4,"take names, source offsets, partial final extent and new Lane defaults are literal");
+        check(exactWindows && pass==4 && db.execAndGet("SELECT count(*) FROM lanes WHERE name='Lane'").getInt()==4,"loop takes follow tempo and retain their names, exact source windows and default lane names");
         SQLite::Statement laneOrder(db,"SELECT id FROM lanes ORDER BY ord,id");
         bool chronological=true;pass=0;
         while(laneOrder.executeStep()) {
@@ -1096,6 +1177,7 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
+    recordedTakeFollowsTempo();
     latencyCompensationKeepsPunchProtection();
     midiLinearTakes();mixedLinearTake();
     midiLoopTakes();

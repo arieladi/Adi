@@ -105,8 +105,6 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
     void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
     void setListing(LibraryListing, bool ready = true);
-    // Where the list must stop, in this panel's coordinates: above the AI tab at the panes' foot.
-    void setFootLimit(int y);
     const LibraryListing &listing() const noexcept;
     // Selects a label, as a click on it does.
     void choose(int);
@@ -120,6 +118,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         const PluginEntry *plugin = nullptr;
         int depth = 0;
         const preset::Entry *savedPreset = nullptr;
+        juce::String tooltip{};
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads a row (double-click, Enter), or says why it cannot.
@@ -174,6 +173,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void refill();
     int getNumRows() override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
+    juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
     // A folder's heading is never selected: the selection steps past it, the way it was moving.
@@ -189,7 +189,6 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
-    int footLimit_ = 1 << 20;
     // The search's down arrow goes into the list (§41.4.1.6).
     struct SearchKeys final : juce::KeyListener {
         BrowserPanel &panel;

@@ -133,6 +133,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
     static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     bool synchronise();
+    // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
+    // Returns how many woke (the view then re-reads the session).
+    std::size_t wakeMissingPlugins();
     void tick(std::int64_t milliseconds);
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
     // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
@@ -318,6 +321,9 @@ class ProjectDocument final : public engine::BlockProcessor {
                                const std::optional<rows::PluginRef> &installed = {});
     bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
                        std::int64_t nowUtc);
+    // SC-325 (ADR-0134 d7): the expression route remembered for a plug-in (format, uid), the default of a
+    // new instance `loadPlugin` makes; the project then keeps it on the device row. Unset: Auto.
+    std::function<std::optional<engine::RouteChoice>(const std::string &, const std::string &)> pluginRouteDefault;
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);

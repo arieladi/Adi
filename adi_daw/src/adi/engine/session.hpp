@@ -227,6 +227,13 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+
+    /// SC-318: asks the loader again for every placeholder's plug-in, as a
+    /// plug-in scan ends. One that now loads takes the placeholder's place --
+    /// its stored state and parameter rows restored, as at open -- and the
+    /// placeholder is retired; one still missing stays as it is, its reason
+    /// updated. Rebuilds when any woke. Returns how many woke.
+    std::size_t retryPlaceholders(const Store& store);
     // nullopt means the latest transaction needs ordinary full synchronisation.
     std::optional<bool> refreshDeviceKeys(const Store&, const std::shared_ptr<const std::vector<std::uint8_t>>& image);
 
@@ -261,6 +268,9 @@ public:
     // Turning a gate off prevents new writes but keeps a pending write suspended
     // until its captured data is committed/refreshed and explicitly finished.
     void setAutomationWriteState(bool armed, bool recording) noexcept;
+    /// SC-333: a take is being recorded, so the transport a hosted plug-in is handed says it records
+    /// while it plays. Set by the document as its recording starts and ends; read on the audio thread.
+    void setRecordingForDevices(bool on) noexcept { recordingForDevices_.store(on, std::memory_order_release); }
     [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
     [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
     [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
@@ -477,6 +487,8 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
+    bool configureArrangementLoopRecording(AudioRecordingSpec&, std::string& error) const;
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
@@ -527,7 +539,8 @@ private:
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
-    void resolveOne(const Store& store, const rows::Device& row);
+    void resolveOne(const Store& store, const rows::Device& row,
+                    std::unique_ptr<device::DeviceInstance> preloaded = nullptr);
     void retireDepartedRows();
     void syncFlags();
     void syncRoute(Entry& e, device::DeviceInstance& inst);
@@ -608,6 +621,7 @@ private:
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
     std::atomic<std::int64_t> driverSample_{0};
     std::atomic<bool> driverPlaying_{false};
+    std::atomic<bool> recordingForDevices_{false}; // SC-333
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
     std::int64_t loopStartTick_=0,loopEndTick_=0;

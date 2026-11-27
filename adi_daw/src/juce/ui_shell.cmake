@@ -1,5 +1,5 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
-target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/theme.cpp src/adi/ui/density.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp src/adi/ui/shared_analysis.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/theme.cpp src/adi/ui/density.cpp src/adi/ui/project_document.cpp src/adi/ui/plugin_hold_off.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp src/adi/ui/shared_analysis.cpp)
 target_sources(adi_core PRIVATE src/adi/ui/analysis_comparison.cpp)
 add_executable(adi_ui_analysis_comparison_tests tests/test_analysis_comparison.cpp)
 target_link_libraries(adi_ui_analysis_comparison_tests PRIVATE adi_core adi_warnings)
@@ -120,6 +120,10 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_shared_analysis.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shared_spectrum_tests COMMAND adi_ui_shared_spectrum_tests)
+    if(APPLE)
+        set_tests_properties(adi_ui_shared_spectrum_tests PROPERTIES
+            FAIL_REGULAR_EXPRESSION "Leaked objects detected:.*ImagePixelData")
+    endif()
     juce_add_console_app(adi_ui_mix_functions_tests PRODUCT_NAME "adi_ui_mix_functions_tests")
     target_sources(adi_ui_mix_functions_tests PRIVATE tests/test_ui_mix_functions.cpp)
     target_link_libraries(adi_ui_mix_functions_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
@@ -132,7 +136,14 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_eq_pages.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
-    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
+    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw"
+        MICROPHONE_PERMISSION_ENABLED TRUE
+        MICROPHONE_PERMISSION_TEXT "ADI uses audio input to record audio tracks.")
+    if(APPLE)
+        add_test(NAME adi_ui_microphone_usage_tests
+            COMMAND /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription"
+                "$<TARGET_BUNDLE_CONTENT_DIR:adi_app>/Info.plist")
+    endif()
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)

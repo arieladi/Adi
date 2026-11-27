@@ -192,10 +192,11 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
-        state.follow = j.value("follow", false);
+        state.follow = j.value("follow", state.follow);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);
+        state.trackMixer = j.value("trackMixer", true);
         state.mixerInOut = j.value("mixerInOut", false);
         state.mixerSends = j.value("mixerSends", true);
         state.trackOptions = j.value("trackOptions", false);
@@ -307,6 +308,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"overview", state.overview},
                             {"inOut", state.inOut},
                             {"sends", state.sends},
+                            {"trackMixer", state.trackMixer},
                             {"mixerInOut", state.mixerInOut},
                             {"mixerSends", state.mixerSends},
                             {"trackOptions", state.trackOptions},

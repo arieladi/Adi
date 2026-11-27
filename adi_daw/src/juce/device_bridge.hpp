@@ -105,6 +105,14 @@ public:
         // never takes this lock.
         const std::lock_guard lock(errorMutex_);
         pendingError_ = message;
+        lastError_ = message;
+    }
+
+    // The last error a driver reported, kept for a tool's receipt (adi_play). The window takes its
+    // problems once, through takeDeviceProblem.
+    [[nodiscard]] juce::String lastError() const {
+        const std::lock_guard lock(errorMutex_);
+        return lastError_;
     }
 
     // The owner's explicit Settings change may replace a device or turn audio off.
@@ -142,8 +150,9 @@ private:
     OpenResult last_;
     DeviceName currentDevice_;
     std::optional<DeviceName> stoppedDevice_; // owner thread, like open/close
-    std::mutex errorMutex_;
+    mutable std::mutex errorMutex_;
     std::optional<juce::String> pendingError_;
+    juce::String lastError_;
 };
 
 /// The timer that ticks `DeviceHost`, and the only JUCE-shaped part of it.
