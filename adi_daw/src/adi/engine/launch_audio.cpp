@@ -136,6 +136,10 @@ LaunchAudioClip LaunchAudioClip::fromPagedWarp(std::int64_t clip, std::uint32_t 
     return result;
 }
 
+std::int32_t LaunchAudioClip::latencySamples() const noexcept {
+    return pages_ ? pages_->latencySamples(clip_) : 0;
+}
+
 std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const noexcept {
     if (!std::isfinite(bpm) || bpm <= 0)
         return -1;

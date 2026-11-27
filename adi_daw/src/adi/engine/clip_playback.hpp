@@ -35,7 +35,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint64_t residentBudget = kSessionResidentPcmBudget, bool allowSteadyWarp = true);
 class ClipPlayback {
 public:
-    enum class WarpPlayback { Streaming, Prepared, NativePages };
+    enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
                  std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false,
                  WarpPlayback = WarpPlayback::Streaming);
@@ -46,6 +46,8 @@ public:
     /// Driver-only lookahead for an idle source. Each candidate is a physical
     /// source window. Queue pages with the same worker used by playback.
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
+    /// Owner-side R3 delay for a private source bank whose PCM is aligned.
+    [[nodiscard]] std::int32_t warpLatencyFor(std::int64_t trackId) const noexcept;
     using SampleRange = std::pair<std::int64_t, std::int64_t>;
     /// Owner-side half-open Arrangement extents from the prepared clip clock.
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;

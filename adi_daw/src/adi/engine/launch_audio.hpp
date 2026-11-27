@@ -66,6 +66,7 @@ public:
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept;
     [[nodiscard]] bool usesPages() const noexcept { return pages_ || pagedWarp_; }
     [[nodiscard]] bool followsTempo() const noexcept { return warp_ || pagedWarp_; }
     void prefetchWarp(std::int64_t launchTick, std::int64_t sourceTick) const noexcept;

@@ -13,7 +13,7 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
                                   std::span<const LaunchPagedSource> sources, std::uint32_t sampleRate,
                                   std::int32_t channels, std::int32_t maxFrames)
     : pages_(std::move(project), clock_, sampleRate, channels, maxFrames, nullptr, false,
-             ClipPlayback::WarpPlayback::Prepared), channels_(channels),
+             ClipPlayback::WarpPlayback::AlignedR3), channels_(channels),
       blockFrames_(maxFrames), sampleRate_(sampleRate) {
     if (channels < 1 || channels > 64 || maxFrames < 1 || maxFrames > 4096)
         throw std::invalid_argument("invalid Session paged playback format");
@@ -23,7 +23,7 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
             source.loopBeginFrame < 0 || source.loopEndFrame < source.loopBeginFrame)
             throw std::invalid_argument("invalid Session paged source");
         const auto nodes = pages_.sourcesFor(source.sourceTrack);
-        if (nodes.size() == 1) sources_.push_back({source, nodes.front()});
+        if (nodes.size() == 1) sources_.push_back({source, nodes.front(), pages_.warpLatencyFor(source.sourceTrack)});
     }
     std::ranges::sort(sources_, {}, [](const Entry& entry) { return entry.source.clip; });
     if (std::ranges::adjacent_find(sources_, {}, [](const Entry& entry) { return entry.source.clip; }) != sources_.end())
@@ -61,6 +61,11 @@ const LaunchPagedAudio::Entry* LaunchPagedAudio::find(std::int64_t clip) const n
 
 bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
     return find(clip) != nullptr;
+}
+
+std::int32_t LaunchPagedAudio::latencySamples(std::int64_t clip) const noexcept {
+    const auto* source = find(clip);
+    return source ? source->latency : 0;
 }
 
 void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {

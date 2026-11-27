@@ -649,7 +649,9 @@ public:
     void attachLaunch(std::shared_ptr<const LaunchAudioRuntime> runtime, const TrackSource* before) {
         launchAudio = std::move(runtime);
         if (!launchAudio) return;
+        playbackDelay = std::max(playbackDelay, launchAudio->latencyForTrack(track));
         if (playbackDelay == 0) return;
+        for (auto* clip : clips) clip->playbackDelay = playbackDelay;
 
         if (before && before->launchDelay && before->playbackDelay == playbackDelay && before->channels == channels &&
             before->launchAudio->incarnation() == launchAudio->incarnation()) {
@@ -902,7 +904,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 warpMode && (a->formantShift == 0) &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
                  (*warpMode == audio::WarpMode::RePitch && a->transposeSemis == 0));
-            const bool r3Mode = warpPlayback == WarpPlayback::Streaming && warpMode &&
+            const bool r3Mode = (warpPlayback == WarpPlayback::Streaming || warpPlayback == WarpPlayback::AlignedR3) && warpMode &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
             if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
@@ -1139,7 +1141,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
-            if (clip->r3Warp)
+            if (clip->r3Warp && warpPlayback == WarpPlayback::Streaming)
                 (*track)->playbackDelay=std::max((*track)->playbackDelay,clip->r3Warp->latencySamples());
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const MissingClipMedia& e) {
@@ -1690,6 +1692,12 @@ void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candida
         clip.trimAdmission(requested);
         clip.request(requested);
     }
+}
+std::int32_t ClipPlayback::warpLatencyFor(std::int64_t id) const noexcept {
+    std::int32_t delay = 0;
+    for (const auto& clip : impl_->clips)
+        if (clip->track == id && clip->r3Warp) delay = std::max(delay,clip->r3Warp->latencySamples());
+    return delay;
 }
 std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
     std::vector<SampleRange> ranges;

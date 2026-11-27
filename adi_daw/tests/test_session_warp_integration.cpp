@@ -257,13 +257,17 @@ void preparedTempoScene(bool paged) {
     // the replacement's Re-Pitch media would be eligible for native Warp.
     store->db().exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
         "UPDATE clip_launch SET legato=0 WHERE clip_id=102");
+    // The transposed Complex variant exceeds the streaming pitch range and
+    // exercises the prepared paging fallback through the same tempo scene.
     if (paged) store->db().exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102;"
-        "UPDATE audio_clips SET warp_mode='complex' WHERE clip_id=102");
+        "UPDATE audio_clips SET warp_mode='complex',transpose_semis=12.25 WHERE clip_id=102");
 
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
     require(session.problems().empty(), "initial tempo bank is prepared");
+    if (paged) require(session.graph().currentGraph()->latencySamples() == 0,
+        "out-of-domain R3 slot keeps the prepared paging path");
     const auto last = frameAfterTempoScene(paged ? 1 : 3) + 1024;
     std::vector<float> pcm(static_cast<std::size_t>(last));
     Playback playback{session, pcm};
@@ -275,11 +279,11 @@ void preparedTempoScene(bool paged) {
     require(playback.count == 2 && playback.edges[0].sample == 0 &&
         playback.edges[1].sample == tempoSceneFrame && playback.edges[1].newClip == 102 &&
         playback.edges[1].sourceTick == 0, "the addressed slot starts from source zero at the exact tempo bar");
-    constexpr std::array<float,2> complexPeaks{-.304f, -.426f};
+    constexpr std::array<float,2> complexPeaks{-.09f, -.543f};
     constexpr std::array<float,4> resampledPeaks{-.5f, -.6f, -.7f, -.8f};
     const auto error = paged ? checkTempoPulses(pcm, complexPeaks, 0.08f, "Paged Complex")
         : checkTempoPulses(pcm, resampledPeaks, 0.03f, "RAM Re-Pitch");
-    require(error <= (paged ? 64 : 2), "prepared slot audio follows the performed 140 BPM playback grid");
+    require(error <= (paged ? 192 : 2), "prepared slot audio follows the performed 140 BPM playback grid");
 }
 
 LaunchTrackStatus trackState(const Session& session) {

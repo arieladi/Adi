@@ -423,6 +423,20 @@ std::span<const LaunchRenderSlice> LaunchAudioRuntime::sectionsFor(std::int64_t 
                                : std::span<const LaunchRenderSlice>{ranges.midi.data(), ranges.size};
 }
 
+std::int32_t LaunchAudioRuntime::latencyForTrack(std::int64_t track) const noexcept {
+    const auto forBank = [track](const LaunchAudioProject& bank) {
+        const auto slots = bank.view().slots;
+        auto maximum = std::int32_t{0};
+        for (auto it = std::ranges::lower_bound(slots, track, {}, &LaunchSlot::track);
+             it != slots.end() && it->track == track; ++it) {
+            if (const auto* clip = bank.clip(it->clip)) maximum = std::max(maximum, clip->latencySamples());
+        }
+        return maximum;
+    };
+    const auto after = forBank(*project_);
+    return beforeClock_ ? std::max(after, forBank(*beforeClock_)) : after;
+}
+
 void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node, std::span<std::uint8_t> replaces) const noexcept {
     if (!active_ || tracks_.empty())
         return;

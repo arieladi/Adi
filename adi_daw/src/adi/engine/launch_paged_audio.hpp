@@ -22,7 +22,7 @@ struct LaunchPagedSource {
 class LaunchPagedAudio {
 public:
     LaunchPagedAudio(std::shared_ptr<const ClipProject>, std::span<const LaunchPagedSource>,
-                      std::uint32_t sampleRate, std::int32_t channels, std::int32_t maxFrames);
+                     std::uint32_t sampleRate, std::int32_t channels, std::int32_t maxFrames);
     LaunchPagedAudio(const LaunchPagedAudio&) = delete;
     LaunchPagedAudio& operator=(const LaunchPagedAudio&) = delete;
 
@@ -30,6 +30,7 @@ public:
     /// admission. No Store or future file callback survives into the driver.
     [[nodiscard]] bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
     [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
+    [[nodiscard]] std::int32_t latencySamples(std::int64_t clip) const noexcept;
     /// Driver only. Queue an idle clip's upcoming source phase while keeping
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
@@ -47,7 +48,7 @@ public:
     }
 
 private:
-    struct Entry { LaunchPagedSource source; Node* playback; };
+    struct Entry { LaunchPagedSource source; Node* playback; std::int32_t latency; };
     [[nodiscard]] const Entry* find(std::int64_t clip) const noexcept;
     Transport clock_;
     ClipPlayback pages_;
