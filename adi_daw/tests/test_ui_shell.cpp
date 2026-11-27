@@ -21456,6 +21456,16 @@ int main(int argc, char **argv) {
               "a click on Track writes the port's record at once, and the host follows");
         table.rebuild();
         check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        {
+            // SC-405: every switch does something, or is not a switch.
+            const auto &in = table.rows()[0]->switches, &out = table.rows()[1]->switches;
+            check(in[0]->isEnabled() && in[3]->isEnabled() && !in[1]->isEnabled() && !in[2]->isEnabled() &&
+                      in[1]->getTooltip().contains("sync") && in[2]->getTooltip().contains("Remote"),
+                  "an input's Track and MPE are switches; Sync and Remote, read by nothing yet, are dimmed and say why");
+            check(std::none_of(out.begin(), out.end(), [](const auto &s) { return s->isEnabled(); }) &&
+                      out[0]->getTooltip().contains("sends no MIDI"),
+                  "an output's four switches are dimmed: ADI sends no MIDI to a port yet");
+        }
         check(settings.get("midi.ports")["in:port-1"].value("name", std::string()) == "Keystation 61",
               "the record keeps the port's name (N61)");
         check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");

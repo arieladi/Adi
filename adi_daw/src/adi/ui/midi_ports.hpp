@@ -26,6 +26,20 @@ struct MidiPortSwitches {
     friend bool operator==(const MidiPortSwitches &, const MidiPortSwitches &) = default;
 };
 // A switch's default: the registry's `midi.port.<field>` row (false where the row is missing).
+// SC-405: whether a port's switch does anything yet, and if not, why, for its tooltip. On an input, Track
+// feeds the tracks and MPE parses per-note expression; Remote opens the port for control surfaces nothing
+// reads yet (SRF-05), and Sync is MIDI clock, not built (TM-LS-03). ADI sends no MIDI to an output yet, so
+// no output switch acts. A switch that does nothing is shown, dimmed, and cannot be turned.
+inline std::string midiPortSwitchInert(bool input, const char *field) {
+    const std::string f = field;
+    if (!input)
+        return "ADI sends no MIDI to an output port yet.";
+    if (f == "sync")
+        return "MIDI sync (clock) is not built yet.";
+    if (f == "remote")
+        return "Control surfaces (Remote) are not built yet.";
+    return {};
+}
 inline bool midiPortDefault(const char *field) {
     const auto *row = settings::find(std::string("midi.port.") + field);
     return row != nullptr && row->defaultValue.is_boolean() && row->defaultValue.get<bool>();
