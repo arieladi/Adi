@@ -30,6 +30,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-267 | `basics/look-chain` at `77f611a5` | Reveal keyboard and cross-view track selections. Keep manual scroll and editing gestures stable. Window seat. | Headless keys, Mixer to Arrangement selection, automation hit-testing and edit viewport checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-268 | `basics/look-chain` at `03505361` | Disable unavailable Reference Track controls with reasons and connect visibility for assigned roles. Window and Mix View seats. | Peerless menu and visibility tests passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-270 | `basics/look-chain` at `2affb764` | Wire Arrangement M and View Volume to the volume, pan and meter group. Window seat. | Peerless click, layout, menu state and per-window persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-290 | `basics/look-chain` at `9b50a04d` | Show the preceding device's stereo output in each Device View gap. Window seat. | Headless tap, channel, clipping, stale signal and visibility checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -217,6 +218,18 @@ At 1440 × 900 Compact, Mix View controls keep these local rectangles before and
 ### SC-270
 
 At 1440 × 900 Compact, the Arrangement Names Bar's M hit box stays `(1301, 58, 18, 20)`. Its lit face turns dark when the mixer group is hidden. With I/O on, volume `(82, 20, 35, 13)`, pan `(132, 20, 45, 13)` and meter `(183, 1, 8, 84)` disappear from the track row. Send A moves from `(82, 37, 29, 13)` to `(82, 20, 29, 13)` and the visible Delay field from `(82, 54, 45, 13)` to `(82, 37, 45, 13)`. Routing and track switches remain usable. The approved sheet's M face is lit at `(1750, 103, 22, 16)`.
+
+### SC-290
+
+The peerless software-render fixture is 1200 × 720 logical pixels in Compact density. The Device View is `(324,486,868,196)` in root coordinates, and the inner strip is `(328,490,860,188)`. Three 150 px device panels start at strip-local x = 10, 171 and 332. The strip does not scroll in this fixture.
+
+| Surface | Before | After |
+|---|---|---|
+| Gap after device 50 | Two fixed wells at `(163,82,2,24)` and `(166,82,2,24)` | Same wells. A peak of 0.5 (−6.02 dBFS) fills `(163,86,2,20)` in green. Silence leaves the other channel dark. |
+| Gap after device 51 | Two fixed wells at `(324,82,2,24)` and `(327,82,2,24)` | Same wells. A peak of 1.1 (+0.83 dBFS) fills `(327,83,2,23)` in red. Silence leaves the other channel dark. |
+| Pause in published audio | Fixed wells | The fill clears after 250 ms while the wells stay in place. |
+
+Locations are strip-local `(x,y,width,height)` unless noted. `deviceOutputMeters` uses separate synthetic `ScopeTap` writers on the existing `SharedAnalysis` path and reads the rendered wells. It checks the prior device ID as well as the channel colors and meter height, then hides the Device View to verify release of both tap leases. Folded devices retain their output meters. A gap that would join different authored chains remains dark. This touches the window seat’s Device View implementation and shell tests.
 
 ## For the director
 
