@@ -40,7 +40,10 @@ public:
     /// Owner only, before publishing. The span object outlives rendering of this
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
+    // Includes notices for clips that use prepared Warp audio.
     const std::vector<std::string>& problems() const noexcept;
+    // Source errors for Session's export, Freeze and analysis preflight.
+    [[nodiscard]] std::span<const std::string> fatalProblems() const noexcept;
     // Off-callback owner view of the external files successfully selected
     // by this generation, including Session's frozen-source substitutions.
     // Names the original input to decode/warp, not a second media resolver or

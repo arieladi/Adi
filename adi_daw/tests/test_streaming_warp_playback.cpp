@@ -467,6 +467,37 @@ std::vector<StereoFrame> exportWav(const std::filesystem::path& project, std::si
     return stereo;
 }
 
+void preparedFallbackNotice() {
+    Project project("complex");
+    project.tempo(0, 4 * quarter, 300);
+    constexpr std::string_view notice = "clips#7: tempo changes need a new prepared Warp render";
+    {
+        Session session;
+        project.load(session, Precision::Float32, sourceRate);
+        const auto* clips = session.clips();
+        const auto& diagnostics = clips->problems();
+        check(std::find(diagnostics.begin(), diagnostics.end(), notice) != diagnostics.end(),
+              "ClipPlayback names the Complex clip using prepared Warp audio");
+        check(clips->fatalProblems().empty() && session.problems().empty(),
+              "the prepared Warp notice leaves offline preflight resolved");
+        const auto frames = 4 * framesPerBeat + sourceRate / 3;
+        const auto playback = compensatedPlayback(session, frames, 257);
+        const auto exported = exportWav(project.store->path(), frames);
+        check(playback == exported && std::any_of(playback.begin(), playback.end(),
+              [](const auto& frame) { return std::abs(frame.left) > 0.25f; }),
+              "the fallback is audible and exports the same prepared PCM");
+    }
+
+    project.store->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
+                             "VALUES(8,1,'audio',0,5765760)");
+    Session session;
+    project.load(session, Precision::Float32, sourceRate);
+    const auto fatal = session.clips()->fatalProblems();
+    check(fatal.size() == 1 && fatal.front().starts_with("clips#8:") &&
+          session.problems().size() == 1 && session.problems().front() == fatal.front(),
+          "missing audio remains fatal beside a prepared Warp notice");
+}
+
 void playbackExportAndReopen(std::string_view mode, bool bezier) {
     Project project(mode);
     if (bezier) project.tempo(2, arrangementBeats * quarter, 140, 120, bezierTension);
@@ -541,6 +572,7 @@ int main() {
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.
         steadyTempo("complex", 120.0, 0.08f, 0.004);
+        preparedFallbackNotice();
         playbackExportAndReopen("complex", false);
         playbackExportAndReopen("beats", true);
     } catch (const std::exception& error) {

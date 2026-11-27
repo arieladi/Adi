@@ -1268,7 +1268,10 @@ bool Session::rebuild() {
 void Session::refreshProblems() {
     problems_ = model_.problems;
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
-    if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
+    if (const auto* c = clips()) {
+        const auto fatal = c->fatalProblems();
+        problems_.insert(problems_.end(), fatal.begin(), fatal.end());
+    }
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
     problems_.insert(problems_.end(), summing_.problems().begin(), summing_.problems().end());

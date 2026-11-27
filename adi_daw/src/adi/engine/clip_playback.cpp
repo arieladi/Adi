@@ -741,6 +741,7 @@ struct ClipPlayback::Impl {
     std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
+    std::size_t fatalProblemCount = 0;
     std::atomic<bool> stalled{false};
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     // Last member so all workers join before any of their clips are destroyed.
@@ -1006,9 +1007,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
+    impl_->fatalProblemCount = impl_->problems.size();
     impl_->externalSources.reserve(impl_->clips.size());
-    for(auto& clip:impl_->clips)
+    for(auto& clip:impl_->clips) {
+        if (clip->warp)
+            impl_->problems.push_back("clips#"+std::to_string(clip->clipId)+
+                                      ": tempo changes need a new prepared Warp render");
         impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
+    }
     for(auto& t:impl_->tracks) {
         t->owner=impl_;
         for(auto* clip:t->clips) clip->playbackDelay=t->playbackDelay;
@@ -1069,6 +1075,9 @@ void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std
     }
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
+std::span<const std::string> ClipPlayback::fatalProblems() const noexcept {
+    return std::span<const std::string>(impl_->problems).first(impl_->fatalProblemCount);
+}
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
     if(audio::onAudioThread)return {};
     return impl_->externalSources;
