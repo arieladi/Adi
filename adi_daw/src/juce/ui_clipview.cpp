@@ -3574,11 +3574,19 @@ bool SampleEditor::command(int id) {
     case AppCommands::ZoomBack:
         time.back();
         break;
-    case AppCommands::Quantize:
+    case AppCommands::Quantize: {
         if (!canQuantize())
             return false;
+        const bool straight = markers_.size() == 2;
+        const auto onsets = straight ? transients() : nullptr;
+        if (straight && (!onsets || onsets->empty())) {
+            panel.root.say("Quantize Audio needs detected transients.");
+            return true;
+        }
+        const auto frames = onsets ? std::span<const std::uint64_t>(*onsets) : std::span<const std::uint64_t>{};
         return panel.root.commitEdit(clip_edit::prepareQuantizeWarpMarkers(panel.root.editStore(), clip->id,
-            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate()));
+            std::llround(time.gridQuarters() * textproj::kPPQ), panel.root.editRate(), frames));
+    }
     case AppCommands::InsertSilence:
         return true;
     default:
@@ -3588,7 +3596,7 @@ bool SampleEditor::command(int id) {
     repaint();
     return true;
 }
-bool SampleEditor::canQuantize() const noexcept { return markers_.size() > 2; }
+bool SampleEditor::canQuantize() const noexcept { return markers_.size() >= 2; }
 std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
