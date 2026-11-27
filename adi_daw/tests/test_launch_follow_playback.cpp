@@ -215,6 +215,7 @@ struct FollowFixture {
 struct FollowTrace {
     const LaunchFollowPlayer& player;
     LaunchView view;
+    std::int64_t quarterFrames = beatSamples;
     std::array<LaunchTransition, 8> clips{};
     std::array<LaunchSceneTransition, 8> scenes{};
     std::size_t clipCount = 0, sceneCount = 0;
@@ -227,11 +228,14 @@ struct FollowTrace {
         block.incarnation = 7;
         block.global = global;
         block.followActionsEnabled = enabled;
-        block.tickAtSample = [](const void*, std::int64_t frame) noexcept {
-            return (frame * quarter + beatSamples / 2) / beatSamples;
+        block.clock = &quarterFrames;
+        block.tickAtSample = [](const void* context, std::int64_t frame) noexcept {
+            const auto beat = *static_cast<const std::int64_t*>(context);
+            return (frame * quarter + beat / 2) / beat;
         };
-        block.sampleAtTick = [](const void*, std::int64_t tick) noexcept {
-            return (tick * beatSamples + quarter / 2) / quarter;
+        block.sampleAtTick = [](const void* context, std::int64_t tick) noexcept {
+            const auto beat = *static_cast<const std::int64_t*>(context);
+            return (tick * beat + quarter / 2) / quarter;
         };
         LaunchSink sink{};
         sink.context = this;
@@ -253,6 +257,16 @@ struct FollowTrace {
         };
         return launcher.process(block, view, sink);
     }
+
+    bool processUntil(Launcher& launcher, std::int64_t begin, std::int64_t end,
+                      std::int32_t width, adi::LaunchQuantization global) {
+        auto accepted = true;
+        for (auto sample = begin; sample < end; sample += width) {
+            const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(width,end - sample));
+            accepted &= process(launcher, sample, frames, global);
+        }
+        return accepted;
+    }
 };
 
 bool launchScene(Launcher& launcher, std::int64_t id) {
@@ -260,24 +274,173 @@ bool launchScene(Launcher& launcher, std::int64_t id) {
     return launcher.post({&request, 1});
 }
 
+bool launchSlot(Launcher& launcher, std::int64_t scene, std::int64_t clip, float velocity = 1.0f) {
+    const LaunchRequest request{LaunchRequestKind::SlotPress,1,scene,clip,7,velocity};
+    return launcher.post({&request,1});
+}
+
 void storedFollowQuantization() {
     using adi::LaunchQuantization;
     FollowFixture fixture;
     fixture.settings[0].follow.first.action = FollowAction::Next;
+    fixture.settings[0].quantization = static_cast<std::int64_t>(LaunchQuantization::EightBars) + 1;
+    fixture.runtimeSlots[0].quantization = LaunchQuantization::EightBars;
     const auto player = fixture.player();
     check(player.has_value(), "prepare the authored, unlinked Follow Action settings");
     if (!player)
         return;
-    constexpr std::array quantization{std::optional<LaunchQuantization>{},
-        std::optional{LaunchQuantization::None}, std::optional{LaunchQuantization::Eighth}};
-    for (const auto target : quantization) {
-        fixture.runtimeSlots[1].quantization = target;
+
+    struct Grid { LaunchQuantization setting; std::int64_t manualTick; };
+    constexpr std::array globals{Grid{LaunchQuantization::None, 0}, Grid{LaunchQuantization::Bar, 4*quarter},
+        Grid{LaunchQuantization::Eighth, quarter/2}, Grid{LaunchQuantization::QuarterTriplet, 2*quarter/3}};
+    struct ClipSetting {
+        std::optional<LaunchQuantization> grid;
+        std::int64_t manualTick, followTick;
+        const char* name;
+    };
+    constexpr std::array targets{
+        ClipSetting{std::nullopt,0,quarter/3,"Global"},
+        ClipSetting{LaunchQuantization::None,0,quarter/3,"None"},
+        ClipSetting{LaunchQuantization::Sixteenth,quarter/4,quarter/2,"1/16"},
+        ClipSetting{LaunchQuantization::Eighth,quarter/2,quarter/2,"1/8"},
+        ClipSetting{LaunchQuantization::Quarter,quarter,quarter,"1/4"}};
+    constexpr std::int64_t pressFrame = 1001;
+    auto cases = 0;
+    for (const std::int64_t beat : {22050,24000}) {
+        const auto pressTick = (pressFrame * quarter + beat/2) / beat;
+        const auto frameAt = [beat](std::int64_t tick) { return (tick * beat + quarter/2) / quarter; };
+        for (const auto width : {257,4096}) {
+            for (const auto& global : globals) {
+                for (const auto& target : targets) {
+                    fixture.runtimeSlots[1].quantization = target.grid;
+                    const auto nominal = target.grid ? target.manualTick : global.manualTick;
+                    const auto manualTick = nominal == 0 ? pressTick : nominal;
+                    const auto manualFrame = nominal == 0 ? pressFrame : frameAt(manualTick);
+                    const auto followFrame = frameAt(target.followTick);
+                    Launcher manual(1), follow(1);
+                    FollowTrace tapped{*player,fixture.view(),beat}, automatic{*player,fixture.view(),beat};
+                    const auto manualExact = tapped.process(manual,0,static_cast<std::int32_t>(pressFrame),global.setting) &&
+                        launchSlot(manual,20,51) &&
+                        tapped.processUntil(manual,pressFrame,manualFrame,width,global.setting) &&
+                        tapped.clipCount == 0 && tapped.process(manual,manualFrame,1,global.setting) &&
+                        tapped.clipCount == 1 && tapped.clips[0].newClip == 51 &&
+                        tapped.clips[0].sample == manualFrame && tapped.clips[0].tick == manualTick &&
+                        tapped.clips[0].offset == 0;
+                    const auto followExact = launchSlot(follow,10,50) &&
+                        automatic.processUntil(follow,0,followFrame,width,global.setting) &&
+                        automatic.clipCount == 1 && automatic.clips[0].newClip == 50 &&
+                        automatic.process(follow,followFrame,1,global.setting) && automatic.clipCount == 2 &&
+                        automatic.clips[1].oldClip == 50 && automatic.clips[1].newClip == 51 &&
+                        automatic.clips[1].sample == followFrame && automatic.clips[1].tick == target.followTick &&
+                        automatic.clips[1].offset == 0;
+                    if (!manualExact || !followExact)
+                        std::printf("  rate %lld Hz, block %d, Global %d, clip %s, expected manual/follow %lld/%lld\n",
+                            static_cast<long long>(2*beat),width,static_cast<int>(global.setting),target.name,
+                            static_cast<long long>(manualFrame),static_cast<long long>(followFrame));
+                    check(manualExact,"manual clip waits on its explicit grid or inherits Global");
+                    check(followExact,"clip Follow Action observes the destination's explicit grid and bypasses Global");
+                    cases += 2;
+                }
+            }
+        }
+    }
+    std::printf("%d exact manual/Follow timing cases at 44.1 and 48 kHz.\n",cases);
+    fixture.runtimeSlots[1].quantization.reset();
+    constexpr std::array sourceStarts{
+        std::pair{std::optional<LaunchQuantization>{},4*beatSamples},
+        std::pair{std::optional{LaunchQuantization::QuarterTriplet},2*beatSamples/3},
+        std::pair{std::optional{LaunchQuantization::None},pressFrame}};
+    for (const auto& [grid, sourceFrame] : sourceStarts) {
+        fixture.runtimeSlots[0].quantization = grid;
         Launcher launcher(1);
-        FollowTrace trace{*player, fixture.view()};
-        const auto frame = target == LaunchQuantization::Eighth ? beatSamples / 2 : dueSamples;
-        check(launchScene(launcher, 10) && trace.process(launcher, 0, 12001, LaunchQuantization::Bar) &&
-              trace.clipCount == 2 && trace.clips[1].newClip == 51 && trace.clips[1].sample == frame,
-              "a stored Follow Action waits only for the destination's explicit grid");
+        FollowTrace trace{*player,fixture.view()};
+        const auto due = sourceFrame + dueSamples;
+        check(trace.processUntil(launcher,0,pressFrame,4096,LaunchQuantization::Bar) &&
+              launchSlot(launcher,10,50) &&
+              trace.processUntil(launcher,pressFrame,due+1,4096,LaunchQuantization::Bar) &&
+              trace.clipCount == 2 && trace.clips[0].newClip == 50 && trace.clips[0].sample == sourceFrame &&
+              trace.clips[1].newClip == 51 && trace.clips[1].sample == due,
+              "the Follow interval starts at the performed source edge after its launch quantization");
+    }
+}
+
+void manualAgainstFollow() {
+    using adi::LaunchQuantization;
+    FollowFixture fixture;
+    fixture.settings[0].follow.first.action = FollowAction::Next;
+    fixture.runtimeSlots[1].velocityAmount = 1.0f;
+    const auto player = fixture.player();
+    check(player.has_value(),"prepare the real Follow Action for manual precedence");
+    if (!player)
+        return;
+
+    struct Collision {
+        std::optional<LaunchQuantization> followGrid;
+        LaunchQuantization manualGrid;
+        std::int64_t sample;
+    };
+    constexpr std::array collisions{
+        Collision{std::nullopt,LaunchQuantization::None,dueSamples},
+        Collision{LaunchQuantization::None,LaunchQuantization::None,dueSamples},
+        Collision{LaunchQuantization::Sixteenth,LaunchQuantization::Eighth,beatSamples/2},
+        Collision{LaunchQuantization::Eighth,LaunchQuantization::Eighth,beatSamples/2},
+        Collision{LaunchQuantization::Quarter,LaunchQuantization::Quarter,beatSamples}};
+    for (const auto global : {LaunchQuantization::None,LaunchQuantization::Bar,LaunchQuantization::QuarterTriplet}) {
+        for (const auto& [followGrid, manualGrid, at] : collisions) {
+            fixture.runtimeSlots[1].quantization = followGrid;
+            fixture.runtimeSlots[2].quantization = manualGrid;
+            Launcher competing(1);
+            FollowTrace trace{*player,fixture.view()};
+            const auto press = manualGrid == LaunchQuantization::None ? at : std::int64_t{1001};
+            check(launchSlot(competing,10,50) && trace.processUntil(competing,0,press,257,global) &&
+                  launchSlot(competing,30,52) && trace.processUntil(competing,press,at,257,global) &&
+                  trace.clipCount == 1 && trace.process(competing,at,1,global) &&
+                  trace.clipCount == 2 && trace.clips[1].sample == at && trace.clips[1].newClip == 52 &&
+                  trace.process(competing,at+1,32,global) && trace.clipCount == 2,
+                  "same-sample manual destination wins once over the due Follow Action");
+        }
+    }
+    fixture.runtimeSlots[1].quantization = LaunchQuantization::Eighth;
+    Launcher same(1);
+    FollowTrace sameSlot{*player,fixture.view()};
+    check(launchSlot(same,10,50) && sameSlot.process(same,0,1001,LaunchQuantization::Bar) &&
+          launchSlot(same,20,51,0.25f) && sameSlot.process(same,1001,11001,LaunchQuantization::Bar) &&
+          sameSlot.clipCount == 2 && sameSlot.clips[1].sample == 12000 && sameSlot.clips[1].newClip == 51 &&
+          sameSlot.clips[1].velocity == 0.25f,
+          "manual press of the same destination supplies velocity and creates only one run");
+
+    fixture.runtimeSlots[1].quantization.reset();
+    fixture.runtimeSlots[2].quantization = LaunchQuantization::Sixteenth;
+    Launcher before(1);
+    FollowTrace earlier{*player,fixture.view()};
+    check(launchSlot(before,10,50) && earlier.process(before,0,1001,LaunchQuantization::Bar) &&
+          launchSlot(before,30,52) && earlier.process(before,1001,8000,LaunchQuantization::Bar) &&
+          earlier.clipCount == 2 && earlier.clips[1].newClip == 52 && earlier.clips[1].sample == 6000,
+          "an earlier manual replacement cancels the outgoing run's due Follow Action");
+
+    fixture.runtimeSlots[2].quantization = LaunchQuantization::Quarter;
+    Launcher after(1);
+    FollowTrace later{*player,fixture.view()};
+    check(launchSlot(after,10,50) && later.process(after,0,1001,LaunchQuantization::Bar) &&
+          launchSlot(after,30,52) && later.process(after,1001,23001,LaunchQuantization::Bar) &&
+          later.clipCount == 3 && later.clips[1].newClip == 51 && later.clips[1].sample == 8000 &&
+          later.clips[2].newClip == 52 && later.clips[2].sample == 24000,
+          "an earlier Follow Action preserves a later quantized manual launch");
+
+    fixture.runtimeSlots[0].endTick = quarter/2;
+    fixture.runtimeSlots[1].quantization = LaunchQuantization::Quarter;
+    for (const auto manual : {false,true}) {
+        Launcher oneShot(1);
+        FollowTrace trace{*player,fixture.view()};
+        check(launchSlot(oneShot,10,50) && trace.process(oneShot,0,12001,LaunchQuantization::Bar) &&
+              trace.clipCount == 2 && trace.clips[1].sample == 12000 && trace.clips[1].oldClip == 50 &&
+              trace.clips[1].newClip == 0 && !trace.clips[1].arrangement &&
+              (!manual || launchSlot(oneShot,30,52)) &&
+              trace.process(oneShot,12001,12000,LaunchQuantization::Bar) && trace.clipCount == 3 &&
+              trace.clips[2].sample == 24000 && trace.clips[2].oldClip == 0 &&
+              trace.clips[2].newClip == (manual ? 52 : 51),
+              manual ? "manual still wins the due tie after the source one-shot ends"
+                     : "a pending explicit Follow Action survives the source one-shot ending before its grid");
     }
 }
 
@@ -518,6 +681,7 @@ int main() {
     chance();
     complementaryChoices();
     storedFollowQuantization();
+    manualAgainstFollow();
     provisionalActionsAndGlobalEnable();
     preparedPlayer();
     queuedSceneSurvivesReorder();
