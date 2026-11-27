@@ -31,6 +31,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-128 | `basics/browser-chain` at `3bdc44247` | Ship an original starter drum kit under Drums and Samples. Browser, library and packaging seats. | The headless roster and read-only listing, deterministic WAV generator and relocated Linux installer smoke passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-432 | `basics/browser-chain` at `e073649db` | Register a stable Hot-Swap command for the active device or sample slot. Window seat. | Headless command ordering, focus, rebinding and menu-label checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-424 | `basics/browser-chain` at `d1ad41dcd` | Reopen a collapsed Browser from the Info shortcut, menu command or Status Bar button. Window seat. | Headless command and layout tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-129 | `basics/browser-chain` at `634911602` | Give Browser results and Places a context menu with an available file or folder action. Browser seat. | The headless popup seam covered files, built-ins, presets, plug-ins, nested and added folders, removal and immutable action targets. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -237,6 +238,21 @@ Component positions are calculated from the existing layout. For an ordinary unf
 ### SC-424 remainder
 
 At 1440 × 900 Compact, the Info gesture previously left the collapsed Browser and Info with empty bounds. It now restores the Browser to `(8,35,308,623)` and Info to `(8,666,308,196)`. On the right these are `(1124,35,308,623)` and `(1124,666,308,196)`. The selected side and width are retained. With the Browser already open, the same controls still toggle only Info. The regression invokes the shortcut, View menu command and Status Bar button without opening a native menu.
+
+### SC-129 Browser item menus
+
+In the 308 × 443 px Compact Browser, the sidebar is (4, 27, 113, 412) and the results list is (119, 46, 185, 393) before and after this item with the preview row hidden. The corresponding bounds with the preview row open are (4, 27, 113, 385) and (119, 46, 185, 366). Sidebar rows are 113 × 19 at x = 4 and results are 19 px high. After SC-128, at scroll zero User Library and the first added Place begin at y = 237 and y = 256. Their center-click targets are (60, 246) and (60, 265). In the single-result fixture, the first result starts at (119, 46) and the plug-in result beneath its format and vendor headings starts at (119, 84). The popup target is a 1 × 1 rectangle at the click point in screen coordinates, as it already was for the added-Place popup.
+
+| Right-click target | Before, ordered popup rows | After, ordered popup rows |
+| --- | --- | --- |
+| Sample, saved preset, plug-in, nested folder, or registered User Library | 0 | Show in File Manager, 136 × 16 px |
+| Built-in device | 0 | Show in File Manager (built-in), disabled, 178 × 16 px |
+| Added Place | Remove from Places, 132 × 16 px | Show in File Manager then Remove from Places, 136 × 32 px total item area |
+| File result with no absolute path | 0 | Show in File Manager (file unavailable), disabled, 218 × 16 px |
+
+The display-free JUCE LookAndFeel probe measured ideal menu item dimensions. Popup chrome, display-edge adjustment, and the operating system's file manager remain live-window checks. SC-131 can add a 105 × 16 px Rescan Library item to sample, folder and library menus. SC-133 supplies its own favorites actions. The shell fixture intercepts popup presentation and invokes actions against captured paths. It tests sample, preset, plug-in, built-in, nested directory and both kinds of Places, including an open popup whose source listing was replaced. No native menu or window is used.
+
+The first integrated run caught a nested folder being passed as a relative path. The menu now resolves that path against its selected Place before capturing it, so Reveal works for the clicked directory.
 
 ## For the director
 
