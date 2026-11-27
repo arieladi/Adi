@@ -14,6 +14,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-442 | `basics/test-chain` at `d438ea3fd` | Cmd/Ctrl+1 and +2 are already integrated in the Arrangement and key maps. Edit and window seats. | The headless command and grid fixture verified both directions, displayed spacing and persistence. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-444, SC-203 | `basics/test-chain` at `afceb2556` | Make the normal fade curve drag follow the pointer and keep Alt as the reversal. Clips and Arrangement seats. | An extracted source probe and the peerless fixture covered direction, the stored fade shape and one Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-201 | `basics/test-chain` at `afceb2556` | Pitch, cents and the supported Warp controls are already integrated. Clip and engine seats. | The peerless Clip View, Warp actions and real audio playback suites checked the existing controls and renderer. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
+| SC-435 | `basics/test-chain` at `a07084ccc` | Resize Main and pinned Returns from the top edge with the bottom held. Arrangement and mixer seats. | The headless fixture moved the Main header and Return mixer hit zones and measured their anchored bounds. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -78,6 +79,20 @@ Unwarped pitch changes the source clock through resampling. Re-Pitch derives pit
 Complex Pro’s renderer can consume an existing absolute semitone formant shift and runs the Rubber Band formant-preserving option. The stored value is not equivalent to Live’s Formants compensation percentage. The editor exposes neither that stored control nor Live’s Envelope. Beats transient loop/envelope controls and the Tones/Texture grain and fluctuation settings have renderer support with defaults but have no per-clip persisted controls on this branch. The existing six algorithm choices are the supported Warp mode controls.
 
 The 1100 × 278 Clip View fixture measures Pitch `(6,164,69,16)`, Detune `(81,164,69,16)`, Warp `(229,2,52,13)`, BPM `(285,2,75,13)`, division `(363,2,23,13)`, multiplication `(388,2,23,13)`, and mode `(415,2,84,13)` in local pixels. The headless engine fixtures passed 171 playback and 96 Warp edit checks, and the peerless editor exercised pitch, Undo, timing controls, modes and marker editing.
+
+### SC-435 · Resize Main and Returns from the top
+
+Baseline `f02bd171c` has the five-pixel resize zone at the bottom of every Arrangement header and mixer strip. Commit `7edff82be` places that zone at the top of each row in the pinned foot. An upward drag increases the height using the existing bottom anchor. Returns inside a group follow the scrolling rows and use their lower edge.
+
+Coordinates are Compact logical pixels. The 1440×900 fixture has a 525 px lane body beginning at root y115. Rows use x328 and width 788 in the lane, x1116 and width 95 in the name header, and x1211 and width 194 in the Arrangement mixer. The values below are lane-local where specified. The peerless fixture asserts the painted cursor and these y/height changes through `rowTop` and `heightFor` during the drag.
+
+| Stage | Main local y, height | Return immediately above Main local y, height |
+|---|---|---|
+| Before either drag | 485, 40 | 445, 40 |
+| Drag Main top up 24 px | 461, 64 | 421, 40 |
+| Drag Return top up 16 px | 461, 64 | 405, 56 |
+
+Main’s bottom boundary is y525 throughout. The Return’s bottom boundary is y461 throughout its own drag. At the starting layout the five-pixel Main hit zone moves from y520–524 to y485–489, and the Return’s from y480–484 to y445–449. The horizontal hit range covers the header and the mixer background. The fixture starts Main’s drag on its header at local `(60, 487)` and starts the Return’s on its mixer component at `(20, 2)`.
 
 ## For the director
 
