@@ -20,6 +20,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-12 | `basics/look-chain` at `9a1e6c59` | Dimming and specific Info reasons for eleven unavailable controls. Enabled controls retain their actual actions. Window seat. | Peerless checks covered disabled hit regions, help, active punch and metronome controls, and the Unicode quantization placeholder. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-38 | `basics/look-chain` at `458cc4a8` | Preview sample and device drop positions in Arrangement, Mixer and Device View. Window seat. | Software-pixel probes and the existing drop assertions verified the previews and final targets. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-74 | `basics/look-chain` at `43febaaf` | Insert or edit a step tempo change from the beat ruler and draw tempo changes along it. Window seat. | Peerless menu, inline editor, persistence of event fields and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-75 | `basics/look-chain` at `fac5ee51` | Return the stopped transport, marker and viewport to 1.1.1 on Stop while stopped. Engine view-state mailbox and window seat. | Focused mailbox red/green and peerless transport, count-in and Continue checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -167,6 +168,10 @@ Previously there was no position preview. In the 1200 × 720 Compact fixture at 
 ### SC-74
 
 At 60 px per quarter with left edge at bar 1, the beat ruler is 29 px high and bar 2 is local x=240. Before there was no tempo affordance at that position. A committed tempo change now places a `(240, 19, 1, 8)` marker and a label up to `(244, 17, 64, 12)`. The inline BPM editor is `(240, 0, 64, 29)`. The beat-ruler menu and undo test use an in-process menu seam. Replacing an existing event preserves the ID, curve and tension.
+
+### SC-75
+
+At 1440 × 900 Compact the Stop button stays `(566, 9, 18, 17)` and Position stays `(446, 9, 82, 17)`. An idle Stop changes the position from `17.1.1` to `1.1.1`. With the fixture's 30 px per quarter, bar 1 moves from canvas x=−1920 to x=0. The selected lane's insert marker retains a 1 px stroke. A focused driver probe showed both stopped and continued sample positions at 96064 before and both at 0 afterward.
 
 ## For the director
 
