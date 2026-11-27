@@ -15,6 +15,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-06 | `basics/look-chain` at `1d04ccd5` | Display measured callback utilization and deadline misses, with Average, Current and Off. Window seat. | The focused headless callback probe passed eight checks including overrun and restart. The shell exercised the three modes and overload. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-37 | `basics/look-chain` at `55eac841` | Draw the authored clip colour through the Arrangement lane and overview. Engine and window seats. | Peerless chooser, title/body pixels and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-90 | `basics/look-chain` at `81254e5e` | Dim the clips on inactive tracks and the full panels of bypassed devices. Window seat. | Peerless canvas and panel pixels, plus undo or reactivation, passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-92 | `basics/look-chain` at `164c387b` | Label the main Audio To route Main. Window seat. | Headless tests covered Main, Group, instrumentless MIDI No Output and the Main pair. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -126,6 +127,10 @@ At 1440 × 900 Compact with 40 px per quarter, the peerless MIDI clip's canvas-l
 In the same clip fixture as SC-37, the muted track's clip bounds stay `(40, 1, 80, 84)`. The title and body samples change from `#f099a7` to `#5c5c5c` and are restored by undo.
 
 The Device View fixture's bypassed panel keeps its local bounds of `(0, 0, 150, 180)`. The title is `(0, 0, 150, 17)`, the activator is `(2, 1, 16, 15)` and Configure is `(94, 2, 52, 13)`. The entire device takes a 55% frame-colour overlay during bypass. The body sample at `(100, 100)` goes from `#2b2b2b` to approximately `#222222` and the title sample at `(90, 10)` from `#383838` to approximately `#282828`. The activator remains operable.
+
+### SC-92
+
+Audio To changes from `Master` to `Main` in the existing strip-local rectangles. These are `(5, 54, 70, 13)` for an ordinary Arrangement audio track, `(5, 3, 70, 13)` for a return or group, and `(4, 106, 85, 13)` for the standard 95 px Mixer View strip. The approved Arrangement sheet draws Main in a 104 × 16 chooser at header x + 134. A grouped track still reads Group and an instrumentless MIDI track still reads No Output.
 
 ## For the director
 
