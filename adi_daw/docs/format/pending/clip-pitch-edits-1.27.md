@@ -37,5 +37,6 @@ Freeze the actual predecessor, add the new object to `Store::migrationSteps`,
 and update the schema minor, `SPEC.md` and schema validator version together.
 Check fresh creation, migration, read-only older files and replay with the
 native format gates. Add the table to the text projection coverage manifest
-when the native schema includes it and record the projection contract in
-`TEXT-PROJECTION.md`.
+when the native schema includes it. The staged fixtures already check the
+clip-owned projection, including dormant edits and the pre-pitch read-only
+case. [Projection contract](../TEXT-PROJECTION.md#81-authored-audio-pitch)

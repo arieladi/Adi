@@ -4,6 +4,7 @@
 #include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -95,7 +96,7 @@ void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
     }
 }
 
-Model readModel(const Store& store) {
+static Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead* pitchEdits) {
     Model m;
     const SQLite::Database& db = store.db();
 
@@ -626,6 +627,8 @@ Model readModel(const Store& store) {
               m.automationSegmentRanges.push_back(range);
           });
 
+    if (pitchEdits) *pitchEdits = clip_edit::readProjectPitchEdits(store);
+
     if (txn) {
         try {
             txn->commit();   // a read transaction: commit and rollback are the same
@@ -635,5 +638,9 @@ Model readModel(const Store& store) {
 
     return m;
 }
+
+Model readModel(const Store& store) { return readModel(store, nullptr); }
+
+Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead& edits) { return readModel(store, &edits); }
 
 }  // namespace adi::rows

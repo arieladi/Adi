@@ -1877,6 +1877,7 @@ target_link_libraries(adi_pitch_render_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pitch_render_tests COMMAND adi_pitch_render_tests)
 
 set(ADI_PITCH_STAGED_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/pending/clip-pitch-edits-1.27.sql")
+target_compile_definitions(adi_textproj_store_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
 add_executable(adi_pitch_edit_store_tests tests/test_pitch_edit_store.cpp)
 target_link_libraries(adi_pitch_edit_store_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_pitch_edit_store_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
