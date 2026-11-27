@@ -1,6 +1,6 @@
 # Basics tracks
 
-Newest item branch is `basics/sc-317-plugin-parameter-touch` at `35b782d6`. The consolidated `basics/tracks-chain` points to the same commit and includes `land/basics-1127c` and main. All 20 item branches in the table are on `origin`. [Newest item](https://github.com/arieladi/Adi/tree/basics/sc-317-plugin-parameter-touch) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+**Newest branch** `basics/sc-317-plugin-parameter-touch` at `35b782d6858d4f0a7bb3cfef6103e4a4208ea6d9`. The consolidated `basics/tracks-chain` points to the same commit. All 20 item branches in the table are on `origin`. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-317-plugin-parameter-touch) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
