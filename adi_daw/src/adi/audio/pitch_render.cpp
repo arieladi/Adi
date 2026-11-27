@@ -68,7 +68,7 @@ Planes<Channels> view(const Buffers<Channels>& source) {
 
 template<typename SamplePlanes>
 auto planePointers(SamplePlanes& planes, std::size_t frame) {
-    std::array<decltype(planes[0].data()), std::tuple_size_v<SamplePlanes>> pointers;
+    std::array<decltype(planes[0].data()), std::tuple_size_v<SamplePlanes>> pointers{};
     for (std::size_t channel = 0; channel < planes.size(); ++channel) pointers[channel] = planes[channel].data() + frame;
     return pointers;
 }
