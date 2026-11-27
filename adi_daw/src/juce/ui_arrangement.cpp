@@ -2172,7 +2172,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         // A title press selects tracks. Keep the playback starting point when clearing the lane selection.
         sel.clip = 0;
         sel.pickedClips.clear();
-        if (!popup && !split) {
+        if (popup || !split) {
             sel.start = sel.end = sel.insert;
             sel.marked = false;
         }
@@ -4159,7 +4159,7 @@ bool ArrangementCanvas::moveTimeSelection(std::int64_t target) {
             auto selected = geo.selectedTracks(view.reader());
             std::erase_if(selected, [&](const auto id) {
                 const auto *row = view.reader().findTrack(id);
-                return row == nullptr || !geo.shown(id) || (row->kind != "audio" && row->kind != "midi");
+                return row == nullptr || !geo.shown(id) || (row->kind != "audio" && !isMidiTrack(*row));
             });
             const auto content = rangeContent(current->tracks, selected, lo, hi);
             if (!content.inside.empty() || content.crossing != 0) {

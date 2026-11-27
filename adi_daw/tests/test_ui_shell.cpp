@@ -4086,7 +4086,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     };
     const auto pasteAt = 5 * bar;
     const auto gapAt = pasteAt + 3 * bar / 2;
-    add("track.create", {{"id", 20}, {"kind", "midi"}, {"name", "Lower MIDI"}, {"index", 2}});
+    add("track.create", {{"id", 20}, {"kind", "instrument"}, {"name", "Lower MIDI"}, {"index", 2}});
     add("clip.create", {{"id", 61}, {"track", 20}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 62}, {"track", 2}, {"kind", "midi"}, {"pos", bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 63}, {"track", 2}, {"kind", "midi"}, {"pos", gapAt}, {"length", bar / 4}});
@@ -8799,6 +8799,18 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
               fourth.front()->lengthTicks == 2 * bar,
           "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
 
+    const auto popupInsert = pickClip(3);
+    int headerMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
+        if (header)
+            ++headerMenus;
+    };
+    headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
+    headers.mouseUp(pressAt(headers, title(4)));
+    root.arrangement.onContextMenu = nullptr;
+    check(headerMenus == 1 && trackOnly(4, popupInsert),
+          "SC-177: a popup on another title clears the earlier clip's time range");
+
     canvas.mouseDown(pressAt(canvas, rangeFrom));
     canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
     canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
@@ -8834,7 +8846,7 @@ void dragTimeSelection(AppCommands &commands, const std::filesystem::path &dir) 
     for (std::int64_t id = 1; id <= 4; ++id) {
         OpRequest track;
         track.opType = "track.create";
-        track.payload = {{"id", id}, {"kind", "midi"}, {"name", "MIDI"}, {"index", id - 1}};
+        track.payload = {{"id", id}, {"kind", id == 3 ? "instrument" : "midi"}, {"name", "MIDI"}, {"index", id - 1}};
         check(submitter.submit(std::move(track)).ok, "create a track for the time-selection drag");
     }
     auto makeClip = [&](std::int64_t id, std::int64_t track, std::int64_t position, std::int64_t length) {
