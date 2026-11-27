@@ -20795,3 +20795,61 @@ computer and on a server; Stop Agent's key.
 | `docs/DEFERRED.md` | DF-W61 (the sheet), DF-R3 (the rows), DF-C9 (the agent's chain), DF-E92 (the server's spike); DF-E82 lent |
 | `collab/README.md` | ADR 0261 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0262; DF-W62, DF-R4, DF-C10, DF-E93; SC-433 |
+
+## ADR-0262 — The Browser's second sheet, and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, and four buttons — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON FOUR CHOICES (W, X, Y, Z) FROM A PICTURE; SETTLES WHAT ADR-0261 d19 LEFT TO THE SHEET; ADDS TO ADR-0148 AND ADR-0243 d4; THE ANALYSER QUEUE'S NAMES**
+
+**What this records.** ADR-0261 d19 owed the director a picture before any of these was built: the AI
+label and its mode, the filters by what a sound measures, the preview row that waits, a server's mark,
+and the floating search. Win drew it the same day: the Browser's sheet, proposal 2
+(`collab/window/design/proposals/browser-2.png`, its source beside it). It shows the column in four
+states (a sample search, a device selected, AI chosen, AI with the column wider) and the floating search
+twice (on samples, and moved to AI). Four choices on it were his. His words: "W = B", "X = C", "y = a",
+"Z = a".
+
+### Decisions
+
+1. **Choosing AI widens the column by itself (W b).** The Browser's column grows to the width drawn in
+   state D, and gives the width back when another label is chosen. *Win's reading:* a width he drags
+   while AI is chosen is remembered for AI, apart from the Browser's own width.
+2. **The full list of a proposed change opens in a floating window (X c).** A proposal stays a card in
+   the conversation, with Apply and Reject. "Open the list" shows every change, before and after, in a
+   window of its own, with the same two buttons. This answers what ADR-0148 left open, where the window
+   keeps a changeset while the user thinks: the card keeps it, the floating window shows it.
+3. **In the Mix View the floating search calls the agent (Y a).** The Mix View still has no Browser
+   (ADR-0243 d4). A line sent from the floating search there slides the Browser's column in over the
+   Mix View, in its AI mode, and it goes when he closes it. The mark in the Status Bar opens it the same
+   way.
+4. **The floating search has four buttons (Z a):** Samples, Devices (with plug-ins and presets), AI and
+   Commands. It opens on Samples; the mouse or the left and right arrows move between them. With no
+   agent the AI button is not shown (ADR-0261 d3).
+5. **What the sheet is.** He chose from proposal 2 and raised nothing else on it. He has not said the
+   word "agreed" for the whole sheet. Win takes the four answers as leave to build from it, and the first
+   built surface is shown to him against the picture, as ADR-0243 d1 asks of every surface. On the sheet
+   and not chosen by him, so still his to change: the six filter groups' names (Type, Length, Key, Tempo,
+   Tone, Hits), the columns of a sample's row (length, tempo, key), the head of the AI pane, the
+   "Sessions" place.
+6. **The analyser queue's names** (the session's recommendations, taken by win; ADI's own words for
+   ADI's own modes). The third-octave page is **Bands** and the three-colour scope is **Waveform** on
+   the Analysers page; the standalone picker says "Third-Octave Bands" and "Colour Waveform". The Info
+   box's switch stays at its four choices (ADR-0257 d12). The stereo picture draws the same trace in its
+   three places.
+
+**The order of building.** Nothing changes for the Browser queue: its basics are built in today's look.
+After them, from this sheet and in this order: the preview row's rule with the first player (already in
+that queue); the filter panel with find similar (TM-MD-07); the floating search, reworked from
+`window/command-palette`; the AI label, its pane and the floating window of d2, when the chain of
+ADR-0261 d6 stands under them.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0261 d19 | the sheet is drawn and his four choices are in (d1 to d4) |
+| ADR-0148 | where the window keeps a changeset: a card in the conversation, a floating window for the full list (d2) |
+| ADR-0243 d4 | the Browser's column slides in over the Mix View for the agent, and only for that (d3) |
+| ADR-0104 d3; WIN-06 | four buttons; it opens on Samples (d4) |
+| AGT-05 | the review is a card and a floating window (d2); the column's own width under AI (d1) |
+| `collab/window/design/` | proposal 2 of the Browser's sheet and its source; the README's list |
+| `docs/DEFERRED.md` | DF-W61: the sheet is drawn; what waits is the building |
+| `collab/README.md` | ADR 0262 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0263 |
