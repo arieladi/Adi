@@ -21003,3 +21003,43 @@ tip without being told to.
 | `docs/DEFERRED.md` | DF-W62 holds the goal |
 | `collab/README.md` | ADR 0264 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0265; DF-W63 |
+
+## ADR-0265 — After his own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, and a double-click that adds a track — `DECIDED` (2026-11-28) — **DIRECTOR'S WORD AFTER WORKING IN ADI HIMSELF ON 27 NOVEMBER; ANSWERS THE AGENT SEAT'S TWO QUESTIONS; ADDS TO ADR-0259 d1**
+
+**What this records.** On 27 November the director worked in ADI himself, on main after the ninth stack.
+What he found is registered as SC-433 to SC-445 and given to one session
+(`collab/prompts/2026-11-28-directors-test.md`). Four of his words are rulings and are recorded here, with
+his answers to the two questions the agent seat put to him about Stop Agent: "A a, B a".
+
+### Decisions
+
+1. **Stop Agent stops every hand that writes as an agent does (his A).** ADI's own agent, and any outside
+   program that makes its changes through agent changesets. Ordinary scripts and control surfaces keep
+   working under their own grants.
+2. **Stop Agent does not end a job the user started that has no agent in it (his B).** A render or an
+   export finishes and keeps its own Cancel. ADR-0259 d1 stands for a run an agent takes part in.
+3. **A new song has no return tracks.** His words: "i don't want them at all in the default preset, screen
+   should be clean", confirmed the next day. This departs from Live's own new Set, by his word (SC-437).
+4. **FX channels stay as decided.** Inside a group and at the top level, both (ADR-0245 d9). His words:
+   "keep as today more options usually more better". The rule that keeps them from drifting in heavy
+   songs is ADR-0245's, unchanged.
+5. **A double-click on the empty area under the tracks adds a track, an addition.** The first time it
+   asks which kind, a MIDI track, an audio track or an FX channel, and it remembers the answer, as ADI's
+   other remembered choices do. A setting changes it later (DF-W64).
+6. **Loop is as Live's, and he confirmed how it behaves:** the Loop switch plays the brace where it lies,
+   and Ctrl/Cmd+L moves the brace to what is selected. What was wrong is that playback started outside
+   the brace was pulled into it (SC-445).
+7. **The Info box is the one place for its text.** No tooltip repeats it (SC-433; narrows ADR-0203 d5's
+   tooltips). His words: "showing info in the info box is great but what is that".
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0259 d1; DF-C8 | Stop Agent's reach (d1, d2) |
+| ADR-0203 d5 | no tooltip carries the Info text (d7) |
+| ADR-0245 d9 | stands: a return inside a group or at the top level (d4) |
+| `docs/SANITY-CHECK.md` | SC-433 to SC-445 |
+| `docs/DEFERRED.md` | DF-W63 (a fade editor), DF-W64 (the double-click that adds a track) |
+| `collab/README.md` | ADR 0265 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0266; DF-W65 |
