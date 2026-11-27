@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 namespace adi::clip_edit {
@@ -290,6 +291,20 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
     return result;
 }
 namespace {
+std::vector<std::uint64_t> sourceTransientFrames(const Payload& source,std::span<const std::uint64_t> fileFrames) {
+    const auto first=static_cast<std::uint64_t>(integer(source,"src_start_frames"));
+    const auto length=static_cast<std::uint64_t>(integer(source,"src_len_frames"));
+    const bool reverse=integer(source,"reverse")!=0;
+    std::vector<std::uint64_t> frames;
+    for(const auto frame:fileFrames) {
+        if(frame<first || frame-first>=length)continue;
+        const auto local=frame-first;
+        frames.push_back(reverse?length-1-local:local);
+    }
+    std::ranges::sort(frames);
+    frames.erase(std::unique(frames.begin(),frames.end()),frames.end());
+    return frames;
+}
 template<class Transform>
 PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenceRate,const char* label,
                                 Transform transform) {
@@ -382,16 +397,7 @@ PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std
                                            double referenceRate) {
     return prepareWarpMapEdit(store,clipId,referenceRate,"Add Warp Markers at Transients",
         [&](auto& markers,const Payload& source) {
-            const auto first=static_cast<std::uint64_t>(integer(source,"src_start_frames"));
-            const auto length=static_cast<std::uint64_t>(markers.back().sourceFrame);
-            const bool reverse=integer(source,"reverse")!=0;
-            std::vector<std::int64_t> interior;
-            for(const auto frame:fileFrames) {
-                if(frame<first || frame-first>=length)continue;
-                const auto local=frame-first;
-                interior.push_back(static_cast<std::int64_t>(reverse?length-1-local:local));
-            }
-            std::ranges::sort(interior);
+            const auto interior=sourceTransientFrames(source,fileFrames);
             std::vector<WarpMarker> expanded;
             expanded.reserve(markers.size()+interior.size());
             auto onset=interior.begin();
@@ -399,8 +405,8 @@ PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std
             for(std::size_t i=1;i<markers.size();++i) {
                 const auto& right=markers[i];
                 const auto segment=std::span<const WarpMarker>(markers).subspan(i-1,2);
-                while(onset!=interior.end() && *onset<right.sourceFrame) {
-                    const auto frame=*onset++;
+                while(onset!=interior.end() && *onset<static_cast<std::uint64_t>(right.sourceFrame)) {
+                    const auto frame=static_cast<std::int64_t>(*onset++);
                     if(frame<=expanded.back().sourceFrame)continue;
                     const auto tick=mapPosition(segment,frame,&WarpMarker::sourceFrame,&WarpMarker::tick);
                     if(tick>expanded.back().tick && tick<right.tick)expanded.push_back({frame,tick});
@@ -408,6 +414,47 @@ PreparedEdit prepareWarpMarkersAtTransients(Store& store,std::int64_t clipId,std
                 expanded.push_back(right);
             }
             markers=std::move(expanded);
+        });
+}
+PreparedEdit prepareWarpFromHere(Store& store,std::int64_t clipId,std::int64_t startTick,
+                                std::span<const std::uint64_t> fileFrames,audio::AutoWarpOptions options,
+                                double referenceRate) {
+    options.fromFirstBeat=false;
+    return prepareWarpMapEdit(store,clipId,referenceRate,"Warp From Here",
+        [&](auto& markers,const Payload& source) {
+            if(startTick<0 || startTick>=markers.back().tick)
+                throw std::runtime_error("Choose a point before the end of the sample.");
+            const auto startFrame=mapPosition(markers,startTick,&WarpMarker::tick,&WarpMarker::sourceFrame);
+            const auto sourceEnd=markers.back().sourceFrame;
+            const auto right=std::ranges::lower_bound(markers,startTick,{},&WarpMarker::tick);
+            if(right->tick!=startTick &&
+               (startFrame<=std::prev(right)->sourceFrame || startFrame>=right->sourceFrame))
+                throw std::runtime_error("The Warp anchor is too close to an existing marker.");
+            SQLite::Statement media(store.db(),"SELECT sample_rate FROM media_files WHERE id=?");
+            media.bind(1,integer(source,"media_id"));
+            const auto rate=media.executeStep()?media.getColumn(0).getInt64():0;
+            if(rate<8000 || rate>768000)
+                throw std::runtime_error("The Warp source has no supported sample rate.");
+            std::vector<std::uint64_t> suffixOnsets;
+            if(!options.sourceBpm) {
+                suffixOnsets=sourceTransientFrames(source,fileFrames);
+                const auto first=static_cast<std::uint64_t>(startFrame);
+                suffixOnsets.erase(suffixOnsets.begin(),std::ranges::lower_bound(suffixOnsets,first));
+                for(auto& frame:suffixOnsets)frame-=first;
+            }
+            const auto suffix=audio::autoWarpFromOnsets(suffixOnsets,static_cast<std::uint64_t>(sourceEnd-startFrame),
+                                                        static_cast<std::uint32_t>(rate),options);
+            if(suffix.error==audio::AutoWarpError::NoTempo)
+                throw std::runtime_error("No steady tempo was found after this point. Use the Set BPM Warp command.");
+            if(!suffix || suffix.markers.size()<2 || suffix.markers.back().tick>std::numeric_limits<std::int64_t>::max()-startTick)
+                throw std::runtime_error("The Warp suffix cannot be represented.");
+            markers.erase(right,markers.end());
+            markers.push_back({startFrame,startTick});
+            const bool straight=!options.detectTempoChanges || options.sourceBpm.has_value();
+            for(std::size_t i=straight?suffix.markers.size()-1:1;i<suffix.markers.size();++i) {
+                const auto& marker=suffix.markers[i];
+                markers.push_back({startFrame+marker.sourceFrame,startTick+marker.tick});
+            }
         });
 }
 }

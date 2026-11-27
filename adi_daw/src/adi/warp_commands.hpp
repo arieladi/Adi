@@ -27,4 +27,8 @@ enum class WarpMarkerChange { Add, Move, Remove };
     double referenceRate);
 [[nodiscard]] PreparedEdit prepareWarpMarkersAtTransients(Store&,std::int64_t clipId,
     std::span<const std::uint64_t> fileFrames,double referenceRate);
+/// Rebuild only the right side of an existing map. The cached transient frames
+/// refer to the original file. The anchor is never trimmed by Auto-Warp.
+[[nodiscard]] PreparedEdit prepareWarpFromHere(Store&,std::int64_t clipId,std::int64_t startTick,
+    std::span<const std::uint64_t> fileFrames,audio::AutoWarpOptions,double referenceRate);
 }

@@ -435,11 +435,12 @@ class SampleEditor final : public juce::Component {
     juce::Point<int> last_;
     std::optional<std::int64_t> insert_;
     std::vector<WarpMarker> markers_;
-    std::optional<std::int64_t> selectedWarpFrame_;
+    std::optional<std::int64_t> selectedWarpFrame_, warpContextTick_;
     juce::Rectangle<int> warpMarkerArea() const noexcept;
     const WarpMarker *warpMarkerAt(int x) const noexcept;
     bool deleteWarpMarker();
     std::shared_ptr<const std::vector<std::uint64_t>> transients();
+    double setTempo() const noexcept;
     juce::Rectangle<int> scrubArea() const noexcept;
     bool playFromSource(std::int64_t tick);
     std::int64_t sourceSecondsToTicks(double seconds) const noexcept;

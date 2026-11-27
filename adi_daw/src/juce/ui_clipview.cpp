@@ -3145,6 +3145,7 @@ void SampleEditor::showClip() {
     fitPending_ = true;
     insert_.reset();
     selectedWarpFrame_.reset();
+    warpContextTick_.reset();
     drag_ = Drag::None;
 }
 void SampleEditor::updateSource() {
@@ -3221,16 +3222,19 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     if (!clip)
         return;
     if (e.mods.isPopupMenu()) {
-        if (!warpMarkerArea().contains(e.getPosition()) && !waveArea().contains(e.getPosition()))
+        const auto at = e.getPosition();
+        if (!warpMarkerArea().contains(at) && !waveArea().contains(at))
             return;
+        const auto *marker = warpMarkerArea().contains(at) ? warpMarkerAt(at.x) : nullptr;
+        warpContextTick_ = marker ? marker->tick : tickAt(at.x, e.mods);
         focusIfShowing(*this);
         if (onWarpContextMenu) {
-            onWarpContextMenu(e.getPosition());
+            onWarpContextMenu(at);
         } else {
             juce::Component::SafePointer<SampleEditor> safe(this);
             warpContextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
-                [safe, clipId = clip->id](int item) {
-                    if (safe && safe->panel.clip() == clipId)
+                [safe, clipId = clip->id, anchor = warpContextTick_](int item) {
+                    if (safe && safe->panel.clip() == clipId && safe->warpContextTick_ == anchor)
                         safe->chooseWarpContextItem(item);
                 });
         }
@@ -3392,23 +3396,56 @@ std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
     auto *waveforms = panel.root.arrangement.waveforms;
     return waveforms && node && node->audio && node->audio->warpEnabled ? waveforms->transients(*node->audio) : nullptr;
 }
+namespace {
+enum WarpContextItem {
+    QuantizeSource = 1, PromoteSourceTransients, WarpSourceFromHere, WarpSourceStartAtTempo, WarpSourceStraight, WarpSourceSetTempo
+};
+}
+double SampleEditor::setTempo() const noexcept {
+    const auto *tempo = panel.root.reader().tempo();
+    return tempo ? tempo->bpmAt(panel.root.timelineTick()) : 120.;
+}
 juce::PopupMenu SampleEditor::warpContextMenu() {
     juce::PopupMenu menu;
-    menu.addItem(1, "Quantize Audio", canQuantize());
+    menu.addItem(QuantizeSource, "Quantize Audio", canQuantize());
     const auto onsets = transients();
-    menu.addItem(2, "Add Warp Markers at Transients", onsets && !onsets->empty());
+    const bool hasTransients = onsets && !onsets->empty();
+    menu.addItem(PromoteSourceTransients, "Add Warp Markers at Transients", hasTransients);
+    const bool canWarp = !markers_.empty() && warpContextTick_ && *warpContextTick_ < sourceEnd_;
+    const bool canInfer = canWarp && onsets && onsets->size() >= 3;
+    const auto tempo = juce::String(setTempo(), 2);
+    menu.addSeparator();
+    menu.addItem(WarpSourceFromHere, "Warp From Here", canInfer);
+    menu.addItem(WarpSourceStartAtTempo, "Warp From Here (Start At " + tempo + " BPM)", canInfer);
+    menu.addItem(WarpSourceStraight, "Warp From Here (Straight)", canInfer);
+    menu.addItem(WarpSourceSetTempo, "Warp " + tempo + " BPM From Here", canWarp);
     return menu;
 }
 bool SampleEditor::chooseWarpContextItem(int item) {
-    if (item == 1)
+    if (item == QuantizeSource)
         return command(AppCommands::Quantize);
-    if (item == 2) {
+    if (item == PromoteSourceTransients) {
         const auto onsets = transients();
-        if (onsets && !onsets->empty())
-            return panel.root.commitEdit(clip_edit::prepareWarpMarkersAtTransients(panel.root.editStore(), panel.clip(),
-                *onsets, panel.root.editRate()));
+        return onsets && !onsets->empty() &&
+               panel.root.commitEdit(clip_edit::prepareWarpMarkersAtTransients(panel.root.editStore(), panel.clip(),
+                   *onsets, panel.root.editRate()));
     }
-    return false;
+    if (item < WarpSourceFromHere || item > WarpSourceSetTempo || !warpContextTick_ || markers_.empty())
+        return false;
+    audio::AutoWarpOptions options;
+    options.detectTempoChanges = item == WarpSourceFromHere || item == WarpSourceStartAtTempo;
+    options.numerator = panel.meter().numerator;
+    options.denominator = panel.meter().denominator;
+    if (item == WarpSourceStartAtTempo)
+        options.tempoHint = setTempo();
+    if (item == WarpSourceSetTempo)
+        options.sourceBpm = setTempo();
+    const auto onsets = item == WarpSourceSetTempo ? nullptr : transients();
+    if (item != WarpSourceSetTempo && !onsets)
+        return false;
+    const auto frames = onsets ? std::span<const std::uint64_t>(*onsets) : std::span<const std::uint64_t>{};
+    return panel.root.commitEdit(clip_edit::prepareWarpFromHere(panel.root.editStore(), panel.clip(), *warpContextTick_,
+        frames, options, panel.root.editRate()));
 }
 bool SampleEditor::keyPressed(const juce::KeyPress &key) {
     const auto code = key.getKeyCode();

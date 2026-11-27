@@ -261,6 +261,46 @@ void turnTransientsIntoMarkers() {
     check(history.undo().ok && map()==before && history.redo().ok && map()==after,
           "promoting transients restores captured Warp map bytes on Undo and Redo");
 }
+void warpFromHere() {
+    Fixture f(false);
+    auto warp=f.options();
+    warp.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,warp,48000),"seed a Warp From Here source"))return;
+    for(const auto point:{WarpMarker{8820,q/2},WarpMarker{17640,3*q/2}})
+        if(!apply(f,clip_edit::prepareWarpMarkerEdit(*f.store,7,clip_edit::WarpMarkerChange::Add,point,48000),
+                  "seed an interior Warp marker"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto map=[&] {
+        const auto image=clip_edit::captureImage(context,7);
+        const auto& bytes=image.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+        return audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100).markers;
+    };
+    const auto before=map();
+    if(before.size()!=4){check(false,"Warp From Here fixture has both interior anchors");return;}
+    // The already-detected file onsets remain usable when the media goes offline.
+    f.store->db().exec("UPDATE media_files SET rel_path='unavailable.wav',abs_path_hint=NULL,missing=1 WHERE id=8");
+    const std::array<std::uint64_t,10> onsets{100,4410,14553,18963,23373,27783,32193,36603,41013,44100};
+    audio::AutoWarpOptions analysis;
+    const auto suffix=clip_edit::prepareWarpFromHere(*f.store,7,q,onsets,analysis,48000);
+    check(suffix.ok && suffix.requests.size()==1,"cached transients stage one Warp From Here edit without media access");
+    if(!apply(f,suffix,"commit the inferred right-side map"))return;
+    const auto after=map();
+    check(after.size()>=4 && after[0]==before[0] && after[1]==before[1] && after[2]==WarpMarker{13230,q} &&
+          after.back().sourceFrame==before.back().sourceFrame && after.back().tick!=before.back().tick &&
+          std::ranges::find(after,before[2].sourceFrame,&WarpMarker::sourceFrame)==after.end(),
+          "the left anchors and the new boundary survive, with the previous right anchor removed");
+    History history(*f.store);
+    check(history.undo().ok && map()==before && history.redo().ok && map()==after,
+          "Undo and Redo restore exact captured Warp From Here marker bytes");
+    if(!history.undo().ok){check(false,"restore the original map for the Set BPM case");return;}
+    check(!clip_edit::prepareWarpFromHere(*f.store,7,q,{},analysis,48000).ok && map()==before,
+          "an inferred Warp From Here without cached transients leaves the map intact");
+    analysis.sourceBpm=60;
+    if(!apply(f,clip_edit::prepareWarpFromHere(*f.store,7,q,{},analysis,48000),
+              "use the Set BPM with no detected transients"))return;
+    const std::vector<WarpMarker> expected{before[0],before[1],{13230,q},{44100,17*q/10}};
+    check(map()==expected,"the explicit BPM variant makes a straight suffix through the source endpoint");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -290,4 +330,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();warpFromHere();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
