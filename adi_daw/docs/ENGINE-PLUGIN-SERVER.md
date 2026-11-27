@@ -300,6 +300,23 @@ relative clock error of `ppm` over `seconds` at 48 kHz drifts
 `48000 * seconds * ppm / 1e6` samples. Compare this against the mode's phase
 tolerance. [Probe source][probe]
 
+### Live playback through a stalled and disconnected TCP link
+
+An independent v13 peer held reply four for roughly 30 ms, resumed audio,
+then closed the connection after ten replies. Three runs drove the real ADI
+graph for 160 callbacks at 48 kHz and 64 frames across the veth pair. In each
+run seven output blocks contained the exact expected wet and dry samples
+and 152 contained the dry track alone. The remote device counted 152
+missed deadlines in each run, resumed after the stall and named the closed
+connection. Its late replies never appeared in a later output block.
+The callback allocation audit measured zero. A separate network trace
+recorded zero network syscalls on the callback thread and 66 on its worker.
+
+The portable TCP regression uses explicit peer barriers and an ephemeral
+loopback port. It checks dry isolation, exact sequence correspondence,
+resumption, counted misses and a named failure on close. The test allows
+the host scheduler to change the number of missed deadlines.
+
 ## For the director
 
 **A. Stock server support in the release.** Keep stock compatibility for the

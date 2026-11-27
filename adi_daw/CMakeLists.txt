@@ -1119,6 +1119,15 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME adi_remote_session_tests COMMAND "${Python3_EXECUTABLE}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_remote_session.py"
         "$<TARGET_FILE:adi_remote_session_tests>" "$<TARGET_FILE:adi_catalogue_clap_fixture>")
+
+    add_executable(adi_remote_tcp_playback_tests tests/test_remote_tcp_playback.cpp)
+    target_link_libraries(adi_remote_tcp_playback_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_remote_tcp_playback_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_remote_tcp_playback_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_tcp_playback.py"
+        "$<TARGET_FILE:adi_remote_tcp_playback_tests>")
+    set_tests_properties(adi_remote_tcp_playback_tests PROPERTIES TIMEOUT 40)
 endif()
 
 add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)
