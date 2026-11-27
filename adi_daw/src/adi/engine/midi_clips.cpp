@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/midi_clips.hpp"
+#include "adi/engine/midi_expression_clock.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/curves.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
@@ -742,7 +743,6 @@ void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vect
                        const TempoMap& tempo,double rate,double originSeconds,const SecondsAt& secondsAt,
                        std::int64_t sourceStart,std::int64_t visibleStart) {
     constexpr auto tickLimit=std::int64_t{1}<<50;
-    constexpr double ppq=5765760.0;
     const auto step=static_cast<std::int64_t>(std::floor(rate/500.0));
     const auto sampleAt=[&](std::int64_t tick) {
         const double time=secondsAt(sourceStart+tick);
@@ -750,9 +750,7 @@ void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vect
     };
     const auto noteTickAt=[&](std::int64_t sample) {
         const double seconds=static_cast<double>(sample)/rate-originSeconds;
-        const auto tick=tempo.secondsToTicks(seconds);
-        const auto fraction=(seconds-tempo.ticksToSeconds(tick))*tempo.bpmAt(tick)*ppq/60.0;
-        return static_cast<double>(tick-sourceStart)+fraction;
+        return midiNotePosition(tempo, seconds).relativeTo(sourceStart);
     };
     std::uint64_t identity=14695981039346656037ULL,timing=identity;
     for(std::size_t dimension=0;dimension<expressionDimensions;++dimension) {

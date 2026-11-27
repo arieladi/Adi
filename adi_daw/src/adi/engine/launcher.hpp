@@ -10,6 +10,8 @@
 
 namespace adi::engine {
 
+struct MidiNotePosition;
+
 /// Owner-prepared launch metadata. Source boundaries use clip-local ADI ticks.
 /// An empty slot can override the default Stop button with hasStop = false.
 struct LaunchSlot {
@@ -56,6 +58,8 @@ struct LaunchBlock {
     double sampleRate = 48000.0;
     double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
     bool preparedScenePinned = false; // an absent token then revokes the old published scene
+    // Preserve the fractional position separately for note-relative AEXP.
+    MidiNotePosition (*notePositionAtSample)(const void*, std::int64_t) noexcept = nullptr;
 };
 
 struct LaunchSection {

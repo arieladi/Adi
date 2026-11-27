@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/launch_midi.hpp"
+#include "adi/engine/midi_expression_clock.hpp"
 
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/curves.hpp"
@@ -573,13 +574,19 @@ bool LaunchMidiTrack::render(const LaunchBlock& block, const LaunchSection& sect
         if (!expression.empty() && !expressionBlocked) {
             const auto owed = std::count_if(active_.begin(),active_.end(),
                 [](const auto& voice) { return voice.runtimeId && !voice.pending; });
-            const auto tick = std::max(static_cast<double>(section.sourceTick),projection.sourceTick(sample,section));
+            const auto notePosition = block.notePositionAtSample ? block.notePositionAtSample(block.clock, sample)
+                : MidiNotePosition{};
+            const auto fallbackTick = block.notePositionAtSample ? 0.0
+                : std::max(static_cast<double>(section.sourceTick), projection.sourceTick(sample, section));
             for (auto& voice : active_) {
                 if (!voice.runtimeId || voice.releasing || !voice.note.expressionIdentity) continue;
                 const auto fresh = voice.expressionFresh;
                 const auto visibleStart = std::max(section.sourceTick,voice.note.start);
                 const auto startsHere = projection.sample(voice.note.start) == sample;
-                const auto noteTick = fresh && (sample == first || startsHere) ? static_cast<double>(visibleStart) : tick;
+                const auto noteTick = fresh && (sample == first || startsHere)
+                    ? static_cast<double>(visibleStart - voice.note.start)
+                    : block.notePositionAtSample ? notePosition.relativeTo(projection.phase, voice.note.start)
+                    : fallbackTick - static_cast<double>(voice.note.start);
                 voice.expressionFresh = false;
                 for (std::size_t d = 0; d < voice.note.expression.size(); ++d) {
                     const auto range = voice.note.expression[d];
@@ -589,7 +596,7 @@ bool LaunchMidiTrack::render(const LaunchBlock& block, const LaunchSection& sect
                     const bool atKnot = knot != points.end() && projection.sample(voice.note.start+knot->tick) == sample;
                     if (!fresh && !atKnot && sample % expressionStep != 0) continue;
                     const auto value = valueAt(points,projection,sample,voice.note.start,
-                        noteTick-static_cast<double>(voice.note.start),visibleStart) + (d==0 ? voice.note.tuning/100.0 : 0.0);
+                        noteTick,visibleStart) + (d==0 ? voice.note.tuning/100.0 : 0.0);
                     if (voice.expressionSent[d] && voice.expressionValue[d] == value) continue;
                     if (out.capacity()-out.size() <= owed) {
                         expressionBlocked = true;
