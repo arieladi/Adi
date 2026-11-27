@@ -6,6 +6,7 @@
 #include "ui_shell.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/library_listing.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
@@ -4481,7 +4482,7 @@ void ClipViewPanel::reread() {
 }
 bool ClipViewPanel::isInterestedInFileDrag(const juce::StringArray &files) {
     return audio() && details_->aliasOf == std::nullopt && files.size() == 1 &&
-           isAudioFile(media::pathFromUtf8(files[0].toStdString()));
+           libraryFileKind(media::pathFromUtf8(files[0].toStdString())) == LibraryFile::Kind::Audio;
 }
 void ClipViewPanel::filesDropped(const juce::StringArray &files, int, int) {
     if (!isInterestedInFileDrag(files))

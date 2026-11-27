@@ -37,6 +37,7 @@
 #include "ui_project_media.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include "adi/edit_plan.hpp"
 #include "window_release.hpp"
 #include "mix_function_host.hpp"
 #include "adi_app_resources.hpp"
