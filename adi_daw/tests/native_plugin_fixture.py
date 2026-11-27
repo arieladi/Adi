@@ -120,6 +120,7 @@ def check_case(binary, mode):
 def main():
     binary = sys.argv[1]
     subprocess.run([binary, "1", "loopback"], check=True, timeout=2)
+    subprocess.run([binary, "1", "embedded-null"], check=True, timeout=2)
     for mode in ("pcm", "version", "refused", "state-failure", "sequence", "latency", "deadline"):
         check_case(binary, mode)
 

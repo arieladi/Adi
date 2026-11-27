@@ -139,12 +139,16 @@ bool decodeState(std::string_view encoded, std::vector<std::uint8_t>& output) {
 
 bool writeControl(const Socket& socket, Command command, std::string_view payload,
                   Deadline deadline, std::string& error) {
-    std::vector<std::byte> bytes(12 + payload.size());
-    put(bytes, 0, static_cast<std::int32_t>(command));
-    put(bytes, 4, static_cast<std::int32_t>(4 + payload.size()));
-    put(bytes, 8, static_cast<std::int32_t>(payload.size()));
-    std::memcpy(bytes.data() + 12, payload.data(), payload.size());
-    return socket.write(bytes, deadline, error);
+    if (payload.size() > maxControlPayload - 4) {
+        error = "v13 command exceeds the payload bound";
+        return false;
+    }
+    std::array<std::byte, 12> header{};
+    put(header, 0, static_cast<std::int32_t>(command));
+    put(header, 4, static_cast<std::int32_t>(4 + payload.size()));
+    put(header, 8, static_cast<std::int32_t>(payload.size()));
+    return socket.write(header, deadline, error) &&
+           socket.write(std::as_bytes(std::span(payload)), deadline, error);
 }
 
 bool readControl(const Socket& socket, Command command, std::vector<std::byte>& payload,

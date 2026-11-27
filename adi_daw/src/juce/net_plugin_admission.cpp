@@ -8,16 +8,19 @@
 #include <utility>
 
 namespace adi::net {
+
+bool isVst3ClassId(std::string_view uid) noexcept {
+    return uid.size() == 32 && std::ranges::all_of(uid, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    });
+}
+
 namespace {
 
 constexpr std::size_t maximumIdentifierLength = 256;
 
 bool supportsRemoteIdentity(const rows::PluginRef& ref) {
-    if (ref.format == "vst3") {
-        return ref.uid.size() == 32 && std::ranges::all_of(ref.uid, [](char c) {
-            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-        });
-    }
+    if (ref.format == "vst3") return isVst3ClassId(ref.uid);
     return ref.format == "clap" && !ref.uid.empty() && ref.uid.size() <= maximumIdentifierLength &&
            ref.uid.find_first_of("/\\") == std::string::npos && ref.uid.find('\0') == std::string::npos;
 }

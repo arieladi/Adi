@@ -163,7 +163,10 @@ The worker checks the lease before setup, processing and state exchange.
 Raw stock lookup tokens cannot serve as project plug-in identities.
 An unavailable server falls back to the installed plug-in for live
 playback, or the existing placeholder when both are unavailable.
-Offline playback requires the authored server.
+The VST3 loader takes a full-class-ID lookup against the validated local
+catalogue. A successful fallback retains the same class ID for its
+project and runtime identity. Old local projects still use the existing
+catalogue identifier path. Offline playback requires the authored server.
 
 `RemoteDevice` uses two preallocated single-producer, single-consumer rings.
 The I/O worker owns connection setup, processing and teardown. The device
@@ -226,7 +229,44 @@ on the same key reached the server as distinct runtime IDs at offsets
 0 and 32 with exact tuning of +0.125 and −0.375 semitones. A direct
 native fixture also measured a 0.62385 peak PCM difference from
 neutral expression and preserved finer fractional values bit for bit.
-The native test protocol is scoped to loopback. [Official Surge XT release][surge-release]
+The native test protocol is scoped to loopback. A separate native state
+test captured a nondefault 50,208-byte Surge state and restored it in
+a freshly prepared server process. Its state bytes and all 64,000
+compensated output samples were identical across both instances and
+the local reference. [Official Surge XT release][surge-release]
+
+### Discovery and cached catalogue
+
+The application network owner can enable `PluginServerDiscovery` from
+`sync.audioGridderDiscovery`, which defaults to off. A disabled browse opens
+no socket. An enabled IPv4 browse sends one `_audiogridder._tcp.local` query
+to `224.0.0.251:5353` and reads unicast replies on the same ephemeral UDP
+socket. It deduplicates by advertised UUID and address, returns the reply
+TTL, and closes the socket after the bounded collection window. The default
+window is 750 ms. A portable loopback fixture verified silence while disabled,
+one fixed query when enabled, malformed and wrong-source reply rejection,
+and one result from duplicate replies in a 250 ms window.
+[Discovery engine seam][discovery-engine] · [Loopback fixture][discovery-fixture]
+
+The production multicast query also found the official AudioGridder 1.2.0
+Linux server on an isolated virtual Ethernet pair. It returned the server
+at `10.254.42.1:55056` with a 10 s TTL in a 753.233 ms browse. The network
+namespace had no physical LAN access. [Official Linux archive][linux-release]
+
+`PluginServerCatalogue` stores one atomic metadata snapshot per locally
+paired server fingerprint in the application's cache directory. A network
+refresh requires a ledger grant for the project, paired server and exact
+destination before it queries. The observed mDNS UUID has no authority.
+The stock catalogue query reads the unfiltered list and closes without
+activating a plug-in. A stock short token enters the cache only when an
+application-owned resolver supplies a separate full VST3 class ID. Other
+authorized sources can supply full VST3 class IDs and case-sensitive CLAP IDs.
+Cached reads work offline and carry no permission to connect. The stock
+fixture put one mapped row from two eligible wire entries into the cache.
+The official Linux server returned four VST3 entries, and the authorized
+refresh and readback cached the one mapped class in 18.5103 ms without the
+scratch scheduling fallback.
+[Discovery engine seam][discovery-engine] · [Stock metadata transport][wire-transport]
 
 ## Measuring the link and deciding when PTP is needed
 
@@ -411,3 +451,5 @@ stock TCP as an explicitly selected trusted-LAN mode as well.
 [stock-fixture]: ../tests/fixtures/vst3_expression_synth.cpp
 [surge-release]: https://github.com/surge-synthesizer/releases-xt/releases/tag/1.3.4
 [wire-transport]: ../src/juce/audiogridder_transport.cpp
+[discovery-engine]: ../src/juce/net_plugin_server.hpp
+[discovery-fixture]: ../tests/run_plugin_server_discovery.py

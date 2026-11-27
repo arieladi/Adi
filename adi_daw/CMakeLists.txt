@@ -313,6 +313,8 @@ add_library(adi_core STATIC
     src/juce/audiogridder_transport.cpp
     src/juce/native_plugin_transport.cpp
     src/juce/net_plugin_admission.cpp
+    src/juce/net_plugin_routing.cpp
+    src/juce/net_plugin_server.cpp
     # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
     # with no dependencies, so the host side lives in adi_core and its tests
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
@@ -1100,6 +1102,10 @@ add_executable(adi_clap_block_wire_tests tests/test_clap_block_wire.cpp)
 target_link_libraries(adi_clap_block_wire_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clap_block_wire_tests COMMAND adi_clap_block_wire_tests)
 
+add_executable(adi_plugin_server_catalogue_tests tests/test_plugin_server_catalogue.cpp)
+target_link_libraries(adi_plugin_server_catalogue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_plugin_server_catalogue_tests COMMAND adi_plugin_server_catalogue_tests)
+
 if(WIN32 AND NOT ADI_WITH_PD)
     target_link_libraries(adi_core PRIVATE Ws2_32)
 endif()
@@ -1147,6 +1153,11 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME adi_native_plugin_transport_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_plugin_fixture.py"
         "$<TARGET_FILE:adi_native_plugin_transport_tests>")
+
+    add_test(NAME adi_plugin_server_discovery_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_plugin_server_discovery.py"
+        "$<TARGET_FILE:adi_plugin_server_catalogue_tests>")
+    set_tests_properties(adi_plugin_server_discovery_tests PROPERTIES TIMEOUT 15)
 endif()
 
 add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)

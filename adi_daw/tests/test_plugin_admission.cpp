@@ -4,6 +4,7 @@
 #include "adi/engine/offline_render_scope.hpp"
 #include "adi/store.hpp"
 #include "juce/net_plugin_admission.hpp"
+#include "juce/net_plugin_server.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -154,11 +155,45 @@ void run() {
     check(!refused && authorizations == attempts && factories == 1,
           "audio callbacks cannot consult the ledger or create a worker");
 }
+
+void cataloguedBindings() {
+    test::TempDirectory dir("plugin_admission", "catalogue");
+    net::PluginServerCatalogue catalogue(dir.path() / "servers.sqlite");
+    const net::PluginServerAddress endpoint{"127.0.0.1", 55056};
+    const std::string fullId = "157C0F3844664A65B03C829F28B96435";
+    const net::PluginCatalogueScope scope{"project-one", "paired-room", endpoint};
+    std::string error;
+    check(catalogue.refresh(scope, [](const auto&) { return true; },
+              [&](const auto&, std::string&) -> std::optional<std::vector<net::ServerPlugin>> {
+                  return std::vector<net::ServerPlugin>{{"vst3", fullId, "Named plug-in", "VST3-12ab", true},
+                                                       {"clap", "org.adi.test", "Named plug-in", "org.adi.test", false}};
+              }, error), "the full identity and stock token can share a cache row");
+    auto resolve = net::cataloguedPluginServerResolver(catalogue,
+        [&](const net::PluginServerAddress& address, std::string_view)
+            -> std::optional<net::PluginServerPairing> {
+            if (address != endpoint) return {};
+            return net::PluginServerPairing{"fixture-connection", "paired-room"};
+        });
+    net::PluginServerLocation server{7, "Room", endpoint, "audiogridder"};
+    const device::DeviceIdentity vst3{"vst3", "157c0f3844664a65b03c829f28b96435", "Other name", {}, {}};
+    const device::DeviceIdentity clap{"clap", "org.adi.test", "Named plug-in", {}, {}};
+    auto stock = resolve(server, vst3);
+    check(stock && stock->eventFlow == engine::EventFlow::Consume && stock->createProcessor(endpoint),
+          "stock backend uses full VST3 identity independent of display spelling");
+    check(!resolve(server, clap), "stock catalogue cannot route a CLAP to a VST3 command");
+    server.protocol = "adps-v1";
+    auto native = resolve(server, clap);
+    check(native && native->eventFlow == engine::EventFlow::Through && native->createProcessor(endpoint),
+          "native backend uses the exact CLAP descriptor ID");
+    server.address.port = 55057;
+    check(!resolve(server, clap), "the cached server fingerprint grants no access to a remapped endpoint");
+}
 } // namespace
 
 int main() {
     try {
         run();
+        cataloguedBindings();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

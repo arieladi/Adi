@@ -108,6 +108,21 @@ bool persistentCatalogueContracts() {
             "fresh loader/reopen instantiates real VST3 and CLAP from cache with helper absent"))return false;
         auto noHint=vstRef;noHint.pathHint.clear();
         if(!check(load(loader,noHint) && loader.stats().catalogueReads==1,"known cached UID needs no hint or repeated SQL hydration"))return false;
+        auto canonical = noHint;
+        canonical.uid = "AD1E00014D5045319F2A0C1100000001";
+        adi::rows::Device remote;
+        remote.remoteHostId = 7;
+        adi::engine::DeviceRequest request;
+        request.device = &remote;
+        request.ref = &canonical;
+        std::string fallbackError;
+        auto fallback = loader.fn({}, [&](std::string_view uid) -> std::optional<std::string> {
+            if (uid == canonical.uid) return vstRef.uid;
+            return {};
+        })(request, fallbackError);
+        if (!check(fallback && fallback->loaded() && fallback->identity().uid == canonical.uid &&
+                   fallbackError.find("playing the local plug-in") != std::string::npos,
+                   "unavailable server falls back through the local class ID mapping")) return false;
         // A deliberately bad root/target must not reach enumeration or helper
         // discovery once a valid persistent snapshot has been installed.
         const auto trap=scratch.path()/"root-trap";fs::create_directories(trap);

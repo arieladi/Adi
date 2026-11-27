@@ -12,6 +12,10 @@
 
 namespace adi::net {
 
+class PluginServerCatalogue;
+
+[[nodiscard]] bool isVst3ClassId(std::string_view uid) noexcept;
+
 struct PluginServerLocation {
     std::int64_t id = 0;
     std::string name;
@@ -49,6 +53,18 @@ struct PluginServerBinding {
 };
 using PluginServerResolve = std::function<std::optional<PluginServerBinding>(
     const PluginServerLocation&, const device::DeviceIdentity&)>;
+
+struct PluginServerPairing {
+    std::string connectionId;
+    std::string serverFingerprint;
+};
+using PluginServerPairLookup = std::function<std::optional<PluginServerPairing>(
+    const PluginServerAddress&, std::string_view protocol)>;
+
+// Uses the app-local cache only. The application supplies pairing records for
+// the exact address and transport. PluginServerCatalogue never pairs a host.
+[[nodiscard]] PluginServerResolve cataloguedPluginServerResolver(
+    PluginServerCatalogue catalogue, PluginServerPairLookup paired);
 
 // Compose the returned loader with engine::withRemoteDevices. Resolution
 // reads only the app catalogue. The backend opens a socket in worker prepare

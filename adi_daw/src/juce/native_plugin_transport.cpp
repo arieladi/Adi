@@ -25,7 +25,8 @@ using Message = wire::Message;
 
 bool loopback(const net::PluginServerAddress& endpoint, in_addr& address) noexcept {
     constexpr std::uint32_t loopbackPrefix = 0x7f000000;
-    return endpoint.port != 0 && inet_pton(AF_INET, endpoint.host.c_str(), &address) == 1 &&
+    return endpoint.port != 0 && endpoint.host.find('\0') == std::string::npos &&
+           inet_pton(AF_INET, endpoint.host.c_str(), &address) == 1 &&
            (ntohl(address.s_addr) & 0xff000000u) == loopbackPrefix;
 }
 

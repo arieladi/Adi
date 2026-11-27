@@ -32,13 +32,14 @@ int main(int argc, char** argv) {
     const auto parsed = std::from_chars(portText.data(), portText.data() + portText.size(), port);
     if (parsed.ec != std::errc{} || parsed.ptr != portText.data() + portText.size() || port == 0) return 2;
 
-    const auto endpoint = mode == "loopback" ? "192.0.2.1" : "127.0.0.1";
+    std::string endpoint = mode == "loopback" ? "192.0.2.1" : "127.0.0.1";
+    if (mode == "embedded-null") endpoint.append("\0.example", 9);
     adi::device::NativePluginProcessor transport({{endpoint, port}, 2s, 150ms},
                                                {"org.adi.native-fixture"});
     std::int32_t latency = 0;
     std::string error;
     const bool prepared = transport.prepare(48000, 2, 64, true, latency, error);
-    if (mode == "loopback")
+    if (mode == "loopback" || mode == "embedded-null")
         return check(!prepared && error.find("loopback") != std::string::npos, error.c_str()) ? 0 : 1;
     if (mode == "version")
         return check(!prepared && error.find("reply header") != std::string::npos, error.c_str()) ? 0 : 1;

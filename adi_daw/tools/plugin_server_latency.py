@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Measure application-level UDP transit independently of the plug-in protocol."""
 
+from __future__ import annotations
+
 import argparse
 from dataclasses import dataclass
 import json
