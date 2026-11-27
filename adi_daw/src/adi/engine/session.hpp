@@ -209,6 +209,13 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+
+    /// SC-318: asks the loader again for every placeholder's plug-in, as a
+    /// plug-in scan ends. One that now loads takes the placeholder's place --
+    /// its stored state and parameter rows restored, as at open -- and the
+    /// placeholder is retired; one still missing stays as it is, its reason
+    /// updated. Rebuilds when any woke. Returns how many woke.
+    std::size_t retryPlaceholders(const Store& store);
     // nullopt means the latest transaction needs ordinary full synchronisation.
     std::optional<bool> refreshDeviceKeys(const Store&, const std::shared_ptr<const std::vector<std::uint8_t>>& image);
 
@@ -243,6 +250,9 @@ public:
     // Turning a gate off prevents new writes but keeps a pending write suspended
     // until its captured data is committed/refreshed and explicitly finished.
     void setAutomationWriteState(bool armed, bool recording) noexcept;
+    /// SC-333: a take is being recorded, so the transport a hosted plug-in is handed says it records
+    /// while it plays. Set by the document as its recording starts and ends; read on the audio thread.
+    void setRecordingForDevices(bool on) noexcept { recordingForDevices_.store(on, std::memory_order_release); }
     [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
     [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
     [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
@@ -312,7 +322,8 @@ public:
         /// the recorder on its owner first. Explicit locate/play bypasses this
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
-        bool process(const AudioIo&) noexcept;
+        [[nodiscard]] CountInPosition countInPosition() const noexcept;
+        bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
         explicit RenderBlock(Session&) noexcept;
@@ -348,13 +359,15 @@ public:
     /// expression event may use ID zero.
     /// Returns false for invalid events or a full queue. Rebind the producer
     /// when the driver restarts its sample clock.
-    bool enqueueMidiInput(std::int64_t streamSample, const Event&) noexcept;
+    bool enqueueMidiInput(std::int64_t streamSample, const Event&, std::int64_t inputSample = -1) noexcept;
     /// Discard queued events and release held live notes on the next callback.
     /// Call when the producer disconnects or replaces its port configuration.
     void resetMidiInput() noexcept;
     /// Owner only. Start a new capture with the listed armed MIDI tracks.
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
+    // With the audio callback detached, finish without waiting for another slice.
+    void finishMidiInputCapture() noexcept;
 
     /// Owner only. Configures the next graph and rebuilds when loaded; the
     /// prior graph stays live on failure. Zero workers restores serial.
@@ -459,6 +472,8 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
+    bool configureArrangementLoopRecording(AudioRecordingSpec&, std::string& error) const;
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
@@ -505,7 +520,8 @@ private:
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
-    void resolveOne(const Store& store, const rows::Device& row);
+    void resolveOne(const Store& store, const rows::Device& row,
+                    std::unique_ptr<device::DeviceInstance> preloaded = nullptr);
     void retireDepartedRows();
     void syncFlags();
     void syncRoute(Entry& e, device::DeviceInstance& inst);
@@ -525,6 +541,9 @@ private:
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::map<std::int64_t, std::array<std::int32_t, 2>> monitorInputs_;
     std::unique_ptr<AudioInputRecorder> recording_;
+    // Borrowed from the recorder for one rendered slice. Graph workers join
+    // before the driver clears it or acquires the next recorder snapshot.
+    std::span<const std::int64_t> recordingAudioTracks_;
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
@@ -535,12 +554,13 @@ private:
         Session* session=nullptr; // retained Session owns every published graph
         mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
-        // Allocated on the owner; used only at a count-in's exact split. Input
-        // recording supports64 physical channels; output covers the full graph.
+        // Allocated on the owner for exact count-in and punch boundary splits.
+        // Input supports 64 physical channels and output covers the full graph.
         mutable std::vector<const float *> inputSlice;
         mutable std::vector<float *> outputSlice;
         mutable std::vector<double *> outputSlice64;
         std::int64_t loopBegin=0,loopEnd=0;
+    std::int64_t punchOutSample=0; // brace end without the one-frame minimum for loops
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
@@ -552,6 +572,7 @@ private:
         double lastTickSeconds = 0.0;
         SessionSpec spec;
         [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
+        void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
@@ -560,7 +581,7 @@ private:
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
-    void prepareMidiInput(TimingView&, const rows::Model&);
+    void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
@@ -581,6 +602,7 @@ private:
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
     std::atomic<std::int64_t> driverSample_{0};
     std::atomic<bool> driverPlaying_{false};
+    std::atomic<bool> recordingForDevices_{false}; // SC-333
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
     std::int64_t loopStartTick_=0,loopEndTick_=0;
@@ -590,6 +612,7 @@ private:
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
+    std::int32_t countInBars_ = 0, countInDivisionsPerBeat_ = 4;
     // DF-E6 (a): a count-in delayed by the render latency still owes its last
     // clicks (at most one beat) when the roll starts. They play on, on the
     // count-in grid, until the compensated program is heard; the transport

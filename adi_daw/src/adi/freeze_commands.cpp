@@ -2,6 +2,7 @@
 #include "adi/freeze_commands.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/freeze_fingerprint.hpp"
 #include "adi/freeze_groups.hpp"
@@ -13,6 +14,7 @@
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
+#include "adi/track_image.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <limits>
@@ -342,6 +344,153 @@ CommitResult unfreeze(Store &store, std::span<const std::int64_t> tracks, bool a
             operation.label = "Unfreeze Tracks";
         CommitOptions options;
         options.expectHead.emplace(head);
+        return OpJournal(store).commit(requests, options);
+    } catch (const std::exception &e) {
+        result.error = e.what();
+        return result;
+    }
+}
+std::array<OpRequest, 2> audioTrackConversion(Store &store, std::int64_t track) {
+    // The paired native delete/create operations retain causal rows,
+    // including references from other tracks, at the same track ID.
+    auto contents = detail::captureTrack(store.db(), track);
+    auto &entries = contents.at("rows");
+    const auto trackEntry = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) {
+        return entry.at("table") == "tracks" && entry.at("key").at("id") == track;
+    });
+    if (trackEntry == entries.end())
+        throw std::runtime_error("Could not capture the track's original type");
+    (*trackEntry)["before"]["kind"] = "audio";
+    OpRequest remove, replace;
+    remove.opType = "track.delete";
+    remove.payload = {{"id", track}};
+    replace.opType = "track.create";
+    replace.payload = {{"id", track}, {"kind", "audio"}, {"contents", std::move(contents)}};
+    return {std::move(remove), std::move(replace)};
+}
+CommitResult flatten(Store &store, std::int64_t track, std::int64_t clip, Actor actor) {
+    CommitResult result;
+    try {
+        if (audio::onAudioThread || store.readOnly() || track <= 0 || clip <= 0)
+            throw std::runtime_error("Flatten requires the writable document owner and allocated track and clip IDs");
+        SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+        const auto head = OpJournal(store).headSeq();
+        const auto row = detail::captureRow(store.db(), "tracks", "id", track);
+        if (!row || (row->at("kind") != "audio" && row->at("kind") != "midi" &&
+                     row->at("kind") != "instrument") ||
+            row->at("locked") != 0 || row->at("frozen") != 1)
+            throw std::runtime_error("Flatten requires an unlocked, individually frozen audio or MIDI track");
+        const auto before = state(store.db(), track);
+        const auto &cache = before.at("render");
+        if (cache.is_null())
+            throw std::runtime_error("This frozen track has no verified cache. Unfreeze and freeze it again.");
+        for (const auto &[root, members] : groups(store.db())) {
+            if (root == track || std::ranges::any_of(members, [track](const auto &member) { return member.id == track; }))
+                throw std::runtime_error("Unfreeze the group before flattening tracks inside it");
+        }
+        FingerprintSpec spec;
+        spec.root = track;
+        if (fingerprint(store, spec).hash != cache.at("fingerprint").get<std::string>())
+            throw std::runtime_error("The frozen source changed. Unfreeze and freeze it again before flattening.");
+        const auto mediaId = detail::signedInteger(cache.at("post_media_id"));
+        const auto frames = detail::signedInteger(cache.at("frames"));
+        const auto rate = detail::signedInteger(cache.at("sample_rate"));
+        const auto channels = detail::signedInteger(cache.at("channels"));
+        if (before.at("media") != mediaId || frames <= 0 || rate < 8000 || rate > 768000 ||
+            channels <= 0 || channels > 64)
+            throw std::runtime_error("Invalid frozen cache format");
+        const auto duration = static_cast<long double>(frames) * 1'000'000'000.0L /
+                              static_cast<long double>(rate);
+        if (duration >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+            throw std::runtime_error("Frozen duration exceeds the supported timeline range");
+        const auto mediaRow = media::mediaRow(store.db(), mediaId);
+        if (cache.at("pre_media_id") != mediaId) {
+            const auto plan = engine::planGraph(rows::readModel(store));
+            if (std::ranges::any_of(plan.edges, [&](const auto &edge) {
+                    return edge.tap == engine::Tap::PreFx && plan.nodes[edge.from].trackId == track;
+                }))
+                throw std::runtime_error("Flatten would change a Pre FX send or sidechain. Change its tap first.");
+        }
+        if (edit::row(store.db(), "clips", clip))
+            throw std::runtime_error("Flatten clip ID is already in use");
+
+        constexpr const char *label = "Flatten Frozen Track";
+        std::vector<OpRequest> requests;
+        const auto add = [&](const char *type, Payload payload) {
+            OpRequest operation;
+            operation.opType = type;
+            operation.payload = std::move(payload);
+            requests.push_back(std::move(operation));
+        };
+        if (row->at("kind") != "audio")
+            for (auto &operation : audioTrackConversion(store, track))
+                requests.push_back(std::move(operation));
+        const Payload after = {{"armed", 0}, {"frozen", 0}, {"media", nullptr}, {"render", nullptr}};
+        requests.push_back(request(track, before, after, label));
+
+        std::string name = row->at("name").get<std::string>();
+        SQLite::Statement clips(store.db(), "SELECT id,name FROM clips WHERE track_id=? AND lane_id IS NULL "
+                                            "ORDER BY id");
+        clips.bind(1, track);
+        bool first = true;
+        while (clips.executeStep()) {
+            if (first && !clips.getColumn(1).getString().empty())
+                name = clips.getColumn(1).getString();
+            first = false;
+            add("clip.delete", {{"id", clips.getColumn(0).getInt64()}});
+        }
+        SQLite::Statement devices(store.db(), "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                              "WHERE c.track_id=? ORDER BY c.ord,c.id,d.ord,d.id");
+        devices.bind(1, track);
+        while (devices.executeStep())
+            add("device.remove", {{"id", devices.getColumn(0).getInt64()}});
+        SQLite::Statement automatedGain(store.db(), "SELECT id FROM automation_lanes WHERE owner_kind='track' "
+                                                     "AND owner_id=? AND param_ref='input_gain' ORDER BY id");
+        automatedGain.bind(1, track);
+        while (automatedGain.executeStep())
+            add("automation.deleteLane", {{"id", automatedGain.getColumn(0).getInt64()}});
+        SQLite::Statement gain(store.db(), "SELECT input_gain_db FROM mixer_strip WHERE track_id=?");
+        gain.bind(1, track);
+        if (gain.executeStep() && gain.getColumn(0).getDouble() != 0.0)
+            add("mixer.setInputGain", {{"id", track}, {"db", 0.0}});
+        gain.reset();
+        if (row->at("monitor_mode") == 1)
+            add("track.setMonitorMode", {{"id", track}, {"mode", 0}});
+
+        edit::RowEdits placement(store.db());
+        placement.set("clips", clip,
+                      edit::defaultRow(store.db(), "clips",
+                                       {{"id", clip}, {"track_id", track}, {"kind", "audio"}, {"name", name},
+                                        {"time_base", 1}, {"pos_ns", 0}, {"length_ns", std::llround(duration)}}));
+        placement.set("audio_clips", clip,
+                      edit::defaultRow(store.db(), "audio_clips",
+                                       {{"clip_id", clip}, {"media_id", mediaId}, {"src_start_frames", 0},
+                                        {"src_len_frames", frames}, {"warp_enabled", 0}}));
+        add("clip.duplicate", {{"id", clip}, {"changes", placement.changes()}});
+        read.commit();
+
+        for (auto &operation : requests) {
+            operation.actor = actor;
+            operation.label = label;
+        }
+        CommitOptions options;
+        options.expectHead.emplace(head);
+        options.beforeCommit = [&](SQLite::Database &db, std::int64_t, std::string &error) {
+            if (media::mediaRow(db, mediaId) != mediaRow) {
+                error = "The frozen media row changed before attachment";
+                return false;
+            }
+            const auto file = media::resolveMedia(media::projectFolder(store), mediaRow, error);
+            if (file.empty())
+                return false;
+            audio::WavReader wave(file);
+            if (wave.frames() != static_cast<std::uint64_t>(frames) || wave.sampleRate() != rate ||
+                wave.channels() != channels) {
+                error = "Frozen media dimensions disagree with the capture";
+                return false;
+            }
+            return true;
+        };
         return OpJournal(store).commit(requests, options);
     } catch (const std::exception &e) {
         result.error = e.what();

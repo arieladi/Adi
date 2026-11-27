@@ -33,12 +33,13 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
     const auto from = time.tick(0.), to = time.tick(static_cast<double>(area.getWidth()));
     const auto &first = meterAt(from, meters);
     const double beatPx = 4. / std::max<double>(1, first.denominator) * time.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = area.getBottom();
     g.setFont(look::font(look::fontLabel, true));
@@ -66,6 +67,14 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
             }
         for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+    });
+    time.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        if (at) {
+            label(tick, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        } else {
+            g.setColour(look::rulerLabel);
+            g.fillRect(area.getX() + static_cast<int>(time.x(tick)), foot - 5, 1, 3);
+        }
     });
 }
 // The editing grid's lines and the bar lines over them, across `area`.
@@ -195,9 +204,11 @@ void NoteEditor::shapeStroke() {
 }
 void NoteEditor::setTrimMode(bool on) {
     trimMode_ = on;
-    if (on)
-        drawMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    if (on && drawMode_) {
+        setDrawMode(false);
+        return;
+    }
+    setMouseCursor(on || drawMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
     panel.repaint();
 }
 void NoteEditor::trimStroke() {
@@ -298,8 +309,11 @@ void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
     if (on)
         trimMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    setMouseCursor(on || trimMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
     panel.repaint();
+    panel.root.transport.draw.setToggleState(on, juce::dontSendNotification);
+    panel.root.arrangement.canvas.repaint();
+    panel.root.commands().manager.commandStatusChanged();
 }
 std::vector<std::int64_t> NoteEditor::drawnSteps() const {
     std::vector<std::int64_t> out;
@@ -399,6 +413,7 @@ void NoteEditor::zoomToNotes() {
         return;
     if (const auto span = timeSelection(); span && !anySelected()) {
         time.fit(span->first, span->second + std::max<std::int64_t>(1, (span->second - span->first) / 24), notesArea().getWidth());
+        panel.repaint(panel.gridBox());
         repaint();
         return;
     }
@@ -419,10 +434,12 @@ void NoteEditor::zoomToNotes() {
     const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
     keys.show(range->low, range->high, area.getHeight());
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::zoomBack() {
     time.back();
+    panel.repaint(panel.gridBox());
     repaint();
 }
 bool NoteEditor::quantize() {
@@ -1247,6 +1264,7 @@ void NoteEditor::fitWidth() {
     const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
     time.fit(from, from + length + length / 24, area.getWidth());
     panel.root.arrangement.followPaused = true;
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::fitHeight() {
@@ -1369,6 +1387,7 @@ bool NoteEditor::duplicateLoop() {
         const auto from = std::min(window.pos, window.toArrangement(start));
         const auto to = std::max(window.end(), end);
         time.fit(from, to + (to - from) / 24, area.getWidth());
+        panel.repaint(panel.gridBox());
     }
     repaint();
     return true;
@@ -2299,10 +2318,8 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         panel.setFocus(!panel.focus());
         return true;
     }
-    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B')) {
-        setDrawMode(!drawMode_);
-        return true;
-    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B'))
+        return panel.root.commands().key(k, panel.root);
     if (!mods.isAnyModifierKeyDown() && (code == 'f' || code == 'F')) {
         setFold(!folded_);
         return true;
@@ -2484,8 +2501,10 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
-    else
+    else {
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
+        panel.repaint(panel.gridBox());
+    }
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -2812,8 +2831,10 @@ void SampleEditor::resized() {
     }
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
-    if (timeWheel(time, e, w, 0))
+    if (timeWheel(time, e, w, 0)) {
+        panel.repaint(panel.headerArea());
         repaint();
+    }
 }
 void SampleEditor::paint(juce::Graphics &g) {
     g.fillAll(look::laneAlt);
@@ -4460,7 +4481,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (drawBox().contains(at)) {
-        notes.setDrawMode(!notes.drawMode());
+        root.command(AppCommands::DrawMode);
         return;
     }
     if (trimBox().contains(at)) {

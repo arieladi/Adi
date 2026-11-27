@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
+#include <optional>
 namespace adi::engine {
+// Driver feedback for the recording lead-in. The bar is negative during
+// count-in, with one-based beat and sixteenth fields. Zero means inactive.
+struct CountInPosition {
+    int bar = 0, beat = 0, sixteenth = 0;
+    bool operator==(const CountInPosition&) const = default;
+};
+enum class RecordingPunch : std::uint8_t { Within, Before, After };
+struct RecordingPunchWindow {
+    struct Boundary {
+        std::int64_t sample, tick;
+        friend bool operator==(const Boundary&,const Boundary&)=default;
+    };
+    std::optional<Boundary> in, out;
+    [[nodiscard]] bool active()const noexcept{return in.has_value() || out.has_value();}
+    friend bool operator==(const RecordingPunchWindow&,const RecordingPunchWindow&)=default;
+};
+
 // Single driver-thread state. Commands execute BETWEEN callbacks (or with the
 // driver stopped). A UI must marshal commands to that driver, never mutate this
 // concurrently. Nodes read the same block origin; Session advances it once.
