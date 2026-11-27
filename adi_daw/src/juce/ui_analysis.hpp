@@ -49,7 +49,7 @@ class SharedSpectrumView final : public juce::Component,
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
         Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope,
-        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands
+        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands, ColourWaveform
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
@@ -119,6 +119,7 @@ class SharedSpectrumView final : public juce::Component,
     bool updateFilledDisplay() noexcept;
     void paintFilledSpectrum(juce::Graphics &) const;
     void paintThirdOctaveBands(juce::Graphics &) const;
+    void paintColourWaveform(juce::Graphics &) const;
     bool spectrumMode() const noexcept {
         return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
                mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;

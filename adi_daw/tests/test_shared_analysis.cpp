@@ -168,6 +168,135 @@ void contiguousPeriodScopeDemand() {
     }
 }
 
+void colourWaveformReference() {
+    using Capture = adi::dsp::ColourWaveformCapture;
+    using adi::dsp::kColourWaveformColumnsPerSecond;
+    for (const double rate : {44100., 48000., 768000.}) {
+        Capture whole, chunked;
+        check(whole.prepare(rate) && chunked.prepare(rate), "the waveform prepares its band split at the running native rate");
+        const auto frames = static_cast<std::size_t>(rate / 4.);
+        std::vector<float> left(frames), right(frames);
+        for (std::size_t i = 0; i < frames; ++i) {
+            const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / rate;
+            const auto mono = .4f * static_cast<float>(std::sin(1200. * phase));
+            const auto side = .7f * static_cast<float>(std::sin(300. * phase));
+            left[i] = mono + side;
+            right[i] = mono - side;
+        }
+        constexpr std::int64_t origin = 321;
+        whole.feed(left, right, origin);
+        const auto boundary = static_cast<std::size_t>(std::ceil(rate / kColourWaveformColumnsPerSecond));
+        const auto feed = [&](std::size_t offset, std::size_t length) {
+            chunked.feed(std::span<const float>(left).subspan(offset, length), std::span<const float>(right).subspan(offset, length),
+                         origin + static_cast<std::int64_t>(offset));
+        };
+        feed(0, boundary - 1);
+        check(chunked.reading().size == 0, "an incomplete column never invents future audio");
+        feed(boundary - 1, 1);
+        const auto first = chunked.reading();
+        check(first.size == 1 && first.serial == 1 && first.firstSequence == origin &&
+                  first.endSequence == origin + static_cast<std::int64_t>(boundary),
+              "the first column closes on the first native sample at a 256 Hz cell boundary");
+        for (auto offset = boundary; offset < frames;) {
+            const auto block = std::min<std::size_t>(97, frames - offset);
+            feed(offset, block);
+            offset += block;
+        }
+        const auto batch = whole.reading(), split = chunked.reading();
+        check(batch == split && split.size == 64 && split.serial == 64 &&
+                  split.endSequence == origin + static_cast<std::int64_t>(frames) &&
+                  near(split.columns[63].envelope, .4, .002) && split.columns[63].bands[1] > .32f,
+              "one quarter-second gives 64 identical real columns through any callback partition or native rate");
+    }
+
+    constexpr double rate = 48000.;
+    constexpr std::size_t frames = 14400;
+    std::array<float, frames> lane{};
+    for (const auto &[target, frequency] : {std::pair{0u, 50.}, std::pair{1u, 1200.}, std::pair{2u, 10000.}}) {
+        Capture capture;
+        check(capture.prepare(rate), "band convergence fixture prepares");
+        for (std::size_t i = 0; i < lane.size(); ++i)
+            lane[i] = .73f * static_cast<float>(std::sin(2. * std::numbers::pi * frequency * static_cast<double>(i) / rate));
+        capture.feed(lane, lane, 0);
+        const auto reading = capture.reading();
+        const auto &column = reading.columns[reading.size - 1];
+        const auto &bands = column.bands;
+        check(near(column.envelope, .73, .012) && bands[target] > 1.35f * std::max(bands[(target + 1) % 3], bands[(target + 2) % 3]),
+              "the 200/4000 Hz split gives each test tone its own band and preserves the actual mono envelope");
+        if (target == 0)
+            check(bands[0] + bands[1] + bands[2] > column.envelope + .12f,
+                  "band peaks can sum higher than the true envelope without increasing waveform height");
+    }
+
+    Capture history;
+    check(history.prepare(rate), "waveform ring fixture prepares");
+    const std::vector<float> past(48000, .2f), recent(48000, .5f), now(12000, .8f);
+    history.feed(past, past, 0);
+    history.feed(recent, recent, static_cast<std::int64_t>(past.size()));
+    history.feed(now, now, static_cast<std::int64_t>(past.size() + recent.size()));
+    const auto wrapped = history.reading();
+    check(wrapped.size == 512 && wrapped.serial == 576 && near(wrapped.columns[0].envelope, .2) &&
+              near(wrapped.columns[192].envelope, .5) && near(wrapped.columns[511].envelope, .8),
+          "the two-second ring retains the newest 512 real columns in chronological order");
+}
+
+void continuousColourWaveformDemand() {
+    Fixture fixture;
+    fixture.tap = std::make_shared<ScopeTap>(768000., .5);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::ColourWaveform;
+    auto waveform = fixture.broker.acquire(request);
+    request.fftSize = 4096;
+    auto mirror = fixture.broker.acquire(request);
+    constexpr int frames = 192000;
+    const std::vector<float> samples(frames, -.5f);
+    fixture.tap->write(samples.data(), samples.data(), frames, 0, true, 1);
+    fixture.broker.pump();
+    const auto first = waveform.read();
+    const auto stats = fixture.broker.stats();
+    check(first && first == mirror.read() && first->colourWaveform && first->colourWaveform->serial == 64 &&
+              first->firstSequence + first->request.fftSize == frames && !first->pendingFrames &&
+              stats.spectralPlans == 0 && stats.analysisWindows == 0 && stats.domains == 1 && stats.taps == 1,
+          "one worker pass consumes a high-rate quarter-second without an FFT hop bottleneck");
+    if (!first || !first->colourWaveform) return;
+
+    constexpr int columnFrames = 3000;
+    fixture.tap->write(samples.data(), samples.data(), columnFrames, 0, true, 1);
+    fixture.broker.pump();
+    const auto looped = waveform.read();
+    fixture.tap->write(static_cast<const float *>(nullptr), nullptr, columnFrames, 0, false, 2);
+    fixture.broker.pump();
+    const auto stopped = waveform.read();
+    check(looped && looped->colourWaveform && looped->colourWaveform->serial == 65 && looped->sourceEpoch == first->sourceEpoch &&
+              stopped && stopped->colourWaveform && stopped->colourWaveform->serial == 66 && stopped->sourceEpoch == first->sourceEpoch &&
+              stopped->colourWaveform->columns[65].envelope == 0.f,
+          "looping and stopping leave the waveform on its sample clock and still record real silence");
+
+    fixture.tap->write(samples.data(), samples.data(), columnFrames, 120, false, 3);
+    fixture.broker.pump();
+    const auto sought = waveform.read();
+    check(sought && sought->colourWaveform && sought->sourceEpoch > first->sourceEpoch && sought->colourWaveform->serial == 1 &&
+              sought->colourWaveform->firstSequence == frames + 2 * columnFrames &&
+              sought->firstSequence + sought->request.fftSize == frames + 3 * columnFrames,
+          "a real seek starts a new capture while the generic epoch fence identifies its newest completed column");
+
+    auto raw = fixture.broker.acquire({1});
+    check(fixture.broker.stats().taps == 1 && fixture.acquireCalls == 1,
+          "concurrent spectrum and waveform domains share the physical tap");
+    waveform.reset();
+    mirror.reset();
+    check(fixture.broker.stats().consumers == 1 && fixture.broker.stats().domains == 1 && fixture.releaseCalls == 0 &&
+              first->colourWaveform->serial == 64,
+          "hiding the waveform releases its worker domain without discarding immutable readings");
+    raw.reset();
+    const auto exited = fixture.broker.stats();
+    fixture.tap->write(samples.data(), samples.data(), columnFrames, 120, false, 3);
+    fixture.broker.pump();
+    check(exited.domains == 0 && exited.taps == 0 && fixture.releaseCalls == 1 &&
+              fixture.broker.stats().cursorReads == exited.cursorReads,
+          "no capture work continues without any visible analysis lease");
+}
+
 void filledSpectrumCurves() {
     using Curve = SharedAnalysis::FilledCurve;
     constexpr int size = 4096, hop = 1024, rate = 48000, bin = 64;
@@ -3313,7 +3442,7 @@ ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operat
 #undef ADI_TEST_NOINLINE
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); periodScopeReference(); contiguousPeriodScopeDemand(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); periodScopeReference(); contiguousPeriodScopeDemand(); colourWaveformReference(); continuousColourWaveformDemand(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

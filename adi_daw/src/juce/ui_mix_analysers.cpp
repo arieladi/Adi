@@ -335,7 +335,7 @@ MixAnalysers::MixAnalysers() {
     compare_ = std::make_unique<Compare>(*this);
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
-                         "1 s Average", "Compare", "Bands"}, 1);
+                         "1 s Average", "Compare", "Bands", "Waveform"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
     for (std::size_t i = 0; i < traceNames.size(); ++i)
@@ -379,7 +379,7 @@ MixAnalysers::~MixAnalysers() { compare_.reset(); table_.reset(); }
 
 void MixAnalysers::setPage(Page page) {
     const auto index = static_cast<std::size_t>(page);
-    if (index > static_cast<std::size_t>(Page::ThirdOctaveBands)) return;
+    if (index > static_cast<std::size_t>(Page::ColourWaveform)) return;
     page_ = page;
     pageBox.setSelectedId(static_cast<int>(page) + 1, juce::dontSendNotification);
     const bool all = page == Page::All;
@@ -393,6 +393,7 @@ void MixAnalysers::setPage(Page page) {
         if (page == Page::Scope) detail.setMode(Mode::ClassicScope);
         else if (page == Page::Average) detail.setMode(Mode::SpectrumAverage);
         else if (page == Page::ThirdOctaveBands) detail.setMode(Mode::ThirdOctaveBands);
+        else if (page == Page::ColourWaveform) detail.setMode(Mode::ColourWaveform);
         else detail.setMode(modes[index - 1]);
         if (page == Page::Spectrum) spectrumTraceBox.onChange();
     }
@@ -405,6 +406,7 @@ void MixAnalysers::setMode(Mode mode) {
     if (mode == Mode::ClassicScope) mode = Mode::Scope;
     if (mode == Mode::SpectrumAverage) setPage(Page::Average);
     else if (mode == Mode::ThirdOctaveBands) setPage(Page::ThirdOctaveBands);
+    else if (mode == Mode::ColourWaveform) setPage(Page::ColourWaveform);
     else if (mode == Mode::Spectrum) setPage(Page::Spectrum);
     else if (mode == Mode::SpectrumMaximum || mode == Mode::SpectrumCumulativeMaximum) {
         const auto curve = mode == Mode::SpectrumMaximum ? FilledCurve::RealtimeMaximum : FilledCurve::HeldMaximum;

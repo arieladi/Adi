@@ -16640,6 +16640,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     panel.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::Compare) + 2, juce::sendNotificationSync);
     check(panel.analysis.pageBox.getText() == "Bands" && panel.analysis.detail.view.getTitle() == "Third-Octave Bands",
           "the Analysers picker opens the third-octave bands and their period scope");
+    panel.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::ThirdOctaveBands) + 2,
+                                         juce::sendNotificationSync);
+    check(panel.analysis.pageBox.getText() == "Waveform" && panel.analysis.detail.view.getTitle() == "Colour Waveform",
+          "the Analysers picker opens the colour waveform");
     panel.analysis.setPage(MixAnalysers::Page::Phase);
     root.state().mixViewTab = persistence.load("mix").mixViewTab;
     panel.adoptViewState(); root.frame();

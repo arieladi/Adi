@@ -20,7 +20,8 @@ namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
-                                     SharedAnalysis::FilledSpectrum | SharedAnalysis::PeriodScope;
+                                     SharedAnalysis::FilledSpectrum | SharedAnalysis::PeriodScope |
+                                     SharedAnalysis::ColourWaveform;
 constexpr std::size_t maxHistoryColumns = 128;
 constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
 // PFFFT squares its unnormalised float bins. Leave headroom for that sum
@@ -29,6 +30,7 @@ constexpr float spectralSampleLimit = 1.e12f;
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
+    if ((r.outputs & SharedAnalysis::ColourWaveform) && r.outputs != SharedAnalysis::ColourWaveform) return false;
     using Weighting = dsp::StereoEnvelopeMeter::Weighting;
     if (r.stereoMeter && (r.outputs != SharedAnalysis::Meters || r.stereoMeter->weighting < Weighting::Standard ||
                           r.stereoMeter->weighting > Weighting::K)) return false;
@@ -42,7 +44,14 @@ bool valid(const SharedAnalysis::Request &r) {
 }
 SharedAnalysis::Request keyFor(SharedAnalysis::Request r) {
     r.hopSize = r.hopSize ? r.hopSize : r.fftSize / 4;
-    r.outputs = 0;
+    r.outputs &= SharedAnalysis::ColourWaveform;
+    if (r.outputs) {
+        // This continuous domain is identified by the physical source. The
+        // 32-sample metadata window only conveys the newest completed boundary.
+        r.fftSize = r.hopSize = 32;
+        r.channel = SharedAnalysis::Channel::Mid;
+        r.window = dsp::Window::Hann;
+    }
     if (r.stereoMeter && r.stereoMeter->kScale)
         r.stereoMeter->weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
     return r;
@@ -221,6 +230,7 @@ struct SharedAnalysis::Domain {
             return sum / static_cast<double>(r.fftSize);
         }()) {
         if (request.stereoMeter) meter = std::make_unique<dsp::StereoEnvelopeMeter>();
+        if (request.outputs & ColourWaveform) colour = std::make_unique<dsp::ColourWaveformCapture>();
     }
     Request request;
     std::unique_ptr<dsp::Spectrum> spectrum;
@@ -247,6 +257,8 @@ struct SharedAnalysis::Domain {
     std::atomic<bool> periodReady{false};
     std::atomic<bool> cumulativeReady{true};
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
+    std::unique_ptr<dsp::ColourWaveformCapture> colour;
+    bool colourPrepared = false;
     bool meterPrepared = false;
     std::atomic<bool> neutralMeter{false};
     bool averageConfigured = false;
@@ -298,7 +310,8 @@ struct SharedAnalysis::Domain {
         const auto unavailable = (averageConfigured ? 0u : std::uint32_t{Average1s}) |
                                  (maximum ? 0u : std::uint32_t{RealtimeMaximum});
         const bool onlyUnavailable = bits != 0 && (bits & ~unavailable) == 0;
-        available.store(usable(tap, request.fftSize) && !onlyUnavailable && (!meter || meterPrepared),
+        available.store(usable(tap, request.fftSize) && !onlyUnavailable && (!meter || meterPrepared) &&
+                            (!colour || colourPrepared),
                         std::memory_order_release);
     }
     void resetAverageForGap() noexcept {
@@ -409,6 +422,7 @@ struct SharedAnalysis::Domain {
                 meter->prepare({tap->sampleRate(), releaseSeconds, integrationSeconds, correlationSeconds, 1.e-6,
                                 profile.midSide, profile.weighting, profile.linkedDynamic});
         }
+        if (colour) colourPrepared = usable(tap, request.fftSize) && colour->prepare(tap->sampleRate());
         updateAvailability();
         resetWindow(false);
         consumedSequence.store(cursor.next, std::memory_order_release);
@@ -559,13 +573,14 @@ struct SharedAnalysis::Domain {
         const auto end = tap->written();
         const auto consumed = consumedSequence.load(std::memory_order_acquire);
         if (end == consumed) return false;
+        if (colour) return true; // real silence also advances the waveform
         const auto quiet = tap->lastParkedSilence();
         if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin < consumed && quiet.end >= end);
         return !(quiet.end >= end && settledParkedSilence(quiet));
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 10> outputUsers{}; // State mutex
+    std::array<std::size_t, 11> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -840,6 +855,73 @@ struct SharedAnalysis::Domain {
         auto latest = std::make_shared<Result>(*previous);
         latest->revision = ++revision;
         return latest;
+    }
+    bool pumpColour(std::span<float> leftSamples, std::span<float> rightSamples,
+                    std::size_t &samples, std::size_t &reads) {
+        const auto end = tap->written();
+        bool changedEpoch = false;
+        const auto invalidate = [&] {
+            ++sourceEpoch;
+            ++gaps;
+            changedEpoch = true;
+            publishResult({});
+        };
+        while (cursor.next < end && reads < kMaxReadsPerFrame && samples < kMaxSamplesPerFrame) {
+            const auto count = std::min({static_cast<std::size_t>(end - cursor.next), leftSamples.size(),
+                                         kMaxSamplesPerFrame - samples});
+            const auto previousRevision = cursor.expectedRevision;
+            const bool wasAdvancing = cursor.expectedAdvancing;
+            ++reads;
+            const auto read = tap->read(cursor, leftSamples.first(count), rightSamples.first(count));
+            using Status = engine::ScopeTap::ReadStatus;
+            if (read.status == Status::Overrun || read.status == Status::GenerationChanged) {
+                if (read.status == Status::Overrun) ++overruns;
+                colour->reset();
+                invalidate();
+                continue;
+            }
+            // Physical time continues through loop wraps and a simple Play/Stop.
+            if (read.status == Status::Discontinuity && read.transportRevision != previousRevision &&
+                (read.advancing == wasAdvancing || read.transportRevision != previousRevision + 1)) {
+                colour->reset();
+                invalidate();
+            }
+            if (!read.frames) break;
+            const auto frames = static_cast<std::size_t>(read.frames);
+            samples += frames;
+            if (!colour->feed(leftSamples.first(frames), rightSamples.first(frames), read.firstSequence)) invalidate();
+        }
+        consumedSequence.store(cursor.next, std::memory_order_release);
+        if (!colour->serial() || !active.load(std::memory_order_acquire)) return false;
+        const auto prior = readResult();
+        if (prior && prior->sourceEpoch == sourceEpoch && prior->windowSerial == colour->serial()) return false;
+        try {
+            auto latest = std::make_shared<Result>();
+            latest->request = request;
+            latest->outputs = ColourWaveform;
+            latest->generation = tap->generation();
+            latest->sourceEpoch = sourceEpoch;
+            latest->revision = ++revision;
+            latest->windowSerial = colour->serial();
+            latest->sampleRate = tap->sampleRate();
+            latest->hopSize = request.hopSize;
+            latest->transportRevision = cursor.expectedRevision;
+            latest->advancing = cursor.expectedAdvancing;
+            latest->gapCount = gaps;
+            latest->overrunCount = overruns;
+            latest->discontinuity = changedEpoch;
+            latest->colourWaveform = std::make_shared<const dsp::ColourWaveformReading>(colour->reading());
+            latest->firstSequence = latest->colourWaveform->endSequence - request.fftSize;
+            latest->firstStamp = latest->advancing
+                ? cursor.expectedStamp - (cursor.next - latest->firstSequence) : cursor.expectedStamp;
+            latest->pendingFrames = std::max(std::int64_t{0}, tap->written() - cursor.next);
+            latest->budgetLimited = latest->pendingFrames > 0 && (samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
+            publishResult(std::move(latest));
+            return true;
+        } catch (...) {
+            dirty.store(true, std::memory_order_release);
+            return false;
+        }
     }
     void resetMeter() {
         meter->reset();
@@ -1437,6 +1519,10 @@ struct SharedAnalysis::State {
                 if (d.pumpMeter(readLeft, readRight, samples, reads)) publications.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
+            if (d.colour) {
+                if (d.pumpColour(readLeft, readRight, samples, reads)) publications.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             std::shared_ptr<Result> latest;
             // Make space released since the preceding publication available to
             // its staged columns before this pass can offer new ones.
@@ -1901,7 +1987,8 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     }
     ++t.domains; domain->bind(t.value, true);
     if (t.value) domain->startAt(inserted ? t.freshSequence :
-        key.stereoMeter ? t.value->written() : std::max({t.value->oldest(), t.value->written() - key.fftSize, t.freshSequence}));
+        (key.stereoMeter || (key.outputs & ColourWaveform)) ? t.value->written() :
+        std::max({t.value->oldest(), t.value->written() - key.fftSize, t.freshSequence}));
     domain->consumers = 1;
     domain->changeOutputs(request.outputs, true);
     const auto admission = inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0);

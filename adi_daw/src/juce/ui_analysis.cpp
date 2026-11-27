@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_analysis.hpp"
+#include "ui_colour_waveform.hpp"
 #include "ui_filled_spectrum.hpp"
 #include "ui_look.hpp"
 #include "ui_third_octave.hpp"
@@ -399,6 +400,11 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
         view.setTooltip("Thirty third-octave bands with held peaks and a scope locked to one cycle when a pitch is detected.");
         return;
     }
+    if (mode == SharedSpectrumView::Mode::ColourWaveform) {
+        view.setTitle("Colour Waveform");
+        view.setTooltip("Two seconds of audio scroll towards the left. Blue, amber and pale show low, middle and high bands.");
+        return;
+    }
     view.setTitle("Channel spectrum");
     view.setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
@@ -422,7 +428,8 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
         isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
         mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum ||
-        mode == Mode::ThirdOctaveBands || mode_ == Mode::ThirdOctaveBands) frozen_ = false;
+        mode == Mode::ThirdOctaveBands || mode_ == Mode::ThirdOctaveBands ||
+        mode == Mode::ColourWaveform || mode_ == Mode::ColourWaveform) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
@@ -438,7 +445,8 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
         mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum || mode_ == Mode::Phase || mode == Mode::Phase ||
-        mode_ == Mode::ThirdOctaveBands || mode == Mode::ThirdOctaveBands)
+        mode_ == Mode::ThirdOctaveBands || mode == Mode::ThirdOctaveBands ||
+        mode_ == Mode::ColourWaveform || mode == Mode::ColourWaveform)
         describeAnalysisView(*this, mode);
     mode_ = mode;
     if (classicPanel_) {
@@ -615,7 +623,7 @@ void SharedSpectrumView::clear() {
     } else {
         armFreshBoundary();
     }
-    if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
+    if (mode_ == Mode::Spectrogram || mode_ == Mode::ColourWaveform) historyClearPosition_ = sourcePosition_;
     resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
@@ -694,13 +702,18 @@ void SharedSpectrumView::updateDemand() noexcept {
                 request.channel = SharedAnalysis::Channel::Mid;
                 request.outputs = SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope;
                 break;
+            case Mode::ColourWaveform:
+                request.channel = SharedAnalysis::Channel::Mid;
+                request.outputs = SharedAnalysis::ColourWaveform;
+                break;
             case Mode::ClassicScope: break; // Uses the continuous capture lease above.
             }
             try {
                 lease_ = broker_->acquire(request);
                 sourcePosition_ = lease_.sourcePosition();
                 clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-                historyClearPosition_ = {};
+                historyClearPosition_ = mode_ == Mode::ColourWaveform && freshRequired_
+                    ? sourcePosition_ : SharedAnalysis::Lease::SourcePosition{};
             }
             catch (...) { lease_.reset(); }
         }
@@ -1330,10 +1343,80 @@ void SharedSpectrumView::paintThirdOctaveBands(juce::Graphics &g) const {
     }
 }
 
+void SharedSpectrumView::paintColourWaveform(juce::Graphics &g) const {
+    using namespace colour_waveform;
+    g.fillAll(look::display);
+    const auto body = getLocalBounds().reduced(5);
+    g.setFont(look::font(10.f, true));
+    g.setColour(look::textOnBand);
+    g.drawText(frozen_ ? "Colour Waveform / Frozen" : "Colour Waveform", body.withHeight(14),
+               juce::Justification::centredLeft);
+    const auto plot = body.withTrimmedTop(16).withTrimmedBottom(14).toFloat();
+    if (plot.getWidth() < 2.f || plot.getHeight() < 2.f) return;
+    const auto midY = plot.getCentreY();
+    const auto verticalScale = plot.getHeight() * .36f;
+    const auto xAt = [&](double slot) { return plot.getX() + columnX(slot, plot.getWidth()); };
+    g.setColour(juce::Colour(26, 28, 27));
+    g.fillRect(plot);
+    g.setColour(juce::Colour(50, 54, 52));
+    for (const float fraction : {-.75f, -.5f, -.25f, .25f, .5f, .75f})
+        g.drawHorizontalLine(juce::roundToInt(midY - fraction * verticalScale), plot.getX(), plot.getRight());
+    g.setColour(juce::Colour(71, 77, 74));
+    g.drawHorizontalLine(juce::roundToInt(midY), plot.getX(), plot.getRight());
+    g.setFont(look::font(9.f));
+    constexpr std::array ticks{"-2 s", "-1.5 s", "-1 s", "-0.5 s", "Now"};
+    for (std::size_t index = 0; index < ticks.size(); ++index) {
+        const auto slot = static_cast<double>(index) * dsp::kColourWaveformColumnsPerSecond * .5;
+        const auto x = std::min(xAt(slot), plot.getRight() - 1.f);
+        g.setColour(juce::Colour(71, 77, 74));
+        g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
+        if (plot.getWidth() >= 160.f || index % 2 == 0) {
+            const auto width = std::min(40.f, plot.getWidth());
+            const auto labelX = std::clamp(x - width * .5f, plot.getX(), plot.getRight() - width);
+            g.setColour(look::textOnBand);
+            g.drawText(ticks[index], juce::Rectangle<float>(labelX, plot.getBottom(), width, 14.f),
+                       juce::Justification::centred);
+        }
+    }
+    if (!shown_ || !shown_->colourWaveform) return;
+    const auto &waveform = *shown_->colourWaveform;
+    const auto first = historyClearPosition_.generation == shown_->generation && historyClearPosition_.generation != 0
+        ? firstVisibleColumn(waveform, historyClearPosition_.written, shown_->sampleRate) : 0;
+    if (first >= waveform.size) return;
+    const auto blankSlots = static_cast<double>(dsp::kColourWaveformColumns - waveform.size);
+    std::array<std::array<float, 3>, dsp::kColourWaveformColumns> edges;
+    for (auto column = first; column < waveform.size; ++column) {
+        const auto &record = waveform.columns[column];
+        edges[column] = bandEdges(record.envelope, record.bands);
+    }
+    // Back-to-front cumulative fills meet without gaps and leave exactly
+    // each band's share of the height visible on both sides of the centre.
+    const std::array colours{juce::Colour(46, 115, 219), juce::Colour(230, 152, 41), juce::Colour(224, 230, 238)};
+    const auto firstX = xAt(blankSlots + static_cast<double>(first));
+    juce::Graphics::ScopedSaveState clip(g);
+    if (!g.reduceClipRegion(plot.toNearestInt())) return;
+    for (std::size_t band = colours.size(); band-- > 0;) {
+        const auto yAt = [&](std::size_t col) { return verticalScale * edges[col][band]; };
+        juce::Path shape;
+        shape.startNewSubPath(firstX, midY - yAt(first));
+        for (auto col = first; col < waveform.size; ++col)
+            shape.lineTo(xAt(blankSlots + static_cast<double>(col) + .5), midY - yAt(col));
+        shape.lineTo(plot.getRight(), midY - yAt(waveform.size - 1));
+        shape.lineTo(plot.getRight(), midY + yAt(waveform.size - 1));
+        for (auto col = waveform.size; col-- > first;)
+            shape.lineTo(xAt(blankSlots + static_cast<double>(col) + .5), midY + yAt(col));
+        shape.lineTo(firstX, midY + yAt(first));
+        shape.closeSubPath();
+        g.setColour(colours[band]);
+        g.fillPath(shape);
+    }
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     if (mode_ == Mode::FilledSpectrum) { paintFilledSpectrum(g); return; }
     if (mode_ == Mode::ThirdOctaveBands) { paintThirdOctaveBands(g); return; }
+    if (mode_ == Mode::ColourWaveform) { paintColourWaveform(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
     const auto area = getLocalBounds().toFloat().reduced(5.f);
@@ -1500,6 +1583,7 @@ AnalysisPane::AnalysisPane() {
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     modeBox.addItem("Filled Spectrum", static_cast<int>(SharedSpectrumView::Mode::FilledSpectrum) + 1);
     modeBox.addItem("Third-Octave Bands", static_cast<int>(SharedSpectrumView::Mode::ThirdOctaveBands) + 1);
+    modeBox.addItem("Colour Waveform", static_cast<int>(SharedSpectrumView::Mode::ColourWaveform) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
@@ -1583,7 +1667,8 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     slopeBox.setEnabled(spectral);
     scaleBox.setVisible(spectral);
     const bool classic = mode == SharedSpectrumView::Mode::ClassicScope;
-    channelBox.setVisible(!classic && mode != SharedSpectrumView::Mode::ThirdOctaveBands);
+    channelBox.setVisible(!classic && mode != SharedSpectrumView::Mode::ThirdOctaveBands &&
+                          mode != SharedSpectrumView::Mode::ColourWaveform);
     freezeButton.setVisible(!classic);
     resized();
 }

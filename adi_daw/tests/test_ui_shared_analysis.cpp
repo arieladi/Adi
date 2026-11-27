@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
+#include "../src/juce/ui_colour_waveform.hpp"
 #include "../src/juce/ui_filled_spectrum.hpp"
 #include "../src/juce/ui_third_octave.hpp"
 #include "../src/juce/ui_look.hpp"
@@ -1482,6 +1483,90 @@ void thirdOctaveAndPeriodSurface() {
           "the detached selector offers the bands and hides controls for its fixed measurement");
 }
 
+void colourWaveformSurface() {
+    using namespace adi::ui;
+    using namespace colour_waveform;
+    const auto edges = bandEdges(.8f, {.25f, .5f, .25f});
+    check(std::abs(edges[0] - .2f) < 1.e-6f && std::abs(edges[1] - .6f) < 1.e-6f && std::abs(edges[2] - .8f) < 1.e-6f,
+          "three colour heights stack their energy shares inside the original peak envelope");
+    check(std::abs(columnX(128, 630.f) - 157.5f) < .01f && std::abs(columnX(512, 630.f) - 630.f) < .01f,
+          "a half-second occupies one fourth of the two-second canvas, ending at Now");
+    adi::dsp::ColourWaveformReading suffix;
+    suffix.firstSequence = 100;
+    suffix.serial = 3;
+    suffix.size = 2;
+    check(firstVisibleColumn(suffix, 288, 48000.) == 0 && firstVisibleColumn(suffix, 289, 48000.) == 1 &&
+              firstVisibleColumn(suffix, 476, 48000.) == 2,
+          "a local clear keeps only complete columns that start at or after the source fence");
+
+    Fixture fixture;
+    Root root;
+    root.setBounds(0, 0, 640, 360);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(root.getLocalBounds());
+    view.setMode(SharedSpectrumView::Mode::ColourWaveform);
+    root.addAndMakeVisible(view);
+    view.present(fixture.broker, 1);
+    const auto blank = softwarePicture(view);
+    constexpr int length = 4800;
+    std::array<float, length> tone{}, silence{};
+    for (std::size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(.65 * std::sin(2. * std::numbers::pi * 80. * static_cast<double>(i) / 48000.));
+    fixture.tap->write(tone.data(), tone.data(), length, 0, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto current = view.snapshot();
+    check(root.getPeer() && !root.getPeer()->getNativeHandle() && current && current->colourWaveform &&
+              current->colourWaveform->size >= 20 && current->colourWaveform->size < 30 &&
+              current->request.channel == SharedAnalysis::Channel::Mid && fixture.broker->stats().spectralPlans == 0,
+          "the fake-peer waveform consumes only timestamped paired-mono columns at the native source rate");
+    const auto hasBlue = [](const juce::Image &picture, int x, int y) {
+        const auto pixel = picture.getPixelAt(x, y);
+        return pixel.getBlue() > 170 && pixel.getBlue() > pixel.getGreen() && pixel.getGreen() > pixel.getRed();
+    };
+    const auto fresh = softwarePicture(view);
+    check(hasBlue(fresh, 624, 150) && hasBlue(fresh, 624, 212) &&
+              fresh.getPixelAt(490, 150) == blank.getPixelAt(490, 150) &&
+              fresh.getPixelAt(638, 150) == blank.getPixelAt(638, 150),
+          "the captured low band mirrors at the right edge, with empty past and no future trace");
+    fixture.tap->write(silence.data(), silence.data(), length, length, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto scrolled = softwarePicture(view);
+    check(hasBlue(scrolled, 592, 150) && !hasBlue(scrolled, 624, 150),
+          "another 100 ms shifts the earlier peak 32 px to the left and leaves the newest silence at the right");
+    const auto retained = view.snapshot();
+    view.freeze(true);
+    check(retained && view.snapshot() == retained && !view.subscribed() && hasBlue(softwarePicture(view), 592, 150),
+          "Freeze keeps the rendered two-second picture and releases its passive demand");
+    view.freeze(false);
+    SharedAnalysis::Request siblingRequest{1};
+    siblingRequest.outputs = SharedAnalysis::ColourWaveform;
+    auto sibling = fixture.broker->acquire(siblingRequest);
+    fixture.tap->write(tone.data(), tone.data(), length, 2 * length, true);
+    fixture.broker->pump();
+    view.frame();
+    const auto siblingPicture = sibling.read();
+    view.clear();
+    check(!view.snapshot() && siblingPicture && sibling.read() == siblingPicture,
+          "Clear empties the local waveform while its sibling retains audio history");
+    fixture.tap->write(silence.data(), silence.data(), length, 3 * length, true);
+    fixture.broker->pump();
+    view.frame();
+    check(view.snapshot() && samePixels(blank, softwarePicture(view)), "post-Clear silence cannot reveal older colour columns");
+    root.setVisible(false);
+    view.frame();
+    check(!view.subscribed() && fixture.broker->stats().consumers == 1, "hiding the waveform releases its lease alone");
+
+    AnalysisPane standalone;
+    standalone.modeBox.setSelectedId(static_cast<int>(SharedSpectrumView::Mode::ColourWaveform) + 1, juce::sendNotificationSync);
+    check(standalone.mode() == SharedSpectrumView::Mode::ColourWaveform && standalone.modeBox.getText() == "Colour Waveform" &&
+              !standalone.channelBox.isVisible() && !standalone.historyBox.isVisible() && !standalone.paletteBox.isVisible(),
+          "the detached analyser offers the colour waveform with its fixed scroll and colour stack");
+}
+
 void spectrumDetailScale() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -2121,7 +2206,7 @@ void mixAnalyserPages() {
     pages.setMainMeterSource(meter);
     pages.frame(f.broker, reader, main->id, first->id);
     const auto all = f.broker->stats();
-    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::ThirdOctaveBands) + 1 &&
+    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::ColourWaveform) + 1 &&
               pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
           "analysers default to All and Main and offer each non-Main channel once");
     check(all.taps == 3 && all.domains == 4 && all.consumers == 8 && all.spectralPlans == 2,
@@ -2137,6 +2222,7 @@ void mixAnalyserPages() {
          std::pair{Page::Scope, SharedSpectrumView::Mode::ClassicScope},
          std::pair{Page::Phase, SharedSpectrumView::Mode::Phase},
          std::pair{Page::ThirdOctaveBands, SharedSpectrumView::Mode::ThirdOctaveBands},
+         std::pair{Page::ColourWaveform, SharedSpectrumView::Mode::ColourWaveform},
          std::pair{Page::Loudness, SharedSpectrumView::Mode::Meters}}) {
         pages.pageBox.setSelectedId(static_cast<int>(page) + 1, juce::sendNotificationSync);
         pages.frame(f.broker, reader, main->id, first->id);
@@ -2607,7 +2693,7 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
           linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); colourWaveformSurface(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
