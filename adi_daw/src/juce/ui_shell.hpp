@@ -176,7 +176,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArmSelected,
         ToggleTrackMixer,
         SwitchDetailView,
-        LastId = SwitchDetailView
+        ConsolidateMidi,
+        LastId = ConsolidateMidi
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -726,6 +727,7 @@ class AdiRootComponent final : public juce::Component,
     bool trackClipboardContext() const;
     bool trackGroupingContext() const;
     bool canClipClipboard(ClipCommand) const;
+    bool canConsolidateMidi() const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.
     bool canClipboard(int commandId) const;
@@ -924,6 +926,7 @@ class AdiRootComponent final : public juce::Component,
 
   private:
     void globalFocusChanged(juce::Component *) override;
+    clip_edit::MidiConsolidation prepareMidiConsolidation() const;
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);

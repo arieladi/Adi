@@ -1805,6 +1805,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
         }
         if (geometry.selection.clip == 0 && geometry.selection.start != geometry.selection.end)
             menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+        if (root.canConsolidateMidi())
+            menu.addCommandItem(&commands.manager, AppCommands::ConsolidateMidi);
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).

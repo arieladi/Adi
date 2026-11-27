@@ -5,6 +5,7 @@
 #include "adi/automation_clipboard.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/note_stream_detail.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -812,6 +813,142 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,con
         for(const auto& lane:scope.targets)batch.clear.push_back({lane,scope.bounds});
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Delete Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& selection,
+    std::span<const std::int64_t> picked, const edit_plan::Options& options) {
+    MidiConsolidation result;
+    try {
+        validRange(selection);
+        constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
+        if (selection.tracks.size() != 1 || selection.begin.base != 0 || selection.end.value > tickLimit)
+            throw std::runtime_error("Consolidate currently needs a musical time range on one MIDI track.");
+        const auto trackId = selection.tracks.front();
+        auto& db = store.db();
+        Read read(db);
+        SQLite::Statement track(db, "SELECT kind FROM tracks WHERE id=?");
+        track.bind(1, trackId);
+        if (!track.executeStep() || (track.getColumn(0).getString() != "midi" &&
+                                     track.getColumn(0).getString() != "instrument"))
+            throw std::runtime_error("Consolidate currently supports MIDI tracks only.");
+        CopyIds ids(db);
+        const auto output = ids.next("clips");
+        auto children = Payload::object();
+        notes::Diff noteDiff;
+        std::set<std::uint64_t> noteIds;
+        std::size_t sources = 0;
+        std::string name;
+        OpContext context{store,db};
+        edit::TimeMap time(db);
+        SQLite::Statement clips(db, "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY pos_ticks,id");
+        clips.bind(1, trackId);
+        while (clips.executeStep()) {
+            const auto id = clips.getColumn(0).getInt64();
+            const auto row = *edit::row(db, "clips", id);
+            const int base = static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first = detail::signedInteger(row.at(base == 0 ? "pos_ticks" : "pos_ns"));
+            const auto end = coordinate(selection.end, base, time);
+            if (first >= end)
+                continue;
+            const auto length = detail::signedInteger(row.at(base == 0 ? "length_ticks" : "length_ns"));
+            const auto last = edit::addTime(first, length);
+            const auto begin = coordinate(selection.begin, base, time);
+            if (last <= begin)
+                continue;
+            if (!picked.empty() && std::find(picked.begin(), picked.end(), id) == picked.end())
+                throw std::runtime_error("Consolidate would cover an unselected clip.");
+            if (base != 0 || length <= 0 || first < begin || last > end || row.at("kind") != "midi")
+                throw std::runtime_error("Consolidate currently needs whole MIDI clips on the musical timeline.");
+            const auto offset = detail::signedInteger(row.at("content_offset_ticks"));
+            if (offset < -tickLimit || offset > tickLimit)
+                throw std::runtime_error("MIDI clip source offset is outside the supported timeline.");
+            const auto finish = edit::addTime(offset, length);
+            if (detail::signedInteger(row.at("loop_enabled")) != 0) {
+                const auto loopStart = detail::signedInteger(row.at("loop_start_ticks"));
+                const auto& loopLength = row.at("loop_len_ticks");
+                if (loopLength.is_null() || loopStart < 0 || loopStart > offset ||
+                    finish > edit::addTime(loopStart, detail::signedInteger(loopLength)))
+                    throw std::runtime_error("Consolidate cannot yet assign note IDs to repeated MIDI notes.");
+            }
+            const auto image = captureDeleted(context, id);
+            const auto& sourceChildren = image.at("children");
+            if (detail::signedInteger(row.at("muted")) != 0 || !row.at("alias_of").is_null() ||
+                !image.at("alias_links").empty() || !sourceChildren.at("automation_data").empty() ||
+                !sourceChildren.at("automation_segment_ranges").empty() || !sourceChildren.at("audio_clips").empty() ||
+                !sourceChildren.at("clip_properties").empty() || !sourceChildren.at("clip_playback_details").empty() ||
+                !sourceChildren.at("clip_warp_fade_domains").empty())
+                throw std::runtime_error("Consolidate cannot yet combine muted, linked or specially configured clips.");
+            if (sources++ == 0)
+                name = row.at("name").get<std::string>();
+            const auto& streams = sourceChildren.at("event_streams");
+            if (streams.size() > 1 || (streams.size() == 1 && (streams[0].at("stream_kind") != "notes" ||
+                !streams[0].at("channel").is_null() || !streams[0].at("controller").is_null())))
+                throw std::runtime_error("Consolidate cannot yet merge MIDI controller or other event streams.");
+            std::set<std::uint64_t> sourceIds;
+            if (!streams.empty()) {
+                const auto& raw = streams[0].at("data").get_binary();
+                std::string error;
+                const auto source = notes::detail::decodeNotes(std::as_bytes(std::span(raw.data(), raw.size())), error);
+                if (!source)
+                    throw std::runtime_error(error);
+                if (notes::detail::streamVersion(*source) != 1 || !source->trailer.empty() ||
+                    notes::detail::recordStride(*source) != notes::detail::notePrefixBytes)
+                    throw std::runtime_error("Consolidate cannot merge extended MIDI note streams without losing data.");
+                for (const auto& record : source->records) {
+                    auto note = notes::values(record, error);
+                    if (!note)
+                        throw std::runtime_error(error);
+                    if (!noteIds.insert(note->id).second)
+                        throw std::runtime_error("Consolidate cannot yet merge duplicate MIDI note IDs.");
+                    if (note->start < offset || note->start >= finish || note->duration > finish - note->start)
+                        throw std::runtime_error("Consolidate cannot yet trim notes at a source boundary.");
+                    sourceIds.insert(note->id);
+                    note->start = (first - begin) + (note->start - offset);
+                    auto placed = notes::withValues(record, *note, error);
+                    if (!placed)
+                        throw std::runtime_error(error);
+                    noteDiff.added.push_back(std::move(*placed));
+                }
+            }
+            for (auto expression : sourceChildren.at("note_expression")) {
+                if (!sourceIds.contains(notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")))))
+                    throw std::runtime_error("Consolidate found expression without its source note.");
+                expression["id"] = ids.next("note_expression");
+                expression["clip_id"] = output;
+                if (!children.contains("note_expression"))
+                    children["note_expression"] = Payload::array();
+                children["note_expression"].push_back(std::move(expression));
+            }
+        }
+        if (sources < 2 || (!picked.empty() && sources != picked.size()))
+            throw std::runtime_error("Select at least two whole MIDI clips on the same track.");
+        if (!noteDiff.added.empty()) {
+            const auto combined = notes::detail::planRecords(notes::detail::emptyNotes(), noteDiff);
+            if (!combined.ok || !combined.changed)
+                throw std::runtime_error(combined.error);
+            std::vector<std::uint8_t> bytes;
+            bytes.reserve(combined.bytes.size());
+            for (const auto byte : combined.bytes)
+                bytes.push_back(std::to_integer<std::uint8_t>(byte));
+            children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams", {
+                {"id",ids.next("event_streams")},{"clip_id",output},{"stream_kind","notes"},
+                {"data",Payload::binary(std::move(bytes))},
+            })});
+        }
+        const auto begin = selection.begin.value, end = selection.end.value;
+        auto row = edit::defaultRow(db, "clips", {{"id",output},{"track_id",trackId},{"kind","midi"},
+            {"name",name.empty() ? std::string("Consolidated MIDI") : std::move(name)},
+            {"time_base",0},{"pos_ticks",begin},{"length_ticks",end-begin}});
+        edit_plan::detail::PlacementBatch batch;
+        batch.incoming.push_back({{"id",output},{"row",std::move(row)},{"children",std::move(children)},
+                                  {"alias_links",Payload::array()}});
+        const auto scope = edit_plan::materialScope(selection.tracks, edit_plan::PlacementClock::Ticks, {begin,end});
+        result.edit = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), options, ids, "Consolidate");
+        if (result.edit.ok)
+            result.clip = output;
+    } catch (const std::exception& error) {
+        result.edit.error = error.what();
+    }
     return result;
 }
 PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
