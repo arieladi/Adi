@@ -17,6 +17,12 @@ The next bundle contains the published Edit SC-179, MIDI and Safety tips. The Br
 
 The Windows checklist also lists Session and Pitch seat changes outside these bundles. [Windows checklist](https://github.com/arieladi/Adi/blob/d4116822018450ff97fdcf0b239890639699d1d7/adi_daw/collab/basics/wincheck.md)
 
+## Follow-up review bundle
+
+| Chain and source head | Integration head | Resolution and verification |
+|---|---|---|
+| `basics/sc-179-multi-clip-clipboard` at `53ec8a7927a0e26468ba538cc6089231aa46418d` | `e503a8bc33f5b3d60ee7c1ab0693742db0dbec6e` | Resolved three conflicts in clip planning and shell commands. Sparse Copy, Cut, Paste and Duplicate preserve gaps and eligible clip IDs, honor the envelope lock, and keep take-lane and Reverse behavior. Kept the owner’s fixtures and added exact gap, Undo and take-lane coverage. Built the app, player and affected targets. Passed six focused suites, all 18 display-free window suites, three acceptance suites, six validators and the landing-check tests. |
+
 ## Ninth stack and earlier integration
 
 Final verification head for integrate-1 was `9d6bfb23dda4d9fb76e00f4bd5c014878633ec21`.
