@@ -149,12 +149,13 @@ class SampleTile final : public juce::Component,
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
-class DevicePanelView final : public juce::Component, public juce::FileDragAndDropTarget {
+class DevicePanelView final : public juce::Component,
+                              public juce::FileDragAndDropTarget,
+                              public juce::DragAndDropTarget {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
-    // Samples are "dragged into Simpler" (Live 12 manual 30.11), not into one well: a file from the
-    // desktop dropped off the tile, on the controls or the title, goes to the tile's slot.
+    // A sample dropped on the tile, controls or title goes to the tile's selected slot.
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return sample && !files.isEmpty(); }
     void fileDragEnter(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->fileDragEnter(files, x, y);
@@ -162,6 +163,19 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void fileDragExit(const juce::StringArray &files) override { if (sample) sample->fileDragExit(files); }
     void filesDropped(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->filesDropped(files, x, y);
+    }
+    bool isInterestedInDragSource(const SourceDetails &details) override {
+        auto *tile = samplerTile();
+        return tile && tile->isInterestedInDragSource(details);
+    }
+    void itemDragEnter(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDragEnter(details);
+    }
+    void itemDragExit(const SourceDetails &details) override {
+        if (sample) sample->itemDragExit(details);
+    }
+    void itemDropped(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDropped(details);
     }
     void present(const DevicePanelData &);
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
@@ -254,6 +268,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void cancelInteractions();
 
   private:
+    SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
     void showParameterList();
     void closeConfigure();
