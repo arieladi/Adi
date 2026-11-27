@@ -10,6 +10,7 @@
 // mechanics. ADR-0122.
 
 #include "adi/engine/session.hpp"
+#include "adi/engine/project_view.hpp"
 
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -28,6 +29,7 @@
 #include <utility>
 #include <functional>
 #include <mutex>
+#include <thread>
 
 namespace adi::engine {
 namespace {
@@ -247,6 +249,16 @@ struct Session::ScopeRuntime {
             port.store(nullptr, std::memory_order_release);
         }
     }
+};
+
+struct Session::PendingLoad {
+    const Store* store = nullptr;
+    std::thread::id owner;
+    std::optional<gesture::detail::StoreWriteStamp> stamp;
+    std::uint64_t sequence = 0;
+    std::vector<std::size_t> deviceRows;
+    std::size_t next = 0;
+    bool failed = false;
 };
 
 Session::Session()
@@ -832,9 +844,14 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
         FeedbackLoop* loop = strips_.loopFor(routingId);
         return loop == nullptr ? FeedbackNodes{} : FeedbackNodes{&loop->writer(), &loop->reader()};
     };
-    auto* clipSource = clips();
-    auto* midiSource = midi_.get();
-    rs.sourcesFor = [this, clipSource, midiSource, timing=std::move(timing)](std::int64_t id) {
+    rs.sourcesFor = playbackSources(clips(), midi_.get(), std::move(timing));
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
+    devices_.attachHost(graph_, std::move(rs));
+}
+
+SourceFn Session::playbackSources(ClipPlayback* clipSource, MidiClips* midiSource,
+                                  std::shared_ptr<const TimingView> timing) {
+    return [this, clipSource, midiSource, timing=std::move(timing)](std::int64_t id) {
         auto nodes = sources_ && !frozenSources_.contains(id) ? sources_(id) : std::vector<Node *>{};
         if (auto* monitor = timing->inputMonitorSource(id)) nodes.push_back(monitor);
         if (clipSource) {
@@ -848,8 +865,6 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
         }
         return nodes;
     };
-    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
-    devices_.attachHost(graph_, std::move(rs));
 }
 
 bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error) {
@@ -1137,7 +1152,8 @@ bool Session::rebuild() {
     try {
         const DeviceChainFn eventPath = eventPathFor(model_);
         nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
-                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
+                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder,
+                                                spec_.synchronousClipReads);
         nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
                                                eventPath,clipNoteExpressions(*clipProject_),
                                                spec_.performanceState && !spec_.exporting);
@@ -1585,9 +1601,20 @@ std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::sh
 }
 
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    if (!prepareLoad(store, std::move(loader), spec, false)) return false;
+    while (pendingLoad_->next < pendingLoad_->deviceRows.size())
+        if (!loadNextDevice(store)) return false;
+    return finishLoad(store);
+}
+
+bool Session::beginLoad(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    return prepareLoad(store, std::move(loader), spec, true);
+}
+
+bool Session::prepareLoad(const Store& store, DeviceLoader loader, SessionSpec spec, bool staged) {
     if(audio::onAudioThread)return false;
     error_.clear();
-    if (loaded_) {
+    if (loaded_ || pendingLoad_) {
         // One session, one project. A second project is a second session --
         // the instances this one holds are in a graph that may be rendering.
         error_ = "a project is already loaded in this session";
@@ -1600,6 +1627,15 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     }
     loader_ = std::move(loader);
     appliedSource_ = adi::appliedSource(store);
+    const auto sequence = appliedSource_.sequence();
+    // A staged open may yield to another owner turn. Synchronous load uses
+    // the coherent playback image read in readPlayback, including a caller's
+    // pinned transaction when present.
+    const auto revision = staged ? gesture::detail::storeWriteStamp(store) : std::nullopt;
+    if (staged && !revision) {
+        error_ = "cannot capture the project revision for opening";
+        return false;
+    }
     // Offline rendering loads a coherent read-only project. It retains its
     // source identity without entering the editable gesture domain.
     if(!store.readOnly()) {
@@ -1614,11 +1650,100 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     recordingProject_ = recordingIdentity(store);
     if (!readPlayback(store))
         return false;
-    loaded_ = true;
-    resolveNewRows(store);
-    const bool rebuilt = rebuild();
-    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
-    return rebuilt;
+    if (revision && (gesture::detail::storeWriteStamp(store) != revision || appliedSource_.sequence() != sequence)) {
+        error_ = "the project changed while it was opening";
+        return false;
+    }
+    auto pending = std::make_unique<PendingLoad>();
+    pending->store = &store;
+    pending->owner = std::this_thread::get_id();
+    pending->stamp = revision;
+    pending->sequence = sequence;
+    pending->deviceRows.reserve(model_.devices.size());
+    for (std::size_t index = 0; index < model_.devices.size(); ++index)
+        if (!parkedDevice(model_.devices[index])) pending->deviceRows.push_back(index);
+    pendingLoad_ = std::move(pending);
+    return true;
+}
+
+Session::LoadProgress Session::loadProgress() const noexcept {
+    if (!pendingLoad_) return {};
+    const auto& pending = *pendingLoad_;
+    LoadProgress result{pending.next, pending.deviceRows.size(), {}};
+    if (pending.next < pending.deviceRows.size()) {
+        const auto& row = model_.devices[pending.deviceRows[pending.next]];
+        result.nextDevice = row.name;
+        if (result.nextDevice.empty()) {
+            if (const auto* ref = refFor(row)) result.nextDevice = ref->name;
+        }
+    }
+    return result;
+}
+
+bool Session::checkLoadRevision(const Store& store) {
+    if (audio::onAudioThread) return false;
+    if (!pendingLoad_) {
+        error_ = "no project opening is in progress";
+        return false;
+    }
+    auto& pending = *pendingLoad_;
+    if (pending.owner != std::this_thread::get_id() || pending.failed) return false;
+    if (pending.store != &store || !appliedSource_.sameConnection(adi::appliedSource(store)) ||
+        (pending.stamp && (appliedSource_.sequence() != pending.sequence ||
+                           gesture::detail::storeWriteStamp(store) != pending.stamp))) {
+        pending.failed = true;
+        error_ = "the project changed while it was opening";
+        return false;
+    }
+    return true;
+}
+
+bool Session::loadNextDevice(const Store& store) {
+    if (!checkLoadRevision(store)) return false;
+    auto& pending = *pendingLoad_;
+    if (pending.next == pending.deviceRows.size()) return true;
+    try {
+        // SDK construction and state restoration stay on the owner. Leave
+        // no SQLite transaction open across a yield between devices.
+        resolveOne(store, model_.devices[pending.deviceRows[pending.next]]);
+        if (!checkLoadRevision(store)) return false;
+        ++pending.next;
+        error_.clear();
+        return true;
+    } catch (const std::exception& exception) {
+        pending.failed = true;
+        error_ = exception.what();
+        return false;
+    }
+}
+
+bool Session::finishLoad(const Store& store) {
+    if (!checkLoadRevision(store)) return false;
+    auto& pending = *pendingLoad_;
+    if (pending.next != pending.deviceRows.size()) {
+        error_ = "project devices are still opening";
+        return false;
+    }
+    try {
+        // Initial device preparation uses the saved sidechain/routing flags.
+        syncFlags();
+        loaded_ = true;
+        if (!rebuild()) {
+            pending.failed = true;
+            return false;
+        }
+        if (!checkLoadRevision(store)) {
+            loaded_ = false;
+            return false;
+        }
+        appliedSequence_ = pending.stamp ? pending.sequence : appliedSource_.sequence();
+        pendingLoad_.reset();
+        return true;
+    } catch (const std::exception& exception) {
+        pending.failed = true;
+        error_ = exception.what();
+        return false;
+    }
 }
 
 std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
@@ -1672,6 +1797,97 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     return v;
 }
 }  // namespace
+
+std::optional<bool> Session::refreshLocalEdit(const Store& store, const ProjectView& view) {
+    using Kind = ProjectView::LocalEdit::Kind;
+    const auto& delta = view.localEdit();
+    const auto source = adi::appliedSource(store);
+    if (!delta || !live_ || !appliedSource_.sameConnection(source) || !view.storeCurrent(store) ||
+        gestureHoldsExternalTempo(gestureRuntime_) || !model_.problems.empty()) return {};
+    if (delta->kind == Kind::TrackName) {
+        const auto byId = [&](const rows::Track& track) { return track.id == delta->id; };
+        const auto authored = std::find_if(model_.tracks.begin(), model_.tracks.end(), byId);
+        const auto playback = std::find_if(playbackModel_.tracks.begin(), playbackModel_.tracks.end(), byId);
+        if (authored == model_.tracks.end() || playback == playbackModel_.tracks.end()) return {};
+        auto name = delta->name;
+        auto playbackName = delta->name;
+        authored->name.swap(name);
+        playback->name.swap(playbackName);
+        appliedSequence_ = source.sequence();
+        error_.clear();
+        return true;
+    }
+    if (delta->kind == Kind::Transport || !midi_ || !clipProject_ || gestureClips(gestureRuntime_) ||
+        !frozenSources_.empty() || !frozenGroupChildren_.empty()) return {};
+    const auto timing = std::dynamic_pointer_cast<const TimingView>(devices_.rebuildSpec().transportState);
+    if (!timing) return {};
+    const auto byId = [&](const rows::Clip& clip) { return clip.id == delta->id && clip.kind == "midi"; };
+    const auto authored = std::find_if(model_.clips.begin(), model_.clips.end(), byId);
+    if (authored == model_.clips.end()) return {};
+    if (delta->kind == Kind::MidiPlacement && spec_.performanceState && !spec_.exporting &&
+        std::any_of(model_.tracks.begin(), model_.tracks.end(), [&](const rows::Track& track) {
+            return (track.id == delta->fromTrack || track.id == delta->toTrack) && track.recordArmed &&
+                   track.monitorMode == 2 && (track.kind == "midi" || track.kind == "instrument");
+        })) {
+        // Auto monitoring copies the Arrangement ranges into the audio
+        // timing view. A move needs those bindings rebuilt with the sources.
+        return {};
+    }
+    try {
+        auto candidate = playbackModel_;
+        const auto clip = std::find_if(candidate.clips.begin(), candidate.clips.end(), byId);
+        if (clip == candidate.clips.end()) return {};
+        std::set<std::int64_t> affected{clip->trackId};
+        std::vector<rows::Note> authoredNotes;
+        if (delta->kind == Kind::MidiPlacement) {
+            // A clip-local automation stream moves with the clip. Its clock
+            // changes the existing full automation generation as well.
+            if (authored->trackId != delta->fromTrack || clip->trackId != delta->fromTrack ||
+                std::any_of(model_.automationData.begin(), model_.automationData.end(),
+                            [&](const auto& data) { return data.clipId == delta->id; })) return {};
+            clip->trackId = delta->toTrack;
+            clip->posTicks = delta->position;
+            affected.insert(delta->toTrack);
+        } else {
+            rows::Model material;
+            rows::readClipNotes(material, store, delta->id);
+            if (material.notes.empty() || !material.problems.empty()) return {};
+            const auto replaceNotes = [&](std::vector<rows::Note>& notes) {
+                const auto byClip = [](const rows::Note& note, std::int64_t id) { return note.clipId < id; };
+                const auto first = std::lower_bound(notes.begin(), notes.end(), delta->id, byClip);
+                const auto last = std::find_if(first, notes.end(), [&](const auto& note) { return note.clipId != delta->id; });
+                notes.insert(notes.erase(first, last), material.notes.begin(), material.notes.end());
+            };
+            const auto byClipOrder = [](const rows::Note& a, const rows::Note& b) { return a.clipId < b.clipId; };
+            if (!std::is_sorted(candidate.notes.begin(), candidate.notes.end(), byClipOrder) ||
+                !std::is_sorted(model_.notes.begin(), model_.notes.end(), byClipOrder)) return {};
+            replaceNotes(candidate.notes);
+            authoredNotes = candidate.notes;
+        }
+        auto midi = std::make_shared<MidiClips>(candidate, transport_, spec_.sampleRate, midiState_,
+            eventPathFor(model_), clipNoteExpressions(*clipProject_), midi_.get(), affected);
+        if (!view.storeCurrent(store)) return {};
+        if (!devices_.publishSources(candidate, playbackSources(clips_.get(), midi.get(), timing))) return {};
+        // The graph now owns the affected MIDI sources and the old timing.
+        // No subsequent housekeeping failure can roll back that publication.
+        midi_ = std::move(midi);
+        if (delta->kind == Kind::MidiPlacement) {
+            authored->trackId = delta->toTrack;
+            authored->posTicks = delta->position;
+        } else model_.notes.swap(authoredNotes);
+        playbackModel_ = std::move(candidate);
+        appliedSequence_ = source.sequence();
+        ++stats_.rebuilds;
+        error_.clear();
+    } catch (const std::exception&) { return {}; }
+    try {
+        presentationPending_ = !cueMonitor_.publish(cueSettings_, spec_.sampleRate, spec_.maxFrames, spec_.channels,
+                                                    spec_.performanceState, graph_.currentGraph());
+        attachTaps();
+        refreshProblems();
+    } catch (const std::exception&) { presentationPending_ = true; }
+    return true;
+}
 
 bool Session::refresh(const Store& store) {
     if(const auto handled=refreshGestureRuntime(gestureRuntime_,store))return *handled;
@@ -2391,6 +2607,8 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
 // commits `transport.play` before it posts Play, and the generation that commit builds
 // while stopped could be published just after the driver started, cold, so the second
 // block of playback was silent. Only while a driver runs: with no device nothing plays.
+// An unfinished Warp render must not hold the owner here. Prime the other
+// sources and post the Warp page requests so its worker can join when ready.
 void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     DriverClock clock;
     if (driverClockSequence_.load() == 0 || !readDriverClock(clock)) return;
@@ -2400,12 +2618,12 @@ void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     requested.play();
     constexpr auto timeout = std::chrono::milliseconds(100);
     if (!timing.settings.hasLoop || !timing.settings.loopEnabled) {
-        (void)clips.primeAt(requested, timeout);
+        (void)clips.primeAt(requested, timeout, false);
         return;
     }
     Transport loopHead = requested;
     loopHead.locate(timing.loopBegin);
-    (void)clips.primeAt(requested, loopHead, timeout);
+    (void)clips.primeAt(requested, loopHead, timeout, false);
 }
 
 Session::RenderBlock::RenderBlock(Session& session) noexcept
