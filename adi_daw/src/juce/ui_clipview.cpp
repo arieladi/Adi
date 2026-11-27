@@ -3144,6 +3144,7 @@ void SampleEditor::mouseDoubleClick(const juce::MouseEvent &e) {
 void SampleEditor::showClip() {
     fitPending_ = true;
     insert_.reset();
+    sourceRange_.reset();
     selectedWarpFrame_.reset();
     warpContextTick_.reset();
     drag_ = Drag::None;
@@ -3169,6 +3170,8 @@ void SampleEditor::updateSource() {
     }
     if (selectedWarpFrame_ && std::ranges::find(markers_, *selectedWarpFrame_, &WarpMarker::sourceFrame) == markers_.end())
         selectedWarpFrame_.reset();
+    if (sourceRange_ && sourceRange_->second > sourceEnd_)
+        sourceRange_.reset();
     resized();
     repaint();
 }
@@ -3233,8 +3236,8 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
         } else {
             juce::Component::SafePointer<SampleEditor> safe(this);
             warpContextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
-                [safe, clipId = clip->id, anchor = warpContextTick_](int item) {
-                    if (safe && safe->panel.clip() == clipId && safe->warpContextTick_ == anchor)
+                [safe, clipId = clip->id, anchor = warpContextTick_, range = sourceRange_](int item) {
+                    if (safe && safe->panel.clip() == clipId && safe->warpContextTick_ == anchor && safe->sourceRange_ == range)
                         safe->chooseWarpContextItem(item);
                 });
         }
@@ -3292,6 +3295,8 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
         }
     } else {
         insert_ = downTick_;
+        sourceRange_.reset();
+        drag_ = Drag::SourceRange;
         repaint();
     }
     preview_ = original_;
@@ -3301,6 +3306,15 @@ void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
     if (drag_ == Drag::None || !clip || clip->id != gestureClip_)
         return;
     panel.root.arrangement.followPaused = true;
+    if (drag_ == Drag::SourceRange) {
+        const auto end = tickAt(e.x, e.mods);
+        if (std::abs(e.x - last_.x) >= 3 && end != downTick_)
+            sourceRange_ = std::pair{std::min(downTick_, end), std::max(downTick_, end)};
+        else
+            sourceRange_.reset();
+        repaint();
+        return;
+    }
     if (drag_ == Drag::Ruler) {
         time.pan(static_cast<double>(last_.x - e.x));
         time.zoom(std::pow(1.012, static_cast<double>(e.y - last_.y)), static_cast<double>(e.x));
@@ -3333,7 +3347,7 @@ void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
 void SampleEditor::mouseUp(const juce::MouseEvent &) {
     const auto drag = std::exchange(drag_, Drag::None);
     const auto *clip = panel.details();
-    if (!clip || clip->id != gestureClip_ || preview_ == original_)
+    if (!clip || clip->id != gestureClip_ || drag == Drag::SourceRange || preview_ == original_)
         return;
     const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
     using Field = ClipViewPanel::Field;
@@ -3398,12 +3412,75 @@ std::shared_ptr<const std::vector<std::uint64_t>> SampleEditor::transients() {
 }
 namespace {
 enum WarpContextItem {
-    QuantizeSource = 1, PromoteSourceTransients, WarpSourceFromHere, WarpSourceStartAtTempo, WarpSourceStraight, WarpSourceSetTempo
+    QuantizeSource = 1, PromoteSourceTransients, WarpSourceFromHere, WarpSourceStartAtTempo, WarpSourceStraight,
+    WarpSourceSetTempo, WarpWholeSampleLoop, WarpSelectionLoop, ChooseWarpLoopLength
 };
 }
 double SampleEditor::setTempo() const noexcept {
     const auto *tempo = panel.root.reader().tempo();
     return tempo ? tempo->bpmAt(panel.root.timelineTick()) : 120.;
+}
+std::int64_t SampleEditor::suggestedLoopBars(bool selection) const noexcept {
+    const auto bar = panel.meter().barTicks();
+    if (markers_.empty() || bar <= 0 || (selection && !sourceRange_))
+        return 0;
+    const auto from = selection ? sourceRange_->first : 0;
+    const auto to = selection ? sourceRange_->second : markers_.back().tick;
+    if (const auto *node = panel.node(); node && node->audio && node->audio->mediaInfo) {
+        const auto rate = node->audio->mediaInfo->sampleRate.value_or(0);
+        if (rate > 0) {
+            const auto first = warpedWaveformFrame(markers_, static_cast<double>(from), false);
+            const auto last = warpedWaveformFrame(markers_, static_cast<double>(to), false);
+            const auto seconds = (last - first) / static_cast<double>(rate);
+            const auto bars = seconds * setTempo() / 60. * static_cast<double>(textproj::kPPQ) / static_cast<double>(bar);
+            if (std::isfinite(bars) && bars < static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                return std::max<std::int64_t>(1, std::llround(bars));
+        }
+    }
+    const auto span = to - from;
+    return std::max<std::int64_t>(1, span / bar + (span % bar >= (bar + 1) / 2 ? 1 : 0));
+}
+bool SampleEditor::warpAsLoop(bool selection, std::int64_t bars) {
+    const auto bar = panel.meter().barTicks();
+    if (bar <= 0 || bars <= 0 || bars > std::numeric_limits<std::int64_t>::max() / bar) {
+        panel.root.say("Enter a supported positive whole number of bars.");
+        return false;
+    }
+    std::optional<clip_edit::WarpLoopSelection> range;
+    if (selection) {
+        if (!sourceRange_)
+            return false;
+        range = clip_edit::WarpLoopSelection{sourceRange_->first, sourceRange_->second};
+    }
+    if (!panel.root.commitEdit(clip_edit::prepareWarpAsLoop(panel.root.editStore(), panel.clip(), range,
+                                                           bars * bar, panel.root.editRate())))
+        return false;
+    sourceRange_.reset();
+    repaint();
+    return true;
+}
+void SampleEditor::chooseLoopLength(bool selection) {
+    auto *prompt = new juce::AlertWindow(selection ? "Warp Selection as Loop" : "Warp Sample as Loop",
+                                         "Enter the loop length in bars.", juce::MessageBoxIconType::NoIcon, this);
+    prompt->addTextEditor("bars", juce::String(static_cast<juce::int64>(suggestedLoopBars(selection))), "Bars");
+    prompt->addButton("Warp", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<SampleEditor> safe(this);
+    prompt->enterModalState(true, juce::ModalCallbackFunction::create(
+        [safe, prompt, selection, clip = panel.clip(), generation = panel.root.generation(), range = sourceRange_](int choice) {
+            if (choice != 1 || !safe || safe->panel.clip() != clip || safe->panel.root.generation() != generation ||
+                safe->sourceRange_ != range)
+                return;
+            const auto text = prompt->getTextEditorContents("bars").trim().toStdString();
+            std::int64_t bars = 0;
+            const auto *end = text.data() + text.size();
+            const auto parsed = std::from_chars(text.data(), end, bars);
+            if (parsed.ec != std::errc{} || parsed.ptr != end || bars <= 0) {
+                safe->panel.root.say("Enter the loop length as a positive whole number of bars.");
+                return;
+            }
+            safe->warpAsLoop(selection, bars);
+        }), true);
 }
 juce::PopupMenu SampleEditor::warpContextMenu() {
     juce::PopupMenu menu;
@@ -3419,6 +3496,18 @@ juce::PopupMenu SampleEditor::warpContextMenu() {
     menu.addItem(WarpSourceStartAtTempo, "Warp From Here (Start At " + tempo + " BPM)", canInfer);
     menu.addItem(WarpSourceStraight, "Warp From Here (Straight)", canInfer);
     menu.addItem(WarpSourceSetTempo, "Warp " + tempo + " BPM From Here", canWarp);
+    const auto loopLabel = [](const char *subject, std::int64_t bars) {
+        return juce::String("Warp ") + subject + " as " + juce::String(static_cast<juce::int64>(bars)) +
+               (bars == 1 ? " Bar Loop" : " Bars Loop");
+    };
+    if (const auto bars = suggestedLoopBars(false); bars > 0) {
+        menu.addSeparator();
+        menu.addItem(WarpWholeSampleLoop, loopLabel("Sample", bars));
+        if (const auto selectedBars = suggestedLoopBars(true); selectedBars > 0)
+            menu.addItem(WarpSelectionLoop, loopLabel("Selection", selectedBars));
+        menu.addItem(ChooseWarpLoopLength, sourceRange_ ? "Warp Selection as a Different Loop Length…"
+                                                      : "Warp Sample as a Different Loop Length…");
+    }
     return menu;
 }
 bool SampleEditor::chooseWarpContextItem(int item) {
@@ -3429,6 +3518,15 @@ bool SampleEditor::chooseWarpContextItem(int item) {
         return onsets && !onsets->empty() &&
                panel.root.commitEdit(clip_edit::prepareWarpMarkersAtTransients(panel.root.editStore(), panel.clip(),
                    *onsets, panel.root.editRate()));
+    }
+    if (item == WarpWholeSampleLoop || item == WarpSelectionLoop) {
+        const bool selection = item == WarpSelectionLoop;
+        const auto bars = suggestedLoopBars(selection);
+        return bars > 0 && warpAsLoop(selection, bars);
+    }
+    if (item == ChooseWarpLoopLength && suggestedLoopBars(sourceRange_.has_value()) > 0) {
+        chooseLoopLength(sourceRange_.has_value());
+        return true;
     }
     if (item < WarpSourceFromHere || item > WarpSourceSetTempo || !warpContextTick_ || markers_.empty())
         return false;
@@ -3486,6 +3584,13 @@ void SampleEditor::paint(juce::Graphics &g) {
     g.fillRect(scrubArea());
     const auto area = waveArea();
     paintGrid(g, area, time, meters);
+    if (sourceRange_) {
+        const auto left = std::clamp(time.x(sourceRange_->first), 0., static_cast<double>(area.getWidth()));
+        const auto right = std::clamp(time.x(sourceRange_->second), 0., static_cast<double>(area.getWidth()));
+        g.setColour(look::selection.withAlpha(.65f));
+        g.fillRect(static_cast<float>(left), static_cast<float>(area.getY()), static_cast<float>(right - left),
+                   static_cast<float>(area.getHeight()));
+    }
     const auto start = drag_ == Drag::Start ? preview_ : startMarker();
     const auto end = drag_ == Drag::End ? preview_ : endMarker();
     shadeOutside(g, area, time, {start, std::max<std::int64_t>(1, end - start), 0});
