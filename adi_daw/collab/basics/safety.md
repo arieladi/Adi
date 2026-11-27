@@ -1,12 +1,13 @@
 # Basics safety report
 
-SC-159, SC-157 and SC-151 are ready for Win's Windows check. SC-155 is next.
+SC-159, SC-157, SC-151 and SC-155 are ready for Win's Windows check. The one-gesture Undo items are next.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
 | SC-159 | `basics/sc-159-synced-projects` at `528f6f09` | Recognized sync folders and network volumes use a durable rollback journal, so committed work reaches the project file. Writable opens fold an existing WAL first. The window warns on New, Open and Save As. Touched engine Store and format, engine-win project-file publication, and window/window-fn document and app code. | Linux Debug Ninja, GCC 13.3, JUCE/Pd/Werror/acceptance on. The original Store failed the copy and WAL regressions. The fixed Store passed 82 checks. Seven core suites passed. Debug shell, document and window-state passed with DISPLAY unset. The native app displayed the warning under Xvfb. Acceptance passed 3/3. | Ready for Windows check |
 | SC-157 | `basics/sc-157-project-backups` at `f47d614b` | A saved project gets a versioned backup on open and a new one after a ten-minute check finds edits. The ten newest versions are kept. Safe rotation uses the system trash after a durable write. File > Open Backup restores a separate editable project. Touched engine-win project files and window/window-fn app, File menu and tests. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. Four storage suites and window-state passed, including 99 project-file checks. Native Xvfb covered open, the real ten-minute edit backup, adjacent and read-only recovery, and archive shutdown. Acceptance passed 3/3. The document and shell timing failures are recorded below. | Ready for Windows check |
 | SC-151 | `basics/sc-151-playback-problems` at `08ab0ef5` | Session playback problems mark the affected Arrangement clips and device cards. A single Status Bar action shows the count and opens the full list of reasons. The marks and action clear as the problems clear. Touched window/window-fn and device card display code. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The native red and green runs used the same missing-WAV and missing-CLAP fixture. The new app marked both items and the visible list contained both reasons. Window-state and all three acceptance tests passed. The document and shell suites ran with the known timing failures below. | Ready for Windows check |
+| SC-155 | `basics/sc-155-undo-open-state` at `0864420e` | Undo History captures the current cursor when it opens a project. The bottom row returns to that cursor from either direction. Earlier history remains accessible and any creation snapshot has its own row. Touched window/window-fn's history panel and UI submitter. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. History, history-move and window-state passed. The full shell ran the reopened-cursor regression. Native Xvfb reproduced the old four-to-two-track loss and verified the fix restored four from five with Redo intact. Acceptance passed 3/3. Known timing failures are below. | Ready for Windows check |
 
 ### SC-159 verification
 
@@ -26,6 +27,13 @@ SC-159, SC-157 and SC-151 are ready for Win's Windows check. SC-155 is next.
 - The native probe ran under Xvfb with MIT-SHM disabled to avoid a second-window repaint artifact. It clicked the Status Bar and read both displayed reasons from the list. The old app opened no list for the same fixture.
 - The headless document suite passed 704 of 706 checks, with the same device-loss and slow plug-in timing failures confirmed on unmodified main above. The Debug shell passed 3,854 of 3,855 checks. Its only failure was the unchanged SC-421 benchmark, with a median first keystroke of 121 ms against 40 ms. The playback warning checks passed.
 - Built-in realtime acceptance took 4,005 seconds with the same local 5,400-second timeout. The tested branch includes main `6f96847b`. Main advanced to `ed3da057` during validation and a dry merge found 15 conflicts across the project-file, app and window tests and code. The published head preserves the tested tree.
+
+### SC-155 verification
+
+- The native app restored the opening cursor twice and Ctrl+Y recovered the new track in between. On quit the existing device-state save appended the Reverb and Delay state operations, leaving four audio tracks and all three authored steps reachable. The closed file passed SQLite integrity checking.
+- The Debug shell passed 4,375 of 4,376 checks with DISPLAY unset. Its only failure was SC-421, with a 114 ms first keystroke against 40 ms. The document suite passed 914 of 916 checks, with the known device-loss and SC-415 timing failures.
+- The item started directly from updated main `ed3da057` to keep its history changes separate from earlier integration conflicts. The Linux code tree was `05623050`. The merge of main `fbf541ee` before publication changed four documents. The built-in realtime test passed in 3,433 seconds with the local emulation timeout.
+- When history retention has discarded the opening cursor or it requires a cross-baseline reload, the row reports that it cannot restore the saved state.
 
 ## Build storage
 
