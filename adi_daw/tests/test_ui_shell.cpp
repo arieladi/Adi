@@ -6546,6 +6546,8 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
         return;
     editor.time.left = 0;
     editor.time.scale = 64;
+    check(editor.keyPressed(juce::KeyPress('5', juce::ModifierKeys::commandModifier, 0)),
+          "switch the Note Editor from its fixed default to Adaptive");
     check(!editor.time.grid.fixed && editor.gridTicks() == beat / 4 && panel.readings().grid == "1/16",
           "the adaptive Note Editor has a sixteenth grid at 64 px per quarter");
     const auto notes = editor.notesArea();
@@ -7219,7 +7221,8 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
           "zoom reaches thirty-seconds and the wider and narrower commands still apply");
     auto &arrangement = root.arrangement.geometry;
     arrangement.scale = ed.time.scale;
-    check(arrangement.gridQuarters() == 1., "the editor's finer adaptive grid leaves Arrangement's grid alone");
+    check(!arrangement.grid.fixed && arrangement.grid.narrow == 0 && arrangement.gridQuarters() == .125,
+          "Arrangement follows its own adaptive grid after the Note Editor commands");
 
     ed.time.zoomAround(2., beat);
     const auto ruler = ed.rulerArea();
