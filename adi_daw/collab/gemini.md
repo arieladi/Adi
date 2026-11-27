@@ -4,6 +4,30 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `land/*` Round 5 (`land/basics-1127f` `3ca5a798` — FAIL on GCC 12 `-Werror=range-loop-construct` + 2 Clang 14 JUCE errors)
+
+Verified `origin/land/basics-1127f` at `3ca5a798` (merging `land/basics-1127e` `4535b93a` + `basics/plugins-chain` `5f0e646b` + `basics/recording-chain` `c2cc49bd` + `basics/look-chain` `c5f204b8`) under **GCC 12.4.0 `-DADI_WERROR=ON`**.
+
+| Branch | SHA | Compiler / Tool | Headless `-DADI_WERROR=ON` | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Verdict |
+|---|---|---|---|---|---|
+| `land/basics-1127f` | `3ca5a798` | GCC 12.4.0 | **BUILD_FAIL** (15/16 targets 0 warnings; **`tests/test_audio_recording.cpp:836:20` `-Werror=range-loop-construct`**) | — | **FAIL (do not land)** |
+| `land/basics-1127f` | `3ca5a798` | Clang 14.0.6 + libstdc++ 12 | — | **FAIL** (still carries both Clang 14 errors: `src/juce/ui_arrangement.cpp:2904:42` and `src/juce/ui_shell.cpp:1933:74`) | **FAIL (do not land)** |
+
+### Findings on `land/basics-1127f` (`3ca5a798`)
+
+1. **NEW GCC 12.4.0 `-Werror=range-loop-construct` build error at `tests/test_audio_recording.cpp:836:20` (also affects `basics/recording-chain` `6a1878a1`..`c2cc49bd`):**
+   - `tests/test_audio_recording.cpp:836:20: error: loop variable 'invalidLoop' creates a copy from type 'const adi::engine::AudioRecordingLoop' [-Werror=range-loop-construct]`
+   - `SC-27` (`6a1878a1 Record audio across Arrangement Loop passes (SC-27)`) grew `struct AudioRecordingLoop` past GCC 12's `-Wrange-loop-construct` threshold, so `for (const auto invalidLoop : ...)` now triggers `-Werror=range-loop-construct`.
+   - **Fix direction (for owner):** `for (const auto &invalidLoop : ...)`.
+   - **Owner:** `basics/recording` (`SC-27` `6a1878a1` / `basics/recording-chain` `c2cc49bd`).
+   - **Smallest repro:** `cmake -S adi_daw -B build-gcc12 -G Ninja -DADI_WERROR=ON && cmake --build build-gcc12 --target adi_audio_recording_tests`.
+2. **Still present on `land/basics-1127f` (`3ca5a798`) and `land/basics-1127e` (`4535b93a`):**
+   - `src/juce/ui_arrangement.cpp:2904:42` (`1127e`: `:2892:42`, Clang 14 `automationStroke_.emplace()`, `SC-87`, owner `basics/tracks`).
+   - `src/juce/ui_shell.cpp:1933:74` (`1127e`: `:1966:74`, Clang 14 `[safe, mode]` structured-binding lambda capture, `SC-112`, owner `basics/look`).
+   - (Note: Round 4's `SETTINGS-CATALOGUE.md:183` `adi_settings_tests` failure was fixed by `561ed0c2` on both `1127e` `4535b93a` and `1127f` `3ca5a798`.)
+
+---
+
 ## 2026-11-26 — `basics/*` Round 11 (`basics/speed-chain` `c17e5904` — PASS)
 
 Verified updated `origin/basics/speed-chain` head `c17e5904` (entire speed queue through `SC-423`, including `c71d2e7f` fixing the Round 9 `adi_midi_clips_tests` failure; 80 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 8 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
