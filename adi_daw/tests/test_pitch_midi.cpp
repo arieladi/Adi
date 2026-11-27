@@ -295,6 +295,146 @@ void installPitchSchema(Store& store) {
     store.db().exec(std::string(std::istreambuf_iterator<char>(schema), {}));
 }
 
+std::vector<std::int64_t> extractionMarkers(const Store& store) {
+    SQLite::Statement rows(store.db(), "SELECT clip_id FROM clip_pitch_extractions ORDER BY clip_id");
+    std::vector<std::int64_t> result;
+    while (rows.executeStep()) result.push_back(rows.getColumn(0).getInt64());
+    return result;
+}
+
+void extractionLineage() {
+    Fixture f;
+    f.warp();
+    installPitchSchema(*f.store);
+    const auto initial = digestProject(*f.store).text;
+    PitchMidiOptions options;
+    options.keepTuning = true;
+    const auto first = preparePitchMidi(*f.store, f.analysis, options);
+    check(first && digestProject(*f.store).text == initial, "lineage prepare leaves the project unchanged");
+    if (!first) return;
+    const auto old = first.data->midiClip;
+    const auto track = first.data->track;
+    const auto entered = commitPitchMidi(*f.store, *first.data);
+    check(entered.ok && extractionMarkers(*f.store) == std::vector{old},
+          "new-track extraction marks the output in its creation transaction");
+    if (!entered.ok) return;
+    const auto created = digestProject(*f.store).text;
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == initial &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == created,
+          "Undo and Redo of notes-only new-track extraction include its marker and native notes");
+
+    {
+        SQLite::Statement lane(f.store->db(), "INSERT INTO lanes(id,track_id) VALUES(19,?)");
+        lane.bind(1, track);
+        lane.exec();
+        SQLite::Statement clips(f.store->db(),
+            "INSERT INTO clips(id,track_id,lane_id,kind,name,pos_ticks,length_ticks) VALUES"
+            "(101,?,NULL,'midi','Old extraction outside the new range',?,?),"
+            "(102,?,NULL,'midi','Unrelated MIDI',?,?),"
+            "(103,?,19,'midi','Take lane extraction',?,?),"
+            "(104,2,NULL,'midi','Different track extraction',?,?)");
+        const std::array positions{6 * quarter, 8 * quarter, quarter};
+        for (int i = 0; i < 3; ++i) {
+            clips.bind(i * 3 + 1, track);
+            clips.bind(i * 3 + 2, positions[static_cast<std::size_t>(i)]);
+            clips.bind(i * 3 + 3, quarter);
+        }
+        clips.bind(10, quarter);
+        clips.bind(11, quarter);
+        clips.exec();
+    }
+    f.store->db().exec("UPDATE tracks SET kind='midi' WHERE id=2;"
+                       "INSERT INTO clip_pitch_extractions(clip_id) VALUES(101),(103),(104)");
+    const auto snapshotBefore = digestProject(*f.store).text;
+    if (!f.store->close()) throw std::runtime_error("cannot close extraction lineage fixture");
+    StoreError error{};
+    f.store = Store::open(f.temp.path() / "a.adi", error);
+    check(f.store && digestProject(*f.store).text == snapshotBefore,
+          "initial markers and native output reopen exactly");
+    if (!f.store) return;
+    options.destinationTrack = track;
+    options.includePitchCurve = true;
+
+    f.store->db().exec("UPDATE clips SET pos_ticks=5765760 WHERE id=102");
+    const auto overlapBefore = digestProject(*f.store).text;
+    check(!preparePitchMidi(*f.store, f.analysis, options) && digestProject(*f.store).text == overlapBefore,
+          "an unrelated overlapping main-lane clip protects itself and every prior extraction");
+    f.store->db().exec("UPDATE clips SET pos_ticks=46126080 WHERE id=102");
+    check(digestProject(*f.store).text == snapshotBefore, "clearing fixture overlap restores the setup exactly");
+
+    const auto replacement = preparePitchMidi(*f.store, f.analysis, options);
+    check(replacement && replacement.data->track == track && digestProject(*f.store).text == snapshotBefore,
+          "selected extraction discovers marked outputs after reopening without preparing writes");
+    if (!replacement) {
+        if (replacement.detail) std::printf("Lineage preparation error: %s\n", replacement.detail->c_str());
+        return;
+    }
+    const auto newer = replacement.data->midiClip;
+    const auto committed = commitPitchMidi(*f.store, *replacement.data);
+    check(committed.ok && committed.seqs.size() == 3 &&
+          extractionMarkers(*f.store) == std::vector<std::int64_t>{103, 104, newer},
+          "selected extraction replaces all and only the marked main-lane clips in one action");
+    if (!committed.ok) {
+        std::printf("Lineage commit error: %s\n", committed.error.c_str());
+        return;
+    }
+    const auto fresh = engine::readClipDetails(*f.store, newer, true, true);
+    check(f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id IN (101,102,103,104)").getInt() == 3 &&
+          !engine::readClipDetails(*f.store, old).clip && fresh.clip && fresh.clip->noteExpressions.curves.size() == 3,
+          "whole replacement preserves unrelated clips and writes the new native pitch curves");
+
+    const auto snapshotAfter = digestProject(*f.store).text;
+    const auto copied = copyPitchMidi(*f.store, f.analysis);
+    check(copied && copied.data->image.at("children").value("clip_pitch_extractions", Payload::array()).empty(),
+          "detached clipboard output has no automatic-replacement marker");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == snapshotBefore &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == snapshotAfter,
+          "one Undo and Redo restore exact output bytes, all prior marks, and unrelated clips");
+    if (!f.store->close()) throw std::runtime_error("cannot close replacement lineage fixture");
+    f.store = Store::open(f.temp.path() / "a.adi", error);
+    check(f.store && digestProject(*f.store).text == snapshotAfter &&
+          History(*f.store).undo().ok && digestProject(*f.store).text == snapshotBefore &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == snapshotAfter,
+          "reopen retains replacement lineage and exact journal replay");
+    if (!f.store) return;
+    PitchMidiOptions melodyOptions;
+    melodyOptions.content = PitchMidiContent::DetectedMelody;
+    const auto melody = preparePitchMidi(*f.store, f.analysis, melodyOptions);
+    check(melody && commitPitchMidi(*f.store, *melody.data).ok &&
+          extractionMarkers(*f.store) == std::vector<std::int64_t>{103, 104, newer},
+          "Convert Melody creates an unmarked clip");
+    OpRequest removeSource;
+    removeSource.opType = "clip.delete";
+    removeSource.payload = {{"id", 11}};
+    check(OpJournal(*f.store).commit(std::span(&removeSource, 1)).ok &&
+          extractionMarkers(*f.store) == std::vector<std::int64_t>{103, 104, newer},
+          "output marker outlives the audio source clip");
+}
+
+void markFirstSelectedExtraction() {
+    Fixture f;
+    installPitchSchema(*f.store);
+    f.store->db().exec("UPDATE tracks SET kind='instrument' WHERE id=2");
+    PitchMidiOptions options;
+    options.destinationTrack = 2;
+    const auto placed = preparePitchMidi(*f.store, f.analysis, options);
+    check(placed && commitPitchMidi(*f.store, *placed.data).ok &&
+          extractionMarkers(*f.store) == std::vector{placed.data->midiClip},
+          "first extraction on a selected instrument track records its lineage");
+}
+
+void unfinishedExtractionSchema() {
+    Fixture f;
+    installPitchSchema(*f.store);
+    f.store->db().exec("DROP TABLE clip_pitch_extractions");
+    const auto oldSchema = digestProject(*f.store).text;
+    const auto prepared = preparePitchMidi(*f.store, f.analysis);
+    check(prepared && commitPitchMidi(*f.store, *prepared.data).ok &&
+          !f.store->db().tableExists("clip_pitch_extractions") && History(*f.store).undo().ok &&
+          digestProject(*f.store).text == oldSchema,
+          "extraction and Undo still work in an earlier staged project without the marker table");
+}
+
 void durableEdits() {
     Fixture f;
     f.warp();
@@ -626,7 +766,8 @@ void callback() {
 
 int main() {
     try {
-        projection(); journal(); expressionAndDestinations(); analyzedMelody(); durableEdits(); durableGeometry();
+        projection(); journal(); expressionAndDestinations(); analyzedMelody(); extractionLineage();
+        markFirstSelectedExtraction(); unfinishedExtractionSchema(); durableEdits(); durableGeometry();
         amplitudeExtraction(); channelBendExtraction(); callback();
     }
     catch (const std::exception& error) { check(false, error.what()); }

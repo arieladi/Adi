@@ -28,8 +28,9 @@ struct PitchMidiOptions {
     // A verified full-source mono PCM buffer supplies RMS and authored gain to
     // dynamic velocity or the selected continuous volume mode.
     std::span<const float> velocitySource;
-    // Empty prepares a new MIDI track. The owner can identify a previous
-    // extraction on a selected destination for explicit whole replacement.
+    // Empty prepares a new MIDI track. EditedPitch replaces prior marked
+    // main-lane extractions on a selected track where lineage is available.
+    // An explicit previous ID also supports an unmarked main-lane predecessor.
     // An overlap with any other existing clip refuses the operation.
     std::optional<std::int64_t> destinationTrack;
     std::optional<std::int64_t> previousExtractionClip;

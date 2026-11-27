@@ -30,6 +30,7 @@ constexpr std::uint64_t maxFrame = std::uint64_t{1} << 50; // exact source frame
 constexpr std::size_t maxRecords = std::size_t{1} << 20;
 constexpr int maxKey = 127;
 constexpr std::uint8_t releaseVelocity = 64;
+constexpr auto extractionTable = "clip_pitch_extractions";
 
 template<class Data>
 PitchMidiResult<Data> fail(PitchMidiProblem problem) { return {problem, {}, {}}; }
@@ -607,7 +608,7 @@ Payload controllerData(const PitchMidiProjection::ControllerCurve& curve) {
 }
 
 Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t track, std::int64_t clip,
-                  std::int64_t stream, const std::string& title, RowIds& ids) {
+                  std::int64_t stream, const std::string& title, RowIds& ids, bool markExtraction = false) {
     auto& db = store.db();
     const auto row = edit::defaultRow(db, "clips",
         {{"id", clip}, {"track_id", track}, {"kind", "midi"}, {"name", title},
@@ -615,6 +616,7 @@ Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t tr
     const auto noteBytes = writeStream<NoteRecord>(FourCC::Notes, midi.notes, 1, StreamFlags::SortedByTime);
     auto children = Payload::object();
     for (const auto& child : childTables()) children[child.table] = Payload::array();
+    if (markExtraction) children[extractionTable].push_back({{"clip_id", clip}});
     children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams",
         {{"id", stream}, {"clip_id", clip}, {"stream_kind", "notes"}, {"data", binary(noteBytes)}})});
     const auto expression = [&children, &ids, clip](std::span<const PitchMidiProjection::NoteCurve> curves,
@@ -640,11 +642,37 @@ std::string titleFor(const Source& source, const char* label) {
     return source.clip.name.empty() ? label : source.clip.name;
 }
 
+std::vector<std::int64_t> previousExtractions(const SQLite::Database& db, std::int64_t track,
+                                               const PitchMidiOptions& options, bool marked) {
+    std::vector<std::int64_t> result;
+    if (options.previousExtractionClip) {
+        SQLite::Statement existing(db, "SELECT 1 FROM clips WHERE id=? AND track_id=? AND kind='midi' AND lane_id IS NULL");
+        existing.bind(1, *options.previousExtractionClip);
+        existing.bind(2, track);
+        if (!existing.executeStep())
+            throw CaptureError{PitchMidiProblem::Storage, "previous extraction is absent from the selected destination"};
+        result.push_back(*options.previousExtractionClip);
+    }
+    if (marked) {
+        SQLite::Statement existing(db, "SELECT c.id FROM clips c JOIN clip_pitch_extractions e ON e.clip_id=c.id "
+                                       "WHERE c.track_id=? AND c.kind='midi' AND c.lane_id IS NULL ORDER BY c.id");
+        existing.bind(1, track);
+        while (existing.executeStep()) {
+            cancellation(options.stop);
+            const auto id = existing.getColumn(0).getInt64();
+            if (options.previousExtractionClip != id) result.push_back(id);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
 std::vector<OpRequest> requestsFor(Store& store, const Source& source, const PitchMidiProjection& midi,
                                     std::int64_t track, std::int64_t clip, std::int64_t stream,
                                     const char* label, const PitchMidiOptions& options, RowIds& ids) {
     const auto& db = store.db();
     const auto title = titleFor(source, label);
+    const auto markExtraction = options.content == PitchMidiContent::EditedPitch && db.tableExists(extractionTable);
     if (options.destinationTrack) {
         SQLite::Statement destination(db, "SELECT kind FROM tracks WHERE id=?");
         destination.bind(1, track);
@@ -654,15 +682,8 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
         if (kind != "midi" && kind != "instrument")
             throw CaptureError{PitchMidiProblem::Storage, "MIDI extraction destination must be a MIDI or instrument track"};
         destination.reset();
-        if (options.previousExtractionClip) {
-            SQLite::Statement existing(db, "SELECT 1 FROM clips WHERE id=? AND track_id=? AND kind='midi' AND lane_id IS NULL");
-            existing.bind(1, *options.previousExtractionClip);
-            existing.bind(2, track);
-            if (!existing.executeStep())
-                throw CaptureError{PitchMidiProblem::Storage, "previous extraction is absent from the selected destination"};
-        }
-
-        auto image = midiImage(store, midi, track, clip, stream, title, ids);
+        const auto previous = previousExtractions(db, track, options, markExtraction);
+        auto image = midiImage(store, midi, track, clip, stream, title, ids, markExtraction);
         edit_plan::detail::PlacementBatch batch;
         batch.incoming.push_back(image);
         const auto scope = edit_plan::materialScope(std::span(&track, 1), edit_plan::PlacementClock::Ticks,
@@ -672,14 +693,16 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
         if (!placement.ok) throw std::runtime_error(placement.error);
         const auto description = edit_plan::describe(placement);
         for (const auto& effect : description.effects) {
-            if (effect.before && effect.before->id != options.previousExtractionClip)
+            if (effect.before && !std::binary_search(previous.begin(), previous.end(), effect.before->id))
                 throw CaptureError{PitchMidiProblem::Storage, "MIDI extraction overlaps other destination material"};
         }
-        if (!options.previousExtractionClip) return std::move(placement.requests);
+        if (previous.empty()) return std::move(placement.requests);
 
-        const auto previous = *options.previousExtractionClip;
         std::vector<OpRequest> requests;
-        addRequest(requests, "clip.delete", {{"id", previous}}, label, "clip", previous);
+        for (const auto id : previous) {
+            cancellation(options.stop);
+            addRequest(requests, "clip.delete", {{"id", id}}, label, "clip", id);
+        }
         edit::RowEdits rows(store.db());
         createImage(rows, image);
         addRequest(requests, "clip.duplicate", {{"id", clip}, {"changes", rows.changes()}}, label, "clip", clip);
@@ -708,7 +731,7 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
         {{"id", track}, {"kind", "midi"}, {"name", title},
          {"parent", parent ? Payload(*parent) : Payload(nullptr)}, {"index", index}},
         label, "track", track);
-    if (midi.pitchCurves.empty() && midi.gainCurves.empty()) {
+    if (!markExtraction && midi.pitchCurves.empty() && midi.gainCurves.empty()) {
         const auto bytes = writeStream<NoteRecord>(FourCC::Notes, midi.notes, 1, StreamFlags::SortedByTime);
         auto controllers = Payload::array();
         if (midi.volumeCurve) {
@@ -722,7 +745,7 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
             label, "clip", clip);
     } else {
         edit::RowEdits rows(store.db());
-        createImage(rows, midiImage(store, midi, track, clip, stream, title, ids));
+        createImage(rows, midiImage(store, midi, track, clip, stream, title, ids, markExtraction));
         addRequest(requests, "clip.duplicate", {{"id", clip}, {"changes", rows.changes()}}, label, "clip", clip);
     }
     return requests;
