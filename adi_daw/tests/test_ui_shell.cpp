@@ -6353,6 +6353,88 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     // With nothing chosen, Copy says what to choose.
     marker(2, 0);
     check(!root.command(AppCommands::Copy) && !root.error().empty(), "Copy with no clip or time selection says what to select");
+
+    // SC-179: two explicitly picked clips with both a time gap and an unpicked track between them.
+    std::vector<OpRequest> multi;
+    const auto add = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        request.label = "Set up clip selection";
+        multi.push_back(std::move(request));
+    };
+    const auto pasteAt = 5 * bar;
+    const auto gapAt = pasteAt + 3 * bar / 2;
+    add("track.create", {{"id", 20}, {"kind", "instrument"}, {"name", "Lower MIDI"}, {"index", 2}});
+    add("clip.create", {{"id", 61}, {"track", 20}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar / 2}});
+    add("clip.create", {{"id", 62}, {"track", 2}, {"kind", "midi"}, {"pos", bar}, {"length", bar / 2}});
+    add("clip.create", {{"id", 63}, {"track", 2}, {"kind", "midi"}, {"pos", gapAt}, {"length", bar / 4}});
+    add("clip.create", {{"id", 64}, {"track", 3}, {"kind", "midi"}, {"pos", pasteAt + bar / 2}, {"length", bar / 4}});
+    check(document->ops().submit(std::move(multi)).ok && document->synchronise(), "SC-179 fixture creates the sparse selection");
+    root.frame();
+    const Clips upper{{0, bar}, {bar, bar / 2}, {gapAt, bar / 4}};
+    const Clips between{{0, bar / 2}, {pasteAt + bar / 2, bar / 4}};
+    const Clips lower{{2 * bar, bar / 2}};
+    auto &arrangement = root.arrangement;
+    // Start with the later clip as primary so clipboard order is independent of pick order.
+    const auto pickBoth = [&] {
+        clickClip(20, 61, 2 * bar, bar / 2);
+        sel.pickedClips = {50};
+    };
+    const auto fixtureStep = document->ops().nextUndo();
+    const auto undoOne = [&](const char *caption) {
+        const auto step = document->ops().nextUndo();
+        check(fixtureStep && step && step->txnId != fixtureStep->txnId && root.command(AppCommands::Undo), caption);
+        root.frame();
+        const auto after = document->ops().nextUndo();
+        check(fixtureStep && after && after->txnId == fixtureStep->txnId &&
+                  clipsOf(2) == upper && clipsOf(3) == between && clipsOf(20) == lower,
+              "SC-179: one Undo restores the full arrangement");
+    };
+
+    const auto selectedCopy = [&](std::int64_t track, std::int64_t at) {
+        const auto *row = root.reader().findTrack(track);
+        return row != nullptr && std::any_of(row->clips.begin(), row->clips.end(), [&](const auto &clip) {
+            return clip->posTicks == at && arrangement.geometry.clipSelected(clip->id);
+        });
+    };
+    pickBoth();
+    check(root.keyPressed(copyKey), "SC-179: Copy two clips");
+    marker(2, pasteAt);
+    juce::ApplicationCommandInfo pasteTime(AppCommands::PasteTime);
+    commands.getCommandInfo(AppCommands::PasteTime, pasteTime);
+    check((pasteTime.flags & juce::ApplicationCommandInfo::isDisabled) != 0 &&
+              !root.command(AppCommands::PasteTime) && root.error().find("no time to paste") != std::string::npos &&
+              clipsOf(2) == upper && clipsOf(3) == between && clipsOf(20) == lower,
+          "SC-179: Paste Time is inactive and refuses an explicit clip copy without shifting material");
+    check(root.keyPressed(pasteKey), "SC-179: paste the two clips at the new marker");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {pasteAt, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {pasteAt + 2 * bar, bar / 2}},
+          "SC-179: Paste preserves clip offsets and leaves the unpicked material in the gaps");
+    check(arrangement.geometry.selectedClips().size() == 2 &&
+              selectedCopy(2, pasteAt) && selectedCopy(20, pasteAt + 2 * bar),
+          "SC-179: Paste selects just the two inserted clips");
+    undoOne("SC-179: undo Paste");
+
+    pickBoth();
+    check(root.keyPressed(cutKey), "SC-179: Cut the picked clips");
+    root.frame();
+    check(clipsOf(2) == Clips{{bar, bar / 2}, {gapAt, bar / 4}} && clipsOf(3) == between && clipsOf(20).empty(),
+          "SC-179: Cut removes exactly the two picked clips");
+    undoOne("SC-179: undo Cut");
+
+    pickBoth();
+    check(root.keyPressed(duplicateKey), "SC-179: Duplicate the picked clips");
+    root.frame();
+    const auto offset = 5 * bar / 2;
+    check(clipsOf(2) == Clips{{0, bar}, {bar, bar / 2}, {offset, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{2 * bar, bar / 2}, {offset + 2 * bar, bar / 2}},
+          "SC-179: Duplicate places both clips at their original offsets after the selection");
+    check(arrangement.geometry.selectedClips().size() == 2 &&
+              selectedCopy(2, offset) && selectedCopy(20, offset + 2 * bar),
+          "SC-179: both duplicates are selected");
+    undoOne("SC-179: undo Duplicate");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();
