@@ -4669,10 +4669,19 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
     };
     const auto checkSpan = [&](std::int64_t pos, const char *message) {
         const auto *clip = audioClip();
-        const auto offset = (pos - start) * 500'000'000 / beat;
-        check(clip && clip->posTicks == pos && clip->posTicks + clip->lengthTicks == end &&
-                  clip->contentOffsetNs.value_or(0) == offset,
-              message);
+        const auto rate = root.editRate();
+        const auto sampleAt = [&](std::int64_t tick) {
+            return std::llround(static_cast<double>(tick) * .5 * rate / static_cast<double>(beat));
+        };
+        const auto offset = std::llround(static_cast<double>(sampleAt(pos) - sampleAt(start)) * 1e9 / rate);
+        const bool matches = clip && clip->posTicks == pos && clip->posTicks + clip->lengthTicks == end &&
+                             clip->contentOffsetNs.value_or(0) == offset;
+        if (!matches && clip)
+            std::printf("trim span expected (%lld, %lld, %lld ns), got (%lld, %lld, %lld ns)\n",
+                        static_cast<long long>(pos), static_cast<long long>(end), offset,
+                        static_cast<long long>(clip->posTicks), static_cast<long long>(clip->posTicks + clip->lengthTicks),
+                        static_cast<long long>(clip->contentOffsetNs.value_or(0)));
+        check(matches, message);
     };
     const auto x = [&](std::int64_t tick) { return static_cast<float>(std::ceil(geo.x(tick))); };
     const auto y = static_cast<float>(laneTop(root, track) + 5);
