@@ -29,6 +29,7 @@
 #include "ui_diagnostic_log.hpp"
 #include "ui_export.hpp"
 #include "ui_floating.hpp"
+#include "ui_project_media.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include "window_release.hpp"
@@ -2752,6 +2753,31 @@ class AdiApplication final : public juce::JUCEApplication,
         options.resizable = true;
         options.launchAsync();
     }
+    bool showProjectMedia() {
+        if (!document_ || !floating_)
+            return false;
+        constexpr auto key = "Project Files";
+        try {
+            auto inventory = captureProjectMedia(document_->store());
+            if (auto *panel = dynamic_cast<ProjectMediaPanel *>(floating_->content(key))) {
+                panel->scan(std::move(inventory));
+                floating_->show(key, true);
+                return true;
+            }
+            auto panel = std::make_unique<ProjectMediaPanel>(!document_->store().readOnly());
+            const auto view = juce::Component::SafePointer<ProjectMediaPanel>(panel.get());
+            panel->locateFile = [this, view](const ProjectMediaFile &file) {
+                return chooseMediaFile(file.name, [this, id = file.id, hash = file.hash](const std::filesystem::path &path) {
+                    return document_->relinkMediaFile(id, hash, path);
+                }, view);
+            };
+            panel->scan(std::move(inventory));
+            return floating_->openView(key, 0, std::move(panel), {}, true, key, true);
+        } catch (const std::exception &exception) {
+            root_->say(exception.what());
+            return false;
+        }
+    }
     void locateMissingSample(std::int64_t clip) {
         if (chooser_ || !document_ || !root_)
             return;
@@ -2760,25 +2786,53 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say("The clip no longer has a sample to locate.");
             return;
         }
+        const auto name = target->originalName;
+        (void)chooseMediaFile(name, [this, target = std::move(*target)](const std::filesystem::path &path) {
+            return document_->relinkClipMedia(target, path);
+        });
+    }
+    bool chooseMediaFile(const std::string &name, std::function<bool(const std::filesystem::path &)> relink,
+                         juce::Component::SafePointer<ProjectMediaPanel> panel = {}) {
+        if (chooser_ || !document_ || !root_ || projectSave_ || projectOpen_)
+            return false;
+        if (document_->store().readOnly()) {
+            root_->say("This project is read-only.");
+            return false;
+        }
         const auto owner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        const auto project = document_->store().path();
         const auto folder = juce::File(juce::String(media::pathUtf8(media::projectFolder(document_->store()))));
-        const auto title = target->originalName.empty() ? juce::String("Locate Missing Sample")
-            : "Locate " + juce::String::fromUTF8(target->originalName.c_str());
+        const auto title = name.empty() ? juce::String("Locate Missing Sample")
+                                        : "Locate " + juce::String::fromUTF8(name.c_str());
         chooser_ = std::make_unique<juce::FileChooser>(title, folder, "*");
         chooser_->launchAsync(juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode,
-                              [this, owner, target = std::move(*target)](const juce::FileChooser &chooser) {
+                              [this, owner, panel, project, relink = std::move(relink)](const juce::FileChooser &chooser) {
             const auto file = chooser.getResult();
-            if (owner && root_ == owner.getComponent() && file != juce::File{}) {
-                const bool ok = document_->relinkClipMedia(target, media::pathFromUtf8(file.getFullPathName().toStdString()));
-                owner->say(ok ? "Sample relinked." : document_->error());
+            if (owner && root_ == owner.getComponent() && document_ && document_->store().path() == project &&
+                file != juce::File{}) {
+                try {
+                    const bool ok = relink(media::pathFromUtf8(file.getFullPathName().toStdString()));
+                    const auto message = ok ? "Sample relinked." : document_->error();
+                    owner->say(message);
+                    if (panel) {
+                        if (ok) panel->scan(captureProjectMedia(document_->store()));
+                        else panel->showStatus(message);
+                    }
+                } catch (const std::exception &exception) {
+                    owner->say(exception.what());
+                    if (panel) panel->showStatus(exception.what());
+                }
             }
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)
                     chooser_.reset();
             });
         });
+        return true;
     }
     bool applicationCommand(int id) {
+        if (id == AppCommands::ManageProjectFiles)
+            return showProjectMedia();
         if (id == AppCommands::ImportMidiFile || id == AppCommands::ExportMidiClip)
             return chooseMidiFile(id == AppCommands::ExportMidiClip);
         if (id == AppCommands::Quit) {

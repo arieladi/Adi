@@ -186,7 +186,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ExportMidiClip,
         About,
         ImportAudioFile,
-        LastId = ImportAudioFile
+        ManageProjectFiles,
+        LastId = ManageProjectFiles
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

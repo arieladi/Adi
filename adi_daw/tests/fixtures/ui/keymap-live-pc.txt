@@ -136,3 +136,4 @@
 29063 Export MIDI Clip...: Cmd+Shift+E
 29064 About ADI: 
 29065 Import Audio File...: 
+29066 Manage Project Files...: 

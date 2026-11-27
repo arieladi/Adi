@@ -8,6 +8,7 @@
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
+#include "../src/juce/ui_project_media.hpp"
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/warp_commands.hpp"
@@ -12101,6 +12102,78 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
             juce::PNGImageFormat{}.writeImageToStream(cut, *stream);
     }
 }
+void projectFilesList(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto folder = dir / "Media List";
+    std::filesystem::create_directories(folder);
+    const auto canonicalFolder = std::filesystem::canonical(folder);
+    const auto original = canonicalFolder / "Moved Kick.wav";
+    const auto relocated = canonicalFolder / "Located Kick.wav";
+    const auto present = canonicalFolder / "Snare.wav";
+    const auto wave = [](const std::filesystem::path &path, float level) {
+        std::vector<float> samples(480, level);
+        audio::WavWriter writer(path, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    };
+    wave(original, .25f);
+    wave(present, .5f);
+    std::string error;
+    auto document = ProjectDocument::open(canonicalFolder / "Song.adi", true, {}, error);
+    check(document != nullptr, "SC-153: open a project to inspect its media");
+    if (!document) return;
+    auto &store = document->store();
+    const auto movedId = media::importMedia(store, original, 31, 1);
+    const auto presentId = media::importMedia(store, present, 32, 2);
+    check(movedId.ok && presentId.ok, "SC-153: add a sample which will move and a sample which stays in place");
+    if (!movedId.ok || !presentId.ok) return;
+    std::filesystem::rename(original, relocated);
+    auto inventory = captureProjectMedia(store);
+    inspectProjectMedia(inventory);
+    ProjectMediaPanel panel(true);
+    panel.setFiles(std::move(inventory.files));
+    const auto &files = panel.files();
+    check(files.size() == 2 && files[0].id == movedId.mediaId && files[0].name == "Moved Kick.wav" &&
+              files[0].location == original && !files[0].problem.empty() && files[0].bytes &&
+              files[1].id == presentId.mediaId && files[1].location == present && files[1].problem.empty() &&
+              files[1].bytes && static_cast<std::uintmax_t>(*files[1].bytes) == std::filesystem::file_size(present),
+          "SC-153: the list shows file names, locations, missing status and sizes");
+    if (files.size() != 2) return;
+    auto chosen = present;
+    panel.locateFile = [&](const ProjectMediaFile &file) {
+        return document->relinkMediaFile(file.id, file.hash, chosen);
+    };
+    const auto before = OpJournal(store).headSeq();
+    panel.select(0);
+    check(!panel.locateSelected() && OpJournal(store).headSeq() == before,
+          "SC-153: Locate File refuses a sample with different content without changing the project");
+    check(!document->relinkMediaFile(movedId.mediaId, files[1].hash, relocated) &&
+              OpJournal(store).headSeq() == before,
+          "SC-153: the chooser cannot relink a stale media identity");
+    chosen = relocated;
+    check(panel.locateSelected() && OpJournal(store).headSeq() != before,
+          "SC-153: Locate File journals the chosen byte-identical sample on the selected media entry");
+    inventory = captureProjectMedia(store);
+    inspectProjectMedia(inventory);
+    panel.setFiles(std::move(inventory.files));
+    check(panel.files().size() == 2 && panel.files()[0].location == relocated && panel.files()[0].problem.empty(),
+          "SC-153: the refreshed list reports the recovered file and its new location");
+    check(document->ops().undo().ok, "SC-153: the relink is one undo step");
+    auto afterUndo = captureProjectMedia(store);
+    inspectProjectMedia(afterUndo);
+    check(afterUndo.files.size() == 2 && !afterUndo.files[0].problem.empty(),
+          "SC-153: Undo restores the original missing link");
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "project-file-list");
+    int opened = 0;
+    root.applicationCommand = [&](int id) {
+        if (id != AppCommands::ManageProjectFiles) return false;
+        ++opened;
+        return true;
+    };
+    check(root.command(AppCommands::ManageProjectFiles) && opened == 1 &&
+              std::string_view(AppCommands::stableId(AppCommands::ManageProjectFiles)) == "file.manage-project-files",
+          "SC-153: the File menu's command reaches the project file list without opening a native window in the test");
+}
 // New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
 // tracks then Main, and nothing to undo.
 void browserStartupLabel(AppCommands &commands, const std::filesystem::path &dir) {
@@ -22844,7 +22917,7 @@ int main(int argc, char **argv) {
               "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio,
                                                 C::ExportMidiClip},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then audio/video and MIDI clip export. Quit is in the Mac application menu [P:export#1]");
@@ -22852,7 +22925,7 @@ int main(int argc, char **argv) {
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, openBackupId, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then audio/video and MIDI clip export. It ends with Quit [P:export#1]");
@@ -22960,7 +23033,8 @@ int main(int argc, char **argv) {
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
                       C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
-                      C::About == C::ExportMidiClip + 1 && C::LastId == C::ImportAudioFile,
+                      C::About == C::ExportMidiClip + 1 && C::ManageProjectFiles == C::ImportAudioFile + 1 &&
+                      C::LastId == C::ManageProjectFiles,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -25519,6 +25593,7 @@ int main(int argc, char **argv) {
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
+    trace("projectFilesList", [&] { projectFilesList(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
     trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });

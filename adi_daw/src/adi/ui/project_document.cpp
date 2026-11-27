@@ -2364,6 +2364,18 @@ bool ProjectDocument::relinkClipMedia(const ClipRelinkTarget &target, const std:
     }
     return relinkMediaFile(target.mediaId, path);
 }
+bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, std::string_view expectedHash,
+                                      const std::filesystem::path &path) {
+    {
+        SQLite::Statement current(store_->db(), "SELECT hash_blake3 FROM media_files WHERE id=? AND embedded=0");
+        current.bind(1, mediaId);
+        if (!current.executeStep() || current.getColumn(0).getString() != expectedHash) {
+            error_ = "The project media entry changed while the file chooser was open. Choose it again.";
+            return false;
+        }
+    }
+    return relinkMediaFile(mediaId, path);
+}
 bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &path) {
     const auto result = media::relinkMedia(*store_, mediaId, path);
     if (!result.ok) {

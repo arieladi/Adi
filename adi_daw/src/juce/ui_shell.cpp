@@ -374,6 +374,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"file.export-midi-clip", "File"}, // ExportMidiClip
         {"help.about", "Help"}, // About
         {"create.import-audio-file", "Create"}, // ImportAudioFile
+        {"file.manage-project-files", "File"}, // ManageProjectFiles
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -602,7 +603,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
-                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File..."};
+                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File...",
+                                  "Manage Project Files..."};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
@@ -5217,7 +5219,8 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
-        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About)
+        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About ||
+        id == AppCommands::ManageProjectFiles)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -5737,10 +5740,10 @@ const std::vector<MenuEntries> &menuBar() {
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
         {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip}},
+                  C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip}},
 #else
         {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, kOpenBackupMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
+                  C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's

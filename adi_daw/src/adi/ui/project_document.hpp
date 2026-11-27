@@ -376,6 +376,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::optional<ClipRelinkTarget> clipRelinkTarget(std::int64_t clip);
     bool relinkClipMedia(const ClipRelinkTarget &, const std::filesystem::path &);
     bool relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, std::string_view expectedHash, const std::filesystem::path &);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
