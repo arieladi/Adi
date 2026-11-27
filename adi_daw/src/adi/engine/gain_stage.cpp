@@ -148,6 +148,11 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     if (block <= 0) return fail("invalid gain-stage block size");
     std::vector<float> l(static_cast<std::size_t>(block)), r(l.size()), output(2*l.size());
     float* outputs[]{output.data(),output.data()+block};
+    if (!offline.clips()->waitForWarp()) {
+        std::string why = "gain stage Warp preparation failed";
+        for (const auto& problem : offline.clips()->decodeProblems()) why += "; " + problem;
+        return fail(why);
+    }
     // Render from zero so instruments/automation have their preceding history.
     // Every output is a memory buffer; this command never opens an audio driver.
     offline.transport().play();
