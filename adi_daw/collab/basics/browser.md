@@ -13,6 +13,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-429 | `basics/browser-chain` at `f2c761cd8` | Reveal preview from the first eligible sample selection and retain the current list height. Browser seat. | The headless visibility, reservation, folder and hidden-command checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-431 | `basics/browser-chain` at `f23561dc8` | Report missing physical Cue outputs and map sparse device grants consistently. Engine and window seats. | Headless status, sparse stereo, failed restart, metronome and preview tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-127 | `basics/browser-chain` at `6286d5a37` | Keep working labels and list saved presets under Sounds. Browser seat. | The roster, fallback and preset search and load passed headless. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-128 | `basics/browser-chain` at `3bdc44247` | Ship an original starter drum kit under Drums and Samples. Browser, library and packaging seats. | The headless roster and read-only listing, deterministic WAV generator and relocated Linux installer smoke passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -152,6 +153,63 @@ Collections returns with Favorites (SC-133). The remaining hidden labels, in cat
 Sounds lists saved preset files alphabetically and uses the same word matcher as All. The headless fixture creates and reads two real preset files, checks that an audio file with matching words stays outside Sounds, and checks that empty Sounds, a same-named user Place and old hidden-label preferences behave as expected. SC-128 adds the ordered Drums label, which shifts the rows below it by 19 px.
 
 The Device, Mixer and Mix View software fixture changed inside its Browser results from `(133,84)` to `(310,474)`, exclusive. The fixture’s first-label focus check now visits All because Favorites is hidden at this step. The other software references remained pixel-identical.
+
+### SC-128 starter drums
+
+The original kit contained zero shipped samples. The new kit has 16 signed 16-bit mono PCM WAV files at 48,000 frames per second, synthesized without input samples.
+
+| Hit | Duration | Sound |
+| --- | ---: | --- |
+| Kick Deep | 620 ms | Descending low body and short transient |
+| Kick Punch | 390 ms | Shorter brighter pitch sweep and click |
+| Snare Dry | 350 ms | Two drum modes and a close noise burst |
+| Snare Bright | 520 ms | Higher drum modes with longer high-band noise |
+| Clap Scatter | 380 ms | Three spaced claps and a decaying tail |
+| Rim Click | 210 ms | Three inharmonic modes and a short tick |
+| Tom Low | 510 ms | Three descending low-frequency modes |
+| Tom High | 390 ms | Three higher, shorter descending modes |
+| Hat Closed | 175 ms | Two metal modes and short high-band noise |
+| Hat Open | 690 ms | Three metal modes and long high-band noise |
+| Shaker Grain | 315 ms | Three staggered bands of granular noise |
+| Cymbal Wash | 1,650 ms | Five resonances and a long broadband decay |
+
+| Loop | BPM | Frames | Pattern |
+| --- | ---: | ---: | --- |
+| Half Step | 96 | 120,000 | Staggered kick, half-time snare and rim accents, varied hats |
+| Straight | 120 | 96,000 | Four-on-the-floor kick, backbeat claps, offbeat hats and shaker |
+| Skips | 128 | 90,000 | Syncopated kicks and snares with rim and shaker accents |
+| Tom Run | 150 | 76,800 | Kick and backbeat with a tom fill and cymbal wash |
+
+The kit is staged at `share/adi/starter-drums` on Linux, `starter-drums` beside the installed `ADI.exe` on Windows, and `Contents/Resources/starter-drums` in the macOS bundle. Non-bundle development builds copy the kit beside ADI. The app path resolver takes the executable path and the configured install-relative path and checks for both Hits and Loops directories without writing.
+
+The Python validator regenerated all 16 files byte-for-byte and checked distinct audio, bounds, sample format, and exact loop lengths. A display-free CMake smoke installed the actual adi_base rules at a relocated default prefix and under custom bindir/dataroot directories; the probe resolved both variants and the development copy, and both installed kits matched the source WAVs byte-for-byte. Linux shell syntax checks passed. Windows and macOS were checked against their packaging recipes and JUCE resource API on Linux.
+
+
+## Browser layout and registration
+
+At Browser size 308 × 443 px and zero sidebar scroll, the sidebar keeps (4, 27, 113, 412) and the results list keeps (119, 46, 185, 393) with SC-123’s preview row hidden. With the preview row open those bounds are (4, 27, 113, 385) and (119, 46, 185, 366). Bounds are x, y, width, height.
+
+| Sidebar label | Before y | After y |
+| --- | ---: | ---: |
+| Categories | 28 | 28 |
+| All | 47 | 47 |
+| Sounds | 66 | 66 |
+| Drums | — | 85 |
+| Instruments | 85 | 104 |
+| Audio Effects | 104 | 123 |
+| Pd Devices | 123 | 142 |
+| Plug-Ins | 142 | 161 |
+| Samples | 161 | 180 |
+| Separator | 180 | 199 |
+| Places | 199 | 218 |
+| User Library | 218 | 237 |
+| Add Folder | 237 | 256 |
+
+With the preview hidden, the result list is `(119,46,185,393)` in the 308 × 443 fixture. Every sidebar row is 113 × 19 px at x = 4. Every result row is 19 px high. With a fresh library, Drums and Samples show 16 results, taking 304 px of logical row height. A local place also named Drums remains independent and appears immediately above Add Folder. The starter kit itself has no duplicate Places entry. Sounds still lists saved presets.
+
+The app resolves the kit by its real executable location and registers it under a factory library identity. The scanner uses the read-only listing path and ignores separately configured aliases of the factory root before marker acquisition. Drums scopes the shared query directly to this identity, then ordinary Samples and All include the same files with the other sample results. A headless linked scanner/query smoke also used an actual symlink alias and confirmed one indexed user file, 16 Drums hits and loops, 17 Samples when one user WAV is present, a one-result multi-word search, and zero marker writes to the kit. The UI regression intercepts the remove-menu callback before a native menu can be shown.
+
+An explicitly added Hits or Loops subfolder still opens as an ordinary Place. The scanner skips marker and index writes inside the kit, and identical absolute paths appear once in Samples and All regardless of scan order. The linked headless regression reproduced the prior marker write through a symbolic link, then proved that both scan orders preserve a read-only 12-hit Place and leave Drums and Samples counts unchanged.
 
 ## For the director
 
