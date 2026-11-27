@@ -903,8 +903,36 @@ bool BrowserPanel::hitFolderDisclosure(int row, int x) const {
     return entry.folder != nullptr && x >= indent && x < indent + kFolderDisclosureWidth;
 }
 void BrowserPanel::listBoxItemClicked(int row, const juce::MouseEvent &event) {
-    if (event.getNumberOfClicks() != 1 || event.mods.isPopupMenu())
+    if (event.getNumberOfClicks() != 1)
         return;
+    if (event.mods.isPopupMenu()) {
+        if (row < 0 || row >= getNumRows())
+            return;
+        const auto &entry = rows_[static_cast<std::size_t>(row)];
+        if (!entry.file && !entry.folder && !entry.savedPreset && !entry.plugin && !entry.device)
+            return;
+        juce::PopupMenu menu;
+        std::filesystem::path path;
+        if (entry.file)
+            path = entry.file->path;
+        else if (entry.folder && selected_ >= 0) {
+            const auto &places = listing().places;
+            const auto &volume = sidebar_[static_cast<std::size_t>(selected_)].place;
+            const auto place = std::ranges::find(places, volume, &LibraryPlace::volumeId);
+            if (place != places.end())
+                path = place->root / entry.folder->path;
+        } else if (entry.savedPreset)
+            path = entry.savedPreset->path;
+        else if (entry.plugin)
+            path = media::pathFromUtf8(entry.plugin->path);
+        addRevealItem(menu, path, entry.device != nullptr);
+        if (entry.file || entry.folder)
+            addRescanItem(menu);
+        if (appendFavoritesToMenu && !entry.folder)
+            appendFavoritesToMenu(menu, entry);
+        presentContextMenu(std::move(menu), event);
+        return;
+    }
     if (hitFolderDisclosure(row, event.x)) {
         toggleFolder(row);
         return;
@@ -915,7 +943,7 @@ void BrowserPanel::listBoxItemClicked(int row, const juce::MouseEvent &event) {
         root_.command(AppCommands::PreviewSelected);
 }
 void BrowserPanel::listBoxItemDoubleClicked(int row, const juce::MouseEvent &event) {
-    if (!hitFolderDisclosure(row, event.x))
+    if (!event.mods.isPopupMenu() && !hitFolderDisclosure(row, event.x))
         load(row);
 }
 void BrowserPanel::resized() {
@@ -1102,22 +1130,69 @@ void BrowserPanel::sidebarClick(int row, const juce::MouseEvent &e) {
         return;
     }
     const auto &entry = sidebar_[static_cast<std::size_t>(row)];
-    if (!removeFolder || entry.place.empty()) return;
+    if (entry.heading)
+        return;
     const auto &places = listing().places;
-    const auto place = std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
-    if (place == places.end() || place->userLibrary || place->starterDrums) return;
-    juce::Component::SafePointer<BrowserPanel> safe(this);
-    auto remove = [safe, path = place->root] {
-        if (safe && safe->removeFolder) safe->removeFolder(path);
-    };
+    const auto place = entry.place.empty() ? places.end()
+                                          : std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
+    juce::PopupMenu menu;
+    if (place != places.end()) {
+        addRevealItem(menu, place->root);
+        if (!place->userLibrary && !place->starterDrums && removeFolder) {
+            const SafePointer<BrowserPanel> safe(this);
+            menu.addItem("Remove from Places", [safe, path = place->root] {
+                if (safe && safe->removeFolder)
+                    safe->removeFolder(path);
+            });
+        }
+    }
+    if (place != places.end() || entry.glyph == All || entry.samples || entry.glyph == User)
+        addRescanItem(menu);
+    presentContextMenu(std::move(menu), e);
+}
+void BrowserPanel::presentContextMenu(juce::PopupMenu menu, const juce::MouseEvent &e) {
+    if (menu.getNumItems() == 0)
+        return;
     const auto where = e.getScreenPosition();
-    if (onRemoveFolderMenu) {
-        onRemoveFolderMenu(where, std::move(remove));
+    if (onContextMenu) {
+        onContextMenu(std::move(menu), where);
         return;
     }
-    juce::PopupMenu menu;
-    menu.addItem("Remove from Places", std::move(remove));
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+void BrowserPanel::addRevealItem(juce::PopupMenu &menu, const std::filesystem::path &path, bool builtin) {
+    if (!path.is_absolute()) {
+        menu.addItem(juce::PopupMenu::Item(builtin ? "Show in File Manager (built-in)"
+                                                 : "Show in File Manager (file unavailable)").setEnabled(false));
+        return;
+    }
+    const SafePointer<BrowserPanel> safe(this);
+    menu.addItem("Show in File Manager", [safe, path] {
+        if (!safe)
+            return;
+        if (safe->revealInFileManager) {
+            safe->revealInFileManager(path);
+            return;
+        }
+        juce::MessageManager::callAsync([safe, path] {
+            if (!safe)
+                return;
+            const juce::File file(juce::String::fromUTF8(media::pathUtf8(path).c_str()));
+            if (file.exists())
+                file.revealToUser();
+            else
+                safe->root_.say("The Browser item is no longer on disk.");
+        });
+    });
+}
+void BrowserPanel::addRescanItem(juce::PopupMenu &menu) {
+    if (!requestLibraryRescan)
+        return;
+    const SafePointer<BrowserPanel> safe(this);
+    menu.addItem("Rescan Library", [safe] {
+        if (safe && safe->requestLibraryRescan)
+            safe->requestLibraryRescan();
+    });
 }
 namespace {
 bool droppedDirectory(const juce::String &file) {

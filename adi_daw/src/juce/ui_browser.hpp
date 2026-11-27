@@ -125,7 +125,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::function<void()> requestAddFolder;
     std::function<void(std::span<const std::filesystem::path>)> addFolders;
     std::function<void(const std::filesystem::path &)> removeFolder;
-    std::function<void(juce::Point<int>, std::function<void()>)> onRemoveFolderMenu;
+    std::function<void()> requestLibraryRescan;
+    // The app's file-manager action and the popup can be captured without a native peer.
+    std::function<void(const std::filesystem::path &)> revealInFileManager;
+    std::function<void(juce::PopupMenu, juce::Point<int>)> onContextMenu;
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
@@ -141,6 +144,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         const BrowserLibrarySnapshot::Folder *folder = nullptr;
         bool folderOpen = false;
     };
+    std::function<void(juce::PopupMenu &, const Row &)> appendFavoritesToMenu;
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
     bool load(int row);
@@ -190,6 +194,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void revealSidebarSelection();
     int sidebarCursor() const noexcept;
     void sidebarClick(int row, const juce::MouseEvent &);
+    void presentContextMenu(juce::PopupMenu, const juce::MouseEvent &);
+    void addRevealItem(juce::PopupMenu &, const std::filesystem::path &, bool builtin = false);
+    void addRescanItem(juce::PopupMenu &);
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();

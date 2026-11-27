@@ -6913,7 +6913,11 @@ void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir
           "SC-128: a configured kit subfolder remains an ordinary browsable Place");
     int removeMenus = 0;
     browser.removeFolder = [](const auto &) {};
-    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()>) { ++removeMenus; };
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Remove from Places")
+                ++removeMenus;
+    };
     const auto popup = juce::ModifierKeys::rightButtonModifier;
     browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(drums).getCentre().toFloat(), popup));
     check(removeMenus == 0, "SC-128: Drums never offers Remove from Places");
@@ -7021,6 +7025,124 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
           "SC-120: the two modes keep separate text and results");
 }
+void browserContextMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-context.adi", true, {}, error);
+    check(document != nullptr, "SC-129: the Browser context fixture opens");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-context");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    const auto place = dir / "Context Library";
+    const auto nested = place / "Nested";
+    std::filesystem::create_directories(nested);
+    const auto wave = place / "Test Kick.wav", presetPath = place / "Test Preset.adipreset";
+    const auto plug = place / "Test Plug-in.vst3";
+    std::ofstream(wave) << "sample fixture";
+    std::ofstream(presetPath) << "preset fixture";
+    std::filesystem::create_directory(plug);
+    LibraryListing listing;
+    listing.places = {{"Context Library", place, "context-place", false, {}, {"Nested"}}};
+    listing.samples = {{"Test Kick.wav", wave, "context-place"}};
+    browser.setListing(listing);
+    browser.setDevicePresets({{preset::deviceKey({"internal", "org.adidaw.builtin.oneshot", {}}),
+                               "Test Preset", presetPath}});
+    PluginScan scan;
+    scan.phase = PluginScan::Phase::Done;
+    scan.listing.plugins = {{"vst3", "test.ctx", "Test Plug-in", "Test Vendor", "1",
+                             media::pathUtf8(plug), PluginEntry::Kind::Effect}};
+    browser.setPluginScan(scan);
+
+    juce::PopupMenu captured;
+    juce::Point<int> anchor;
+    int menus = 0, rescans = 0, favorited = 0, loads = 0;
+    std::filesystem::path revealed, removed;
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int> at) {
+        captured = std::move(menu);
+        anchor = at;
+        ++menus;
+    };
+    browser.revealInFileManager = [&](const std::filesystem::path &path) { revealed = path; };
+    browser.removeFolder = [&](const std::filesystem::path &path) { removed = path; };
+    browser.loadDevicePreset = [&](const std::filesystem::path &) { ++loads; return true; };
+    const auto item = [&](const char *text) -> std::optional<juce::PopupMenu::Item> {
+        for (juce::PopupMenu::MenuItemIterator it(captured); it.next();)
+            if (it.getItem().text == text)
+                return it.getItem();
+        return {};
+    };
+    const auto invoke = [&](const char *text) {
+        const auto row = item(text);
+        if (!row || !row->isEnabled || !row->action)
+            return false;
+        row->action();
+        return true;
+    };
+    const auto choose = [&](const juce::String &name) {
+        const auto found = std::ranges::find(browser.sidebar(), name, &BrowserPanel::Entry::name);
+        if (found == browser.sidebar().end())
+            return -1;
+        const int n = static_cast<int>(found - browser.sidebar().begin());
+        browser.choose(n);
+        return n;
+    };
+    const auto right = juce::ModifierKeys::rightButtonModifier;
+    const auto rowMenu = [&](const auto &isTarget) {
+        const auto found = std::ranges::find_if(browser.rows(), isTarget);
+        if (found == browser.rows().end())
+            return false;
+        const int n = static_cast<int>(found - browser.rows().begin());
+        const auto e = pressAt(browser.list, browser.list.getRowPosition(n, true).getCentre().toFloat(), right);
+        const int before = menus;
+        browser.list.getListBoxModel()->listBoxItemClicked(n, e);
+        return menus == before + 1 && anchor == e.getScreenPosition();
+    };
+
+    choose("Samples");
+    const bool sampleMenu = rowMenu([](const auto &row) { return row.file != nullptr; });
+    check(sampleMenu && captured.getNumItems() == 1 && item("Show in File Manager") &&
+              !item("Rescan Library") && !item("Add to Favorites"),
+          "SC-129: a sample popup offers reveal before the rescan and favorite services exist");
+    browser.setListing({}); // A popup can outlive the list from which its target came.
+    check(invoke("Show in File Manager") && revealed == wave,
+          "SC-129: a deferred reveal retains the clicked sample after its list is replaced");
+    browser.setListing(listing);
+
+    choose("Sounds");
+    check(rowMenu([](const auto &row) { return row.savedPreset != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == presetPath && loads == 0,
+          "SC-129: the preset popup uses its actual path and does not load the preset");
+    choose("Plug-Ins");
+    check(rowMenu([](const auto &row) { return row.plugin != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == plug,
+          "SC-129: a plug-in popup reveals the discovered bundle");
+    choose("Instruments");
+    const bool builtinMenu = rowMenu([](const auto &row) { return row.device != nullptr; });
+    const auto compiled = item("Show in File Manager (built-in)");
+    check(builtinMenu && compiled && !compiled->isEnabled && !compiled->action,
+          "SC-129: a compiled-in device has a popup with no fictitious file target");
+
+    browser.requestLibraryRescan = [&] { ++rescans; };
+    browser.appendFavoritesToMenu = [&](juce::PopupMenu &menu, const BrowserPanel::Row &row) {
+        if (row.file)
+            menu.addItem("Add to Favorites", [&] { ++favorited; });
+    };
+    choose("Samples");
+    check(rowMenu([](const auto &row) { return row.file != nullptr; }) &&
+              invoke("Rescan Library") && invoke("Add to Favorites") && rescans == 1 && favorited == 1,
+          "SC-129: the sample menu delegates both optional actions to their owners");
+    const int placeIndex = choose("Context Library");
+    check(rowMenu([](const auto &row) { return row.folder != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == nested && !item("Remove from Places"),
+          "SC-129: a nested folder reveals itself without removing its parent Place");
+    if (placeIndex >= 0)
+        browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(placeIndex).getCentre().toFloat(), right));
+    check(placeIndex >= 0 && invoke("Show in File Manager") && revealed == place &&
+              invoke("Remove from Places") && removed == place && invoke("Rescan Library") && rescans == 2,
+          "SC-129: a Place's popup offers reveal, removal and the installed rescan action");
+}
 void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     const auto base = dir / "places-test";
@@ -7124,14 +7246,17 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.shown().size() == 1, "SC-132: the read-only sample is searchable");
     int menuRequests = 0;
     std::function<void()> remove;
-    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()> action) {
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
         ++menuRequests;
-        remove = std::move(action);
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Remove from Places")
+                remove = it.getItem().action;
     };
     const auto popup = juce::ModifierKeys::rightButtonModifier;
     browser.mouseDown(pressAt(browser, pointFor(userRow), popup));
+    check(menuRequests == 1 && !remove, "SC-125: User Library opens a menu without a Remove action");
     browser.mouseDown(pressAt(browser, pointFor(dropRow), popup));
-    check(menuRequests == 1 && remove, "SC-125: only configured extra Places offer Remove from Places");
+    check(menuRequests == 2 && remove, "SC-125: a configured extra Place offers Remove from Places");
     if (remove) remove();
     check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({media::pathUtf8(chosen)}) &&
               fs::is_regular_file(dropped / "Rim.wav"),
@@ -26061,6 +26186,7 @@ int main(int argc, char **argv) {
     trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
     trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
+    trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
