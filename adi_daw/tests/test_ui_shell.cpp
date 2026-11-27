@@ -13775,6 +13775,34 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
           "the cut device comes back at the chain's end, a new id, one step");
+    if (peer && !order.empty()) {
+        const auto arrow = [peer](int code) { return peer->handleKeyPress(juce::KeyPress(code)); };
+        const auto reachedEnd = [&] {
+            return root.devices.endChosen() && !root.devices.focusedDevice() && !root.devices.insertPoint() &&
+                   root.devices.canClipboard(Clip::Paste) && !root.devices.canClipboard(Clip::Copy);
+        };
+        const bool right = focus(order.size() - 1) && root.devices.focusedDevice() == order.back() &&
+                           arrow(juce::KeyPress::rightKey) && reachedEnd();
+        check(right, "SC-301: Right from the last Device title moves focus to the chain end");
+        if (right) {
+            const bool left = arrow(juce::KeyPress::leftKey) && root.devices.focusedDevice() == order.back() &&
+                              root.devices.insertPoint() == order.back() && !root.devices.endChosen();
+            check(left, "SC-301: Left from the chain end returns focus to the last Device title");
+            const auto before = OpJournal(document->store()).headSeq();
+            const bool pasted = left && arrow(juce::KeyPress::rightKey) && reachedEnd() && key('v');
+            refresh();
+            const auto appended = chain();
+            check(pasted && appended.size() == order.size() + 1 &&
+                      std::equal(order.begin(), order.end(), appended.begin()) && label() == "Paste Device",
+                  "SC-301: Right then Ctrl/Cmd+V appends after the unchanged chain");
+            if (OpJournal(document->store()).headSeq() != before) {
+                const bool undone = root.command(AppCommands::Undo);
+                refresh();
+                check(undone && chain() == order && OpJournal(document->store()).headSeq() == before,
+                      "SC-301: one Undo removes the appended device");
+            }
+        }
+    }
     // The device's menu and the strip with its end chosen, for the picture beside Live 12's.
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         renderMenu(look::liveLook(), root.devices.panels[0]->commands(),
