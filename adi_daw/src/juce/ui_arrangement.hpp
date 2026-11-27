@@ -213,7 +213,8 @@ class TrackHeaderList final : public juce::Component,
     // is moving; whether the press, on one of several selected tracks, selects it alone on release
     // without a drag (Live keeps the selection for the drag).
     std::int64_t moveId_ = 0;
-    bool moving_ = false, selectOnUp_ = false, movingReturn_ = false;
+    bool moving_ = false, movingReturn_ = false;
+    std::int64_t selectOnUp_ = 0;
     // Whether the press was on a fold switch, which does all it does on the press: its release keeps
     // what the Status Bar says.
     bool foldPressed_ = false;
@@ -443,6 +444,7 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t toggleOnUp_ = 0;
     // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
     bool copying_ = false;
+    bool contextMenuPress_ = false;
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
@@ -564,8 +566,9 @@ class ArrangementView final : public juce::Component {
     // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
     bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
     static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
-    // Selects at a point: the clip there, or the insert marker on the grid (§6.10).
-    void select(int x, int y, bool snapToGrid = true);
+    enum class SelectionPurpose { Edit, ContextMenu };
+    // Selects the clip or point. A context menu keeps an existing selection under the pointer.
+    void select(int x, int y, bool snapToGrid = true, SelectionPurpose purpose = SelectionPurpose::Edit);
     // Whether a gesture with these keys snaps to the grid.
     bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.

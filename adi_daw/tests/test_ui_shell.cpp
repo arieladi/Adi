@@ -3434,7 +3434,7 @@ void deviceOutputMeters(AppCommands &commands, const std::filesystem::path &dir)
     peer.addAndMakeVisible(root);
     peer.setVisible(true);
     peer.addToDesktop(0);
-    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-290: a software-only peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "SC-290: the test uses the software peer");
     root.setBounds(peer.getLocalBounds());
     root.frame();
     root.sharedAnalysis = broker;
@@ -11475,6 +11475,136 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     click(title(2));
     check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
           "a plain click on 2 selects it alone");
+
+    // SC-174: opening a menu on selected material keeps the target of its commands.
+    int laneMenus = 0, headerMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *, const juce::PopupMenu &) {
+        if (header)
+            ++headerMenus;
+        else
+            ++laneMenus;
+    };
+    const auto popup = [](juce::Component &component, juce::Point<float> at) {
+        component.mouseDown(pressAt(component, at, juce::ModifierKeys::rightButtonModifier));
+        component.mouseUp(pressAt(component, at));
+    };
+    const juce::Point<float> rangeFrom{x(0) + 1, lane(1)}, rangeTo{x(2 * bar) - 1, lane(3)};
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto timeSelection = geo.selection;
+    check(timeSelection.clip == 0 && timeSelection.toTrack == 3 && timeSelection.start < timeSelection.end,
+          "SC-174 fixture selects time across three tracks");
+    popup(canvas, {x(bar) + 6, lane(2)});
+    check(geo.selection == timeSelection, "SC-174: a clip under a selected range keeps the time selection");
+
+    const auto clipTitle = [&](std::int64_t id) {
+        return juce::Point<float>{x(bar) + 6, static_cast<float>(laneTop(root, id) + 5)};
+    };
+    canvas.mouseDown(pressAt(canvas, clipTitle(1)));
+    canvas.mouseUp(pressAt(canvas, clipTitle(1)));
+    const juce::Point<float> splitPoint{x(bar + bar / 2) + 1, lane(1)};
+    auto singleClipSelection = geo.selection;
+    singleClipSelection.insert = geo.tick(juce::roundToInt(splitPoint.x));
+    check(singleClipSelection.insert != geo.selection.insert, "SC-174 fixture opens at a new point in the clip");
+    const bool wasSnapping = std::exchange(geo.grid.snap, false);
+    popup(canvas, splitPoint);
+    geo.grid.snap = wasSnapping;
+    check(geo.selection == singleClipSelection, "SC-174: a single clip keeps its selection and Split uses the popup point");
+
+    canvas.mouseDown(pressAt(canvas, clipTitle(3), cmd));
+    canvas.mouseUp(pressAt(canvas, clipTitle(3)));
+    const auto clipSelection = geo.selection;
+    check(clipSelection.clip == 11 && clipSelection.pickedClips == std::vector<std::int64_t>{13},
+          "SC-174 fixture picks two clips");
+    popup(canvas, clipTitle(3));
+    check(geo.selection == clipSelection, "SC-174: a right-click keeps both picked clips");
+
+    click(title(1));
+    click(title(3), cmd);
+    const auto trackSelection = geo.selection;
+    popup(headers, title(3));
+    check(geo.selection == trackSelection && geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 3},
+          "SC-174: a right-click on a selected header keeps both picked tracks");
+
+    engine::Transport driver;
+    mailbox.setSampleRate(48000.);
+    mailbox.drain(driver);
+    driver.locate(1357);
+    driver.play();
+    mailbox.publish(driver);
+    root.frame();
+    const auto position = driver.position();
+    const auto revision = driver.revision();
+    const juce::Point<float> outside{x(2 * bar) + 6, lane(4)};
+    popup(canvas, outside);
+    mailbox.drain(driver);
+    const auto insert = geo.snap(geo.tick(static_cast<int>(outside.x)), false);
+    check(geo.selection.track == 4 && geo.selection.clip == 14 && geo.selection.insert == insert,
+          "SC-174: a right-click outside the selection chooses the clicked clip and sets the insert marker");
+    check(driver.playing() && driver.position() == position && driver.revision() == revision,
+          "SC-174: opening the menu outside the selection does not seek during playback");
+    check(laneMenus == 4 && headerMenus == 1, "SC-174: each right-click requests the matching menu");
+
+    const auto pickClip = [&](std::int64_t track) {
+        canvas.mouseDown(pressAt(canvas, clipTitle(track)));
+        canvas.mouseUp(pressAt(canvas, clipTitle(track)));
+        return geo.selection.insert;
+    };
+    const auto trackOnly = [&](std::int64_t track, std::int64_t insert) {
+        const auto &sel = geo.selection;
+        return sel.track == track && sel.toTrack == 0 && sel.picked.empty() && sel.clip == 0 &&
+               sel.pickedClips.empty() && sel.marked && sel.insert == insert && sel.start == insert &&
+               sel.end == insert;
+    };
+    const auto sameTrackInsert = pickClip(1);
+    check(geo.selection.clip == 11, "SC-177 fixture selects the clip on track 1");
+    click(title(1));
+    check(trackOnly(1, sameTrackInsert), "SC-177: clicking the same track's title clears the clip and time selection");
+    canvas.keyPressed(juce::KeyPress('0'));
+    root.frame();
+    check(!clipOf(1)->muted, "SC-177: 0 on the selected track leaves the clip active");
+
+    const auto otherTrackInsert = pickClip(3);
+    check(geo.selection.clip == 13, "SC-177 fixture selects the clip on track 3");
+    click(title(4));
+    check(trackOnly(4, otherTrackInsert), "SC-177: clicking another track's title selects only that track");
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    const auto &fourth = root.reader().findTrack(4)->clips;
+    check(fourth.size() == 1 && fourth.front()->id == 14 && fourth.front()->posTicks == bar &&
+              fourth.front()->lengthTicks == 2 * bar,
+          "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
+
+    const auto popupInsert = pickClip(3);
+    int retargetedHeaderMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *, const juce::PopupMenu &) {
+        if (header)
+            ++retargetedHeaderMenus;
+    };
+    headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
+    headers.mouseUp(pressAt(headers, title(4)));
+    root.arrangement.onContextMenu = nullptr;
+    check(retargetedHeaderMenus == 1 && trackOnly(4, popupInsert),
+          "SC-177: a popup on another title clears the earlier clip's time range");
+
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto rangeInsert = geo.selection.insert;
+    check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start < geo.selection.end,
+          "SC-177 fixture selects a time range across tracks");
+    headers.mouseDown(pressAt(headers, title(2)));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 2, 3},
+          "SC-177: pressing a selected track title keeps multiple tracks for dragging");
+    headers.mouseUp(pressAt(headers, title(2)));
+    check(trackOnly(2, rangeInsert), "SC-177: releasing without dragging selects just the clicked track");
+    canvas.keyPressed(juce::KeyPress('x', cmd, 0));
+    root.frame();
+    const auto &second = root.reader().findTrack(2)->clips;
+    check(second.size() == 1 && second.front()->id == 12 && second.front()->posTicks == bar &&
+              second.front()->lengthTicks == bar,
+          "SC-177: Cut after releasing a track title leaves the clip intact");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -13283,7 +13413,7 @@ void panelFocusAndOverflow(AppCommands &commands, const std::filesystem::path &d
     peer.addAndMakeVisible(root);
     peer.setVisible(true);
     peer.addToDesktop(0);
-    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-91: the test uses a software-only peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "SC-91: the test uses the software peer");
     root.setBounds(peer.getLocalBounds());
     root.frame();
     const auto focusPoint = [](const juce::Component &panel) { return panel.getPosition() + juce::Point<int>{8, 1}; };
@@ -17984,6 +18114,34 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     };
     const auto volume=volumeTarget(2);
     choose(bar/2,bar);
+    {
+        auto &mailbox = document->mailbox();
+        engine::Transport driver;
+        mailbox.setSampleRate(48000.);
+        mailbox.drain(driver);
+        driver.locate(1357);
+        mailbox.publish(driver);
+        const auto revision = driver.revision();
+        const auto chosenRange = geometry.selection;
+        int menuRequests = 0;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *, const juce::PopupMenu &) {
+            if (!header) ++menuRequests;
+        };
+        const auto popup = [&](juce::Point<float> position) {
+            canvas.mouseDown(pressAt(canvas, position, juce::ModifierKeys::rightButtonModifier));
+            canvas.mouseUp(pressAt(canvas, position));
+        };
+        popup(at(7 * bar / 8));
+        check(canvas.hasAutomationSelection() && geometry.selection == chosenRange,
+              "SC-174: the automation menu keeps the selected time range under the pointer");
+        popup(at(7 * bar / 4));
+        mailbox.drain(driver);
+        check(menuRequests == 2 && canvas.hasAutomationSelection() && geometry.selection.start == 7 * bar / 4 &&
+                  geometry.selection.start == geometry.selection.end && driver.revision() == revision,
+              "SC-174: the automation menu outside a range chooses its point without moving the stopped transport");
+        root.arrangement.onContextMenu = {};
+    }
+    choose(bar/2,bar);
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),"Delete is handled in the automation time range");
     root.frame();
     check(clipIntact() && !point(volume,3*bar/4,-6) && point(volume,5*bar/4,-3),
@@ -18067,8 +18225,7 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     root.setBounds(fake.getLocalBounds());
     fake.setVisible(true);
     fake.addToDesktop(0);
-    check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
-          "channel navigation uses the software peer");
+    check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "channel navigation uses the software peer");
     auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
     auto broker = std::make_shared<SharedAnalysis>(
         [&](std::int64_t, engine::ScopePoint) { return tap; },
@@ -18407,7 +18564,7 @@ void mixChannelToolSearch(AppCommands &commands, const std::filesystem::path &di
     root.setBounds(fake.getLocalBounds());
     fake.setVisible(true);
     fake.addToDesktop(0);
-    check(fake.getPeer() && !fake.getPeer()->getNativeHandle() && root.setMixView(true, false),
+    check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && root.setMixView(true, false),
           "tool search is exercised through the normal Mix View on a software peer");
     root.frame();
     auto &mix = root.mixViewPanel;
@@ -18482,7 +18639,7 @@ void mixStackViewReopen(AppCommands &commands, const std::filesystem::path &dir)
         fake.addAndMakeVisible(root);
         fake.setVisible(true);
         fake.addToDesktop(0);
-        check(fake.getPeer() && !fake.getPeer()->getNativeHandle(), "Stack persistence uses only a software peer");
+        check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "Stack persistence uses the software peer");
         check(root.setMixView(true, false), "open the Stack in this project");
         auto &surface = root.mixViewPanel.stack;
         surface.channelScope.setSelectedId(2, juce::sendNotificationSync);
@@ -19223,8 +19380,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             fake.addAndMakeVisible(actual);
             fake.setVisible(true);
             fake.addToDesktop(0);
-            check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
-                  "Mix View focus dispatch uses a fake peer with no native window");
+            check(dynamic_cast<UiFakePeer *>(fake.getPeer()), "Mix View focus dispatch uses the software peer");
             actual.afterEdit = [&] { document->synchronise(); };
             actual.devices.publication = [&] { return document->parameterFeed().current(); };
             actual.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
@@ -20109,8 +20265,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mainPeer.setSize(1600, 1000);
                 mainPeer.addAndMakeVisible(window);
                 mainPeer.setVisible(true);mainPeer.addToDesktop(0);
-                check(dynamic_cast<UiFakePeer *>(mainPeer.getPeer()) && window.getPeer() &&
-                          window.getPeer()->getNativeHandle() == nullptr,
+                check(dynamic_cast<UiFakePeer *>(mainPeer.getPeer()) && window.getPeer() == mainPeer.getPeer(),
                       "parameter visibility fixture has only a software peer");
                 observed.frame();
                 check(observed.setMixView(true, false), "parameter demand opens the docked Stack");
@@ -23107,7 +23262,11 @@ int main(int argc, char **argv) {
             peerRoot.setVisible(true);
             peerRoot.addToDesktop(0);
             auto *peer = peerRoot.getPeer();
-            check(peer != nullptr, "fake peer created without OS window");
+            check(dynamic_cast<UiFakePeer *>(peer), "input dispatch uses the software peer");
+#if JUCE_LINUX || JUCE_BSD
+            check(peer != nullptr && (peer->getNativeHandle() == nullptr) == juce::Desktop::getInstance().isHeadless(),
+                  "the fake peer supplies a cursor target when X11 is available");
+#endif
             const auto origin =
                 peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
