@@ -5,6 +5,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/clip_sinc_441_to_480.hpp"
+#include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
@@ -508,6 +509,7 @@ public:
     const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
+    std::shared_ptr<const LaunchAudioRuntime> launchAudio;
     // ADR-0207 d2: the clips of one track are a mix point, summed in double
     // and converted once. Sized here, on the message thread, at the shape the
     // session builds this rebuild's graph at, and never resized after.
@@ -522,6 +524,7 @@ public:
     void process(const NodeIo& io) noexcept override {
         if(io.wide()) play<double>(io,io.out64);
         else play<float>(io,io.out);
+        if(launchAudio)launchAudio->overlay(track,io);
     }
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
@@ -619,7 +622,7 @@ public:
 }
 struct ClipPlayback::Impl {
     Transport& transport;
-    std::int32_t maxFrames;
+    std::int32_t maxFrames, channels;
     const bool synchronousReads;
     std::vector<std::unique_ptr<Clip>> clips;
     std::vector<ClipMediaSource> externalSources;
@@ -629,13 +632,14 @@ struct ClipPlayback::Impl {
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     // Last member so all workers join before any of their clips are destroyed.
     std::vector<std::jthread> workers;
-    Impl(Transport& t,std::int32_t f,bool synchronous):transport(t),maxFrames(f),synchronousReads(synchronous){}
+    Impl(Transport& t,std::int32_t f,std::int32_t ch,bool synchronous)
+        :transport(t),maxFrames(f),channels(ch),synchronousReads(synchronous){}
     ~Impl() { for(auto& worker:workers) worker.request_stop(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
                            double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder,
                            bool synchronousReads)
-    :impl_(std::make_shared<Impl>(transport,maxFrames,synchronousReads)) {
+    :impl_(std::make_shared<Impl>(transport,maxFrames,channels,synchronousReads)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
@@ -895,6 +899,18 @@ std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int6
 void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
     for (auto& clip : impl_->clips)
         if (clip->track == id) clip->monitorInputOnly = true;
+}
+void ClipPlayback::attachLaunchAudio(std::int64_t id, std::shared_ptr<const LaunchAudioRuntime> runtime) {
+    for (auto& track : impl_->tracks) {
+        if (track->track == id) {
+            track->launchAudio = std::move(runtime);
+            return;
+        }
+    }
+    auto track = std::make_unique<TrackSource>(impl_->transport, impl_->maxFrames, impl_->channels, id);
+    track->owner = impl_;
+    track->launchAudio = std::move(runtime);
+    impl_->tracks.push_back(std::move(track));
 }
 void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std::int64_t>& recordingTracks) noexcept {
     for (auto& track : impl_->tracks) {

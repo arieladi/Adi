@@ -47,7 +47,7 @@ struct LaunchDecision {
 }
 
 enum class LaunchRequestKind : std::uint8_t {
-    SlotPress, SlotRelease, ScenePress, StopTrack, BackToArrangement
+    SlotPress, SlotRelease, ScenePress, StopTrack, BackToArrangement, StopAll, CancelScene
 };
 struct LaunchRequest {
     LaunchRequestKind kind = LaunchRequestKind::SlotPress;

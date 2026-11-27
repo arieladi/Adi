@@ -16,6 +16,7 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
 struct NoteExpressionsRead;
+class LaunchAudioRuntime;
 struct ClipMediaSource {
     std::int64_t clipId = 0, mediaId = 0;
     std::filesystem::path path;
@@ -37,6 +38,9 @@ public:
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;
     /// Owner only, before priming or publishing this source generation.
     void useMonitoredInput(std::int64_t track) noexcept;
+    /// Owner only, before publishing. A launched track still needs a source
+    /// when it has no Arrangement clips.
+    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>);
     /// Owner only, before publishing. The span object outlives rendering of this
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;

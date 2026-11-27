@@ -572,6 +572,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->setBraceSamples(sample(image->transport.loopStartTicks), sample(image->transport.loopEndTicks));
         timing->signatures=image->model.signatures;
         timing->prepareDeviceClockChanges();
+        if (reusedReaders) timing->launchAudio = previousTiming->launchAudio;
+        else owner->prepareLaunchAudio(*timing, image->model, *out->clips);
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;

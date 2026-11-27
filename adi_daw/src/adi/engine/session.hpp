@@ -86,7 +86,12 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
+class LaunchAudioProject;
+class LaunchAudioRuntime;
+class LaunchAudioDriver;
 struct AudioRecordingSpec;
+struct LaunchRequest;
+struct LaunchTransition;
 class MidiInputCapture;
 struct RecordingTarget;
 
@@ -116,6 +121,9 @@ struct SessionSpec {
     bool offline = false;
     /// An offline driver prepares clip pages itself between process calls.
     bool synchronousClipReads = false;
+    /// Owner-prepared fixed-tempo Session audio. Each Session owns its driver
+    /// state. Isolated renders bypass this optional performance input.
+    std::shared_ptr<const LaunchAudioProject> launchAudio = {};
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -341,6 +349,14 @@ public:
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
         [[nodiscard]] CountInPosition countInPosition() const noexcept;
+        /// Driver-only observer, valid within this pinned callback. Receives
+        /// performed edges in per-track order with a logical slice offset and
+        /// absolute stream sample. The observer must be safe on the callback.
+        void observeLaunchTransitions(void* context,
+            void (*observe)(void*, const LaunchTransition&, std::int64_t) noexcept) noexcept {
+            launchObserverContext_ = context;
+            launchObserver_ = observe;
+        }
         bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
@@ -349,6 +365,8 @@ public:
         audio::CallbackScope callback_;
         Session& session_;
         GraphHost::RenderBlock graph_;
+        void* launchObserverContext_ = nullptr;
+        void (*launchObserver_)(void*, const LaunchTransition&, std::int64_t) noexcept = nullptr;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
 
@@ -485,6 +503,8 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Single owner to driver. Launches are consumed while transport rolls.
+    [[nodiscard]] bool postLaunchGesture(std::span<const LaunchRequest>) noexcept;
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
@@ -531,6 +551,7 @@ private:
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
+    void prepareLaunchAudio(TimingView&, const rows::Model&, ClipPlayback&);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
@@ -555,6 +576,7 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<LaunchAudioDriver> launchAudioDriver_;
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
@@ -587,6 +609,7 @@ private:
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         std::shared_ptr<InputMonitors> inputMonitors;
+        std::shared_ptr<LaunchAudioRuntime> launchAudio;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
         SessionSpec spec;

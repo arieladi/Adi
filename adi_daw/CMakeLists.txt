@@ -1837,6 +1837,28 @@ add_executable(adi_launch_data_tests tests/test_launch_data.cpp)
 target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
 
+target_sources(adi_core PRIVATE
+    src/adi/engine/launch_quantize.cpp
+    src/adi/engine/launcher.cpp
+    src/adi/engine/launch_audio.cpp
+    src/adi/engine/launch_audio_runtime.cpp
+    src/adi/engine/launch_follow_playback.cpp
+    src/adi/engine/launch_capture.cpp
+    src/adi/engine/launch_midi.cpp
+    src/adi/engine/slot_recording.cpp)
+foreach(_adi_launch_suite IN ITEMS
+        launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
+        launch_follow_playback launch_capture launch_midi slot_recording)
+    add_executable(adi_${_adi_launch_suite}_tests tests/test_${_adi_launch_suite}.cpp)
+    target_link_libraries(adi_${_adi_launch_suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${_adi_launch_suite}_tests COMMAND adi_${_adi_launch_suite}_tests)
+endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
+    target_link_options(adi_launch_audio_tests PRIVATE
+        -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
+
 add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
 target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)
 target_compile_definitions(adi_media_hash_tests PRIVATE
