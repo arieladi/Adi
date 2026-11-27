@@ -11,7 +11,9 @@ class SnapshotReader;
 
 class MixAnalysers final : public juce::Component {
   public:
-    enum class Page { All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare };
+    enum class Page {
+        All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare, ThirdOctaveBands, ColourWaveform
+    };
     MixAnalysers();
     ~MixAnalysers() override;
     void setPage(Page);
