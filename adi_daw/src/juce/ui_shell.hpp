@@ -176,7 +176,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArmSelected,
         ToggleTrackMixer,
         SwitchDetailView,
-        LastId = SwitchDetailView
+        OpenBackup,
+        LastId = OpenBackup
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

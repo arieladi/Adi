@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/project_backup.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/gesture_capture_detail.hpp"
@@ -14,12 +15,16 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <SQLiteCpp/Backup.h>
 #include <sqlite3.h>
+#include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
+#include <cstdio>
 #include <stdexcept>
 #include <limits>
 #include <map>
 #include <functional>
+#include <tuple>
 
 namespace adi {
 namespace {
@@ -193,6 +198,131 @@ std::string joinedWarning(std::string first,const std::string& next) {
     if(!first.empty())first+="; ";
     first+=next;return first;
 }
+struct BackupMetadata {
+    std::string sourceName;
+    std::string sourceGeneration;
+    std::int64_t utcMicros = 0;
+    int collisionIndex = 0;
+};
+
+constexpr std::size_t kBackupsRetained = 10;
+constexpr int kBackupNameAttempts = 256;
+
+template<class Integer>
+bool parseBackupNumber(const std::string& text, Integer& number) {
+    const auto end = text.data() + text.size();
+    const auto parsed = std::from_chars(text.data(), end, number);
+    return parsed.ec == std::errc{} && parsed.ptr == end && number >= 0;
+}
+
+std::string backupGeneration(SQLite::Database& database) {
+    return database.execAndGet("SELECT COALESCE("
+        "(SELECT 'uuid:' || value FROM adi_meta WHERE key='project_uuid' AND value<>''), "
+        "(SELECT 'created:' || value FROM adi_meta WHERE key='created_utc' AND value<>''), '')").getString();
+}
+
+std::optional<BackupMetadata> readBackupMetadata(SQLite::Database& database) {
+    SQLite::Statement query(database,
+        "SELECT source.value, stamp.value, ordinal.value FROM adi_meta AS source "
+        "JOIN adi_meta AS stamp ON stamp.key='backup_utc' "
+        "JOIN adi_meta AS ordinal ON ordinal.key='backup_collision' "
+        "WHERE source.key='backup_source'");
+    if (!query.executeStep()) return std::nullopt;
+    BackupMetadata metadata;
+    metadata.sourceName = query.getColumn(0).getString();
+    if (metadata.sourceName.empty() ||
+        !parseBackupNumber(query.getColumn(1).getString(), metadata.utcMicros) ||
+        !parseBackupNumber(query.getColumn(2).getString(), metadata.collisionIndex) ||
+        metadata.collisionIndex >= kBackupNameAttempts)
+        return std::nullopt;
+    metadata.sourceGeneration = backupGeneration(database);
+    return metadata;
+}
+
+fs::path backupFilename(const BackupMetadata& metadata) {
+    using namespace std::chrono;
+    const sys_time<microseconds> time{microseconds{metadata.utcMicros}};
+    const auto day = floor<days>(time);
+    if (time < sys_days{year{1970}/January/1} || day > sys_days{year{9999}/December/31})
+        throw std::runtime_error("backup time is outside the supported range");
+    const year_month_day date{day};
+    const hh_mm_ss clock{time - day};
+    // The path uses UTC so the name can distinguish repeated local clock hours.
+    char stamp[60];
+    std::snprintf(stamp, sizeof(stamp), " [%04d-%02u-%02u %02lld%02lld%02lld.%06lldZ]",
+        static_cast<int>(date.year()), static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()),
+        static_cast<long long>(clock.hours().count()), static_cast<long long>(clock.minutes().count()),
+        static_cast<long long>(clock.seconds().count()), static_cast<long long>(clock.subseconds().count()));
+    auto name = media::pathFromUtf8(metadata.sourceName).stem();
+    name += stamp;
+    if (metadata.collisionIndex != 0) name += "-" + std::to_string(metadata.collisionIndex + 1);
+    name += ".adi";
+    return name;
+}
+
+void finishBackupCopy(SQLite::Database& destination, const BackupMetadata* metadata) {
+    if (!metadata && !readBackupMetadata(destination)) return;
+    {
+        SQLite::Transaction transaction(destination);
+        destination.exec("DELETE FROM session_lock");
+        if (metadata) {
+            SQLite::Statement set(destination, "INSERT OR REPLACE INTO adi_meta(key,value) VALUES"
+                "('backup_source',?),('backup_utc',?),('backup_collision',?)");
+            set.bind(1, metadata->sourceName);
+            set.bind(2, std::to_string(metadata->utcMicros));
+            set.bind(3, std::to_string(metadata->collisionIndex));
+            set.exec();
+        } else {
+            // A recovered file or a normal Save As from a backup is an editable project again.
+            destination.exec("DELETE FROM adi_meta WHERE key IN ('backup_source','backup_utc','backup_collision')");
+        }
+        transaction.commit();
+    }
+    SQLite::Statement check(destination, "PRAGMA quick_check(1)");
+    if (!check.executeStep() || check.getColumn(0).getString() != "ok" || check.executeStep())
+        throw std::runtime_error("the project copy failed its SQLite integrity check");
+}
+
+std::vector<backup::Expired> expiredBackups(const fs::path& directory, const BackupMetadata& source) {
+    if (source.sourceGeneration.empty()) return {};
+    struct Candidate {
+        backup::Expired file;
+        BackupMetadata metadata;
+    };
+    std::vector<Candidate> backups;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        const auto path = entry.path();
+        if (path.extension() != ".adi" || projectDestinationReady(path)) continue;
+        std::error_code error;
+        const auto revision = media::readFileRevision(path, error);
+        if (!revision) continue;
+        try {
+            std::optional<BackupMetadata> metadata;
+            {
+                SQLite::Database database(media::pathUtf8(path), SQLite::OPEN_READONLY);
+                if (database.execAndGet("PRAGMA application_id").getInt() != kApplicationId) continue;
+                metadata = readBackupMetadata(database);
+            }
+            backup::Expired file{path, *revision};
+            if (metadata && metadata->sourceName == source.sourceName &&
+                metadata->sourceGeneration == source.sourceGeneration && backupFilename(*metadata) == path.filename() &&
+                media::readFileRevision(path, error) == revision)
+                backups.push_back({std::move(file), std::move(*metadata)});
+        } catch (const std::exception&) {
+            // Leave files whose backup metadata cannot be verified where they are.
+        }
+    }
+    if (backups.size() <= kBackupsRetained) return {};
+    std::sort(backups.begin(), backups.end(), [](const Candidate& first, const Candidate& second) {
+        return std::tie(first.metadata.utcMicros, first.metadata.collisionIndex) <
+               std::tie(second.metadata.utcMicros, second.metadata.collisionIndex);
+    });
+    std::vector<backup::Expired> expired;
+    for (std::size_t index = 0; index < backups.size() - kBackupsRetained; ++index)
+        expired.push_back(std::move(backups[index].file));
+    return expired;
+}
+
 std::string collectionName(const std::string& hash,const fs::path& source) {
     auto extension=media::pathUtf8(source.extension());
     if(extension.empty() || extension.size()>16 || extension.find_first_not_of(".abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")!=std::string::npos)
@@ -218,6 +348,7 @@ struct StoreFileSave::Data {
     std::uint64_t sequence = 0;
     gesture::detail::StoreWriteStamp stamp{};
     std::unique_ptr<SQLite::Database> reader;
+    std::optional<BackupMetadata> backup;
     std::optional<Store::CopyState> copy;
     std::unique_ptr<Store> retired;
     bool cancelled = false;
@@ -383,7 +514,11 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
             // copy's folder). On unix SQLite resolves symlinks (macOS: /var is
             // /private/var) and ".." climbs physical parents, so a path made
             // relative to fs::absolute()'s spelling climbs the wrong distance.
-            if(major==kSchemaMajor)rebaseHistory(destination,sourceFolder,media::projectFolder(destination).parent_path(),stop);
+            if (major == kSchemaMajor) {
+                rebaseHistory(destination, sourceFolder, media::projectFolder(destination).parent_path(), stop);
+                const auto* metadata = pending && pending->data_->backup ? &*pending->data_->backup : nullptr;
+                finishBackupCopy(destination, metadata);
+            }
             destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
             destination.exec("PRAGMA journal_mode=DELETE");
         }
@@ -405,6 +540,99 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
         return {true,{},std::move(warning),result.identity};
     }catch(const std::exception& e){return {false,e.what(),{}};}
 }
+namespace backup {
+
+std::shared_ptr<media::ProjectFileLease> leaseForTrash(const Expired& candidate) {
+    try {
+        if (audio::onAudioThread) return {};
+        std::error_code error;
+        auto lease = media::ProjectFileLease::openExclusive(candidate.path, error);
+        if (!lease || lease->identity() != candidate.revision.identity ||
+            projectDestinationReady(candidate.path) ||
+            media::readFileRevision(candidate.path, error) != candidate.revision)
+            return {};
+        return lease;
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+fs::path directoryFor(const fs::path& project) {
+    if (project.empty()) return {};
+    std::error_code error;
+    const auto canonical = fs::weakly_canonical(project, error);
+    return (error ? project : canonical).parent_path() / "Backup";
+}
+
+bool isBackup(Store& store) {
+    if (store.schemaMajor() != kSchemaMajor || !appliedSource(store).alive()) return false;
+    try {
+        return readBackupMetadata(store.db()).has_value();
+    } catch (const SQLite::Exception&) {
+        return false;
+    }
+}
+
+StoreFileResult prepare(Store& store, std::int64_t utcMicros, Job& job) {
+    if (audio::onAudioThread || !appliedSource(store).alive() || store.schemaMajor() != kSchemaMajor)
+        return {false, "backups need an open supported project", {}};
+    if (job.file.data_) return {false, "backup was already prepared", {}};
+    try {
+        if (isBackup(store)) return {false, "this file is already a backup", {}};
+        std::error_code error;
+        const auto source = fs::canonical(store.path(), error);
+        if (error || !fs::is_regular_file(source))
+            return {false, "backups need a saved project file", {}};
+        const auto directory = directoryFor(source);
+        fs::create_directory(directory);
+        if (!fs::is_directory(fs::symlink_status(directory)))
+            return {false, "the project's Backup folder is not a directory", {}};
+        BackupMetadata metadata{media::pathUtf8(source.filename()), backupGeneration(store.db()), utcMicros, 0};
+        for (; metadata.collisionIndex < kBackupNameAttempts; ++metadata.collisionIndex) {
+            auto target = directory / backupFilename(metadata);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found || projectDestinationReady(target))
+                continue;
+            auto result = store.prepareFileSave(target, StoreSaveKind::copy, job.file);
+            if (!result.ok) return result;
+            job.file.data_->backup = std::move(metadata);
+            job.path = std::move(target);
+            return result;
+        }
+        return {false, "could not reserve a new backup filename", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+Result write(Job& job, std::stop_token stop) {
+    if (!job.file.data_ || !job.file.data_->backup)
+        return {{false, "backup was not prepared", {}}, {}, {}};
+    Result result{job.file.write(stop), job.path, {}};
+    job.file.data_->sourceLease.reset();
+    if (result.file.ok && result.file.warning.empty() && !stop.stop_requested()) {
+        try {
+            result.expired = expiredBackups(job.path.parent_path(), *job.file.data_->backup);
+        } catch (const std::exception& error) {
+            result.file.warning = joinedWarning(std::move(result.file.warning),
+                "could not check backup retention: " + std::string(error.what()));
+        }
+    }
+    return result;
+}
+
+StoreFileResult recover(const fs::path& backup, const fs::path& destination, std::stop_token stop) {
+    if (stop.stop_requested()) return {false, "recovery cancelled", {}};
+    StoreError error{};
+    auto source = Store::open(backup, error, true);
+    if (!source) return {false, "could not open backup: " + std::string(toString(error)), {}};
+    if (!isBackup(*source)) return {false, "the selected file is not an ADI backup", {}};
+    StoreFileSave file;
+    auto prepared = source->prepareFileSave(destination, StoreSaveKind::copy, file);
+    return prepared.ok ? file.write(stop) : prepared;
+}
+
+}  // namespace backup
+
 StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileCollision collision) {
     if(audio::onAudioThread)return {false,{},{}};
     if(detail::appliedDispatchActive(*this))return {false,"reentrant Save As during applied-batch delivery",{}};

@@ -8,6 +8,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/plugin_hold_off.hpp"
+#include "adi/ui/project_backup_schedule.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
@@ -3877,6 +3878,30 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
               doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
           "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
 }
+void projectBackupSchedule() {
+    backup::Schedule schedule;
+    const backup::Schedule::Clock::time_point opened;
+    const backup::Schedule::Revision initial{3, 1}, localEdit{4, 1}, externalEdit{4, 2};
+    const auto interval = backup::Schedule::interval;
+
+    check(!schedule.due(opened), "backup scheduling starts disabled");
+    schedule.arm(opened, true);
+    check(schedule.due(opened) && schedule.claim(opened, initial), "opening an existing song is due immediately");
+    schedule.recordSuccess(initial);
+    check(!schedule.due(opened + interval - std::chrono::seconds(1)),
+          "a scheduled backup waits for its interval");
+    check(!schedule.claim(opened + interval, initial), "an unchanged song skips its scheduled copy");
+    check(schedule.claim(opened + 2 * interval, localEdit), "a local change is backed up on schedule");
+    check(schedule.claim(opened + 3 * interval, localEdit), "a failed backup can retry at the next interval");
+    schedule.recordSuccess(localEdit);
+    check(schedule.claim(opened + 4 * interval, externalEdit), "an external data version change is backed up");
+    schedule.recordSuccess(externalEdit);
+
+    schedule.arm(opened + 5 * interval, true);
+    check(schedule.claim(opened + 5 * interval, externalEdit), "a saved destination gets its own initial backup");
+    schedule.arm(opened + 6 * interval, false);
+    check(!schedule.claim(opened + 7 * interval, externalEdit), "an ineligible project stays out of the schedule");
+}
 void sharedStorageWarning(const std::filesystem::path &dir) {
     const auto sync = dir / "sync";
     std::filesystem::create_directory(sync);
@@ -3890,7 +3915,18 @@ void sharedStorageWarning(const std::filesystem::path &dir) {
     auto doc = ui::ProjectDocument::open(dir / "local.adi", true, {}, error);
     check(doc != nullptr && !mentionsSharedStorage(*doc), "local project opens without a shared storage warning");
     if (!doc) return;
-    check(doc->saveAs(saved) && mentionsSharedStorage(*doc), "Save As into a sync folder warns");
+    check(doc->startSave(saved, ui::ProjectDocument::SaveKind::as), "start the window's Save As into a sync folder");
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto progress = doc->saveProgress();
+    while (progress && progress->phase != Phase::succeeded && progress->phase != Phase::failed &&
+           progress->phase != Phase::cancelled && std::chrono::steady_clock::now() < deadline) {
+        doc->advanceSave();
+        progress = doc->saveProgress();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(progress && progress->phase == Phase::succeeded && mentionsSharedStorage(*doc),
+          "the window's Save As into a sync folder warns");
     doc.reset();
     doc = ui::ProjectDocument::open(saved, false, {}, error);
     check(doc != nullptr && mentionsSharedStorage(*doc), "opening a project in a sync folder warns");
@@ -4044,6 +4080,7 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        projectBackupSchedule();
         test::TempDirectory syncDir("ui_document", "shared-storage");
         sharedStorageWarning(syncDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");

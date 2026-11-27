@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/project_backup.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
 #include "adi/history_compaction.hpp"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <future>
 
 namespace {
@@ -97,6 +99,125 @@ void copiesAndSwitches() {
     auto reopened=Store::open(newPath,error);
     check(reopened && resolves(*reopened) && History(*reopened).canUndo(),"Save As and its history survive reopen");
 }
+void automaticProjectBackups() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    constexpr std::int64_t stamp = 1795737600000000;
+    store.db().exec("INSERT INTO session_lock VALUES(1,'test',42,'test',10,11)");
+
+    backup::Job firstJob;
+    const auto prepared = backup::prepare(store, stamp, firstJob);
+    check(prepared.ok, "prepare a project backup beside the original");
+    if (!prepared.ok) return;
+    OpRequest edit;
+    edit.opType = "project.setName";
+    edit.payload = {{"name", "Edited after backup was prepared"}};
+    check(OpJournal(store).commit(edit).ok, "continue editing while the backup snapshot is pinned");
+    const auto first = std::async(std::launch::async, [&] { return backup::write(firstJob); }).get();
+    check(first.file.ok && first.path.parent_path() == backup::directoryFor(fixture.source) &&
+              first.expired.empty(),
+          "publish a version in the song's Backup folder without rotating anything");
+    if (!first.file.ok) return;
+
+    StoreError error{};
+    {
+        auto saved = Store::open(first.path, error, true);
+        check(saved && backup::isBackup(*saved) && resolves(*saved) &&
+                  saved->db().execAndGet("SELECT name FROM project").getString() == "Original" &&
+                  saved->db().execAndGet("SELECT count(*) FROM ops").getInt() == 3,
+              "the pinned backup includes current WAL, media paths and history at the chosen revision");
+        check(saved && saved->db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 0 &&
+                  store.db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 1,
+              "the backup clears only its own copy of the session lock");
+        backup::Job nested;
+        check(saved && !backup::prepare(*saved, stamp, nested).ok &&
+                  !fs::exists(first.path.parent_path() / "Backup"),
+              "an open backup cannot create nested backups");
+    }
+
+    auto makeBackup = [&](Store& project, std::int64_t utcMicros) {
+        backup::Job job;
+        const auto prep = backup::prepare(project, utcMicros, job);
+        if (!prep.ok) throw std::runtime_error(prep.error);
+        auto saved = backup::write(job);
+        if (!saved.file.ok) throw std::runtime_error(saved.file.error);
+        return saved;
+    };
+    const auto second = makeBackup(store, stamp);
+    check(second.path != first.path && fs::is_regular_file(first.path),
+          "a repeated timestamp creates a distinct backup without replacing the earlier one");
+
+    auto neighbor = Store::create(fixture.folder / "Source-Two.adi", error);
+    check(neighbor != nullptr, "create a neighboring project in a shared legacy folder");
+    if (!neighbor) return;
+    const auto other = makeBackup(*neighbor, stamp - 1);
+    const auto unmarked = first.path.parent_path() / "Unmarked.adi";
+    check(store.saveCopy(unmarked).ok, "put an unrelated ADI file in the Backup folder");
+    const auto malformed = first.path.parent_path() / "Source [1970-01-01 000000.000000Z].adi";
+    { std::ofstream file(malformed); file << "damaged"; }
+
+    for (std::int64_t offset = 1; offset <= 8; ++offset)
+        check(makeBackup(store, stamp + offset).expired.empty(), "retain ten backups without rotating one");
+    const auto rotated = makeBackup(store, stamp + 9);
+    check(rotated.expired.size() == 1 && rotated.expired.front().path == first.path &&
+              backup::leaseForTrash(rotated.expired.front()) && fs::exists(first.path) &&
+              fs::exists(second.path) && fs::exists(other.path) && fs::exists(unmarked) && fs::exists(malformed),
+          "offer only the oldest owned version for trash, preserving equally stamped, unrelated and corrupt files");
+
+    if (!rotated.expired.empty()) {
+        auto reader = Store::open(first.path, error, true);
+        check(reader && !backup::leaseForTrash(rotated.expired.front()),
+              "rotation skips a backup that is already open for recovery");
+        reader.reset();
+        const auto lease = backup::leaseForTrash(rotated.expired.front());
+        check(lease && !Store::open(first.path, error, true),
+              "a backup cannot open while rotation holds its lease");
+    }
+
+    {
+        backup::Job conflict;
+        check(backup::prepare(store, stamp + 10, conflict).ok, "prepare a backup before a concurrent name collision");
+        if (!conflict.path.empty()) {
+            { std::ofstream file(conflict.path); file << "another process"; }
+            const auto refused = backup::write(conflict);
+            std::ifstream untouched(conflict.path);
+            std::string contents;
+            std::getline(untouched, contents);
+            check(!refused.file.ok && refused.expired.empty() && contents == "another process",
+                  "a destination created during backup is neither overwritten nor rotated");
+        }
+    }
+
+    const auto missing = fixture.folder / "Moved.adi";
+    fixture.store.reset();
+    fs::rename(fixture.source, missing);
+    const auto recoveredPath = fixture.target("recovered", "Recovered.adi");
+    check(backup::recover(first.path, recoveredPath).ok && !fs::exists(fixture.source),
+          "restore a valid backup to a new file even when the original is missing");
+    auto recovered = Store::open(recoveredPath, error);
+    if (recovered) {
+        History history(*recovered);
+        check(!backup::isBackup(*recovered) && resolves(*recovered) && history.undo().ok &&
+                  history.redo().ok && resolves(*recovered),
+              "the recovery is editable and media references still work after Undo and Redo");
+    } else {
+        check(false, "open the restored project for editing");
+    }
+    check(!backup::recover(first.path, recoveredPath).ok && fs::is_regular_file(first.path) &&
+              !backup::recover(unmarked, fixture.target("recovered", "Ordinary.adi")).ok,
+          "recovery never overwrites an existing file or accepts an unmarked file as a backup");
+
+    auto replacement = Store::create(fixture.source, error);
+    check(replacement && makeBackup(*replacement, stamp + 10).expired.empty(),
+          "a new project with the old filename preserves the previous project's backups");
+
+    if (!rotated.expired.empty()) {
+        { std::ofstream changed(first.path, std::ios::app); changed << "later file contents"; }
+        check(!backup::leaseForTrash(rotated.expired.front()),
+              "an expired candidate edited after enumeration cannot be sent to trash");
+    }
+}
+
 void refusalsAndMissingMedia() {
     Fixture f;const auto target=f.target("pending");
     {
@@ -313,5 +434,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();automaticProjectBackups();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

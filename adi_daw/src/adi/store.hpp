@@ -67,6 +67,13 @@ struct StoreFileResult {
     std::string warning;
 };
 
+namespace backup {
+struct Job;
+struct Result;
+StoreFileResult prepare(Store&, std::int64_t utcMicros, Job&);
+Result write(Job&, std::stop_token);
+}  // namespace backup
+
 enum class StoreSaveKind { copy, saveAs };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
@@ -97,6 +104,8 @@ private:
     struct Data;
     std::unique_ptr<Data> data_;
     friend class Store;
+    friend StoreFileResult backup::prepare(Store&, std::int64_t, backup::Job&);
+    friend backup::Result backup::write(backup::Job&, std::stop_token);
 };
 
 /// An open `.adi`.

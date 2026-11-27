@@ -19927,17 +19927,17 @@ int main(int argc, char **argv) {
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
               "Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, C::OpenBackup, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
-              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "the File menu: Open Backup follows Open Project. Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac [P:export#1]");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, C::OpenBackup, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
-              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "the File menu: Open Backup follows Open Project. Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
@@ -19947,6 +19947,21 @@ int main(int argc, char **argv) {
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
+        juce::ApplicationCommandInfo openBackup(C::OpenBackup);
+        commands.getCommandInfo(C::OpenBackup, openBackup);
+        check(openBackup.shortName == "Open Backup..." && openBackup.categoryName == "File" &&
+                  AppCommands::commandFor("file.open-backup") == C::OpenBackup,
+              "Open Backup has its own File menu command and stable ID");
+        auto &backupRoot = window.root();
+        int selectedBackupCommand = 0;
+        auto previousApplicationCommand = std::move(backupRoot.applicationCommand);
+        backupRoot.applicationCommand = [&](int id) {
+            selectedBackupCommand = id;
+            return id == C::OpenBackup;
+        };
+        check(backupRoot.command(C::OpenBackup) && selectedBackupCommand == C::OpenBackup,
+              "Open Backup reaches the application to choose a backup file");
+        backupRoot.applicationCommand = std::move(previousApplicationCommand);
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
         // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
         // first and B4 (window/track-delay) extends the same tail: SoloInPlace, then the two Track
