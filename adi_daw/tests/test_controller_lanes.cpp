@@ -288,8 +288,11 @@ void consistentRead() {
         if (type != SQLITE_TRACE_PROFILE || state.fired)
             return 0;
         const auto *sql = sqlite3_sql(static_cast<sqlite3_stmt *>(statement));
-        if (!sql ||
-            std::string_view(sql).find("SELECT id,clip_id,channel,controller,data FROM event_streams") != 0)
+        const std::string_view query = sql ? sql : "";
+        // Inject after the controller rows have been read, including queries
+        // that project additional columns such as stream_kind.
+        if (!query.starts_with("SELECT id,clip_id,channel,controller,data") ||
+            query.find(" FROM event_streams ") == std::string_view::npos)
             return 0;
         state.fired = true;
         try {
