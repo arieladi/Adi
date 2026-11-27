@@ -109,9 +109,13 @@ FollowDecision resolveFollowPlaybackTarget(const launch::FollowSettings& setting
         const auto found = std::find(sceneIds.begin(), sceneIds.end(), *selected.jumpSceneId);
         if (found != sceneIds.end()) {
             const auto index = static_cast<std::size_t>(found - sceneIds.begin());
-            const auto group = jumpCanCrossGroup ? std::nullopt : followGroup(clips, playing);
-            if (jumpCanCrossGroup || (group && index >= group->begin && index < group->end))
+            if constexpr (jumpCanCrossGroup) {
                 choice.jump = index;
+            } else {
+                const auto group = followGroup(clips, playing);
+                if (group && index >= group->begin && index < group->end)
+                    choice.jump = index;
+            }
         }
     }
 
