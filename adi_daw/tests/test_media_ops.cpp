@@ -346,8 +346,15 @@ void captureDecodeAndDedup() {
           captured.payload.at("row").at("bit_depth").is_null(),"compressed source format stays FLAC without inventing its original bit depth");
     const auto entries=cache.entries();
     check(entries.size()==1 && entries[0].pins==0,"metadata capture releases its decode-cache pin");
+    // A cut-short FLAC plays as far as it goes (SC-391); one with no audio in it at all is refused.
+    const auto damaged=f.folder()/"damaged.flac";
+    {
+        const char bytes[]="fLaC\x00\x00\x00\x22 nothing in here is a FLAC stream at all";
+        std::ofstream out(damaged,std::ios::binary);
+        out.write(bytes,static_cast<std::streamsize>(sizeof bytes-1));
+    }
     OpRequest corrupt;
-    check(!media::prepareImport(*f.store,fs::path(ADI_DECODE_FIXTURES)/"truncated.flac",11,1,corrupt,&cache).ok && corrupt.opType.empty(),
+    check(!media::prepareImport(*f.store,damaged,11,1,corrupt,&cache).ok && corrupt.opType.empty(),
           "corrupt known audio fails without a prepared op");
     const auto source=f.folder()/"sample.wav";
     {audio::WavWriter w(source,48000,1,audio::WavFormat::Float32);float v=0.5f;w.write(&v,1);}

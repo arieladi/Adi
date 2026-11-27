@@ -224,9 +224,18 @@ void refusals(const fs::path& root) {
         }
         check(frames == 4800, "a WAV with zeroed size fields plays its 4800 frames: " + std::to_string(frames) + " " + why);
     }
+    // The cut-short files above play (SC-391) and are cached; what follows is refused and adds nothing.
+    const auto cached = cache.entries().size();
     check(problemOf([&] { (void)cache.playable(fixture("not_audio.bin")); }) == DecodeProblem::UnknownFormat, "not audio: decode.unknown_format");
     check(problemOf([&] { (void)cache.playable(root / "absent.flac"); }) == DecodeProblem::Unreadable, "a missing file: decode.unreadable");
-    check(cache.entries().empty() && leftovers(folder) == 0, "a refused decode leaves no file in the cache, not even a partial one");
+    const auto damaged = root / "damaged.flac";
+    {
+        const char bytes[] = "fLaC\x00\x00\x00\x22 nothing in here is a FLAC stream at all";
+        std::ofstream out(damaged, std::ios::binary);
+        out.write(bytes, static_cast<std::streamsize>(sizeof bytes - 1));
+    }
+    check(problemOf([&] { (void)cache.playable(damaged); }) == DecodeProblem::Corrupt, "a FLAC with no audio in it is refused as decode.corrupt");
+    check(cache.entries().size() == cached && leftovers(folder) == 0, "a refused decode leaves no file in the cache, not even a partial one");
     check(std::string(toString(DecodeProblem::AudioThread)) == "decode.audio_thread", "problem names");
 }
 
