@@ -28,13 +28,18 @@ Shared edits are in `CMakeLists.txt`, `audio/transients.*`, `library/index.*`, `
 
 ## For win
 
-A. The labelled suite analyser selection in ADR-0226 d4 still needs a representative held-out corpus and independent comparators. Keep the shared onset detector and fallback key estimate behind the worker seam until that gate is met. The six-recording feasibility study below is too small to choose the suite analyser.
+A. The 32-recording gate below favors the candidate over the incumbent for timing. Can the candidate ship as the default timing source after the Live readings, with the incumbent key estimator retained? The smaller real-key check favored the incumbent and the downbeat result still varies by instrument.
 
 B. The continuation implements the authored-key and BPM-provenance exchange in library JSON v3. ADIL's existing SQL annotation table holds the authored key. Older exchange versions remain readable.
 
+## For the director
+
+A. The TM-MD-04 appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue say ADI always caches derived analysis. Keep the existing rule and use the implemented root, size, free-space and Cleanup settings?
+
 ## Readings owed
 
-- Live 12.4's short/long Warp boundary, Auto on an explicit Warp press versus the import prompt, and whether ACID BPM wins in Warp. The 60 s short-Warp boundary is provisional. Forced short-loop timing rounds to a permitted bar count near the known BPM or supplied tempo hint. [Live 12.4 Warp manual](https://www.ableton.com/en/live-manual/12/audio-clips-tempo-and-warping/#warping-short-samples)
+- Live 12.4's short/long Warp boundary, Auto on drop versus an explicit Warp press or the import prompt, and whether ACID BPM wins in Warp. Existing measured research recorded 45 s unwarped and 52.5 s warped at 120 BPM, and 60 s unwarped and 90 s warped at 60 BPM. It leaves the predicate unresolved. ADI retains the named provisional 60 s limit and rounds forced loops to a permitted bar count near the known source BPM or tempo hint. [Research Intake §6.2](../../docs/RESEARCH-INTAKE.md#62-live-124-the-readings) · [Live 12 Warp manual](https://www.ableton.com/en/live-manual/12/audio-clips-tempo-and-warping/#warping-short-samples)
+- The Clip View audit relays M3-07 as one start marker on a long auto-warped sample. The TM-WT-01 card specifies an anchor each bar. M2-A-WARP 1 should capture the visible markers and the saved map for the same source to settle how the plan maps those observations. The candidate currently follows the card's bar-anchor rule. [Clip View audit](../window/live-clip-view-audit-2026-11-16.md#4-where-measurement-manual-and-our-rows-disagree)
 - Live's documented Sound Similarity limit is 60 s and its sound analysis uses the first 2 s. Published results run most-to-least similar. ADI uses measured spectral and envelope distance, hits, RMS, and lower-weight length, known key and tempo. Live's feature weighting and score cutoff need a comparative reading. [Live 12 manual](https://www.ableton.com/en/live-manual/12/live-concepts/#sound-similarity) · [Similarity FAQ](https://help.ableton.com/hc/en-us/articles/11386675465628-Sound-Similarity-Search-FAQ)
 - The expanded tag reader covers MP4, APE, Matroska, ID3 variants, WAV/ACID, AIFF Apple Loops, FLAC and Ogg Vorbis. BPM resolves user, file tag, ACID, then detection. A bare MIDI root carries no major/minor mode.
 
@@ -50,7 +55,7 @@ Six GuitarSet 4/4 guitar accompaniments from the CC BY 4.0 release, with their o
 | AMLt | 0.0304 | 0.6657 | 0.7984 |
 | Tempo Acc1 and Acc2, ±4% | 0/6 | 4/6 | 5/6 |
 
-Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesced within 10 ms. Candidate onset F and independent beat_this results are still owed. Essentia supplied beats and tempo. The corpus has six clips from three styles and one instrument. Gate results need broader instrumentation, meters, and held-out arrangements. The experiment and its reproducible setup are in the cloud workspace at `/workspace/scratch/adi-warp-feasibility/setup.sh`. [GuitarSet](https://zenodo.org/records/3371780) · [Mixxx](https://github.com/mixxxdj/mixxx/tree/902cfc2543d7ef65bda1678e6f3c3e98be4aa39d)
+Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesced within 10 ms. Essentia supplied beats and tempo. The pilot has six clips from three styles and one instrument. The experiment and its reproducible setup are in the cloud workspace at `/workspace/scratch/adi-warp-feasibility/setup.sh`. The continuation expanded it to 32 recordings and added Beat This, onset and meter measurements. [GuitarSet](https://zenodo.org/records/3371780) · [Mixxx](https://github.com/mixxxdj/mixxx/tree/902cfc2543d7ef65bda1678e6f3c3e98be4aa39d)
 
 ## Continued acceptance on 27 November
 
@@ -65,8 +70,20 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 | TM-MD-04, shared cache and Cleanup | Chain `a21caea2f`. Decoded audio and ADIA share the configured root and eviction order. Both directions of pressure passed with 76,894-byte decoded PCM and 32,952-byte ADIA under an 80,990-byte cap. Cleanup preserved active pins, current-project data and authored settings. The recency fix also passed under the CTest ADI_HOME. Strict isolated checks passed 65 decode, 66 ADIA, 5 trim and 347 settings cases. | Shared budget and cleanup slice pushed. |
 | TM-WT-01, 32-recording benchmark | Chain `4ac314981`. On 16 guitar and 16 drum recordings, beat F at 70 ms was 0.2374 current, 0.6793 candidate, 0.9442 held-out Beat This, and 0.6984 Essentia. Spectral onset F at 10 ms rose from 0.4362 to 0.5446. Supplied meter increased candidate downbeat F to 0.3124 on the published labels. On two 6/8 tracks, known meter and source tempo gave 0.9828 macro downbeat F against the original MIDI bar grid. | Benchmark and standalone acceptance pushed. Automatic meter selection and broader key evidence remain open. |
 | TM-WT-01 and TM-WT-05, native analysis acceptance | Chain `c3497bb17`. The fixed-rate candidate, versioned AWTM cache and captured sensitivity now connect to the native Warp and import producers. A real WAV measured 120.1853 BPM with 32 beats and 8 downbeats. A warm preparation preserved both AWRP and the file read position. The pickup/bar test matched at 48/96 kHz. The six-mode 0.75×/1.5× and ±7-semitone render matrix had minimum RMS 0.0154 and maximum Re-Pitch/R3 errors 0.006/0.013 Hz. Auto kept the decaying crash clean. All 12 focused suites passed. | Native evaluation path pushed. |
-
 | TM-MD-04 and TM-WT-01, shared PCM pass | Chain `c2d4236d6`. An indexing job can feed descriptors and Warp timing from each decoded block. Cold measured exactly one decoder passthrough and produced ALIB plus AWTM. Warm performed zero new decodes. Changing sensitivity performed one timing pass and retained the descriptors. All six focused suites passed. | Shared worker slice pushed. |
+| TM-WT-05, document import and Warp off | Chain `b4b10f466`. Both producers use one short-Warp policy resolver. A real `ProjectDocument` worker import honored its captured `Unwarped One Shot` choice. Warp off disabled a generated full-source loop, and Undo/Redo restored the captured states. The provisional boundary switches policy one frame after 60 s. The scratch Browser composition passed its 38 Warp checks, 41 sample-analysis checks and the short-sample fixture through Warp off. | Engine slice pushed. Join details below. |
+
+The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% tempo tolerance. A dash means the comparator supplied no matching labelled output.
+
+| Measure | Incumbent | Candidate | Beat This | Essentia |
+|---|---:|---:|---:|---:|
+| Beat F, 70 ms | 0.2374 | 0.6793 | 0.9442 | 0.6984 |
+| Downbeat F, 70 ms | 0.0956 | 0.2811 | 0.8306 | — |
+| Onset F, 10 ms | 0.4362 | 0.5446 | — | — |
+| CMLt | 0.0274 | 0.5348 | 0.8705 | 0.6103 |
+| AMLt | 0.0950 | 0.7381 | 0.8966 | 0.7506 |
+| Tempo Acc1 | 2/32 | 22/32 | 28/32 | 24/32 |
+| Tempo Acc2 | 4/32 | 27/32 | 29/32 | 27/32 |
 
 ## Remaining acceptance
 
@@ -74,8 +91,9 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 - TM-WT-01's evaluation switch exposes the candidate in both native producers. The labelled corpus favors it over the incumbent beat detector. Downbeat accuracy still varies by instrument, and the 6/8 proof uses supplied source meter and quarter tempo. The real key comparison favored the incumbent at 7/16 exact versus 5/16 for the CQT probe. Recommend promoting the timing candidate only after the remaining meter and Live reference readings. The independent model runs in the benchmark process.
 - TM-MD-04's appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue specify always caching derived analysis. The engine applies the existing size, free-space, folder and Cleanup settings. Recommend retaining the catalogue rule.
 - The Browser and floating search can use the tested headless adapter at the existing presentation boundary. Preview can apply the same typed classification. Window wiring is the later window lane.
+- The virtual merge with `basics/browser-chain` at `862cea353` has one conflict, in `warp_commands.cpp`. The scratch join keeps the Browser's edited source intervals, End marker mapping and byte-exact stored AWRP reuse. A new map uses the shared timing analyzer, and short-sample policy applies only to an unedited full file with no stored map. Warp off clears the opted-in full-source loop with the clip edit. The composition is proved separately from both branches. In the cloud workspace the Browser-based patch is `/workspace/scratch/adi-browser-warp-compose.euQhL5/warp-against-browser.patch`.
 
-The continuation's GCC 14.2 Debug warnings-as-errors build passed with Pd and acceptance enabled. Headless CTest passed all 294 suites in 230.50 s. All five validators passed.
+The continuation's GCC 14.2 Debug warnings-as-errors build passed with Pd and acceptance enabled. Headless CTest passed all 294 suites in 218.56 s after the shared PCM pass. The document import slice also passed its focused binary. All five validators passed.
 
 The native Beats renderer consumed 16 captured AWTM onsets and rendered 512,000 frames at 0.75× and 256,000 at 1.5×. Both rates produced PCM-identical repeats. The Warp recipe already accepts source-relative onset frames, which lets the owner supply these observations directly.
 
