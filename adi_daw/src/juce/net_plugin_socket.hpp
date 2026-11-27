@@ -19,6 +19,7 @@
 #endif
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -59,7 +60,9 @@ inline SocketHandle createSocket() noexcept {
 }
 inline bool setNonblocking(SocketHandle handle) noexcept {
     unsigned long state = 1;
-    return ioctlsocket(handle, FIONBIO, &state) == 0;
+    // Winsock takes a signed long, while FIONBIO's encoding sets bit 31.
+    constexpr auto command = std::bit_cast<long>(static_cast<unsigned long>(FIONBIO));
+    return ioctlsocket(handle, command, &state) == 0;
 }
 using SocketPollFd = WSAPOLLFD;
 inline int socketPoll(SocketPollFd& fd, int timeout) { return WSAPoll(&fd, 1, timeout); }
