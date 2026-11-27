@@ -6,6 +6,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-27, evening — the seventh stack on main; the Browser's second sheet and his four choices (ADR-0262); the analysers chain
+
+**Landed:** #817, the seventh basics stack: the speed chain, two Clang 14 lines, the Mac session's fix for Apple's library, and ADR-0261 with the director's four answers (the floating search as the Mac's own search, opening on samples; Sync on from the start; in-time preview with the real-time stretcher; the agent's hidden half started now). #815 and #816, prompts only: the Browser queue rewritten with one owner, and the agent seat's queue. #814 was closed as carried by #817.
+
+**A lesson for win's own landings.** A pull request that touches `README.md`, `collab/README.md` or any file that is not Markdown runs the whole matrix, an hour of the one macOS runner. Prompts go in a pull request of their own, which runs no check; an ADR rides inside the next landing stack.
+
+**The sheet.** Win drew the Browser's sheet, proposal 2, the same day and he chose from it: the AI column widens by itself; the full list of a proposed change opens in a floating window; in the Mix View the floating search calls the agent; four buttons. ADR-0262. Nothing of it is built before the basics.
+
+**Seats started by his pastes:** the Browser session (it claimed `basics/browser-log`; the integrator had built items 1 and 2 on `basics/integrate-2` before the handover, and the session was told to merge them, not rebuild them); the agent seat (`control/agent-chain`, the chain of ADR-0261 d6, the marker-prompt hole first).
+
+**The analysers session** finished its six items on `basics/analysers-chain` (the measurement core with the director's own device's tests, the filled spectrum, the meter, the stereo picture, third-octave bands with a period-locked scope, the colour waveform). Its names are taken in ADR-0262 d6. It is the eighth stack, `land/basics-1127j`, with this entry.
+
+**The edit session** held twelve fixes on its own machine, waiting for a Linux check. It was told to push each as it is, marked unverified: the integrator verifies when it merges.
+
+**Owed:** the register's rows that #817 landed are not yet marked "on main" (the speed chain's); the plan rows of DF-R2 and DF-R3 by 30 November.
+
+**Next free:** ADR-0263; DF-W62, DF-R4, DF-C10, DF-E93; SC-433.
+
+---
+
 ## 2026-11-27, afternoon — the check of the Browser and the AI (ADR-0261); who builds the Browser; four choices asked
 
 **The director's words of the day.** AI is a label in the Browser's Categories list; choosing it turns the Browser into the place to ask (its bar) and to read the answer (its pane): "the browser is where the AI interaction should happen". The floating search is the quick way, "for easy pick of a sample real fast or easy call of an agent real fast", and the Browser the deep one. The label is not shown until ADI can answer. The Browser filters by what a sound measures. Its preview row is hidden until it is needed. "dont forget all the integration of the audiogridder". Delete in a plug-in's window stays as Live's.
