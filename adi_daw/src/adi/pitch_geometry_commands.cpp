@@ -155,8 +155,11 @@ void merge(const PitchAnalysis& source, PitchSegmentDraft& draft, PitchGlueSegme
 }
 
 PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& source,
-                          const PitchSegmentationCommand& change, const char* label) {
+                          const PitchSegmentationCommand& change, const char* label,
+                          PitchGeometryCorrections corrections = PitchGeometryCorrections::PreserveExact) {
     if (onAudioThread) return {{}, "audio callback"};
+    if (corrections != PitchGeometryCorrections::PreserveExact && corrections != PitchGeometryCorrections::ResetChanged)
+        return {{}, "invalid pitch geometry correction policy"};
     try {
         auto& database = const_cast<SQLite::Database&>(store.db());
         std::optional<SQLite::Transaction> snapshot;
@@ -188,7 +191,9 @@ PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& so
         }
         prepared.options.expectHead.emplace(OpJournal(const_cast<Store&>(store)).headSeq());
         auto& geometry = *draft.draft;
-        if (const auto* cut = std::get_if<PitchSplitSegment>(&change)) {
+        if (corrections == PitchGeometryCorrections::ResetChanged) {
+            applyShape(source.analysis, geometry, change);
+        } else if (const auto* cut = std::get_if<PitchSplitSegment>(&change)) {
             split(source.analysis, geometry, *cut);
         } else if (const auto* glue = std::get_if<PitchGlueSegments>(&change)) {
             merge(source.analysis, geometry, *glue);
@@ -215,12 +220,14 @@ PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& so
 
 } // namespace
 
-PitchGeometryEdit prepareSplitPitchSegment(const Store& store, const media::ClipPitchAnalysis& source, PitchSplitSegment change) {
-    return prepare(store, source, change, "Split pitch segment");
+PitchGeometryEdit prepareSplitPitchSegment(const Store& store, const media::ClipPitchAnalysis& source,
+                                          PitchSplitSegment change, PitchGeometryCorrections corrections) {
+    return prepare(store, source, change, "Split pitch segment", corrections);
 }
 
-PitchGeometryEdit prepareMergePitchSegments(const Store& store, const media::ClipPitchAnalysis& source, PitchGlueSegments change) {
-    return prepare(store, source, change, "Merge pitch segments");
+PitchGeometryEdit prepareMergePitchSegments(const Store& store, const media::ClipPitchAnalysis& source,
+                                           PitchGlueSegments change, PitchGeometryCorrections corrections) {
+    return prepare(store, source, change, "Merge pitch segments", corrections);
 }
 
 PitchGeometryEdit prepareSetPitchSegmentBoundary(const Store& store, const media::ClipPitchAnalysis& source,

@@ -17,15 +17,18 @@ struct PitchGeometryEdit {
     [[nodiscard]] explicit operator bool() const noexcept { return edit.has_value(); }
 };
 
+enum class PitchGeometryCorrections { PreserveExact, ResetChanged };
+
 // Each prepared action has its own history label and captures one complete
 // replacement through clip.setPitchEdits. Commit separately with
 // commitPrepared on the same live project generation.
-// Split and merge preserve constant authored corrections and exact frame
-// mapping. Inputs requiring incompatible contours or a fractional cut refuse.
+// PreserveExact retains compatible corrections and an exact frame mapping.
+// ResetChanged deliberately clears controls and timing on affected segments.
+// Undo restores the entire preceding state under either policy.
 [[nodiscard]] PitchGeometryEdit prepareSplitPitchSegment(const Store&, const media::ClipPitchAnalysis&,
-                                                         audio::PitchSplitSegment);
+    audio::PitchSplitSegment, PitchGeometryCorrections = PitchGeometryCorrections::PreserveExact);
 [[nodiscard]] PitchGeometryEdit prepareMergePitchSegments(const Store&, const media::ClipPitchAnalysis&,
-                                                          audio::PitchGlueSegments);
+    audio::PitchGlueSegments, PitchGeometryCorrections = PitchGeometryCorrections::PreserveExact);
 [[nodiscard]] PitchGeometryEdit prepareSetPitchSegmentBoundary(const Store&, const media::ClipPitchAnalysis&,
                                                                audio::PitchSetSegmentBoundary);
 

@@ -250,6 +250,39 @@ void mergeMismatch() {
     const auto merge = prepareMergePitchSegments(*fixture.store, fixture.source, {1, 4});
     check(!merge && merge.error.find("different note corrections") != std::string::npos && fixture.row() == before,
           "merge refuses touching segments with different active control values");
+    const auto reset = prepareMergePitchSegments(*fixture.store, fixture.source, {1, 4},
+                                                PitchGeometryCorrections::ResetChanged);
+    check(reset && commit(*fixture.store, reset).ok && fixture.saved().rows.empty(),
+          "explicit reset-and-merge can combine differently corrected segments");
+    const auto after = fixture.row();
+    fixture.reopen();
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.row() == before && history.redo().ok && fixture.row() == after,
+          "reset-and-merge keeps exact corrections on reopened Undo and Redo");
+}
+
+void splitReset() {
+    Fixture fixture;
+    const PitchEditCommand initial[] = {
+        {0, PitchSetTiming{1300, 1901}}, {0, PitchSetStraighten{0.6}}, {0, PitchSetGain{-6}},
+        {2, PitchSetShift{25}}
+    };
+    fixture.seed(initial);
+    const auto before = fixture.row();
+    const auto changed = prepareSplitPitchSegment(*fixture.store, fixture.source, {1, 300},
+                                                  PitchGeometryCorrections::ResetChanged);
+    check(changed && commit(*fixture.store, changed).ok, "explicit reset-and-split handles an incompatible corrected contour");
+    const auto saved = fixture.saved();
+    check(saved.segmentation && saved.segmentation->segments[0] == PitchSegmentSpan{1, 100, 300} &&
+          saved.segmentation->segments[1] == PitchSegmentSpan{4, 300, 500} &&
+          saved.rows.size() == 1 && saved.rows.front().edit.noteIndex == 3 &&
+          saved.rows.front().edit.pitchShiftCents == 25,
+          "reset-and-split resets both children to source timing and leaves the unrelated correction untouched");
+    const auto after = fixture.row();
+    fixture.reopen();
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.row() == before && history.redo().ok && fixture.row() == after,
+          "reset-and-split round trips exact bytes, including corrected timing, across reopen");
 }
 
 } // namespace
@@ -260,6 +293,7 @@ int main() {
         directBoundaryHistory();
         rejectsIncompatibleAndStale();
         mergeMismatch();
+        splitReset();
     } catch (const std::exception& error) {
         check(false, error.what());
     }
