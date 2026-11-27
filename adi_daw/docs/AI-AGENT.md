@@ -337,6 +337,8 @@ it, not whether they may drive this user's agent.
 
 ## 8. What this is not
 
+*[27 November 2026. ADR-0257 d7 and d10: in a session the user starts, the agent writes notes, instruments and settings into a copy of the project; it still makes no audio with a neural model. ADR-0261 d1: the conversation lives under the Browser's AI label; ordinary controls backed by a model stay the other way in.]*
+
 - **Not a music generator.** There are better tools for generating audio from
   nothing, and that is not what a DAW is for. The agent works on *your* material.
 - **Not a mixing engineer.** It can measure, flag and suggest. It does not get an
