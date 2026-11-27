@@ -14467,7 +14467,8 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
               "the warped clip has only its two fixed anchors and a cached onset map");
         panel.sample.time.grid.fixed = true;
         panel.sample.time.grid.fixedQuarters = 1.;
-        const bool quantized = panel.sample.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0));
+        const juce::KeyPress quantizeKey('u', juce::ModifierKeys::commandModifier, 0);
+        const bool quantized = panel.sample.keyPressed(quantizeKey);
         root.frame();
         constexpr auto beat = textproj::kPPQ;
         const auto result = markers();
@@ -14479,6 +14480,36 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
             check(root.command(AppCommands::Undo), "undo transient promotion and quantizing together");
             root.frame();
             check(markers() == original, "one Undo restores the original two anchors");
+        }
+
+        const auto anchor = WarpMarker{48000, 2 * beat + beat / 4};
+        const bool added = root.commitEdit(clip_edit::prepareWarpMarkerEdit(root.editStore(), id,
+            clip_edit::WarpMarkerChange::Add, anchor, root.editRate()));
+        check(added, "add an authored anchor between two cached transients");
+        if (added) {
+            root.frame();
+            const auto authored = markers();
+            const bool mixed = panel.sample.keyPressed(quantizeKey);
+            root.frame();
+            const auto mixedMap = markers();
+            check(mixed && authored.size() == 3 && mixedMap.size() == 5 &&
+                      mixedMap.front() == authored.front() && mixedMap[1] == WarpMarker{30000, beat} &&
+                      mixedMap[2] == WarpMarker{48000, 2 * beat} && mixedMap[3] == WarpMarker{66000, 3 * beat} &&
+                      mixedMap.back() == authored.back() && root.undoTitle(false) == "Undo Quantize Audio",
+                  "Quantize Audio snaps authored anchors and missing cached transients in the same edit");
+            if (mixed) {
+                const auto beforeNoOp = document->ops().nextUndo();
+                check(panel.sample.keyPressed(quantizeKey), "repeat Quantize Audio on the aligned map");
+                root.frame();
+                const auto afterNoOp = document->ops().nextUndo();
+                check(beforeNoOp && afterNoOp && beforeNoOp->txnId == afterNoOp->txnId && markers() == mixedMap,
+                      "repeating Quantize Audio makes no extra undo step");
+                check(root.command(AppCommands::Undo), "undo quantizing the mixed Warp map");
+                root.frame();
+                check(markers() == authored, "one Undo restores the original authored anchor and both fixed endpoints");
+            }
+            check(root.command(AppCommands::Undo), "remove the authored anchor before testing the Warp switch");
+            root.frame();
         }
     }
     if (!button.isEmpty()) {

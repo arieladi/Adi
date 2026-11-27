@@ -3618,9 +3618,8 @@ bool SampleEditor::command(int id) {
     case AppCommands::Quantize: {
         if (!canQuantize())
             return false;
-        const bool straight = markers_.size() == 2;
-        const auto onsets = straight ? transients() : nullptr;
-        if (straight && (!onsets || onsets->empty())) {
+        const auto onsets = transients();
+        if (markers_.size() == 2 && (!onsets || onsets->empty())) {
             panel.root.say("Quantize Audio needs detected transients.");
             return true;
         }
