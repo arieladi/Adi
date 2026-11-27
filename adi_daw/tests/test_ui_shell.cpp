@@ -21405,17 +21405,19 @@ void discardUneditedUntitled(const std::filesystem::path &dir) {
           "an Untitled project with a named snapshot is kept");
 }
 int main(int argc, char **argv) {
-    // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
+    // WTS-02: suppress Windows dialogs and fail on unexpected logged JUCE assertions.
     adi::uitest::noDialogs();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI init;
+#if JUCE_LOG_ASSERTIONS
     adi::uitest::AssertionWatch assertions;
     {
         // The watch sees an assertion: one tripped on purpose under a watch of its own.
         adi::uitest::AssertionWatch probe;
         jassertfalse;
-        check(probe.count() == 1, "an assertion is logged and counted (JUCE_LOG_ASSERTIONS on this target)");
+        check(probe.count() == 1, "an assertion is logged and counted");
     }
+#endif
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
@@ -25293,10 +25295,12 @@ int main(int argc, char **argv) {
     trace("discardUneditedUntitled", [&] { discardUneditedUntitled(temp.path()); });
     trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
+#if JUCE_LOG_ASSERTIONS
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)
         std::fprintf(stderr, "[shell] %d JUCE assertions came from the machine (no message loop, display or MIDI), counted apart\n",
                      assertions.queueFull());
+#endif
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

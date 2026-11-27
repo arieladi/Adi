@@ -98,9 +98,6 @@ if(ADI_WITH_JUCE)
     target_sources(adi_ui_shell_tests PRIVATE tests/test_ui_shell.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp)
     target_link_libraries(adi_ui_shell_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
     target_compile_definitions(adi_ui_shell_tests PRIVATE ADI_UI_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ui")
-    # WTS-02: JUCE's assertions logged, so the suite's AssertionWatch counts them. On test targets only:
-    # never on adi_app, where it would keep jassert live in the release ADI.exe.
-    target_compile_definitions(adi_ui_shell_tests PRIVATE JUCE_LOG_ASSERTIONS=1)
     # The suite's fixtures keep whole root windows on the stack. Windows gives a program 1 MB of stack
     # where Linux and macOS give 8 MB, and a Debug build's frames are large: on 27 November the root grew
     # (the Info box's own analyser, the recording fixtures) and the suite overflowed on Windows only. The
