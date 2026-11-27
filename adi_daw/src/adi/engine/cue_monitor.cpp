@@ -5,7 +5,10 @@
 #include "adi/engine/sample_preview.hpp"
 #include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <set>
 namespace adi::engine {
@@ -297,6 +300,18 @@ void moveMainOutput(T* const* output, int frames, int first) noexcept {
         if (output[first + 1]) output[first + 1][i] = r;
     }
 }
+// The packed buffer that carries one physical output, or -1 when the device has not opened it.
+int packedOutput(const OutputChannelMap& map, int physical) noexcept {
+    if (physical < 0 || physical >= OutputChannelMap::maximumChannels)
+        return -1;
+    const auto bit = std::uint64_t{1} << physical;
+    return (map.enabled & bit) != 0 ? std::popcount(map.enabled & (bit - 1)) : -1;
+}
+template<class T>
+void silenceOutput(T* const* output, int frames, int channel) noexcept {
+    if (output && output[channel])
+        std::fill_n(output[channel], frames, T{});
+}
 }
 void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) noexcept {
     SnapshotPublisher<Scene>::AudioRead scene(impl_->scenes);
@@ -326,19 +341,41 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
         buffers.activeFilter = MainAudition::Stereo;
     }
     int mainOut = 0;
+    bool mainHeard[2]{true, true}; // Main's left and right have an output on this device
     if (!io.exporting && buffers.channels == 2) {
-        const int packedMain = io.packedOutputPair(scene->settings.firstMainOutputChannel);
+        const int physicalMain = scene->settings.firstMainOutputChannel;
+        const int packedMain = io.packedOutputPair(physicalMain);
         if (packedMain > 0) {
             mainOut = packedMain;
             moveMainOutput(io.out, io.frames, mainOut);
             moveMainOutput(io.out64, io.frames, mainOut);
+        } else if (packedMain < 0) {
+            // The device has not opened Main Out's pair. The graph wrote Main to
+            // the first two buffers, which are other outputs here: silence them,
+            // with no fallback onto a different pair. A buffer that already is
+            // Main's own output keeps playing (the left of 1/2 on a one-channel
+            // device).
+            for (int c = 0; c < 2; ++c) {
+                if (packedOutput(io.outputChannels, physicalMain + c) == c)
+                    continue;
+                mainHeard[c] = false;
+                if (c < io.numOut) {
+                    silenceOutput(io.out, io.frames, c);
+                    silenceOutput(io.out64, io.frames, c);
+                }
+            }
         }
     }
     const auto physicalFirst=scene->settings.firstOutputChannel;
     const auto first=io.packedOutputPair(physicalFirst);
     auto* preview=impl_->preview;
     const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,physicalFirst);
-    const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
+    // Debug vector iterators can take a lock on the audio thread.
+    const auto* voices=scene->voices.data();
+    const auto voiceCount=scene->voices.size();
+    bool cueActive=false;
+    for(std::size_t index=0;index<voiceCount && !cueActive;++index)
+        cueActive=voices[index].selected || voices[index].gate->current!=0;
     if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render && !sampleActive) {
         impl_->volume={scene->gain,scene->gain,0,0};
         return;
@@ -350,7 +387,8 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     double* scratch[]{buffers.scratch.data(),buffers.scratch.data()+stride};
     for(int c=0;c<2;++c){std::fill_n(cue[c],frames,0.0);std::fill_n(reference[c],frames,0.0);}
     AudioIo copy;copy.out64=scratch;copy.numOut=2;copy.frames=io.frames;
-    for(const auto& voice:scene->voices) {
+    for(std::size_t index=0;index<voiceCount;++index) {
+        const auto& voice=voices[index];
         voice.gate->set(voice.selected?1.0:0.0,scene->ramp);
         if(voice.gate->current==0 && !voice.selected)continue;
         const bool copied=graph.copyRenderedOutput(*voice.node,copy);
@@ -390,18 +428,19 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
         if(wantReference && i==readyAt)impl_->referenceMix.set(1.0,scene->ramp);
         const double ref=impl_->referenceMix.next(),main=1-ref,gain=impl_->volume.next();
         for(int c=mainOut;main!=1 && c<std::min(mainOut + buffers.channels,io.numOut);++c) {
+            if(c-mainOut<2 && !mainHeard[c-mainOut])continue; // silenced above: not Main's output
             if(io.out && io.out[c])io.out[c][i]*=static_cast<float>(main);
             if(io.out64 && io.out64[c])io.out64[c][i]*=main;
         }
         for(int c=0;c<2;++c) {
             const auto index=static_cast<std::size_t>(i);
             const double r=reference[c][index]*ref*gain;
-            add(mainOut + c, i, r);
+            if(mainHeard[c])add(mainOut + c, i, r);
             // An output shared with Main already has the reference. Cue Out
             // also receives it on its separate outputs, past Main's chain.
             if (first >= 0) {
                 const int cueChannel = first + c;
-                const bool onMain = cueChannel >= mainOut && cueChannel < mainOut + 2;
+                const bool onMain = cueChannel >= mainOut && cueChannel < mainOut + 2 && mainHeard[cueChannel - mainOut];
                 add(cueChannel, i, cue[c][index] * main * gain + (onMain ? 0 : r));
             }
         }

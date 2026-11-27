@@ -7,12 +7,16 @@
 #include "adi/ui/track_edits.hpp"
 #include "ui_controls.hpp"
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 namespace adi::engine {
 struct StripMeter; // adi/engine/mixer.hpp: the engine's post-fader peak and RMS

@@ -121,7 +121,7 @@ void shape(const fs::path& directory, std::size_t targets, bool prepared) {
             continue;
         // A killed atomic metadata publication can leave a private stage. It
         // is never read as a plan or deleted by inspection. Refuse all others.
-        if (prepared && stageName(name.generic_string()))
+        if (prepared && stageName(media::pathUtf8(name)))
             continue;
         refuse("unexpected file in the take directory");
     }
@@ -539,10 +539,12 @@ std::vector<LaunchTake> findLaunchTakes() {
     root=checkedDirectory(fs::canonical(root));
     std::set<std::string> seen;
     for(const auto& session:fs::directory_iterator(root)) {
-        const auto name=session.path().filename().generic_string();
-        if(!name.starts_with(sessionPrefix) || !hexId(std::string_view(name).substr(sessionPrefix.size())))
-            continue;
         try {
+            // Read as UTF-8, and inside the guard: on Windows the narrow form of a name the system
+            // code page cannot spell throws, and one such stray entry ended the whole discovery.
+            const auto name=media::pathUtf8(session.path().filename());
+            if(!name.starts_with(sessionPrefix) || !hexId(std::string_view(name).substr(sessionPrefix.size())))
+                continue;
             const auto directory=checkedDirectory(session.path());
             ordinary(directory/"owner.lock",false);
             std::error_code error;
@@ -554,10 +556,12 @@ std::vector<LaunchTake> findLaunchTakes() {
                 continue;
             (void)unsignedInteger(header.at("started"));
             for(const auto& registration:fs::directory_iterator(directory)) {
-                const auto leaf=registration.path().filename().generic_string();
-                if(!leaf.starts_with(registrationPrefix) || !leaf.ends_with(".json"))
-                    continue;
                 try {
+                    // As above: an entry whose name cannot be read hides only itself, not the
+                    // session's other takes.
+                    const auto leaf=media::pathUtf8(registration.path().filename());
+                    if(!leaf.starts_with(registrationPrefix) || !leaf.ends_with(".json"))
+                        continue;
                     const auto record=parse(readText(registration.path()));
                     fields(record,{"schema","recordingId","directory"});
                     const auto id=textField(record.at("recordingId"));

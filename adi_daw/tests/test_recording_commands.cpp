@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/appdata.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/warp_commands.hpp"
@@ -28,6 +29,7 @@
 #include <fstream>
 #include <future>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <thread>
 namespace {
@@ -1678,12 +1680,27 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
     if(!fixture.store)throw std::runtime_error(toString(error));
     const auto directory=fs::directory_iterator(root)->path();
     const auto known=fs::canonical(directory);
+    // A stray file beside the sessions and one inside each, named in Hebrew, Chinese and a symbol at
+    // once, which no single Windows code page spells. The leading digit lists it first on NTFS.
+    const fs::path stray(std::u8string(u8"0א中\U0001F3B5.txt"));
+    const auto sessions=appdata::pathsFor(appdata::App::Daw).data/"recording-sessions";
+    if(fs::is_directory(sessions)) {
+        for(const auto& session:fs::directory_iterator(sessions)) {
+            if(!fs::is_directory(session.path()))continue;
+            std::ofstream inside(session.path()/stray);
+            inside<<"not a registration";
+        }
+        std::ofstream beside(sessions/stray);
+        beside<<"not a session";
+    }
     const auto launched=recording::discoverInterrupted();
     const auto candidate=std::find_if(launched.begin(),launched.end(),
         [&](const auto& item){return item.directory==known;});
     check(candidate!=launched.end() && candidate->tracks==std::vector<std::int64_t>{21} &&
           !candidate->projectUuid.empty() && !candidate->recordingId.empty(),
           "startup finds the unclosed process's recording without being given its directory");
+    check(candidate!=launched.end() && fs::is_regular_file(sessions/stray),
+          "startup reads past entries whose names the system code page cannot spell");
     auto recovered=recording::recoverInterrupted(*fixture.store,root,directory);
     check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==128 &&
           recovered.capture.startSample==512,

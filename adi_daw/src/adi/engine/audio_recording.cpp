@@ -120,6 +120,11 @@ std::error_code AudioRecordingResult::discard() {
     if(files_->hasOriginalPlan) {
         fs::remove(files_->directory/"start.json",removalError);
         if(removalError)return removalError;
+        // This take's owner.lock is inside the folder removed next. Where a delete only takes
+        // effect once the last handle closes (FAT and exFAT volumes, some network shares), the
+        // lease still open kept the file's name, the folder stayed non-empty and the discard
+        // failed. With start.json gone no scan offers this take again, so the lease can go first.
+        files_->recordingOwner.reset();
     }
     fs::remove_all(files_->directory,removalError);
     if(!removalError) {

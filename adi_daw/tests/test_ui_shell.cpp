@@ -5475,7 +5475,7 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
         writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
     }
     AudioImport import;
-    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "read the two-second file");
+    check(document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import), "read the two-second file");
     constexpr std::int64_t track = 4, beat = textproj::kPPQ, start = 4 * beat, end = 8 * beat;
     auto drop = dropAudio(*document->view().current(), track, start, "Trim", import);
     check(drop.refusal.empty() && document->ops().submit(std::move(drop.ops)).ok && document->synchronise(),
@@ -6508,7 +6508,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
         return t != nullptr ? t->clips.size() : std::size_t{0};
     };
     // A drop asks first, every choice off.
-    check(root.dropAudio(wav.string(), audioTrack, 0, "Prompted") && root.importPrompt() != nullptr &&
+    check(root.dropAudio(media::pathUtf8(wav), audioTrack, 0, "Prompted") && root.importPrompt() != nullptr &&
               root.importPrompt()->isVisible() && clipsOn() == 0,
           "a drop opens the prompt and imports nothing yet");
     if (auto *prompt = root.importPrompt()) {
@@ -6536,7 +6536,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
           "Import: the file is imported with Copy on, as one clip");
     check(settings.get("files.copyImportedMedia") == "always", "the choice is kept as the last one");
     // The next drop asks again, with the last choices; Cancel imports nothing.
-    check(root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr &&
+    check(root.dropAudio(media::pathUtf8(wav), audioTrack, 4 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr &&
               root.importPrompt()->choices().copyIn,
           "the prompt opens again with the last choices");
     if (auto *prompt = root.importPrompt())
@@ -6545,20 +6545,20 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     check(root.importPrompt() == nullptr && asked.size() == 1 && clipsOn() == 1, "Cancel imports nothing");
     // Not asking: the last choices are used straight away.
     settings.set("editing.importOptions", std::string("never"), {}, why);
-    const bool silent = root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted");
+    const bool silent = root.dropAudio(media::pathUtf8(wav), audioTrack, 4 * textproj::kWhole, "Prompted");
     root.frame();
     check(silent && root.importPrompt() == nullptr && asked.size() == 2 && asked[1].copyIn && clipsOn() == 2,
           "with the prompt off, the last choices import at once");
     // All off and not asking: the plain import, as before E5.
     keepImportChoices(settings, ImportChoices{}, why);
-    const bool plain = root.dropAudio(wav.string(), audioTrack, 8 * textproj::kWhole, "Prompted");
+    const bool plain = root.dropAudio(media::pathUtf8(wav), audioTrack, 8 * textproj::kWhole, "Prompted");
     root.frame();
     check(plain && asked.size() == 2 && clipsOn() == 3, "every choice off: the plain import, no material import");
     // The prompt's keys, and a second drop while it is open.
     settings.set("editing.importOptions", std::string("ask"), {}, why);
-    check(root.dropAudio(wav.string(), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
+    check(root.dropAudio(media::pathUtf8(wav), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
           "the prompt again");
-    check(!root.dropAudio(wav.string(), audioTrack, 16 * textproj::kWhole, "Prompted") &&
+    check(!root.dropAudio(media::pathUtf8(wav), audioTrack, 16 * textproj::kWhole, "Prompted") &&
               root.error() == "Answer the import prompt first.",
           "a second drop waits for the open prompt, and says so");
     if (auto *prompt = root.importPrompt()) {
@@ -6568,7 +6568,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     }
     root.frame();
     check(root.importPrompt() == nullptr && clipsOn() == 3, "Escape cancels");
-    check(root.dropAudio(wav.string(), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
+    check(root.dropAudio(media::pathUtf8(wav), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
           "and again");
     if (auto *prompt = root.importPrompt())
         prompt->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
@@ -6581,14 +6581,14 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     keepImportChoices(settings, warped, why);
     const auto trackCount = root.reader().tracks().size();
     const auto headBefore = document->ops().nextUndo();
-    root.dropAudio(wav.string(), 0, 0, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), 0, 0, "Prompted");
     root.frame();
     const auto headAfter = document->ops().nextUndo();
     check(root.reader().tracks().size() == trackCount && headBefore && headAfter && headAfter->txnId == headBefore->txnId &&
               root.error().find("no steady beat") != std::string::npos && !root.importing(),
           "a refused file below the tracks leaves no track and no undo step, and says why");
     // Several files: the first refused stops the rest, and the Status Bar says so.
-    root.dropAudioFiles({{wav.string(), "Prompted"}, {wav.string(), "Prompted"}}, audioTrack, 20 * textproj::kWhole, false);
+    root.dropAudioFiles({{media::pathUtf8(wav), "Prompted"}, {media::pathUtf8(wav), "Prompted"}}, audioTrack, 20 * textproj::kWhole, false);
     root.frame();
     check(clipsOn() == 4 && root.error().find("(0 files imported; 1 not tried.)") != std::string::npos,
           "a refusal part-way through says what landed and what was not tried");
@@ -6597,14 +6597,14 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     root.importMaterial = [](const std::vector<std::pair<std::string, std::string>> &,
                              std::int64_t, std::int64_t, bool, const ImportChoices &,
                              AdiRootComponent::MaterialDone) { return false; };
-    root.dropAudio(wav.string(), audioTrack, 20 * textproj::kWhole, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), audioTrack, 20 * textproj::kWhole, "Prompted");
     check(!root.importing() && root.error().find("still being prepared") != std::string::npos && clipsOn() == 4,
           "a worker still busy: the drop says to drop it again");
     root.importMaterial = material;
     // Copy set to "ask": the prompt asks even with the import options off, and "ask" stays.
     keepImportChoices(settings, ImportChoices{}, why);
     settings.set("files.copyImportedMedia", std::string("ask"), {}, why);
-    check(importAsks(settings) && root.dropAudio(wav.string(), audioTrack, 20 * textproj::kWhole, "Prompted") &&
+    check(importAsks(settings) && root.dropAudio(media::pathUtf8(wav), audioTrack, 20 * textproj::kWhole, "Prompted") &&
               root.importPrompt() != nullptr,
           "Copy on \"ask\" asks on every drop");
     if (auto *prompt = root.importPrompt())
@@ -6652,7 +6652,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     const auto beforeOptOut = clipsOn();
     settings.set("files.copyImportedMedia", std::string("ask"), {}, why);
     const auto next = 32 * textproj::kWhole;
-    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), audioTrack, next, "Prompted");
     check(root.importPrompt() != nullptr, "SC-160: the import prompt offers an opt-out");
     if (auto *prompt = root.importPrompt()) {
         prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
@@ -6663,7 +6663,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     check(clipsOn() == beforeOptOut && settings.get("editing.importOptions") == "ask" &&
               settings.get("files.copyImportedMedia") == "ask",
           "SC-160: Cancel saves neither the opt-out nor the copy choice");
-    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), audioTrack, next, "Prompted");
     if (auto *prompt = root.importPrompt()) {
         prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
         prompt->copy.setToggleState(true, juce::dontSendNotification);
@@ -6675,7 +6675,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
               settings.get("editing.importOptions") == "never" && settings.get("files.copyImportedMedia") == "always" &&
               importChoicesFrom(settings).edgeFades,
           "SC-160: Import remembers the selected options and stops prompting");
-    root.dropAudio(wav.string(), audioTrack, next + 4 * textproj::kWhole, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), audioTrack, next + 4 * textproj::kWhole, "Prompted");
     root.frame();
     check(clipsOn() == beforeOptOut + 2 && root.importPrompt() == nullptr && !asked.empty() &&
               asked.back().copyIn && asked.back().edgeFades,
@@ -6683,7 +6683,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     const auto beforeBatch = History(document->store()).head();
     const auto countBeforeBatch = root.reader().tracks().size();
     const auto batchPosition = 40 * textproj::kWhole;
-    const std::vector<std::pair<std::string, std::string>> pair{{wav.string(), "Prompted"}, {wav.string(), "Prompted"}};
+    const std::vector<std::pair<std::string, std::string>> pair{{media::pathUtf8(wav), "Prompted"}, {media::pathUtf8(wav), "Prompted"}};
     const bool batchStarted = root.dropAudioFiles(pair, 0, batchPosition, true);
     root.frame();
     const auto landedClips = [&] {
@@ -6706,7 +6706,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     check(batchRedone && root.reader().tracks().size() == countBeforeBatch + 2 && landedClips() == 2,
           "SC-158: one Redo restores the complete drop");
     settings.set("editing.importOptions", std::string("ask"), {}, why);
-    root.dropAudio(wav.string(), audioTrack, next + 8 * textproj::kWhole, "Prompted");
+    root.dropAudio(media::pathUtf8(wav), audioTrack, next + 8 * textproj::kWhole, "Prompted");
     check(root.importPrompt() && !root.importPrompt()->stopAsking.getToggleState() &&
               root.importPrompt()->choices().copyIn && root.importPrompt()->choices().edgeFades,
           "SC-160: Settings can re-enable the prompt with its last import options");
@@ -7059,6 +7059,41 @@ void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
     const auto restored = engine::readClipDetails(document->store(), original);
     check(restored.clip && restored.clip->posTicks == 0 && restored.clip->lengthTicks == 4 * beat,
           "Undo restores the exact original MIDI clip interval");
+
+    // A MIDI file the Browser lists loads by a double-click, where Create > Import MIDI File puts it.
+    auto &browser = root.browser;
+    LibraryListing listing;
+    listing.places = {{"MIDI Files", dir, "midi-files"}};
+    listing.files = {{"Scale.mid", path, "midi-files", LibraryFile::Kind::Midi}};
+    browser.setListing(std::move(listing));
+    const auto place = std::ranges::find(browser.sidebar(), std::string("midi-files"), &BrowserPanel::Entry::place);
+    if (place != browser.sidebar().end())
+        browser.choose(static_cast<int>(place - browser.sidebar().begin()));
+    const auto listed = std::ranges::find_if(browser.rows(), [](const BrowserPanel::Row &row) {
+        return row.file != nullptr && row.file->kind == LibraryFile::Kind::Midi;
+    });
+    check(listed != browser.rows().end(), "the Browser lists the MIDI file in its Place");
+    if (listed == browser.rows().end())
+        return;
+    const auto listedRow = static_cast<int>(listed - browser.rows().begin());
+    const auto doubleClick = [&] {
+        browser.list.getListBoxModel()->listBoxItemDoubleClicked(listedRow, pressAt(browser.list, {45.f, 9.f}));
+        root.frame();
+        return engine::readClipDetails(document->store(), root.midiClipForExport());
+    };
+    auto &selection = arrangement.geometry.selection;
+    selection.track = 2;
+    selection.insert = 8 * beat;
+    const auto onSelected = doubleClick();
+    check(onSelected.clip && onSelected.clip->trackId == 2 && onSelected.clip->posTicks == 8 * beat &&
+              onSelected.clip->name == "Scale" && onSelected.clip->notes.size() == 1 && count() == 2,
+          "a double-click on a MIDI file in the Browser imports it on the selected MIDI track at the insert marker");
+    const auto tracksBefore = root.reader().tracks().size();
+    selection.track = 0;
+    const auto onNew = doubleClick();
+    check(onNew.clip && onNew.clip->trackId != 2 && onNew.clip->name == "Scale" && count() == 2 &&
+              root.reader().tracks().size() == tracksBefore + 1,
+          "with no MIDI track selected, the double-click imports the file on a new MIDI track");
 }
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
@@ -7111,7 +7146,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     auto &geometry = root.arrangement.geometry;
     auto &canvas = root.arrangement.canvas;
-    const auto path = juce::String(wav.string());
+    const auto path = juce::String(media::pathUtf8(wav));
     geometry.scale = 48;
     // A little past bar 2: the clip starts on its line.
     const auto bar2 = textproj::kWhole;
@@ -7241,7 +7276,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     {
         std::ofstream(text) << "not audio";
     }
-    canvas.filesDropped(juce::StringArray{juce::String(text.string())}, x, laneTop(root, 1) + 10);
+    canvas.filesDropped(juce::StringArray{juce::String(media::pathUtf8(text))}, x, laneTop(root, 1) + 10);
     root.frame();
     check(root.reader().findTrack(1)->clips.size() == 1 && !root.error().empty(), "a text file is refused, with the reason");
     // Several files at once, as Live places them: one after another on the track; with Ctrl/Cmd, each
@@ -7253,7 +7288,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         audio::WavWriter writer(snare, 48000, 1, audio::WavFormat::Pcm16);
         writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
     }
-    const auto snarePath = juce::String(snare.string());
+    const auto snarePath = juce::String(media::pathUtf8(snare));
     check(canvas.isInterestedInFileDrag(juce::StringArray{path, snarePath}), "the lanes take several files");
     const auto bar3 = 2 * textproj::kWhole;
     const int x3 = static_cast<int>(geometry.x(bar3) + 3);
@@ -7875,6 +7910,22 @@ void browserFavorites(const std::filesystem::path &dir) {
           "SC-133: a plug-in can be marked independently of a matching UID in another format");
     check(choose(browser, "Favorites") && browser.rows().size() == 3 && !History(document->store()).head(),
           "SC-133: only marked sample, built-in and plug-in are listed, without project history edits");
+    {
+        // Favorites has no scan status line, so a scan in progress leaves no row out of the Name order.
+        scan.phase = PluginScan::Phase::Scanning;
+        browser.setPluginScan(scan);
+        const auto clickName = [&] {
+            browser.mouseDown(pressAt(browser, browser.nameHeaderArea().getCentre().toFloat(),
+                                      juce::ModifierKeys::leftButtonModifier));
+        };
+        clickName();
+        clickName();
+        const auto &sorted = browser.rows();
+        check(sorted.size() == 3 && sorted[0].device && sorted[1].plugin && sorted[2].file,
+              "SC-133: Name sorts every favorite while a plug-in scan runs");
+        scan.phase = PluginScan::Phase::Done;
+        browser.setPluginScan(scan);
+    }
     browser.search.setText("test vendor", false);
     browser.search.onTextChange();
     check(browser.rows().size() == 1 && browser.rows()[0].plugin && browser.rows()[0].plugin->format == "clap",
@@ -14335,6 +14386,25 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
           "SC-253: Insert Take Lane adds a visible empty row through the peerless header menu");
     check(headers.keyPressed(show) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
           "SC-253: Hide Take Lanes restores the normal track layout");
+    {
+        // The audio track has no take lane: its Show Take Lanes is dimmed, and the shortcut says why
+        // instead of turning the menu's wording to Hide with nothing to show.
+        const auto showItem = [&] {
+            const auto trackMenu = arrangement.headerMenu(2);
+            for (juce::PopupMenu::MenuItemIterator entry(trackMenu); entry.next();)
+                if (entry.getItem().text.endsWith("Take Lanes"))
+                    return std::pair{entry.getItem().text, entry.getItem().isEnabled};
+            return std::pair{juce::String(), false};
+        };
+        const auto dimmed = showItem();
+        const auto priorTrack = geo.selection.track;
+        geo.selection.track = 2;
+        const bool refused = !headers.keyPressed(show) && root.error().find("take lanes") != std::string::npos;
+        geo.selection.track = priorTrack;
+        check(dimmed == std::pair{juce::String("Show Take Lanes"), false} && refused && showItem() == dimmed &&
+                  !geo.shownTakeLanes.contains(2) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
+              "SC-253: a track with no take lanes dims Show Take Lanes, and its shortcut says why and shows nothing");
+    }
 
     root.setAutomationMode(true);
     const auto pan = panTarget(1);
@@ -14726,6 +14796,23 @@ void projectFilesList(AppCommands &commands, const std::filesystem::path &dir) {
               files[1].bytes && static_cast<std::uintmax_t>(*files[1].bytes) == std::filesystem::file_size(present),
           "SC-153: the list shows file names, locations, missing status and sizes");
     if (files.size() != 2) return;
+    {
+        // The rows keep the project's order, so a click on a column header must not claim a sort.
+        juce::TableListBox *mediaTable = nullptr;
+        for (auto *child : panel.getChildren())
+            if (auto *listBox = dynamic_cast<juce::TableListBox *>(child))
+                mediaTable = listBox;
+        bool sortClaimed = false;
+        if (mediaTable != nullptr) {
+            auto &columns = mediaTable->getHeader();
+            for (int index = 0; index < columns.getNumColumns(false); ++index) {
+                columns.columnClicked(columns.getColumnIdOfIndex(index, false), juce::ModifierKeys{});
+                sortClaimed = sortClaimed || columns.getSortColumnId() != 0;
+            }
+        }
+        check(mediaTable != nullptr && mediaTable->getHeader().getNumColumns(false) == 4 && !sortClaimed,
+              "SC-153: a click on a column header shows no sort order the list does not apply");
+    }
     auto chosen = present;
     panel.locateFile = [&](const ProjectMediaFile &file) {
         return document->relinkMediaFile(file.id, file.hash, chosen);
@@ -15773,8 +15860,8 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     commands.activate(root);
     for (int b = 0; b < 8; b += 2)
-        check(root.dropAudio((samples / "Drum Loop.wav").string(), 4, b * bar, "Drum Loop"), "the drum loop dropped");
-    check(root.dropAudio((samples / "Pad.wav").string(), 5, 0, "Pad"), "the pad dropped");
+        check(root.dropAudio(media::pathUtf8(samples / "Drum Loop.wav"), 4, b * bar, "Drum Loop"), "the drum loop dropped");
+    check(root.dropAudio(media::pathUtf8(samples / "Pad.wav"), 5, 0, "Pad"), "the pad dropped");
     root.frame();
     // The waveforms come from the document's worker: wait for every audio clip's peaks.
     for (int tries = 0; tries < 200; ++tries) {
@@ -16226,7 +16313,7 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     const auto bar = textproj::kWhole;
     for (const auto at : {std::int64_t{0}, bar}) {
         AudioImport import;
-        check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+        check(document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import), "the file is read");
         auto edit = dropAudio(*document->view().current(), 4, at, "Pad", import);
         check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
               "a bar of Pad dropped on 3 Audio");
@@ -16536,7 +16623,7 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
     }
     AudioImport import;
-    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, import)) {
+    if (!document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import)) {
         check(false, "read the file for the Warp switch");
         return;
     }
@@ -16869,7 +16956,7 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
     }
     constexpr std::int64_t track = 4, beat = textproj::kPPQ;
     AudioImport imported;
-    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, imported)) {
+    if (!document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, imported)) {
         check(false, "read the Sample Editor's source");
         return;
     }
@@ -17309,7 +17396,7 @@ void clipWarpSwitchWithOnsets(AppCommands &commands, const std::filesystem::path
         writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
     }
     AudioImport import;
-    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, import)) {
+    if (!document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import)) {
         check(false, "read the file for the Warp switch");
         return;
     }
@@ -17448,7 +17535,7 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
         writer.write(samples.data(), 96000);
     }
     AudioImport import;
-    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+    check(document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import), "the file is read");
     auto edit = dropAudio(*document->view().current(), 4, 0, "Break", import);
     check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
           "dropped on 3 Audio at bar 1: four beats at 120 BPM");
@@ -27949,7 +28036,7 @@ void untitledProjects(const std::filesystem::path &dir) {
           "with no projects folder chosen, the first Untitled reserves its own project folder");
     const auto folder = dir / "untitled";
     std::string why;
-    check(fresh.set("files.projectsFolder", folder.string(), {}, why), "the projects folder is chosen");
+    check(fresh.set("files.projectsFolder", media::pathUtf8(folder), {}, why), "the projects folder is chosen");
     check(nextUntitledProject(fresh) == file(folder / "Untitled" / "Untitled.adi") &&
               std::filesystem::is_directory(folder / "Untitled"),
           "the chosen projects folder is made and its first Untitled has a separate directory");
@@ -28906,6 +28993,23 @@ int main(int argc, char **argv) {
               }), "SC-424: the View menu command reopens the Browser and enables the Info dock");
         check(reopen([&] { a.status.infoToggle.onClick(); return true; }),
               "SC-424: the Status Bar's Info control reopens the Browser and its Info dock");
+        // The Settings window's switch changes the app's setting with no command of this window:
+        // the window learns of it on its next frame.
+        const auto settingsSwitch = [&](bool shown) {
+            const bool applied = commands.setInfoView(shown, why);
+            a.frame();
+            return applied;
+        };
+        const bool offWithBrowser = settingsSwitch(false) && a.infoArea().isEmpty() && !a.browserArea().isEmpty();
+        const bool columnHidden = a.command(AppCommands::ToggleBrowser) && a.browserArea().isEmpty();
+        check(offWithBrowser && columnHidden && settingsSwitch(true) && a.browserArea() == browserWithInfo &&
+                  !a.infoArea().isEmpty() && a.deviceArea() == deviceWithInfo,
+              "SC-424: the Settings switch for the Info View brings a hidden Browser column back with its Info dock");
+        const bool columnHiddenAgain = a.command(AppCommands::ToggleBrowser) && a.browserArea().isEmpty();
+        check(columnHiddenAgain && settingsSwitch(false) && a.browserArea().isEmpty() && a.infoArea().isEmpty(),
+              "SC-424: switching the Info View off in the Settings leaves a hidden Browser column hidden");
+        check(settingsSwitch(true) && a.browserArea() == browserWithInfo && !a.infoArea().isEmpty(),
+              "restore the Browser column and its Info dock for the surrounding fixtures");
     }
     if (restoreBrowserRight)
         check(a.command(AppCommands::SwapPanels), "restore the Browser side used by the surrounding fixtures");

@@ -30,6 +30,17 @@
 #elif defined(__linux__)
 #include <linux/magic.h>
 #include <sys/vfs.h>
+// <linux/magic.h> names these three only from Linux 5.17 on; older kernel headers (Ubuntu 22.04
+// ships 5.15) leave them out. The numbers are the kernel's own.
+#ifndef CEPH_SUPER_MAGIC
+#define CEPH_SUPER_MAGIC 0x00c36400
+#endif
+#ifndef CIFS_SUPER_MAGIC
+#define CIFS_SUPER_MAGIC 0xFF534D42
+#endif
+#ifndef SMB2_SUPER_MAGIC
+#define SMB2_SUPER_MAGIC 0xFE534D42
+#endif
 #endif
 
 namespace adi {

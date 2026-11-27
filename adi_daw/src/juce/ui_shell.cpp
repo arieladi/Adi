@@ -1963,7 +1963,13 @@ void AdiRootComponent::frame() noexcept {
         namesBar.lock.setToggleState(envelopesLocked, juce::dontSendNotification);
     // The Info View and density are app-scoped and can change in another window.
     if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
+        // Switched on from outside this window's own command (the Settings window's switch): the
+        // Info box is the foot of the Browser's column, so a hidden column comes back with it, as
+        // it does for the Info key, and the switch is never a control that shows nothing.
+        const bool switchedOn = commands_.infoView() && !infoShown_;
         infoShown_ = commands_.infoView();
+        if (switchedOn && state_.panels.find(Panel::Browser)->collapsed)
+            (void)toggle(Panel::Browser); // a refusal is said in the Status Bar
         resized();
     }
     if (!infoArea_.isEmpty())

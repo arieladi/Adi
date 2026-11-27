@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_browser.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "ui_controls.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
@@ -1038,8 +1039,10 @@ void BrowserPanel::sortRows() {
                 self(self, index + 1, ends[index]);
         }
     };
-    // Scan progress is a status line and the progress callback updates row zero.
-    const bool scanNotice = pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
+    // Scan progress is a status line and the progress callback updates row zero. Favorites lists
+    // its marked plug-ins without that line, so every row there is sorted.
+    const bool scanNotice = !favoritesShown() && pluginsShown() &&
+                            pluginScan_.phase == PluginScan::Phase::Scanning;
     if (scanNotice)
         append(0);
     appendSorted(appendSorted, scanNotice ? 1u : 0u, count);
@@ -1311,6 +1314,17 @@ bool BrowserPanel::load(int row) {
             const juce::File file(nativeFilePath(entry.file->path));
             open(file);
             return true;
+        }
+        if (entry.file->kind == LibraryFile::Kind::Midi) {
+            // Where Create > Import MIDI File puts it: on the selected MIDI track at the insert
+            // marker, otherwise on a new MIDI track. Copy the path first: the import can refill
+            // the list this row points into.
+            const auto path = media::pathUtf8(entry.file->path);
+            const auto name = media::pathUtf8(entry.file->path.stem());
+            const auto current = root_.current();
+            const auto *target = current ? current->findTrack(track) : nullptr;
+            return root_.dropMidiFiles({{path, name}}, target && isMidiTrack(*target) ? track : 0,
+                                       root_.arrangement.geometry.selection.insert, false);
         }
         if (!entry.file->isSample())
             return false;

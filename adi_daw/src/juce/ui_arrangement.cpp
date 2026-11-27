@@ -1768,8 +1768,14 @@ bool supportsTakeLanes(const engine::TrackNode *track) {
 }
 }
 bool ArrangementView::toggleTakeLanes(std::int64_t track) {
-    if (!supportsTakeLanes(reader().findTrack(track)))
+    const auto *target = reader().findTrack(track);
+    if (!supportsTakeLanes(target))
         return false;
+    // A track with no take lane has nothing to show: say so, and leave the menu's wording alone.
+    if (target->takeLanes.empty() && !geometry.shownTakeLanes.contains(track)) {
+        root.say("This track has no take lanes yet. Insert Take Lane adds one.");
+        return false;
+    }
     if (geometry.shownTakeLanes.erase(track) == 0) {
         geometry.shownTakeLanes.insert(track);
         geometry.foldedTracks.erase(track);
@@ -1894,7 +1900,10 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     root.addTrackAutomationDeleteItem(menu, track);
     root.addTrackRenderItems(menu, track);
     if (const auto *target = reader().findTrack(track); supportsTakeLanes(target)) {
-        menu.addItem(geometry.shownTakeLanes.contains(track) ? "Hide Take Lanes" : "Show Take Lanes",
+        // Dimmed while the track has no take lane to show; Insert Take Lane below adds the first.
+        const bool lanesShown = geometry.shownTakeLanes.contains(track);
+        menu.addItem(lanesShown ? "Hide Take Lanes" : "Show Take Lanes",
+                     lanesShown || !target->takeLanes.empty(), false,
                      [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->toggleTakeLanes(track); });
         menu.addItem("Insert Take Lane", !target->frozen, false,
                      [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->insertTakeLane(track); });

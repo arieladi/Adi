@@ -5,6 +5,7 @@
 #include "adi/ui/library_listing.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <span>
 #include <string>

@@ -3,7 +3,16 @@
 
 #include "adi/ui/project_media.hpp"
 #include "ui_look.hpp"
+#include <juce_gui_basics/juce_gui_basics.h>
+#include <algorithm>
+#include <cstddef>
+#include <exception>
+#include <functional>
+#include <stop_token>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace adi::ui {
 class ProjectMediaPanel final : public juce::Component, private juce::TableListBoxModel {
@@ -14,10 +23,12 @@ public:
         table_.setTitle("Project media files");
         table_.setRowHeight(22);
         auto &header = table_.getHeader();
-        header.addColumn("File", Name, 180, 80);
-        header.addColumn("Location", Location, 360, 100);
-        header.addColumn("Status", State, 90, 64);
-        header.addColumn("Size", Size, 110, 68);
+        // The list keeps the project's order: a header click sets no sort arrow the rows would not follow.
+        constexpr int unsorted = juce::TableHeaderComponent::notSortable;
+        header.addColumn("File", Name, 180, 80, -1, unsorted);
+        header.addColumn("Location", Location, 360, 100, -1, unsorted);
+        header.addColumn("Status", State, 90, 64, -1, unsorted);
+        header.addColumn("Size", Size, 110, 68, -1, unsorted);
         table_.setAutoSizeMenuOptionShown(false);
         header.setPopupMenuActive(false);
         addAndMakeVisible(table_);

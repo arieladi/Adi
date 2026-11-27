@@ -963,7 +963,14 @@ StoreFileResult Store::restoreProjectBackup(const fs::path& project, const fs::p
     try {
         checkSaveCancellation(stop);
         const auto folder = fs::weakly_canonical(project).parent_path();
-        if (fs::canonical(backup.parent_path()) != folder / "Backup" ||
+        // The Backup folder as the disk spells it. Where letter case does not distinguish names (NTFS,
+        // APFS) an existing "backup" is the folder the backups were written to and are listed from, and
+        // canonical() answers with that spelling: compared with "Backup" as text, every restore from it
+        // was refused. A link standing in for the folder is still refused, as writing and listing do.
+        std::error_code unreadable;
+        const auto backups = fs::canonical(folder / "Backup", unreadable);
+        if (unreadable || !fs::is_directory(fs::symlink_status(folder / "Backup")) ||
+            fs::canonical(backup.parent_path()) != backups ||
             !fs::is_regular_file(fs::symlink_status(backup)))
             return {false, "choose a backup from this project's Backup folder", {}};
         StoreError error{};

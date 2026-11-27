@@ -14,11 +14,19 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <future>
-#include <fstream>
 #include <iterator>
+#include <memory>
+#include <stdexcept>
+#include <stop_token>
+#include <string>
+#include <system_error>
+#include <vector>
 
 namespace {
 using namespace adi;
@@ -155,6 +163,32 @@ void projectBackups() {
     check(Store::projectBackups(fixture.source).empty() &&
               !Store::restoreProjectBackup(fixture.source, backups.front().path, refusedRecovery).ok,
           "SC-157: a same-name replacement cannot select or rotate the previous song's backups");
+}
+
+// A folder named "backup" is already in the project folder. Where letter case does not distinguish
+// names (Windows, macOS) it is the Backup folder: written to, listed from and restored from alike.
+// Where it does, a Backup folder of its own is made beside it and the same three steps hold.
+void backupFolderInAnotherLetterCase() {
+    Fixture fixture;
+    fixture.store->db().exec("INSERT OR REPLACE INTO adi_meta VALUES('project_uuid','cased-project')");
+    fs::create_directory(fixture.folder / "backup");
+    const auto written = std::async(std::launch::async, [](const fs::path& project) {
+        return Store::writeProjectBackup(project, 1'800'000'000'000'000);
+    }, fixture.source).get();
+    const auto backups = Store::projectBackups(fixture.source);
+    check(written.ok && backups.size() == 1,
+          "SC-157: a backup is written and listed where a folder named backup already exists");
+    if (!written.ok || backups.size() != 1) {
+        std::printf("backup: %s\n", written.error.c_str());
+        return;
+    }
+    fixture.store.reset();
+    fs::path recovered;
+    const auto restored = Store::restoreProjectBackup(fixture.source, backups.front().path, recovered);
+    check(restored.ok && fs::is_regular_file(recovered),
+          "SC-157: a listed backup restores whatever the letter case of the Backup folder on disk");
+    if (!restored.ok)
+        std::printf("restore: %s\n", restored.error.c_str());
 }
 
 void automaticProjectBackups() {
@@ -652,5 +686,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();automaticProjectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderInAnotherLetterCase();automaticProjectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

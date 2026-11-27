@@ -430,10 +430,21 @@ class AdiApplication final : public juce::JUCEApplication,
             try {
                 interruptedRecordings_ = std::async(std::launch::async, [project] {
                     auto takes = recording::discoverInterrupted();
-                    if (project != juce::File{})
-                        std::erase_if(takes, [&project](const auto &take) {
-                            return juce::File(juce::String(take.sourceProject)) != project;
+                    if (project != juce::File{}) {
+                        // The same file, not the same spelling. A take names its project as the database
+                        // named it when the take was recorded (symbolic links followed on macOS and
+                        // Linux), and the launch names it as it was typed or handed over: through a
+                        // link, /var beside /private/var or a short (8.3) name the two differ as text,
+                        // and the take was hidden from the very project it belongs to. Where the two
+                        // cannot be compared as files (one is gone), the spelling decides, as before.
+                        const auto requested = pathFromUtf8(project.getFullPathName().toStdString());
+                        std::erase_if(takes, [&project, &requested](const auto &take) {
+                            std::error_code unreadable;
+                            const bool same = std::filesystem::equivalent(pathFromUtf8(take.sourceProject),
+                                                                          requested, unreadable);
+                            return unreadable ? juce::File(juce::String(take.sourceProject)) != project : !same;
                         });
+                    }
                     return takes;
                 });
             } catch (const std::system_error &) {
@@ -499,6 +510,14 @@ class AdiApplication final : public juce::JUCEApplication,
                     }
                 });
             };
+            // The first project's window was installed before this host existed, and the host listed its
+            // ports in its constructor, before onChange was bound: the window is given the ports now.
+            // Without this the Mixer's MIDI From offered none, and a track routed from or to a port read
+            // "Unavailable", until a port was plugged in or a switch was thrown.
+            if (root_) {
+                refreshMidiInputPorts(*root_);
+                root_->mark(DirtySet::Content);
+            }
         }
     }
     void refreshMidiInputPorts(AdiRootComponent &root) const {
@@ -2568,9 +2587,13 @@ class AdiApplication final : public juce::JUCEApplication,
         // The keyboard into the session (N60): the ports' rings drained in the device callback, in
         // front of the document's process.
         const auto levelDb = settings_->get(settings::kStandalonePreviewLevelKey).get<float>();
+        // The output feed goes in wherever a port host will read it (never in a smoke run), whether or
+        // not the host exists yet: the first project's audio is attached before startAfterFirstOpen()
+        // makes the host, and a processor made without the feed kept hardware MIDI outputs silent until
+        // another project was opened. The host discards what was queued before it took the feed.
         live_ = std::make_unique<LiveMidiProcessor>(document_.get(), midiFeed_, samplePreview_,
                                                    juce::Decibels::decibelsToGain(levelDb),
-                                                   midiPorts_ ? &midiOutputFeed_ : nullptr);
+                                                   smokeOutput_ == juce::File{} ? &midiOutputFeed_ : nullptr);
         refreshTestTone();
         bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
@@ -2612,6 +2635,10 @@ class AdiApplication final : public juce::JUCEApplication,
                         const auto snapshots = History(document_->store()).listSnapshots();
                         if (std::count_if(snapshots.begin(), snapshots.end(), [](const auto &point) { return !point.automatic; }) >= 2)
                             requestProjectBackup();
+                        // A snapshot is history metadata, not an edit: the project's generation does not
+                        // move, so the frame that refreshes an open Undo History never runs for it.
+                        if (root_ && root_->undoHistory.isShowing())
+                            root_->undoHistory.refresh();
                     }
                     if (root_)
                         root_->say(taken.ok
@@ -3340,6 +3367,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
                 return false;
             }
+            // The files' places changed without an edit: the Browser's Current Project reads them again.
+            projectLibrary_.invalidate();
             root_->say(withWarning("Collected every file the project uses into its audio folder.",
                                               document_->warning()));
             return true;

@@ -31,7 +31,9 @@
 #include <mutex>
 #include <thread>
 #include <optional>
+#include <stop_token>
 #include <string>
+#include <utility>
 #include <vector>
 namespace adi::ui {
 class MidiPortHost final : private juce::ump::EndpointsListener {

@@ -288,6 +288,9 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         // During overdub the armed Auto track hears the original clip and the new notes.
         const bool followClips = transport.playing() && !route.blockedRanges.empty() &&
                                  !(capture && capture->overdubs(route.monitorTrack));
+        // Debug vector iterators can take a lock on the audio thread.
+        const auto* const blockedBegin = route.blockedRanges.data();
+        const auto* const blockedEnd = blockedBegin + route.blockedRanges.size();
         auto input = first;
         for (std::int32_t frame = 0; frame < io.frames;) {
             auto runEnd = io.frames;
@@ -295,9 +298,9 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
             if (followClips) {
                 const auto sample = transport.sampleAt(frame);
                 auto remaining = transport.contiguousFrames(frame, io.frames - frame);
-                const auto range = std::upper_bound(route.blockedRanges.begin(), route.blockedRanges.end(), sample,
+                const auto* const range = std::upper_bound(blockedBegin, blockedEnd, sample,
                     [](std::int64_t at, const MidiMonitorRange& span) { return at < span.end; });
-                if (range != route.blockedRanges.end()) {
+                if (range != blockedEnd) {
                     blocked = sample >= range->start;
                     remaining = std::min(remaining, (blocked ? range->end : range->start) - sample);
                 }
