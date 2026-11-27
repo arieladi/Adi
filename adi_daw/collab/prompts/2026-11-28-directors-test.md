@@ -3,7 +3,7 @@
 **What this is.** On 27 November the director opened ADI himself on his Mac, on main after the ninth
 stack, and worked in it for a while. What follows is what stopped or annoyed him, in the order it
 bothered him. These are the faults that matter most to the one person ADI is built for: each is a row of
-`docs/SANITY-CHECK.md` (SC-433 to SC-444, and notes on SC-175, SC-176, SC-201 and SC-425).
+`docs/SANITY-CHECK.md` (SC-433 to SC-445, and notes on SC-175, SC-176, SC-201 and SC-425).
 
 Read `collab/prompts/2026-11-27-basics-howto.md` first. Your report is `collab/basics/test.md` on
 `basics/test-log`; your work is one chain branch, `basics/test-chain`, started **from
@@ -27,9 +27,13 @@ beside ADI. His words are quoted where they decide something.
 3. **SC-441: the metronome, and Loop.** With the metronome on, Play gives no click. With the Control
    Bar's Loop on, the song is silent, the click sounds, and Play does nothing until Loop is off. Seen on
    macOS with the built-in output; find whether it is the same elsewhere.
-4. **SC-440, with SC-176: loop what is selected.** Ctrl/Cmd+L puts the loop brace on the selected time
-   and switches Loop on. The menu on a time selection today offers only Delete, the two Insert Track
-   commands and the grid: it gets what Live's has.
+4. **SC-445: Loop does not hold the playback.** "i cant get out of it ... if i am trying to go elsewhere it
+   doesn't play there it plays the loop". As Live: Play from before the brace runs into it and then loops;
+   Play from after it plays on and never loops. This is also the second half of item 3: a new song's brace
+   lies on its empty first bars, so the looped silence left only the click.
+   Then **SC-440, with SC-176:** Ctrl/Cmd+L already loops the selection (he found the key the next day). The
+   menu on a time selection, which offers only Delete, the two Insert Track commands and the grid today,
+   gets Loop Selection and what else Live's has.
 5. **SC-425: plug-ins on macOS.** None was found and none could be loaded. One unreadable folder inside
    the system's VST3 folder stops the whole scan. The scan skips what it cannot read, says so, and lists
    the rest. On a Mac this is first-hour.
@@ -50,8 +54,19 @@ beside ADI. His words are quoted where they decide something.
 14. **SC-438: an empty group, and a song with every track deleted.** ADI allows both where Live refuses,
     and he likes that. Prove it causes no trouble: save, reopen, export, routing, freeze, the agent's
     read. Fix what you find.
+15. **DF-W64: a double-click on the empty area under the tracks adds a track,** his wish of 28 November
+    (ADR-0265 d5, an addition: Live does nothing there). The first time it asks which kind, a MIDI track,
+    an audio track or an FX channel, and it remembers the answer, as ADI's other remembered choices do; a
+    setting changes it later.
+16. **A setting: the Loop switch takes the selection** (his word of 28 November: "lets add that as an
+    option in settings"). Off, the default, is Live's way: the switch turns the existing loop on and off.
+    On, a click on the switch while time is selected loops that selection, as Ctrl/Cmd+L does; with
+    nothing selected it turns the existing loop on and off. An addition (DF-W65, win registers it).
 
 ## What he said works
 
 A file dropped in plays, its waveform and playhead run smoothly, the meters read right, Play and Stop are
 exact, the tracks and groups look right, resizing a lane by a drag is live. Do not change these.
+
+A note on Loop, from his second look: the Loop switch plays the brace where it lies and Ctrl/Cmd+L moves
+the brace to what is selected. That is Live's way and it is right; only SC-445 is wrong there.
