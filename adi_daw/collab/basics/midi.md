@@ -35,7 +35,7 @@ The remaining item branches are verified on the Arrangement landing base `9322d7
 ## SC-55 virtual MIDI
 
 - **Surge XT CLAP.** ADI parsed all 16 virtual-port messages across both plugin runs without port overflow or a refused enqueue. At the CLAP input ABI, the trace showed CC1 93 and 0, CC64 127 and 0, and pitch wheel 12288 and 8192. Surge XT rendered the note using its default patch.
-- **Surge XT VST3.** The same note rendered. ADI parsed all six controller changes and reported each as unsupported because the current VST3 host had no controller mapping. The ordinary pitch wheel took the same channel-controller path as CC1 and CC64. Surge XT VST3 controller delivery remains part of SC-312.
+- **Surge XT 1.3.4 VST3.** The original SC-55 branch parsed the six controller changes and reported all six unsupported. After SC-312 landed, the private Win32 port probe traced all six through `IParameterChanges` at the actual Surge XT processor. The mapped CC1 values were 93/127 and 0, CC64 was 1 and 0, and the pitch-wheel values were 12288/16383 and 8192/16383. The processor accepted each call, rendered the note, and the trace reported zero unsupported events, overflows or refused enqueues.
 - The wheel uses the engine's ordinary ±2-semitone range. The mod wheel is audible when the patch has an LFO depth assigned.
 
 ## For the director
