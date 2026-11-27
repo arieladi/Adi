@@ -16,6 +16,7 @@ public:
     [[nodiscard]] virtual float gain() const noexcept = 0;
     [[nodiscard]] virtual std::uint32_t underrunSamples() const noexcept = 0;
     [[nodiscard]] virtual std::uint32_t readErrors() const noexcept = 0;
+    [[nodiscard]] virtual bool allPhasesPrimed() const noexcept = 0;
 
     // A read is confined to the driver's current render slice. All setup
     // and cleanup here exchanges page leases without waiting for a worker.

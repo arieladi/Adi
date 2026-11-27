@@ -144,6 +144,10 @@ bool LaunchAudioClip::allWorkerPhasesPrimed() const noexcept {
     return pages_ && pages_->allWorkerPhasesPrimed(clip_);
 }
 
+bool LaunchAudioClip::allWarpPhasesPrimed() const noexcept {
+    return warp_ || (pagedWarp_ && pagedWarp_->allPhasesPrimed());
+}
+
 std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const noexcept {
     if (!std::isfinite(bpm) || bpm <= 0)
         return -1;

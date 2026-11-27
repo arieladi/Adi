@@ -720,6 +720,8 @@ private:
     std::shared_ptr<const ClipProject> storedLaunchSource_;
     std::shared_ptr<const LaunchAudioProject> storedLaunchProject_;
     std::vector<TempoEvent> storedLaunchTempo_;
+    std::optional<double> storedLaunchPreparedBpm_;
+    std::vector<std::int64_t> storedLaunchWarmWarpClips_;
     std::vector<std::string> launchProblems_;
     std::uint32_t storedLaunchRate_ = 0;
     std::uint16_t storedLaunchChannels_ = 0;
@@ -732,6 +734,7 @@ private:
         std::shared_ptr<const LaunchAudioProject> before;
         std::int64_t tick;
         double bpm;
+        std::vector<std::int64_t> warmWarpClips;
     };
     std::optional<SceneTempoBanks> sceneTempoBanks_;
     struct SceneClockRollback {

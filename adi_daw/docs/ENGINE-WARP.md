@@ -135,6 +135,12 @@ use the effective clock from the persisted slot graph. The scheduler's Legato
 forecast warms the upcoming source pages. A cold page miss emits silence and
 counts an underrun while the worker fills the request.
 
+A scene that mixes native and fixed sources keeps the effective clock for
+native Warp and uses a flat prepared BPM for the fixed sources. Continued
+native audio keeps its run and source phase while the fixed tracks stop or
+launch new material. A mixed scene validates the continued clip and primes
+the full raw source window when it needs all phases of a paged clip.
+
 Supported fixed-clock R3 slots use aligned worker PCM. The track reports the
 maximum source delay across its Arrangement clips and Session media banks.
 The driver delays Session PCM and its Arrangement replacement mask together.

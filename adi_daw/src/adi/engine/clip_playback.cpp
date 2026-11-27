@@ -76,6 +76,26 @@ bool sameStoredLaunchSources(const ClipProject& a, const ClipProject& b) {
         std::ranges::equal(a.session->slots(), b.session->slots()) &&
         std::ranges::equal(a.session->settingsRows(), b.session->settingsRows());
 }
+
+bool sameStoredWarpSource(const ClipProject& a, const ClipProject& b, std::int64_t id) {
+    const auto left = std::ranges::find(a.rows.slotClips,id,&rows::Clip::id);
+    const auto right = std::ranges::find(b.rows.slotClips,id,&rows::Clip::id);
+    if (left == a.rows.slotClips.end() || right == b.rows.slotClips.end() || left->gainDb != right->gainDb)
+        return false;
+    const auto leftAudio = std::ranges::find(a.rows.audioClips,id,&rows::AudioClip::clipId);
+    const auto rightAudio = std::ranges::find(b.rows.audioClips,id,&rows::AudioClip::clipId);
+    if (leftAudio == a.rows.audioClips.end() || rightAudio == b.rows.audioClips.end() || *leftAudio != *rightAudio)
+        return false;
+    const auto mediaId = leftAudio->mediaId;
+    const auto leftMedia = std::ranges::find(a.rows.media,mediaId,&rows::Media::id);
+    const auto rightMedia = std::ranges::find(b.rows.media,mediaId,&rows::Media::id);
+    if (leftMedia == a.rows.media.end() || rightMedia == b.rows.media.end() || *leftMedia != *rightMedia)
+        return false;
+    if (leftMedia->relPath) return a.folder == b.folder;
+    const auto leftHint = a.hints.find(mediaId);
+    const auto rightHint = b.hints.find(mediaId);
+    return leftHint != a.hints.end() && rightHint != b.hints.end() && leftHint->second == rightHint->second;
+}
 namespace {
 constexpr std::size_t slots = 8;
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
@@ -1237,8 +1257,11 @@ public:
     float gain() const noexcept override { return clip_.gain; }
     std::uint32_t underrunSamples() const noexcept override { return clip_.underruns.load(std::memory_order_relaxed); }
     std::uint32_t readErrors() const noexcept override { return clip_.errors.load(std::memory_order_relaxed); }
+    bool allPhasesPrimed() const noexcept override { return allPhasesPrimed_; }
 
-    bool prime(const LaunchSlot& slot) {
+    bool prime(const LaunchSlot& slot, bool warmAllPhases) {
+        const auto lastPage = (static_cast<std::int64_t>(clip_.sourceLength) - 1) / clip_.pageFrames;
+        if (warmAllPhases && lastPage >= static_cast<std::int64_t>(warmed_.size())) return false;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (!player().ready()) {
             if (readErrors() || std::chrono::steady_clock::now() >= deadline) return false;
@@ -1250,6 +1273,10 @@ public:
         };
         if (!warm(slot.startTick) || (slot.loopEndTick > slot.loopStartTick && !warm(slot.loopStartTick)))
             return false;
+        if (warmAllPhases) {
+            for (std::int64_t page = 0; page <= lastPage; ++page)
+                (void)append(warmed_,page);
+        }
         clip_.request(warmed_);
         do {
             if (readErrors()) break;
@@ -1258,6 +1285,7 @@ public:
                 if (page >= 0 && !clip_.reserve(page)) ready = false;
             if (ready) {
                 clip_.releaseAdmission();
+                allPhasesPrimed_ = warmAllPhases;
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1337,6 +1365,7 @@ private:
     std::int32_t maxFrames_, lookAhead_;
     Pages warmed_, forecast_;
     std::uint32_t missing_ = 0;
+    bool allPhasesPrimed_ = false;
 };
 } // namespace
 
@@ -1349,12 +1378,12 @@ struct LaunchWarpPageBank : std::enable_shared_from_this<LaunchWarpPageBank> {
         : playback(std::move(project),transport,rate,channels,maxFrames,nullptr,false,
                    ClipPlayback::WarpPlayback::NativePages) {}
 
-    std::shared_ptr<LaunchWarpSource> prepare(const LaunchSlot& slot) {
+    std::shared_ptr<LaunchWarpSource> prepare(const LaunchSlot& slot, bool warmAllPhases) {
         const auto& media = playback.impl_->clips;
         const auto found = std::ranges::find_if(media,[&](const auto& clip) { return clip->clipId == slot.clip; });
         if (found == media.end()) return {};
         auto source = std::make_shared<PagedLaunchWarpSource>(shared_from_this(),**found,playback.impl_->maxFrames);
-        return source->prime(slot) ? std::move(source) : nullptr;
+        return source->prime(slot,warmAllPhases) ? std::move(source) : nullptr;
     }
 };
 
@@ -1490,24 +1519,22 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
-    std::vector<std::string>& problems, std::uint64_t residentBudget, bool allowSteadyWarp) {
+    std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
+    std::span<const std::int64_t> warmWarpClips) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
-    const auto bpm = clock.bpmAt(0);
+    const auto initialBpm = clock.bpmAt(0);
+    const auto bpm = preparedBpm.value_or(initialBpm);
     const auto streamingClock=std::make_shared<const WarpArrangementClock>(clock,rate);
-    const bool constantTempo=streamingClock->constantFramesPerTick() != 0;
-    // A scene tempo can switch any queued or active slot. Only the bank whose
-    // audible slots can all stream may keep its audio through a clock change.
-    const bool nativeSceneBank=allowSteadyWarp && constantTempo &&
-        std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; }) &&
-        std::ranges::all_of(original.rows.slotClips, [&](const rows::Clip& clip) {
-            if (clip.kind != "audio" || clip.muted) return true;
-            const auto source=std::ranges::find(original.rows.audioClips,clip.id,&rows::AudioClip::clipId);
-            return source != original.rows.audioClips.end() && nativeLaunchWarpMode(*source);
-        });
+    const bool steadyWarp = streamingClock->constantFramesPerTick() != 0;
+    const bool hasPreparedClock = preparedBpm.has_value() || steadyWarp;
+    const bool useNativeWarp = !steadyWarp ||
+        std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; });
     TempoMap fixedClock;
     fixedClock.events.push_back({0, bpm, 0});
+    TempoMap nativeReferenceClock;
+    nativeReferenceClock.events.push_back({0, initialBpm, 0});
     std::vector<std::int64_t> tracks, midiTracks, scenes;
     for (const auto id : data.tracks()) {
         const auto track = std::ranges::find(original.rows.tracks, id, &rows::Track::id);
@@ -1545,7 +1572,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         warpPageProject->rows.tempo.push_back({event.posTicks,event.bpm,event.curve,event.tension,event.rampSpan});
     struct NativePageSlot {
         const rows::Clip& clip;
-        LaunchSlot slot;
+        std::size_t slotIndex;
         std::uint64_t frames;
     };
     std::vector<NativePageSlot> nativePages;
@@ -1565,6 +1592,14 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             throw std::runtime_error("invalid Session clip extent");
         return a + b;
     };
+    const auto usePreparedWarpEnd = [&](const rows::Clip& clip, LaunchSlot& slot) {
+        // Native Warp keeps clip-local ticks on the original clock. An
+        // absolute-duration fallback needs its end on the prepared clock.
+        if (clip.timeBase != 1 || clip.endMarkerTicks) return;
+        const auto end = add(slot.startTick,fixedClock.storedNanosecondsToTicks(clip.lengthNs.value_or(0)));
+        if (end <= slot.startTick) throw std::runtime_error("invalid Session start or end marker");
+        slot.endTick = end;
+    };
     for (const auto& cell : data.slots()) {
         if (!std::ranges::binary_search(tracks, cell.key.trackId)) continue;
         LaunchSlot slot;
@@ -1579,6 +1614,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         if (clip == original.rows.slotClips.end()) continue; // the persisted reader has already validated this
         const auto audioRow = std::ranges::find(original.rows.audioClips, *cell.clipId, &rows::AudioClip::clipId);
         const bool warped = audioRow != original.rows.audioClips.end() && audioRow->warpEnabled;
+        const auto mode = warped && useNativeWarp ? nativeLaunchWarpMode(*audioRow) : std::nullopt;
+        const auto& slotClock = mode ? nativeReferenceClock : fixedClock;
         const auto setting = data.settings(clip->id).value_or(launch::ClipLaunchSettings{});
         slot.clip = clip->id;
         slot.mode = setting.mode;
@@ -1592,7 +1629,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             slot.startTick = usePins && clip->contentOffsetNs
                 ? fixedClock.storedNanosecondsToTicks(*clip->contentOffsetNs) : clip->contentOffsetTicks;
             const auto length = clip->timeBase == 0 ? clip->lengthTicks.value_or(0)
-                : fixedClock.storedNanosecondsToTicks(clip->lengthNs.value_or(0));
+                : slotClock.storedNanosecondsToTicks(clip->lengthNs.value_or(0));
             slot.endTick = usePins && clip->sourceEndNs
                 ? fixedClock.storedNanosecondsToTicks(*clip->sourceEndNs)
                 : clip->endMarkerTicks.value_or(add(slot.startTick, length));
@@ -1609,10 +1646,9 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             launchSlots.push_back(slot);
             if (clip->kind == "audio" && !clip->muted) {
                 const auto end = std::max(slot.endTick, slot.loopEndTick);
-                const auto mode=warped ? nativeLaunchWarpMode(*audioRow) : std::nullopt;
-                if ((!constantTempo || nativeSceneBank) && setting.ramMode && mode) {
+                if (setting.ramMode && mode) {
                     try {
-                        auto audioClip=prepareStreamingLaunchClip(original,*clip,*audioRow,*mode,fixedClock,
+                        auto audioClip=prepareStreamingLaunchClip(original,*clip,*audioRow,*mode,nativeReferenceClock,
                                                                   streamingClock,end,rate,channels,remaining);
                         remaining-=audioClip.bytes();
                         pcm.push_back(std::move(audioClip));
@@ -1620,23 +1656,25 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     } catch (const std::exception&) {
                         // Keep fixed playback available if this source cannot
                         // fit the streaming backend's PCM or ratio budget.
-                        if (!constantTempo) throw;
+                        if (!hasPreparedClock) throw;
                     }
                 }
-                if ((!constantTempo || nativeSceneBank) && !setting.ramMode && mode) {
-                    const auto extent = fixedFrame(end);
+                if (!setting.ramMode && mode) {
+                    const auto extent = samples(nativeReferenceClock.ticksToSeconds(end),rate);
                     if (extent <= 0) throw std::runtime_error("Session Warp source is shorter than one frame");
                     appendLaunchSource(*warpPageProject,original,*clip,clip->id,end);
-                    nativePages.push_back({*clip,slot,static_cast<std::uint64_t>(extent)});
+                    nativePages.push_back({*clip,launchSlots.size()-1,static_cast<std::uint64_t>(extent)});
                     continue;
                 }
-                if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
+                if (!hasPreparedClock) throw std::runtime_error("Session audio requires a constant prepared tempo");
+                if (mode) usePreparedWarpEnd(*clip,launchSlots.back());
+                const auto preparedEnd = std::max(launchSlots.back().endTick,slot.loopEndTick);
                 if (setting.ramMode) {
-                    auto clipAudio = prepareLaunchClipAudio(original, *clip, end, bpm, rate, channels, remaining);
+                    auto clipAudio = prepareLaunchClipAudio(original, *clip, preparedEnd, bpm, rate, channels, remaining);
                     remaining -= clipAudio.bytes();
                     pcm.push_back(std::move(clipAudio));
                 } else {
-                    addPreparedPages(*clip,slot,end);
+                    addPreparedPages(*clip,launchSlots.back(),preparedEnd);
                 }
             }
         } catch (const std::exception& e) {
@@ -1646,10 +1684,17 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     if (!nativePages.empty()) {
         auto bank = std::make_shared<LaunchWarpPageBank>(std::move(warpPageProject),rate,channels,maxFrames);
         for (const auto& entry : nativePages) {
-            if (auto source = bank->prepare(entry.slot)) {
+            auto& slot = launchSlots[entry.slotIndex];
+            const bool warmAllPhases = std::ranges::binary_search(warmWarpClips,entry.clip.id);
+            if (auto source = bank->prepare(slot,warmAllPhases)) {
                 pcm.push_back(LaunchAudioClip::fromPagedWarp(entry.clip.id,rate,channels,entry.frames,std::move(source)));
-            } else if (constantTempo) {
-                addPreparedPages(entry.clip,entry.slot,std::max(entry.slot.endTick,entry.slot.loopEndTick));
+            } else if (hasPreparedClock) {
+                try {
+                    usePreparedWarpEnd(entry.clip,slot);
+                    addPreparedPages(entry.clip,slot,std::max(slot.endTick,slot.loopEndTick));
+                } catch (const std::exception& e) {
+                    problems.push_back("Session clips#" + std::to_string(entry.clip.id) + ": " + e.what());
+                }
             } else {
                 const auto prefix = "clips#" + std::to_string(entry.clip.id) + ": ";
                 const auto& errors = bank->playback.problems();

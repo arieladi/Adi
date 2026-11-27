@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <utility>
@@ -28,12 +29,15 @@ struct ClipMediaSource {
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 bool sameStoredLaunchSources(const ClipProject&, const ClipProject&);
+bool sameStoredWarpSource(const ClipProject&, const ClipProject&, std::int64_t clip);
 inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
-/// Owner-only. Empty when this project has no Session scene list.
+/// Owner-only. A scene handover can supply a flat clock for prepared media
+/// and warm the native sources that may inherit an arbitrary source phase.
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
     std::uint64_t incarnation, std::vector<std::string>& problems,
-    std::uint64_t residentBudget = kSessionResidentPcmBudget, bool allowSteadyWarp = true);
+    std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
+    std::span<const std::int64_t> warmWarpClips = {});
 class ClipPlayback {
 public:
     enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };

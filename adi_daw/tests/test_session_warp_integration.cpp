@@ -6,9 +6,11 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/engine/clip_playback.hpp"
+#include "adi/engine/launch_audio_runtime.hpp"
+#include "adi/engine/launch_gain_edits.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
-#include "adi/engine/launch_gain_edits.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -68,8 +70,8 @@ std::unique_ptr<Store> sceneProject(const std::filesystem::path& folder) {
 }
 
 void addClip(Store& store, const std::filesystem::path& folder, int clip, int scene,
-             int beats, bool legato, int pulseOffsetFrames = 0) {
-    constexpr int sourceFramesPerBeat = rate / 2, halfWidth = 48;
+             int beats, bool legato, int pulseOffsetFrames = 0, int track = 1, int sourceFramesPerBeat = rate / 2) {
+    constexpr int halfWidth = 48;
     const auto frames = static_cast<std::uint32_t>(beats * sourceFramesPerBeat);
     const auto name = std::to_string(clip) + ".wav";
     const auto file = folder / name;
@@ -90,21 +92,22 @@ void addClip(Store& store, const std::filesystem::path& folder, int clip, int sc
     auto& db = store.db();
     SQLite::Statement mediaRow(db, "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) VALUES(?,?,?,'wav',48000,1,?)");
     mediaRow.bind(1, clip); mediaRow.bind(2, digest.hex); mediaRow.bind(3, name); mediaRow.bind(4, frames); mediaRow.exec();
-    SQLite::Statement clipRow(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_len_ticks) VALUES(?,1,'audio',0,?,1,?)");
-    clipRow.bind(1, clip); clipRow.bind(2, beats * quarter); clipRow.bind(3, beats * quarter); clipRow.exec();
+    SQLite::Statement clipRow(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_len_ticks) VALUES(?,?,'audio',0,?,1,?)");
+    clipRow.bind(1, clip); clipRow.bind(2, track); clipRow.bind(3, beats * quarter); clipRow.bind(4, beats * quarter);
+    clipRow.exec();
     const auto markers = audio::writeWarpMap(std::array<WarpMarker,2>{{{0,0},{frames, beats*quarter}}}, frames);
     require(static_cast<bool>(markers), "encode native slot Warp source map");
     SQLite::Statement audioRow(db, "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers) VALUES(?,?,?,1,'re-pitch',?)");
     audioRow.bind(1, clip); audioRow.bind(2, clip); audioRow.bind(3, frames);
     audioRow.bind(4, markers.bytes.data(), static_cast<int>(markers.bytes.size())); audioRow.exec();
-    SQLite::Statement slot(db, "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,?,?)");
-    slot.bind(1, scene); slot.bind(2, clip); slot.exec();
+    SQLite::Statement slot(db, "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(?,?,?)");
+    slot.bind(1, track); slot.bind(2, scene); slot.bind(3, clip); slot.exec();
     SQLite::Statement settings(db, "INSERT INTO clip_launch(clip_id,legato,ram_mode,clip_fade) VALUES(?,?,1,0)");
     settings.bind(1, clip); settings.bind(2, legato ? 1 : 0); settings.exec();
 }
 
 struct Playback {
-    struct Edge { std::int64_t newClip = 0, sample = 0, sourceTick = 0; };
+    struct Edge { std::int64_t newClip = 0, sample = 0, sourceTick = 0, track = 0; };
     struct Scene { std::int64_t scene = 0, sample = 0; double bpm = 0; };
     Session& session;
     std::span<float> pcm;
@@ -128,7 +131,7 @@ struct Playback {
                 block.observeLaunchTransitions(this, [](void* opaque, const LaunchTransition& edge, std::int64_t) noexcept {
                     auto& self = *static_cast<Playback*>(opaque);
                     if (self.count < self.edges.size()) {
-                        self.edges[self.count++] = {edge.newClip, edge.sample, edge.sourceTick};
+                        self.edges[self.count++] = {edge.newClip, edge.sample, edge.sourceTick, edge.track};
                     }
                 });
                 block.observeSceneLaunches(this, [](void* opaque, const LaunchSceneTransition& edge, std::int64_t) noexcept {
@@ -152,6 +155,15 @@ void scene(Store& store, const Session& session, int sceneId) {
     gesture.opType = "session.launchScene";
     gesture.payload = {{"scene", sceneId}, {"incarnation", session.launchIncarnation()}};
     require(OpJournal(store).commit(gesture).ok, "submit actual scene launch operation");
+}
+
+void sceneWithGain(Store& store, const Session& session, int sceneId, int clipId, double gainDb) {
+    std::array<OpRequest,2> operations;
+    operations[0].opType = "clip.setGain";
+    operations[0].payload = {{"id", clipId}, {"gain", gainDb}};
+    operations[1].opType = "session.launchScene";
+    operations[1].payload = {{"scene", sceneId}, {"incarnation", session.launchIncarnation()}};
+    require(OpJournal(store).commit(operations).ok, "commit the authored gain change with the tempo scene");
 }
 
 std::vector<float> exercise(bool paged = false) {
@@ -322,12 +334,7 @@ void continuingTempoScene(bool legato, bool paged = false, bool changeAuthoredGa
     playback.through(rate / 2 + 1);
     require(std::abs(pcm[rate / 2] + 0.30f) < 0.01f, "half gain is audible before the tempo scene is queued");
     if (changeAuthoredGain) {
-        std::array<OpRequest,2> operations;
-        operations[0].opType = "clip.setGain";
-        operations[0].payload = {{"id", 101}, {"gain", 20.0 * std::log10(0.5)}};
-        operations[1].opType = "session.launchScene";
-        operations[1].payload = {{"scene", 20}, {"incarnation", session.launchIncarnation()}};
-        require(OpJournal(*store).commit(operations).ok, "commit the authored gain change with the tempo scene");
+        sceneWithGain(*store,session,20,101,20.0 * std::log10(0.5));
     } else {
         scene(*store, session, 20);
     }
@@ -352,6 +359,111 @@ void continuingTempoScene(bool legato, bool paged = false, bool changeAuthoredGa
         legato ? "Legato tempo scene" : "Retained tempo scene");
     require(error <= 2 && pcm[static_cast<std::size_t>(tempoSceneFrame)] < (legato ? -0.58f : -0.28f),
         "the new tempo follows the inherited phase and the current run's gain at the bar and loop wrap");
+}
+
+enum class MixedScene { Retain, Legato, KeepFixed, ColdWarp, ChangeNativeGain };
+
+void mixedTempoScene(MixedScene mode) {
+    const bool legato = mode == MixedScene::Legato;
+    const bool paged = legato || mode == MixedScene::ColdWarp;
+    test::TempDirectory folder{"session_scene_warp", legato ? "mixed-legato" : "mixed-retained"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(2,'audio','Fixed',1)");
+    addClip(*store, folder.path(), 101, 10, 3, true, 0, 1, legato ? 16000 : rate / 2);
+    addClip(*store, folder.path(), 201, 10, 3, false, rate / 8, 2);
+    if (legato) {
+        addClip(*store, folder.path(), 102, 20, 4, true, 0, 1, 16000);
+        addClip(*store, folder.path(), 202, 20, 4, false, rate / 8, 2);
+    } else {
+        store->db().exec("INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0),(2,20,1)");
+    }
+    store->db().exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id>=200");
+    if (paged) store->db().exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id<200");
+    if (mode == MixedScene::KeepFixed)
+        store->db().exec("UPDATE clip_slots SET has_stop=0 WHERE track_id=2 AND scene_id=20");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(), "prepare a mixed native and fixed Session bank");
+    const auto last = frameAfterTempoScene(3) + 1024;
+    std::vector<float> pcm(static_cast<std::size_t>(last));
+    Playback playback{session, pcm};
+    playback.paged = paged;
+    scene(*store, session, 10);
+    playback.through(blockFrames);
+    std::array<LaunchTrackStatus,4> before{};
+    LaunchStatusHeader status;
+    require(session.readLaunchStatus(before,status) && status.trackCount == 2 &&
+        before[0].clip == 101 && before[1].clip == 201, "start both tracks of the mixed Session bank");
+    if (mode == MixedScene::Retain || mode == MixedScene::ChangeNativeGain) {
+        const LaunchClipGainEdit gain{1,101,session.launchIncarnation(),before[0].run,0.5f,ClipUpdateRate::None};
+        require(session.postLaunchClipGainEdit(gain), "apply live gain to the retained native slot");
+        playback.through(rate / 2 + 1);
+        require(std::abs(pcm[rate / 2] + 0.30f) < 0.01f, "hear the initial live gain before queuing the mixed scene");
+    }
+    if (mode == MixedScene::KeepFixed || mode == MixedScene::ColdWarp || mode == MixedScene::ChangeNativeGain) {
+        if (mode == MixedScene::ChangeNativeGain) sceneWithGain(*store,session,20,101,20.0 * std::log10(0.5));
+        else require(!session.prepareSceneLaunch(*store,20,4 * quarter), "refuse an incompatible continuation");
+        const auto expected = mode == MixedScene::KeepFixed ? "Stop or non-legato" :
+            mode == MixedScene::ColdWarp ? "Session clips#101" : "unchanged Warp source audio and clip gain";
+        require(session.error().find(expected) != std::string::npos, "name the unsupported continuation");
+        playback.through(tempoSceneFrame + blockFrames);
+        require(playback.sceneCount == 1 && session.beginRender().bpmAtTick(4 * quarter) == 120,
+            "leave the previous bank and clock running after a refused scene");
+        if (mode == MixedScene::ChangeNativeGain)
+            require(std::abs(pcm[tempoSceneFrame] + 0.30f) < 0.01f, "keep the old source gain after rejecting No Stop");
+        return;
+    }
+    if (mode == MixedScene::Retain) sceneWithGain(*store,session,20,201,-6.0);
+    else scene(*store, session, 20);
+    playback.through(last);
+    checkTempoScene(*store, session, playback);
+    require(pcm[rate / 8] > 0.54f, "the fixed source plays before the tempo scene");
+    const auto fixedAfter = pcm[static_cast<std::size_t>(tempoSceneFrame + rate / 8)];
+    require(legato ? fixedAfter > 0.54f : fixedAfter == 0, "the fixed track restarts or stops on the scene bar");
+    std::array<LaunchTrackStatus,4> after{};
+    require(session.readLaunchStatus(after,status) && status.trackCount == 2, "read both tracks after the scene");
+    if (legato) {
+        require(after[0].clip == 102 && after[0].run != before[0].run && after[1].clip == 202,
+            "the native Legato cue and fixed restart launch new runs");
+        const auto edges = std::span(playback.edges).first(playback.count);
+        require(std::ranges::any_of(edges, [](const auto& edge) {
+            return edge.track == 1 && edge.newClip == 102 && edge.sample == tempoSceneFrame &&
+                std::abs(edge.sourceTick - quarter) <= ticksPerFrame;
+        }), "native Legato inherits the old source phase at the bar");
+    } else {
+        require(after[0].clip == 101 && after[0].run == before[0].run && after[1].clip == 0,
+            "the fixed track stops while No Stop retains the native run");
+    }
+    constexpr std::array<float,4> retainedPeaks{-.30f, -.35f, -.25f, -.30f};
+    constexpr std::array<float,4> legatoPeaks{-.6f, -.7f, -.8f, -.5f};
+    const auto error = checkTempoPulses(pcm, legato ? legatoPeaks : retainedPeaks, 0.08f,
+        legato ? "Mixed Legato" : "Mixed retained");
+    require(error <= 2, "the native track keeps its phase after the mixed scene");
+}
+
+void absoluteWarpFallback() {
+    test::TempDirectory folder{"session_scene_warp", "absolute-fallback"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    addClip(*store, folder.path(), 101, 20, 3, true);
+    store->db().exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,"
+        "length_ns=250000000,loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
+    const auto model = rows::readModel(*store);
+    const auto source = readClipProject(*store,model,true);
+    TempoMap clock;
+    clock.events = {{0,120,0},{4 * quarter,140,0}};
+    std::vector<std::string> problems;
+    // Enough PCM for 250 ms of prepared stereo, below the full native source.
+    const auto bank = prepareStoredLaunchProject(*source,clock,rate,2,blockFrames,1,problems,128000,140.0);
+    require(bank && problems.empty(), "prepare an absolute-time Warp slot on the fallback bank");
+    const auto* clip = bank->clip(101);
+    const auto slots = bank->view().slots;
+    require(clip && !clip->followsTempo() && slots.size() == 1 && clip->frames() == rate / 4 &&
+        clip->frameForTick(slots[0].endTick,bank->bpm()) == rate / 4,
+        "the fixed bank preserves all 250 ms of the absolute-time slot");
 }
 
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
@@ -412,6 +524,12 @@ int main() {
         continuingTempoScene(false, false, true);
         continuingTempoScene(true);
         continuingTempoScene(true, true);
+        mixedTempoScene(MixedScene::Retain);
+        mixedTempoScene(MixedScene::Legato);
+        mixedTempoScene(MixedScene::KeepFixed);
+        mixedTempoScene(MixedScene::ColdWarp);
+        mixedTempoScene(MixedScene::ChangeNativeGain);
+        absoluteWarpFallback();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.
