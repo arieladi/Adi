@@ -893,6 +893,7 @@ class AdiRootComponent final : public juce::Component,
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
+    bool nudgeSelectedTracks(bool down);
     // Group the selected tracks, or ungroup an explicit group from its title menu.
     bool groupTracks(bool ungroup, std::int64_t group = 0);
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live

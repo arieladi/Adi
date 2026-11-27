@@ -2584,6 +2584,15 @@ void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::Mous
 bool TrackHeaderList::keyPressed(const juce::KeyPress &key) {
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
         return view.root.keyPressed(key);
+    const auto code = key.getKeyCode();
+    const auto &selection = view.geometry.selection;
+    if ((code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) &&
+        key.getModifiers().getRawFlags() == juce::ModifierKeys::commandModifier &&
+        renaming_ == 0 && !view.loopSelected && view.selectedLocator == 0 && view.selectedMeter < 0 &&
+        selection.clip == 0 && selection.pickedClips.empty() && selection.start == selection.end) {
+        view.root.nudgeSelectedTracks(code == juce::KeyPress::downKey);
+        return true;
+    }
     return view.canvas.keyPressed(key);
 }
 bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
