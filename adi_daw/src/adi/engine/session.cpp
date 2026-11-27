@@ -1117,6 +1117,42 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     }
 }
 
+std::shared_ptr<DeviceAutomationBinding> Session::bindResolvedDeviceAutomation(
+    std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& suspended,
+    const rows::Model& model) {
+    return bindDeviceAutomation(std::move(program), suspended, transport_, spec_.sampleRate,
+        [&](std::int64_t id, std::uint32_t parameter) -> DeviceParameterSteps {
+            const auto* entry = entryFor(id);
+            if (!entry || entry->retired || entry->parked || entry->placeholder)
+                return {};
+
+            // Structural preview supplies its proposed rows. A numeric ID
+            // alone does not prove its device is still the resolved instance.
+            const auto row = std::find_if(model.devices.begin(), model.devices.end(),
+                [id](const auto& candidate) { return candidate.id == id; });
+            if (row == model.devices.end() || !row->pluginRefId || row->pluginRefId != entry->resolvedPluginRef)
+                return {};
+            const auto reference = std::find_if(model.pluginRefs.begin(), model.pluginRefs.end(),
+                [&](const auto& candidate) { return candidate.id == *row->pluginRefId; });
+            if (reference == model.pluginRefs.end() || reference->format != entry->resolvedFormat ||
+                reference->uid != entry->resolvedUid)
+                return {};
+
+            const auto& instance = devices_.deviceAt(entry->hostIndex);
+            if (!instance.loaded())
+                return {};
+            const auto native = reference->format == "clap" ? device::ClapDevice::paramIdToText(parameter)
+                                                             : std::to_string(parameter);
+            const auto* descriptor = instance.findParam(native);
+            if (!descriptor || descriptor->missing || !descriptor->automatable)
+                return {};
+            if (descriptor->shape == device::ParamShape::Switch)
+                return {true, 2};
+            const bool stepped = descriptor->shape == device::ParamShape::Menu || descriptor->stepCount > 1;
+            return {stepped, descriptor->stepCount};
+        });
+}
+
 bool Session::rebuild() {
     if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
@@ -1213,7 +1249,7 @@ bool Session::rebuild() {
     auto suspended = overridden_;
     suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
     stripAutomation_ = bindStripAutomation(program, suspended);
-    deviceAutomation_ = bindDeviceAutomation(program, suspended, transport_, spec_.sampleRate);
+    deviceAutomation_ = bindResolvedDeviceAutomation(program, suspended, model_);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;

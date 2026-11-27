@@ -4000,12 +4000,14 @@ bool sameAutomationLaneOwners(const ParameterPublication *a, const ParameterPubl
         return true;
     return a && b && std::equal(a->begin(), a->end(), b->begin(), b->end(), [](const auto &left, const auto &right) {
         return left.id == right.id && left.track == right.track && left.instance == right.instance &&
-               left.name == right.name;
+               left.name == right.name && left.available == right.available && left.metadata == right.metadata;
     });
 }
 
+using AutomationCatalog = std::function<const ParameterPublication *(std::int64_t)>;
 std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
-    const engine::Snapshot &snapshot, const ParameterPublication *devices, const engine::AutomationLaneNode &lane) {
+    const engine::Snapshot &snapshot, const ParameterPublication *devices, const engine::AutomationLaneNode &lane,
+    const AutomationCatalog &catalogForTrack = {}) {
     auto track = lane.ownerId;
     AutomationTarget target;
     if (lane.ownerKind == "track") {
@@ -4031,10 +4033,24 @@ std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
         if (dev == devices->end())
             return std::nullopt;
         track = dev->track;
-        for (const auto &parameter : dev->declarations())
-            if (auto candidate = deviceTarget(*dev, parameter); candidate &&
-                automation_override_detail::sameParam(lane.ownerKind, lane.paramRef, candidate->paramRef))
-                return std::pair{track, std::move(*candidate)};
+        const auto findParameter = [&](const DevicePanelData &description) -> std::optional<AutomationTarget> {
+            for (const auto &parameter : description.declarations())
+                if (auto candidate = deviceTarget(description, parameter); candidate &&
+                    candidate->valueDomain == lane.valueDomain &&
+                    automation_override_detail::sameParam(lane.ownerKind, lane.paramRef, candidate->paramRef))
+                    return candidate;
+            return std::nullopt;
+        };
+        if (auto candidate = findParameter(*dev))
+            return std::pair{track, std::move(*candidate)};
+        if (dev->available && !dev->metadata && dev->declarations().empty() && catalogForTrack)
+            if (const auto *catalog = catalogForTrack(track))
+                for (const auto &description : *catalog)
+                    if (description.id == dev->id && description.track == track) {
+                        if (auto candidate = findParameter(description))
+                            return std::pair{track, std::move(*candidate)};
+                        break;
+                    }
         target.device = dev->name;
     } else
         return std::nullopt;
@@ -4048,6 +4064,7 @@ std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
     }
     target.paramName = lane.paramName.empty() ? lane.paramRef : lane.paramName;
     target.valueDomain = lane.valueDomain;
+    target.stepped = lane.valueDomain == "enum";
     target.unit = lane.unit;
     target.defaultValue = lane.defaultValue;
     target.minimum = lane.minValue.value_or(0.);
@@ -4073,11 +4090,20 @@ void AdiRootComponent::refreshAdditionalAutomationLanes() {
     automationLaneSnapshot_ = snapshot;
     automationLanePublication_ = published;
     additionalAutomationLanes_.clear();
+    std::map<std::int64_t, std::shared_ptr<const ParameterPublication>> catalogs;
+    const AutomationCatalog catalogForTrack = [&](std::int64_t track) -> const ParameterPublication * {
+        if (!automationParameters)
+            return nullptr;
+        const auto [entry, inserted] = catalogs.try_emplace(track);
+        if (inserted)
+            entry->second = automationParameters(track);
+        return entry->second.get();
+    };
     if (snapshot)
         for (const auto &lane : snapshot->automationLanes) {
             if (!lane || !lane->visible)
                 continue;
-            auto entry = additionalLaneTarget(*snapshot, published.get(), *lane);
+            auto entry = additionalLaneTarget(*snapshot, published.get(), *lane, catalogForTrack);
             if (!entry || !snapshot->findTrack(entry->first))
                 continue;
             auto &trackLanes = additionalAutomationLanes_[entry->first];
@@ -4373,7 +4399,9 @@ bool AdiRootComponent::moveAutomationPoint(std::int64_t track, const AutomationT
             return fail("That breakpoint has changed. Open Edit Value again.");
         if (!validExactAutomationValue(envelope, target, value))
             return fail("Enter a finite value in the envelope's range.");
-        return found->value == value || submitEdits({editAutomationPointValue(envelope, *found, value)});
+        const auto written = steppedAutomationValue(automationRange(target), value);
+        return found->value == value || found->value == written ||
+               submitEdits({editAutomationPointValue(envelope, *found, written)});
     }
     auto ops = ::adi::ui::moveAutomationPoint(envelope, target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));

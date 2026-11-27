@@ -3266,16 +3266,13 @@ std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
 namespace {
 // A value's height in a lane body, and back: the range's top at the body's top.
 float automationY(double value, const AutomationRange &r, float top, float bottom) {
-    auto t = (std::clamp(value, r.minimum, r.maximum) - r.minimum) / (r.maximum - r.minimum);
-    if (r.flipped)
-        t = t < .5 ? 1.0 : 0.0;
-    return bottom - static_cast<float>(t) * (bottom - top);
+    const auto display = steppedAutomationValue(r, std::clamp(value, r.minimum, r.maximum));
+    const auto level = (display - r.minimum) / (r.maximum - r.minimum);
+    return bottom - static_cast<float>(r.flipped ? 1.0 - level : level) * (bottom - top);
 }
 double automationValue(float y, const AutomationRange &r, float top, float bottom) {
-    auto t = std::clamp(static_cast<double>((bottom - y) / std::max(1.f, bottom - top)), 0.0, 1.0);
-    if (r.flipped)
-        t = t > .5 ? 0.0 : 1.0;
-    return r.minimum + t * (r.maximum - r.minimum);
+    const auto level = std::clamp(static_cast<double>((bottom - y) / std::max(1.f, bottom - top)), 0.0, 1.0);
+    return steppedAutomationValue(r, std::lerp(r.minimum, r.maximum, r.flipped ? 1.0 - level : level));
 }
 double automationDragValue(const engine::AutomationLaneNode &lane, const AutomationTarget &target,
                            double original, double delta) {
@@ -3283,11 +3280,9 @@ double automationDragValue(const engine::AutomationLaneNode &lane, const Automat
     if (delta == 0)
         return original;
     const auto range = automationRange(target);
-    auto value = std::clamp(original, range.minimum, range.maximum) +
-                 (range.flipped ? -delta : delta) * (range.maximum - range.minimum);
-    if (range.flipped)
-        value = value > (range.minimum + range.maximum) / 2 ? range.maximum : range.minimum;
-    value = writtenAutomationValue(target, value);
+    const auto before = steppedAutomationValue(range, std::clamp(original, range.minimum, range.maximum));
+    auto value = writtenAutomationValue(target, before + (range.flipped ? -delta : delta) *
+                                                      (range.maximum - range.minimum));
     if (lane.minValue)
         value = std::max(value, *lane.minValue);
     if (lane.maxValue)
@@ -3326,7 +3321,7 @@ struct AutomationCurveProjection {
                 time, value, curve, tension, slice, id, selected, sliceEnd};
     }
 
-    bool held(const AutomationMark &point) const { return range.flipped || point.curve == kAutomationHold; }
+    bool held(const AutomationMark &point) const { return range.stepped || point.curve == kAutomationHold; }
 
     void appendSegment(juce::Path &line, const AutomationMark &from, const AutomationMark &to,
                        float left, float right) const {
@@ -3389,7 +3384,10 @@ juce::String automationValueText(const AutomationTarget &target,double value,boo
         const auto converted=std::to_chars(buffer.data(),buffer.data()+buffer.size(),value,std::chars_format::general);
         if(converted.ec==std::errc{})
             number=juce::String::fromUTF8(buffer.data(),static_cast<int>(converted.ptr-buffer.data()));
-    } else number=juce::String(value,6).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+    } else {
+        const auto display = steppedAutomationValue(automationRange(target), value);
+        number=juce::String(display,6).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+    }
     if(!target.unit.empty())number+=" "+juce::String::fromUTF8(target.unit.c_str());
     return number;
 }
@@ -3732,26 +3730,8 @@ constexpr std::pair<automation::Shape, const char *> kArrangementShapes[]{
     {automation::Shape::ADSR, "ADSR"},
 };
 
-bool discreteAutomationEnvelope(const AdiRootComponent &root, std::int64_t track, const AutomationTarget &target,
-                             const engine::AutomationLaneNode *lane) {
-    if (target.stepped || (lane && lane->valueDomain == "enum"))
-        return true;
-    if (target.ownerKind != "device" || !root.automationParameters)
-        return false;
-    const auto catalog = root.automationParameters(track);
-    if (!catalog)
-        return false;
-    for (const auto &device : *catalog) {
-        if (device.id != target.ownerId)
-            continue;
-        return std::any_of(device.declarations().begin(), device.declarations().end(), [&](const auto &parameter) {
-            if (parameter.shape == panel::Shape::Continuous && parameter.stepCount < 2)
-                return false;
-            const auto reference = engine::automationParamRef(device.format, parameter.id);
-            return reference && automation_override_detail::sameParam(target.ownerKind, target.paramRef, *reference);
-        });
-    }
-    return false;
+bool discreteAutomationEnvelope(const AutomationTarget &target, const engine::AutomationLaneNode *lane) {
+    return target.stepped || (lane && lane->valueDomain == "enum");
 }
 } // namespace
 
@@ -3800,7 +3780,7 @@ void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
         });
         if (rangeBegin < 0 || rangeEnd <= rangeBegin || (lane && lane->timeBase != 0))
             return;
-        const bool discrete = discreteAutomationEnvelope(safe->view.root, edit->track, edit->target, lane);
+        const bool discrete = discreteAutomationEnvelope(edit->target, lane);
         juce::PopupMenu shapes;
         for (const auto &[shape, label] : kArrangementShapes) {
             if (shape != automation::Shape::Square && discrete)
@@ -3833,7 +3813,7 @@ void ArrangementCanvas::insertAutomationShape(const AutomationValueAddress &addr
         return;
     }
     if (shape != automation::Shape::Square &&
-        discreteAutomationEnvelope(view.root, address.track, target, envelope.lane))
+        discreteAutomationEnvelope(target, envelope.lane))
         return;
 
     const auto rate = view.root.editRate();
@@ -3942,7 +3922,7 @@ void ArrangementCanvas::simplifyAutomationEnvelope(const AutomationValueAddress 
     }
     const auto envelope = envelopeOf(*current, address.target);
     if (!envelope.lane || !envelope.data || !resolveAutomationValue(address, envelope) ||
-        !editableEnvelope(envelope) || discreteAutomationEnvelope(view.root, address.track, address.target, envelope.lane))
+        !editableEnvelope(envelope) || discreteAutomationEnvelope(address.target, envelope.lane))
         return;
 
     const auto tolerance = automation::kSimplifyRelativeTolerance * (address.target.maximum - address.target.minimum);
@@ -4094,7 +4074,7 @@ std::optional<ArrangementCanvas::AutomationTransformBounds> ArrangementCanvas::a
     for (const auto &body : laneBodies()) {
         if (body.track->id != key.first || body.target != key.second)
             continue;
-        const AutomationTransformBounds bounds{key, envelope.lane->id, envelope.data->id, begin, end,
+        const AutomationTransformBounds bounds{{key.first, body.target}, envelope.lane->id, envelope.data->id, begin, end,
                                                 body.top, body.scaleBottom, body.bottom};
         const auto box = automationTransformBox(bounds);
         if (box.getWidth() >= kAutomationTransformMinSize && box.getHeight() >= kAutomationTransformMinSize &&
@@ -4532,7 +4512,7 @@ bool ArrangementCanvas::beginAutomationSegmentDrag(const juce::MouseEvent &e) {
                 return AutomationDragPoint{0, tick, next->value, 0, 0.f};
             const auto &previous = *(next - 1);
             double value = previous.value;
-            if (next != points.end() && tick != previous.time && !range.flipped && previous.curve != 0) {
+            if (next != points.end() && tick != previous.time && !range.stepped && previous.curve != 0) {
                 const auto tempo = current->tempo.get();
                 const auto rate = view.root.editRate();
                 const auto first = automationCurveTime(previous.time, tempo, rate);
@@ -4543,7 +4523,7 @@ bool ArrangementCanvas::beginAutomationSegmentDrag(const juce::MouseEvent &e) {
                 value = automationSegmentValue(previous.value, next->value, fraction, previous.curve,
                                                previous.tension, previous.curveSlice ? &*previous.curveSlice : nullptr);
             }
-            const auto curve = next == points.end() || range.flipped ? std::uint8_t{0} : previous.curve;
+            const auto curve = next == points.end() || range.stepped ? std::uint8_t{0} : previous.curve;
             return AutomationDragPoint{0, tick, value, curve, previous.tension};
         };
         // Begin takes the settled value after any coincident points. End takes the incoming
@@ -4640,8 +4620,8 @@ void ArrangementCanvas::updateAutomationDrag(const juce::MouseEvent &e) {
         for (const auto &point : lane.points) {
             minimumTime = std::max(minimumTime, -point.time);
             maximumTime = std::min(maximumTime, limit - point.time);
-            auto normalized = (std::clamp(point.value, range.minimum, range.maximum) - range.minimum) /
-                              (range.maximum - range.minimum);
+            const auto displayed = steppedAutomationValue(range, std::clamp(point.value, range.minimum, range.maximum));
+            auto normalized = (displayed - range.minimum) / (range.maximum - range.minimum);
             if (range.flipped)
                 normalized = 1 - normalized;
             minimumValue = std::max(minimumValue, -normalized);
@@ -6484,12 +6464,14 @@ bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
         auto &draft = *keyboardAutomationDraft_;
         constexpr double kAutomationKeyboardValueStep = .01;
         const auto range = automationRange(target);
-        const auto delta = (code == juce::KeyPress::upKey ? 1. : -1.) *
-                           (range.flipped ? 1. : kAutomationKeyboardValueStep);
+        const auto step = range.stepped && range.stepCount > 1 ? 1.0 / (range.stepCount - 1)
+                                                               : kAutomationKeyboardValueStep;
+        const auto delta = (code == juce::KeyPress::upKey ? 1. : -1.) * step;
         if (envelope.lane)
             draft.value = automationDragValue(*envelope.lane, target, draft.value, delta);
         else
-            draft.value = writtenAutomationValue(target, draft.value + delta * (range.maximum - range.minimum));
+            draft.value = writtenAutomationValue(target, draft.value +
+                (range.flipped ? -delta : delta) * (range.maximum - range.minimum));
         showAutomationValue(target, draft.value, makeAddress(draft.tick, nullptr).anchor.toFloat());
         return true;
     }

@@ -547,7 +547,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);
-        out->devices=bindDeviceAutomation(program,excluded,owner->transport_,owner->spec_.sampleRate);
+        out->devices=owner->bindResolvedDeviceAutomation(program,excluded,image->model);
         out->controls=controls(image->model,excluded);
         auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;

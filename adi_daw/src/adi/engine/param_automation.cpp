@@ -13,15 +13,23 @@ std::int32_t automationInterval(double sampleRate) noexcept {
     return static_cast<std::int32_t>(std::max(1L, std::lround(sampleRate / 500.0)));
 }
 
-void DeviceAutomation::add(const AutomationLaneProgram& lane, std::uint32_t paramId) {
+void DeviceAutomation::add(const AutomationLaneProgram& lane, std::uint32_t paramId,
+                           DeviceParameterSteps steps) {
     Lane l;
     l.program = &lane;
     l.paramId = paramId;
+    l.steps = steps;
     lanes_.push_back(l);
 }
 
 void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std::int64_t sample) noexcept {
-    const double v = std::clamp(valueAt(*lane.program, sample), 0.0, 1.0);
+    const auto& program = *lane.program;
+    double v = std::clamp(lane.steps.stepped ? heldValueAt(program, sample, program.defaultValue)
+                                            : valueAt(program, sample), 0.0, 1.0);
+    if (lane.steps.stepped && lane.steps.count > 1) {
+        const double divisions = lane.steps.count - 1;
+        v = std::round(v * divisions) / divisions;
+    }
     if (lane.sent && v == lane.last) return;
     Event e;
     e.frame = frame;
@@ -90,7 +98,8 @@ void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int
 
 std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<const AutomationProgram> program,
                                                               const std::set<std::int64_t>& overridden,
-                                                              const Transport& transport, double sampleRate) {
+                                                              const Transport& transport, double sampleRate,
+                                                              const DeviceAutomationSteps& steps) {
     auto out = std::make_shared<DeviceAutomationBinding>();
     out->program = std::move(program);
     if (!out->program) return out;
@@ -121,7 +130,7 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
         if (overridden.count(lane.laneId)) continue;   // ADR-0162: known, not bound
         auto& device = out->byDevice[lane.ownerId];
         if (!device) device = std::make_unique<DeviceAutomation>(transport, interval);
-        device->add(lane, paramId);
+        device->add(lane, paramId, steps ? steps(lane.ownerId, paramId) : DeviceParameterSteps{});
     }
     return out;
 }

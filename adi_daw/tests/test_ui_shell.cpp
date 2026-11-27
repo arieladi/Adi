@@ -16091,6 +16091,175 @@ void automationChooserControls(AppCommands &commands, const std::filesystem::pat
         }
     }
 }
+void steppedDeviceAutomation(AppCommands &commands, const std::filesystem::path &dir) {
+    class DiscreteControls final : public device::DeviceInstance {
+      public:
+        DiscreteControls() {
+            identity_.format = "vst3";
+            descriptors_[0].id = "7";
+            descriptors_[0].name = "Switch";
+            descriptors_[0].shape = device::ParamShape::Switch;
+            descriptors_[0].stepCount = 2;
+            descriptors_[1].id = "8";
+            descriptors_[1].name = "Mode";
+            descriptors_[1].shape = device::ParamShape::Menu;
+            descriptors_[1].stepCount = 4;
+        }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+        std::int32_t paramCount() const noexcept override { return 2; }
+        const device::ParamDescriptor *paramAt(std::int32_t index) const noexcept override {
+            return index >= 0 && index < paramCount() ? &descriptors_[static_cast<std::size_t>(index)] : nullptr;
+        }
+        device::ParamValue getParam(const std::string &) const noexcept override {
+            return device::ParamValue::fromNormalized(0.0);
+        }
+        bool setParam(const std::string &, const device::ParamValue &) override { return true; }
+
+      private:
+        device::DeviceIdentity identity_;
+        std::array<device::ParamDescriptor, 2> descriptors_;
+    };
+
+    constexpr std::int64_t track = 2, deviceId = 3;
+    constexpr auto bar = textproj::kWhole;
+    const auto loader = [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == "test.discrete-controls")
+            return std::make_unique<DiscreteControls>();
+        return {};
+    };
+    std::string error;
+    auto document = ProjectDocument::open(dir / "stepped-device-automation.adi", true, loader, error);
+    check(document != nullptr, "a project with loaded discrete device descriptors");
+    if (!document)
+        return;
+    document->store().db().exec(
+        "INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','test.discrete-controls','Discrete controls')");
+    OpRequest chain, device;
+    chain.opType = "chain.create";
+    chain.payload = {{"id", 3}, {"track", track}, {"ord", 0}, {"name", "Devices"}};
+    device.opType = "device.insert";
+    device.payload = {{"id", deviceId}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "Discrete controls"}, {"latency", 0}};
+    const auto makeLane = [](std::int64_t id, const char *ref) {
+        automation::LaneSpec lane;
+        lane.id = id;
+        lane.ownerKind = "device";
+        lane.ownerId = deviceId;
+        lane.paramRef = ref;
+        lane.minValue = 0.;
+        lane.maxValue = 1.;
+        lane.visible = true;
+        return automation::createLane(lane);
+    };
+    const auto writeLegacy = [bar](std::int64_t data, std::int64_t lane, double first) {
+        return automation::writePoints(data, lane, nullptr,
+            Payload::array({{{"id", 11}, {"time", bar}, {"value", first}, {"curve", 1}, {"tension", 0.}},
+                            {{"id", 12}, {"time", 2 * bar}, {"value", .93}, {"curve", 1}, {"tension", 0.}}}));
+    };
+    const bool setUp = document->ops().submit({std::move(chain), std::move(device), makeLane(31, "7"), makeLane(32, "8"),
+                                              writeLegacy(41, 31, .1), writeLegacy(42, 32, .29)}).ok &&
+                       document->synchronise();
+    check(setUp, "a switch and four-state chooser have old linear automation streams");
+    if (!setUp)
+        return;
+    const auto originalSwitch = document->store().getAutomationData(31, {});
+    const auto originalMenu = document->store().getAutomationData(32, {});
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "stepped-device-automation");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    int catalogReads = 0;
+    root.automationParameters = [&](std::int64_t id) {
+        ++catalogReads;
+        return document->automationParameters(id);
+    };
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    document->tick(0);
+    root.frame();
+    const auto identityOnly = root.devices.publication();
+    const bool unpublishedValues = identityOnly && std::any_of(identityOnly->begin(), identityOnly->end(), [](const auto &entry) {
+        return entry.id == deviceId && entry.declarations().empty() && entry.parameters().empty();
+    });
+    check(unpublishedValues, "the hidden device publishes identity without subscribing to parameter values");
+
+    auto &canvas = root.arrangement.canvas;
+    const auto laneAt = [&](const char *ref) -> std::optional<ArrangementCanvas::LaneBody> {
+        for (const auto &body : canvas.laneBodies())
+            if (body.track->id == track && body.target.ownerId == deviceId && body.target.paramRef == ref)
+                return body;
+        return std::nullopt;
+    };
+    const auto hitAt = [&](const ArrangementCanvas::LaneBody &body, double level) {
+        const auto x = static_cast<float>(geometry.x(3 * bar / 2));
+        const auto y = body.scaleBottom - static_cast<float>(level) * (body.scaleBottom - body.top);
+        const auto hit = canvas.automationLineAt({x, y});
+        return hit && hit->target == body.target;
+    };
+    root.setAutomationMode(true);
+    root.frame();
+    const auto auxiliarySwitch = laneAt("7");
+    const auto auxiliaryMenu = laneAt("8");
+    check(auxiliarySwitch && auxiliaryMenu && hitAt(*auxiliarySwitch, 0.) && hitAt(*auxiliaryMenu, 1. / 3.) &&
+              catalogReads == 1,
+          "hidden devices supply stepped geometry for both auxiliary lanes from one on-demand catalog");
+
+    if (auxiliaryMenu) {
+        const auto readsBeforePopup = catalogReads;
+        bool squareOnly = false;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool, const engine::AutomationLaneNode *,
+                                             const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Insert Shape" && item.getItem().subMenu) {
+                    juce::PopupMenu::MenuItemIterator shape(*item.getItem().subMenu);
+                    squareOnly = shape.next() && shape.getItem().text == "Square" && !shape.next();
+                }
+        };
+        const auto middle = (auxiliaryMenu->top + auxiliaryMenu->scaleBottom) / 2.f;
+        const auto popup = pressAt(canvas, {static_cast<float>(geometry.x(3 * bar / 2)), middle},
+                                   juce::ModifierKeys::rightButtonModifier);
+        canvas.mouseDown(popup);
+        canvas.mouseUp(popup);
+        root.arrangement.onContextMenu = {};
+        check(squareOnly && catalogReads == readsBeforePopup,
+              "the stepped auxiliary menu uses its resolved type without reading the catalog again");
+    }
+
+    const auto showAndHit = [&](const char *ref, double level) {
+        if (!root.showDeviceAutomation(deviceId, ref))
+            return false;
+        root.frame();
+        const auto body = laneAt(ref);
+        return body && hitAt(*body, level);
+    };
+    check(showAndHit("7", 0.), "the switch holds its first state at the bottom between legacy points");
+    check(showAndHit("8", 1. / 3.), "the chooser holds its first discrete state rather than ramping");
+    check(originalSwitch && originalMenu && document->store().getAutomationData(31, {}) == originalSwitch &&
+              document->store().getAutomationData(32, {}) == originalMenu,
+          "displaying the stepped envelopes keeps the original streams untouched");
+
+    const auto add = [&](const char *ref, double value, double expected, bool exact) {
+        if (!root.showDeviceAutomation(deviceId, ref) ||
+            !root.addAutomationPoint(track, root.automationTarget(track), 3 * bar, value, exact))
+            return false;
+        const auto snapshot = root.current();
+        const auto envelope = envelopeOf(*snapshot, root.automationTarget(track));
+        return envelope.lane && envelope.lane->valueDomain == "normalized" && envelope.data &&
+               std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+                   return point.time == 3 * bar && std::abs(point.value - expected) < 1.e-9 && point.curve == 0;
+               });
+    };
+    check(add("7", .74, 1., false), "a new switch point writes the normalized on state with Hold");
+    check(add("8", .59, 2. / 3., true), "typed chooser values write the nearest of four normalized states with Hold");
+}
+
 void automationAdditionalLanes(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-additional-lanes.adi", true, {}, error);
@@ -24328,6 +24497,7 @@ int main(int argc, char **argv) {
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
+    trace("steppedDeviceAutomation", [&] { steppedDeviceAutomation(commands, temp.path()); });
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
     trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
     trace("automationBreakpointModifiers", [&] { automationBreakpointModifiers(commands, temp.path()); });

@@ -367,9 +367,14 @@ struct Recorder final : device::DeviceInstance {
     };
     device::DeviceIdentity id;
     std::vector<Seen> seen;   // reserved before any render
+    std::vector<device::ParamDescriptor> declared;
     std::int64_t clock = 0;
     const device::DeviceIdentity& identity() const noexcept override { return id; }
     bool loaded() const noexcept override { return true; }
+    std::int32_t paramCount() const noexcept override { return static_cast<std::int32_t>(declared.size()); }
+    const device::ParamDescriptor* paramAt(std::int32_t index) const noexcept override {
+        return index >= 0 && static_cast<std::size_t>(index) < declared.size() ? &declared[static_cast<std::size_t>(index)] : nullptr;
+    }
     void process(const NodeIo& io) noexcept override {
         for (const Event& e : io.events)
             if (e.type == EventType::ParamValue && seen.size() < seen.capacity())
@@ -387,6 +392,7 @@ struct Project {
     std::unique_ptr<Store> store;
     Session session;
     Recorder* rec = nullptr;
+    std::vector<device::ParamDescriptor> declared;
     std::int64_t clock = 0;
     double rate;
     std::int32_t block;
@@ -421,6 +427,7 @@ struct Project {
             [this](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
                 auto r = std::make_unique<Recorder>();
                 r->seen.reserve(200000);
+                r->declared = declared;
                 rec = r.get();
                 return r;
             },
@@ -488,6 +495,52 @@ void testThroughTheGraph() {
     }
     check(g_allocations.load() == 0, "no callback in any of those twenty sessions allocated");
     check(audio::callbackFileIo.load() == 0, "and none touched a file");
+}
+
+void testLegacySteppedDeviceLanes() {
+    section("SC-352 -- existing linear streams follow exact resolved switch and menu descriptors");
+    Project p("legacy_stepped", 48000.0, 512);
+    device::ParamDescriptor toggle, menu, unknownCount;
+    toggle.id = "7";
+    toggle.shape = device::ParamShape::Switch;
+    toggle.automatable = true;
+    menu.id = "9";
+    menu.shape = device::ParamShape::Menu;
+    menu.stepCount = 5;
+    menu.automatable = true;
+    unknownCount.id = "11";
+    unknownCount.shape = device::ParamShape::Menu;
+    unknownCount.automatable = true;
+    p.declared = {toggle, menu, unknownCount};
+    p.lane(1, {{0, .2}, {100, .8}, {250, .2}}, "007");
+    p.lane(2, {{0, .24}, {80, .61}, {245, .81}}, "9");
+    p.lane(3, {{0, .29}, {170, .68}}, "11");
+    p.lane(4, {{0, .1}, {480, .9}}, "85");
+    const auto bytes = p.store->getAutomationData(1, {});
+    g_allocations = 0;
+    p.load();
+    p.play(512);
+
+    const auto sent = [&](std::uint32_t id) {
+        std::vector<std::pair<std::int64_t, double>> events;
+        for (const auto& event : p.rec->seen)
+            if (event.paramId == id)
+                events.emplace_back(event.sample, event.value);
+        return events;
+    };
+    check(sent(7) == std::vector<std::pair<std::int64_t, double>>{{0, 0}, {100, 1}, {250, 0}},
+          "the switch holds between authored points and quantizes to 0 or 1");
+    check(sent(9) == std::vector<std::pair<std::int64_t, double>>{{0, .25}, {80, .5}, {245, .75}},
+          "the menu holds and quantizes to its five normalized positions");
+    check(sent(11) == std::vector<std::pair<std::int64_t, double>>{{0, .29}, {170, .68}},
+          "the declared menu of unknown count holds its original normalized values");
+    const auto unresolved = sent(85);
+    check(unresolved.size() > 2 && unresolved[1].second > .1 && unresolved[1].second < .9,
+          "an unresolved parameter keeps the legacy continuous path");
+    check(bytes && p.store->getAutomationData(1, {}) == bytes &&
+              StreamReader<AutomationPoint>(*bytes, FourCC::Automation).at(0)->curve == 1,
+          "rebuild and playback leave the original linear AAUT bytes untouched");
+    check(g_allocations.load() == 0, "stepped playback allocates nothing during a callback");
 }
 
 void testOverrideAndReenable() {
@@ -621,6 +674,7 @@ int main() {
         testDeterministic();
         testBinding();
         testThroughTheGraph();
+        testLegacySteppedDeviceLanes();
         testOverrideAndReenable();
         testNamedAndPlaceholders();
         testRepublishedUnderTheCallback();

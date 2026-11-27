@@ -544,6 +544,8 @@ private:
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
     // Every node a track's events reach, which is MIDI's controller route identity.
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
+    [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindResolvedDeviceAutomation(
+        std::shared_ptr<const AutomationProgram>, const std::set<std::int64_t>& suspended, const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row,

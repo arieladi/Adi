@@ -28,6 +28,8 @@ namespace adi::ui {
 struct AutomationRange {
     double minimum = 0, maximum = 1;
     bool flipped = false;
+    bool stepped = false;
+    std::int32_t stepCount = 0;
 };
 // A track parameter's travel, as the mixer's controls have it: the fader's -70..+6 dB, the pan's -1..1.
 inline AutomationRange automationRange(const std::string &param) {
@@ -52,6 +54,8 @@ struct AutomationTarget {
     bool footIsSilence = true; // the foot written as silence (-150 dB), as the fader's and a send's
     std::string device = "Mixer";
     bool stepped = false;
+    bool inverted = false;
+    std::int32_t stepCount = 0;
     // Keep the descriptor's native id and default when the device panel does
     // not publish parameters for the selected lane.
     std::string nativeParamId{};
@@ -85,7 +89,8 @@ inline AutomationTarget activatorTarget(std::int64_t track) {
     t.minimum = 0;
     t.maximum = 1;
     t.footIsSilence = false;
-    t.stepped = true;
+    t.stepped = t.inverted = true;
+    t.stepCount = 2;
     return t;
 }
 // A send's level, on its routing row: the knob's -70..0 dB, its foot silence.
@@ -118,6 +123,8 @@ inline std::optional<AutomationTarget> deviceTarget(const DevicePanelData &d, co
     t.maximum = 1;
     t.footIsSilence = false;
     t.device = d.name;
+    t.stepped = p.shape != panel::Shape::Continuous || p.stepCount > 1;
+    t.stepCount = p.shape == panel::Shape::Switch ? 2 : p.stepCount;
     t.nativeParamId = p.id;
     const auto value = d.defaultValues().find(p.id);
     if (value != d.defaultValues().end())
@@ -125,12 +132,21 @@ inline std::optional<AutomationTarget> deviceTarget(const DevicePanelData &d, co
     return t;
 }
 // A target's travel, and a value as written: inside it, the foot as silence where it is one.
-inline AutomationRange automationRange(const AutomationTarget &t) { return {t.minimum, t.maximum, t.stepped}; }
+inline AutomationRange automationRange(const AutomationTarget &t) {
+    return {t.minimum, t.maximum, t.inverted, t.stepped, t.stepCount};
+}
+inline double steppedAutomationValue(const AutomationRange &range, double value) noexcept {
+    if (!range.stepped || range.stepCount < 2 || range.minimum >= range.maximum)
+        return value;
+    const double intervals = range.stepCount - 1;
+    const auto level = std::clamp((value - range.minimum) / (range.maximum - range.minimum), 0., 1.);
+    return std::lerp(range.minimum, range.maximum, std::round(level * intervals) / intervals);
+}
 inline double writtenAutomationValue(const AutomationTarget &t, double v) {
     v = std::clamp(std::isfinite(v) ? v : t.minimum, t.minimum, t.maximum);
-    if (t.stepped)
-        return v >= 0.5 ? 1.0 : 0.0;
-    return t.footIsSilence && v <= t.minimum ? kAutomationSilenceDb : v;
+    if (t.footIsSilence && v <= t.minimum)
+        return kAutomationSilenceDb;
+    return steppedAutomationValue(automationRange(t), v);
 }
 // Live's lane chooser for a track (manual 25.2): the mixer's Volume, Pan where the track has a mixer,
 // and each send that has its row (a send without one has no lane to own yet); then each device on the
@@ -175,12 +191,14 @@ struct TrackEnvelope {
 inline TrackEnvelope envelopeOf(const engine::Snapshot &snapshot, const AutomationTarget &target) {
     TrackEnvelope out;
     out.lane = laneOf(snapshot, target.ownerKind, target.ownerId, target.paramRef);
-    // A disabled lane of the target is still its lane: shown and edited, never doubled by a new one.
+    if (out.lane && !target.inverted && out.lane->valueDomain != target.valueDomain)
+        out.lane = nullptr;
+    // An authored lane of the exact domain is still visible and editable when its owner cannot play it.
     if (out.lane == nullptr)
         for (const auto &lane : snapshot.automationLanes)
             if (lane && lane->ownerKind == target.ownerKind && lane->ownerId == target.ownerId &&
                 automation_override_detail::sameParam(target.ownerKind, lane->paramRef, target.paramRef) &&
-                (target.stepped || lane->valueDomain == target.valueDomain)) {
+                (target.inverted || lane->valueDomain == target.valueDomain)) {
                 out.lane = lane.get();
                 break;
             }
@@ -221,7 +239,8 @@ inline automation::LaneSpec automationLaneSpec(const AutomationTarget &target, d
     spec.valueDomain = target.valueDomain;
     spec.unit = target.unit;
     spec.defaultValue = exactValue && validExactAutomationValue({}, target, currentValue)
-                            ? currentValue : writtenAutomationValue(target, currentValue);
+                            ? steppedAutomationValue(automationRange(target), currentValue)
+                            : writtenAutomationValue(target, currentValue);
     spec.minValue = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
     spec.maxValue = target.maximum;
     return spec;
@@ -249,7 +268,8 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const
         data, lane, nullptr,
         Payload::array({Payload{{"id", point},
                                 {"time", std::max<std::int64_t>(0, tick)},
-                                {"value", exactValue ? value : writtenAutomationValue(target, value)},
+                                {"value", exactValue ? steppedAutomationValue(automationRange(target), value)
+                                                     : writtenAutomationValue(target, value)},
                                 {"curve", target.stepped ? 0 : 1},
                                 {"tension", 0.0}}})));
     for (auto &op : ops)
