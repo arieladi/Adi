@@ -10,6 +10,7 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <string_view>
@@ -5498,15 +5499,12 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (field == Field::Name)
         return rename(typed);
     if (field == Field::SourceTempo) {
-        const auto number = typed.trim().toStdString();
-        const auto end = number.data() + number.size();
-        double bpm = 0;
-        const auto parsed = std::from_chars(number.data(), end, bpm);
-        if (parsed.ec != std::errc{} || parsed.ptr != end || !(bpm > 0 && bpm < 1000)) {
+        const auto bpm = decimal::parse(typed.trim().toStdString());
+        if (!bpm || !(*bpm > 0 && *bpm < 1000)) {
             root.say("Type a source BPM greater than 0 and below 1000.");
             return false;
         }
-        return setWarp(true, bpm);
+        return setWarp(true, *bpm);
     }
     if (field == Field::Gain) {
         auto raw = typed.trim();
