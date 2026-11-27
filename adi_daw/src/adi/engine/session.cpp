@@ -1342,6 +1342,8 @@ std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) c
 }
 bool Session::readPlayback(const Store &store) {
     try {
+        if (auto problem = store.essentialExtensionProblem(kSessionSchemaUserVersion); !problem.empty())
+            throw std::runtime_error(problem);
         auto& db = const_cast<SQLite::Database&>(store.db());
         std::optional<SQLite::Transaction> read;
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
@@ -2888,6 +2890,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     if (launchAudio && session_.launchAudioDriver_) {
         LaunchBlock launchBlock;
         launchBlock.frames = io.frames;
+        launchBlock.global = timing->settings.launchQuantization.value_or(launchAudio->globalQuantization());
         launchBlock.meters = timing->signatures;
         launchBlock.clock = this;
         launchBlock.tickAtSample = [](const void* state, std::int64_t sample) noexcept {

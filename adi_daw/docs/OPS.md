@@ -2067,6 +2067,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `transport.setCountIn` | t | S | — | P1 |
+| `transport.setLaunchQuantization` | t | S | — | P1 |
 | `transport.setSongStart` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
 | `controller.unbind` | e | N | pair `controller.bind` | P1 |
@@ -2111,6 +2112,10 @@ export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
 
 `transport.setCountIn {bars}` saves one of `0` (None), `1`, `2`, `4`.
+`transport.setLaunchQuantization {code}` saves Global Quantization in
+`session_state` outside Undo. Codes 0–13 are None, 8 Bars, 4 Bars, 2 Bars,
+1 Bar, 1/2, 1/2T, 1/4, 1/4T, 1/8, 1/8T, 1/16, 1/16T and 1/32. The
+default is 1 Bar. The driver reads the setting from its pinned timing generation.
 `transport.setSongStart {on, start?}` saves a nonnegative musical tick when on;
 `on:false` clears the override. Both use session metadata, Snapshot impact and
 the same ephemeral/audit/batch-rollback rules as loop/click. A missing song start
@@ -2195,6 +2200,63 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
+### 9.13 Session scenes and clip slots
+
+| Op | S | E | Inv | P |
+|---|---|---|---|---|
+| `scene.create` | e | G | cap | P2 |
+| `scene.delete` | e | G | cap | P2 |
+| `scene.reorder` | e | G | cap | P2 |
+| `scene.rename` | e | G | cap | P2 |
+| `scene.setTempo` | e | G | cap | P2 |
+| `scene.setSignature` | e | G | cap | P2 |
+| `scene.setEnabled` | e | G | cap | P2 |
+| `session.setSlotClip` | e | G | cap | P2 |
+| `session.clearSlot` | e | G | cap | P2 |
+| `session.setStopButton` | e | G | cap | P2 |
+| `session.setLaunchMode` | e | G | cap | P2 |
+| `session.setLaunchQuant` | e | G | cap | P2 |
+| `session.setLaunchSettings` | e | G | cap | P2 |
+| `session.setFollowAction` | e | G | cap | P2 |
+| `session.launchClip` | s | N | — | P2 |
+| `session.launchScene` | s | N | — | P2 |
+| `session.stopTrack` | s | N | — | P2 |
+| `session.stopAll` | s | N | — | P2 |
+| `session.cancelSceneLaunch` | s | N | — | P2 |
+| `session.backToArrangement` | s | N | — | P2 |
+
+- `scene.create {id, ord, name?, color?}` inserts at an explicit order.
+  `scene.delete {id}` removes the scene and its slots.
+  `scene.reorder {scenes}` supplies the complete ordered list of scene IDs.
+  `scene.rename {id, name}` sets its name.
+- `scene.setTempo {id, bpm}` and `scene.setSignature {id, numerator, denominator}`
+  set the scene values. `scene.setEnabled {id, tempo?, signature?}` changes one
+  or both enable flags. A disabled value is retained.
+- `session.setSlotClip {track, scene, clip}` assigns a same-track clip to a
+  slot. Its Arrangement placement is captured for Undo.
+  `session.clearSlot {track, scene}` removes the occupied clip and retains
+  the slot's Stop-button choice. `session.setStopButton {track, scene, on}`
+  sets that choice. A missing row means an empty slot with Stop.
+- `session.setLaunchMode {clip, mode}` uses Trigger 0, Gate 1, Toggle 2 or
+  Repeat 3. `session.setLaunchQuant {clip, quant}` uses Global 0 and the
+  fourteen explicit transport codes offset by one.
+  `session.setLaunchSettings {clip, legato?, velocity?, fade?, ram?}` edits the
+  supplied fields. Velocity amount is normalized from 0 to 1.
+- `session.setFollowAction {clip?, scene?, enabled, duration, actionA, jumpA?,
+  actionB, jumpB?, chanceB, linked?, loops?}` targets exactly one clip or scene.
+  Duration uses ticks and Chance B is a percentage. Jump carries a literal
+  scene ID. Linked timing and loop counts belong to clips.
+
+The launcher accepts `session.launchClip {track, scene, clip, incarnation,
+release?, velocity?}`, `session.launchScene {scene, incarnation, velocity?}`,
+`session.stopTrack {track, incarnation}`, `session.stopAll {incarnation}`,
+`session.cancelSceneLaunch {scene, incarnation}` and
+`session.backToArrangement {track?, incarnation}`. An absent track in the last
+command covers every track. A gesture carries literal IDs and one live
+incarnation. The driver validates the whole gesture against its pinned
+generation. An owner can dispatch directly or deliver the committed audit batch
+as one gesture. The journal retains the commands outside the Undo head.
+
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every
 pull request that added an op rewrote it to the same new value, so two such pull
@@ -2235,10 +2297,10 @@ The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
 navigation.
 
-ADR-0037 removed the four `session.*` launch ops along with Session View, so the
-transport scope is the whole of this category, including Cue/monitor commands
-that save performance controls in the session layer. These do not reintroduce
-Session View or launching.
+ADR-0101 d4 restores the Session launch operations as ephemeral. The Transport
+scope includes Cue and monitor commands that save performance controls in the
+session layer. Session launches change the live launcher state and keep their
+audit rows outside Undo.
 
 They still go through the registry — same validation, same scopes, same
 attribution — and still emit an op row, tagged `ephemeral`. Undo skips ephemeral

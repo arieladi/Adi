@@ -66,6 +66,9 @@ public:
     LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>, std::vector<std::int64_t> tracks,
                        std::int32_t maxFrames);
 
+    [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
+        return project_->globalQuantization();
+    }
     void begin(LaunchAudioDriver&, LaunchBlock, const Transport&, std::int64_t streamSample,
                void* observerContext,
                void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept) noexcept;

@@ -40,6 +40,8 @@ Checks, in order:
   9. Every older minor is frozen under docs/format/history/, each minor
      only ADDS objects except the 1.9 project-default rebuild, and migrating each frozen
      file yields this schema, ignoring order and comments (ADR-0144).
+  9b. The reserved Session schema adds only its own objects to the current
+     schema and enforces Session clip ownership before its version is activated.
 """
 
 from __future__ import annotations
@@ -767,6 +769,81 @@ def main() -> int:
         previous = (minor, objs)
     if fail.count == before_9:  # type: ignore[attr-defined]
         ok(f"1.0 to 1.{spec_minor - 1} are frozen and upgrade (including the 1.9 default rebuild) to 1.{spec_minor}")
+
+    # Work on Session's reserved minor before the intervening schemas land.
+    # Keep the frozen-history test above strict and exercise the pending DDL
+    # as a separate additive step, without changing the production version.
+    if spec_minor < 26:
+        print("[9b] reserved Session 1.26 additions")
+        before_9b = fail.count  # type: ignore[attr-defined]
+        staged_file = SCHEMA.with_name("schema-session-1.26.sql")
+        try:
+            current.executescript(staged_file.read_text(encoding="utf-8"))
+            staged_objects = objects(current)
+            wanted = {
+                "scenes", "clip_slots", "clip_launch", "idx_clip_slots_scene",
+                "clip_slots_validate_insert", "clip_slots_validate_update",
+                "clips_validate_session_insert", "clips_validate_session_update",
+                "scenes_delete_clips",
+            }
+            additions = {name for _type, name, _table, _sql in staged_objects - cur_objects
+                         if not name.startswith("sqlite_")}
+            if not cur_objects <= staged_objects or additions != wanted:
+                fail("the reserved Session step must only add its named tables, index and triggers")
+            if current.execute("PRAGMA user_version").fetchone()[0] != SPEC_USER_VERSION:
+                fail("the reserved test DDL rewrote the current production version")
+            for table in ("scenes", "clip_slots", "clip_launch"):
+                table_info = current.execute(f"PRAGMA table_list({table})").fetchone()
+                if table_info is None or table_info[5] != 1:
+                    fail(f"pending {table} is not STRICT")
+
+            current.executescript("""
+                INSERT INTO tracks(id, kind) VALUES (1, 'midi'), (2, 'audio');
+                INSERT INTO clips(id, track_id, kind, pos_ticks) VALUES (1, 1, 'midi', 0),
+                    (2, 1, 'audio', 1), (3, 1, 'midi', 0);
+                INSERT INTO scenes(id, ord, tempo_bpm, signature_numerator,
+                    signature_denominator) VALUES (1, 0, 132.5, 7, 8), (2, 1, 120.0, 4, 4);
+                INSERT INTO clip_slots(track_id, scene_id, clip_id) VALUES (1, 1, 1);
+                INSERT INTO clip_slots(track_id, scene_id, has_stop) VALUES (2, 1, 0), (2, 2, 1);
+                INSERT INTO clip_launch(clip_id, launch_quant, follow_a, follow_a_scene_id)
+                    VALUES (1, 14, 9, 2);
+            """)
+
+            def reject_session_edit(sql: str, explanation: str) -> None:
+                try:
+                    with current:
+                        current.execute(sql)
+                except sqlite3.IntegrityError:
+                    return
+                fail(explanation)
+
+            reject_session_edit("INSERT INTO clip_slots VALUES(1, 2, 1, 1)",
+                                "the same clip occupied two Session cells")
+            reject_session_edit("INSERT INTO clip_slots VALUES(1, 2, 2, 1)",
+                                "a nonzero arrangement clip entered Session")
+            reject_session_edit("UPDATE clip_slots SET clip_id=3 WHERE track_id=2 AND scene_id=1",
+                                "a slot accepted a clip owned by another track")
+            reject_session_edit("UPDATE clips SET pos_ticks=1 WHERE id=1",
+                                "a slotted clip gained an arrangement position")
+            reject_session_edit("INSERT INTO clip_launch(clip_id) VALUES(3)",
+                                "an arrangement clip kept Session launch settings")
+            reject_session_edit("DELETE FROM scenes WHERE id=2",
+                                "deleting a Jump target discarded its authored reference")
+            dormant = current.execute("SELECT tempo_bpm, tempo_enabled, signature_numerator, "
+                                      "signature_denominator, signature_enabled FROM scenes "
+                                      "WHERE id=1").fetchone()
+            if dormant != (132.5, 0, 7, 8, 0):
+                fail("dormant scene tempo or signature was discarded")
+            with current:
+                current.execute("DELETE FROM scenes WHERE id=1")
+            if (current.execute("SELECT count(*) FROM clips WHERE id=1").fetchone()[0]
+                    or current.execute("SELECT count(*) FROM clip_launch").fetchone()[0]
+                    or current.execute("PRAGMA foreign_key_check").fetchall()):
+                fail("scene deletion left an orphan clip, launch setting or foreign key")
+            if fail.count == before_9b:  # type: ignore[attr-defined]
+                ok("reserved additions preserve the production version and enforce Session ownership")
+        except (OSError, sqlite3.Error) as exc:
+            fail(f"pending Session schema could not be validated: {exc}")
 
     n = fail.count  # type: ignore[attr-defined]
     print()

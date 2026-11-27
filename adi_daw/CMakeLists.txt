@@ -282,6 +282,16 @@ add_custom_command(
     COMMENT "Embedding schema.sql"
     VERBATIM)
 
+set(ADI_SESSION_SCHEMA_SQL "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/schema-session-1.26.sql")
+set(ADI_SESSION_SCHEMA_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/adi/session_schema_sql.hpp")
+add_custom_command(
+    OUTPUT "${ADI_SESSION_SCHEMA_HPP}"
+    COMMAND "${CMAKE_COMMAND}" -DIN=${ADI_SESSION_SCHEMA_SQL} -DOUT=${ADI_SESSION_SCHEMA_HPP}
+            -DSYMBOL=kSessionSchemaSql -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    DEPENDS "${ADI_SESSION_SCHEMA_SQL}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    COMMENT "Embedding reserved Session schema"
+    VERBATIM)
+
 add_library(adi_core STATIC
     src/adi/applied_batches.cpp
     src/adi/appdata.cpp
@@ -451,6 +461,7 @@ add_library(adi_core STATIC
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
+    "${ADI_SESSION_SCHEMA_HPP}"
 )
 target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp src/adi/device_key_routes.cpp src/adi/device_key_edit.cpp)
 include(cmake/mix_cores.cmake)
@@ -1838,6 +1849,9 @@ target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
 
 target_sources(adi_core PRIVATE
+    src/adi/session_ops.cpp
+    src/adi/engine/launch_ops.cpp
+    src/adi/engine/launch_store.cpp
     src/adi/engine/launch_quantize.cpp
     src/adi/engine/launcher.cpp
     src/adi/engine/launch_audio.cpp
@@ -1847,12 +1861,18 @@ target_sources(adi_core PRIVATE
     src/adi/engine/launch_midi.cpp
     src/adi/engine/slot_recording.cpp)
 foreach(_adi_launch_suite IN ITEMS
-        launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
+        launch_ops launch_store launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
         launch_follow_playback launch_capture launch_midi slot_recording)
     add_executable(adi_${_adi_launch_suite}_tests tests/test_${_adi_launch_suite}.cpp)
     target_link_libraries(adi_${_adi_launch_suite}_tests PRIVATE adi_core adi_warnings)
     add_test(NAME adi_${_adi_launch_suite}_tests COMMAND adi_${_adi_launch_suite}_tests)
 endforeach()
+add_executable(adi_session_arrangement_isolation_tests tests/test_session_arrangement_isolation.cpp)
+target_link_libraries(adi_session_arrangement_isolation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_arrangement_isolation_tests COMMAND adi_session_arrangement_isolation_tests)
+add_executable(adi_session_ops_tests tests/test_session_ops.cpp)
+target_link_libraries(adi_session_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_ops_tests COMMAND adi_session_ops_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
     target_link_options(adi_launch_audio_tests PRIVATE

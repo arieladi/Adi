@@ -20,6 +20,9 @@
 if(NOT DEFINED IN OR NOT DEFINED OUT)
     message(FATAL_ERROR "embed_schema.cmake needs -DIN= and -DOUT=")
 endif()
+if(NOT DEFINED SYMBOL)
+    set(SYMBOL kSchemaSql)
+endif()
 
 file(READ "${IN}" _hex HEX)
 string(LENGTH "${_hex}" _hexlen)
@@ -53,7 +56,7 @@ namespace detail {
 // MSVC rejects the initialiser (C4309). The schema is ASCII today, but a
 // comment with a non-ASCII character would otherwise break the build for a
 // reason nobody would guess from the error.
-inline constexpr unsigned char kSchemaSqlBytes[] = {
+inline constexpr unsigned char ${SYMBOL}Bytes[] = {
     ${_body}
 };
 
@@ -61,9 +64,9 @@ inline constexpr unsigned char kSchemaSqlBytes[] = {
 
 /// The normative DDL, byte-for-byte as docs/format/schema.sql holds it.
 /// Not constexpr: reinterpret_cast is not allowed in a constant expression.
-inline const std::string_view kSchemaSql{
-    reinterpret_cast<const char*>(detail::kSchemaSqlBytes),
-    sizeof(detail::kSchemaSqlBytes)};
+inline const std::string_view ${SYMBOL}{
+    reinterpret_cast<const char*>(detail::${SYMBOL}Bytes),
+    sizeof(detail::${SYMBOL}Bytes)};
 
 }  // namespace adi
 ")

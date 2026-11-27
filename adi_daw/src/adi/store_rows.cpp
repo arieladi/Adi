@@ -10,6 +10,7 @@
 #include <sqlite3.h>
 #include <map>
 #include <cstring>
+#include <set>
 
 namespace adi::rows {
 namespace {
@@ -64,15 +65,17 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
 /// `all()` refuses above 8.4M records rather than allocating on a corrupt
 /// header's word. Striding by the header's `rec_size` is what makes a v2 record
 /// readable by this v1 build (ADR-0023) -- never `sizeof(NoteRecord)`.
-void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
+namespace {
+void readClipNotesInto(const Store& store, std::int64_t clipId, std::vector<Note>& notes,
+                       std::vector<std::string>& problems) {
     const auto blob = store.getEventStream(clipId, "notes");
     if (!blob) return;
 
     const StreamReader<NoteRecord> r(*blob, FourCC::Notes);
     if (!r.ok()) {
-        m.problems.push_back("clips#" + std::to_string(clipId) +
-                             ": note stream is not readable (" +
-                             std::string(toString(r.error())) + ")");
+        problems.push_back("clips#" + std::to_string(clipId) +
+                           ": note stream is not readable (" +
+                           std::string(toString(r.error())) + ")");
         return;
     }
 
@@ -91,8 +94,13 @@ void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
         n.tuningCents = static_cast<double>(rec->tuning_cents);
         n.flags = rec->flags;
         n.noteId = rec->note_id;
-        m.notes.push_back(n);
+        notes.push_back(n);
     }
+}
+} // namespace
+
+void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
+    readClipNotesInto(store, clipId, m.notes, m.problems);
 }
 
 Model readModel(const Store& store) {
@@ -249,6 +257,12 @@ Model readModel(const Store& store) {
               m.lanes.push_back(std::move(l));
           });
 
+    std::set<std::int64_t> slotted;
+    if (db.tableExists("clip_slots") &&
+        !query(m, db, "clip_slots", "SELECT clip_id FROM main.clip_slots WHERE clip_id IS NOT NULL",
+            [&](const SQLite::Statement& st) { slotted.insert(st.getColumn(0).getInt64()); }))
+        return m; // A malformed ownership table cannot place unknown clips on the timeline.
+
     query(m, db, "clips",
           "SELECT c.id,c.track_id,c.lane_id,c.kind,c.name,c.color,c.time_base,c.pos_ticks,"
           "c.pos_ns,c.length_ticks,c.length_ns,c.loop_enabled,c.loop_start_ticks,c.loop_len_ticks,"
@@ -282,11 +296,13 @@ Model readModel(const Store& store) {
               c.endMarkerTicks = optInt(st, 22);
               c.signatureNumerator = optInt(st, 23); c.signatureDenominator = optInt(st, 24);
               c.scaleRoot = optInt(st, 25); c.scaleId = optText(st, 26); c.scaleMask = optInt(st, 27);
-              m.clips.push_back(std::move(c));
+              auto& list = slotted.contains(c.id) ? m.slotClips : m.clips;
+              list.push_back(std::move(c));
           });
 
     std::map<std::int64_t,Clip*> fadeClipOf;
     for(auto& clip:m.clips)fadeClipOf[clip.id]=&clip;
+    for(auto& clip:m.slotClips)fadeClipOf[clip.id]=&clip;
     query(m,db,"clip_playback_details","SELECT clip_id,in_tension,out_tension,content_offset_ns,loop_begin_ns,loop_end_ns,source_end_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns FROM clip_playback_details",
           [&](const SQLite::Statement& st) {
               if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end()) {
@@ -615,6 +631,8 @@ Model readModel(const Store& store) {
     // second place that knows how an event stream is addressed.
     for (const Clip& c : m.clips)
         if (c.kind == "midi") readClipNotes(m, store, c.id);
+    for (const Clip& c : m.slotClips)
+        if (c.kind == "midi") readClipNotesInto(store, c.id, m.slotNotes, m.slotProblems);
 
     query(m,db,"automation_segment_ranges",
           "SELECT id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges ORDER BY data_id,record_index",

@@ -83,6 +83,35 @@ void storage() {
     f.store->db().exec("UPDATE session_state SET value='broken' WHERE key='transport.loop'");
     check(!readTransportSettings(*f.store).hasLoop,"malformed session metadata falls back without trusting a bad loop");
 }
+void globalLaunchQuantization() {
+    Fixture f;
+    check(!readTransportSettings(*f.store).launchQuantization, "an absent Global setting uses the session's default");
+    check(f.op("project.setName", {{"name", "Seed undo"}}).ok, "seed the undo head");
+    const auto head = History(*f.store).head();
+    for (std::int64_t code = 0; code <= 13; ++code) {
+        check(f.op("transport.setLaunchQuantization", {{"code", code}}).ok &&
+              readTransportSettings(*f.store).launchQuantization == static_cast<LaunchQuantization>(code),
+              "every literal Global code round-trips through the journal");
+    }
+    for (const auto& value : std::array<Payload, 5>{-1, 14, 1.25, "2", true})
+        check(!f.op("transport.setLaunchQuantization", {{"code", value}}).ok,
+              "bad launch quantization is refused without coercion");
+    check(History(*f.store).head() == head && History(*f.store).undo().ok &&
+          readTransportSettings(*f.store).launchQuantization == LaunchQuantization::ThirtySecond,
+          "Global Quantization remains outside undo");
+    check(f.op("transport.setLaunchQuantization", {{"code", 7}}).ok &&
+          SnapshotBuilder::fromStore(*f.store)->transport.launchQuantization == LaunchQuantization::Quarter,
+          "the saved Global setting is carried by snapshots");
+    const auto path = f.store->path();
+    check(f.store->close(), "close a project with Global Quantization");
+    f.store.reset();
+    StoreError error{};
+    f.store = Store::open(path, error);
+    check(f.store && readTransportSettings(*f.store).launchQuantization == LaunchQuantization::Quarter,
+          "Global Quantization survives reopen");
+    f.store->db().exec("UPDATE session_state SET value='14' WHERE key='transport.launchQuantization'");
+    check(!readTransportSettings(*f.store).launchQuantization, "malformed Global values fall back");
+}
 std::vector<float> render(Session& session,int frames) {
     std::vector<float> result;result.reserve(static_cast<std::size_t>(frames));
     std::array<float,128> l{},r{};float* outputs[]{l.data(),r.data()};AudioIo io;io.out=outputs;io.numOut=2;
@@ -777,6 +806,7 @@ void countInRecording() {
 int main() {
     try {
         storage();
+        globalLaunchQuantization();
         playback();
         compensation();
         receivingLoopClock();

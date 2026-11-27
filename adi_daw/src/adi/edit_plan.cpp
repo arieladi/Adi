@@ -2,6 +2,7 @@
 #include "adi/edit_plan.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
@@ -239,7 +240,8 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
         for(const auto& placed:input.incoming)masks.push_back({placed.lane,placed.span});
         const std::set<std::int64_t> relocated(batch.relocated.begin(),batch.relocated.end());
         for(const auto& lane:scope.targets) {
-            SQLite::Statement query(store.db(),"SELECT id FROM clips WHERE track_id=? AND lane_id IS ? ORDER BY id");
+            SQLite::Statement query(store.db(),"SELECT id FROM clips WHERE track_id=? AND lane_id IS ?" +
+                engine::excludeSlotClips(store.db(), "clips.id") + " ORDER BY id");
             query.bind(1,lane.track);
             if(lane.lane)query.bind(2,*lane.lane);else query.bind(2);
             while(query.executeStep()) {

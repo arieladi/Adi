@@ -106,7 +106,6 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     if (!active_)
         return;
     block.incarnation = project_->incarnation();
-    block.global = project_->globalQuantization();
     block.followPass = driver.pass_;
     const auto* follow = project_->followPlayer();
     block.followActionsEnabled = follow != nullptr;
