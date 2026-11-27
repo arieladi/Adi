@@ -5267,6 +5267,22 @@ void trackClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         return peer.getPeer()->handleKeyPress(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
     };
     const auto count = document->view().current()->tracks.size();
+    commands.clipClipboard().held = std::monostate{};
+    int captures = 0;
+    bool allowCapture = false;
+    root.beforeDeleteTrack = [&](std::string &reason) {
+        ++captures;
+        if (!allowCapture)
+            reason = "Plug-in state capture refused.";
+        return allowCapture;
+    };
+    const auto head = OpJournal(document->store()).headSeq();
+    for (const auto command : {AppCommands::Copy, AppCommands::Cut, AppCommands::Duplicate})
+        check(!root.command(command) && root.error() == "Plug-in state capture refused." &&
+                  commands.clipClipboard().empty() && OpJournal(document->store()).headSeq() == head,
+              "SC-80: track clipboard refuses to use stale state and leaves the track and clipboard alone");
+    check(captures == 3, "SC-80: all source track clipboard commands attempt state capture");
+    allowCapture = true;
     check(shortcut('d') && selectedCopy() && document->view().current()->tracks.size() == count + 1 &&
               document->view().current()->findTrack(arrangement.geometry.selection.track)->indexInParent ==
                   document->view().current()->findTrack(2)->indexInParent + 1 &&
@@ -5280,6 +5296,7 @@ void trackClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(shortcut('x') && !document->view().current()->findTrack(cut) &&
               shortcut('v') && selectedCopy() && arrangement.geometry.selection.track != cut,
           "SC-80: cut removes a track and paste restores its content under new identities");
+    check(captures == 6, "SC-80: each source operation captures once and Paste uses the held state");
     commands.clipClipboard().held = std::monostate{};
 }
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {

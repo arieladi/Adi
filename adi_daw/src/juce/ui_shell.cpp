@@ -2720,6 +2720,9 @@ bool AdiRootComponent::trackClipboard(ClipCommand command) {
         } else {
             if (selected == nullptr || selected->kind == "master")
                 return fail("Select a track other than Main.");
+            std::string error;
+            if (beforeDeleteTrack && !beforeDeleteTrack(error))
+                return fail(std::move(error));
             copy = {projectFile(store), selected->kind, selected->name, selected->parent, selected->indexInParent,
                     detail::captureTrackForCopy(store.db(), selected->id)};
             for (const auto &row : copy.contents.at("rows"))
