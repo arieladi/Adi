@@ -829,6 +829,45 @@ void samplerSession() {
           "a stereo sample holds at most 4M frames, a mono one 8M");
 #endif
 }
+#if ADI_WITH_PD
+void instrumentSustainWithAutomation(DeviceInstance& source) {
+    auto instrument=load("org.adidaw.builtin.oneshot");
+    const auto param=[](int index){return std::to_string(index+1);};
+    const auto volume=param(OneShot::Volume);
+    instrument->prepare(48000,64);
+    check(instrument->loadState("sample:1",source.saveState("sample:1")) &&
+          instrument->setParam(param(OneShot::Attack),ParamValue::withReal(0,0)) &&
+          instrument->setParam(param(OneShot::Release),ParamValue::withReal(0,1)) &&
+          instrument->setParam(volume,ParamValue::withReal(0,0)),"OneShot loads the sample for live MIDI");
+    std::array<std::array<float,64>,2> output{};
+    float* out[]{output[0].data(),output[1].data()};
+    NodeIo io;io.out=out;io.channels=2;io.frames=64;
+    const auto peak=[&](std::size_t from,std::size_t to) {
+        double result=0;
+        for(std::size_t i=from;i<to;++i)result=std::max(result,std::abs(static_cast<double>(output[0][i])));
+        return result;
+    };
+    const std::array<Event,4> play{{{0,EventType::NoteOn,7,60,1,0,1},
+        {12,EventType::Controller,7,0,0,64,1},
+        {32,EventType::ParamValue,0,0,0,OneShot::Volume+1,0},
+        {48,EventType::NoteOff,7,60,1,0,0}}};
+    io.events={play.data(),static_cast<std::int32_t>(play.size())};
+    allocations.store(0,std::memory_order_relaxed);counting=true;
+    {audio::CallbackScope callback;instrument->process(io);}
+    counting=false;
+    check(peak(12,32)>.05 && peak(34,48)<.025 && allocations.load(std::memory_order_relaxed)==0,
+          "typed MIDI and one-based automation share a split callback without allocating");
+    const Event restore{0,EventType::ParamValue,0,0,0,OneShot::Volume+1,
+                        instrument->getParam(volume).normalized};
+    io.events={&restore,1};
+    instrument->process(io);
+    check(peak(0,64)>.05,"the pedal holds the released live note across automation");
+    const Event pedalUp{8,EventType::Controller,7,0,0,64,0};
+    io.events={&pedalUp,1};
+    instrument->process(io);
+    check(peak(0,8)>.05 && peak(57,64)==0,"the pedal starts the one-millisecond release at its frame");
+}
+#endif
 void instrumentSession() {
 #if ADI_WITH_PD
     const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
@@ -866,6 +905,7 @@ void instrumentSession() {
     const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,64});
     if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
     check(loaded,"the project with OneShot loads in an ordinary Session");
+    if(auto* live=session.instanceFor(inserted.deviceId))instrumentSustainWithAutomation(*live);
     session.transport().play();
     std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
     double peak=0;int firstSound=-1;

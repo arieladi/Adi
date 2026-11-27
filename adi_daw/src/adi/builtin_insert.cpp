@@ -86,6 +86,18 @@ std::size_t deviceInsertPosition(std::span<const ChainDevice> devices, DeviceRol
 }
 namespace {
 std::int64_t integer(const Payload& value){return detail::signedInteger(value);}
+// Live 12 Mixing §18.1 describes first-instrument arming under Exclusive Arm. The R16 observation
+// will confirm what happens to the previously armed track in the same gesture.
+constexpr bool kAutoArmFirstInstrumentWithExclusiveArm = true;
+
+bool midiTrackNeedsFirstInstrument(SQLite::Database& db, std::int64_t track) {
+    SQLite::Statement eligible(db, "SELECT 1 FROM tracks t WHERE t.id=? AND t.kind IN ('midi','instrument') "
+        "AND NOT EXISTS (SELECT 1 FROM device_chains c JOIN devices d ON d.chain_id=c.id "
+        "LEFT JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE c.track_id=t.id "
+        "AND COALESCE(NULLIF(p.subtype,''),d.rack_kind,'')='instrument')");
+    eligible.bind(1, track);
+    return eligible.executeStep();
+}
 std::string editableTrackKind(SQLite::Database& db, std::int64_t track, std::string_view action = "moved") {
     std::set<std::int64_t> seen;
     std::string kind;
@@ -148,7 +160,7 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,bool exclusiveArm,
     const PluginInsertOptions* plugin = nullptr, std::optional<std::int64_t> replace = {}) {
     PreparedBuiltinInsert result;
     try {
@@ -269,12 +281,26 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         if (plugin && plugin->expressionRoute && *plugin->expressionRoute != engine::RouteChoice::Auto)
             append("device.setExpressionRoute",{{"dev",result.deviceId},{"route",engine::routeChoiceName(*plugin->expressionRoute)}},
                    "device",result.deviceId);
+        if (kAutoArmFirstInstrumentWithExclusiveArm && exclusiveArm && insertionRole == detail::DeviceRole::Instrument &&
+            (!newTrack.empty() || midiTrackNeedsFirstInstrument(db, track))) {
+            if (!newTrack.empty())
+                append("track.setArm", {{"id", track}, {"armed", true}}, "track", track);
+            SQLite::Statement arms(db, "SELECT id,record_armed FROM tracks WHERE kind IN ('audio','midi','instrument') "
+                "AND (id=? OR record_armed<>0) ORDER BY id");
+            arms.bind(1, track);
+            while (arms.executeStep()) {
+                const auto id = arms.getColumn(0).getInt64();
+                const bool arm = id == track;
+                if (arm != (arms.getColumn(1).getInt() != 0))
+                    append("track.setArm", {{"id", id}, {"armed", arm}}, "track", id);
+            }
+        }
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
 static PreparedBuiltinInsert prepareBuiltin(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
-    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,std::optional<std::int64_t> replace = {}) {
+    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,bool exclusiveArm,std::optional<std::int64_t> replace = {}) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -284,7 +310,7 @@ static PreparedBuiltinInsert prepareBuiltin(Store& store,std::string_view uid,st
     rows::PluginRef ref;
     ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
     ref.subtype=info->instrument?"instrument":"effect";
-    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,nullptr,replace);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,exclusiveArm,nullptr,replace);
 }
 static PreparedBuiltinInsert preparePlugin(Store& store,const rows::PluginRef& ref,std::int64_t track,
     std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId,
@@ -299,11 +325,11 @@ static PreparedBuiltinInsert preparePlugin(Store& store,const rows::PluginRef& r
         *engine::routeChoiceName(*options.expressionRoute) == '\0') {
         PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
     }
-    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,&options,replace);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,options.exclusiveArm,&options,replace);
 }
 PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
-    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack) {
-    return prepareBuiltin(store,uid,track,before,retainedDeviceId,newTrack);
+    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,bool exclusiveArm) {
+    return prepareBuiltin(store,uid,track,before,retainedDeviceId,newTrack,exclusiveArm);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
     std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId,
@@ -312,7 +338,7 @@ PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& re
 }
 PreparedBuiltinInsert prepareBuiltinReplacement(Store& store, std::string_view uid, std::int64_t targetDevice,
     std::int64_t retainedDeviceId) {
-    return prepareBuiltin(store,uid,0,{},retainedDeviceId,{},targetDevice);
+    return prepareBuiltin(store,uid,0,{},retainedDeviceId,{},false,targetDevice);
 }
 PreparedBuiltinInsert preparePluginReplacement(Store& store, const rows::PluginRef& ref, std::int64_t targetDevice,
     std::int64_t retainedDeviceId) {

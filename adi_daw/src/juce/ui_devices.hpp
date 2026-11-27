@@ -208,6 +208,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     static constexpr int kTitleHeight = 17, kFoldedWidth = 22;
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
+    juce::TextButton parameterList{"Parameter List"};
     ActivatorButton enabled;
     WrenchButton wrench;
     HotSwapButton hotSwapButton;
@@ -254,6 +255,12 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
 
   private:
     void endRename(bool commit);
+    void showParameterList();
+    void closeConfigure();
+    void queueConfigureTouch(const DevicePanelData &);
+    void applyConfigureTouches();
+    bool panelTargetCurrent(const DevicePanelData &);
+    void chooseLastTouch(const DevicePanelData &, bool showAutomation);
     bool canHotSwap() const;
     bool requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot, std::uint64_t epoch);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
@@ -275,6 +282,12 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
+    struct ConfigureSession {
+        DevicePanelData expected;
+        std::uint64_t observed = 0;
+        std::vector<std::string> pending;
+    };
+    std::optional<ConfigureSession> configureSession_;
     std::optional<DevicePanelData> dragTarget_;
     std::vector<DevicePanelData> draggedDevices_;
     bool selectOnRelease_ = false;
@@ -308,13 +321,15 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
 };
 class DeviceChainStrip final : public juce::Component,
                                public juce::DragAndDropTarget,
-                               public juce::FileDragAndDropTarget {
+                               public juce::FileDragAndDropTarget,
+                               private juce::AsyncUpdater {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     ~DeviceChainStrip() override;
     void suspendParameters(bool);
     bool parametersSuspended() const noexcept { return parametersSuspended_; }
     void frame(std::int64_t track);
+    void settleParameterTouches() { handleUpdateNowIfNeeded(); }
     void resized() override;
     void paint(juce::Graphics &) override;
     void paintOverChildren(juce::Graphics &) override;
@@ -325,6 +340,7 @@ class DeviceChainStrip final : public juce::Component,
     bool editPairExpected(const DevicePanelData &, const engine::ParameterPair &, engine::ParameterPairEvent,
                           std::shared_ptr<const gesture::OwnerToken> &);
     bool validExpected(const DevicePanelData &) const;
+    bool addLastTouchedParameter(const DevicePanelData &expected);
     bool action(const std::string &, Payload);
     // Native functions remove with Undo; ordinary plug-ins retain bypass.
     bool setEnabledExpected(const DevicePanelData &, bool);
@@ -375,6 +391,8 @@ class DeviceChainStrip final : public juce::Component,
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
+    // Publish native gestures already waiting when a Configure session opens.
+    std::function<void()> pollParameterEdits;
     std::function<void(const void *, const std::vector<std::int64_t> &)> parameterDemand;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
@@ -426,6 +444,9 @@ class DeviceChainStrip final : public juce::Component,
     std::vector<OutputMeter> outputMeters_;
     std::weak_ptr<SharedAnalysis> outputMeterBroker_;
     void setDropPreview(std::optional<int>);
+    void handleAsyncUpdate() override;
+    void cancelConfigureTouches();
+    std::shared_ptr<const ParameterPublication> latestPublication() const;
     struct PickedDevice {
         std::int64_t id, track, chain;
         std::uint64_t instance;
