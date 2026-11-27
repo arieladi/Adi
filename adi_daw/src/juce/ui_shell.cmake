@@ -144,6 +144,10 @@ if(ADI_WITH_JUCE)
             COMMAND /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription"
                 "$<TARGET_BUNDLE_CONTENT_DIR:adi_app>/Info.plist")
     endif()
+    if(WIN32)
+        # SC-388: a sample at a path over 260 characters imports (where Windows allows long paths).
+        target_sources(adi_app PRIVATE src/juce/long_paths.manifest)
+    endif()
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)

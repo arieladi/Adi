@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
@@ -277,6 +283,31 @@ void moreThanTwoChannelsRefused() {
     OpRequest captured;
     check(media::prepareImport(s,stereo,11,123,captured).ok,"a stereo file still imports");
 }
+// SC-388: a sample deep in a library -- a path over 260 characters -- imports, where Windows allows long
+// paths (this program, as ADI, carries the long-path mark).
+void longPathImports() {
+#if defined(_WIN32)
+    DWORD enabled = 0, size = sizeof enabled;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"LongPathsEnabled",
+                     RRF_RT_REG_DWORD, nullptr, &enabled, &size) != ERROR_SUCCESS || enabled == 0) {
+        std::puts("SKIP: Windows long paths are off on this machine (LongPathsEnabled)");
+        return;
+    }
+#endif
+    Fixture f;auto& s=*f.store;
+    auto folder=f.folder();
+    while(folder.native().size()<420)folder/=std::string(40,'d');
+    std::error_code ec;fs::create_directories(folder,ec);
+    check(!ec,("a folder 420 characters deep is made: "+ec.message()).c_str());
+    if(ec)return;
+    const auto path=folder/"deep-sample.wav";
+    {std::array<float,480> one{};audio::WavWriter w(path,48000,1,audio::WavFormat::Pcm16);w.write(one.data(),480);}
+    OpRequest captured;
+    const auto prepared=media::prepareImport(s,path,12,123,captured);
+    check(path.native().size()>260 && prepared.ok && prepared.audio && prepared.audio->frames==480,
+          ("a sample at a "+std::to_string(path.native().size())+"-character path imports: "+prepared.error).c_str());
+    fs::remove_all(f.folder()/std::string(40,'d'),ec);
+}
 void captureDecodeAndDedup() {
     Fixture f;audio::DecodeCache cache(f.temp.path()/"decoded",{1024*1024,0});
     OpRequest captured;
@@ -340,7 +371,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); longPathImports(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }
