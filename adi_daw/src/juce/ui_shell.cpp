@@ -3873,7 +3873,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 if (!kept) {
                     const auto warning = "The import's choices were used but not saved: " + why;
                     if (importing_)
-                        importing_->warning = warning;
+                        *importing_ = warning;
                     else
                         say(warning);
                 }
@@ -3892,33 +3892,24 @@ bool AdiRootComponent::dropWithChoices(const std::vector<std::pair<std::string, 
         return dropPlain(files, track, pos, separate);
     if (files.empty())
         return fail("Drop an audio file.");
-    // One file at a time, each one undo step: the engine imports one file into one clip.
-    importing_ = PendingImport{files, track, std::max<std::int64_t>(0, pos), separate, choices, 0, 0, 0, 0, 0, 0, {}};
-    importNext();
+    importing_.emplace();
+    say(files.size() == 1 ? "Importing " + files.front().second + "..."
+                          : "Importing " + std::to_string(files.size()) + " audio files...");
+    const bool started = importMaterial(files, track, pos, separate, choices, [this](std::int64_t clip,
+                                                                                      std::int64_t on,
+                                                                                      const std::string &why) {
+        finishImport(clip, on, clip == 0 && why.empty() ? "The files were not imported." : why);
+    });
+    if (!started && importing_)
+        finishImport(0, 0, "The last import is still being prepared. Drop the files again when it ends.");
     return true;
 }
-void AdiRootComponent::finishImport(const std::string &why) {
+void AdiRootComponent::finishImport(std::int64_t first, std::int64_t onTrack, const std::string &why) {
     if (!importing_)
         return;
-    // A refused file leaves nothing: the track this queue made for it goes, while its step is still
-    // the latest.
     std::string message = why;
-    if (!why.empty() && importing_->madeStep != 0)
-        if (const auto step = submitter_.nextUndo(); step && step->txnId == importing_->madeStep) {
-            if (submitter_.undo().ok && afterEdit)
-                afterEdit();
-        }
-    // Stopped part-way through several files: what landed, and what was not tried.
-    if (!why.empty() && importing_->files.size() > 1) {
-        const auto &pending = *importing_;
-        const auto untried = pending.files.size() - pending.next - 1;
-        if (pending.landed > 0 || untried > 0)
-            message += " (" + std::to_string(pending.landed) + (pending.landed == 1 ? " file" : " files") +
-                       " imported; " + std::to_string(untried) + " not tried.)";
-    }
-    if (!importing_->warning.empty())
-        message += (message.empty() ? "" : " ") + importing_->warning;
-    const auto first = importing_->firstClip, onTrack = importing_->firstTrack;
+    if (!importing_->empty())
+        message += (message.empty() ? "" : " ") + *importing_;
     importing_.reset();
     if (first != 0) {
         // The first clip selected, as a click on it selects it.
@@ -3942,58 +3933,6 @@ void AdiRootComponent::finishImport(const std::string &why) {
     else
         error_.clear();
     dirty_.mark(DirtySet::Status);
-}
-void AdiRootComponent::importNext() {
-    if (!importing_)
-        return;
-    auto &job = *importing_;
-    if (job.next >= job.files.size())
-        return finishImport({});
-    const auto current = view_.current();
-    if (!current)
-        return finishImport("The project closed during the import.");
-    // A new audio track first when the drop asks for one: below the tracks, or each file after the
-    // first with Ctrl/Cmd held. Its own undo step.
-    std::int64_t on = job.track;
-    job.madeTrack = job.madeStep = 0;
-    if (on == 0 || (job.separate && job.next > 0)) {
-        auto made = newAudioTrack(*current, &commands_.recordingDefaults());
-        if (!submitEdits(std::move(made.ops)))
-            return finishImport(error_);
-        on = made.select;
-        job.madeTrack = on;
-        if (const auto step = submitter_.nextUndo())
-            job.madeStep = step->txnId;
-        if (job.track == 0)
-            job.track = on;
-    }
-    const auto at = job.pos;
-    const auto &[path, name] = job.files[job.next];
-    say("Importing " + name + "...");
-    const bool started = importMaterial(path, on, at, job.choices, [this, on](std::int64_t clip, const std::string &why) {
-        if (!importing_)
-            return;
-        if (clip == 0)
-            return finishImport(why.empty() ? std::string("The file was not imported.") : why);
-        auto &pending = *importing_;
-        ++pending.landed;
-        pending.madeTrack = pending.madeStep = 0;
-        if (pending.firstClip == 0) {
-            pending.firstClip = clip;
-            pending.firstTrack = on;
-        }
-        // The next file after this one on the same track; on its own track it starts where the drop did.
-        if (!pending.separate)
-            if (const auto now = view_.current())
-                if (const auto *t = now->findTrack(on))
-                    for (const auto &c : t->clips)
-                        if (c->id == clip)
-                            pending.pos = c->posTicks + c->lengthTicks;
-        ++pending.next;
-        importNext();
-    });
-    if (!started && importing_)
-        finishImport("The last import is still being prepared: drop " + name + " again when it ends.");
 }
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {

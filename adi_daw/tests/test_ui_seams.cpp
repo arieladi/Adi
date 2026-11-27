@@ -2588,7 +2588,11 @@ void heldIdsAreSkipped() {
     const auto next = rows.next("tracks");
     auto made2 = ui::insertTrack(view.current()->tracks, 0, false, nullptr, next);
     check(next == 5 && !made2.ops.empty() && made2.ops.front().payload["id"] == 5, "Insert Audio Track takes 5 from RowIds");
-    auto dropped = ui::newAudioTrack(*view.current());
+    ui::AudioImport preparedAudio;
+    preparedAudio.mediaId = 1;
+    preparedAudio.sampleRate = 48000;
+    preparedAudio.frames = 480;
+    const auto dropped = ui::dropAudio(*view.current(), 0, 0, "Sample", std::move(preparedAudio));
     check(!dropped.ops.empty() && dropped.ops.front().payload["id"] == 5, "a dropped file's new track takes 5 too");
     check(sub.submit(std::move(made2.ops)).ok && view.current()->findTrack(5) != nullptr, "and lands");
     check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(4) != nullptr, "Undo brings Kick back, with its id");

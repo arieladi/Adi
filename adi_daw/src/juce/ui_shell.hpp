@@ -516,18 +516,17 @@ class AdiRootComponent final : public juce::Component,
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
-    // ADI's import with choices (E5): the file prepared off the message thread with the prompt's
-    // Warp, edge fades and copy (the document's `prepareMaterial`), then committed here as one undo
-    // step; `done` comes on the message thread with the new clip's id, or 0 and why not. False when
-    // it could not start. Unset, the choices are not offered and the plain import runs.
-    using MaterialDone = std::function<void(std::int64_t clip, const std::string &why)>;
-    std::function<bool(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const ImportChoices &,
+    // The drop with Warp, edge fades and copy is prepared off the message thread and committed as
+    // one undo step. `done` gives the first clip and track, or 0 and the reason for refusal.
+    using MaterialDone = std::function<void(std::int64_t clip, std::int64_t track, const std::string &why)>;
+    std::function<bool(const std::vector<std::pair<std::string, std::string>> &files,
+                       std::int64_t track, std::int64_t pos, bool separate, const ImportChoices &,
                        MaterialDone done)>
         importMaterial;
     // ADI's import prompt (E5): open while a drop waits for its choices; none otherwise.
     class ImportPrompt;
     ImportPrompt *importPrompt() noexcept { return importPrompt_.get(); }
-    // Whether a drop with choices is still going: its files land one at a time.
+    // Whether a drop with choices is still being prepared.
     bool importing() const noexcept { return importing_.has_value(); }
     // Live's Automation Arm and Re-Enable Automation (manual 25.1, 25.4; MR 6.1; N26): the
     // session's state, which the document owns, so the application sets these three. Re-Enable's
@@ -1091,27 +1090,12 @@ class AdiRootComponent final : public juce::Component,
     int leftWidth_ = 0, rightWidth_ = 0;
     int shownPanelWidth(const PanelGeometry &) const noexcept;
     std::string error_;
-    // E5: the prompt while open, and a drop with choices landing one file at a time.
+    // E5: the prompt while open and the optional warning for the drop in progress.
     std::unique_ptr<ImportPrompt> importPrompt_;
-    struct PendingImport {
-        std::vector<std::pair<std::string, std::string>> files;
-        std::int64_t track = 0, pos = 0;
-        bool separate = false;
-        ImportChoices choices;
-        std::size_t next = 0;
-        std::int64_t firstClip = 0, firstTrack = 0;
-        // The track this queue made for the file being imported, and that step: a refusal undoes it,
-        // so a refused file leaves nothing.
-        std::int64_t madeTrack = 0, madeStep = 0;
-        std::size_t landed = 0;
-        // A choice that could not be saved, said when the import ends.
-        std::string warning;
-    };
-    std::optional<PendingImport> importing_;
+    std::optional<std::string> importing_;
     bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
                    bool separate);
-    void importNext();
-    void finishImport(const std::string &why);
+    void finishImport(std::int64_t first, std::int64_t onTrack, const std::string &why);
     MixViewProvider defaultMixProvider_;
     const MixViewProvider *mixProvider_ = &defaultMixProvider_;
     MomentaryLatch latch_;

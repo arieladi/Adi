@@ -58,6 +58,15 @@ inline std::int64_t newTrackId(const engine::Snapshot &snapshot) noexcept {
             id = std::max(id, t->id + 1);
     return pastRemarks(snapshot, "track", id);
 }
+inline void appendAudioTrack(std::vector<OpRequest> &requests, std::int64_t id, std::int64_t index,
+                             const RecordingDefaults *defaults, const char *label) {
+    requests.push_back(track_edits_detail::op(
+        "track.create", {{"id", id}, {"kind", "audio"}, {"name", "# Audio"}, {"index", index}}, label));
+    // A new track takes the same recording defaults as Insert Audio Track (N31).
+    if (defaults != nullptr)
+        for (auto &request : recordingDefaultOps(id, *defaults, label))
+            requests.push_back(std::move(request));
+}
 } // namespace audio_drop_detail
 // Why a file can't be dropped at `track` (0: the drop area, which makes a track); empty when it can.
 // Checked before the file is read, so a refused drop costs nothing.
@@ -112,12 +121,7 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
     auto index = static_cast<std::int64_t>(snapshot.tracks.size());
     auto newTrack = [&]() {
         const auto id = nextTrack++;
-        edit.ops.push_back(op("track.create",
-                              {{"id", id}, {"kind", "audio"}, {"name", "# Audio"}, {"index", index++}}, label));
-        // A new track takes the registry's recording defaults, as Insert Audio Track's does (N31).
-        if (defaults != nullptr)
-            for (auto &o : recordingDefaultOps(id, *defaults, label))
-                edit.ops.push_back(std::move(o));
+        audio_drop_detail::appendAudioTrack(edit.ops, id, index++, defaults, label);
         return id;
     };
     if (track == 0)
@@ -142,23 +146,6 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
         ++clip;
         at = start + length;
     }
-    return edit;
-}
-// A new audio track at the end, as a drop below the tracks makes one (E5's material import makes
-// its track first, then imports into it): one batch, "Insert Audio Track".
-inline TrackEdit newAudioTrack(const engine::Snapshot &snapshot, const RecordingDefaults *defaults = nullptr) {
-    using namespace track_edits_detail;
-    constexpr const char *label = "Insert Audio Track";
-    TrackEdit edit;
-    const auto id = audio_drop_detail::newTrackId(snapshot);
-    edit.ops.push_back(op("track.create",
-                          {{"id", id}, {"kind", "audio"}, {"name", "# Audio"},
-                           {"index", static_cast<std::int64_t>(snapshot.tracks.size())}},
-                          label));
-    if (defaults != nullptr)
-        for (auto &o : recordingDefaultOps(id, *defaults, label))
-            edit.ops.push_back(std::move(o));
-    edit.select = id;
     return edit;
 }
 // One file dropped at `track` and `pos`, named `name`.

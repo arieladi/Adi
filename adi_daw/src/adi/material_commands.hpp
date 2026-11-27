@@ -9,7 +9,8 @@ namespace adi::clip_edit {
 struct MaterialFiles;
 struct MaterialEdit {
     PreparedEdit edit;
-    std::shared_ptr<MaterialFiles> files;
+    std::vector<std::shared_ptr<MaterialFiles>> files;
+    std::optional<std::size_t> refusedImport;
 };
 struct ImportOptions {
     std::filesystem::path source;
@@ -27,6 +28,15 @@ struct ImportOptions {
 // defaults use normal import; unsupported/mismatched authored data refuse. The
 // captured native request owns all values; no library survives into commit/play.
 [[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,library::Index*);
+struct ImportBatch {
+    std::vector<ImportOptions> imports;
+    std::vector<OpRequest> createTracks;
+    std::optional<std::int64_t> expectedHead;
+    bool consecutive = false;
+};
+/// Prepare all destinations from one store snapshot. Clip positions are taken from each input
+/// unless consecutive is true, when the previous clip's authored end is used.
+[[nodiscard]] MaterialEdit prepareImportAudioBatch(Store&, const ImportBatch&, double referenceRate);
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;

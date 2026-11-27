@@ -2447,28 +2447,103 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     out = clip_edit::prepareImportAudio(*store, options, job.rate);
     return out;
 }
+namespace {
+std::string importRefusal(const std::filesystem::path &path, const std::string &why) {
+    const std::string file = media::pathUtf8(path.filename());
+    if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
+        return file + ": ADI found no steady beat to warp it by. Import it with Warp off.";
+    return file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
+}
+} // namespace
 std::int64_t ProjectDocument::commitMaterial(clip_edit::MaterialEdit &material, const MaterialJob &job) {
-    const auto name = job.source.filename().u8string();
-    const std::string file(name.begin(), name.end());
     if (!material.edit.ok) {
         // The engine's words, with the file named; an indeterminate beat with Warp on says what to do.
-        const auto &why = material.edit.error;
-        if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
-            error_ = file + ": ADI found no steady beat to warp it by. Import it with Warp off.";
-        else
-            error_ = file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
+        error_ = importRefusal(job.source, material.edit.error);
         return 0;
     }
     const auto result = ops_.commitPrepared(material.edit.requests, [&](Store &s, Actor actor) {
         return clip_edit::commitMaterial(s, material, actor);
     });
     if (!result) {
-        error_ = result.stale ? "The project changed while " + file + " was being prepared: drop it again."
+        error_ = result.stale ? "The project changed while " + media::pathUtf8(job.source.filename()) +
+                                    " was being prepared: drop it again."
                               : result.error;
         return 0;
     }
     error_.clear();
     return job.clipId;
+}
+ProjectDocument::MaterialBatchJob ProjectDocument::materialBatchJob(
+        const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t atTicks,
+        bool separate, const ImportChoices &choices, const RecordingDefaults &defaults, std::int64_t nowUtc) const {
+    if (files.empty()) throw std::runtime_error("Drop an audio file.");
+    const auto current = view_.current();
+    if (!current) throw std::runtime_error("Dropping audio needs an open project.");
+    if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
+        throw std::runtime_error(std::move(refusal));
+    SQLite::Transaction read(store_->db(), SQLite::TransactionBehavior::DEFERRED);
+    MaterialBatchJob job;
+    job.project = store_->path();
+    job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    job.batch.expectedHead = OpJournal(*store_).headSeq();
+    job.batch.consecutive = !separate;
+    auto index = static_cast<std::int64_t>(current->tracks.size());
+    RowIds rows(store_->db());
+    const auto addTrack = [&] {
+        const auto id = rows.next("tracks");
+        audio_drop_detail::appendAudioTrack(job.batch.createTracks, id, index++, &defaults, "Import Audio");
+        return id;
+    };
+    const auto first = track == 0 ? addTrack() : track;
+    job.batch.imports.reserve(files.size());
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        clip_edit::ImportOptions options;
+        options.source = pathFromUtf8(files[i].first);
+        options.track = separate && i > 0 ? addTrack() : first;
+        options.clipId = rows.next("clips");
+        options.mediaId = rows.next("media_files");
+        options.importedUtc = nowUtc;
+        options.at = {0, std::max<std::int64_t>(0, atTicks)};
+        options.copyIn = choices.copyIn;
+        options.warp = choices.warp;
+        options.edgeFades = choices.edgeFades;
+        options.warpMode = choices.mode;
+        job.batch.imports.push_back(std::move(options));
+    }
+    return job;
+}
+clip_edit::MaterialEdit ProjectDocument::prepareMaterialBatch(MaterialBatchJob job, std::stop_token stop) {
+    StoreError error{};
+    auto store = Store::open(job.project, error, false);
+    if (!store) {
+        clip_edit::MaterialEdit refused;
+        refused.edit.error = "The project could not be read for the import: " + std::string(toString(error));
+        return refused;
+    }
+    for (auto &options : job.batch.imports) options.stop = stop;
+    return clip_edit::prepareImportAudioBatch(*store, job.batch, job.rate);
+}
+bool ProjectDocument::commitMaterialBatch(clip_edit::MaterialEdit &material, const MaterialBatchJob &job) {
+    if (!material.edit.ok) {
+        error_ = material.edit.error;
+        if (const auto failed = material.refusedImport; failed && *failed < job.batch.imports.size()) {
+            error_ = importRefusal(job.batch.imports[*failed].source, material.edit.error);
+            const auto untried = job.batch.imports.size() - *failed - 1;
+            if (job.batch.imports.size() > 1)
+                error_ += " (0 files imported; " + std::to_string(untried) + " not tried.)";
+        }
+        return false;
+    }
+    const auto result = ops_.commitPrepared(material.edit.requests, [&](Store &store, Actor actor) {
+        return clip_edit::commitMaterial(store, material, actor);
+    });
+    if (!result) {
+        error_ = result.stale ? "The project changed while the drop was being prepared: drop the files again."
+                              : result.error;
+        return false;
+    }
+    error_.clear();
+    return true;
 }
 bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &expected,
                                           std::uint64_t stamp) {

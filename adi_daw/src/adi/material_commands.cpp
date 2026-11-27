@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 
 namespace adi::clip_edit {
@@ -101,10 +102,11 @@ void snapshot(Store& store,const fs::path& target) {
     }
 }
 }
-MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
-    return prepareImportAudio(store,options,referenceRate,nullptr);
-}
-MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+namespace {
+using ImportedHashes = std::map<std::string, std::int64_t>;
+MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double referenceRate,
+                          library::Index* index, ImportedHashes* hashes = nullptr,
+                          std::int64_t* endTicks = nullptr) {
     // The callback refusal is a prvalue built in the caller's slot: guaranteed
     // elision, not optional NRVO, so it costs exactly one empty result.
     if(audio::onAudioThread)return {};
@@ -115,12 +117,14 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
         if(!std::isfinite(referenceRate) || referenceRate<=0 || referenceRate>768000)
             throw std::runtime_error("invalid reference render rate");
-        SQLite::Transaction read(store.db(),SQLite::TransactionBehavior::DEFERRED);
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(store.db().getHandle()) != 0)
+            read.emplace(store.db(), SQLite::TransactionBehavior::DEFERRED);
         result.edit.options.expectHead.emplace(OpJournal(store).headSeq());
         SQLite::Statement identity(store.db(),"PRAGMA database_list");
         while(identity.executeStep())if(identity.getColumn(1).getString()=="main")result.edit.sourceFile=identity.getColumn(2).getString();
         auto source=options.source.is_absolute()?options.source:media::projectFolder(store)/options.source;
-        auto files=stage(media::projectFolder(store));files->stop=options.stop;result.files=files;
+        auto files=stage(media::projectFolder(store));files->stop=options.stop;result.files.push_back(files);
         if(options.copyIn) {
             files->staged=files->directory/source.filename();
             copyImport(source,files->staged,options.stop);source=files->staged;
@@ -173,7 +177,15 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         const auto capturedHash=mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),imported.mediaId).at("hash_blake3");
         if(!sourceHash || capturedHash!=sourceHash.hex)throw std::runtime_error("source changed during material capture");
         files->staged=source;files->hash=sourceHash.hex;
-        if(options.copyIn) {
+        auto mediaId = imported.mediaId;
+        bool firstUse = true;
+        if (hashes) {
+            const auto [owner, inserted] = hashes->try_emplace(sourceHash.hex, mediaId);
+            mediaId = owner->second;
+            firstUse = inserted;
+            if (!firstUse) mediaRequest = {};
+        }
+        if(options.copyIn && firstUse) {
             const auto folder=media::projectFolder(store)/"audio";
             if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("audio directory must not be a symlink");
             fs::create_directories(folder);
@@ -215,7 +227,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         }
         auto root=edit::defaultRow(store.db(),"clips",values);
         Payload image={{"id",options.clipId},{"row",root},{"children",Payload::object()},{"alias_links",Payload::array()}};
-        Payload sourceValues={{"clip_id",options.clipId},{"media_id",imported.mediaId},{"src_len_frames",info.frames}};
+        Payload sourceValues={{"clip_id",options.clipId},{"media_id",mediaId},{"src_len_frames",info.frames}};
         Payload playbackValues={{"clip_id",options.clipId}};
         if(warped) {
             sourceValues["src_start_frames"]=static_cast<std::int64_t>(warped->trimFrames);sourceValues["src_len_frames"]=info.frames-static_cast<std::int64_t>(warped->trimFrames);
@@ -231,9 +243,51 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         OpRequest request;request.opType="clip.duplicate";request.payload={{"id",options.clipId},{"changes",plan.changes()}};
         request.label="Import Audio";request.targetKind="clip";request.targetId=options.clipId;result.edit.requests.push_back(std::move(request));
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
+        if (endTicks) *endTicks = edit::addTime(beginTicks, tickSpan);
         result.edit.ok=true;
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
+}
+} // namespace
+MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
+    return prepareImportAudio(store,options,referenceRate,nullptr);
+}
+MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+    return prepareAudio(store, options, referenceRate, index);
+}
+MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, double referenceRate) {
+    if (audio::onAudioThread) return {};
+    MaterialEdit material;
+    try {
+        if (batch.imports.empty()) throw std::runtime_error("Drop an audio file.");
+        SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+        if (OpJournal(store).headSeq() != batch.expectedHead)
+            throw std::runtime_error("The project changed before the drop could be prepared. Drop it again.");
+        material.edit.options.expectHead.emplace(batch.expectedHead);
+        material.edit.requests = batch.createTracks;
+        ImportedHashes hashes;
+        auto next = batch.imports.front().at;
+        for (std::size_t i = 0; i < batch.imports.size(); ++i) {
+            auto options = batch.imports[i];
+            if (batch.consecutive && i != 0) options.at = next;
+            std::int64_t end = 0;
+            auto file = prepareAudio(store, options, referenceRate, nullptr, &hashes, &end);
+            if (!file.edit.ok) {
+                material.edit.error = std::move(file.edit.error);
+                material.refusedImport = i;
+                return material;
+            }
+            next = {0, end};
+            if (i == 0) material.edit.sourceFile = std::move(file.edit.sourceFile);
+            for (auto &request : file.edit.requests)
+                material.edit.requests.push_back(std::move(request));
+            material.files.push_back(std::move(file.files.front()));
+        }
+        material.edit.ok = true;
+    } catch (const std::exception& error) {
+        material.edit.error = error.what();
+    }
+    return material;
 }
 MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::DeviceLoader loader,render::Control control) {
     MaterialEdit result;
@@ -255,7 +309,7 @@ MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::Dev
         result=prepareImportAudio(store,destination,job.session.sampleRate);
         if(!result.edit.ok)return result;
         result.edit.options.expectHead.emplace(expected);
-        result.files->stop=control.stop;
+        result.files.front()->stop=control.stop;
         if(options.replace) {
             edit_plan::Options placement{job.session.sampleRate,{}};
             placement.policy.automationFollowsClips=false; // Replace material while leaving its mixer controls live.
@@ -267,46 +321,66 @@ MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::Dev
     } catch(const std::exception& exception){result.edit.ok=false;result.edit.error=exception.what();}
     return result;
 }
+namespace {
+bool publishMaterialFile(MaterialFiles& files, std::string& error) {
+    if (files.stop.stop_requested()) { error = "operation cancelled"; return false; }
+    const auto hash = media::blake3File(files.staged, files.stop);
+    if (!hash || hash.hex != files.hash) { error = "staged media changed after capture"; return false; }
+    if (files.target.empty()) return true;
+    // publishFile moves its source. Retain the capture to allow a retry after
+    // a publication failure or a deferred constraint rejecting SQL COMMIT.
+    const auto publication = files.directory / "publication.tmp";
+    std::error_code cleanup;
+    fs::remove(publication, cleanup);
+    fs::copy_file(files.staged, publication, fs::copy_options::none);
+    const auto copied = media::blake3File(publication, files.stop);
+    if (!copied || copied.hex != files.hash) { error = "material changed while staging publication"; return false; }
+    const auto published = media::publishFile(publication, files.target, {}, media::PublishPolicy::AtomicOnly);
+    if (published.status == media::PublishStatus::exists) {
+        // Undo retains owned media for redo. Reuse an identical regular file;
+        // this commit must never remove pre-existing bytes on failure.
+        std::error_code statusError;
+        const auto status = fs::symlink_status(files.target, statusError);
+        if (!statusError && fs::is_regular_file(status)) {
+            const auto existing = media::blake3File(files.target, files.stop);
+            if (existing && existing.hex == files.hash) return true;
+        }
+    }
+    if (published.status != media::PublishStatus::published) {
+        error = "publish imported media " + media::pathUtf8(files.target) + ": " +
+            (published.status == media::PublishStatus::exists ? "file exists" : published.error);
+        return false;
+    }
+    files.published = true;
+    return true;
+}
+} // namespace
 CommitResult commitMaterial(Store& store,MaterialEdit& material,Actor actor) {
-    auto prepared=material.edit;
-    const auto files=material.files;
-    if(files && files->committed){CommitResult result;result.error="material edit was already committed";return result;}
-    if(files && files->stop.stop_requested()){CommitResult result;result.error="operation cancelled";return result;}
-    if(files) {
-        const auto previous=prepared.options.beforeCommit;
-        prepared.options.beforeCommit=[files,previous](SQLite::Database& db,std::int64_t transaction,std::string& error) {
-            if(previous && !previous(db,transaction,error))return false;
-            if(files->stop.stop_requested()){error="operation cancelled";return false;}
-            const auto hash=media::blake3File(files->staged,files->stop);
-            if(!hash || hash.hex!=files->hash){error="staged media changed after capture";return false;}
-            if(files->target.empty())return true;
-            // publishFile moves its source. Retain the only captured render for
-            // recovery when a deferred SQL constraint rejects COMMIT afterward.
-            const auto publication=files->directory/"publication.tmp";
-            std::error_code cleanup;fs::remove(publication,cleanup);
-            fs::copy_file(files->staged,publication,fs::copy_options::none);
-            const auto copied=media::blake3File(publication,files->stop);
-            if(!copied || copied.hex!=files->hash){error="material changed while staging publication";return false;}
-            const auto published = media::publishFile(publication, files->target, {},
-                                                      media::PublishPolicy::AtomicOnly);
-            if(published.status==media::PublishStatus::exists) {
-                // Undo retains owned media for redo. A new import with the
-                // same content/id may safely reference that existing regular
-                // file; no bytes are replaced and failure must not remove it.
-                std::error_code statusError;const auto status=fs::symlink_status(files->target,statusError);
-                if(!statusError && fs::is_regular_file(status)) {
-                    const auto existing=media::blake3File(files->target);
-                    if(existing && existing.hex==files->hash)return true;
-                }
-            }
-            if(published.status!=media::PublishStatus::published){error="publish imported media "+media::pathUtf8(files->target)+": "+(published.status==media::PublishStatus::exists?"file exists":published.error);return false;}
-            files->published=true;return true;
+    auto prepared = material.edit;
+    for (const auto& files : material.files) {
+        CommitResult refused;
+        if (files->committed) refused.error = "material edit was already committed";
+        else if (files->stop.stop_requested()) refused.error = "operation cancelled";
+        if (!refused.error.empty()) return refused;
+    }
+    if (!material.files.empty()) {
+        const auto previous = prepared.options.beforeCommit;
+        prepared.options.beforeCommit = [files = material.files, previous](SQLite::Database& db,
+                                                std::int64_t transaction, std::string& error) {
+            if (previous && !previous(db, transaction, error)) return false;
+            return std::all_of(files.begin(), files.end(), [&](const auto& file) {
+                return publishMaterialFile(*file, error);
+            });
         };
     }
-    auto result=commitPrepared(store,prepared,actor);
-    if(files) {
-        if(result.ok)files->committed=true;
-        else if(files->published && !files->committed) {std::error_code ec;fs::remove(files->target,ec);files->published=false;}
+    auto result = commitPrepared(store, prepared, actor);
+    for (const auto& files : material.files) {
+        if (result.ok) files->committed = true;
+        else if (files->published && !files->committed) {
+            std::error_code error;
+            fs::remove(files->target, error);
+            if (!error) files->published = false;
+        }
     }
     return result;
 }

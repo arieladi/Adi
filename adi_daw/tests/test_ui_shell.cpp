@@ -5586,14 +5586,17 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     };
     // As the app's worker does, here on the spot.
     std::vector<ImportChoices> asked;
-    root.importMaterial = [&](const std::string &path, std::int64_t track, std::int64_t pos, const ImportChoices &choices,
+    root.importMaterial = [&](const std::vector<std::pair<std::string, std::string>> &files,
+                              std::int64_t track, std::int64_t pos, bool separate, const ImportChoices &choices,
                               AdiRootComponent::MaterialDone done) {
         asked.push_back(choices);
-        auto job = document->materialJob(path, track, pos, choices, 1'700'000'000'000'000);
-        auto prepared = ProjectDocument::prepareMaterial(job);
-        const auto clip = document->commitMaterial(prepared, job);
+        const auto job = document->materialBatchJob(files, track, pos, separate, choices,
+                                                     commands.recordingDefaults(), 1'700'000'000'000'000);
+        auto prepared = ProjectDocument::prepareMaterialBatch(job);
+        const bool committed = document->commitMaterialBatch(prepared, job);
         document->synchronise();
-        done(clip, clip != 0 ? std::string{} : document->error());
+        const auto &first = job.batch.imports.front();
+        done(committed ? first.clipId : 0, first.track, committed ? std::string{} : document->error());
         return true;
     };
     root.setSize(1440, 900);
@@ -5704,7 +5707,8 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
           "a refusal part-way through says what landed and what was not tried");
     // The worker busy: the drop says so.
     auto material = root.importMaterial;
-    root.importMaterial = [](const std::string &, std::int64_t, std::int64_t, const ImportChoices &,
+    root.importMaterial = [](const std::vector<std::pair<std::string, std::string>> &,
+                             std::int64_t, std::int64_t, bool, const ImportChoices &,
                              AdiRootComponent::MaterialDone) { return false; };
     root.dropAudio(wav.string(), audioTrack, 20 * textproj::kWhole, "Prompted");
     check(!root.importing() && root.error().find("still being prepared") != std::string::npos && clipsOn() == 4,
@@ -5789,6 +5793,31 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     check(clipsOn() == beforeOptOut + 2 && root.importPrompt() == nullptr && !asked.empty() &&
               asked.back().copyIn && asked.back().edgeFades,
           "SC-160: the next import uses the saved copy and fade options directly");
+    const auto beforeBatch = History(document->store()).head();
+    const auto countBeforeBatch = root.reader().tracks().size();
+    const auto batchPosition = 40 * textproj::kWhole;
+    const std::vector<std::pair<std::string, std::string>> pair{{wav.string(), "Prompted"}, {wav.string(), "Prompted"}};
+    const bool batchStarted = root.dropAudioFiles(pair, 0, batchPosition, true);
+    root.frame();
+    const auto landedClips = [&] {
+        int n = 0;
+        for (const auto &node : root.reader().tracks())
+            if (node && node->clips.size() == 1 && node->clips.front()->posTicks == batchPosition &&
+                node->clips.front()->fadeInTicks > 0 && node->clips.front()->fadeOutTicks > 0) ++n;
+        return n;
+    };
+    check(batchStarted && !root.importing() && root.reader().tracks().size() == countBeforeBatch + 2 &&
+              landedClips() == 2 && selection.clip != 0 && selection.track != audioTrack,
+          "SC-158: a separate drop with Copy and Fades creates both tracks and selects the first clip");
+    const bool batchUndone = root.command(AppCommands::Undo);
+    root.frame();
+    check(batchUndone && root.reader().tracks().size() == countBeforeBatch && landedClips() == 0 &&
+              History(document->store()).head() == beforeBatch,
+          "SC-158: one Undo removes both clips and their new tracks");
+    const bool batchRedone = root.command(AppCommands::Redo);
+    root.frame();
+    check(batchRedone && root.reader().tracks().size() == countBeforeBatch + 2 && landedClips() == 2,
+          "SC-158: one Redo restores the complete drop");
     settings.set("editing.importOptions", std::string("ask"), {}, why);
     root.dropAudio(wav.string(), audioTrack, next + 8 * textproj::kWhole, "Prompted");
     check(root.importPrompt() && !root.importPrompt()->stopAsking.getToggleState() &&

@@ -393,6 +393,16 @@ class ProjectDocument final : public engine::BlockProcessor {
     static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
     // The new clip's id when it landed; 0 with `error()` saying why when it did not.
     std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
+    struct MaterialBatchJob {
+        std::filesystem::path project;
+        clip_edit::ImportBatch batch;
+        double rate = 48000.0;
+    };
+    MaterialBatchJob materialBatchJob(const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t atTicks, bool separate, const ImportChoices &,
+                                      const RecordingDefaults &, std::int64_t nowUtc) const;
+    static clip_edit::MaterialEdit prepareMaterialBatch(MaterialBatchJob, std::stop_token = {});
+    bool commitMaterialBatch(clip_edit::MaterialEdit &, const MaterialBatchJob &);
     // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
     // project through its own read-only store (`Store::open(path, error, true)`), never this one.
     WaveformCache &waveforms() noexcept { return waveforms_; }

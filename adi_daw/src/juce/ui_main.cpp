@@ -1859,12 +1859,19 @@ class AdiApplication final : public juce::JUCEApplication,
         // ADI's import with choices (E5): prepared on a worker of its own, against a connection of
         // its own on the project's file; committed back on the message thread, to the same document
         // only, as one undo step (stale when the project moved meanwhile).
-        root->importMaterial = [this](const std::string &path, std::int64_t track, std::int64_t pos,
+        root->importMaterial = [this](const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t pos, bool separate,
                                       const ImportChoices &choices, AdiRootComponent::MaterialDone done) {
             if (importing_ && importing_->load())
                 return false;
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            const auto job = document_->materialJob(path, track, pos, choices, now);
+            ProjectDocument::MaterialBatchJob job;
+            try {
+                job = document_->materialBatchJob(files, track, pos, separate, choices, commands_->recordingDefaults(), now);
+            } catch (const std::exception &error) {
+                done(0, 0, error.what());
+                return true;
+            }
             if (import_.joinable())
                 import_.join(); // the last one has finished
             importing_ = std::make_shared<std::atomic<bool>>(true);
@@ -1873,19 +1880,20 @@ class AdiApplication final : public juce::JUCEApplication,
             // pointer, never by an address a later document could reuse.
             const auto installed = installGeneration_;
             const auto asker = juce::Component::SafePointer<AdiRootComponent>(root_);
-            import_ = std::thread([this, job, finished = std::move(done), installed, asker, running = importing_,
+            import_ = std::thread([this, job = std::move(job), finished = std::move(done), installed, asker, running = importing_,
                                    stop = importStop_.get_token()] {
                 auto prepared =
-                    std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterial(job, stop));
+                    std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterialBatch(job, stop));
                 running->store(false);
                 juce::MessageManager::callAsync([this, job, finished, installed, asker, prepared] {
                     if (juce::JUCEApplicationBase::getInstance() != this || installGeneration_ != installed ||
                         asker == nullptr || asker.getComponent() != root_ || !document_)
                         return;
-                    const auto clip = document_->commitMaterial(*prepared, job);
-                    if (clip != 0 && !document_->synchronise())
+                    const bool committed = document_->commitMaterialBatch(*prepared, job);
+                    if (committed && !document_->synchronise())
                         report(document_->error());
-                    finished(clip, clip != 0 ? std::string{} : document_->error());
+                    const auto &first = job.batch.imports.front();
+                    finished(committed ? first.clipId : 0, first.track, committed ? std::string{} : document_->error());
                 });
             });
             return true;
