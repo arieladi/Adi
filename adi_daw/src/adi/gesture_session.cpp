@@ -380,6 +380,13 @@ StateProducerFence::Watermarks StateProducerFence::watermarks() const noexcept {
 }
 Status StateProducerFence::acknowledgePrefix(const PendingCapture& capture, std::uint64_t prefix) {
     if (!data_ || !matchingLease(capture, data_->domain)) return fail(Error::TargetConflict, "state acknowledgement needs source lease");
+    return consumePrefix(prefix);
+}
+Status StateProducerFence::discardStalePrefix(std::uint64_t prefix) {
+    return consumePrefix(prefix);
+}
+Status StateProducerFence::consumePrefix(std::uint64_t prefix) {
+    if (!data_) return fail(Error::SourceLost, "state producer source is unavailable");
     if (data_->domain->thread != std::this_thread::get_id()) return fail(Error::WrongThread, "state acknowledgement requires owner thread");
     const auto consumed = data_->consumed.load(std::memory_order_acquire);
     if (prefix < consumed || prefix > data_->published.load(std::memory_order_acquire)) return fail(Error::InvalidInput, "state prefix is not published");

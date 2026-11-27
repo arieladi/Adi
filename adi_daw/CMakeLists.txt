@@ -294,7 +294,10 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/interchange/smf.cpp
+    src/adi/interchange/midi_clip_file.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
@@ -1467,6 +1470,9 @@ if(ADI_WITH_JUCE)
             "    bash adi_daw/tools/fetch_external.sh --with-juce")
     endif()
 
+    # WTS-02: send Debug assertions to the window suite's logger. JUCE object
+    # layouts depend on this flag, so all targets in a configuration must agree.
+    add_compile_definitions("$<$<CONFIG:Debug>:JUCE_LOG_ASSERTIONS=1>")
     add_subdirectory("${ADI_JUCE_DIR}" "${CMAKE_BINARY_DIR}/third_party/JUCE" EXCLUDE_FROM_ALL SYSTEM)
 
     target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
@@ -1963,7 +1969,10 @@ add_executable(adi_library_tests tests/test_library.cpp)
 target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_library_tests COMMAND adi_library_tests)
 
-set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
+# RUN_SERIAL: the index worker lowers its own priority, which on Windows is
+# THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
+# took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.
@@ -2220,6 +2229,10 @@ add_test(NAME adi_audio_memory_capture_tests COMMAND adi_audio_memory_capture_te
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
+
+add_executable(adi_smf_tests tests/test_smf.cpp)
+target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
 
 
 
