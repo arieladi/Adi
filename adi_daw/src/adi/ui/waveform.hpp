@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/audio/warp_map.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/media/peaks.hpp"
 #include <algorithm>
@@ -34,8 +35,10 @@ inline void mergePeakBins(media::PeakBin &into, const media::PeakBin &bin) noexc
 // finest level is the worker's source analysis or the best cached APKS fallback.
 class WaveformPeaks {
   public:
-    explicit WaveformPeaks(media::MediaPeaks finest) {
+    explicit WaveformPeaks(media::MediaPeaks finest, bool buildCoarserLevels = true) {
         levels_.push_back(std::move(finest));
+        if (!buildCoarserLevels)
+            return;
         while (levels_.back().channels > 0 && levels_.back().bins.size() > levels_.back().channels) {
             const auto &previous = levels_.back();
             if (previous.framesPerBin > std::numeric_limits<std::uint64_t>::max() / kWaveformPeakGroup)
@@ -89,6 +92,37 @@ class WaveformPeaks {
     std::vector<media::MediaPeaks> levels_;
 };
 
+struct PunchedPreviewRange {
+    std::int64_t startTicks, endTicks;
+    double startSeconds;
+    std::uint64_t sourceStartFrame, sourceEndFrame;
+};
+
+inline std::optional<PunchedPreviewRange> punchedPreviewRange(
+    const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,
+    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {
+    if (sampleRate == 0)
+        return std::nullopt;
+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);
+    if (!range)
+        return std::nullopt;
+    const auto rate = static_cast<double>(sampleRate);
+    const double firstSeconds = static_cast<double>(range->timelineStartSample) / rate;
+    auto first = tempo.secondsToTicks(firstSeconds);
+    auto last = tempo.secondsToTicks(static_cast<double>(range->timelineEndSample) / rate);
+    // Several ticks can project to a single device sample. At a cut, draw the
+    // authored brace tick that landing uses instead of the inverse clock's tick.
+    if (punch.window.in)
+        first = range->timelineStartSample == punch.window.in->sample ? punch.window.in->tick
+                                                                     : std::max(first, punch.window.in->tick);
+    if (punch.window.out)
+        last = range->timelineEndSample == punch.window.out->sample ? punch.window.out->tick
+                                                                   : std::min(last, punch.window.out->tick);
+    if (last <= first)
+        return std::nullopt;
+    return PunchedPreviewRange{first, last, firstSeconds, range->sourceStartFrame, range->sourceStartFrame + range->frames};
+}
+
 // An audio clip's waveform (Live 12 manual 6.1, chapter 9; parity-7.3 row 35; N40, #404).
 //
 // The peaks come from `media::buildMediaPeaks` (APKS v1), on a worker of their own, never on the
@@ -104,9 +138,16 @@ class WaveformPeaks {
 // would decode each file again after every edit.
 class WaveformCache {
   public:
-    // Builds one media row's peaks; run on the worker only.
     using Build = std::function<media::PeakResult(std::int64_t mediaId, std::stop_token)>;
-    explicit WaveformCache(Build build) : build_(std::move(build)) {}
+    // A missing media ID selects an embedded sample state. Both builders run on the worker only.
+    using BuildSource = std::function<media::PeakResult(std::optional<std::int64_t> mediaId,
+                                                       const std::string &stateHash, std::stop_token)>;
+    explicit WaveformCache(Build build)
+        : WaveformCache([build = std::move(build)](std::optional<std::int64_t> mediaId, const std::string &,
+                                                   std::stop_token stop) {
+              return mediaId ? build(*mediaId, stop) : media::PeakResult{media::PeakProblem::invalidSource, {}, {}};
+          }) {}
+    explicit WaveformCache(BuildSource build) : build_(std::move(build)) {}
     WaveformCache(const WaveformCache &) = delete;
     WaveformCache &operator=(const WaveformCache &) = delete;
     ~WaveformCache() {
@@ -121,20 +162,61 @@ class WaveformCache {
     std::shared_ptr<const WaveformPeaks> peaks(const engine::AudioClipSource &audio) {
         if (!audio.mediaInfo || audio.mediaInfo->missing || audio.mediaInfo->contentHash.empty())
             return nullptr;
-        const auto &hash = audio.mediaInfo->contentHash;
-        std::lock_guard lock(mutex_);
-        if (const auto found = kept_.find(hash); found != kept_.end())
-            return found->second;
-        wanted_.insert(hash);
-        if (asked_.insert(hash).second) {
-            queue_.push_back({audio.mediaId, hash});
-            start();
-            wake_.notify_one();
-        }
-        return nullptr;
+        return peaks(audio.mediaId, audio.mediaInfo->contentHash);
     }
-    // A new generation of the document: the files none of its clips use are dropped, and any
-    // request or result for them with it.
+    std::shared_ptr<const media::MediaPeaks> peaks(const engine::SampleSlotNode &slot) {
+        if (slot.empty || slot.missing || sampleKey(slot).empty())
+            return nullptr;
+        const auto waveform = peaks(slot.filePresent ? slot.mediaId : std::nullopt, sampleKey(slot));
+        return waveform ? std::shared_ptr<const media::MediaPeaks>(waveform, &waveform->finest()) : nullptr;
+    }
+    // Carry the finalized recording preview into its newly landed clips while the worker reads
+    // the file's own peaks. A recording can share media with an earlier clip that already has them.
+    void seedRecording(const engine::Snapshot &snapshot, std::span<const std::int64_t> clips,
+                       const engine::AudioRecordingPreview &preview) {
+        const auto &source = preview.peaks;
+        if (clips.empty() || source.channels == 0 || source.frames == 0 || source.framesPerBin == 0 ||
+            source.sampleRate == 0 || source.bins.size() > media::kMaxPeakValues)
+            return;
+        const auto binCount = source.bins.size() / source.channels;
+        if (source.bins.size() % source.channels != 0 ||
+            binCount != source.frames / source.framesPerBin + (source.frames % source.framesPerBin != 0))
+            return;
+        const std::set<std::int64_t> landed(clips.begin(), clips.end());
+        for (const auto &mapping : preview.tracks) {
+            const auto *track = snapshot.findTrack(mapping.trackId);
+            if (!track || mapping.channels.empty() || mapping.channels.size() > source.channels ||
+                std::any_of(mapping.channels.begin(), mapping.channels.end(),
+                            [&](std::uint32_t channel) { return channel >= source.channels; }))
+                continue;
+            const auto channels = static_cast<std::uint32_t>(mapping.channels.size());
+            for (const auto &clip : track->clips) {
+                if (!landed.contains(clip->id) || !clip->audio || !clip->audio->mediaInfo)
+                    continue;
+                const auto &audio = *clip->audio;
+                const auto &identity = *audio.mediaInfo;
+                if (identity.missing || identity.contentHash.empty() ||
+                    (identity.sampleRate && *identity.sampleRate != source.sampleRate) ||
+                    (identity.channels && *identity.channels != channels) ||
+                    (identity.frames && static_cast<std::uint64_t>(*identity.frames) != source.frames))
+                    continue;
+                media::MediaPeaks peaks{identity.contentHash, source.sampleRate, channels, source.frames,
+                                      source.framesPerBin, {}};
+                peaks.bins.reserve(binCount * channels);
+                for (std::size_t bin = 0; bin < binCount; ++bin)
+                    for (const auto channel : mapping.channels)
+                        peaks.bins.push_back(source.bins[bin * source.channels + channel]);
+                std::lock_guard lock(mutex_);
+                if (kept_.contains(identity.contentHash) || provisional_.contains(identity.contentHash))
+                    continue;
+                requestLocked(audio.mediaId, identity.contentHash);
+                // The recording's own preview is ready now. Build the hierarchy on the worker.
+                provisional_.emplace(identity.contentHash, std::make_shared<WaveformPeaks>(std::move(peaks), false));
+                delivered_.fetch_add(1, std::memory_order_acq_rel);
+            }
+        }
+    }
+    // A new document generation drops requests and results for sources neither a clip nor a sample slot uses.
     void follow(const engine::Snapshot &snapshot, std::uint64_t generation) {
         if (generation == generation_)
             return;
@@ -144,6 +226,9 @@ class WaveformCache {
             for (const auto &c : t->clips)
                 if (c->audio && c->audio->mediaInfo && !c->audio->mediaInfo->contentHash.empty())
                     used.insert(c->audio->mediaInfo->contentHash);
+        for (const auto &slot : snapshot.sampleSlots)
+            if (slot && !slot->empty && !slot->missing && !sampleKey(*slot).empty())
+                used.insert(sampleKey(*slot));
         std::lock_guard lock(mutex_);
         std::erase_if(kept_, [&](const auto &entry) {
             if (used.contains(entry.first))
@@ -151,6 +236,7 @@ class WaveformCache {
             detailValues_ -= entry.second->detailValues();
             return true;
         });
+        std::erase_if(provisional_, [&used](const auto &entry) { return !used.contains(entry.first); });
         std::erase_if(asked_, [&used](const std::string &hash) { return !used.contains(hash); });
         std::erase_if(queue_, [&used](const Request &r) { return !used.contains(r.hash); });
         wanted_ = std::move(used);
@@ -176,10 +262,30 @@ class WaveformCache {
   private:
     static constexpr std::size_t fileDetailValues = 2 * 1024 * 1024 / sizeof(media::PeakBin);
     static constexpr std::size_t documentDetailValues = 32 * 1024 * 1024 / sizeof(media::PeakBin);
+    static const std::string &sampleKey(const engine::SampleSlotNode &slot) noexcept {
+        return slot.filePresent && slot.mediaId ? slot.mediaHash : slot.stateHash;
+    }
+    std::shared_ptr<const WaveformPeaks> peaks(std::optional<std::int64_t> mediaId, const std::string &hash) {
+        std::lock_guard lock(mutex_);
+        if (const auto found = kept_.find(hash); found != kept_.end())
+            return found->second;
+        if (const auto found = provisional_.find(hash); found != provisional_.end())
+            return found->second;
+        requestLocked(mediaId, hash);
+        return nullptr;
+    }
     struct Request {
-        std::int64_t mediaId = 0;
+        std::optional<std::int64_t> mediaId;
         std::string hash;
     };
+    void requestLocked(std::optional<std::int64_t> mediaId, const std::string &hash) {
+        wanted_.insert(hash);
+        if (asked_.insert(hash).second) {
+            queue_.push_back({mediaId, hash});
+            start();
+            wake_.notify_one();
+        }
+    }
     void start() {
         if (!worker_.joinable())
             worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
@@ -196,7 +302,8 @@ class WaveformCache {
                 queue_.pop_front();
                 busy_ = true;
             }
-            auto result = build_(next.mediaId, stop);
+            static const std::string noState;
+            auto result = build_(next.mediaId, next.mediaId ? noState : next.hash, stop);
             std::shared_ptr<WaveformPeaks> built;
             if (result && !stop.stop_requested()) {
                 try {
@@ -217,6 +324,7 @@ class WaveformCache {
                 if (wanted_.contains(next.hash) && !kept_.contains(next.hash)) {
                     const auto budget = std::min(fileDetailValues, documentDetailValues - detailValues_);
                     const auto values = built->limitDetail(budget);
+                    provisional_.erase(next.hash);
                     kept_.emplace(std::move(next.hash), std::move(built));
                     detailValues_ += values;
                 }
@@ -224,11 +332,12 @@ class WaveformCache {
             }
         }
     }
-    Build build_;
+    BuildSource build_;
     mutable std::mutex mutex_;
     std::condition_variable_any wake_;
     std::deque<Request> queue_;
     std::map<std::string, std::shared_ptr<const WaveformPeaks>> kept_;
+    std::map<std::string, std::shared_ptr<const WaveformPeaks>> provisional_;
     std::set<std::string> asked_, wanted_;
     std::string problem_;
     bool busy_ = false;
