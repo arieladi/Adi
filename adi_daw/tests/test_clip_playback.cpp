@@ -479,6 +479,31 @@ void legacyUnwarpedLoopPastSource() {
               "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
     }
 }
+void legacyUnwarpedLoopRetainsEnd() {
+    for (const bool physicalEnd : {false, true}) {
+        for (const auto &[offsetTicks, firstFrame] : {std::pair{0, 0}, std::pair{6006, 50},
+                                                        std::pair{24024, 0}, std::pair{96096, 0}}) {
+            Fixture f;
+            f.add(1, 0, 2000, 7, 300);
+            f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                               "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                               "content_offset_ticks=" + std::to_string(offsetTicks));
+            if (physicalEnd)
+                f.store->db().exec("INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,2500000)");
+            else
+                f.store->db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,15015)");
+            f.load(512);
+            const auto pcm = f.render(512);
+            const auto endFrame = physicalEnd ? 120 : 125;
+            const auto played = static_cast<std::size_t>(endFrame - firstFrame);
+            check(pcm.front() == f.media[static_cast<std::size_t>(7 + firstFrame) * 2] &&
+                      pcm[played - 1] == f.media[static_cast<std::size_t>(7 + endFrame - 1) * 2] &&
+                      std::all_of(pcm.begin() + static_cast<std::ptrdiff_t>(played), pcm.begin() + 512,
+                                  [](float sample) { return sample == 0.f; }),
+                  "the nonloop fallback respects End and resets only offsets outside that interval");
+        }
+    }
+}
 void editedFades() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
         Fixture f(48000,2,4000,-1);f.add(1,0,800,0,1000);
@@ -1925,7 +1950,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
-        if(only=="all" || only=="properties"){properties();legacyUnwarpedLoopPastSource();}
+        if(only=="all" || only=="properties"){properties();legacyUnwarpedLoopPastSource();legacyUnwarpedLoopRetainsEnd();}
         if(only=="all" || only=="fades"){editedFades();shortenedFade();resizeClampsFades();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
