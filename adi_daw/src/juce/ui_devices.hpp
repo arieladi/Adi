@@ -364,6 +364,12 @@ class DeviceChainStrip final : public juce::Component,
     // A plug-in's expression route chosen from its menu, after the project took it (SC-325): the app
     // remembers it for that plug-in, the default of its next instance.
     std::function<void(const DevicePanelData&, engine::RouteChoice)> rememberRoute;
+    // SC-329: a plug-in's own programs (their names and the current one, read as its menu opens), choosing
+    // one, whether it loads a preset file of its own format, and loading one (the app asks for the file).
+    std::function<std::pair<std::vector<std::string>, std::int32_t>(const DevicePanelData&)> programsOf;
+    std::function<bool(const DevicePanelData&, std::int32_t)> selectProgram;
+    std::function<bool(const DevicePanelData&)> loadsPresetFiles;
+    std::function<void(const DevicePanelData&)> loadPresetFile;
     std::function<mix::Availability(mix::Function)> functionAvailability;
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,

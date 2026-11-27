@@ -290,6 +290,9 @@ public:
     [[nodiscard]] std::vector<std::string> stateRoles() const override;
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override;
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override;
+    // SC-329: a preset file of the plug-in's own format, through its preset-load extension.
+    [[nodiscard]] bool loadsPresetFiles() const noexcept override;
+    bool loadPresetFile(const std::string& path, std::string& error) override;
 
     /// Read the plugin's parameter list. Called at construction and again when
     /// the plugin asks for a rescan.
@@ -655,6 +658,11 @@ public:
     [[nodiscard]] std::uint64_t stateSignals() const noexcept {
         return stateSignals_.load(std::memory_order_acquire);
     }
+    /// SC-329: the plug-in loaded a preset file the user chose -- a capture boundary, as its own
+    /// `mark_dirty` is. Main thread.
+    void userStateChange() noexcept { stateSignal(); }
+    /// SC-329: what the plug-in said through `clap_host_preset_load.on_error`, taken once. Main thread.
+    [[nodiscard]] std::string takePresetError() { return std::exchange(presetError_, std::string()); }
     /// Signals that arrived inside our own `loadState`, and were not counted.
     [[nodiscard]] std::uint64_t mutedStateSignals() const noexcept {
         return mutedStateSignals_.load(std::memory_order_acquire);
@@ -740,6 +748,9 @@ private:
     static void paramsClear(const clap_host_t*, clap_id, clap_param_clear_flags);
     static void paramsRequestFlush(const clap_host_t*);
     static void stateMarkDirty(const clap_host_t*);
+    static void presetLoadError(const clap_host_t*, std::uint32_t, const char*, const char*, std::int32_t,
+                                const char* message);
+    static void presetLoaded(const clap_host_t*, std::uint32_t, const char*, const char*);
     void stateSignal() noexcept;
     static void requestRestart(const clap_host_t*);
     static void requestProcess(const clap_host_t*);
@@ -750,6 +761,8 @@ private:
     clap_host_thread_check_t threadCheckExt_{&ClapHostGlue::isMainThread, &ClapHostGlue::isAudioThread};
     clap_host_params_t      hostParamsExt_{};   ///< ADR-0142
     clap_host_state_t       hostStateExt_{};    ///< ADR-0142
+    clap_host_preset_load_t presetLoadExt_{};   ///< SC-329
+    std::string             presetError_;       ///< SC-329, main thread
     std::atomic<std::uint64_t> stateSignals_{0};
     std::atomic<std::uint64_t> mutedStateSignals_{0};
     std::atomic<std::uint64_t> flushRequests_{0};

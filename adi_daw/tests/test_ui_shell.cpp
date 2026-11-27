@@ -19491,6 +19491,7 @@ int main(int argc, char **argv) {
                 (*plugged)[1].format = "vst3";
                 (*plugged)[1].uid = "VST3-Synth-1-2";
                 (*plugged)[1].route = "mpe_midi";
+                (*plugged)[1].available = true;
                 integrated.devices.publication = [plugged] { return plugged; };
                 integrated.frame();
                 const auto routesOf = [&](const juce::PopupMenu &menu) {
@@ -19529,6 +19530,45 @@ int main(int argc, char **argv) {
                           remembered[0].second == engine::RouteChoice::NoteExpression &&
                           remembered[1].second == engine::RouteChoice::Auto,
                       "and it is remembered for the plug-in's next instance");
+                // SC-329: its own programs and a preset file of its own format, from the same menu.
+                std::vector<std::int32_t> chosenPrograms;
+                int presetFileAsks = 0;
+                integrated.devices.programsOf = [](const DevicePanelData &) {
+                    return std::pair<std::vector<std::string>, std::int32_t>{{"Init", "Bass"}, 1};
+                };
+                integrated.devices.selectProgram = [&](const DevicePanelData &d, std::int32_t i) {
+                    if (d.id == 12) chosenPrograms.push_back(i);
+                    return true;
+                };
+                integrated.devices.loadsPresetFiles = [](const DevicePanelData &) { return true; };
+                integrated.devices.loadPresetFile = [&](const DevicePanelData &d) { presetFileAsks += d.id == 12; };
+                {
+                    juce::PopupMenu::Item programs, loadFile;
+                    const auto pluginMenu = integrated.devices.panels[1]->commands();
+                    for (juce::PopupMenu::MenuItemIterator it(pluginMenu); it.next();) {
+                        if (it.getItem().text == "Programs") programs = it.getItem();
+                        if (it.getItem().text == juce::String::fromUTF8("Load Preset File\xe2\x80\xa6")) loadFile = it.getItem();
+                    }
+                    std::vector<juce::PopupMenu::Item> listed;
+                    if (programs.subMenu)
+                        for (juce::PopupMenu::MenuItemIterator sub(*programs.subMenu); sub.next();) listed.push_back(sub.getItem());
+                    check(listed.size() == 2 && listed[0].text == "Init" && !listed[0].isTicked && listed[1].isTicked,
+                          "a plug-in's programs in its menu, the current one ticked (SC-329)");
+                    if (listed.size() == 2 && listed[0].action) listed[0].action();
+                    if (loadFile.action) loadFile.action();
+                    check(chosenPrograms == std::vector<std::int32_t>{0} && presetFileAsks == 1,
+                          "choosing a program and Load Preset File reach the plug-in");
+                    check(integrated.devices.panels[0]->commands().getNumItems() > 0, "ADI's own device's menu stands");
+                    bool ownHasPrograms = false;
+                    const auto own = integrated.devices.panels[0]->commands();
+                    for (juce::PopupMenu::MenuItemIterator it(own); it.next();)
+                        ownHasPrograms = ownHasPrograms || it.getItem().text == "Programs";
+                    check(!ownHasPrograms, "ADI's own device has no plug-in programs");
+                }
+                integrated.devices.programsOf = nullptr;
+                integrated.devices.selectProgram = nullptr;
+                integrated.devices.loadsPresetFiles = nullptr;
+                integrated.devices.loadPresetFile = nullptr;
                 integrated.devices.rememberRoute = nullptr;
                 integrated.devices.publication = [publication] { return publication; };
                 integrated.frame();

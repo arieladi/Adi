@@ -772,6 +772,38 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     return ok;
 }
 
+namespace {
+const clap_plugin_preset_load_t* presetLoadOf(const clap_plugin_t* plugin) noexcept {
+    if (plugin == nullptr || plugin->get_extension == nullptr) return nullptr;
+    auto* ext = static_cast<const clap_plugin_preset_load_t*>(plugin->get_extension(plugin, CLAP_EXT_PRESET_LOAD));
+    if (ext == nullptr)
+        ext = static_cast<const clap_plugin_preset_load_t*>(plugin->get_extension(plugin, CLAP_EXT_PRESET_LOAD_COMPAT));
+    return ext != nullptr && ext->from_location != nullptr ? ext : nullptr;
+}
+} // namespace
+
+bool ClapDevice::loadsPresetFiles() const noexcept { return presetLoadOf(plugin_) != nullptr; }
+
+bool ClapDevice::loadPresetFile(const std::string& path, std::string& error) {
+    // SC-329: the plug-in's own file, through its preset-load extension (main thread). Unmuted: the
+    // user chose it, so it is a capture boundary and the glue records it as one undo step.
+    const auto* ext = presetLoadOf(plugin_);
+    if (ext == nullptr) {
+        error = "This plug-in does not load preset files.";
+        return false;
+    }
+    if (glue_ != nullptr) (void)glue_->takePresetError();
+    const ReactivationGate::Hold hold(gate_);
+    const bool ok = ext->from_location(plugin_, CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr);
+    std::string said = glue_ != nullptr ? glue_->takePresetError() : std::string();
+    if (!ok || !said.empty()) {
+        error = said.empty() ? "The plug-in could not load that preset file." : said;
+        return false;
+    }
+    if (glue_ != nullptr) glue_->userStateChange();
+    return true;
+}
+
 void ClapDevice::setAutomationIndication(std::int32_t index, bool automated) {
     // The contract's mark first, because it is what stops the echo becoming
     // an op (ADR-0196). It must be set whether or not the plug-in implements
@@ -1753,6 +1785,8 @@ ClapHostGlue::ClapHostGlue() {
     hostParamsExt_.clear         = &ClapHostGlue::paramsClear;
     hostParamsExt_.request_flush = &ClapHostGlue::paramsRequestFlush;
     hostStateExt_.mark_dirty     = &ClapHostGlue::stateMarkDirty;
+    presetLoadExt_.on_error      = &ClapHostGlue::presetLoadError;
+    presetLoadExt_.loaded        = &ClapHostGlue::presetLoaded;
 }
 
 const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
@@ -1764,6 +1798,8 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)      return &self->hostParamsExt_;
     if (std::strcmp(id, CLAP_EXT_GUI) == 0)         return &self->guiExt_;
     if (std::strcmp(id, CLAP_EXT_STATE) == 0)       return &self->hostStateExt_;
+    if (std::strcmp(id, CLAP_EXT_PRESET_LOAD) == 0 || std::strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT) == 0)
+        return &self->presetLoadExt_;
     if (std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0) return &self->threadCheckExt_;
     // Whole-device graph workers run independently. Plug-ins retain CLAP's
     // own fallback for nested voice tasks.
@@ -1882,6 +1918,15 @@ void ClapHostGlue::paramsRequestFlush(const clap_host_t* h) {
     static_cast<ClapHostGlue*>(h->host_data)
         ->flushRequests_.fetch_add(1, std::memory_order_release);
 }
+
+void ClapHostGlue::presetLoadError(const clap_host_t* h, std::uint32_t, const char*, const char*, std::int32_t,
+                                   const char* message) {
+    if (h == nullptr) return;
+    static_cast<ClapHostGlue*>(h->host_data)->presetError_ =
+        message != nullptr && *message != 0 ? message : "the plug-in could not load the preset";
+}
+
+void ClapHostGlue::presetLoaded(const clap_host_t*, std::uint32_t, const char*, const char*) {}
 
 void ClapHostGlue::stateMarkDirty(const clap_host_t* h) {
     if (h == nullptr) return;

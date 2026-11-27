@@ -60,6 +60,36 @@ void declaredMidiMap() {
 // (ADR-0073). ADI calls the processor itself, so JUCE's own hand-over in processBlock never runs: a
 // value set only through JUCE reached the edit controller and stopped there. The fixture records Drive
 // as its processor received it and through nothing else, as a plug-in that keeps its processor apart.
+// SC-329: a .vstpreset of the plug-in's own loads into it, as the user's act (its state epoch moves, so the
+// parameter glue records one undo step); another file is refused with a reason; a plug-in that declares
+// no programs lists none.
+void presetFileLoads(device::Vst3Host& host, const juce::PluginDescription& desc) {
+    std::string error;
+    auto instance = host.instantiate(desc, 48000.0, 64, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    auto* client = instance->getVST3Client();
+    const juce::MemoryBlock preset = client != nullptr ? client->getPreset() : juce::MemoryBlock();
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    check(preset.getSize() > 48, "the fixture's state saves as a .vstpreset (Steinberg's PresetFile)");
+    check(vst.programNames().empty() && vst.currentProgram() == -1 && !vst.selectProgram(0),
+          "a plug-in that declares no programs lists none and takes no program change");
+    check(vst.loadsPresetFiles() && vst.presetFilePattern() == "*.vstpreset", "a VST3 offers .vstpreset files");
+    test::TempDirectory temp("vst3_key", "preset_file");
+    const auto good = temp.path() / "Drive.vstpreset";
+    const auto bad = temp.path() / "not-a-preset.vstpreset";
+    juce::File(juce::String(good.string())).replaceWithData(preset.getData(), preset.getSize());
+    juce::File(juce::String(bad.string())).replaceWithText("not a preset");
+    const auto epoch = vst.stateEpoch();
+    check(vst.loadPresetFile(good.string(), error) && vst.stateEpoch() > epoch,
+          "the .vstpreset loads, and as the user's act its state epoch moves (one undo step)");
+    const auto after = vst.stateEpoch();
+    check(!vst.loadPresetFile(bad.string(), error) && !error.empty() && vst.stateEpoch() == after,
+          "another file is refused, with a reason, and changes nothing");
+    check(!vst.loadPresetFile((temp.path() / "missing.vstpreset").string(), error) && !error.empty(),
+          "a file that is not there is refused");
+}
+
 // SC-332: a plug-in that renames a parameter (a macro) and says so shows the new name, at the next pump.
 void renamedParameterShows(device::Vst3Host& host, const juce::PluginDescription& desc, void (*rename)(int)) {
     std::string error;
@@ -648,6 +678,7 @@ void contract() {
     check(rename != nullptr, "the fixture can rename its Drive parameter");
     if (rename != nullptr)
         renamedParameterShows(host, *expression, rename);
+    presetFileLoads(host, *expression);
     for (const auto &desc : types)
         for (bool wide : {false, true}) {
             std::string error;

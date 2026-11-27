@@ -474,6 +474,26 @@ public:
         return false;
     }
 
+    // --- the plug-in's own presets (SC-329) ----------------------------------
+    // Chosen from the device's menu. Both change the plug-in's state as the user's own act, a
+    // capture boundary (`stateEpoch` moves), so the parameter glue records it as one undo step.
+
+    /// Its program list, where it declares one (a VST3's programs). Empty: it declares none.
+    [[nodiscard]] virtual std::vector<std::string> programNames() const { return {}; }
+    [[nodiscard]] virtual std::int32_t currentProgram() const { return -1; }
+    /// Message thread.
+    virtual bool selectProgram(std::int32_t) { return false; }
+    /// Whether it loads a preset file of its own format (a VST3's `.vstpreset`; a CLAP's own file,
+    /// through its preset-load extension), and the chooser's pattern for one.
+    [[nodiscard]] virtual bool loadsPresetFiles() const noexcept { return false; }
+    [[nodiscard]] virtual std::string presetFilePattern() const { return "*"; }
+    /// Message thread; `path` is UTF-8.
+    virtual bool loadPresetFile(const std::string& path, std::string& error) {
+        (void) path;
+        error = "This plug-in does not load preset files.";
+        return false;
+    }
+
     /// Where this device's own parameter broadcasts go (ADR-0110, ADR-0124).
     /// Set by the glue on the message thread; read by whichever thread the
     /// format broadcasts on. The capture behind it is single-producer, which

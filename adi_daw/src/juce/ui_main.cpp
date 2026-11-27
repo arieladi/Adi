@@ -890,6 +890,55 @@ class AdiApplication final : public juce::JUCEApplication,
             if ((!registry || !registry->remember(target.format, target.uid, route, now, why)) && root_)
                 root_->say("The choice is kept in this project, not for the plug-in's next instance: " + why);
         };
+        // SC-329: a plug-in's own programs and preset files, from its device menu. The plug-in's state change
+        // is a capture boundary: the parameter glue records it as one undo step at its next drain.
+        const auto pluginOf = [this](const DevicePanelData &target) -> device::DeviceInstance * {
+            if (!document_)
+                return nullptr;
+            auto *instance = document_->session().instanceFor(target.id);
+            return instance != nullptr && instance->loaded() ? instance : nullptr;
+        };
+        root->devices.programsOf = [pluginOf](const DevicePanelData &target) {
+            std::pair<std::vector<std::string>, std::int32_t> out{{}, -1};
+            if (auto *instance = pluginOf(target)) {
+                out.first = instance->programNames();
+                out.second = instance->currentProgram();
+            }
+            return out;
+        };
+        root->devices.selectProgram = [this, pluginOf](const DevicePanelData &target, std::int32_t index) {
+            auto *instance = pluginOf(target);
+            const bool ok = instance != nullptr && instance->selectProgram(index);
+            if (!ok && root_)
+                root_->say("The plug-in did not change its program.");
+            return ok;
+        };
+        root->devices.loadsPresetFiles = [pluginOf](const DevicePanelData &target) {
+            auto *instance = pluginOf(target);
+            return instance != nullptr && instance->loadsPresetFiles();
+        };
+        root->devices.loadPresetFile = [this, pluginOf](const DevicePanelData &target) {
+            auto *instance = pluginOf(target);
+            if (instance == nullptr)
+                return;
+            const auto pattern = juce::String::fromUTF8(instance->presetFilePattern().c_str());
+            presetChooser_ = std::make_unique<juce::FileChooser>("Load Preset File", juce::File(), pattern);
+            const auto installed = installGeneration_;
+            presetChooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                        [this, target, installed, pluginOf](const juce::FileChooser &chooser) {
+                const auto file = chooser.getResult();
+                if (file == juce::File() || installGeneration_ != installed)
+                    return;
+                auto *plugin = pluginOf(target);
+                std::string why;
+                if (plugin == nullptr || !plugin->loadPresetFile(file.getFullPathName().toStdString(), why)) {
+                    if (root_)
+                        root_->say(why.empty() ? std::string("The preset file was not loaded.") : why);
+                } else if (root_) {
+                    root_->say("Loaded " + file.getFileName().toStdString() + ".");
+                }
+            });
+        };
         root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
         root->devices.savePreset = [this](const DevicePanelData &target) { promptDevicePreset(target); };
         root->devices.hotSwap = [this](const DevicePanelData &target, std::optional<std::int32_t> slot) {
@@ -1892,6 +1941,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<LoadingGuard> loadGuard_ = std::make_shared<LoadingGuard>(loadingMarkerFile());
     std::shared_ptr<PluginHoldOff> holdOff_;
     ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
+    std::unique_ptr<juce::FileChooser> presetChooser_; // SC-329: Load Preset File
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).

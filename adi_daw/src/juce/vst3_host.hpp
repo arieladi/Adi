@@ -201,6 +201,13 @@ public:
     [[nodiscard]] std::vector<std::string> stateRoles() const override;
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override;
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override;
+    // SC-329: the plug-in's programs and `.vstpreset` files.
+    [[nodiscard]] std::vector<std::string> programNames() const override;
+    [[nodiscard]] std::int32_t currentProgram() const override;
+    bool selectProgram(std::int32_t index) override;
+    [[nodiscard]] bool loadsPresetFiles() const noexcept override { return inst_ != nullptr; }
+    [[nodiscard]] std::string presetFilePattern() const override { return "*.vstpreset"; }
+    bool loadPresetFile(const std::string& path, std::string& error) override;
 
     // --- ADR-0066: a latency change is REPORTED and nothing else ------------
 

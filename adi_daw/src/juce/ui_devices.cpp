@@ -1916,6 +1916,42 @@ juce::PopupMenu DevicePanelView::commands() {
         m.addSeparator();
         m.addItem(std::move(item));
     }
+    if (data && data->plugin && data->available) {
+        // SC-329: the plug-in's own programs, where it declares them, and a preset file of its own format
+        // (a VST3's .vstpreset, a CLAP's own file). Each is one undo step; saving is Save Preset's ADI file.
+        const auto expected = *data;
+        if (strip.programsOf) {
+            const auto [names, current] = strip.programsOf(expected);
+            if (!names.empty()) {
+                juce::PopupMenu programs;
+                for (std::size_t i = 0; i < names.size(); ++i) {
+                    const auto index = static_cast<std::int32_t>(i);
+                    juce::PopupMenu::Item item(names[i].empty() ? juce::String(index + 1)
+                                                                : juce::String::fromUTF8(names[i].c_str()));
+                    item.isTicked = index == current;
+                    item.action = [safe, epoch, expected, index] {
+                        if (!safe || safe->menuEpoch_ != epoch) return;
+                        safe->endInteraction(Interaction::Menu);
+                        if (safe && safe->validTarget() && safe->strip.validExpected(expected) && safe->strip.selectProgram)
+                            safe->strip.selectProgram(expected, index);
+                    };
+                    programs.addItem(std::move(item));
+                }
+                m.addSeparator();
+                m.addSubMenu("Programs", programs);
+            }
+        }
+        if (strip.loadPresetFile && strip.loadsPresetFiles && strip.loadsPresetFiles(expected)) {
+            juce::PopupMenu::Item item(juce::String::fromUTF8("Load Preset File\xe2\x80\xa6"));
+            item.action = [safe, epoch, expected] {
+                if (!safe || safe->menuEpoch_ != epoch) return;
+                safe->endInteraction(Interaction::Menu);
+                if (safe && safe->validTarget() && safe->strip.validExpected(expected) && safe->strip.loadPresetFile)
+                    safe->strip.loadPresetFile(expected);
+            };
+            m.addItem(std::move(item));
+        }
+    }
     juce::PopupMenu automation;
     strip.root.addDeviceAutomationDeleteItem(automation, id);
     if (automation.getNumItems() > 0) {

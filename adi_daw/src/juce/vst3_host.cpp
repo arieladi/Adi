@@ -1193,6 +1193,60 @@ bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8
     return true;
 }
 
+// SC-329: the plug-in's own programs and `.vstpreset` files, chosen by the user from the device's menu.
+// Unmuted: the plug-in's state changes as the user's act, a capture boundary (`stateEpoch` moves), which
+// the parameter glue records as one undo step, as a preset picked in the plug-in's own browser is.
+std::vector<std::string> Vst3Device::programNames() const {
+    std::vector<std::string> names;
+    if (inst_ == nullptr) return names;
+    const int count = inst_->getNumPrograms();
+    if (count <= 1) return names; // JUCE reports one unnamed program for a plug-in that declares none
+    names.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) names.push_back(inst_->getProgramName(i).toStdString());
+    return names;
+}
+
+std::int32_t Vst3Device::currentProgram() const {
+    return inst_ != nullptr && inst_->getNumPrograms() > 1 ? inst_->getCurrentProgram() : -1;
+}
+
+bool Vst3Device::selectProgram(std::int32_t index) {
+    if (inst_ == nullptr || index < 0 || index >= inst_->getNumPrograms()) return false;
+    // JUCE hands a program change to the controller and to its own process queue, which ADI's raw
+    // process call never reads (ADR-0073, SC-310): every value the change moved is posted to the
+    // processor here, the program parameter's among them.
+    std::vector<float> before(handles_.size());
+    for (std::size_t i = 0; i < handles_.size(); ++i) before[i] = handles_[i] != nullptr ? handles_[i]->getValue() : 0.0f;
+    inst_->setCurrentProgram(index);
+    for (std::size_t i = 0; i < handles_.size(); ++i)
+        if (handles_[i] != nullptr && handles_[i]->getValue() != before[i])
+            postToProcessor(i, static_cast<double>(handles_[i]->getValue()));
+    auto signal = beginStateSignal();
+    stateEpoch_.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+bool Vst3Device::loadPresetFile(const std::string& path, std::string& error) {
+    if (inst_ == nullptr) {
+        error = "The plug-in is not loaded.";
+        return false;
+    }
+    juce::MemoryBlock bytes;
+    if (!juce::File(juce::String::fromUTF8(path.c_str())).loadFileAsData(bytes) || bytes.getSize() == 0) {
+        error = "The preset file could not be read.";
+        return false;
+    }
+    auto* client = inst_->getVST3Client();
+    if (client == nullptr || !client->setPreset(bytes)) {
+        error = "The plug-in did not take that preset file (a .vstpreset of another plug-in?).";
+        return false;
+    }
+    // The state went to the component and the controller directly; the processor is the component.
+    auto signal = beginStateSignal();
+    stateEpoch_.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
 void* Vst3Device::rawComponent() const noexcept {
     if (inst_ == nullptr) return nullptr;
     if (const auto* c = inst_->getVST3Client()) return c->getIComponentPtr();
