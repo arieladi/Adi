@@ -38,6 +38,7 @@ float fallen(float shown, float now, double seconds) noexcept {
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
 const juce::Identifier kButtonLit{"adi.lit"};
+const juce::var kAccentButtonLit{juce::String("accent")}, kValueButtonLit{juce::String("value")};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
 // silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
 // on: -70 dB is quiet, not silent.
@@ -462,6 +463,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(pane
     addChildComponent(cueOut);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
+    active.getProperties().set(kButtonLit, kAccentButtonLit);
     solo.setTitle("Solo");
     solo.setTooltip("Solos the track.");
     arm.setTitle("Arm Recording");
@@ -594,7 +596,7 @@ void MixerStrip::frame(bool changed) noexcept {
     // The track's arm and monitoring as the session's rows hold them (MX-09): lit when they change.
     if (const auto record = panel_.root.recordState(track_); record != record_) {
         if ((record.monitor == Monitor::In) != (record_.monitor == Monitor::In)) {
-            active.getProperties().set(kButtonLit, record.monitor == Monitor::In ? "value" : "accent");
+            active.getProperties().set(kButtonLit, record.monitor == Monitor::In ? kValueButtonLit : kAccentButtonLit);
             active.repaint();
         }
         record_ = record;
@@ -1199,6 +1201,7 @@ void MixerStrip::MonitorSwitch::paint(juce::Graphics &g) {
     }
 }
 void MixerStrip::MonitorSwitch::mouseDown(const juce::MouseEvent &event) {
+    // Use the strip's coordinates and event component for its existing hit and popup handling.
     strip_.mouseDown(event.getEventRelativeTo(&strip_));
 }
 bool MixerStrip::MonitorSwitch::keyPressed(const juce::KeyPress &key) {
