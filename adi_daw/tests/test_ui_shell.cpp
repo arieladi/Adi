@@ -15739,8 +15739,8 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
                 sample.onWarpContextMenu = {};
                 int useSetTempo = 0;
                 bool infer = false, startAt = false, straight = false;
-                const auto warpMenu = sample.warpContextMenu();
-                for (juce::PopupMenu::MenuItemIterator it(warpMenu); it.next();) {
+                const auto fromHereMenu = sample.warpContextMenu();
+                for (juce::PopupMenu::MenuItemIterator it(fromHereMenu); it.next();) {
                     const auto &entry = it.getItem();
                     infer |= entry.text == "Warp From Here";
                     startAt |= entry.text.startsWith("Warp From Here (Start At ");
