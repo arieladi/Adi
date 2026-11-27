@@ -11,6 +11,12 @@ Queue from `origin/main` on `basics/analysers-chain`. The measurement reference 
 | 5 · Third-octave bands and period scope | `basics/analysers-chain` · `31d621d0` (`5bcb6f17` item commit) | Added thirty bands to the Mix View seat's Analysers and a 512-cell mono scope. The pitch detector normalizes the overlap and checks neighbouring lags before taking the first qualifying peak. | Worker and pixel tests cover 44.1 and 768 kHz capture, the 50 Hz limit, harmonics, noise, silence, and a 984 Hz case that once read an octave low. The full Debug build, validators, layout check, 18 no-display UI and three acceptance suites passed. One history timing assertion failed in the first parallel group. It passed three isolated runs, then all 272 headless suites passed on the same commit at three-way parallelism. | Ready for landing |
 | 6 · Colour Waveform | `basics/analysers-chain` · `d83ec6f3` | The Mix View seat's waveform reads the shared tap at 256 columns per second. It stacks three colour bands within the measured envelope across a two-second history ending at Now. | Capture and software drawing tests cover 44.1, 48 and 768 kHz, band separation, constant time, wrap, Freeze, Clear and the Now edge. The full Debug build, five validators, layout check, 272 headless, 18 no-display UI and three acceptance suites passed. | Ready for landing |
 
+## Wave 2 audit · 27 November 2026
+
+Checked the Queue and Wave cells of all 124 Wave 2 rows at `origin/main` `9dc431732` and reviewed the current session reports. Wave 2 has zero rows assigned to `analysers`. SC-427, the palette-preview quit leak in the analyser code, is assigned to `look` and is on main via #811.
+
+Merged `origin/main` into `basics/analysers-chain` at `bdd8fa175`. The merge has the same file tree as the completed analyser chain at `d83ec6f3`. All five validators, the layout check, all JUCE targets in Debug with warnings as errors, 272 headless suites, 18 UI suites with `DISPLAY` unset and three acceptance suites passed.
+
 ## Visual checks
 
 The coordinates below use logical pixels in each component's local space. Review the live picture with the same signal and matching settings in the reference device.
