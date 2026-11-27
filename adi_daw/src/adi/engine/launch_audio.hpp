@@ -12,6 +12,7 @@
 
 namespace adi::engine {
 class LaunchPagedAudio;
+class LaunchWarpSource;
 class WarpArrangementClock;
 
 struct LaunchWarpPosition {
@@ -53,15 +54,21 @@ public:
     static LaunchAudioClip fromWarp(std::int64_t clip, std::uint16_t channels,
                                    std::uint64_t referenceFrames, LaunchWarpMedia,
                                    std::vector<float> source);
+    static LaunchAudioClip fromPagedWarp(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
+                                        std::uint64_t referenceFrames, std::shared_ptr<LaunchWarpSource>);
 
     [[nodiscard]] std::int64_t clip() const noexcept { return clip_; }
     [[nodiscard]] std::uint32_t rate() const noexcept { return rate_; }
-    [[nodiscard]] std::uint64_t frames() const noexcept { return pages_ || warp_ ? renderedFrames_ : samples_.size() / channels_; }
+    [[nodiscard]] std::uint64_t frames() const noexcept {
+        return pages_ || followsTempo() ? renderedFrames_ : samples_.size() / channels_;
+    }
     [[nodiscard]] std::uint64_t bytes() const noexcept { return samples_.size() * sizeof(float); }
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
-    [[nodiscard]] bool followsTempo() const noexcept { return static_cast<bool>(warp_); }
+    [[nodiscard]] bool usesPages() const noexcept { return pages_ || pagedWarp_; }
+    [[nodiscard]] bool followsTempo() const noexcept { return warp_ || pagedWarp_; }
+    void prefetchWarp(std::int64_t launchTick, std::int64_t sourceTick) const noexcept;
     // Returns false for a regular PCM backend and lets the fixed render proceed.
     bool renderWarp(const AudioIo&, std::int32_t offset, std::int32_t frames,
                     LaunchWarpPosition, double gain, std::int64_t fadeElapsed,
@@ -79,6 +86,7 @@ private:
     std::vector<float> samples_;
     std::shared_ptr<LaunchPagedAudio> pages_;
     std::shared_ptr<const Warp> warp_;
+    std::shared_ptr<LaunchWarpSource> pagedWarp_;
     std::uint64_t renderedFrames_ = 0;
 };
 

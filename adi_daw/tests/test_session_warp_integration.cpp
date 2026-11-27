@@ -16,6 +16,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -25,6 +26,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace { unsigned callbackAllocations = 0; }
@@ -110,6 +112,7 @@ struct Playback {
     std::size_t count = 0;
     std::size_t sceneCount = 0;
     std::int64_t first = 0;
+    bool paged = false;
 
     void through(std::int64_t target) {
         std::array<float,blockFrames> left{}, right{};
@@ -138,6 +141,7 @@ struct Playback {
             require(rendered, "render actual persisted launch graph");
             std::copy_n(left.begin(), frames, pcm.begin() + first);
             first += frames;
+            if (paged) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 };
@@ -149,7 +153,7 @@ void scene(Store& store, const Session& session, int sceneId) {
     require(OpJournal(store).commit(gesture).ok, "submit actual scene launch operation");
 }
 
-void exercise() {
+std::vector<float> exercise(bool paged = false) {
     test::TempDirectory temporary{"session_warp_integration", "project"};
     auto store = sceneProject(temporary.path());
     auto& db = store->db();
@@ -157,6 +161,7 @@ void exercise() {
     tempo.bind(1, lastBeat * quarter); tempo.exec();
     addClip(*store, temporary.path(), 101, 10, 3, false);
     addClip(*store, temporary.path(), 102, 20, 4, true);
+    if (paged) db.exec("UPDATE clip_launch SET ram_mode=0");
 
     Session session;
     session.graph().setFadeFrames(0);
@@ -166,6 +171,7 @@ void exercise() {
     session.transport().play();
     std::vector<float> pcm(static_cast<std::size_t>(frameAtBeat(lastBeat)));
     Playback playback{session, pcm};
+    playback.paged = paged;
     playback.through(blockFrames);
     scene(*store, session, 10);
     playback.through(frameAtBeat(4) + blockFrames);
@@ -204,6 +210,7 @@ void exercise() {
     require(session.problems().empty(), "prepare the persisted media under a ramp without slot problems");
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,
             "the native slot callback performs no allocation or file I/O");
+    return pcm;
 }
 
 void enableTempoScene(Store& store) {
@@ -283,25 +290,27 @@ LaunchTrackStatus trackState(const Session& session) {
     return tracks[0];
 }
 
-void continuingTempoScene(bool legato) {
+void continuingTempoScene(bool legato, bool paged = false) {
     test::TempDirectory folder{"session_scene_warp", legato ? "legato" : "retained"};
     auto store = sceneProject(folder.path());
     enableTempoScene(*store);
     addClip(*store, folder.path(), 101, 10, 3, true);
     if (legato) addClip(*store, folder.path(), 102, 20, 4, true);
     else store->db().exec("INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0)");
+    if (paged) store->db().exec("UPDATE clip_launch SET ram_mode=0");
 
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
-    require(session.problems().empty(), "prepare the native resident warp slot");
+    require(session.problems().empty(), "prepare the native Warp slot");
     const auto last = frameAfterTempoScene(3) + 1024;
     std::vector<float> pcm(static_cast<std::size_t>(last));
     Playback playback{session, pcm};
+    playback.paged = paged;
     scene(*store, session, 10);
     playback.through(blockFrames);
     const auto before = trackState(session);
-    require(before.clip == 101 && before.run != 0, "the first scene starts the initial resident run");
+    require(before.clip == 101 && before.run != 0, "the first scene starts the initial native Warp run");
     scene(*store, session, 20);
     playback.through(last);
     checkTempoScene(*store, session, playback);
@@ -373,11 +382,13 @@ void residentModeRamp(const char* mode, std::int64_t tolerance) {
 
 int main() {
     try {
-        exercise();
+        const auto resident = exercise();
+        require(exercise(true) == resident, "paged and resident Warp play the same samples through the ramp and loop");
         preparedTempoScene(false);
         preparedTempoScene(true);
         continuingTempoScene(false);
         continuingTempoScene(true);
+        continuingTempoScene(true, true);
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

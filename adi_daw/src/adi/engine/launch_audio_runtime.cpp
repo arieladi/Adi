@@ -63,7 +63,7 @@ LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, st
         return a.clip() < b.clip();
     };
     std::sort(clips_.begin(), clips_.end(), lessClip);
-    if (!stored_ && std::ranges::any_of(clips_, [](const LaunchAudioClip& clip) { return clip.pageReader() != nullptr; }))
+    if (!stored_ && std::ranges::any_of(clips_, [](const LaunchAudioClip& clip) { return clip.usesPages(); }))
         throw std::invalid_argument("a shared injected project cannot own Session page playback state");
     if (std::adjacent_find(clips_.begin(), clips_.end(), [](const auto& a, const auto& b) {
             return a.clip() == b.clip();
@@ -139,7 +139,7 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
     if (pcm) {
         const auto last = std::max(edit.region.end, edit.region.loop ? edit.region.loop->end : std::int64_t{0});
         const auto lastFrame = pcm->frameForTick(last, prepared.bpm());
-        if (pcm->pageReader() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
+        if (pcm->usesPages() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
     } else if (!prepared.isMidiTrack(edit.track)) return false;
     return driver.launcher_.postRegionEdit(edit);
 }
@@ -272,7 +272,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto& media = *call.runtime.mediaAt(due);
         if (&media != call.media) return;
         const auto* clip = media.clip(track.queued.clip);
-        if (clip && clip->pageReader())
+        if (clip && clip->followsTempo())
+            clip->prefetchWarp(track.queued.tick,*track.queued.legatoSourceTick);
+        else if (clip && clip->pageReader())
             clip->pageReader()->prefetch(clip->clip(), clip->frameForTick(*track.queued.legatoSourceTick, media.bpm()));
     }, [](void* state, const LaunchSceneTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);

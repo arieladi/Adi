@@ -35,7 +35,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint64_t residentBudget = kSessionResidentPcmBudget, bool allowSteadyWarp = true);
 class ClipPlayback {
 public:
-    enum class WarpPlayback { Streaming, Prepared };
+    enum class WarpPlayback { Streaming, Prepared, NativePages };
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
                  std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false,
                  WarpPlayback = WarpPlayback::Streaming);
@@ -139,6 +139,7 @@ public:
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
+    friend struct LaunchWarpPageBank;
     bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
                       std::stop_token stop = {}, std::optional<std::int64_t> track = {});
     struct Impl;
