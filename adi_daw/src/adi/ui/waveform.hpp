@@ -420,18 +420,29 @@ class ClipSourceMap {
         FrameSpan first{}, second{};
         bool repeats = false;
     };
+    struct LoopPosition {
+        double seconds;
+        std::optional<double> warpTicks;
+    };
+    struct RepeatedRange {
+        // An empty start keeps the original selection start on the first pass.
+        std::optional<LoopPosition> from;
+        LoopPosition to;
+    };
 
-    ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate)
+    // A caller already holding the clip's parsed Warp map can borrow it for a frame.
+    ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate,
+                  std::optional<std::span<const WarpMarker>> parsed = std::nullopt)
         : pos_(clip.posTicks), offsetTicks_(clip.contentOffsetTicks),
           rate_(clip.audio->warpEnabled ? sampleRate : audio::pitchedSampleRate(sampleRate, clip.audio->transposeSemis)), tempo_(tempo),
-          audio_(*clip.audio) {
-        if (audio_.warpEnabled && audio_.warpMarkers)
+          audio_(*clip.audio), parsedMarkers_(parsed.value_or(std::span<const WarpMarker>{})) {
+        if (!parsed && audio_.warpEnabled && audio_.warpMarkers)
             if (auto read = audio::readWarpMap(*audio_.warpMarkers, static_cast<std::uint64_t>(audio_.sourceLengthFrames)))
-                markers_ = std::move(read.markers);
+                ownedMarkers_.emplace(std::move(read.markers));
         if (pos_ < 0 || !(rate_ > 0))
             return;
         startSeconds_ = timelineSeconds(pos_);
-        if (markers_.empty()) {
+        if (markers().empty()) {
             if (clip.contentOffsetNs)
                 offsetSeconds_ = static_cast<double>(*clip.contentOffsetNs) * 1e-9;
             else
@@ -453,6 +464,36 @@ class ClipSourceMap {
         if (audio_.reverse)
             return std::max(start, *frame - 1.);
         return *frame < start + static_cast<double>(audio_.sourceLengthFrames) ? frame : std::nullopt;
+    }
+
+    // The Sample Editor's source ruler is musical for Warp and physical otherwise.
+    std::optional<LoopPosition> repeatedPositionAt(std::int64_t tick) const {
+        if (const auto seconds = repeatedClockAt(tick))
+            return loopPosition(*seconds);
+        return {};
+    }
+
+    // The continuous source-ruler interval covering the audible selection [first, last).
+    std::optional<RepeatedRange> repeatedRangeAcross(std::int64_t first, std::int64_t last) const {
+        const auto lastRepeat = repeatAt(last);
+        if (lastRepeat < 1.)
+            return {};
+        const auto firstRepeat = repeatAt(first);
+        if (firstRepeat == lastRepeat)
+            return RepeatedRange{repeatedPositionAt(first), loopPosition(clockInRepeat(last, lastRepeat))};
+
+        const auto loopEnd = loopPosition(loopStart_ + loopLength_);
+        const auto lastClock = clockAt(last);
+        const auto wrapClock = loopStart_ + lastRepeat * loopLength_;
+        const auto error = std::numeric_limits<double>::epsilon() * std::max(lastClock, wrapClock) * 8.;
+        if (lastRepeat == firstRepeat + 1. && std::abs(lastClock - wrapClock) <= error)
+            return RepeatedRange{repeatedPositionAt(first), loopEnd};
+
+        // A wrap includes the tail and head of the loop. Keep any lead-in before it too.
+        RepeatedRange range{std::nullopt, loopEnd};
+        if (clockAt(first) >= loopStart_)
+            range.from = loopPosition(loopStart_);
+        return range;
     }
 
     Column framesAcross(std::int64_t first, std::int64_t last) const {
@@ -478,6 +519,9 @@ class ClipSourceMap {
     }
 
   private:
+    std::span<const WarpMarker> markers() const noexcept {
+        return ownedMarkers_ ? std::span<const WarpMarker>(*ownedMarkers_) : parsedMarkers_;
+    }
     static constexpr double fallbackSecondsPerTick = .5 / textproj::kPPQ; // 120 BPM
     double earlySecondsPerTick() const {
         return tempo_ != nullptr ? 60. / tempo_->bpmAt(0) / textproj::kPPQ : fallbackSecondsPerTick;
@@ -493,7 +537,22 @@ class ClipSourceMap {
         return timelineSeconds(origin + ticks) - timelineSeconds(origin);
     }
     double clockAt(std::int64_t tick) const { return offsetSeconds_ + (timelineSeconds(tick) - startSeconds_); }
+    std::optional<double> repeatedClockAt(std::int64_t tick) const {
+        const auto repeat = repeatAt(tick);
+        if (repeat < 1.)
+            return {};
+        return clockInRepeat(tick, repeat);
+    }
+    double clockInRepeat(std::int64_t tick, double repeat) const {
+        return std::clamp(clockAt(tick) - repeat * loopLength_, loopStart_, loopStart_ + loopLength_);
+    }
 
+    LoopPosition loopPosition(double seconds) const {
+        LoopPosition position{seconds, std::nullopt};
+        if (!markers().empty())
+            position.warpTicks = sourceTickAt(seconds);
+        return position;
+    }
     double sourceTickAt(double seconds) const {
         const auto absolute = warpOriginSeconds_ + seconds;
         if (tempo_ == nullptr || absolute < 0)
@@ -511,17 +570,16 @@ class ClipSourceMap {
             return std::nullopt;
         const auto into = tick - pos_;
         const auto sourceLength = static_cast<double>(audio_.sourceLengthFrames);
-        const auto repeat = repeatAt(tick);
-        const auto wrapped = repeat >= 1. ? std::clamp(clockAt(tick) - repeat * loopLength_, loopStart_, loopStart_ + loopLength_)
-                                          : 0.;
+        const auto wrapped = repeatedClockAt(tick);
+        const auto map = markers();
         double frame;
-        if (!markers_.empty()) {
-            if (repeat < 1. && (offsetTicks_ < 0 || offsetTicks_ >= markers_.back().tick - into))
+        if (!map.empty()) {
+            if (!wrapped && (offsetTicks_ < 0 || offsetTicks_ >= map.back().tick - into))
                 return std::nullopt;
-            const auto ticks = repeat >= 1. ? sourceTickAt(wrapped) : static_cast<double>(offsetTicks_ + into);
-            frame = warpedWaveformFrame(markers_, ticks, audio_.reverse);
+            const auto ticks = wrapped ? sourceTickAt(*wrapped) : static_cast<double>(offsetTicks_ + into);
+            frame = warpedWaveformFrame(map, ticks, audio_.reverse);
         } else {
-            frame = (repeat >= 1. ? wrapped : clockAt(tick)) * rate_;
+            frame = (wrapped ? *wrapped : clockAt(tick)) * rate_;
             if (!(frame >= 0. && frame < sourceLength))
                 return std::nullopt;
             if (audio_.reverse)
@@ -546,8 +604,9 @@ class ClipSourceMap {
         if (start < 0 || length < 0 || length > std::numeric_limits<std::int64_t>::max() - start)
             return;
         const auto end = start + length;
+        const auto map = markers();
         double beginSeconds, endSeconds, beginFrame, endFrame;
-        if (markers_.empty()) {
+        if (map.empty()) {
             if (audio_.warpEnabled)
                 return;
             beginSeconds = clip.loopBeginNs ? static_cast<double>(*clip.loopBeginNs) * 1e-9 : secondsFrom(pos_, start);
@@ -560,15 +619,15 @@ class ClipSourceMap {
                 endFrame = sourceLength - endFrame;
             }
         } else {
-            if (offsetTicks_ < 0 || end > markers_.back().tick)
+            if (offsetTicks_ < 0 || end > map.back().tick)
                 return;
             warpOrigin_ = pos_ - offsetTicks_;
             warpOriginSeconds_ = timelineSeconds(warpOrigin_);
             offsetSeconds_ = startSeconds_ - warpOriginSeconds_;
             beginSeconds = secondsFrom(warpOrigin_, start);
             endSeconds = secondsFrom(warpOrigin_, end);
-            beginFrame = warpedWaveformFrame(markers_, static_cast<double>(start), audio_.reverse);
-            endFrame = warpedWaveformFrame(markers_, static_cast<double>(end), audio_.reverse);
+            beginFrame = warpedWaveformFrame(map, static_cast<double>(start), audio_.reverse);
+            endFrame = warpedWaveformFrame(map, static_cast<double>(end), audio_.reverse);
         }
         if (!(beginSeconds >= 0. && endSeconds > beginSeconds && beginFrame != endFrame &&
               std::min(beginFrame, endFrame) >= 0. && std::max(beginFrame, endFrame) <= static_cast<double>(audio_.sourceLengthFrames)))
@@ -584,7 +643,8 @@ class ClipSourceMap {
     double loopStart_ = 0., loopLength_ = 0., loopFirstFrame_ = 0., loopLastFrame_ = 0.;
     const engine::TempoMap *tempo_;
     const engine::AudioClipSource &audio_;
-    std::vector<WarpMarker> markers_;
+    std::span<const WarpMarker> parsedMarkers_;
+    std::optional<std::vector<WarpMarker>> ownedMarkers_;
 };
 // The lowest and highest sample of `channel` over the file's frames [from, to), from its peaks;
 // none where the span holds no bin: an empty or backwards span, one that is not a number, one that
