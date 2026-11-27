@@ -1000,7 +1000,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::ranges::sort(scenes);
 
     std::uint64_t remaining = residentBudget;
-    std::vector<LaunchSlot> slots;
+    std::vector<LaunchSlot> launchSlots;
     std::vector<LaunchAudioClip> pcm;
     auto pagedProject = std::make_shared<ClipProject>();
     pagedProject->folder = original.folder;
@@ -1019,7 +1019,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         slot.scene = cell.key.sceneId;
         slot.hasStop = cell.hasStop;
         if (!cell.clipId) {
-            slots.push_back(slot);
+            launchSlots.push_back(slot);
             continue;
         }
         const auto clip = std::ranges::find(original.rows.slotClips, *cell.clipId, &rows::Clip::id);
@@ -1053,7 +1053,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             }
             if (slot.startTick < 0 || slot.endTick <= slot.startTick)
                 throw std::runtime_error("invalid Session start or end marker");
-            slots.push_back(slot);
+            launchSlots.push_back(slot);
             if (clip->kind == "audio" && !clip->muted) {
                 if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
                 const auto end = std::max(slot.endTick, slot.loopEndTick);
@@ -1085,7 +1085,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         }
         problems.insert(problems.end(), reader->problems().begin(), reader->problems().end());
     }
-    return std::make_shared<const LaunchAudioProject>(incarnation, bpm, std::move(tracks), std::move(slots),
+    return std::make_shared<const LaunchAudioProject>(incarnation, bpm, std::move(tracks), std::move(launchSlots),
         std::move(scenes), std::move(pcm), LaunchQuantization::Bar,
         std::make_shared<const LaunchFollowPlayer>(data), incarnation, std::move(midiTracks), true, std::move(sceneClocks));
 }

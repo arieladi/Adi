@@ -161,7 +161,7 @@ constexpr std::string_view sessionNamespace = "org.adidaw.session";
 constexpr std::string_view sessionMarker = "clip_slots";
 
 bool featureMarker(const Payload& row) {
-    return row.at("ns") == sessionNamespace && row.at("key") == sessionMarker &&
+    return row.at("ns") == std::string(sessionNamespace) && row.at("key") == std::string(sessionMarker) &&
         row.at("scope_kind") == "project" && row.at("scope_id").is_null();
 }
 
