@@ -16,6 +16,7 @@ constexpr auto noPcmRange = std::numeric_limits<std::size_t>::max();
 bool validPcmRange(const LaunchCapturedPcmRange& range) noexcept {
     return range.track > 0 && range.clip > 0 && range.run != 0 &&
         range.beginSample >= 0 && range.endSample > range.beginSample && range.firstSourceFrame >= 0 &&
+        std::isfinite(range.playbackGain) && range.playbackGain >= 0 &&
         range.firstSourceFrame <= std::numeric_limits<std::int64_t>::max() - (range.endSample - range.beginSample);
 }
 } // namespace
@@ -69,7 +70,8 @@ bool LaunchCaptureBuffer::appendPcmRange(const LaunchCapturedPcmRange& range) no
         }
         const auto next = previous.firstSourceFrame + (previous.endSample - previous.beginSample);
         if (previous.clip == range.clip && previous.run == range.run &&
-            previous.endSample == range.beginSample && next == range.firstSourceFrame) {
+            previous.endSample == range.beginSample && next == range.firstSourceFrame &&
+            previous.playbackGain == range.playbackGain) {
             previous.endSample = range.endSample;
             previous.liveRegionEdit |= range.liveRegionEdit;
             return true;

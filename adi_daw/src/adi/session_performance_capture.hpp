@@ -17,6 +17,7 @@ struct SessionPerformanceClock {
 
 /// Proof from the recorded graph. Session PCM is baked at Float32. Set
 /// gainStayedAuthored only if no transient launch gain changed rendered audio.
+/// Otherwise every audible audio span needs exact performed PCM receipts.
 struct SessionPerformanceAudio {
     engine::Precision precision;
     bool gainStayedAuthored = false;

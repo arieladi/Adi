@@ -7,6 +7,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_capture.hpp"
+#include "adi/engine/launch_gain_edits.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -121,9 +123,14 @@ struct SceneReceipts {
     std::size_t size = 0;
 };
 
+struct LiveAudioEdit {
+    std::optional<LaunchClipRegion> region{};
+    float gain = 1.0f;
+};
+
 Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int64_t* endTick = nullptr,
                bool firstSceneOnly = false, SceneReceipts* scenes = nullptr, std::int32_t width = blockFrames,
-               const LaunchClipRegion* liveRegion = nullptr) {
+               const LiveAudioEdit* liveEdit = nullptr) {
     Session session;
     session.graph().setFadeFrames(0);
     SessionSpec spec{1, sampleRate, width};
@@ -136,14 +143,18 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
     for (std::int64_t sample = 0; sample < frames; sample += width) {
         if (capture && (!firstSceneOnly || sample == 100))
             performCommand(project, session, sample);
-        if (liveRegion && sample == 200) {
+        if (liveEdit && sample == 200) {
             std::array<LaunchTrackStatus, 1> tracks{};
             LaunchStatusHeader status;
             require(session.readLaunchStatus(tracks, status) && status.endSample == sample &&
                     tracks[0].clip == 11 && tracks[0].run != 0,
                     "address the live audio run after its first 100 samples");
-            require(session.postLaunchClipRegionEdit({1, 11, status.incarnation, tracks[0].run,
-                        *liveRegion, ClipUpdateRate::None}), "enable the loop for this live run only");
+            if (liveEdit->region)
+                require(session.postLaunchClipRegionEdit({1, 11, status.incarnation, tracks[0].run,
+                            *liveEdit->region, ClipUpdateRate::None}), "enable the loop for this live run only");
+            if (liveEdit->gain != 1.0f)
+                require(session.postLaunchClipGainEdit({1, 11, status.incarnation, tracks[0].run,
+                            liveEdit->gain, ClipUpdateRate::None}), "apply the gain to this live run only");
         }
         require(session.clips()->prime(), "prime the render's Arrangement readers");
         auto* destination = result.data() + sample;
@@ -364,11 +375,11 @@ void liveRawRegion() {
 
     constexpr std::int64_t launchAt = 100, editAt = 200, sourceStart = 37;
     constexpr std::int64_t loopFirst = 50, loopFrames = 25;
-    const LaunchClipRegion region{0, 240240, LaunchClipLoopRegion{12012, 18018}};
+    const LiveAudioEdit edit{.region = LaunchClipRegion{0, 240240, LaunchClipLoopRegion{12012, 18018}}};
     std::array<LaunchTransition, 4> noTapeEdges{};
     LaunchCaptureBuffer noTape(noTapeEdges);
     std::int64_t endTick = 0;
-    const auto withoutTape = render(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &region);
+    const auto withoutTape = render(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &edit);
     const auto refused = planLaunchCapture(noTape, {0, 0}, {frames, endTick}, {});
     require(refused.error == LaunchCaptureError::SourceEdited,
             "a transient geometry edit without a PCM tape cannot be replayed from authored geometry");
@@ -377,7 +388,7 @@ void liveRawRegion() {
     std::array<LaunchCapturedPcmRange, 64> pcm{};
     std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
     LaunchCaptureBuffer buffer(events, pcm, tracks);
-    const auto heard = render(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &region);
+    const auto heard = render(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
     require(heard == withoutTape, "the trace leaves the live performance unchanged");
     for (std::int64_t frame = 0; frame < frames; ++frame) {
         const auto local = frame < editAt ? frame - launchAt : loopFirst + (frame - editAt) % loopFrames;
@@ -424,6 +435,75 @@ void liveRawRegion() {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the edited raw PCM trace remains callback-safe");
     std::puts("PASS -- a live raw loop enabled at frame 200 replays 1000 frames bit-for-bit through Undo, Redo and reopen");
 }
+
+void liveRawGain() {
+    Project project;
+    std::array<float, 2048> signal{};
+    for (std::size_t index = 0; index < signal.size(); ++index)
+        signal[index] = static_cast<float>(index) / 2048.0f;
+    project.media("edited-gain.wav", 4, signal);
+    project.store->db().exec(
+        "UPDATE audio_clips SET media_id=4,src_start_frames=37,src_len_frames=1024 WHERE clip_id=11;"
+        "UPDATE clips SET length_ticks=240240 WHERE id=11;"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+    const auto arrangementBefore = render(*project.store);
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    const LiveAudioEdit edit{.gain = 0.5f};
+
+    std::int64_t endTick = 0;
+    std::array<LaunchTransition, 4> noTapeEdges{};
+    LaunchCaptureBuffer noTape(noTapeEdges);
+    const auto withoutTape = render(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &edit);
+    require(planLaunchCapture(noTape, {0, 0}, {frames, endTick}, {}).error == LaunchCaptureError::SourceEdited,
+            "a live gain change without a PCM tape cannot be replayed from authored gain");
+
+    std::array<LaunchTransition, 4> events{};
+    std::array<LaunchCapturedPcmRange, 4> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer buffer(events, pcm, tracks);
+    const auto heard = render(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
+    require(heard == withoutTape, "tracing the gain does not change the Session mix");
+    for (std::size_t frame = 0; frame < heard.size(); ++frame) {
+        const auto expected = frame < 100 ? 0.125f : signal[37 + frame - 100] * (frame < 200 ? 1.0f : 0.5f);
+        require(heard[frame] == expected, "the native raw gain halves its exact signal from frame 200 onward");
+    }
+    const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1 && plan.pcmRanges.size() == 2,
+            "one continuous raw run supplies two exact gain ranges");
+    const auto& before = plan.pcmRanges[0];
+    const auto& after = plan.pcmRanges[1];
+    require(before.beginSample == 100 && before.endSample == 200 && before.firstSourceFrame == 0 &&
+            before.playbackGain == 1.0f && !before.liveRegionEdit &&
+            after.beginSample == 200 && after.endSample == frames && after.firstSourceFrame == 100 &&
+            after.playbackGain == 0.5f && !after.liveRegionEdit && before.run == after.run,
+            "a new PCM gain interval starts without resetting source phase or run identity");
+    constexpr SessionPerformanceAudio audioProof{Precision::Float32, false};
+    auto invalidGain = plan;
+    invalidGain.pcmRanges[1].playbackGain = std::numeric_limits<float>::infinity();
+    require(!prepareSessionPerformance(*project.store, *source, invalidGain, sampleRate, std::nullopt, audioProof).ok,
+            "the replay writer refuses a non-finite multiplier");
+    require(!prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt,
+                SessionPerformanceAudio{Precision::Float64, false}).ok,
+            "a gain trace needs the same Float32 graph precision");
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, audioProof);
+    require(prepared.ok, prepared.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+            "the captured gain step replays bit-for-bit at a different Arrangement block size");
+    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render(*project.store) == heard,
+            "one Undo and Redo restore the complete raw gain take");
+    require(project.store->close(), "close the performed gain capture");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render(*project.store) == heard, "reopen preserves the exact gain step");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the gain tape remains callback-safe");
+    std::puts("PASS -- live raw gain changes at frame 200 and replays bit-for-bit through Undo, Redo and reopen");
+}
 } // namespace
 
 int main() {
@@ -433,6 +513,7 @@ int main() {
         followThroughGraph();
         fractionalRawLoop();
         liveRawRegion();
+        liveRawGain();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

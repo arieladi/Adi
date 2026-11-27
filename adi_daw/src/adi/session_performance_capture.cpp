@@ -508,7 +508,7 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
     if (!muted && (!std::isfinite(span.velocity) || span.velocity != 1.0f || (!midi && span.fade)))
         throw std::runtime_error("Session launch Fade or velocity needs an exact capture render contract");
     if (!midi && !muted) {
-        if (audioCapture && !audioCapture->gainStayedAuthored)
+        if (audioCapture && !audioCapture->gainStayedAuthored && !performedPcm)
             throw std::runtime_error("transient Session audio gain requires a performed gain trace");
         const auto gainDb = source.at("gain_db").get<double>();
         if (!std::isfinite(gainDb) || std::abs(gainDb) > 120 ||
@@ -590,6 +590,18 @@ std::int64_t nanosSample(std::int64_t nanos, std::int64_t rate) {
         ((nanos % nanosPerSecond) * rate + nanosPerSecond / 2) / nanosPerSecond;
 }
 
+double capturedGainDb(double authored, float multiplier) {
+    if (multiplier == 1.0f) return authored;
+    if (authored != 0)
+        throw std::runtime_error("performed Session gain requires a unity authored clip gain");
+    if (!std::isfinite(multiplier) || multiplier <= 0.0f)
+        throw std::runtime_error("performed Session gain must be finite and positive");
+    const auto db = std::clamp(20.0 * std::log10(static_cast<double>(multiplier)), -120.0, 120.0);
+    if (static_cast<float>(std::pow(10.0, db / 20)) != multiplier)
+        throw std::runtime_error("performed Session gain has no exact supported Arrangement dB value");
+    return db;
+}
+
 void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
                    std::span<const engine::LaunchCapturedPcmRange> ranges, const std::filesystem::path& path,
                    const edit::TimeMap& placementClock, const engine::TempoMap& authored,
@@ -599,8 +611,8 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
     const auto* audioRow = firstChild(image, "audio_clips");
     if (!audioRow || audioRow->at("warp_enabled") != 0 || audioRow->at("reverse") != 0 ||
         audioRow->at("transpose_semis") != 0 || audioRow->at("formant_shift") != 0 ||
-        !audioCapture || !audioCapture->gainStayedAuthored || audioCapture->precision != engine::Precision::Float32)
-        throw std::runtime_error("exact Session PCM capture requires raw forward Float32 audio with authored gain");
+        !audioCapture || audioCapture->precision != engine::Precision::Float32)
+        throw std::runtime_error("exact Session PCM capture requires raw forward Float32 audio");
     const audio::WavReader wav(path);
     const auto fileStart = detail::signedInteger(audioRow->at("src_start_frames"));
     const auto fileLength = detail::signedInteger(audioRow->at("src_len_frames"));
@@ -640,6 +652,7 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
         throw std::runtime_error("performed Session PCM ranges do not cover the entire run");
 
     auto placed = arrangeRun(store, image, span, authored, fixed, rate, audioCapture, ids, true, true);
+    const auto authoredGain = image.at("row").at("gain_db").get<double>();
     const auto first = incoming.size();
     for (const auto& range : ranges) {
         auto piece = incoming.size() == first ? std::move(placed)
@@ -655,6 +668,7 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
         row["pos_ns"] = start;
         row["length_ns"] = finish - start;
         row["content_offset_ticks"] = fixed.storedNanosecondsToTicks(sourceBegin);
+        row["gain_db"] = capturedGainDb(authoredGain, range.playbackGain);
         row["loop_enabled"] = 0;
         row["loop_start_ticks"] = 0;
         row["loop_len_ticks"] = nullptr;
@@ -853,7 +867,9 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                 [&](const auto& range) { return range.clip != span.clip; }))
                 throw std::runtime_error("performed Session PCM refers to a different clip in the same run");
             const bool needsPcm = pcm != pcmByRun.end() && (row.at("loop_enabled") == 1 ||
-                std::ranges::any_of(pcm->second, &engine::LaunchCapturedPcmRange::liveRegionEdit));
+                (audio && !audio->gainStayedAuthored) || std::ranges::any_of(pcm->second, [](const auto& range) {
+                    return range.liveRegionEdit || range.playbackGain != 1.0f;
+                }));
             Payload placed;
             if (!needsPcm)
                 placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids, authoredClock);
