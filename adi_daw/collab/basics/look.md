@@ -16,6 +16,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-37 | `basics/look-chain` at `55eac841` | Draw the authored clip colour through the Arrangement lane and overview. Engine and window seats. | Peerless chooser, title/body pixels and undo passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-90 | `basics/look-chain` at `81254e5e` | Dim the clips on inactive tracks and the full panels of bypassed devices. Window seat. | Peerless canvas and panel pixels, plus undo or reactivation, passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-92 | `basics/look-chain` at `164c387b` | Label the main Audio To route Main. Window seat. | Headless tests covered Main, Group, instrumentless MIDI No Output and the Main pair. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-71 | `basics/look-chain` at `d8e80eed` | Follow zoom below a quarter note in the Arrangement and Note Editor. Window seat. | The independent Debug shell also passed all 3,536 checks. The test covers grid positions, ticks and Note Editor gestures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -132,8 +133,16 @@ The Device View fixture's bypassed panel keeps its local bounds of `(0, 0, 150, 
 
 Audio To changes from `Master` to `Main` in the existing strip-local rectangles. These are `(5, 54, 70, 13)` for an ordinary Arrangement audio track, `(5, 3, 70, 13)` for a return or group, and `(4, 106, 85, 13)` for the standard 95 px Mixer View strip. The approved Arrangement sheet draws Main in a 104 × 16 chooser at header x + 134. A grouped track still reads Group and an instrumentless MIDI track still reads No Output.
 
+### SC-71
+
+The spacing follows zoom down through 1/32. At 4.625 px per quarter the first 4/4 bar line stays x=18.5. At 48, 64 and 128 px per quarter the first sub-bar grid line moves from x=48, 64 and 128 to x=24, 16 and 16 respectively. The subdivisions are 1/8, 1/16 and 1/32. At 256 px per quarter a 1 × 3 px short ruler tick is at local `(32, 26)`. At x=64 the label tick is 1 × 5 px and the text box for `1.1.2` is `(68, 1, 60, 16)`. At this zoom the previous first line was x=256 and had no subdivision mark.
+
+In the Note Editor at 64 px per quarter, drawing at local x=34 changes the new note from x=0 with a 64 px width to x=32 with a 16 px width. Right moves x=32 to x=48. At 128 px per quarter quantize moves x=173 to x=176. The regression covers drawing, the arrow, quantize and Chop at the zoom-derived grid.
+
 ## For the director
 
 Confirm the Control Bar gesture rate and wheel feel in a real window when the window-driving session reaches the fields. Recommendation is to start with the implemented one step per wheel event and one per four logical px of drag.
 
 Does a stock Live 12 Set start with Follow lit? Recommendation is to retain Off until the window-driving session confirms the default.
+
+The separate MIDI SC-71 candidate opens with a fixed 1/16 grid. Recommendation is to retain Adaptive Medium for automatic zoom following until the Live reading settles the initial setting, and to land one implementation of the Note Editor marks.
