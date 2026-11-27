@@ -17,7 +17,7 @@ namespace adi::library {
 namespace {
 const std::string sectionTag = "ALIB";
 constexpr std::uint32_t sectionVersion = 2; // Adds measured integrated loudness.
-constexpr std::uint32_t configuration = 1; // Read-only TagLib metadata support.
+constexpr std::uint32_t configuration = 2; // Includes native AIFF title and author tags.
 constexpr std::size_t maximumTagBytes = 32768;
 constexpr std::uint32_t blockFrames = 4096;
 

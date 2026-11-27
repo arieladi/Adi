@@ -185,15 +185,34 @@ void rf64Tags(const std::filesystem::path& directory) {
     check(tags.tagBpm == 131.5 && tags.tagKey == SampleKey{10, true}, "RF64 ds64 data size reaches embedded tags after PCM");
 }
 
-void aiffTags(const std::filesystem::path& directory) {
+std::string aiffPcm() {
+    constexpr std::uint32_t frames = 88200;
     std::string form = "AIFF";
     std::string common;
     appendInteger(common, 1, 2, false);
-    appendInteger(common, 88200, 4, false);
+    appendInteger(common, frames, 4, false);
     appendInteger(common, 16, 2, false);
     appendInteger(common, 16398, 2, false);
     appendInteger(common, std::uint64_t{44100} << 48, 8, false);
     appendChunk(form, "COMM", common, false);
+    std::string sound(8, '\0'); // SSND offset and block size
+    sound.append("NAME\0\0\0\4fake", 12); // A chunk-shaped pattern inside PCM is still audio.
+    sound.resize(8 + 2 * frames, '\0');
+    appendChunk(form, "SSND", sound, false);
+    return form;
+}
+
+std::string aiffEnvelope(const std::string& form) {
+    std::string aiff = "FORM";
+    appendInteger(aiff, form.size(), 4, false);
+    return aiff + form;
+}
+
+void aiffTags(const std::filesystem::path& directory) {
+    auto form = aiffPcm();
+    appendChunk(form, "NAME", " Odd ", false);
+    appendChunk(form, "AUTH", "Élodie", false);
+    appendChunk(form, "NAME", "Élodie", false);
     std::string basc;
     appendInteger(basc, 1, 4, false);
     appendInteger(basc, 4, 4, false);
@@ -203,14 +222,48 @@ void aiffTags(const std::filesystem::path& directory) {
     appendInteger(basc, 4, 2, false);
     appendInteger(basc, 0, 2, false);
     appendChunk(form, "basc", basc, false);
-    std::string aiff = "FORM";
-    appendInteger(aiff, form.size(), 4, false);
-    aiff += form;
     const auto path = directory / "apple.aiff";
-    writeFixture(path, aiff);
+    writeFixture(path, aiffEnvelope(form));
     const auto tags = readSampleFileTags(path);
     check(tags.tagBpm == 120. && tags.tagKey == SampleKey{3, false} && tags.tagLoop == true,
           "Apple Loop declares musical beats, root, scale and type");
+    check(tags.tags == std::vector<std::string>{"Odd", "Élodie"},
+          "native NAME and AUTH trim, deduplicate, and cross odd padding after SSND");
+
+    appendChunk(form, "ID3 ", id3Fixture(), false);
+    const auto combinedBytes = aiffEnvelope(form);
+    writeFixture(path, combinedBytes);
+    const auto combined = readSampleFileTags(path);
+    check(combined.tagBpm == 131.5 && combined.tagKey == SampleKey{10, true} && combined.tagLoop == false &&
+              combined.rootNote == 63 && combined.tags == std::vector<std::string>{"Drums", "Odd", "Élodie"},
+          "embedded ID3 supplies primary fields and native text and basc root still contribute");
+    check(readFixture(path) == combinedBytes, "reading AIFF metadata preserves the complete file bytes");
+
+    auto bounded = aiffPcm();
+    appendChunk(bounded, "NAME", std::string(513, 'x'), false);
+    appendChunk(bounded, "AUTH", "bad\xc0\xaf", false);
+    appendChunk(bounded, "NAME", std::string("bad\0name", 8), false);
+    const std::string limit(512, 'v');
+    appendChunk(bounded, "AUTH", limit, false);
+    appendChunk(bounded, "NAME", "Later", false);
+    writeFixture(path, aiffEnvelope(bounded));
+    check(readSampleFileTags(path).tags == std::vector<std::string>{limit, "Later"},
+          "oversized and malformed native text is skipped and valid later chunks still parse");
+
+    auto malformed = aiffPcm();
+    appendChunk(malformed, "AUTH", "Valid", false);
+    auto overruns = malformed + "NAME";
+    appendInteger(overruns, 100, 4, false);
+    overruns += "partial";
+    writeFixture(path, aiffEnvelope(overruns));
+    check(readSampleFileTags(path).tags == std::vector<std::string>{"Valid"},
+          "a native text extent beyond FORM cannot turn truncated bytes into a tag");
+    malformed += "NAME";
+    appendInteger(malformed, 3, 4, false);
+    malformed += "Odd"; // The declared FORM ends before the mandatory pad byte.
+    writeFixture(path, aiffEnvelope(malformed));
+    check(readSampleFileTags(path).tags == std::vector<std::string>{"Valid"},
+          "an odd native chunk outside its padded FORM extent is rejected");
 }
 
 std::string vorbisFields() {

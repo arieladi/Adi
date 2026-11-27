@@ -17,6 +17,7 @@
 #include <mp4file.h>
 #include <mp4tag.h>
 #include <mpegfile.h>
+#include <riff/aiff/aifffile.h>
 #include <tbytevector.h>
 #include <tiostream.h>
 #include <tpropertymap.h>
@@ -257,11 +258,14 @@ void collectEmbeddedTags(TagLib::File& parsed, SampleFileTags& tags) {
     }
 }
 
-enum class EmbeddedFormat { Wave, Mp4, Generic };
+enum class EmbeddedFormat { Wave, Aiff, Mp4, Generic };
 
 void readEmbeddedTags(MetadataFile& file, SampleFileTags& tags, EmbeddedFormat format) {
     if (format == EmbeddedFormat::Wave) {
         TagLib::RIFF::WAV::File parsed(&file, false);
+        if (parsed.isValid() && !file.refused()) collectEmbeddedTags(parsed, tags);
+    } else if (format == EmbeddedFormat::Aiff) {
+        TagLib::RIFF::AIFF::File parsed(&file, false);
         if (parsed.isValid() && !file.refused()) collectEmbeddedTags(parsed, tags);
     } else if (format == EmbeddedFormat::Mp4) {
         TagLib::MP4::File parsed(&file, false);
@@ -323,20 +327,21 @@ bool readRiff(MetadataFile& file, std::uint32_t declaredSize, bool extended, Sam
     return embeddedTags;
 }
 
-void readAiff(MetadataFile& file, std::uint32_t declaredSize, SampleFileTags& tags, std::stop_token stop) {
+bool readAiff(MetadataFile& file, std::uint32_t declaredSize, SampleFileTags& tags, std::stop_token stop) {
     const auto boundary = static_cast<std::uint64_t>(declaredSize) + 8;
-    if (boundary > file.size) return;
+    if (boundary > file.size) return false;
     std::optional<double> duration;
     std::optional<double> beats;
-    SampleFileTags apple;
+    bool embeddedTags = false;
     std::array<unsigned char, 8> header{};
     for (std::uint64_t offset = 12, count = 0;
          offset <= boundary && boundary - offset >= 8 && count < maxChunks && !stop.stop_requested(); ++count) {
         if (!file.read(offset, header)) break;
         const auto name = text(Bytes(header).first(4));
         const auto size = integer(Bytes(header).subspan(4, 4), false);
+        const auto paddedSize = size + (size & 1u);
         offset += header.size();
-        if (size > boundary - offset) break;
+        if (paddedSize > boundary - offset) break;
         if (name == "COMM" && size >= 18) {
             std::array<unsigned char, 18> payload{};
             if (file.read(offset, payload)) {
@@ -357,20 +362,24 @@ void readAiff(MetadataFile& file, std::uint32_t declaredSize, SampleFileTags& ta
                 const auto denominator = integer(chunk.subspan(14, 2), false);
                 const auto type = integer(chunk.subspan(16, 2), false);
                 if (root < 128) {
-                    apple.rootNote = static_cast<std::uint8_t>(root);
-                    if (mode == 1 || mode == 2) apple.tagKey = SampleKey{static_cast<std::uint8_t>(root % 12), mode == 1};
+                    tags.rootNote = static_cast<std::uint8_t>(root);
+                    if (mode == 1 || mode == 2) tags.tagKey = SampleKey{static_cast<std::uint8_t>(root % 12), mode == 1};
                 }
-                if (type <= 1) apple.tagLoop = type == 0;
+                if (type <= 1) tags.tagLoop = type == 0;
                 if (denominator > 0)
                     beats = 4. * static_cast<double>(integer(chunk.subspan(4, 4), false)) / static_cast<double>(denominator);
             }
+        } else if ((name == "NAME" || name == "AUTH") && size > 0 && size <= maxTagBytes) {
+            std::array<unsigned char, maxTagBytes> payload{};
+            const auto textBytes = std::span(payload).first(static_cast<std::size_t>(size));
+            if (file.read(offset, textBytes)) addTag(tags, text(textBytes));
+        } else if (name == "ID3 " || name == "id3 ") {
+            embeddedTags = true;
         }
-        offset += size + (size & 1u);
+        offset += paddedSize;
     }
-    if (!tags.tagKey) tags.tagKey = apple.tagKey;
-    if (!tags.tagLoop) tags.tagLoop = apple.tagLoop;
-    if (!tags.rootNote) tags.rootNote = apple.rootNote;
-    if (!tags.tagBpm && beats && duration) tags.tagBpm = bpmInRange(60. * *beats / *duration);
+    if (beats && duration) tags.tagBpm = bpmInRange(60. * *beats / *duration);
+    return embeddedTags;
 }
 
 } // namespace
@@ -392,20 +401,29 @@ SampleFileTags readSampleFileTags(const std::filesystem::path& path, std::stop_t
 
     SampleFileTags tags;
     const bool wave = (format == "RIFF" || format == "RF64" || format == "BW64") && type == "WAVE";
-    const bool embedded = !wave || readRiff(file, static_cast<std::uint32_t>(integer(prefix.subspan(4, 4), true)),
-                                           format != "RIFF", tags, stop);
+    const bool aiff = format == "FORM" && (type == "AIFF" || type == "AIFC");
+    SampleFileTags nativeAiff;
+    bool embedded = true;
+    if (wave)
+        embedded = readRiff(file, static_cast<std::uint32_t>(integer(prefix.subspan(4, 4), true)),
+                            format != "RIFF", tags, stop);
+    else if (aiff)
+        embedded = readAiff(file, static_cast<std::uint32_t>(integer(prefix.subspan(4, 4), false)), nativeAiff, stop);
     if (embedded && !stop.stop_requested() &&
         file.size <= static_cast<std::uint64_t>(std::numeric_limits<TagLib::offset_t>::max())) {
         file.clear();
         // These containers already supplied a format signature. A generic
         // content probe is useful only for the other file families.
-        const auto knownFormat = wave ? EmbeddedFormat::Wave :
+        const auto knownFormat = wave ? EmbeddedFormat::Wave : aiff ? EmbeddedFormat::Aiff :
             (text(prefix.subspan(4, 4)) == "ftyp" ? EmbeddedFormat::Mp4 : EmbeddedFormat::Generic);
         readEmbeddedTags(file, tags, knownFormat);
     }
-    if (format == "FORM" && (type == "AIFF" || type == "AIFC")) {
-        file.clear();
-        readAiff(file, static_cast<std::uint32_t>(integer(prefix.subspan(4, 4), false)), tags, stop);
+    if (aiff) {
+        if (!tags.tagKey) tags.tagKey = nativeAiff.tagKey;
+        if (!tags.tagLoop) tags.tagLoop = nativeAiff.tagLoop;
+        if (!tags.rootNote) tags.rootNote = nativeAiff.rootNote;
+        if (!tags.tagBpm) tags.tagBpm = nativeAiff.tagBpm;
+        for (const auto& tag : nativeAiff.tags) addTag(tags, tag);
     }
     if (stop.stop_requested()) return {};
     return tags;
