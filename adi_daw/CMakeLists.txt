@@ -1154,6 +1154,21 @@ if(Python3_Interpreter_FOUND)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_plugin_fixture.py"
         "$<TARGET_FILE:adi_native_plugin_transport_tests>")
 
+    add_library(adi_native_host_clap_fixture MODULE tests/fixtures/native_host_clap.cpp)
+    target_include_directories(adi_native_host_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+    target_link_libraries(adi_native_host_clap_fixture PRIVATE adi_warnings)
+    set_target_properties(adi_native_host_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+
+    add_executable(adi_native_plugin_host_tests tests/test_native_plugin_host.cpp)
+    target_link_libraries(adi_native_plugin_host_tests PRIVATE adi_core adi_warnings)
+    add_dependencies(adi_native_plugin_host_tests adi_native_host_clap_fixture)
+    set_target_properties(adi_native_plugin_host_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_native_plugin_host_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_native_plugin_host.py"
+        "$<TARGET_FILE:adi_native_plugin_host_tests>" "$<TARGET_FILE:adi_native_host_clap_fixture>")
+    set_tests_properties(adi_native_plugin_host_tests PROPERTIES TIMEOUT 40)
+
     add_test(NAME adi_plugin_server_discovery_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_plugin_server_discovery.py"
         "$<TARGET_FILE:adi_plugin_server_catalogue_tests>")
