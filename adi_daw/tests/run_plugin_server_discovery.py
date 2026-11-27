@@ -59,6 +59,7 @@ def check_discovery(executable):
                     foreign.sendto(reply(service, b"WrongSource"), client)
                 good = reply(service, b"Loopback")
                 peer.sendto(good[:-1], client)
+                peer.sendto(good + bytes(10000), client)
                 peer.sendto(good, client)
                 peer.sendto(good, client)
                 if browse.wait(5) != 0:

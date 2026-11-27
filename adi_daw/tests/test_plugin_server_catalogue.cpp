@@ -121,7 +121,9 @@ void catalogue() {
     const auto djCache = adi::net::pluginServerCataloguePath(adi::appdata::App::DJ);
     require(dawCache.empty() || dawCache != djCache, "application caches must stay separate");
     Scratch scratch;
-    const adi::net::PluginServerCatalogue cache(scratch.path / "app" / "catalogue.sqlite");
+    const auto cacheDirectory = scratch.path / std::filesystem::path(u8"cache-\u05d0\u05d3\u05d9");
+    const auto database = cacheDirectory / "catalogue.sqlite";
+    const adi::net::PluginServerCatalogue cache(database);
     const adi::net::PluginCatalogueScope scope{
         "project-uuid", "trusted-server-key", {"192.168.1.12", 55056}};
     std::string error;
@@ -138,9 +140,12 @@ void catalogue() {
             {"clap", "org.example.test", "Example", "org.example.test", false},
             {"clap", "org.example.Test", "Example Uppercase", "org.example.Test", false}};
     };
+    const auto initial = cache.cached(scope.serverFingerprint, error);
+    require(initial && initial->empty() && !std::filesystem::exists(cacheDirectory),
+            "an offline read of a missing Unicode cache must not create it");
     require(!cache.refresh(scope, {}, fetch, error) && queries == 0 &&
-            !std::filesystem::exists(scratch.path / "app"), "missing grant prevents any contact or write");
-    require(!cache.refreshStock(scope, grant, {}, error) && !std::filesystem::exists(scratch.path / "app"),
+            !std::filesystem::exists(cacheDirectory), "missing grant prevents any contact or write");
+    require(!cache.refreshStock(scope, grant, {}, error) && !std::filesystem::exists(cacheDirectory),
             "missing full class ID resolver prevents any stock catalogue query");
     auto other = scope;
     other.projectUuid = "copied-project";
@@ -152,7 +157,7 @@ void catalogue() {
     other.serverFingerprint = "00112233445566778899aabbccddeeff";
     require(!cache.refresh(other, grant, fetch, error) && queries == 0, "advertised UUID cannot act as grant");
     require(cache.refresh(scope, grant, fetch, error) && queries == 1, "granted full catalogue refresh");
-    const adi::net::PluginServerCatalogue reopened(scratch.path / "app" / "catalogue.sqlite");
+    const adi::net::PluginServerCatalogue reopened(database);
     auto rows = reopened.cached(scope.serverFingerprint, error);
     require(rows && rows->size() == 3 && queries == 1, "offline catalogue reopens without a remote call");
     require((*rows)[0].uid == "org.example.Test" && (*rows)[1].uid == "org.example.test" &&
