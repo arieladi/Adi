@@ -15,9 +15,8 @@ namespace adi::ui {
 // snapshot fields), so the window reads them from the session's rows, `RecordStates` below, and the
 // app fills it once per frame. `tracks.monitor_mode` stores 0 Off, 1 In, 2 Auto.
 enum class Monitor : std::int64_t { Off = 0, In = 1, Auto = 2 };
-// A track the window has no rows for (outside the application) shows Live's default, Auto. A track's
-// own rows are always read as they stand: New's tracks and the window's new tracks are written Auto
-// (N67); a bare `track.create` still stores Off until the engine's default changes.
+// A track without record state in the window uses Auto as a display fallback. The application
+// reads the actual mode for every recording track from the project.
 struct TrackRecordState {
     bool armed = false;
     Monitor monitor = Monitor::Auto;
@@ -88,9 +87,7 @@ inline TrackEdit setMonitor(const SnapshotTracks &tracks, const RecordStates &st
     }
     return edit;
 }
-// The tracks a Record takes (manual 21.1: "all armed tracks"): the armed ones the snapshot still holds,
-// in its order, audio apart from MIDI, since the recorder takes audio and the engine's live MIDI input
-// is not on main yet.
+// The tracks Arrangement Record takes: the armed ones the snapshot still holds, in track order.
 struct ArmedTracks {
     std::vector<std::int64_t> audio, midi;
 };

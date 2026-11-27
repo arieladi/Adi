@@ -3,6 +3,7 @@
 // See param_ops.hpp. ADR-0124; the chunk snapshot is ADR-0142.
 
 #include "adi/engine/param_ops.hpp"
+#include "adi/audio/io_audit.hpp"
 
 #include "adi/engine/session.hpp"
 #include "adi/engine/session_runtime.hpp"
@@ -134,6 +135,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     std::size_t drain(std::int64_t, std::vector<OpRequest>&);
     std::size_t snapshot(std::int64_t, std::int64_t, std::vector<OpRequest>&);
     SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    std::optional<DevicePresetState> readDevicePresetState(std::int64_t, std::string&);
     std::vector<StateBlob> takeBlobs();
     bool writeBlobs(Store&, std::string&);
     bool applied(const Payload&, std::int64_t);
@@ -154,7 +156,8 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     std::size_t offerOne(std::vector<OpRequest>&);
     std::shared_ptr<Gesture> beginGesture(std::int64_t,const std::string&,ParameterImage,bool,bool unchanged=false,
                                           const std::string& pairedParameter={});
-    bool readImage(Attached&,ParameterImage&);
+    enum class ImagePurpose { Snapshot, Preset };
+    bool readImage(Attached&,ParameterImage&,ImagePurpose = ImagePurpose::Snapshot);
     std::vector<PendingParameterGesture> pendingGestures() const;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&,std::int64_t,bool);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&,std::int64_t,bool);
@@ -1756,6 +1759,72 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
     }
 }
 
+std::optional<ParamOps::DevicePresetState> ParamOps::Runtime::readDevicePresetState(std::int64_t id, std::string& error) {
+    error.clear();
+    const auto refuse = [&](const char* reason) -> std::optional<DevicePresetState> {
+        error = reason;
+        return std::nullopt;
+    };
+    if (audio::onAudioThread || snapshottingDevices_ || pumpingGestures_)
+        return refuse("Device preset capture needs an idle document owner.");
+    struct Reset { bool& flag; ~Reset() { flag = false; } };
+    snapshottingDevices_ = true;
+    const Reset reset{snapshottingDevices_};
+    try {
+        auto* session = replay_->session;
+        const auto source = replay_->source;
+        const auto sequence = source.sequence();
+        // Do not pump or commit queued device edits on behalf of a file save.
+        if (!session || replay_->life.expired() || !source.alive() || replay_->blocked ||
+            replay_->sequence != sequence || !replay_->pending.empty())
+            return refuse("Device updates are pending before preset capture.");
+        const auto found = devices_.find(id);
+        if (found == devices_.end())
+            return refuse("The device is not available for preset capture.");
+        auto& attached = found->second;
+        const auto token = attached.runtimeToken;
+        auto* instance = attached.inst;
+        const auto fence = attached.stateFence;
+        const auto capture = attached.capture;
+        if (!instance || !attached.active || attached.session != session || attached.sessionLife.expired() ||
+            !fence || !attached.fenceSource.sameConnection(source) || session->resolveDevice(token) != instance)
+            return refuse("The device is not available for preset capture.");
+        const auto pendingInput = [&] {
+            return attached.captureBlocked || capture->hasPendingEvents() || !instance->captureCallbacksQuiescent() ||
+                   instance->hasPendingParamChanges() || std::any_of(gestures_.begin(), gestures_.end(), [&](const auto& task) {
+                       return task->deviceId == id && !task->terminal();
+                   });
+        };
+        const auto epoch = instance->stateEpoch();
+        const auto marks = fence->watermarks();
+        const auto input = capture->stats();
+        if (epoch != attached.seenEpoch || marks.fault || marks.closed ||
+            marks.reserved != marks.consumed || input.dropped != attached.recoveredDrops || pendingInput())
+            return refuse("Finish the pending device edit before saving its preset.");
+        ParameterImage image;
+        if (!readImage(attached, image, ImagePurpose::Preset))
+            return refuse("The device did not return a complete preset state.");
+        if (replay_->life.expired() || !attached.active || session->resolveDevice(token) != instance)
+            return refuse("The device changed while its preset was being captured.");
+        for (const auto& [parameter, value] : image.parameters)
+            if (instance->getParam(parameter).normalized != value)
+                return refuse("The device changed while its preset was being captured.");
+        // Check for a callback that ran entirely during saveState(), as well
+        // as one that is still announcing or publishing input now.
+        const auto after = fence->watermarks();
+        const auto inputAfter = capture->stats();
+        if (!source.alive() || source.sequence() != sequence || !replay_->source.sameConnection(source) ||
+            replay_->life.expired() || !attached.active || session->resolveDevice(token) != instance ||
+            instance->stateEpoch() != epoch || after.reserved != marks.reserved || after.fault || after.closed ||
+            inputAfter.pushed != input.pushed || inputAfter.dropped != input.dropped || pendingInput())
+            return refuse("The device changed while its preset was being captured.");
+        return DevicePresetState{std::move(image.parameters), std::move(image.roles)};
+    } catch (const std::exception& exception) {
+        error = exception.what();
+        return std::nullopt;
+    }
+}
+
 std::size_t ParamOps::Runtime::snapshotOne(std::int64_t id, Attached& a, std::vector<OpRequest>& out,
                                   bool save) {
     std::size_t appended = 0;
@@ -2073,19 +2142,24 @@ bool ParamOps::Runtime::appliedStateBytes(const Payload& payload,std::span<const
     return true;
 }
 
-bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image) {
-    if(!attached.inst || attached.sessionLife.expired())return false;
-    ParameterImage copied=attached.committed;image=std::move(copied);image.token=attached.runtimeToken;
-    image.name=attached.name;image.format=attached.inst->identity().format;
-    image.parameters.clear();image.declarations.clear();image.roles.clear();
-    for(std::int32_t index=0;index<attached.inst->paramCount();++index) {
-        const auto* descriptor=attached.inst->paramAt(index);if(!descriptor)continue;
-        const auto value=attached.inst->getParam(descriptor->id).normalized;
+bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image,ImagePurpose purpose) {
+    auto* instance = attached.inst;
+    if(!instance || attached.sessionLife.expired())return false;
+    const auto deviceId = attached.committed.deviceId; // Some callers update this same image.
+    image = {};
+    image.deviceId=deviceId;image.token=attached.runtimeToken;
+    image.name=attached.name;image.format=instance->identity().format;
+    for(std::int32_t index=0;index<instance->paramCount();++index) {
+        const auto* descriptor=instance->paramAt(index);if(!descriptor)continue;
+        if (purpose == ImagePurpose::Preset &&
+            (descriptor->missing || (!descriptor->automatable && !descriptor->configurable))) continue;
+        const auto value=instance->getParam(descriptor->id).normalized;
         if(!std::isfinite(value) || value<0 || value>1)return false;
-        image.parameters.emplace(descriptor->id,value);image.declarations.emplace(descriptor->id,*descriptor);
+        image.parameters.emplace(descriptor->id,value);
+        if (purpose == ImagePurpose::Snapshot) image.declarations.emplace(descriptor->id,*descriptor);
     }
-    for(const auto& role:attached.inst->stateRoles()) {
-        const auto bytes=attached.inst->saveState(role);
+    for(const auto& role:instance->stateRoles()) {
+        const auto bytes=instance->saveState(role);
         if(bytes.empty())return false;
         const auto span=std::as_bytes(std::span(bytes));image.roles.emplace(role,std::vector<std::byte>(span.begin(),span.end()));
     }
@@ -2458,6 +2532,9 @@ const AppliedDeliveryStatus& ParamOps::appliedDeliveryStatus() const noexcept { 
 std::size_t ParamOps::drain(std::int64_t now,std::vector<OpRequest>& out) { return runtime_->drain(now,out); }
 std::size_t ParamOps::snapshot(std::int64_t id,std::int64_t now,std::vector<OpRequest>& out) { return runtime_->snapshot(id,now,out); }
 ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now) { return runtime_->snapshotAll(now); }
+std::optional<ParamOps::DevicePresetState> ParamOps::readDevicePresetState(std::int64_t id, std::string& error) {
+    return runtime_->readDevicePresetState(id, error);
+}
 std::vector<StateBlob> ParamOps::takeBlobs() { return runtime_->takeBlobs(); }
 bool ParamOps::writeBlobs(Store& store,std::string& error) { return runtime_->writeBlobs(store,error); }
 bool ParamOps::applied(const Payload& payload,std::int64_t now) { return runtime_->applied(payload,now); }

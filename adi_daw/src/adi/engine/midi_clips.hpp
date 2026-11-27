@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/engine/midi_monitoring.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/store_rows.hpp"
+#include <cstdint>
 #include <memory>
+#include <span>
 namespace adi::engine {
 // Message-thread registry; its per-track note state is used ONLY by the audio
 // consumer. Shared by successive immutable source generations, never copied
@@ -13,6 +16,10 @@ namespace adi::engine {
 // not release/retrigger them. Missing/ambiguous identities use release/chase.
 struct MidiClipState;
 struct NoteExpressionsRead;
+struct MidiNoteActivity {
+    std::uint32_t onsets = 0;
+    bool held = false;
+};
 std::shared_ptr<MidiClipState> makeMidiClipState();
 class MidiClips {
 public:
@@ -21,9 +28,15 @@ public:
     MidiClips(const rows::Model&, Transport&, double rate, std::shared_ptr<MidiClipState>,
               const DeviceChainFn& eventPathFor = {});
     MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
-              const DeviceChainFn& eventPathFor,const NoteExpressionsRead&);
+              const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,bool honorMonitoring=false);
     ~MidiClips();
     std::vector<Node*> sourcesFor(std::int64_t track);
+    // Owned by this generation. Includes empty clips and uses the same sample
+    // boundaries as the note scheduler. Overlapping or touching spans merge.
+    [[nodiscard]] std::span<const MidiMonitorRange> monitorRanges(std::int64_t track) const noexcept;
+    // Owner-thread read of the source's last rendered note activity. The onset counter
+    // lets a meter show a note that began and ended between two frames.
+    [[nodiscard]] MidiNoteActivity noteActivity(std::int64_t track) const noexcept;
     const std::vector<std::string>& problems() const noexcept;
     std::uint32_t droppedNotes() const noexcept;
     std::uint64_t droppedControllers() const noexcept;

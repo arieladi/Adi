@@ -271,7 +271,8 @@ int MpeRouter::allocate() noexcept {
 }
 
 void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::int32_t frame,
-                        std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent) noexcept {
+                        std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent,
+                        double bendRange) noexcept {
     MpeOut o;
     o.kind = MpeOut::Kind::Control;
     o.channel = chan;
@@ -285,7 +286,7 @@ void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::in
         // `v` is semitones. The parameter gets the UNROUNDED word over 16383
         // -- the scale JUCE's own host uses, which its client decodes back to
         // the same word -- and the wire gets the rounded one.
-        const double x = semitonesToBendExact(v, kMpeOutBendSemitones);
+        const double x = semitonesToBendExact(v, bendRange);
         o.word = static_cast<std::uint16_t>(std::lround(x));
         o.value = x / 16383.0;
         o.paramId = caps_.bendParam[c];
@@ -447,6 +448,23 @@ void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     auto drop = [&]() noexcept {
         if (di < dropped_.size()) ++dropped_[di]; else ++droppedOther_;
     };
+
+    // SC-312: an expression for the whole channel (note 0: the pitch wheel, channel pressure, CC74 as
+    // ADI's MIDI input makes them) is the channel's own message on EVERY route, as Live sends it: a VST3
+    // takes it through its MIDI map, a CLAP as MIDI. Note expression for note 0 is ignored by synths, and
+    // the MIDI routes knew no note 0 and dropped it. On channel 0, where ADR-0054 puts every note.
+    if (e.noteId == 0) {
+        switch (d) {
+            case ExpressionDim::Pitch:
+                control(0, kCtrlPitchBend, e.value, e.frame, 0, out, false, kChannelBendSemitones); return;
+            case ExpressionDim::Pressure:
+                control(0, kCtrlAfterTouch, e.value, e.frame, 0, out); return;
+            case ExpressionDim::Timbre:
+                control(0, kCtrlTimbre, e.value, e.frame, 0, out); return;
+            default:
+                drop(); return;
+        }
+    }
 
     if (route_ == ExpressionRoute::NoteExpression) {
         // Anchored by note id, so no channel or key is needed and the note
