@@ -41,7 +41,7 @@ The basics-edit session has claimed the Arrangement edit queue. The item branche
 
 - The edit guest uses `D:\adi-basics-edit-linux\ubuntu-repaired.qcow2`. The active image file is 1.16 GiB. Its backing files `ubuntu-pc.qcow2` and `noble-base.img` are in the same D: folder. The three image files total 4.52 GiB.
 - C: had **15.82 GiB free** (16,987,402,240 bytes) on 27 November 2026 at 18:18 Israel time.
-- New build trees, caches and downloads go on D:. The edit session prepared `D:\bax-edit`, `D:\adi-edit-build-cache` and `D:\adi-edit-downloads` for that work.
+- New build trees, caches and downloads go on D:. The fresh SC-179 configuration uses `D:\bax-edit` and the pinned toolchain and caches in `D:\adi-edit-build-cache`. New downloads go to `D:\adi-edit-downloads`.
 
 ## For the director
 
