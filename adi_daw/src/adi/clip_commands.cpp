@@ -339,22 +339,39 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
 void expectedHead(Store& store,PreparedEdit& result) {result.options.expectHead.emplace(OpJournal(store).headSeq());}
 }
 ClipCopy copyClip(Store& store,std::int64_t id,double referenceRate) {
+    return copyClip(store,id,edit_plan::Options{referenceRate,{}});
+}
+ClipCopy copyClip(Store& store,std::int64_t id,const edit_plan::Options& options) {
+    const auto referenceRate=options.referenceRate;
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
         result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
-        edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);result.ok=true;
+        edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);
+        const auto& row=result.image.at("row");
+        if(options.policy.automationFollowsClips && row.at("lane_id").is_null()) {
+            const auto base=static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first=detail::signedInteger(row.at(base==0?"pos_ticks":"pos_ns"));
+            const auto& length=row.at(base==0?"length_ticks":"length_ns");
+            if(!length.is_null() && detail::signedInteger(length)>0)
+                result.envelopes=edit::copyAutomationMaterial(store,time,detail::signedInteger(row.at("track_id")),
+                    {base,first},{base,edit::addTime(first,detail::signedInteger(length))},referenceRate);
+        }
+        result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
 ClipCut prepareCutClip(Store& store,std::int64_t id,double referenceRate) {
+    return prepareCutClip(store,id,edit_plan::Options{referenceRate,{}});
+}
+ClipCut prepareCutClip(Store& store,std::int64_t id,const edit_plan::Options& options) {
     ClipCut result;
     try {
-        Read read(store.db());expectedHead(store,result.edit);result.copy=copyClip(store,id,referenceRate);
+        Read read(store.db());result.copy=copyClip(store,id,options);
         if(!result.copy.ok)throw std::runtime_error(result.copy.error);
-        result.edit.sourceFile=result.copy.sourceFile;
-        OpRequest request;request.opType="clip.delete";request.payload={{"id",id}};request.label="Cut Clip";
-        request.targetKind="clip";request.targetId=id;result.edit.requests.push_back(std::move(request));result.edit.ok=true;
+        const std::array clips{id};
+        result.edit=edit_plan::prepareDelete(store,clips,options);
+        for(auto& request:result.edit.requests)request.label="Cut Clip";
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
@@ -383,6 +400,7 @@ PreparedEdit preparePaste(Store& store,const ClipCopy& copy,std::int64_t newId,s
         if(end==begin)end=edit::addTime(end,1);
         auto scope=edit_plan::materialScope(tracks,base==0?edit_plan::PlacementClock::Ticks:edit_plan::PlacementClock::Nanoseconds,{begin,end});
         edit_plan::detail::PlacementBatch batch;batch.incoming.push_back(std::move(image));batch.sourceTracks.push_back(sourceTrack);
+        if(!copy.envelopes.is_null())batch.envelopes.push_back({track,{base,first},{base,last},copy.envelopes});
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Clip");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -394,7 +412,7 @@ PreparedEdit prepareDuplicate(Store& store,std::int64_t sourceId,std::int64_t ne
     // Both reads share one snapshot; no second writer can change material
     // between capturing the copy and capturing the expected undo head.
     try {
-        Read read(store.db());auto copy=copyClip(store,sourceId,options.referenceRate);
+        Read read(store.db());auto copy=copyClip(store,sourceId,options);
         auto result=preparePaste(store,copy,newId,track,point,options);
         if(result.ok && !result.requests.empty())result.requests[0].label="Duplicate Clip";
         return result;
@@ -411,7 +429,7 @@ PreparedEdit prepareDuplicates(Store& store,std::span<const ClipPlacement> place
         std::set<std::int64_t> tracks;auto begin=std::numeric_limits<std::int64_t>::max();std::int64_t end=0;
         edit_plan::detail::PlacementBatch batch;
         for(const auto& place:places) {
-            const auto copy=copyClip(store,place.sourceId,options.referenceRate);
+            const auto copy=copyClip(store,place.sourceId,options);
             if(!copy.ok)throw std::runtime_error(copy.error);
             verifyMediaKeys(store,copy.image);
             auto image=cloneImage(copy.image,place.newId,ids);
@@ -426,6 +444,11 @@ PreparedEdit prepareDuplicates(Store& store,std::span<const ClipPlacement> place
             const auto sourceTrack=detail::signedInteger(copy.image.at("row").at("track_id"));
             tracks.insert(place.track);
             if(sourceTrack!=place.track && detail::captureRow(store.db(),"tracks","id",sourceTrack))tracks.insert(sourceTrack);
+            const auto& row=image.at("row");
+            const auto base=static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first=detail::signedInteger(row.at(base==0?"pos_ticks":"pos_ns"));
+            const auto last=edit::addTime(first,detail::signedInteger(row.at(base==0?"length_ticks":"length_ns")));
+            if(!copy.envelopes.is_null())batch.envelopes.push_back({place.track,{base,first},{base,last},copy.envelopes});
             batch.sourceTracks.push_back(sourceTrack);batch.incoming.push_back(std::move(image));
         }
         const std::vector<std::int64_t> literals(tracks.begin(),tracks.end());
@@ -756,7 +779,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 
 namespace {
 RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
-                        std::span<const std::int64_t> selectedClips={},bool rejectLinked=false) {
+                        std::span<const std::int64_t> selectedClips={},bool captureAutomation=false,bool move=false) {
     RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
@@ -777,7 +800,7 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(result.clearsRange && last<=begin)continue;
                 auto image=captureDeleted(context,id);
-                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
+                if(move && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
                     throw std::runtime_error("Moving a time selection with linked clips is not supported.");
                 captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
@@ -785,39 +808,45 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 if(result.clearsRange && last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
                 image["row"][position]=detail::signedInteger(image.at("row").at(position))-begin;
                 image["trackIndex"]=track;result.images.push_back(std::move(image));
+                if(!result.clearsRange && captureAutomation)
+                    result.envelopes.push_back(edit::copyAutomationMaterial(store,time,selection.tracks[track],
+                        {base,first},{base,last},referenceRate));
             }
         }
         if(!result.clearsRange && result.images.size()!=selectedClips.size())
             throw std::runtime_error("A selected clip is no longer in the Arrangement.");
+        if(result.clearsRange && captureAutomation && (!move || !result.images.empty()))
+            for(const auto track:selection.tracks)
+                result.envelopes.push_back(edit::copyAutomationMaterial(store,time,track,
+                    selection.begin,selection.end,referenceRate));
         result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
 } // namespace
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
-    return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
+    return copyRange(store,selection,edit_plan::Options{referenceRate,{}});
+}
+RangeCopy copyRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
+    return copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{},
+                         options.policy.automationFollowsClips);
 }
 RangeCopy copySelectedClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
-                            double referenceRate) {
+                            const edit_plan::Options& options) {
     if(clips.empty()) {
         RangeCopy result;result.error="Select clips to copy.";return result;
     }
-    return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane,clips);
+    return copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,clips,
+                         options.policy.automationFollowsClips);
 }
 RangeCut prepareCutClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
-                         double referenceRate) {
+                         const edit_plan::Options& options) {
     RangeCut result;
     try {
-        Read read(store.db());expectedHead(store,result.edit);
-        result.copy=copySelectedClips(store,selection,clips,referenceRate);
+        Read read(store.db());result.copy=copySelectedClips(store,selection,clips,options);
         if(!result.copy.ok)throw std::runtime_error(result.copy.error);
-        result.edit.sourceFile=result.copy.sourceFile;
-        for(const auto id:clips) {
-            OpRequest request;request.opType="clip.delete";request.payload={{"id",id}};request.label="Cut Clips";
-            request.targetKind="clip";request.targetId=id;
-            result.edit.requests.push_back(std::move(request));
-        }
-        result.edit.ok=true;
+        result.edit=edit_plan::prepareDelete(store,clips,options);
+        for(auto& request:result.edit.requests)request.label="Cut Clips";
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
@@ -827,7 +856,7 @@ RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double ref
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     RangeCut result;
     try {
-        Read read(store.db());result.copy=copyRange(store,selection,options.referenceRate);
+        Read read(store.db());result.copy=copyRange(store,selection,options);
         if(!result.copy.ok)throw std::runtime_error(result.copy.error);
         result.edit=prepareDeleteRange(store,selection,options);
         for(auto& request:result.edit.requests)request.label="Cut Material";
@@ -844,7 +873,11 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,con
         const auto clock=selection.begin.base==0?edit_plan::PlacementClock::Ticks:edit_plan::PlacementClock::Nanoseconds;
         const auto scope=edit_plan::materialScope(selection.tracks,clock,{selection.begin.value,selection.end.value});
         edit_plan::detail::PlacementBatch batch;
-        for(const auto& lane:scope.targets)batch.clear.push_back({lane,scope.bounds});
+        for(const auto& lane:scope.targets) {
+            batch.clear.push_back({lane,scope.bounds});
+            if(options.policy.automationFollowsClips)
+                batch.envelopes.push_back({lane.track,selection.begin,selection.end,Payload::array()});
+        }
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Delete Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -1027,6 +1060,7 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     PreparedEdit result;
     try {
         if(!copy.ok)throw std::runtime_error(copy.error);
+        if(!copy.clearsRange)throw std::runtime_error("The selected clips have no time to paste.");
         validRange(copy.selection);validRate(referenceRate);Read read(store.db());expectedHead(store,result);
         if(copy.sourceFile!=filename(store))throw std::runtime_error("range clipboard belongs to a different project");
         if(tracks.size()!=copy.selection.tracks.size())throw std::runtime_error("paste needs one destination for each copied track");
@@ -1092,12 +1126,22 @@ PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std:
         // its physical duration when pasted into a faster musical selection;
         // admit and clear that entire image as well as the clipboard's gaps.
         auto scopeBegin=std::min(beginNs,sourceBeginNs),scopeEnd=std::max(endNs,sourceEndNs);
-        if(copy.clearsRange)
-            for(const auto track:tracks)batch.clear.push_back({{track,std::nullopt},{beginNs,endNs}});
         if(move)
-            for(const auto track:copy.selection.tracks)batch.clear.push_back({{track,std::nullopt},{sourceBeginNs,sourceEndNs}});
+            for(const auto track:copy.selection.tracks) {
+                batch.clear.push_back({{track,std::nullopt},{sourceBeginNs,sourceEndNs}});
+                if(options.policy.automationFollowsClips)
+                    batch.envelopes.push_back({track,copy.selection.begin,copy.selection.end,Payload::array()});
+            }
+        // Clear source envelopes before placing destinations, which may overlap them.
+        if(copy.clearsRange)
+            for(std::size_t i=0;i<tracks.size();++i) {
+                batch.clear.push_back({{tracks[i],std::nullopt},{beginNs,endNs}});
+                if(i<copy.envelopes.size())
+                    batch.envelopes.push_back({tracks[i],{base,begin},{base,end},copy.envelopes[i]});
+            }
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
-        for(const auto& original:copy.images) {
+        for(std::size_t i=0;i<copy.images.size();++i) {
+            const auto& original=copy.images[i];
             verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
             const auto index=original.at("trackIndex").get<std::size_t>();
             if(index>=tracks.size())throw std::runtime_error("clipboard track offset is invalid");
@@ -1111,6 +1155,8 @@ PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std:
             if(!copy.clearsRange) {
                 scopeTracks.insert(tracks[index]);
                 batch.sourceTracks.push_back(copy.selection.tracks[index]);
+                if(i<copy.envelopes.size())
+                    batch.envelopes.push_back({tracks[index],{native,first},{native,last},copy.envelopes[i]});
             }
             row["track_id"]=tracks[index];row["lane_id"]=nullptr;batch.incoming.push_back(std::move(image));
         }
@@ -1133,7 +1179,8 @@ PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimeP
         validRange(selection);validRate(options.referenceRate);Read read(store.db());
         edit::TimeMap time(store.db());
         if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
-            const auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{},true);
+            const auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{},
+                                         options.policy.automationFollowsClips,/*move=*/true);
             if(!copy.ok)throw std::runtime_error(copy.error);
             if(!copy.images.empty())return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
         }
@@ -1143,7 +1190,7 @@ PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimeP
 }
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     try {
-        Read read(store.db());const auto copy=copyRange(store,selection,options.referenceRate);
+        Read read(store.db());const auto copy=copyRange(store,selection,options);
         auto result=preparePasteRange(store,copy,selection.tracks,selection.end,options);
         if(result.ok && !result.requests.empty())result.requests[0].label="Duplicate Material";
         return result;
@@ -1152,7 +1199,7 @@ PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,double referenceRate,bool insertTime) {
     if(!insertTime)return prepareDuplicateRange(store,selection,edit_plan::Options{referenceRate,{}});
     try {
-        Read read(store.db());const auto copy=copyRange(store,selection,referenceRate);
+        Read read(store.db());const auto copy=copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
         auto result=preparePasteRange(store,copy,selection.tracks,selection.end,referenceRate,insertTime);
         if(result.ok && !result.requests.empty())result.requests[0].label=insertTime?"Duplicate Time":"Duplicate Material";
         return result;

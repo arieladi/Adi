@@ -459,8 +459,65 @@ class KeyHalfGain final : public device::DeviceInstance {
     const device::DeviceIdentity identity_{"internal", uid, "Key Half Gain", "", ""};
 };
 
+using RefuseStateStreams = void (*)(unsigned);
+constexpr unsigned componentStream = 1, controllerStream = 2;
+
+void stateCaptureContract(device::Vst3Host &host, const juce::PluginDescription &description,
+                          RefuseStateStreams refuseStreams) {
+    const auto make = [&] {
+        std::string error;
+        auto adapter = host.makeDevice(description, 48000., 32, error);
+        if (!adapter) throw std::runtime_error(error);
+        return adapter;
+    };
+    const auto capture = [refuseStreams](device::DeviceInstance &adapter, unsigned refused) {
+        refuseStreams(refused);
+        auto bytes = adapter.saveState("chunk");
+        refuseStreams(0);
+        return bytes;
+    };
+    const auto hasStreams = [](const std::vector<std::uint8_t> &bytes, unsigned expected) {
+        const auto xml = juce::AudioProcessor::getXmlFromBinary(bytes.data(), static_cast<int>(bytes.size()));
+        return xml && xml->hasTagName("VST3PluginState") &&
+               (xml->getChildByName("IComponent") != nullptr) == ((expected & componentStream) != 0) &&
+               (xml->getChildByName("IEditController") != nullptr) == ((expected & controllerStream) != 0);
+    };
+    const auto roundTrips = [&](const std::vector<std::uint8_t> &bytes, unsigned refused) {
+        auto reopened = make();
+        return !bytes.empty() && reopened->loadState("chunk", bytes) && capture(*reopened, refused) == bytes;
+    };
+    auto adapter = make();
+    const auto baseline = capture(*adapter, 0);
+    check(hasStreams(baseline, componentStream | controllerStream),
+          "SC-430: the native fixture hands over both VST3 streams");
+    check(capture(*adapter, componentStream | controllerStream).empty(),
+          "SC-430: the JUCE wrapper alone does not make a refused VST3 state readable");
+    check(capture(*adapter, componentStream).empty(),
+          "SC-430: losing a previously captured component stream fails capture");
+    check(capture(*adapter, controllerStream).empty(),
+          "SC-430: losing a previously captured controller stream fails capture");
+    check(!baseline.empty() && capture(*adapter, 0) == baseline,
+          "SC-430: a healthy retry returns both intact VST3 streams");
+
+    auto stateless = make();
+    check(hasStreams(capture(*stateless, componentStream | controllerStream), 0),
+          "SC-430: a VST3 that has never provided either stream saves an empty wrapper");
+    auto component = make();
+    const auto componentOnly = capture(*component, controllerStream);
+    check(hasStreams(componentOnly, componentStream),
+          "SC-430: a VST3 that has never provided controller state still saves its component");
+    check(roundTrips(componentOnly, controllerStream),
+          "SC-430: reopening a saved component-only VST3 still permits its optional controller stream");
+    auto controller = make();
+    const auto controllerOnly = capture(*controller, componentStream);
+    check(hasStreams(controllerOnly, controllerStream),
+          "SC-430: a VST3 that has never provided component state still saves its controller");
+    check(roundTrips(controllerOnly, componentStream),
+          "SC-430: reopening a saved controller-only VST3 still permits its optional component stream");
+}
+
 void documentContract(device::Vst3Host &host, const juce::PluginDescription &description,
-                      const KeyProbe &keyProbe) {
+                      const KeyProbe &keyProbe, RefuseStateStreams refuseStreams) {
     constexpr std::int64_t keyTrack = 2, programmeTrack = 3, recipientId = 30;
     constexpr std::int32_t frames = 256;
     const auto identity = device::identityOf(description);
@@ -582,6 +639,15 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
 
     check(document->ops().undo().ok && document->synchronise() && routed(*document, "pre_fx"),
           "leave the authored route for a clean reopen");
+    const auto chunkHash = [](ui::ProjectDocument &project) {
+        const auto &states = project.session().model().pluginState;
+        const auto chunk = std::find_if(states.begin(), states.end(), [](const auto &state) {
+            return state.deviceId == recipientId && state.role == "chunk";
+        });
+        return chunk == states.end() ? std::string{} : chunk->hash;
+    };
+    check(document->takeSnapshot("Healthy VST3", 1000, 0).ok, "SC-430: save the native VST3 baseline");
+    const auto savedHash = chunkHash(*document);
     document->release();
     document.reset();
     auto reopened = ui::ProjectDocument::open(file, false, loader, error);
@@ -589,6 +655,12 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
     check(routed(*reopened, "pre_fx") && prepare(*reopened), "the reopened project reads the stored route");
     (void)render(*reopened);
     check(keyProbe.stereoKey(.5, .75), "first reopened audio callback hears the stored pre-FX key without a new edit");
+    refuseStreams(controllerStream);
+    const auto staleSnapshot = reopened->takeSnapshot("VST3 controller refused", 1001, 0);
+    refuseStreams(0);
+    check(staleSnapshot.ok && !savedHash.empty() && chunkHash(*reopened) == savedHash &&
+              reopened->pluginStateWarning().find("Dormant auxiliary") != std::string::npos,
+          "SC-430: Take Snapshot names the reopened VST3 and retains its last saved chunk after a refusal");
     reopened->release();
 }
 
@@ -622,10 +694,11 @@ void contract() {
     const auto readLegacyMidi = reinterpret_cast<ReadLegacyMidi>(module.getFunction("adiFixtureReadLegacyMidi"));
     const auto mappedMemberBend = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureMappedMemberBend"));
     const auto readNoteWire = reinterpret_cast<ReadNoteWire>(module.getFunction("adiFixtureReadNoteWire"));
+    const auto refuseStreams = reinterpret_cast<RefuseStateStreams>(module.getFunction("adiFixtureRefuseStateStreams"));
     auto auxiliaryBuffersValid = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliaryBuffersValid"));
     auto auxiliarySinkSilent = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliarySinkSilent"));
     if (!first || !last || !channels || !inPlace || !auxiliaryBuffersValid || !auxiliarySinkSilent ||
-        !completedProcessCalls || !readLegacyMidi || !mappedMemberBend || !readNoteWire)
+        !completedProcessCalls || !readLegacyMidi || !mappedMemberBend || !readNoteWire || !refuseStreams)
         throw std::runtime_error("owned fixture observations unavailable");
     const auto types = list.getTypes();
     const auto expression = std::find_if(types.begin(), types.end(),
@@ -634,6 +707,7 @@ void contract() {
         [](const auto& desc) { return desc.name == "ADI Test MPE"; });
     if (expression == types.end() || mapped == types.end())
         throw std::runtime_error("owned VST3 expression fixture not discovered");
+    stateCaptureContract(host, *expression, refuseStreams);
     mpeWire(host, *expression, *mapped, readLegacyMidi, mappedMemberBend);
     mpeSwitchReleases(host, *mapped, readNoteWire);
     expressionBlock(host, *expression, completedProcessCalls);
@@ -781,7 +855,7 @@ void contract() {
         return description.name == "ADI Test NoteExpr";
     });
     if (stereo == descriptions.end()) throw std::runtime_error("Owned stereo auxiliary fixture unavailable");
-    documentContract(host, *stereo, {first, last, channels, inPlace});
+    documentContract(host, *stereo, {first, last, channels, inPlace}, refuseStreams);
 }
 } // namespace
 int main() {
