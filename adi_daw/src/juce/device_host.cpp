@@ -91,6 +91,18 @@ bool DeviceHost::publishDeviceKeys(const rows::Model& model, std::function<const
     return true;
 }
 
+bool DeviceHost::publishSources(const rows::Model& model, engine::SourceFn sources) {
+    spec_.sourcesFor.swap(sources);
+    try {
+        if (rebuildModel(model, engine::NodePreparePolicy::PreservePrepared)) return true;
+    } catch (...) {
+        spec_.sourcesFor.swap(sources);
+        throw;
+    }
+    spec_.sourcesFor.swap(sources);
+    return false;
+}
+
 bool DeviceHost::rebuildModel(const rows::Model& model, engine::NodePreparePolicy preparation) {
     lastError_.clear();
     if (!host_) { lastError_ = "no host attached"; return false; }

@@ -276,6 +276,12 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                 why += "; " + problem;
             throw std::runtime_error(why);
         }
+        if (!session.clips()->waitForWarp(control.stop)) {
+            cancellation(control);
+            std::string why = "freeze Warp preparation failed";
+            for (const auto &problem : session.clips()->decodeProblems()) why += "; " + problem;
+            throw std::runtime_error(why);
+        }
         auto *graph = session.graph().currentGraph();
         if (!graph)
             throw std::runtime_error("freeze has no prepared graph");
@@ -413,8 +419,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         };
         for (std::int64_t at = 0; at < lastFrame;) {
             service();
-            if (!session.clips()->prime())
+            if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
+                cancellation(control);
                 throw std::runtime_error("freeze clip read timed out");
+            }
             const auto frames =
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;
