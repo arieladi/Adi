@@ -979,7 +979,7 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
         a.capture->retainFence(a.parameterFence);
         a.runtimeToken=session->deviceRuntimeToken(deviceId);
         a.committed.deviceId=deviceId;a.committed.token=a.runtimeToken;
-        if(!readImage(a,a.committed)) {
+        if(!readImage(a,a.committed) && inst.stateCaptureIssue().empty()) {
             a.active=false;replay_->invalidate("initial device image is incomplete");return false;
         }
         auto binding=std::make_shared<device::DeviceCaptureBinding>();

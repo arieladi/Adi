@@ -1133,6 +1133,20 @@ void testSnapshotAll() {
           stale.staleDevices[0].deviceId == 100 && stale.staleDevices[0].name == "Sampler A" &&
           stale.staleDevices[0].issue == "remote Sampler state is stale",
           "a named remote capture failure keeps its old blob while another device saves");
+
+    Session reopened;
+    const auto initiallyStale = [](const DeviceRequest& request, std::string&)
+        -> std::unique_ptr<device::DeviceInstance> {
+        auto sampler = std::make_unique<Sampler>();
+        sampler->refuseSave = sampler->staleWhenRefused = request.device->id == 100;
+        return sampler;
+    };
+    ParamOps afterReopen;
+    check(reopened.load(*store, initiallyStale, SessionSpec{}) && afterReopen.attachSession(reopened) == 2,
+          "a device whose state is already stale does not prevent a fresh session from attaching");
+    const auto reopenedSave = afterReopen.snapshotAll(2100);
+    check(reopenedSave.ok() && reopenedSave.staleDevices.size() == 1 && rowHash(100) == lastRemoteState,
+          "a reopened session can save while still preserving the stale state");
 }
 
 }  // namespace
