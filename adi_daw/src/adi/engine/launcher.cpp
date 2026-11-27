@@ -105,6 +105,18 @@ std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept 
     return position;
 }
 
+std::int64_t launchSourceTick(const LaunchSlot& target, const LaunchSlot* previous,
+                             std::int64_t previousSourceTick) noexcept {
+    auto position = target.startTick;
+    if (previous && target.legato && previous->clip != target.clip) {
+        const auto previousPosition = wrapSource(*previous,previousSourceTick);
+        position = legatoUsesPreviousClipRelativePosition
+            ? add(target.startTick,std::max<std::int64_t>(0,previousPosition - previous->startTick)) : previousPosition;
+    }
+    position = wrapSource(target,position);
+    return position < sourceEnd(target) ? position : target.startTick;
+}
+
 bool validRegion(const LaunchClipRegion& region) noexcept {
     return region.start >= 0 && region.end > region.start &&
         (!region.loop || (region.loop->begin >= region.start && region.loop->end > region.loop->begin &&
@@ -492,16 +504,9 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     track.run.arrangement = pending.action == Action::Arrangement;
     if (pending.action == Action::Start) {
         track.stopSuppressesFollow = false;
-        auto position = target->startTick;
         LaunchSlot oldGeometry;
         const auto* oldSlot = effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry);
-        if (oldSlot && target->legato && previous.clip != target->clip) {
-            const auto oldPosition = wrapSource(*oldSlot,previous.sourceTick);
-            position = legatoUsesPreviousClipRelativePosition
-                ? add(target->startTick,std::max<std::int64_t>(0,oldPosition - oldSlot->startTick)) : oldPosition;
-        }
-        position = wrapSource(*target,position);
-        if (position >= sourceEnd(*target)) position = target->startTick;
+        const auto position = launchSourceTick(*target,oldSlot,previous.sourceTick);
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
         if (pending.repeat) {
@@ -911,6 +916,43 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
     return true;
 }
 
+std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track, const Pending& pending,
+    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block) const noexcept {
+    const auto& run = track.run;
+    if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
+    const auto physicalSample = [&](const Pending& event) {
+        return std::max(event.earliestSample,block.sampleAtTick(block.clock,event.tick));
+    };
+    const auto dueSample = physicalSample(pending);
+    // Reinspect after any queued event that could replace or move the source.
+    for (auto* event : {&track.back,&track.gateStop,&track.follow,&track.repeat,&track.sceneFollow,&track.dueScene}) {
+        if (*event && physicalSample(**event) <= dueSample) return {};
+    }
+    if (track.regionEdit && (track.regionEdit->edit.rate == ClipUpdateRate::None
+        ? track.regionEdit->boundary.sample : block.sampleAtTick(block.clock,track.regionEdit->boundary.tick)) <= dueSample)
+        return {};
+
+    const auto dueTick = block.sampleAtTick(block.clock,pending.tick) == dueSample
+        ? pending.tick : atSample(block,dueSample);
+    const auto end = sourceEnd(*current);
+    const auto firstEndTick = add(run.anchorTick,std::max<std::int64_t>(0,end - run.anchorSourceTick));
+    const auto firstEndSample = block.sampleAtTick(block.clock,firstEndTick);
+    const auto sourceAtDue = add(run.anchorSourceTick,std::max<std::int64_t>(0,dueTick - run.anchorTick));
+    if (!loops(*current)) {
+        if (firstEndSample < dueSample) return {};
+        return launchSourceTick(target,current,firstEndSample == dueSample ? end : std::min(end,sourceAtDue));
+    }
+
+    // A rounded source wrap and a later grid tick can occupy the same physical
+    // sample. Render takes the wrapped phase on that sample.
+    const auto length = current->loopEndTick - current->loopStartTick;
+    const auto wrap = dueTick <= firstEndTick ? firstEndTick : dueTick - (dueTick - firstEndTick) % length;
+    const auto wrapSample = block.sampleAtTick(block.clock,wrap);
+    const auto nextWrapSample = block.sampleAtTick(block.clock,add(wrap,length));
+    if (wrapSample == nextWrapSample) return {};
+    return launchSourceTick(target,current,wrapSample == dueSample || nextWrapSample == dueSample ? end : sourceAtDue);
+}
+
 LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& block,
                                         const LaunchView& view, std::int64_t endSample) const noexcept {
     const auto& run = track.run;
@@ -921,11 +963,12 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
     status.sourceTick = run.sourceTick;
     status.run = run.serial;
     status.completedLoops = run.completedLoops;
+    const LaunchSlot* slot = nullptr;
+    LaunchSlot regionGeometry;
     if (run.clip) {
         status.source = LaunchTrackSource::Session;
-        const auto* slot = findSlot(view,track.id,run.scene);
+        slot = findSlot(view,track.id,run.scene);
         if (!slot || slot->clip != run.clip) slot = findClip(view,track.id,run.clip);
-        LaunchSlot regionGeometry;
         slot = effectiveSlot(slot,run.region,regionGeometry);
         if (slot && loops(*slot)) {
             status.loopStartTick = slot->loopStartTick;
@@ -953,6 +996,8 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         }
         if (pending->action == Action::Arrangement) action = LaunchQueuedAction::BackToArrangement;
         if (action != LaunchQueuedAction::None) status.queued = {action,pending->clip,pending->scene,pending->tick};
+        if (action == LaunchQueuedAction::Start)
+            status.queued.legatoSourceTick = queuedLegatoSourceTick(track,*pending,*target,slot,block);
     }
     return status;
 }

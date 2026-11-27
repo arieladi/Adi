@@ -41,6 +41,9 @@ public:
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
     std::vector<Node*> sourcesFor(std::int64_t trackId);
+    /// Driver-only lookahead for an idle source. Each candidate is a physical
+    /// source window. Queue pages with the same worker used by playback.
+    static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
     using SampleRange = std::pair<std::int64_t, std::int64_t>;
     /// Owner-side half-open Arrangement extents from the prepared clip clock.
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;

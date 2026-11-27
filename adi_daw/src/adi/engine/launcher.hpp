@@ -107,6 +107,7 @@ enum class LaunchQueuedAction : std::uint8_t { None, Start, Stop, BackToArrangem
 struct LaunchQueuedStatus {
     LaunchQueuedAction action = LaunchQueuedAction::None;
     std::int64_t clip = 0, scene = 0, tick = 0;
+    std::optional<std::int64_t> legatoSourceTick{};
     bool operator==(const LaunchQueuedStatus&) const = default;
 };
 
@@ -238,6 +239,8 @@ private:
                 std::int32_t begin, std::int32_t end) noexcept;
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
+    [[nodiscard]] std::optional<std::int64_t> queuedLegatoSourceTick(const Track&, const Pending&,
+        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;
     void publishStatus(const LaunchBlock&, const LaunchView&, LaunchSink, bool, std::int64_t) noexcept;

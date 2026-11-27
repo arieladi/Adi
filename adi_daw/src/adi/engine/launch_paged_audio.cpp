@@ -49,22 +49,39 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
     return !sources_.empty();
 }
 
-bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
-    if (sources_.empty()) return false;
+const LaunchPagedAudio::Entry* LaunchPagedAudio::find(std::int64_t clip) const noexcept {
+    if (sources_.empty()) return nullptr;
     const auto* end = sources_.data() + sources_.size();
     const auto* found = std::lower_bound(sources_.data(), end, clip,
         [](const Entry& entry, std::int64_t key) { return entry.source.clip < key; });
-    return found != end && found->source.clip == clip;
+    return found != end && found->source.clip == clip ? found : nullptr;
+}
+
+bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
+    return find(clip) != nullptr;
+}
+
+void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {
+    const auto* found = find(id);
+    if (!found || firstFrame < 0) return;
+    const auto& source = found->source;
+    const bool looping = source.loopEndFrame > source.loopBeginFrame;
+    const std::array starts{firstFrame, source.firstFrame, looping ? source.loopBeginFrame : source.firstFrame};
+    std::array<Transport, starts.size()> candidates;
+    for (std::size_t index = 0; index < starts.size(); ++index) {
+        auto& next = candidates[index];
+        next.locate(starts[index]);
+        next.loop(source.loopBeginFrame, source.loopEndFrame, looping);
+        next.play();
+    }
+    ClipPlayback::prefetchSource(*found->playback, candidates);
 }
 
 bool LaunchPagedAudio::read(std::int64_t id, std::int64_t firstFrame, std::int32_t frames, bool allowLoop) noexcept {
     readFrames_ = 0;
-    if (sources_.empty() || frames <= 0 || frames > blockFrames_) return false;
-    const auto* begin = sources_.data();
-    const auto* end = begin + sources_.size();
-    const auto* found = std::lower_bound(begin, end, id,
-        [](const Entry& entry, std::int64_t key) { return entry.source.clip < key; });
-    if (found == end || found->source.clip != id) return false;
+    if (frames <= 0 || frames > blockFrames_) return false;
+    const auto* found = find(id);
+    if (!found) return false;
 
     readFrames_ = frames;
     const auto prefix = firstFrame < 0 ? static_cast<std::int32_t>(-std::max<std::int64_t>(-frames, firstFrame)) : 0;

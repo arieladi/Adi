@@ -4,6 +4,7 @@
 #include "adi/engine/graph.hpp"
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/transport.hpp"
 
 #include <algorithm>
@@ -264,7 +265,16 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto& call = *static_cast<const Context*>(state);
         if (!call.follow) return std::nullopt;
         return call.follow->followOnLaunch(edge, call.view, call.incarnation, call.block.followActionsEnabled, call.seed);
-    }, nullptr, [](void* state, const LaunchSceneTransition& edge) noexcept {
+    }, [](void* state, const LaunchTrackStatus& track) noexcept {
+        const auto& call = *static_cast<const Context*>(state);
+        if (!track.queued.legatoSourceTick) return;
+        const auto due = call.block.sampleAtTick(call.block.clock, track.queued.tick);
+        const auto& media = *call.runtime.mediaAt(due);
+        if (&media != call.media) return;
+        const auto* clip = media.clip(track.queued.clip);
+        if (clip && clip->pageReader())
+            clip->pageReader()->prefetch(clip->clip(), clip->frameForTick(*track.queued.legatoSourceTick, media.bpm()));
+    }, [](void* state, const LaunchSceneTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         if (edge.preparedToken != 0)
             call.driver.performedScene_.store(edge.preparedToken, std::memory_order_release);
