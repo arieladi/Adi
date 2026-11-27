@@ -20853,3 +20853,72 @@ ADR-0261 d6 stands under them.
 | `docs/DEFERRED.md` | DF-W61: the sheet is drawn; what waits is the building |
 | `collab/README.md` | ADR 0262 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0263 |
+
+## ADR-0263 — Working together at different times: Undo that reverses, a heartbeat for presence, tempo as mine or theirs, a shared folder studied beside the bucket, and eleven refinements of the collision design — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON FOUR CHOICES (A, B, T, F) AND ELEVEN ADDITIONS, AFTER AN OUTSIDE PANEL READ ADR-0182; ANSWERS Q-N; AMENDS ADR-0182 d5 AND d9; ADDS TO CO-01 TO CO-05 AND RE-02; P2, NOTHING BUILT NOW**
+
+**What this records.** The director put ADI's collaboration design to his outside panel: working on one
+song at different times, as Excel and Word allow, with notes as Word's comments (ADR-0182, ADR-0203 d17).
+Win gave the panel the decided design and eight open questions, and read its answers against the
+record. The panel confirmed the shape: nothing is applied without the user's Apply, no live cursors,
+ghosts that never play, no blending of clips or notes. It found real gaps, which are the additions below.
+Win put four choices to him. His words: "agreed on the rest", and for Undo he chose (a).
+
+### Decisions
+
+1. **Undo keeps working after work is shared (his A; answers Q-N's first half).** Ctrl+Z on something
+   already uploaded sends its reversal as a new batch, leaving out whatever someone else has since built
+   on, and says that it did. Older shared work is reverted batch by batch from the History window, with a
+   preview. Nothing reaches a collaborator without their own Apply (ADR-0182 d5), so a reversal is one
+   more incoming change and rewrites nobody's song.
+2. **Presence is a slow heartbeat (his B; answers Q-N's second half):** who has the song open and when
+   they last synced. No live cursors in the first version. No "claims" on objects: with no server ADI
+   cannot keep one honest (it stays after its author left, and is absent while its author works offline).
+   A remark pinned to the part says the same thing as a person's note, with a name and a date.
+3. **Tempo offers mine or theirs in the first version (his T; narrows ADR-0182 d9).** The other person's
+   tempo is still kept as a ghost, so both are kept. Combine is not offered for tempo: a blended tempo
+   moves every bar, every warped clip and every automation point after it.
+4. **A shared cloud folder is studied beside the bucket (his F; adds to ADR-0182 d2 and d3).** The reason
+   consumer drives were excluded is that they copy a live database mid-write. Finished batch files and
+   media that never change do not have that fault, and most musicians already have such a folder. The
+   builder of CO-01 works out whether changes can be ordered safely with no atomic claim on a bucket, and
+   reports. The live `.adi` still never lives in a synced folder.
+5. **Rights are what the storage enforces.** ADI shows no role it cannot keep. Comment-only is a place
+   in the storage that the person may write remarks to and nothing else.
+6. **A batch is one piece.** A collaborator's batch is applied, rejected or put off whole, never picked
+   apart: its edits depend on each other. (An agent's proposal is the same, ADR-0261 d7.)
+7. **Eleven refinements of the collision design (ADR-0182 d5, d9).**
+   - A tolerance for "different", per kind of value: curves that differ by less make no collision.
+   - A ghost records what it collided with. If the local curve in that region changes afterwards, the
+     region is measured again and marked as changed since.
+   - The shared starting point is shown with mine and theirs.
+   - Mine, theirs and the blend are heard at the same playhead. Letting go of the slider starts the
+     preview; Keep commits. (ADR-0182 d9 committed on release.)
+   - A region can be split at a bar line, so that parts of it take different weights.
+   - The other author is told what became of their version (kept, dropped, blended at a weight) in the
+     next summary they see.
+   - A count of waiting batches, and a prompt when the user exports or edits what a waiting batch
+     touches.
+   - The blend is taken on the scale the control uses: decibels for a level, pitch for a frequency.
+   - A collaborator's device arrives switched off beside the local one, so that nothing unchosen sounds.
+   - A missing effect is bypassed and a missing instrument is silent, each as a placeholder that keeps
+     its state, as Live's.
+   - Comments from people without ADI: a bounce goes out, comments with times come back as a file, and
+     ADI brings them in as remarks on the timeline. Later, with RE-02.
+8. **Not taken:** a separate suggesting mode (the waiting queue already makes every incoming edit a
+   proposal); a role system drawn in the window; a web page for reviewers in the first version.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0182 d5 | Undo after an Apply is no longer open (d1); batches are whole (d6); a device arrives switched off (d7) |
+| ADR-0182 d9 | no Combine for tempo in the first version (d3); Keep commits, not the slider's release; the tolerance, the stale ghost, the base, the bar-line split, the scale of the blend (d7) |
+| ADR-0182 d2, d3 | a shared folder for finished batches and media is studied (d4) |
+| PLAN Q-N | answered: Undo (d1) and presence (d2) |
+| CO-01, CO-05 | the ordering without an atomic claim, and storage rights (d4, d5) |
+| CO-02 | as d1 |
+| CO-03 | d3, d6 and d7 |
+| CO-04 | as d2 |
+| RE-02 | comments brought in from a file (d7); a remark in place of a claim (d2) |
+| `collab/README.md` | ADR 0263 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0264 |
