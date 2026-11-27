@@ -13775,6 +13775,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
           "the cut device comes back at the chain's end, a new id, one step");
+    const auto head = [&] { return OpJournal(document->store()).headSeq(); };
     if (peer && !order.empty()) {
         const auto arrow = [peer](int code) { return peer->handleKeyPress(juce::KeyPress(code)); };
         const auto reachedEnd = [&] {
@@ -13788,20 +13789,74 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
             const bool left = arrow(juce::KeyPress::leftKey) && root.devices.focusedDevice() == order.back() &&
                               root.devices.insertPoint() == order.back() && !root.devices.endChosen();
             check(left, "SC-301: Left from the chain end returns focus to the last Device title");
-            const auto before = OpJournal(document->store()).headSeq();
+            const auto before = head();
             const bool pasted = left && arrow(juce::KeyPress::rightKey) && reachedEnd() && key('v');
             refresh();
             const auto appended = chain();
             check(pasted && appended.size() == order.size() + 1 &&
                       std::equal(order.begin(), order.end(), appended.begin()) && label() == "Paste Device",
                   "SC-301: Right then Ctrl/Cmd+V appends after the unchanged chain");
-            if (OpJournal(document->store()).headSeq() != before) {
+            if (head() != before) {
                 const bool undone = root.command(AppCommands::Undo);
                 refresh();
-                check(undone && chain() == order && OpJournal(document->store()).headSeq() == before,
+                check(undone && chain() == order && head() == before,
                       "SC-301: one Undo removes the appended device");
             }
         }
+    }
+    if (peer && !order.empty()) {
+        std::optional<juce::PopupMenu> shown;
+        root.devices.onEndMenu = [&shown](juce::PopupMenu menu) { shown = std::move(menu); };
+        const auto openPaste = [&]() -> std::optional<juce::PopupMenu::Item> {
+            shown.reset();
+            if (root.devices.panels.empty()) return std::nullopt;
+            const auto &last = *root.devices.panels.back();
+            const auto blank = host.getLocalPoint(&last, juce::Point<int>{last.getWidth() + 40, last.getHeight() / 2})
+                                   .toFloat();
+            const auto mouse = [&](juce::ModifierKeys mods) {
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, blank, mods, 1.f, 0.f,
+                                       when += 1000);
+            };
+            mouse({});
+            mouse(juce::ModifierKeys::rightButtonModifier);
+            mouse({});
+            if (shown)
+                for (juce::PopupMenu::MenuItemIterator item(*shown); item.next();)
+                    if (item.getItem().text == "Paste")
+                        return item.getItem();
+            return std::nullopt;
+        };
+        auto saved = std::exchange(clipboard, std::nullopt);
+        const auto disabled = openPaste();
+        check(disabled && !disabled->isEnabled, "SC-301: the blank Device View menu disables Paste with nothing copied");
+        clipboard = std::move(saved);
+
+        const auto before = head();
+        const auto stale = openPaste();
+        check(stale && stale->isEnabled && stale->action, "SC-301: right-click in the blank chain offers Paste");
+        root.arrangement.geometry.selection.track = 3;
+        root.publishSelection();
+        refresh();
+        if (stale && stale->action) stale->action();
+        check(head() == before && chain() == order, "SC-301: an open chain menu cannot paste after switching tracks");
+        root.arrangement.geometry.selection.track = 2;
+        root.publishSelection();
+        refresh();
+
+        const auto paste = openPaste();
+        if (paste && paste->isEnabled && paste->action) paste->action();
+        refresh();
+        const auto appended = chain();
+        check(paste && paste->isEnabled && appended.size() == order.size() + 1 &&
+                  std::equal(order.begin(), order.end(), appended.begin()) && label() == "Paste Device",
+              "SC-301: choosing Paste from the blank chain menu appends after its existing devices");
+        if (head() != before) {
+            const bool undone = root.command(AppCommands::Undo);
+            refresh();
+            check(undone && chain() == order && head() == before, "SC-301: one Undo removes the menu's pasted device");
+        }
+        root.devices.onEndMenu = {};
     }
     // The device's menu and the strip with its end chosen, for the picture beside Live 12's.
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
