@@ -25,6 +25,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-91 | `basics/look-chain` at `a748800b` | Mark keyboard focus and show when more tracks extend below the lanes. Window seat. | Fake-peer keyboard focus and software overflow tests passed. Both refreshed structural fixtures changed exactly 128 pixels inside their new badge. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-63 | `basics/look-chain` at `107f1cec` | Publish MIDI note activity and draw it in Arrangement and Mixer meters. Engine and window seats. | Peerless short-note, held-note, stop and track isolation checks passed. The separate MIDI engine suite passed 586 checks. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-04 | `basics/look-chain` at `88b15ee2` | Compute selection duration between tempo-mapped endpoints. Window seat. | Peerless selections spanning and following a tempo change, backwards selection and marker time passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-109 | — | High DPI and second-monitor window walk. Window seat. | Requires a real second display and a window-driving session. | Blocked on the window environment |
 
 ## Measurements
 
@@ -200,3 +201,5 @@ Confirm the Control Bar gesture rate and wheel feel in a real window when the wi
 Does a stock Live 12 Set start with Follow lit? Recommendation is to retain Off until the window-driving session confirms the default.
 
 The separate MIDI SC-71 candidate opens with a fixed 1/16 grid. Recommendation is to retain Adaptive Medium for automatic zoom following until the Live reading settles the initial setting, and to land one implementation of the Note Editor marks.
+
+SC-109 requires the window-driving session to exercise the second monitor, including the CLAP window path noted in the row. Recommendation is to carry the VST3 walk forward and add a two-monitor CLAP check there.
