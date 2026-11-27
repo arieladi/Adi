@@ -92,9 +92,9 @@ juce::String useChannelConfig(juce::AudioDeviceManager &manager, const settings:
 }
 juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::AudioDeviceManager::AudioDeviceSetup &setup,
                              const settings::AppSettings &store) {
-    // JUCE names the type's default device for an empty name only on a side asked for channels:
-    // asked for none, a first run opened no input and F9 had nothing to record (A16).
-    auto error = manager.initialise(2, 2, nullptr, true, {}, &setup);
+    // JUCE names the type's default device for an empty name only on a side asked for channels. An empty
+    // input is not asked for (SC-381): arming a track opens it (openDefaultInput), as F9 needs (A16).
+    auto error = manager.initialise(setup.inputDeviceName.isEmpty() ? 0 : 2, 2, nullptr, true, {}, &setup);
     // A default input that cannot open beside the output leaves the output to open alone, as before.
     if (error.isNotEmpty() && setup.inputDeviceName.isEmpty())
         if (const auto alone = manager.initialise(0, 2, nullptr, true, {}, &setup); alone.isEmpty())
@@ -117,6 +117,30 @@ juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::Audi
     return "The audio output " + output + " could not be opened: " + error +
            (input.isNotEmpty() ? " The input \"" + input + "\" is open." : juce::String()) +
            " Choose an output in Settings > Audio.";
+}
+juce::String openDefaultInput(juce::AudioDeviceManager &manager, const settings::AppSettings &store, juce::String &opened) {
+    auto *device = manager.getCurrentAudioDevice();
+    auto *type = manager.getCurrentDeviceTypeObject();
+    if (device != nullptr && device->getActiveInputChannels().countNumberOfSetBits() > 0) {
+        opened = manager.getAudioDeviceSetup().inputDeviceName;
+        return {};
+    }
+    if (type == nullptr)
+        return "No audio driver is open.";
+    const auto names = type->getDeviceNames(true);
+    if (names.isEmpty())
+        return "This computer has no audio input to record from.";
+    const auto chosen = names[juce::jmax(0, type->getDefaultDeviceIndex(true))];
+    auto setup = manager.getAudioDeviceSetup();
+    const auto before = setup;
+    setup.inputDeviceName = chosen;
+    setup.useDefaultInputChannels = true;
+    if (auto error = manager.setAudioDeviceSetup(setup, true); error.isNotEmpty()) {
+        (void)manager.setAudioDeviceSetup(before, true);
+        return "The input \"" + chosen + "\" could not be opened: " + error;
+    }
+    opened = chosen;
+    return useChannelConfig(manager, store);
 }
 AudioDevicePage::ChannelButtons::ChannelButtons() {
     setTitle("Channel Configuration");

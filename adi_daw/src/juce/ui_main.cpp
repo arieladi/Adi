@@ -1370,6 +1370,10 @@ class AdiApplication final : public juce::JUCEApplication,
         // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
         else if (const auto error = openAudioDevice(manager_, setup, *settings_); error.isNotEmpty())
             report(error.toStdString());
+        // SC-381: with the system's input kept (a first run), none is open until it is wanted; say so once.
+        else if (setup.inputDeviceName.isEmpty() && root_)
+            root_->say("No audio input is open: arming an audio track opens the system's input, or choose one in "
+                       "Settings > Audio.");
         document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
             if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
                 return 0;
@@ -1771,6 +1775,7 @@ class AdiApplication final : public juce::JUCEApplication,
                         auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
                         page->onSetupChanged = [this](bool applied) {
                             userChoseDevice_ = true; // SC-378: the user's own choice, saved as made
+                            inputForArm_ = false;    // SC-381: and an input chosen there is the user's
                             if (applied) {
                                 if (bridge_)
                                     bridge_->acknowledgeDeviceSetup();
@@ -1923,8 +1928,10 @@ class AdiApplication final : public juce::JUCEApplication,
         // SC-379: Windows Audio's mode is kept, not folded into shared mode.
         const auto type = juce::String(settings::driverSettingFor(manager_.getCurrentAudioDeviceType().toStdString()));
         std::string why;
+        // SC-381: an input opened for an armed track is the system's, as the setting keeps it: not saved by name.
+        const bool systemInput = inputForArm_ && settings_->get("audio.inputDevice").get<std::string>().empty();
         if (!settings::keepGrant(*settings_,
-                                 {type.toStdString(), setup.inputDeviceName.toStdString(),
+                                 {type.toStdString(), systemInput ? std::string() : setup.inputDeviceName.toStdString(),
                                   setup.outputDeviceName.toStdString(), static_cast<int>(setup.sampleRate),
                                   setup.bufferSize},
                                  {}, why))
@@ -1955,7 +1962,28 @@ class AdiApplication final : public juce::JUCEApplication,
                              !root_->devices.validExpected(hotSwap_->expected)))
                 leaveHotSwap();
             root_->transport.setCpuLoad(live_ ? live_->cpuLoad() : std::nullopt);
-            root_->setRecordStates(document_->recordStates());
+            const auto states = document_->recordStates();
+            root_->setRecordStates(states);
+            // SC-381: an audio track armed with no input open opens the system's input, once per arming.
+            if (!noAudio_ && settings_->get("audio.inputDevice").get<std::string>().empty()) {
+                bool armedAudio = false;
+                for (const auto &[id, state] : states)
+                    if (state.armed)
+                        if (const auto *t = root_->reader().findTrack(id); t != nullptr && t->kind == "audio")
+                            armedAudio = true;
+                if (armedAudio && !inputOpenedForArm_) {
+                    inputOpenedForArm_ = true;
+                    inputForArm_ = true;
+                    juce::String opened;
+                    if (const auto why = openDefaultInput(manager_, *settings_, opened); why.isNotEmpty())
+                        root_->say(why.toStdString());
+                    else if (opened.isNotEmpty())
+                        root_->say("The input “" + opened.toStdString() + "” is open for the armed track.");
+                    applyInputChannels();
+                }
+                if (!armedAudio)
+                    inputOpenedForArm_ = false;
+            }
             refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
@@ -2032,6 +2060,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<PluginHoldOff> holdOff_;
     ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
     bool userChoseDevice_ = false, holdingDevice_ = false; // SC-378
+    bool inputOpenedForArm_ = false, inputForArm_ = false; // SC-381
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).

@@ -18192,10 +18192,38 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
     check(none.isEmpty(), "a first run keeps no input device: the system's");
     const auto [input, ins, output] =
         open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), none, why);
-    check(why.isEmpty() && input == "Cable Output" && ins == 2 && output == "Speakers",
-          ("the system's default input opens with the output, inputs 1/2 on: " + input.toStdString() + ", " +
-           std::to_string(ins) + " in; " + why.toStdString())
+    check(why.isEmpty() && input.isEmpty() && ins == 0 && output == "Speakers",
+          ("SC-381: a first run opens the output alone, no input taken until one is wanted: " + input.toStdString() +
+           ", " + std::to_string(ins) + " in; " + why.toStdString())
               .c_str());
+    {
+        // SC-381 with A16: an armed audio track opens the system's default input beside the output, 1/2 on.
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.outputDeviceName = "Speakers";
+        (void)openAudioDevice(manager, setup, fresh);
+        juce::String opened;
+        const auto error = openDefaultInput(manager, fresh, opened);
+        const auto *device = manager.getCurrentAudioDevice();
+        check(error.isEmpty() && opened == "Cable Output" && device != nullptr &&
+                  device->getActiveInputChannels().countNumberOfSetBits() == 2 &&
+                  manager.getAudioDeviceSetup().outputDeviceName == "Speakers",
+              ("arming opens the system's default input beside the output, inputs 1/2 on: " + error.toStdString()).c_str());
+        juce::String again;
+        check(openDefaultInput(manager, fresh, again).isEmpty() && again == "Cable Output", "an open input is left as it is");
+    }
+    {
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{}, 0));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.outputDeviceName = "Speakers";
+        (void)openAudioDevice(manager, setup, fresh);
+        juce::String opened;
+        check(openDefaultInput(manager, fresh, opened).contains("no audio input") && opened.isEmpty() &&
+                  manager.getCurrentAudioDevice() != nullptr,
+              "a machine with no input says so when a track is armed, and the output stays open");
+    }
     const auto [chosen, chosenIns, chosenOut] =
         open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), "Microphone", why);
     check(why.isEmpty() && chosen == "Microphone" && chosenIns == 2 && chosenOut == "Speakers",
