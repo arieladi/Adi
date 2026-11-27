@@ -7,7 +7,7 @@
 - Installed-DAW reference runs C5V-001 through C5V-030. The documentary matrix is available on the research branch.
 - Headless additions from that matrix in progress. Normalized straighten range, selection-scoped scale suggestions, key-timeline quantization and whole-event pitch-only flatten preparation.
 - Durable MIDI extraction provenance, native channel-wide pitch bend and plug-in-specific extraction modes.
-- Phase-linked stereo correction, and a reference ruling for Reverse with Warp and permanent flattening.
+- Reverse together with Warp, phase linkage for files wider than stereo, and reference rulings for permanent flattening and timing inheritance.
 
 ## For win, 27 November continuation
 
@@ -80,9 +80,9 @@ B. If automatic previous-extraction replacement is required on reopen, reserve p
 
 ## For the director
 
-B. Preserve exact compatible controls by default on split or merge. When a contour or destination cut cannot be represented exactly, offer the now-tested explicit reset of affected controls. The reference claim about recalculated average pitch leaves the installed retention behavior open.
-
 A. The reference manual describes both whole-event and selected-segment flattening. Use the existing engine render for comparison and settle the permanent commit scope from the reference run before assigning a flatten action. [Reference functions](https://www.steinberg.help/r/cubase-pro/15.0/en/cubase_nuendo/topics/sample_editor_variaudio/sample_editor_variaudio_functions_menu_r.html)
+
+B. Preserve exact compatible controls by default on split or merge. When a contour or destination cut cannot be represented exactly, offer the now-tested explicit reset of affected controls. The reference claim about recalculated average pitch leaves the installed retention behavior open.
 
 ## Continued chain gate
 
@@ -102,3 +102,4 @@ A. The reference manual describes both whole-event and selected-segment flatteni
 | Original / Corrected at one playhead | Arrangement compares two verified, clip-clock-aligned renditions. The live switch preserves transport and loop phase. Export uses the committed render. Small shared changes are in ClipPlayback, Session retirement and CMake. | 27 comparator and 23 Session checks passed, and ignoring the switch failed eight. A live switch matched exact PCM at frame 7,024. Loop wrap matched at frame 8,000. In 10,000 held-frame switches no callback allocations or file reads were counted. The warped pair measured 99.996 cents apart. | Pushed `ac1d1b49`. One opt-in comparison per source generation uses a bounded resident PCM pair. |
 | Staged 1.27 text and DDL | Canonical store projection reads pitch rows in the same snapshot as their clips. Source identity, destination timing, segment bounds and controls survive detach and source replacement. The current release number and coverage manifest stay at 1.23. | 269 checks passed and six authored-output checks failed on the predecessor. Staged DDL rollback and fresh equivalence passed. The test reads a genuine 1.23 file read-only and verifies exact source/edit Undo and Redo. | Pushed `75149766`. Shared row and text adapters have opt-in pitch reads. |
 | Split or merge with incompatible corrections | An explicit producer policy resets controls and timing on affected segments and preserves unrelated edits. The default still preserves compatible edits exactly. | All 36 checks passed. Blocking the reset path failed all five added checks. Undo and Redo restore exact records across reopen under both policies. | Pushed `566f70be`. |
+| Phase-linked stereo correction | The media worker and offline renderer process a stereo pair with one synchronized DSP instance. Wider files retain independent channels on the same note clock. | All six focused suites passed. The steady stereo shift measured +100.00 cents. Adversarial leakage reached −52.18 dB or lower, compared with +2.35, +13.38 and −27.74 dB under independent processing. The transient-heavy tilt measured 68.23 of 85.71 intended cents over 300 ms. | Pushed `aaab232c`. |
