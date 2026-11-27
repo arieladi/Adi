@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 00:23 IST — basics/browser-chain `862cea353f80808d208ce54b773b82cf6a20a3e3`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered CTest suites passed.
+
+All 21 registered ADI translation units mentioning `long double` passed strict syntax checks with `-mlong-double-64`, which matches Apple Silicon's `long double` precision for the checked expressions.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 00:13 IST — control/agent-chain `d68937dc5f4413e3f55d44070da33135710938c2`
 
 The headless `adi_control` translation unit fails under Clang 20 and libc++. At `adi_daw/src/juce/app_control.cpp:292:58`, libc++ rejects `std::atomic<std::shared_ptr<const BrowserCatalogue>>` because the primary atomic template requires a trivially copyable type. The callback error at `88:34` follows from that instantiation. Full build and suites are queued.
