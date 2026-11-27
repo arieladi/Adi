@@ -102,6 +102,12 @@ public:
                 for (const auto row : folder.files) append(listing_.files[row]);
         }
     }
+    [[nodiscard]] const File* matchingFileAtPath(const fs::path& path, const WordQuery& words) const {
+        const auto found = std::ranges::find_if(listing_.files, [&](const auto& file) {
+            return file.path == path && words.matches(file.name);
+        });
+        return found == listing_.files.end() ? nullptr : &*found;
+    }
 private:
     Listing listing_;
     std::map<std::string, std::vector<Folder>> folders_;
@@ -309,12 +315,91 @@ void measuredFits() {
         std::printf("Decoded Fits scores: in-key hat %.3f, tritone hat %.3f, second bass %.3f\n",
                     first[0].score, first[1].score, first[2].score);
 }
+
+void combinedSamples() {
+    test::TempDirectory temp{"browser_sample_query", "combined"};
+    const auto referencePath = temp.path() / "original.wav";
+    const auto hat = temp.path() / "hat.wav";
+    const auto alias = temp.path() / "hat-copy.wav";
+    const auto nextKick = temp.path() / "next-kick.wav";
+    writeSample(referencePath, 74, "Drums");
+    writeSample(hat, 6200, "Drums");
+    writeSample(nextKick, 91, "Drums");
+    fs::copy_file(hat, alias);
+
+    media::AnalysisCache cache(temp.path() / "analyzed");
+    audio::DecodeCache decode(temp.path() / "decoded");
+    SampleAnalysisService service(cache, decode);
+    const auto measure = [&](const fs::path& path) {
+        auto result = service.analyze(path);
+        if (!result) throw std::runtime_error("combined fixture did not analyze");
+        return std::make_shared<const SampleAnalysis>(std::move(*result.analysis));
+    };
+    const auto reference = measure(referencePath);
+    const auto hatRecord = measure(hat);
+    const auto aliasRecord = measure(alias);
+    const auto kickRecord = measure(nextKick);
+
+    Listing sharedFiles;
+    sharedFiles.files = {{"Hat A.wav", hat, {}}, {"Hat B copy.wav", alias, {}},
+                         {"Kick Library.wav", fs::canonical(referencePath), {}}, {"Pending.wav", temp.path() / "pending.wav", {}}};
+    Listing projectFiles;
+    projectFiles.files = {{"Kick Current Project.wav", fs::canonical(referencePath), {}},
+                          {"Kick Next.wav", nextKick, {}}};
+    auto sharedBrowser = std::make_shared<const FilenameIndex>(std::move(sharedFiles));
+    auto projectBrowser = std::make_shared<const FilenameIndex>(std::move(projectFiles));
+    using Search = BrowserSampleQuery<FilenameIndex>;
+    const Search shared(sharedBrowser, {hatRecord, aliasRecord, reference, nullptr});
+    const Search project(projectBrowser, {nullptr, kickRecord});
+    Search::CombinedResults results;
+    const auto names = [&] {
+        std::vector<std::string> output;
+        for (const auto& hit : results.matches) output.push_back(hit.file->name);
+        return output;
+    };
+    shared.queryCombined(WordQuery(""), &project, {}, results);
+    check(names() == std::vector<std::string>{"Hat A.wav", "Hat B copy.wav", "Kick Current Project.wav", "Pending.wav", "Kick Next.wav"},
+          "a matching project duplicate replaces the shared name in place, while unique project files append");
+    if (results.matches.size() != 5) return;
+    auto retainedReference = results.matches[2].analysis;
+    check(retainedReference == reference && !results.matches[3].analysis,
+          "a pending project duplicate can retain its shared measurement and an unmeasured file still matches by name");
+    shared.queryCombined(WordQuery("Library"), &project, {}, results);
+    check(names() == std::vector<std::string>{"Kick Library.wav"}, "a project display name does not displace a sole shared word match");
+
+    SampleQuery low;
+    low.brightnessHz = SampleQueryRange{0, 500};
+    shared.queryCombined(WordQuery("Kick"), &project, low, results);
+    check(names() == std::vector<std::string>{"Kick Current Project.wav", "Kick Next.wav"},
+          "the joined stream applies a measured filter to both sources and honors the inherited measurement");
+    shared.queryCombined(WordQuery("Drums Kick"), &project, {}, results);
+    check(names() == std::vector<std::string>{"Kick Library.wav", "Kick Next.wav"},
+          "both streams use the same indexed independent-word matching with embedded tags");
+
+    const Search rescanned(sharedBrowser, {hatRecord, aliasRecord, std::make_shared<const SampleAnalysis>(*reference), nullptr});
+    SampleQuery similar;
+    similar.rank = SampleQueryRank::Similar;
+    similar.reference = retainedReference.get();
+    similar.limit = 2;
+    rescanned.queryCombined(WordQuery("Drums"), &project, similar, results);
+    check(names() == std::vector<std::string>{"Kick Next.wav", "Hat A.wav"},
+          "one global top-K ranks a project kick ahead of shared hats and skips an equivalent reference after a rescan");
+
+    similar.limit = sharedBrowser->listing().files.size() + projectBrowser->listing().files.size();
+    rescanned.queryCombined(WordQuery("Drums"), &project, similar, results);
+    std::vector<SimilarSampleCandidate> swaps;
+    Search::makeSwapCandidates(results.matches, swaps);
+    check(swaps.size() == 2 && swaps[0].file == nextKick && swaps[0].contentHash == kickRecord->contentHash &&
+          swaps[1].file == hat && swaps[1].contentHash == hatRecord->contentHash,
+          "ranked swaps carry exact decoded content hashes and include only the first identical file");
+}
 } // namespace
 
 int main() {
     try {
         searchableReadOnlyTags();
         measuredFits();
+        combinedSamples();
     } catch (const std::exception& error) {
         check(false, error.what());
     }
