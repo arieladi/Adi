@@ -27,6 +27,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-04 | `basics/look-chain` at `88b15ee2` | Compute selection duration between tempo-mapped endpoints. Window seat. | Peerless selections spanning and following a tempo change, backwards selection and marker time passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-109 | — | High DPI and second-monitor window walk. Window seat. | Requires a real second display and a window-driving session. | Blocked on the window environment |
 | SC-266 | `basics/look-chain` at `040e4116` | Identify frozen tracks in Arrangement and Mixer. Per-track load awaits a track-attributed timing publication. Window seat. | Focused red/green peerless freeze and thaw probes passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-267 | `basics/look-chain` at `77f611a5` | Reveal keyboard and cross-view track selections. Keep manual scroll and editing gestures stable. Window seat. | Headless keys, Mixer to Arrangement selection, automation hit-testing and edit viewport checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -198,6 +199,14 @@ At 1440 × 900 Compact, the Status Bar's message well stays `(35, 870, 1021, 22)
 ### SC-266
 
 The focused 1440 × 1100 Compact fixture adds a frozen badge at Arrangement header-local `(81, 267, 11, 11)`. Its title box goes from `(25, 266, 68, 15)` to `(25, 266, 54, 15)`. The inline mixer adds a rail at `(191, 1, 2, 84)` in a 194 × 88 strip. In the 95 × 260 Mixer View strip the badge is `(79, 3, 11, 11)` and title width goes from 85 to 71. The three sampled colours go from `#eb4a41`, `#363636` and `#eb4a41` to the frozen colour `#4fc3ea`, then return to their original values on thaw. The approved sheet has no frozen-track example.
+
+### SC-267
+
+At 1440 × 900 Compact, the Arrangement viewport is `(328, 115, 788, 305)` and the Mixer viewport is `(324, 439, 887, 219)`. Selecting track 11 puts its 88 px lane at viewport y=217 after y=880 offscreen. Its 95 px Mixer strip moves from x=950 to x=792. Selecting track 10 in the reverse direction moves its lane from y=792 to y=217. Lane scroll goes to 663 and 575 respectively, and the Mixer scrolls horizontally by 158. The viewports retain their bounds.
+
+In the automation fixture, track 4 is already visible from lane y=176 until the pinned foot at y=261. Selecting it by clicking keeps lane scroll at 0 and its breakpoint line at the same coordinate. A full reveal would shift the lane up 3 px. Arrow navigation still performs full reveal.
+
+Cross-view reveal is queued by an Arrangement or Mixer selection gesture. Undo and changes from document edits preserve the current viewport. The peerless suite checks both the navigation path and the existing edits that retain their viewport.
 
 ## For the director
 
