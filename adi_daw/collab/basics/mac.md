@@ -75,6 +75,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/tracks-chain` | `7bd59032cefacc0b7837a728e1c65b8afd5bf3b4` | No | The strict Ninja core compile stopped at `src/adi/audio/warp.hpp:74`. Apple libc++ reported the trivially-copyable requirement for `std::atomic<std::shared_ptr<const WarpResult>>`. The build error gates the runtime suites. Published Mac fix `4679066f` addresses this declaration. With `4679066f` applied in the scratch checkout, all 50 production targets built and 44/44 checks passed, including window and mixer 33/33, acceptance 3/3, and affected and session 8/8. |
 | `origin/land/basics-1127i` | `2c59ae005192a2d6540deebefc6952e9e0c62859` | Yes | This head carries the SC-194 Apple libc++ fix. All 50 production targets built. Passed 53/53, including window and mixer 33/33, acceptance 3/3, and affected and session 17/17. |
 | `origin/basics/clips-chain` | `ee2964cf657a9d058cd86e0ff1ccfbcb0764b81b` | Yes | All 50 production targets built. Passed 41/41, including window and mixer 32/32, acceptance 3/3, and affected and session 6/6. |
+| `origin/basics/tracks-chain` | `24ab441d99bdf1309a1899eaddf69554fa01b8cb` | Yes | All 50 production targets built. Passed 46/46, including window and mixer 33/33, acceptance 3/3, and affected and session 10/10. This head incorporates the Apple libc++ WarpTask fix from 1127i and the Mixer View sends change. |
 
 ## Nine-step window walk
 
