@@ -3,6 +3,7 @@
 
 #include <array>
 #include <bit>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -43,7 +44,7 @@ void writeBigEndian(std::ostream& out, std::uint64_t value, unsigned bytes) {
     std::array<unsigned char, 8> buffer{};
     for (unsigned i = 0; i < bytes; ++i)
         buffer[i] = static_cast<unsigned char>(value >> (8 * (bytes - 1 - i)));
-    out.write(reinterpret_cast<const char*>(buffer.data()), bytes);
+    out.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(bytes));
 }
 
 void writeHeader(std::ostream& out, const WavReader& input, std::uint32_t dataBytes) {

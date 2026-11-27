@@ -1078,6 +1078,7 @@ class AdiRootComponent final : public juce::Component,
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     bool infoShown_ = true;
     bool infoPressed_ = false;
+    DensityId appliedDensity_ = DensityId::Compact;
     void applyInfoAnalyserMode();
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
@@ -1141,9 +1142,6 @@ juce::File projectsFolder(const settings::AppSettings &settings);
 juce::File nextUntitledProject(const settings::AppSettings &settings);
 // Keep an explicitly selected existing file. New songs get a same-named folder.
 juce::File songProjectFile(const juce::File &file);
-// After closing the document: discard its provisional file only when the identity is still the
-// one created by this instance and it contains no edits or named snapshots.
-bool discardUntouchedProject(const std::filesystem::path &, const media::FileIdentity &);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {

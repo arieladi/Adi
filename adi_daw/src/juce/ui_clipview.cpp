@@ -2,6 +2,7 @@
 #include "ui_clipview.hpp"
 #include "adi/warp_commands.hpp"
 #include "ui_controls.hpp"
+#include "ui_decimal.hpp"
 #include "ui_shell.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ui/import_choices.hpp"
@@ -9,7 +10,6 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <limits>
 #include <string_view>
@@ -5516,14 +5516,12 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
         std::string_view number(value);
         if (number.starts_with('+') && !number.starts_with("+-"))
             number.remove_prefix(1);
-        double db = 0.;
-        const auto end = number.data() + number.size();
-        const auto parsed = std::from_chars(number.data(), end, db);
-        if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(db)) {
+        const auto db = decimal::parse(number);
+        if (!db) {
             root.say("Type a gain in dB, for example -6.5.");
             return false;
         }
-        return setGain(db);
+        return setGain(*db);
     }
     if (field == Field::Pitch || field == Field::Detune) {
         auto raw = typed.trim();

@@ -410,6 +410,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
     std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    std::optional<HotSwapTargetInfo> hotSwapTargetAfterCapture(const DevicePanelData &);
     std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
     bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
@@ -448,14 +449,14 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     void recordMixerValues(std::span<const OpRequest>);
     void advanceAutomationWrites();
-    void closeAutomationWrites();
+    bool closeAutomationWrites(std::optional<std::int64_t> deviceId = {});
     bool commitAutomation(std::vector<AutomationPass>,std::vector<OpRequest> requests={});
     std::optional<AutomationPass> prepareParameterAutomation(std::int64_t,const device::ParamDescriptor&,
                                                             double before,double after);
     void suspendParameterAutomation(AutomationPass&);
     bool observeNativeAutomation(std::int64_t,const device::ParamDescriptor&,engine::ParamEventKind,double before,double after,
                                  const std::shared_ptr<const gesture::OwnerToken>&);
-    void finishNativeAutomation(bool stop=false);
+    bool finishNativeAutomation(bool stop=false, std::optional<std::int64_t> deviceId = {});
     bool releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken>&);
     bool commitParameterAutomation(std::int64_t,const std::string&);
     std::vector<AutomationPass> mixerWrites_, nativeWrites_;

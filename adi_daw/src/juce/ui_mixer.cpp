@@ -1369,6 +1369,7 @@ void MixerStrip::trackTitleMenu(juce::Point<int> where) {
     if (!current || !current->findTrack(track))
         return;
     auto &view = panel_.root.arrangement;
+    view.canvas.clearAutomationSelection();
     auto &selection = view.geometry.selection;
     const bool tracksSelected = current->findTrack(selection.track) && selection.clip == 0 &&
                                 selection.pickedClips.empty() && selection.start == selection.end &&
@@ -1434,7 +1435,9 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         }
         focusIfShowing(*this);
         const auto &reader = panel_.root.reader();
-        auto &geometry = panel_.root.arrangement.geometry;
+        auto &arrangement = panel_.root.arrangement;
+        arrangement.canvas.clearAutomationSelection();
+        auto &geometry = arrangement.geometry;
         auto &selection = geometry.selection;
         selection.clearMaterial();
         if (e.mods.isLeftButtonDown() && !e.mods.isAnyModifierKeyDown() && kind_ != "master") {

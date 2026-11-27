@@ -1889,7 +1889,7 @@ std::optional<bool> Session::refreshLocalEdit(const Store& store, const ProjectV
     if (authored == model_.clips.end()) return {};
     if (delta->kind == Kind::MidiPlacement && spec_.performanceState && !spec_.exporting &&
         std::any_of(model_.tracks.begin(), model_.tracks.end(), [&](const rows::Track& track) {
-            return (track.id == delta->fromTrack || track.id == delta->toTrack) && track.recordArmed &&
+            return (track.id == delta->fromTrack || track.id == delta->toTrack) && recordArmed(track) &&
                    track.monitorMode == 2 && (track.kind == "midi" || track.kind == "instrument");
         })) {
         // Auto monitoring copies the Arrangement ranges into the audio
@@ -2937,9 +2937,11 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     const bool rendered = graph_.process(block);
     // MIDI can still report Recording after a locate outside the punch. Only
     // a playing slice inside the punch can contribute to the capture gate.
-    const bool capturing = captureRecording && (!session_.recordingAudioTracks_.empty() ||
-        (transport.playing() && punch == RecordingPunch::Within &&
-         session_.midiInputCapture_->state() == MidiCaptureState::Recording));
+    const bool capturing = captureRecording
+        ? !session_.recordingAudioTracks_.empty() ||
+              (transport.playing() && punch == RecordingPunch::Within &&
+               session_.midiInputCapture_->state() == MidiCaptureState::Recording)
+        : transport.playing() && session_.recordingForDevices_.load(std::memory_order_acquire);
     session_.recordingAudioTracks_ = {};
     if (inputMonitors) {
         inputMonitors->input = nullptr;

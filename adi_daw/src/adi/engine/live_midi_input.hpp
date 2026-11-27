@@ -91,7 +91,6 @@ private:
     std::atomic<std::uint64_t> epoch_{1};
     std::atomic<std::uint64_t> historyRevision_{0};
     std::uint64_t renderedEpoch_ = 1;
-    std::uint64_t renderedHistoryEpoch_ = 0;
     std::uint64_t generation_ = 0;
     std::uint64_t voiceSerial_ = 0;
 

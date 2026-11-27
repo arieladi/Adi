@@ -1470,6 +1470,9 @@ if(ADI_WITH_JUCE)
             "    bash adi_daw/tools/fetch_external.sh --with-juce")
     endif()
 
+    # WTS-02: send Debug assertions to the window suite's logger. JUCE object
+    # layouts depend on this flag, so all targets in a configuration must agree.
+    add_compile_definitions("$<$<CONFIG:Debug>:JUCE_LOG_ASSERTIONS=1>")
     add_subdirectory("${ADI_JUCE_DIR}" "${CMAKE_BINARY_DIR}/third_party/JUCE" EXCLUDE_FROM_ALL SYSTEM)
 
     target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
@@ -1889,7 +1892,10 @@ add_executable(adi_library_tests tests/test_library.cpp)
 target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_library_tests COMMAND adi_library_tests)
 
-set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
+# RUN_SERIAL: the index worker lowers its own priority, which on Windows is
+# THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
+# took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.

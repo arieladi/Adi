@@ -1731,8 +1731,8 @@ void AdiRootComponent::frame() noexcept {
         arrangement.geometry.selection = session_.selection();
         dirty_.mark(DirtySet::Layout);
     }
-    // The Info View is app-scoped: a toggle in another window shows here too.
-    if (infoShown_ != commands_.infoView()) {
+    // The Info View and density are app-scoped and can change in another window.
+    if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
         infoShown_ = commands_.infoView();
         resized();
     }
@@ -1874,6 +1874,7 @@ int AdiRootComponent::shownPanelWidth(const PanelGeometry &panel) const noexcept
     return panel.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth : width;
 }
 void AdiRootComponent::resized() {
+    appliedDensity_ = look::densityId();
     const int w = getWidth(), h = getHeight(), gap = look::gap;
     transport.setBounds(0, 0, w, look::controlBarHeight);
     status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);
@@ -2754,6 +2755,9 @@ bool AdiRootComponent::trackClipboard(ClipCommand command) {
         } else {
             if (selected == nullptr || selected->kind == "master")
                 return fail("Select a track other than Main.");
+            std::string error;
+            if (beforeDeleteTrack && !beforeDeleteTrack(error))
+                return fail(std::move(error));
             copy = {projectFile(store), selected->kind, selected->name, selected->parent, selected->indexInParent,
                     detail::captureTrackForCopy(store.db(), selected->id)};
             for (const auto &row : copy.contents.at("rows"))
@@ -6056,23 +6060,6 @@ juce::File songProjectFile(const juce::File &file) {
     if (file.existsAsFile() || parent == parent.getSiblingFile(name))
         return file;
     return parent.getChildFile(name).getChildFile(file.getFileName());
-}
-bool discardUntouchedProject(const std::filesystem::path &path, const media::FileIdentity &expected) {
-    std::error_code error;
-    const auto lease = media::ProjectFileLease::openExclusive(path, error);
-    if (!lease || lease->identity() != expected || !std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)))
-        return false;
-    try {
-        // Read after all document workers have released SQLite and under the exclusive project lease.
-        // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
-        SQLite::Database db(media::pathUtf8(path), SQLite::OPEN_READONLY);
-        if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
-                          "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
-            return false;
-    } catch (const SQLite::Exception &) {
-        return false;
-    }
-    return media::readFileIdentity(path, error) == expected && std::filesystem::remove(path, error);
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());

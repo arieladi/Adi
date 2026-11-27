@@ -335,30 +335,36 @@ void midiMonitoring() {
           played(instrument, EventType::NoteOff, loopStart + 30, 67),
           "Auto follows the wrapped playhead and closes again where the clip restarts");
 
-    Fixture moved(48000, 64);
-    moved.clip(1, 0, 12012, 24024);
-    moved.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
-                           "UPDATE clips SET pos_ticks=24024 WHERE id=1");
-    moved.load();
-    ProjectView view;
-    view.refresh(*moved.store);
-    OpRequest request;
-    request.opType = "clip.move";
-    request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
-    const auto edit = view.prepareLocalEdit(*moved.store, request);
-    if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
-        throw std::runtime_error("move was not admitted by the scoped Arrangement view");
-    const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
-    check(!scoped, "moving a clip on an armed Auto track refreshes its monitoring ranges");
-    if (!scoped) moved.refresh();
-    check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
-          key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
-    for (int block = 0; block < 5; ++block) moved.render();
-    check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
-          played(*moved.instrument, EventType::NoteOff, 135, 61) &&
-          played(*moved.instrument, EventType::NoteOn, 300, 60) &&
-          !played(*moved.instrument, EventType::NoteOn, 311, 62),
-          "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    for (const bool followsSelection : {false, true}) {
+        Fixture moved(48000, 64);
+        moved.clip(1, 0, 12012, 24024);
+        moved.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1;"
+                               "UPDATE clips SET pos_ticks=24024 WHERE id=1");
+        if (!followsSelection) moved.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+        moved.load();
+        if (followsSelection)
+            check(moved.session.setSelectionArmedTrack(1), "selecting the Auto track arms it for MIDI monitoring");
+        ProjectView view;
+        view.refresh(*moved.store);
+        OpRequest request;
+        request.opType = "clip.move";
+        request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
+        const auto edit = view.prepareLocalEdit(*moved.store, request);
+        if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
+            throw std::runtime_error("move was not admitted by the scoped Arrangement view");
+        const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
+        check(!scoped, followsSelection ? "moving a clip on a selection-armed Auto track refreshes monitoring ranges"
+                                        : "moving a clip on an armed Auto track refreshes its monitoring ranges");
+        if (!scoped) moved.refresh();
+        check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
+              key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
+        for (int block = 0; block < 5; ++block) moved.render();
+        check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
+              played(*moved.instrument, EventType::NoteOff, 135, 61) &&
+              played(*moved.instrument, EventType::NoteOn, 300, 60) &&
+              !played(*moved.instrument, EventType::NoteOn, 311, 62),
+              "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    }
 }
 
 void noteEditorAudition() {
