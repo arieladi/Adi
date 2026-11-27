@@ -894,19 +894,26 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
-bool ProjectDocument::settleParameters() {
-    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
-    // drain dated that far on closes every one now. Each drain offers one finished gesture.
-    constexpr std::int64_t kQuietMs = 150;
+bool ProjectDocument::drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs) {
     std::vector<OpRequest> requests;
-    for (int round = 0; round < 256; ++round) {
+    for (int round = 0; round < gestureLimit; ++round) {
         requests.clear();
-        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+        if (parameterOps_.drain(captureNowMs() + quietDelayMs, requests) == 0)
             return true;
         if (!commitCaptured(requests))
             return false;
     }
     return true;
+}
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input.
+    constexpr std::int64_t kQuietMs = 150;
+    return drainParameterEdits(256, kQuietMs);
+}
+void ProjectDocument::pollParameterEdits() {
+    // Configure can follow several completed native gestures from one window update.
+    drainParameterEdits(256);
+    feed_.publish(session_, realisedGeneration_);
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
@@ -919,9 +926,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
     pollRecording(deviceStopped_.load(std::memory_order_acquire));
-    std::vector<OpRequest> requests;
-    parameterOps_.drain(captureNowMs(), requests);
-    commitCaptured(requests);
+    drainParameterEdits(1);
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
     advanceSave();
@@ -984,7 +989,7 @@ void ProjectDocument::setParameterDemand(const void *consumer, const std::vector
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
 std::shared_ptr<const ParameterPublication> ProjectDocument::automationParameters(std::int64_t track) {
-    return ParameterFeed::describeForAutomation(session_, track);
+    return feed_.describeForAutomation(session_, track);
 }
 device::DeviceInstance* ProjectDocument::limiterReductionTarget(
     std::int64_t id, const engine::DeviceRuntimeToken& expected) {

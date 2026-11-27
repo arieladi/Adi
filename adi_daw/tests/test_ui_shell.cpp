@@ -2647,10 +2647,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(mainStrip != nullptr && mainStrip->cueVolume.isVisible() && mainStrip->cueVolume.getTitle() == "Cue Volume",
               "Main has its Cue Volume");
         if (mainStrip != nullptr) {
-            mainStrip->cueVolume.setValue(-12, juce::sendNotificationSync);
+            auto &cueVolume = mainStrip->cueVolume;
+            cueVolume.setValue(-12, juce::sendNotificationSync);
             root.frame();
             check(std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
                   "a typed Cue Volume is the project's at once, no undo step");
+            check(cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+                      std::abs(root.current()->cue.volumeDb + 11.9) < 1e-9 &&
+                      cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+                      std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
+                  "SC-289: Cue Volume arrows nudge one tenth of a dB without an undo step");
+            check(cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                      std::abs(root.current()->cue.volumeDb) < 1e-9 && root.undoTitle(false) == title,
+                  "SC-289: Delete on Cue Volume returns to 0 dB");
+            cueVolume.setValue(cueVolume.getValueFromText("-inf"), juce::sendNotificationSync);
+            check(std::abs(root.current()->cue.volumeDb - kCueSilenceDb) < 1e-9, "Cue Volume reads -inf as silence");
+            cueVolume.setValue(cueVolume.getValueFromText("-12 dB"), juce::sendNotificationSync);
         }
         check(root.setCueOutput(2) && root.current()->cue.firstOutputChannel == 2 && !root.setCueOutput(3) &&
                   root.current()->cue.firstOutputChannel == 2,
@@ -2799,6 +2811,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                       !column->delay.isEnabled() && boxAt(column->delay, 10.) &&
                       (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == delayStepBefore,
                   "off: the session told, Track Delay unavailable and still 10.00 ms, no undo step");
+            check(column != nullptr && !column->delay.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+                      boxAt(column->delay, 10.) && (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == delayStepBefore,
+                  "SC-289: the disabled Track Delay box does not nudge its value");
             check(root.command(AppCommands::DelayCompensation), "chosen again");
             root.frame();
             column = rowOf(root.mixerView, 3);
@@ -2861,6 +2876,33 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             check(column != nullptr && submitter.nextUndo()->txnId == stepTen && root.reader().findTrack(3) != nullptr &&
                       root.reader().findTrack(3)->delaySamples == 441,
                   "undone, 3 Audio is at its 441 samples again");
+        }
+        if (column != nullptr) {
+            const auto samples = [&] { return root.reader().findTrack(3)->delaySamples; };
+            const auto pressDelay = [&](int key) {
+                auto *shown = rowOf(root.mixerView, 3);
+                const bool handled = shown && shown->delay.keyPressed(juce::KeyPress(key));
+                root.frame();
+                return handled;
+            };
+            const auto undoDelay = [&] {
+                const bool handled = root.command(AppCommands::Undo);
+                root.frame();
+                return handled;
+            };
+            check(pressDelay(juce::KeyPress::upKey) && samples() == 445 &&
+                      submitter.nextUndo()->label == "Change Track Delay" && submitter.nextUndo()->opCount == 1,
+                  "SC-289: Track Delay Up nudges a tenth of a millisecond in one edit on the sample grid");
+            check(pressDelay(juce::KeyPress::downKey) && samples() == 441,
+                  "SC-289: Track Delay Down nudges back to the original delay");
+            if (auto *shown = rowOf(root.mixerView, 3))
+                check(shown->delay.getValueFromText("invalid") == shown->delay.getValue(),
+                      "invalid Track Delay text leaves the delay alone");
+            check(pressDelay(juce::KeyPress::deleteKey) && samples() == 0 && undoDelay() && samples() == 441,
+                  "SC-289: Track Delay resets to zero and Undo restores the delay");
+            check(undoDelay() && samples() == 445 && undoDelay() && samples() == 441 &&
+                      submitter.nextUndo()->txnId == stepTen,
+                  "SC-289: each Track Delay nudge has its own Undo");
         }
     }
     check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
@@ -7206,6 +7248,55 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
     root.frame();
     check(!details().signature.local && panel.readings().signature == "4 / 4", "take the clip back to the song's 4/4");
+
+    // SC-289. Up and Down change the part clicked and leave the same editor open.
+    const juce::KeyPress up(juce::KeyPress::upKey), down(juce::KeyPress::downKey);
+    const auto clickField = [&](juce::Point<float> at) {
+        panel.mouseDown(pressAt(panel, at));
+        panel.mouseUp(pressAt(panel, at));
+    };
+    auto &editor = panel.fieldEditor();
+    const auto positionBeforeArrows = details().loopStartTicks;
+    const auto oldHead = submitter.nextUndo()->txnId;
+    clickField(centreOf(panel.fieldBox(Field::Position)));
+    check(panel.editing() == Field::Position && editor.keyPressed(up) &&
+              details().loopStartTicks == positionBeforeArrows + beat && editor.getText() == "3.2.1" &&
+              editor.isVisible() && undoIs("Set Loop Position"),
+          "Up in Position's beat part advances one beat and refreshes the open editor");
+    const auto nudgedHead = submitter.nextUndo()->txnId;
+    check(nudgedHead != oldHead && editor.keyPressed(down) && details().loopStartTicks == positionBeforeArrows &&
+              submitter.nextUndo()->txnId != nudgedHead && undoIs("Set Loop Position"),
+          "Down returns one beat and commits its own undo step");
+    editor.setText("4.1.1", false);
+    const auto dirtyHead = submitter.nextUndo()->txnId;
+    editor.keyPressed(up);
+    check(editor.getText() == "4.1.1" && panel.editing() == Field::Position &&
+              details().loopStartTicks == positionBeforeArrows && submitter.nextUndo()->txnId == dirtyHead,
+          "an arrow leaves an unsubmitted typed value and the project intact");
+    editor.onEscapeKey();
+    check(root.command(AppCommands::Undo), "undo the Down key");
+    root.frame();
+    check(details().loopStartTicks == positionBeforeArrows + beat && root.command(AppCommands::Undo), "undo the Up key");
+    root.frame();
+    check(details().loopStartTicks == positionBeforeArrows && submitter.nextUndo()->txnId == oldHead,
+          "the two keyboard moves can be undone separately");
+
+    const auto lengthBeforeArrows = loopLengthOf(details());
+    clickField(sixteenths);
+    check(panel.editing() == Field::Length && editor.keyPressed(down) &&
+              loopLengthOf(details()) == lengthBeforeArrows - beat / 4 && undoIs("Set Loop Length"),
+          "Down in Length's sixteenth part shortens the loop by one sixteenth");
+    editor.onEscapeKey();
+    panel.setToolsTab(1);
+    const auto amountBeforeArrows = panel.velocityAmount;
+    const auto beforeToolChange = submitter.nextUndo()->txnId;
+    clickField(centreOf(panel.fieldBox(Field::VelocityAmount)));
+    check(panel.editing() == Field::VelocityAmount && editor.keyPressed(up) &&
+              panel.velocityAmount == amountBeforeArrows + 1 &&
+              editor.getText() == juce::String(amountBeforeArrows + 1) &&
+              submitter.nextUndo()->txnId == beforeToolChange,
+          "Up steps a tool's numeric field by one without applying the tool to notes");
+    editor.onEscapeKey();
 }
 // The Clip View's Pitch and Time panel and its Scale chooser (STEP-7-PLAN 7.7 step 4; manual 8.5, 8.2.5):
 // a MIDI clip has the panel beside the Main panel; Fit to Scale, Invert, Reverse, x2, /2 and Legato act on
@@ -13672,6 +13763,168 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     root.pluginHost = nullptr;
     document->release();
 }
+void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plugin-touches.adi", true, test::knobsLoader("0000001f", "clap"), error);
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "Touch controls";
+    plugin.subtype = "effect";
+    const bool inserted = document && document->insertPlugin(plugin, 2);
+    check(inserted, "SC-317: a hosted plug-in with a software editor");
+    if (!inserted) return;
+    const auto id = document->parameterFeed().current()->front().id;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(id));
+    const std::vector<std::string> original{"older-missing-control"};
+    const auto reset = [&] { return document->deviceAction("device.setPanel", {{"dev", id}, {"params", original}}); };
+    const auto ordered = [&] {
+        SQLite::Statement q(document->store().db(), "SELECT param_id FROM device_panel_params WHERE device_id=? ORDER BY ord");
+        q.bind(1, id);
+        std::vector<std::string> out;
+        while (q.executeStep()) out.push_back(q.getColumn(0).getString());
+        return out;
+    };
+    const bool ready = knobs && reset();
+    check(ready, "the authored panel includes a previously missing control");
+    if (!ready) return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plugin-touches");
+    UiPeerRoot surface;
+    surface.setSize(1440, 900);
+    surface.addAndMakeVisible(root);
+    root.setBounds(surface.getLocalBounds());
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.pollParameterEdits = [&] { document->pollParameterEdits(); };
+    root.automationParameters = [&](std::int64_t track) { return document->automationParameters(track); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    int panelEdits = 0;
+    root.devices.submit = [&](const std::string &op, Payload payload) {
+        if (op == "device.setPanel") ++panelEdits;
+        return document->deviceAction(op, std::move(payload));
+    };
+    FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
+    root.pluginHost = &host;
+    std::vector<std::int64_t> opened;
+    root.pluginEditor = [&](std::int64_t device, std::string &) {
+        opened.push_back(device);
+        AdiRootComponent::PluginEditorView editor;
+        editor.view = std::make_unique<juce::Component>();
+        editor.view->setSize(320, 200);
+        return editor;
+    };
+    std::int64_t now = 0;
+    const auto frame = [&] {
+        document->tick(now++);
+        root.frame();
+    };
+    const auto settle = [&] {
+        root.devices.settleParameterTouches();
+        frame();
+    };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 2;
+    root.publishSelection();
+    frame();
+    frame();
+    const bool shown = root.devices.panels.size() == 1;
+    check(shown, "the selected plug-in owns the visible Device View panel");
+    if (!shown) return;
+    auto &panel = *root.devices.panels.front();
+    const auto menuAction = [&](const juce::String &param, const juce::String &item) -> std::function<void()> {
+        const auto menu = panel.commands();
+        for (juce::PopupMenu::MenuItemIterator outer(menu); outer.next();)
+            if (const auto &entry = outer.getItem(); entry.text == "Last Touched: " + param && entry.subMenu)
+                for (juce::PopupMenu::MenuItemIterator inner(*entry.subMenu); inner.next();)
+                    if (const auto &action = inner.getItem(); action.text == item && action.isEnabled)
+                        return action.action;
+        return {};
+    };
+    const auto touch = [&](std::int32_t index, double value) {
+        knobs->windowGesture(index, value);
+        frame();
+    };
+
+    touch(1, .4);
+    const auto beforeConfigure = menuAction("Gain", "Show on Device Panel");
+    check(beforeConfigure && ordered() == original && panelEdits == 0,
+          "outside Configure a plug-in touch is offered without editing the panel");
+    knobs->windowGesture(0, .57);
+    panel.configureButton.onClick();
+    settle();
+    check(panel.configuring && panel.search.isVisible() && panel.parameterList.isVisible() &&
+              opened == std::vector<std::int64_t>{id} && host.contains(AdiRootComponent::pluginWindowKey(id)),
+          "Configure opens this plug-in's editor and keeps the typed Parameter List available");
+    check(ordered() == original && panelEdits == 0,
+          "Configure ignores touches already published or still waiting when it opened");
+    touch(0, .6);
+    check(panelEdits == 0 && ordered() == original, "the view defers the edit until its frame is complete");
+    settle();
+    check(panelEdits == 1 && ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "a fresh touch adds its stable ID after the existing missing entry");
+    touch(0, .7);
+    settle();
+    check(panelEdits == 1, "another touch of the same parameter does not duplicate the row or history step");
+    touch(1, .5);
+    settle();
+    check(panelEdits == 2 && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"} &&
+              root.command(AppCommands::Undo) && ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "a second learned parameter follows the first and one Undo removes just that panel edit");
+    check(reset(), "reset the panel to exercise two plug-in touches in one drain");
+    frame();
+    const auto beforeBoth = panelEdits;
+    knobs->windowGesture(1, .55);
+    knobs->windowGesture(0, .75);
+    frame();
+    settle();
+    check(panelEdits == beforeBoth + 1 && ordered() == std::vector<std::string>{original.front(), "gain", "0000001f"} &&
+              root.command(AppCommands::Undo) && ordered() == original,
+          "two native controls touched in the same drain appear in touch order and one Undo restores the prior panel");
+
+    panel.configureButton.onClick();
+    check(!panel.configuring && !panel.search.isVisible() && reset(), "leaving Configure keeps ordinary offers temporary again");
+    touch(1, .6);
+    const auto stale = menuAction("Gain", "Show on Device Panel");
+    touch(0, .8);
+    const auto automate = menuAction("Cutoff", "Show Automation");
+    if (stale) stale();
+    check(stale && automate && ordered() == original, "a menu captured before a newer touch cannot add the old parameter");
+    if (automate) automate();
+    const auto target = root.automationTarget(2);
+    check(root.automationMode() && target.ownerId == id && target.paramRef == "31" &&
+              ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "choosing Show Automation displays the exact parameter lane and makes that control permanent");
+    touch(1, .7);
+    const auto show = menuAction("Gain", "Show on Device Panel");
+    if (show) show();
+    check(show && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"},
+          "choosing Show on Device Panel also adds the latest touch in order");
+
+    check(reset(), "reset the panel before choosing a touched parameter without Device View demand");
+    root.devices.suspendParameters(true);
+    knobs->windowGesture(0, .9);
+    document->tick(now++);
+    check(document->parameterFeed().current()->front().declarations().empty(),
+          "the last touch is available while Device View has released its live values");
+    const auto arrangementMenu = root.arrangement.headerMenu();
+    std::function<void()> chooseHiddenTouch;
+    for (juce::PopupMenu::MenuItemIterator item(arrangementMenu, true); item.next();)
+        if (item.getItem().text == "Cutoff (last touched)")
+            chooseHiddenTouch = item.getItem().action;
+    if (chooseHiddenTouch) chooseHiddenTouch();
+    const auto hiddenTarget = root.automationTarget(2);
+    check(chooseHiddenTouch && hiddenTarget.ownerId == id && hiddenTarget.paramRef == "31" &&
+              ordered() == std::vector<std::string>{original.front(), "0000001f"} &&
+              document->parameterFeed().current()->front().declarations().empty(),
+          "Arrangement pins the exact hidden touch without subscribing to live values");
+    root.pluginHost = nullptr;
+}
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
@@ -13755,11 +14008,8 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
                 return p.normalized;
         return -1.0;
     };
-    check(root.devices.panels[0]->controls[0]->getWantsKeyboardFocus() && !cutoff.getWantsKeyboardFocus() &&
-              root.devices.panels[0]->controls[0]->getNumChildComponents() > 0,
-          "a click on the knob lands the focus on its control: the slider declines it (manual 41.6's keys need it)");
     // Live 12 manual 41.6: Delete on a control is Return to Default, where the device's Delete is
-    // Delete (row 6). Through the peer, as the key arrives: the focused control takes it.
+    // Delete (row 6). Send the mouse and keys through the peer to exercise focus and click counts.
     {
         UiPeerRoot host;
         host.setSize(root.getWidth(), root.getHeight());
@@ -13772,31 +14022,82 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
             return true;
         };
         auto &control = *root.devices.panels[0]->controls[0];
-        control.grabKeyboardFocus();
         auto *peer = host.getPeer();
         const auto knobValue = [&] { return knobs->getParam("cutoff").normalized; };
+        check(peer != nullptr && knobs != nullptr, "the device knob has a runtime and a software peer");
         if (peer != nullptr && knobs != nullptr) {
-            const auto previous = knobValue();
-            const auto hit = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
-            document->tick(0);
-            root.frame();
-            check(hit && knobValue() > previous, "SC-82: Up changes a focused device knob");
-            if (knobValue() != previous)
-                check(root.command(AppCommands::Undo), "undo the knob nudge");
-            control.grabKeyboardFocus();
-            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
-            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
-            if (editor) {
-                editor->setText("0.7");
-                peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            const auto update = [&] {
                 document->tick(0);
                 root.frame();
+            };
+            const auto at = host.getLocalPoint(&cutoff, cutoff.getLocalBounds().getCentre()).toFloat();
+            auto time = juce::Time::currentTimeMillis();
+            const auto mouse = [&](juce::ModifierKeys mods, juce::int64 wait) {
+                time += wait;
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, time);
+            };
+            const auto click = [&](juce::int64 wait) {
+                mouse(juce::ModifierKeys::leftButtonModifier, wait);
+                mouse({}, 20);
+            };
+            const auto previous = knobValue();
+            const auto previousHead = OpJournal(document->store()).headSeq();
+            mouse({}, 0);
+            click(1000);
+            update();
+            check(control.hasKeyboardFocus(false) && knobValue() == previous &&
+                      OpJournal(document->store()).headSeq() == previousHead,
+                  "SC-289: clicking the knob gives its control focus and writes no edit");
+            const bool up = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
+            update();
+            const auto raised = knobValue();
+            check(up && raised > previous, "Up changes the clicked device knob");
+            const bool down = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::downKey));
+            update();
+            check(down && std::abs(knobValue() - previous) < 1e-9, "Down changes the same device knob back");
+            if (up && down && raised > previous) {
+                const bool undoneDown = root.command(AppCommands::Undo);
+                update();
+                check(undoneDown && std::abs(knobValue() - raised) < 1e-9, "one Undo takes back the Down nudge");
+                const bool undoneUp = root.command(AppCommands::Undo);
+                update();
+                check(undoneUp && std::abs(knobValue() - previous) < 1e-9, "another Undo takes back the Up nudge");
             }
-            check(editor != nullptr && std::abs(knobValue() - .7) < 1e-9,
-                  "SC-82: typing commits the focused device knob");
-            if (knobValue() != previous)
-                check(root.command(AppCommands::Undo), "undo the typed knob value");
-            control.grabKeyboardFocus();
+
+            const auto type = [&](char ch) {
+                return peer->handleKeyPress(juce::KeyPress(ch, 0, static_cast<juce::juce_wchar>(ch)));
+            };
+            const bool first = type('0');
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            const bool started = first && editor && control.isParentOf(editor) && editor->getText() == "0";
+            check(started, "the first digit opens knob entry and is retained as text");
+            if (started) {
+                const bool typed = type('.') && type('7') &&
+                                   peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+                update();
+                check(typed && control.hasKeyboardFocus(false) && std::abs(knobValue() - .7) < 1e-9,
+                      "typing 0.7 and Return commits the knob and restores its keyboard focus");
+                if (knobValue() != previous) {
+                    const bool undone = root.command(AppCommands::Undo);
+                    update();
+                    check(undone && std::abs(knobValue() - previous) < 1e-9, "one Undo restores the value before typing");
+                }
+            }
+
+            click(1000);
+            click(80);
+            update();
+            check(std::abs(knobValue() - .5) < 1e-9 && std::abs(rowValue() - .5) < 1e-9 &&
+                      root.undoTitle(false) == "Undo UI knobs: Cutoff" && submitted.empty(),
+                  "a double-click on the knob resets it to the plug-in default");
+            if (std::abs(knobValue() - .5) < 1e-9) {
+                const bool undone = root.command(AppCommands::Undo);
+                update();
+                check(undone && std::abs(knobValue() - previous) < 1e-9 &&
+                          OpJournal(document->store()).headSeq() == previousHead,
+                      "one Undo restores the original knob value after the double-click");
+            }
         }
         const juce::KeyPress del(juce::KeyPress::deleteKey);
         check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
@@ -21372,9 +21673,9 @@ int main(int argc, char **argv) {
                 (*plugged)[1].route = "mpe_midi";
                 integrated.devices.publication = [plugged] { return plugged; };
                 integrated.frame();
-                const auto routesOf = [&](const juce::PopupMenu &menu) {
+                const auto routesOf = [&](const juce::PopupMenu &popup) {
                     std::vector<juce::PopupMenu::Item> found;
-                    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                    for (juce::PopupMenu::MenuItemIterator it(popup); it.next();)
                         if (it.getItem().text == "MPE" && it.getItem().subMenu)
                             for (juce::PopupMenu::MenuItemIterator sub(*it.getItem().subMenu); sub.next();)
                                 found.push_back(sub.getItem());
@@ -22768,6 +23069,7 @@ int main(int argc, char **argv) {
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
+    trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });

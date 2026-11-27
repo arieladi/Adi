@@ -137,6 +137,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Returns how many woke (the view then re-reads the session).
     std::size_t wakeMissingPlugins();
     void tick(std::int64_t milliseconds);
+    // Drain and publish queued plug-in edits before a new surface begins observing touches.
+    void pollParameterEdits();
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
     // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
     // step they undo is the one the user sees last (DF-W29). A held drag (Begin with no End) stays.
@@ -392,6 +394,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
     // is nothing done. False with `error()` set when the store refused.
     bool commitCaptured(std::vector<OpRequest> &requests);
+    bool drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs = 0);
     // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
     // value, in that order.
     std::string refusalReason(std::int64_t id, const std::string &param);
@@ -462,7 +465,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;
-    ParameterFeed feed_;
+    ParameterFeed feed_{parameterOps_};
     // Owner-only. Refresh the pointer even when latency fields still match so
     // an old load of controls is never held after its display changes.
     std::shared_ptr<const ParameterPublication> reportedLatencyFeed_;

@@ -716,10 +716,13 @@ class ClipViewPanel final : public juce::Component {
     friend class NoteEditor;
     bool commit(TrackEdit);
     std::int64_t fieldTicks(Field) const noexcept;
-    std::int64_t draggedTicks() const noexcept;
-    std::pair<std::int64_t, std::int64_t> draggedSignature() const noexcept;
-    void openEditor(Field);
+    std::int64_t adjustedTicks(Field, int part, int steps) const noexcept;
+    std::pair<std::int64_t, std::int64_t> adjustedSignature(int part, int steps) const noexcept;
+    void adjustField(Field, int part, int steps);
+    juce::String fieldText(Field);
+    void openEditor(Field, int part = 0);
     void closeEditor();
+    bool stepEditedField(const juce::KeyPress &);
     void showScaleMenu(bool roots);
     // A field of the Functions tab: the number it holds and its range; null for any other field.
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
@@ -762,11 +765,19 @@ class ClipViewPanel final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
-    int pressPart_ = 0, dragSteps_ = 0;
+    int pressPart_ = 0, dragSteps_ = 0, editPart_ = 0;
     std::size_t chord_ = 0, quantizeValue_ = 0, duration_ = 1; // Grid
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
-    juce::TextEditor editor_;
+    juce::String editorReading_;
+    class FieldEditor final : public juce::TextEditor {
+      public:
+        explicit FieldEditor(ClipViewPanel &owner) : owner_(owner) {}
+        bool keyPressed(const juce::KeyPress &key) override;
+
+      private:
+        ClipViewPanel &owner_;
+    } editor_{*this};
 };
 
 // The Clip View's top edge: dragging it grows the view, and dragging it to the window's foot

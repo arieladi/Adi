@@ -144,6 +144,9 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const ParamEditCapture::Stats* uiCaptureStats(std::int64_t) const noexcept;
     bool isAttached(std::int64_t) const noexcept;
     std::int32_t lastTouched(std::int64_t) const noexcept;
+    std::uint64_t lastTouchSequence(std::int64_t) const noexcept;
+    std::span<const ParameterTouch> recentTouches(std::int64_t) const noexcept;
+    const ParamEditCapture* touchCapture(std::int64_t) const noexcept;
     void frontendEnded() noexcept;
     void pump(std::int64_t nowMs) override;
     bool releasable() const noexcept override;
@@ -881,9 +884,29 @@ bool ParamOps::Runtime::isAttached(std::int64_t deviceId) const noexcept {
         (it->second.session==nullptr || !it->second.sessionLife.expired());
 }
 
-std::int32_t ParamOps::Runtime::lastTouched(std::int64_t deviceId) const noexcept {
+const ParamEditCapture* ParamOps::Runtime::touchCapture(std::int64_t deviceId) const noexcept {
     const auto it = devices_.find(deviceId);
-    return it == devices_.end() || !isAttached(deviceId) ? -1 : it->second.capture->lastTouched();
+    if (it == devices_.end() || !it->second.active || !it->second.inst) return nullptr;
+    const auto& attached = it->second;
+    if (attached.session &&
+        (attached.sessionLife.expired() || replay_->blocked || !attached.fenceSource.alive() ||
+         !attached.fenceSource.sameConnection(attached.session->appliedNotifications()) ||
+         attached.session->resolveDevice(attached.runtimeToken) != attached.inst)) return nullptr;
+    return attached.capture.get();
+}
+
+std::int32_t ParamOps::Runtime::lastTouched(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->lastTouched() : -1;
+}
+
+std::uint64_t ParamOps::Runtime::lastTouchSequence(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->lastTouchSequence() : 0;
+}
+std::span<const ParameterTouch> ParamOps::Runtime::recentTouches(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->recentTouches() : std::span<const ParameterTouch>{};
 }
 
 const ParamEditCapture::Stats* ParamOps::Runtime::captureStats(std::int64_t deviceId) const noexcept {
@@ -926,6 +949,7 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
     // one usable slot suffices. The plug-in never receives its address.
     a.uiCapture = std::make_unique<ParamEditCapture>(1);
     a.uiExplicit.clear(); a.uiPending.clear();
+    a.capture->clearLastTouch();
     std::erase_if(touched_,[&](const auto& key) { return key.first == deviceId; });
     a.inst = &inst;
     a.session = session;
@@ -2544,6 +2568,8 @@ const ParamEditCapture::Stats* ParamOps::captureStats(std::int64_t id) const noe
 const ParamEditCapture::Stats* ParamOps::uiCaptureStats(std::int64_t id) const noexcept { return runtime_->uiCaptureStats(id); }
 bool ParamOps::isAttached(std::int64_t id) const noexcept { return runtime_->isAttached(id); }
 std::int32_t ParamOps::lastTouched(std::int64_t id) const noexcept { return runtime_->lastTouched(id); }
+std::uint64_t ParamOps::lastTouchSequence(std::int64_t id) const noexcept { return runtime_->lastTouchSequence(id); }
+std::span<const ParameterTouch> ParamOps::recentTouches(std::int64_t id) const noexcept { return runtime_->recentTouches(id); }
 void ParamOps::setTolerance(double value) noexcept { runtime_->tolerance_=value>0.0?value:0.0; }
 
 void ParamOps::Runtime::frontendEnded() noexcept {

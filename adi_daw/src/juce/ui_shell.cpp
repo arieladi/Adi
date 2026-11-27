@@ -3727,7 +3727,7 @@ bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view r
     if (!track || track->kind != "audio")
         return fail("External audio inputs are available on audio tracks.");
     const auto choices = audioInputs();
-    if (std::none_of(choices.begin(), choices.end(), [&](const auto &input) { return input.ref == ref; }))
+    if (std::none_of(choices.begin(), choices.end(), [&](const auto &choice) { return choice.ref == ref; }))
         return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
     if (track->inputRef && *track->inputRef == ref)
         return true;

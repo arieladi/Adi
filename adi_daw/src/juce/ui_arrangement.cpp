@@ -1718,12 +1718,26 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
         juce::PopupMenu show;
         std::map<std::string, juce::PopupMenu> byDevice;
         std::vector<std::string> order;
+        const auto publication = root.devices.publication ? root.devices.publication() : nullptr;
         for (const auto &t : root.automationChoices(track)) {
             const auto key = t.ownerKind == "device" ? t.device + "#" + std::to_string(t.ownerId) : std::string("Mixer");
             if (!byDevice.count(key))
                 order.push_back(key);
-            byDevice[key].addItem(juce::String::fromUTF8(t.paramName.c_str()), true, t == shown,
-                                  [this, track, t] { root.showAutomation(track, t); });
+            auto label = juce::String::fromUTF8(t.paramName.c_str());
+            if (t.lastTouched) label += " (last touched)";
+            byDevice[key].addItem(label, true, t == shown,
+                                  [safe = SafePointer<ArrangementView>(this), track, t,
+                                   touchSource = t.lastTouched ? publication : nullptr] {
+                                      if (!safe) return;
+                                      if (touchSource) {
+                                          const auto captured = std::find_if(touchSource->begin(), touchSource->end(),
+                                              [&](const auto &d) { return d.id == t.ownerId; });
+                                          if (captured == touchSource->end() ||
+                                              !safe->root.devices.addLastTouchedParameter(*captured))
+                                              return;
+                                      }
+                                      if (safe) safe->root.showAutomation(track, t);
+                                  });
         }
         for (const auto &key : order)
             show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),

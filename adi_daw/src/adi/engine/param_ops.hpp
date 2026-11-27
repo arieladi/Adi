@@ -293,6 +293,12 @@ public:
     /// as of the last drain; -1 when none, or the device is not attached.
     /// Live's temporary entry, and the Master Focus Dial's target (ADR-0130).
     [[nodiscard]] std::int32_t lastTouched(std::int64_t deviceId) const noexcept;
+    /// Owner thread. Advances on another native touch even if lastTouched()
+    /// is unchanged. Zero means no touch on the current live attachment.
+    [[nodiscard]] std::uint64_t lastTouchSequence(std::int64_t deviceId) const noexcept;
+    /// Current attachment's chronological native touches. Consume the span
+    /// before draining again or changing attachments.
+    [[nodiscard]] std::span<const ParameterTouch> recentTouches(std::int64_t deviceId) const noexcept;
 
     /// How close is "the same value" for `applied` (decision 3). Default 1e-6,
     /// the capture's own echo tolerance.
