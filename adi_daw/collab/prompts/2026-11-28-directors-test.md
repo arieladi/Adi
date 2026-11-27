@@ -58,6 +58,10 @@ beside ADI. His words are quoted where they decide something.
     (ADR-0265 d5, an addition: Live does nothing there). The first time it asks which kind, a MIDI track,
     an audio track or an FX channel, and it remembers the answer, as ADI's other remembered choices do; a
     setting changes it later.
+16. **A setting: the Loop switch takes the selection** (his word of 28 November: "lets add that as an
+    option in settings"). Off, the default, is Live's way: the switch turns the existing loop on and off.
+    On, a click on the switch while time is selected loops that selection, as Ctrl/Cmd+L does; with
+    nothing selected it turns the existing loop on and off. An addition (DF-W65, win registers it).
 
 ## What he said works
 
