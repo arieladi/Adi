@@ -1560,23 +1560,42 @@ void ArrangementView::showInsertMarkerAt(std::int64_t tick) {
     changed();
 }
 void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
-void ArrangementView::select(int x, int y, bool snapToGrid) {
-    canvas.clearAutomationSelection();
+void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose purpose) {
+    if (purpose == SelectionPurpose::Edit)
+        canvas.clearAutomationSelection();
     if (const auto *t = geometry.trackAt(reader(), y)) {
-        geometry.selection.track = t->id;
-        geometry.selection.toTrack = 0;
-        geometry.selection.picked.clear();
         const auto at = geometry.tick(x);
         // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
         const auto *c = geometry.hit(*t, at);
         const auto tick = snapToGrid ? geometry.snap(at, false) : at;
+        if (purpose == SelectionPurpose::ContextMenu) {
+            auto &sel = geometry.selection;
+            if (c != nullptr && geometry.clipSelected(c->id)) {
+                if (sel.pickedClips.empty()) {
+                    // Split from a single clip's menu uses the point where it was opened.
+                    sel.insert = tick;
+                    sel.marked = true;
+                    changed();
+                }
+                return;
+            }
+            const auto [start, end] = std::minmax(sel.start, sel.end);
+            if (sel.clip == 0 && sel.pickedClips.empty() && at >= start && at < end &&
+                geometry.inSelection(reader(), t->id))
+                return;
+            canvas.clearAutomationSelection();
+        }
+        geometry.selection.track = t->id;
+        geometry.selection.toTrack = 0;
+        geometry.selection.picked.clear();
         geometry.selection.clip = c ? c->id : 0;
         geometry.selection.pickedClips.clear();
         geometry.selection.insert = tick;
         geometry.selection.marked = true;
         geometry.selection.start = c ? c->posTicks : tick;
         geometry.selection.end = c ? c->posTicks + c->lengthTicks : tick;
-        locate();
+        if (purpose == SelectionPurpose::Edit)
+            locate();
         changed();
     }
 }
@@ -2356,41 +2375,49 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             }
     resizeId = 0;
     moveId_ = 0;
-    moving_ = selectOnUp_ = false;
+    moving_ = false;
+    selectOnUp_ = 0;
+    const bool popup = e.mods.isPopupMenu();
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
         focusIfShowing(*this);
+        auto &sel = view.geometry.selection;
+        if (popup && sel.clip == 0 && sel.pickedClips.empty() &&
+            view.geometry.inSelection(view.reader(), t->id)) {
+            view.contextMenu(e.getScreenPosition(), true);
+            return;
+        }
         // The split line at the row's foot resizes it; the rest of the title moves it, Main and
         // the returns aside.
         const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
         const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
-        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !e.mods.isPopupMenu();
+        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !popup;
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
         // A plain press on one of several selected tracks keeps them for a drag; released
         // without one, it selects that track alone.
         if (plain && !split && view.geometry.inSelection(view.reader(), t->id) &&
             view.geometry.selectedTracks(view.reader()).size() > 1)
-            selectOnUp_ = true;
-        else if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
-            auto &picked = view.geometry.selection.picked;
-            if (t->id != view.geometry.selection.track) {
+            selectOnUp_ = t->id;
+        else if (e.mods.isCommandDown() && sel.track != 0 && !popup) {
+            auto &picked = sel.picked;
+            if (t->id != sel.track) {
                 if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
                     picked.erase(at);
                 else
                     picked.push_back(t->id);
             }
-        } else if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
-            view.geometry.selection.toTrack = t->id == view.geometry.selection.track ? 0 : t->id;
+        } else if (e.mods.isShiftDown() && sel.track != 0 && !popup)
+            sel.toTrack = t->id == sel.track ? 0 : t->id;
         else {
-            view.geometry.selection.track = t->id;
-            view.geometry.selection.toTrack = 0;
-            view.geometry.selection.picked.clear();
+            sel.track = t->id;
+            sel.toTrack = 0;
+            sel.picked.clear();
         }
         // A title chooses tracks. The insert marker can stay at its previous position.
-        view.geometry.selection.clearMaterial();
+        sel.clearMaterial();
         if (split)
             resizeId = t->id;
-        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
+        else if (!popup && pressed < rows.size() && !rows[pressed].place.main) {
             moveId_ = t->id;
             movingReturn_ = rows[pressed].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
@@ -2399,7 +2426,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
-    if (e.mods.isPopupMenu()) {
+    if (popup) {
         resizeId = moveId_ = 0;
         view.contextMenu(e.getScreenPosition(), true);
     }
@@ -2569,7 +2596,7 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other
         // tracks"; the line shows where they would land.
         moving_ = true;
-        selectOnUp_ = false;
+        selectOnUp_ = 0;
         // At the lanes' top or foot they scroll, and the line follows; the returns stand still.
         if (!movingReturn_ && view.edgeScroll(0, e.y, false))
             view.frame(true);
@@ -2584,12 +2611,11 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
     const bool moved = moving_;
     resizeId = moveId_ = 0;
     moving_ = false;
-    if (selectOnUp_ && !moved && dragged != 0) {
-        view.geometry.selection.track = dragged;
+    if (const auto selected = std::exchange(selectOnUp_, 0); selected != 0 && !moved) {
+        view.geometry.selection.track = selected;
         view.geometry.selection.toTrack = 0;
         view.geometry.selection.picked.clear();
     }
-    selectOnUp_ = false;
     view.changed();
     // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
     if (moved) {
@@ -3405,7 +3431,7 @@ bool ArrangementCanvas::automationSelectionDown(const juce::MouseEvent &e) {
         sel.marked = true;
     }
     rememberAutomationSelection();
-    if (!extending)
+    if (!extending && !e.mods.isPopupMenu())
         view.locate();
     view.changed();
     if (e.mods.isPopupMenu())
@@ -3928,7 +3954,6 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         view.selectedMeter = -1; // a click in the lanes lets a selected marker go
         view.scrub.repaint();
     }
-    view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
     copying_ = false;
@@ -3940,7 +3965,10 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     pointDrag_.reset();
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
     pointAdded_ = false;
-    if (!panning && e.mods.isPopupMenu() && view.root.automationMode() && automationPointAt(e.position)) {
+    contextMenuPress_ = e.mods.isPopupMenu();
+    if (!contextMenuPress_)
+        view.followPaused = false; // a primary press in the Arrangement starts Follow again (§6.2)
+    if (!panning && contextMenuPress_ && view.root.automationMode() && automationPointAt(e.position)) {
         clearAutomationSelection();
         automationContextMenu(e);
         return;
@@ -3956,12 +3984,14 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     clearAutomationValueReadout();
     if (!panning && automationSelectionDown(e))
         return;
-    clearAutomationSelection();
-    if (e.mods.isPopupMenu()) {
-        view.select(e.x, e.y, view.snaps(e.mods));
+    if (contextMenuPress_) {
+        view.select(e.x, e.y, view.snaps(e.mods), ArrangementView::SelectionPurpose::ContextMenu);
         // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
         view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
-    } else if (!panning) {
+        return;
+    }
+    clearAutomationSelection();
+    if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
@@ -4141,7 +4171,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
                                                              : juce::MouseCursor::NormalCursor);
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu())
+    if (contextMenuPress_ || e.mods.isPopupMenu())
         return;
     if (automationStroke_) {
         if (view.root.automationMode() && view.root.drawMode())
@@ -4276,6 +4306,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(contextMenuPress_, false))
+        return;
     if (automationStroke_) {
         const bool drawing = view.root.automationMode() && view.root.drawMode();
         if (drawing)

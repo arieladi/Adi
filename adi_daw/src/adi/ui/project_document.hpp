@@ -132,13 +132,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     // it owns and the window keeps working; a project replaced meanwhile does not wait for it.
     struct ExportJob {
         std::filesystem::path project, zip;
+        std::string stateWarning;
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
     static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     // Finish pending device edits and capture even plug-ins that never report changed state.
     // Call before closing the document or reading the file for an offline render.
-    // An individual device copy or removal supplies its target.
+    // Save, Export and Quit keep stored state for an unreadable plug-in and
+    // mark it stale. A hard storage failure is reported separately in error().
     bool capturePluginState(std::optional<std::int64_t> deviceId = {});
+    const std::string &pluginStateWarning() const noexcept { return pluginStateWarning_; }
+    // Structural edits require the device's live state before they proceed.
+    bool requirePluginState();
     bool synchronise();
     // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
     // Returns how many woke (the view then re-reads the session).
@@ -406,6 +411,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
     static std::int64_t captureNowMs() noexcept;
+    bool capturePluginStateImpl(std::optional<std::int64_t> deviceId, bool bestEffort);
+    bool markStalePluginStates(std::span<const std::int64_t> stale, bool complete);
     // What the drain and a gesture both do with the requests the capture appended: the state
     // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
     // is nothing done. False with `error()` set when the store refused.
@@ -520,7 +527,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::shared_ptr<SharedAnalysis> analysis_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
-    std::string error_, warning_;
+    std::string error_, warning_, pluginStateWarning_;
     // Last, so its worker stops before anything else goes; it touches nothing of the above.
     // Where the document's file is now, for the waveform worker: Save As moves it.
     std::shared_ptr<WaveformSource> waveformSource_;
