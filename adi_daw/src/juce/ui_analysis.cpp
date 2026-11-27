@@ -61,11 +61,17 @@ std::size_t currentThemeIndex() noexcept {
     const auto theme = std::ranges::find(kThemes, look::themeId());
     return theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
 }
+// Release shared swatches during GUI shutdown, before JUCE's image leak counters run.
+struct PalettePreviewCache final : private juce::DeletedAtShutdown {
+    ~PalettePreviewCache() override { clearSingletonInstance(); }
+    std::array<juce::Image, kThemes.size()> themed;
+    std::array<juce::Image, palettes::count> stock;
+    JUCE_DECLARE_SINGLETON_INLINE(PalettePreviewCache, false)
+};
 const juce::Image &palettePreview(std::size_t index) {
     // On the message thread, share themed default previews and fixed stock swatches across panes.
-    static std::array<juce::Image, kThemes.size()> themed;
-    static std::array<juce::Image, palettes::count> stock;
-    auto &image = index == palettes::defaultIndex ? themed[currentThemeIndex()] : stock[index];
+    auto &cache = *PalettePreviewCache::getInstance();
+    auto &image = index == palettes::defaultIndex ? cache.themed[currentThemeIndex()] : cache.stock[index];
     if (image.isNull()) {
         constexpr int width = 96, height = 8;
         image = juce::Image(juce::Image::RGB, width, height, false);
