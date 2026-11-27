@@ -75,6 +75,11 @@ constexpr std::array fields = {
     Field{"segmentation", FieldType::Object, false, "Authored note geometry in the original source clock",
           {}, {}, {}, {}, {}, segmentationFields},
 };
+constexpr auto geometryFields = [] {
+    auto result = fields;
+    result.back().required = true;
+    return result;
+}();
 
 std::uint64_t frame(const Payload& value) {
     const auto index = detail::signedInteger(value);
@@ -327,13 +332,19 @@ bool buildInverse(OpContext& context, const Payload& payload, Payload& inverse, 
     }
 }
 
+template<std::size_t MinimumSegments>
 bool apply(OpContext& context, const Payload& payload, std::string& error);
 
 constexpr std::array descriptors = {
     OpDescriptor{opType, "Replace an audio clip's pitch edit rows", Scope::Edit, EngineImpact::Snapshot,
-                 fields, false, false, apply, buildInverse, {}},
+                 fields, false, false, apply<0>, buildInverse, {}},
+    OpDescriptor{"clip.splitPitchSegment", "Split a pitch segment using its resolved clip image", Scope::Edit,
+                 EngineImpact::Snapshot, geometryFields, false, false, apply<2>, buildInverse, {}},
+    OpDescriptor{"clip.mergePitchSegments", "Merge pitch segments using their resolved clip image", Scope::Edit,
+                 EngineImpact::Snapshot, geometryFields, false, false, apply<1>, buildInverse, {}},
 };
 
+template<std::size_t MinimumSegments>
 bool apply(OpContext& context, const Payload& payload, std::string& error) {
     if (audio::onAudioThread) { error = "audio callback"; return false; }
     try {
@@ -352,6 +363,10 @@ bool apply(OpContext& context, const Payload& payload, std::string& error) {
         validateIdentity(edits);
         requireCurrentSource(context.db, edits);
         if (payload.contains("segmentation")) edits.segmentation = decodeSegmentation(payload.at("segmentation"));
+        if constexpr (MinimumSegments > 0) {
+            if (!edits.segmentation || edits.segmentation->segments.size() < MinimumSegments)
+                throw std::runtime_error("pitch geometry operation requires its resolved segment image");
+        }
         decodeRows(edits, payload.at("rows"));
         if (!edits.segmentation && edits.rows.empty()) {
             detail::eraseRowKey(context.db, table, {{clipKey, id}});

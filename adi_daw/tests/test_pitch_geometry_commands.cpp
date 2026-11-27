@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/history.hpp"
+#include "adi/history_compaction.hpp"
 #include "adi/media/clip_pitch.hpp"
 #include "adi/pitch_edit_store.hpp"
 #include "adi/pitch_geometry_commands.hpp"
@@ -107,7 +108,7 @@ void splitAndMergeHistory() {
     const auto before = fixture.row();
     const auto prior = fixture.saved();
     const auto split = prepareSplitPitchSegment(*fixture.store, fixture.source, {1, 300});
-    check(split && split.edit->requests.size() == 1 && split.edit->requests.front().opType == "clip.setPitchEdits" &&
+    check(split && split.edit->requests.size() == 1 && split.edit->requests.front().opType == "clip.splitPitchSegment" &&
           split.edit->requests.front().label == "Split pitch segment", "split prepares one independently named journal action");
     const auto cut = commit(*fixture.store, split);
     check(cut.ok && fixture.row() != before, "split journals new geometry and correction rows together");
@@ -131,7 +132,8 @@ void splitAndMergeHistory() {
           "unaffected retimed note keeps its destination even across split placeholder geometry");
 
     const auto merge = prepareMergePitchSegments(*fixture.store, fixture.source, {1, 4});
-    check(merge && merge.edit->requests.size() == 1 && merge.edit->requests.front().label == "Merge pitch segments",
+    check(merge && merge.edit->requests.size() == 1 && merge.edit->requests.front().opType == "clip.mergePitchSegments" &&
+          merge.edit->requests.front().label == "Merge pitch segments",
           "merge prepares its own named journal action");
     const auto glue = commit(*fixture.store, merge);
     check(glue.ok && glue.txnId != cut.txnId, "merge is a distinct Undo group");
@@ -143,8 +145,10 @@ void splitAndMergeHistory() {
     fixture.reopen();
     check(fixture.row() == mergedRow, "reopen preserves the exact merge record");
     const auto logged = OpJournal(*fixture.store).recent(3);
-    check(logged.size() == 3 && logged[0].label == "Merge pitch segments" && logged[1].label == "Split pitch segment" &&
-          logged[0].txnId != logged[1].txnId, "reopened journal retains distinct intent labels and groups");
+    check(logged.size() == 3 && logged[0].opType == "clip.mergePitchSegments" && logged[0].label == "Merge pitch segments" &&
+          logged[1].opType == "clip.splitPitchSegment" && logged[1].label == "Split pitch segment" &&
+          logged[2].opType == "clip.setPitchEdits" && logged[0].txnId != logged[1].txnId,
+          "reopened journal retains exact operation names and distinct groups");
     History history(*fixture.store);
     check(history.undo().ok && fixture.row() == cutRow, "one Undo restores exact before-merge bytes");
     check(history.undo().ok && fixture.row() == before, "separate Undo restores exact before-split bytes");
@@ -152,6 +156,83 @@ void splitAndMergeHistory() {
     check(history.redo().ok && fixture.row() == mergedRow, "separate Redo restores exact merge bytes");
     std::printf("Pitch split placed its destination boundary at frame %llu and kept %.2f cents\n",
         static_cast<unsigned long long>(left.endFrame), left.pitchShiftCents);
+}
+
+void registeredWireAndCheckpoint() {
+    const auto& registry = OpRegistry::instance();
+    Fixture source;
+    const PitchEditCommand initial[] = {{0, PitchSetShift{100}}, {0, PitchSetGain{-6}}};
+    source.seed(initial);
+    const auto original = source.row();
+    const auto install = [](Fixture& target, const Payload& checkpoint) {
+        SQLite::Transaction transaction(target.store->db());
+        history_detail::installCheckpoint(*target.store, checkpoint);
+        transaction.commit();
+    };
+    Fixture restored;
+    install(restored, history_detail::checkpointState(*source.store));
+    check(restored.row() == original, "base checkpoint preserves the legacy pitch correction row");
+
+    const auto split = prepareSplitPitchSegment(*source.store, source.source, {1, 300});
+    if (!split || split.edit->requests.size() != 1) throw std::runtime_error("split request missing");
+    const auto splitRequest = split.edit->requests.front();
+    check(commit(*source.store, split).ok, "source journal applies the prepared split after-image");
+    const auto splitRow = source.row();
+    const auto merge = prepareMergePitchSegments(*source.store, source.source, {1, 4});
+    if (!merge || merge.edit->requests.size() != 1) throw std::runtime_error("merge request missing");
+    check(commit(*source.store, merge).ok, "source journal applies the prepared merge after-image");
+    const auto mergeRow = source.row();
+    const auto logged = OpJournal(*source.store).recent(2);
+    if (logged.size() != 2) throw std::runtime_error("geometry journal entries are missing");
+
+    for (const auto* name : {"clip.splitPitchSegment", "clip.mergePitchSegments"}) {
+        const auto* descriptor = registry.find(name);
+        check(descriptor && descriptor->scope == Scope::Edit && descriptor->engineImpact == EngineImpact::Snapshot &&
+              descriptor->apply && descriptor->buildInverse && !descriptor->ephemeral,
+              "literal geometry operation is registered for captured project edits");
+        auto missingGeometry = splitRequest;
+        missingGeometry.opType = name;
+        missingGeometry.payload.erase("segmentation");
+        check(descriptor && !validateSubmission(*descriptor, missingGeometry.payload).empty() &&
+              !OpJournal(*restored.store).commit(missingGeometry).ok && restored.row() == original,
+              "named geometry operation requires an explicit resolved segmentation image");
+        auto emptyGeometry = splitRequest;
+        emptyGeometry.opType = name;
+        emptyGeometry.payload["rows"] = Payload::array();
+        emptyGeometry.payload["segmentation"]["segments"] = Payload::array();
+        check(!OpJournal(*restored.store).commit(emptyGeometry).ok && restored.row() == original,
+              "a geometry operation cannot clear all source segments");
+    }
+
+    // Replay from recorded requests over a copied checkpoint. No analysis
+    // producer or cache is needed on the replay side.
+    const auto replay = [](const OpJournal::LoggedOp& recorded) {
+        OpRequest request;
+        request.opType = recorded.opType;
+        request.payload = recorded.payload;
+        request.label = recorded.label;
+        return request;
+    };
+    check(OpJournal(*restored.store).commit(replay(logged[1])).ok && restored.row() == splitRow,
+          "split wire payload replays from checkpoint to the byte-exact split result");
+    Fixture splitCheckpoint;
+    install(splitCheckpoint, history_detail::checkpointState(*restored.store));
+    check(splitCheckpoint.row() == splitRow, "checkpoint round-trip retains split geometry and controls");
+    check(OpJournal(*splitCheckpoint.store).commit(replay(logged[0])).ok && splitCheckpoint.row() == mergeRow,
+          "merge wire payload replays from split checkpoint to the byte-exact merge result");
+    check(History(*splitCheckpoint.store).undo().ok && splitCheckpoint.row() == splitRow &&
+          History(*splitCheckpoint.store).redo().ok && splitCheckpoint.row() == mergeRow,
+          "merge captured history restores exact rows after checkpoint replay");
+
+    Fixture legacy;
+    legacy.seed(initial);
+    auto historicalSplit = splitRequest;
+    historicalSplit.opType = "clip.setPitchEdits";
+    check(OpJournal(*legacy.store).commit(historicalSplit).ok && legacy.row() == splitRow,
+          "old generic pitch wire payload still accepts resolved structural geometry");
+    check(History(*legacy.store).undo().ok && legacy.row() == original &&
+          History(*legacy.store).redo().ok && legacy.row() == splitRow,
+          "legacy structural geometry retains exact Undo and Redo");
 }
 
 void directBoundaryHistory() {
@@ -290,6 +371,7 @@ void splitReset() {
 int main() {
     try {
         splitAndMergeHistory();
+        registeredWireAndCheckpoint();
         directBoundaryHistory();
         rejectsIncompatibleAndStale();
         mergeMismatch();

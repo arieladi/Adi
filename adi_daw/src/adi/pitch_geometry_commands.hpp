@@ -20,8 +20,8 @@ struct PitchGeometryEdit {
 enum class PitchGeometryCorrections { PreserveExact, ResetChanged };
 
 // Each prepared action has its own history label and captures one complete
-// replacement through clip.setPitchEdits. Commit separately with
-// commitPrepared on the same live project generation.
+// replacement. Commit separately with commitPrepared on the same live
+// project generation. Boundary correction is a clip.setPitchEdits action.
 // PreserveExact retains compatible corrections and an exact frame mapping.
 // ResetChanged deliberately clears controls and timing on affected segments.
 // Undo restores the entire preceding state under either policy.

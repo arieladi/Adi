@@ -155,7 +155,7 @@ void merge(const PitchAnalysis& source, PitchSegmentDraft& draft, PitchGlueSegme
 }
 
 PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& source,
-                          const PitchSegmentationCommand& change, const char* label,
+                          const PitchSegmentationCommand& change, const char* opType, const char* label,
                           PitchGeometryCorrections corrections = PitchGeometryCorrections::PreserveExact) {
     if (onAudioThread) return {{}, "audio callback"};
     if (corrections != PitchGeometryCorrections::PreserveExact && corrections != PitchGeometryCorrections::ResetChanged)
@@ -208,6 +208,7 @@ PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& so
         }
         auto request = prepareClipPitchEdits(source, geometry.edits, &geometry.geometry);
         if (!request.request) return {{}, std::move(request.error)};
+        request.request->opType = opType;
         request.request->label = label;
         prepared.requests.push_back(std::move(*request.request));
         if (snapshot) snapshot->commit();
@@ -222,17 +223,17 @@ PitchGeometryEdit prepare(const Store& store, const media::ClipPitchAnalysis& so
 
 PitchGeometryEdit prepareSplitPitchSegment(const Store& store, const media::ClipPitchAnalysis& source,
                                           PitchSplitSegment change, PitchGeometryCorrections corrections) {
-    return prepare(store, source, change, "Split pitch segment", corrections);
+    return prepare(store, source, change, "clip.splitPitchSegment", "Split pitch segment", corrections);
 }
 
 PitchGeometryEdit prepareMergePitchSegments(const Store& store, const media::ClipPitchAnalysis& source,
                                            PitchGlueSegments change, PitchGeometryCorrections corrections) {
-    return prepare(store, source, change, "Merge pitch segments", corrections);
+    return prepare(store, source, change, "clip.mergePitchSegments", "Merge pitch segments", corrections);
 }
 
 PitchGeometryEdit prepareSetPitchSegmentBoundary(const Store& store, const media::ClipPitchAnalysis& source,
                                                  PitchSetSegmentBoundary change) {
-    return prepare(store, source, change, change.boundary == PitchBoundary::Start ?
+    return prepare(store, source, change, "clip.setPitchEdits", change.boundary == PitchBoundary::Start ?
         "Set pitch segment start" : "Set pitch segment end");
 }
 
