@@ -32,6 +32,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-270 | `basics/look-chain` at `2affb764` | Wire Arrangement M and View Volume to the volume, pan and meter group. Window seat. | Peerless click, layout, menu state and per-window persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-290 | `basics/look-chain` at `9b50a04d` | Show the preceding device's stereo output in each Device View gap. Window seat. | Headless tap, channel, clipping, stale signal and visibility checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-291 | `basics/look-chain` at `8a670768` | Show sample filenames and waveforms and reveal file-backed samples. Window, Mix View and engine seats. | Peerless waveform and folder request checks passed. Debug Werror, 17 UI suites without DISPLAY, 5 sample and snapshot suites and 3 acceptance suites passed. | Pushed |
+| SC-292 | `basics/look-chain` at `6fd1d48a` | Name the valid drops for MIDI tracks and Main in Device View. Window seat. | The peerless paint test distinguished the new instructions from the earlier text. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -252,6 +253,23 @@ The slot reads the media pool's original filename, with a basename from the stor
 Validation in the isolated worktree used Linux Debug compiler syntax checks for the four changed implementation units and both tests. The headless shell test replaces the file-manager callback with a path recorder. It covers the size and positions, a real sample waveform drawn to a software image, Undo, and replacement. A document test waits for the actual worker and checks the frames, sample rate, channels and peak range of a fileless preset. The recording waveform handoff test verifies media row 0 remains a file-backed request. The integrated window-suite run is managed by the chain session.
 
 Also passed a standalone Linux smoke test with `DISPLAY` unset. It requested embedded stereo peaks through the real cache worker, verified each channel's extrema, confirmed cache eviction when the slot was removed, and checked cancelled and nonfinite source handling. Both supported waveform builder signatures correctly dispatched a file-backed source with media ID 0.
+
+### SC-292
+
+The compact 1440×900 software render measures `(x, y, width, height)` in root logical pixels. The Device View is `(324, 666, 1108, 196)` and its content is `(328, 670, 1100, 188)`. Both versions draw in the centered text rectangle `(374, 670, 1054, 188)` when the selected track has the app's add-device button. Without that button the rectangle is `(338, 670, 1090, 188)`.
+
+| Selection | Before | After |
+|---|---|---|
+| Empty MIDI track | “Drop an Instrument or Sample Here” at `(820, 760, 162.5, 10)` | “Drop a MIDI Effect, Instrument or Sample Here” at `(794.5, 760, 213, 10)` |
+| Empty Main | “Drop Audio Effects Here” at `(846.5, 760, 109.5, 10)` | “Drop Audio Effects on Main” at `(839.5, 760, 123.5, 10)` |
+| Empty audio track | “Drop Audio Effects Here” at `(846.5, 760, 109.5, 10)` | “Drop Audio Effects Here” at `(846.5, 760, 109.5, 10)` |
+| No selected track | “Drop Audio Effects Here” at `(828.5, 760, 109.5, 10)` | “Select a Track to Add Devices” at `(815, 760, 136, 8)` |
+
+The table gives the actual text ink bounds measured from the 2× JUCE software render. The first three rows include the add-device button. The no-selection row has no button. The probe matched the new strings only with the change applied and ran with `DISPLAY` unset. The committed headless fixture checks the painted guidance with the actual track selection and compares the central strip against text rendered by the same platform font.
+
+An instrumentless MIDI chain that already contains MIDI effects offers a MIDI effect or instrument at its end. A VCA reports that it does not take devices. The change uses the published track and device state and touches the window seat's Device View paint path and shell tests.
+
+The standalone measurement executable emitted the same JUCE software image shutdown diagnostics in both builds. The comparison assertions ran before shutdown. The chain's full UI and acceptance gates can verify the change under the repository's usual harness.
 
 ## For the director
 
