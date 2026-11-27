@@ -51,8 +51,10 @@ SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snaps
 | Item | Integration head | Change and verification |
 |---|---|---|
 | SC-159 | `1e8d065a4716c5bd61953e690b2b0f5f8c143307` | Uses a rollback journal with FULL synchronization in recognized synced and network project folders. Local projects use WAL. The app warns on open and Save As. The focused Store and Project Files runs passed 87 and 77 checks, including copying an open project after a commit and Undo, folding a dirty WAL, and Save As in both directions. The live copy regression reproduced the old failure. The tests used simulated sync paths. The combined Safety run continues. |
+| SC-157 | `940ac322114c923317a42fbe49fb1ace5a460b22` | Makes closed SQLite backups for named projects on open, every ten minutes while open and after a subsequent snapshot. Keeps ten per project. File > Project Backups and the failed-open flow recover a new editable file beside the source. The focused Project Files run passed 88 checks, including a WAL-backed copy, retention and recovery from a truncated original. The peerless File menu fixture passed strict compilation. |
 
 ## For the director
 
 - SC-398. Should EX-04 receive the libFLAC and LAME dependency grants? I recommend the planned pinned in-process encoders, including LAME 3.100. The published Export chain includes AIFF.
 - SC-100. Should explicitly reopening an edited Untitled file restore its first-save naming prompt? I recommend persisting the unnamed state for this recovery workflow. The integrated behavior currently treats an explicitly opened file as named.
+- SC-157. The current Safety prompt explicitly asks for scheduled backups, while ADR-0255 d6 describes snapshots and no timer. I used the current prompt and retained snapshot-triggered copies. I recommend updating the older decision to match.
