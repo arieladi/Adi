@@ -66,6 +66,9 @@ THIRD_PARTY=(
   "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
   "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
   "libsndfile/libsamplerate libsamplerate BSD-2-Clause 0.2.2 c96f5e3de9c4488f4e6c97f59f5245f22fda22f7 build"
+  # ADR-0226: compile just the approved beat-tracking subset; Mixxx has the short-window tracker.
+  "c4dm/qm-dsp qm-dsp GPL-2.0-or-later qm-vamp-plugins-v1.8.0 4d2a4a4e0c2dd0ddf07bf9d2a224ded912712714 build"
+  "mixxxdj/mixxx mixxx-warp GPL-2.0-or-later - 902cfc2543d7ef65bda1678e6f3c3e98be4aa39d build"
   "JuliaStrings/utf8proc utf8proc MIT v2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78 build"
   # Read-only sample tags; the gitlink pins UTF8-CPP used by the parser.
   "taglib/taglib taglib LGPL-2.1-or-MPL-1.1 v2.3.2 deadc2990767dfbda0701e0ab35fdeea653db08f build submodules"

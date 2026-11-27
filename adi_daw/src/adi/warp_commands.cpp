@@ -2,6 +2,7 @@
 #include "adi/warp_commands.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/transients.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -88,6 +89,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             using Action=audio::ShortSampleWarpAction;
             audio::ShortSampleWarpPlan plan{Action::UseAutoWarp,{},{}};
             auto settings=options.analysis;
+            if(options.shortSamplePolicy) settings.transientSensitivity=options.shortSamplePolicy->transientSensitivity;
             auto shortSample=options.shortSample;
             if(!shortSample && options.shortSamplePolicy && start==0 && frames==reader.frames() &&
                 frames<=static_cast<std::uint64_t>(reader.sampleRate())*audio::kShortSampleSeconds)
@@ -111,9 +113,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
                 settings.sourceBpm=plan.sourceBpm;settings.fromFirstBeat=false;
                 analysis=audio::autoWarpFromOnsets({},frames,reader.sampleRate(),settings,options.stop);
             } else {
-                const auto onsets=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
-                if(!onsets)throw std::runtime_error("cannot analyze Warp source transients");
-                analysis=audio::autoWarpFromOnsets(onsets.frames,frames,reader.sampleRate(),settings,options.stop);
+                analysis=audio::analyzeWarpSource(reader,hash.hex,static_cast<std::uint64_t>(start),frames,settings,options.stop);
             }
             cancelled(options.stop);
             if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?"Warp needs a detected beat or an explicit source tempo":"source timing cannot be analyzed with these Warp options");

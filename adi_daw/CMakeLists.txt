@@ -1931,9 +1931,20 @@ target_link_libraries(adi_sample_file_tags_tests PRIVATE adi_sample_tags adi_war
 add_test(NAME adi_sample_file_tags_tests COMMAND adi_sample_file_tags_tests)
 
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+
+# ADR-0226's fixed-rate worker. Only the selected upstream sources build.
+include(cmake/warp_tracker.cmake)
+adi_add_qmdsp("${ADI_THIRD_PARTY}/qm-dsp" "${ADI_THIRD_PARTY}/mixxx-warp/lib/qm-dsp")
+target_link_libraries(adi_core PRIVATE adi_qmdsp)
 target_sources(adi_core PRIVATE
     src/adi/audio/sample_classification.cpp
     src/adi/audio/short_sample_warp.cpp
+    src/adi/audio/spectral_onsets.cpp
+    src/adi/audio/warp_analysis_pcm.cpp
+    src/adi/audio/warp_beat_candidate.cpp
+    src/adi/audio/warp_source_analysis.cpp
+    src/adi/audio/warp_timing_cache.cpp
+    src/adi/audio/warp_timing_map.cpp
     src/adi/library/analysis_worker.cpp
     src/adi/library/sample_analysis.cpp
     src/adi/library/sample_analysis_catalog.cpp
@@ -1943,7 +1954,8 @@ target_sources(adi_core PRIVATE
     src/adi/library/sample_tonality.cpp
     src/adi/library/sample_warp_policy.cpp)
 foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
-                       sample_analysis sample_descriptors sample_query browser_sample_query sample_tonality)
+                       sample_analysis sample_descriptors sample_query browser_sample_query sample_tonality
+                       spectral_onsets warp_timing_map warp_timing_cache warp_source_analysis)
     add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
     target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
     add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)

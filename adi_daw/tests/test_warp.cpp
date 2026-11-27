@@ -233,6 +233,65 @@ double bandPower(const std::vector<float>& samples,double low) {
     }
     return power;
 }
+
+void renderTempoPitchMatrix() {
+    test::TempDirectory temp{"warp","tempo_pitch_matrix"};
+    constexpr std::uint32_t rate=48000,frames=rate/2;
+    const auto source=temp.path()/"tone.wav";
+    std::vector<float> tone(static_cast<std::size_t>(frames)*2);
+    for(std::uint32_t frame=0;frame<frames;++frame) {
+        const auto value=static_cast<float>(0.25*std::sin(2*std::numbers::pi*440*frame/rate));
+        tone[static_cast<std::size_t>(frame)*2]=value;
+        tone[static_cast<std::size_t>(frame)*2+1]=value*0.5f;
+    }
+    {
+        audio::WavWriter writer(source,rate,2,audio::WavFormat::Float32);
+        writer.write(tone.data(),frames);writer.close();
+    }
+    double minimumRms=1,maximumTapeError=0,maximumR3Error=0;
+    for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,
+                         audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
+        for(const double speed:{0.75,1.5}) for(const double semitones:{-7.,7.}) {
+            audio::WarpRenderPlan plan;
+            plan.source=source;plan.workFolder=temp.path()/"work";plan.sourceFrames=frames;
+            plan.mode=mode;plan.fluctuation=0;plan.transients={0,frames/2};
+            const auto outputFrames=static_cast<std::uint64_t>(std::llround(frames/speed));
+            plan.anchors={{0,0},{frames,outputFrames}};
+            const double pitch=std::exp2(semitones/12);
+            plan.transposeSemis=semitones;
+            if(mode==audio::WarpMode::ComplexPro)plan.formantScale=pitch;
+            if(mode==audio::WarpMode::RePitch) {
+                check(audio::prepareWarp(plan).error==audio::WarpError::InvalidPlan,
+                      "Re-Pitch rejects independent semitones for either speed");
+                plan.transposeSemis=0;
+            }
+            const auto output=audio::prepareWarp(plan);
+            if(!output)std::printf("matrix mode %d, speed %.2f, shift %.1f: %s\n",
+                static_cast<int>(mode),speed,semitones,output.detail.c_str());
+            check(output && output.prepared->frames==outputFrames,
+                  "each supported matrix render reaches the exact endpoint");
+            if(!output)continue;
+            const auto pcm=read(*output.prepared);
+            double energy=0;
+            bool finite=true;
+            for(const auto point:pcm) {finite=finite && std::isfinite(point);energy+=static_cast<double>(point)*point;}
+            const auto rms=std::sqrt(energy/static_cast<double>(pcm.size()));
+            minimumRms=std::min(minimumRms,rms);
+            check(finite && rms>0.01,"matrix output is finite and audible");
+            if(mode==audio::WarpMode::RePitch) {
+                const auto error=std::abs(frequency(pcm,rate,0)-440*speed);
+                maximumTapeError=std::max(maximumTapeError,error);
+                check(error<2,"Re-Pitch frequency follows tape speed");
+            } else if(mode==audio::WarpMode::Tones || mode==audio::WarpMode::Complex || mode==audio::WarpMode::ComplexPro) {
+                const auto error=std::abs(frequency(pcm,rate,0)-440*pitch);
+                maximumR3Error=std::max(maximumR3Error,error);
+                check(error<8,"the R3 modes honor each requested semitone shift independently of speed");
+            }
+        }
+    }
+    std::printf("tempo/pitch matrix min RMS %.4f, max Re-Pitch/R3 error %.3f/%.3f Hz\n",
+                minimumRms,maximumTapeError,maximumR3Error);
+}
 void formants() {
     for(const std::uint32_t sourceRate:{44100u,48000u}) {
         test::TempDirectory temporary{"warp","formants"};const auto file=temporary.path()/"vowel.wav";const auto frames=sourceRate/2;
@@ -289,4 +348,4 @@ void guardsAndLifetime() {
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();renderTempoPitchMatrix();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

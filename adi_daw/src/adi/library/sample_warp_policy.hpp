@@ -17,6 +17,7 @@ struct SampleWarpPolicy {
     std::string mode = "auto";
     SampleAnalysisService* analysis = nullptr;
     const Index* library = nullptr;
+    int transientSensitivity = 50;
 };
 
 [[nodiscard]] SampleWarpPolicy sampleWarpPolicyFromSettings(const nlohmann::json& values,

@@ -2,6 +2,7 @@
 #include "adi/library/sample_warp_policy.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_analysis_settings.hpp"
 #include "adi/library/index.hpp"
 #include "adi/library/sample_analysis.hpp"
 #include "adi/media/analysis_cache.hpp"
@@ -18,6 +19,7 @@ SampleWarpPolicy sampleWarpPolicyFromSettings(const nlohmann::json& values,
         result.mode = found->get<std::string>();
     result.analysis = analysis;
     result.library = library;
+    result.transientSensitivity = audio::warpTransientSensitivity(values);
     return result;
 }
 

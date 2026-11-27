@@ -4,6 +4,7 @@
 #include "adi/library/index.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -137,6 +138,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         using WarpAction=audio::ShortSampleWarpAction;
         audio::ShortSampleWarpPlan shortWarp{WarpAction::UseAutoWarp,{},{}};
         auto warpSettings=options.warpAnalysis;
+        if(options.shortSamplePolicy) warpSettings.transientSensitivity=options.shortSamplePolicy->transientSensitivity;
         auto shortSample=options.shortSample;
         if(options.warp && !saved && !shortSample && options.shortSamplePolicy && info.frames>0 &&
             info.frames<=static_cast<std::int64_t>(info.sampleRate)*audio::kShortSampleSeconds)
@@ -173,10 +175,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
                 audio::WavReader reader(decoded.file);
                 if(reader.frames()!=static_cast<std::uint64_t>(info.frames) || reader.sampleRate()!=static_cast<std::uint32_t>(info.sampleRate) || reader.channels()!=static_cast<std::uint16_t>(info.channels))
                     throw std::runtime_error("source dimensions changed during import");
-                const auto onsets=audio::detectTransients(reader,0,static_cast<std::uint64_t>(info.frames),50,options.stop);
-                if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
-                if(!onsets)throw std::runtime_error("cannot analyze the source audio");
-                warped=audio::autoWarpFromOnsets(onsets.frames,static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),warpSettings,options.stop);
+                warped=audio::analyzeWarpSource(reader,capturedHash,0,static_cast<std::uint64_t>(info.frames),warpSettings,options.stop);
             }
             if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
             if(!*warped) {

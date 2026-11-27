@@ -85,6 +85,35 @@ void throughProducers() {
           "forced one-shot setting preserves Warp and leaves the clip loop off");
     check(store->db().execAndGet("SELECT bpm FROM tempo_map LIMIT 1").getDouble() == 127,
           "classification and short Warp never apply tempo to the song");
+
+    const auto crash = temp.path() / "single-crash.wav";
+    std::uint32_t random = 29;
+    float previous = 0;
+    for (std::size_t frame = 0; frame < samples.size(); ++frame) {
+        random = random * 1664525u + 1013904223u;
+        const auto noise = static_cast<float>(random >> 16) / 32768.0f - 1.0f;
+        samples[frame] = (noise - previous) * 0.4f *
+            static_cast<float>(std::exp(-5.5 * static_cast<double>(frame) / rate));
+        previous = noise;
+    }
+    {
+        WavWriter writer(crash, rate, 1, WavFormat::Pcm24);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+    }
+    options.source = crash;
+    options.clipId = 7;
+    options.mediaId = 2;
+    options.warp = false;
+    options.shortSamplePolicy = button.shortSamplePolicy;
+    auto cleanCrash = clip_edit::prepareImportAudio(*store, options, rate);
+    const auto crashHash = media::blake3File(crash);
+    check(clip_edit::commitMaterial(*store, cleanCrash).ok && crashHash, "import a single decaying cymbal-like hit");
+    const auto crashWarp = clip_edit::prepareSetWarp(*store, 7, button, rate);
+    const auto measuredCrash = analysis.read(crashHash.hex);
+    check(crashWarp.ok && crashWarp.requests.empty() && measuredCrash &&
+          measuredCrash.analysis->classification.kind == SampleKind::OneShot,
+          "Auto treats a decaying crash as a single one-shot and captures no Warp edit");
 }
 } // namespace
 
