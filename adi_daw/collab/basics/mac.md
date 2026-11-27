@@ -96,6 +96,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/clips-chain` | `981baad23b87aaafc15b80678a0a89568b623118` | Yes | All 50 production targets built. Passed 56/56, including window and mixer 33/33, acceptance 3/3, and affected and session 20/20. This revision integrates the speed landing and canonicalizes the VST3 fixture path for the CLI render check. |
 | `origin/basics/clips-chain` | `58017abdace734bad68713e723559e7078698b8f` | Yes | All 50 production targets built. Passed 42/42, including window and mixer 33/33, acceptance 3/3, and affected and session 6/6. Clip and window checks cover Reverse Clip(s), selected ranges, loop repeats, and Undo. |
 | `origin/basics/browser-chain` | `da5adae5a60d15a38ca3d6d3844a44a21d6bb06b` | No | Strict Apple Clang build stopped at `src/juce/ui_main.cpp:1138:13` in the Quit callback. `error: lambda capture 'this' is not used [-Werror,-Wunused-lambda-capture]`. The app build gated the runtime suites. The existing author fix `a7d02bcfe` removes the unused capture and qualifies the static JUCE `quit()` call. |
+| `origin/basics/browser-chain` | `0cb6389f161984b93807752ae09498d3639fe713` | No | Exact-head strict `adi_app` compile reproduced `src/juce/ui_main.cpp:1138:13`: `error: lambda capture 'this' is not used [-Werror,-Wunused-lambda-capture]`. A minimal upstream Clang Linux-target compile reproduced the diagnostic. The author fix `a7d02bcfe` first appears in Browser head `e6ff43de`. |
 
 ## Nine-step window walk
 
