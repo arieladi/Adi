@@ -1,9 +1,10 @@
 ## Still unbuilt
 
-- Production app activation depends on the AGT-02 project identifier writer,
-  AGT-03 hosting grants and the DEV-25 full-class-ID and stock parameter maps.
-  The identifier writer is on `control/agent-chain` at `f3b2596bb`.
-  The window and authenticated production fork have separate rows.
+- Production app activation needs the AGT-02/03 changes to land, a host
+  lease that the control owner can revoke during an active stream, and the
+  DEV-25 full-class-ID and stock parameter maps. The project writer and local
+  consent ledger are on `control/agent-chain` at `b86614940`. The window and
+  authenticated production fork have separate rows.
 - Physical two-host PTP evidence needs separately clocked endpoints and PHC
   access. This runner supplies isolated network namespaces on one kernel.
 
@@ -38,6 +39,7 @@ I took the server engine seat on 27 November 2026.
 | DF-E92 main merge and SC-430 | Merged `origin/main` at `6e684bda4`. Shared ParamOps now uses main's best-effort stale-state receipt and keeps the remote worker's diagnostic for strict captures. | The focused regression checks the strict diagnostic, preservation during a best-effort save and retention after reopening. Chain `8fa1ac1e7`. | Merged and checked. |
 | DEV-27 export preflight | Reused the named remote-device check before staging, including signed-delay ranges that render no graph block. | Baseline wrote 32 frames with the server unavailable. The fixed run named the device and server, wrote zero frames and produced no WAV. The same local placeholder still exported 32 silent frames. A granted server matched all 1,732 local samples. Chain `03ad65157`. | Leading-silence and ordinary remote export checked. |
 | DF-E92 stale state from an absent server | Added unresolved remote devices to the shared Save/Quit stale receipt and kept acknowledgement from requesting the captured bytes twice. | Both assertions failed against the merged baseline. Strict ParamOps now passes all 232 checks. Local placeholder saves keep their existing behavior, stored remote bytes survive and the other device's changed state still saves. Chain `3da2e9178`. | Save/Quit engine receipt checked. |
+| DEV-27 project-file consent binding | The server loader supplies its open Store synchronously at lease issuance. The control ledger can derive its separate native file binding even when two files share a UUID. | Strict standalone admission passed 22 checks in 209 ms. The test saves and opens a real native copy, verifies the common UUID and declines the copy before the processor is made. A scratch mutation that forwarded the first file instead of the requested file failed that assertion. Windows x64 Werror compiled the updated admission and Session test inputs. Chain `548025a7a`. | Engine issuance seam complete. Runtime lease publication and production wiring remain with the control and app owners. |
 
 ## For the director
 
@@ -53,6 +55,7 @@ A. Stock server support in the release. I recommend using stock TCP for the trus
 ## For win
 
 - AGT-02’s durable UUID writer and AGT-03’s ledger are the sources for the app owner’s hosting lease and revocation. The seat exposes the gate and its tests. A project UUID is required before a ledger check.
+- The ledger’s current `authorize` consumes a one-time grant and reads the ledger file. The I/O worker needs a local lease publication with expiry and revocation. The app adapter also needs the control owner’s encoding for the exact endpoint and paired peer and the disclosure scope for events and transport.
 - DEV-25 / DF-E25(c) supplies the validated installed full-class-ID lookup to the VST3 loader and the trusted class map for stock catalogue tokens. The seat supplies both call sites. Browser presentation, the Privacy list and Save/Quit presentation belong to their separately owned rows.
 - The release server fork owns authenticated transport and the VST3/CLAP production host. The native proof uses a loopback engine fixture. The stock worker now settles accepted recall before musical input, and native CLAP recall passes byte-for-byte.
 
@@ -71,3 +74,6 @@ The strict GCC Debug continuation at `76e8b92c5` passed all 291 CTests in
 254.92 seconds. Windows PE under MinGW and Wine exercised the actual CLAP DLL
 over TCP with 256 exact compensated samples, and Windows UDP discovery and
 the SQLite catalogue in a Unicode path with one deduplicated mapped identity.
+The merged ParamOps, Session and both regressions also compiled as Windows
+x64 objects with warnings as errors. The second merge from main was the
+reservation update at `ed3da057c` in chain `7dfc9c8a7`.
