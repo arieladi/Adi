@@ -24,6 +24,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-89 | `basics/look-chain` at `1f31704b` | Show named scan failures and render load placeholders with the failure reason. Window and Mix View seats. | Peerless scan rows, blocked drag/load and the real document placeholder paint passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-91 | `basics/look-chain` at `a748800b` | Mark keyboard focus and show when more tracks extend below the lanes. Window seat. | Fake-peer keyboard focus and software overflow tests passed. Both refreshed structural fixtures changed exactly 128 pixels inside their new badge. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-63 | `basics/look-chain` at `107f1cec` | Publish MIDI note activity and draw it in Arrangement and Mixer meters. Engine and window seats. | Peerless short-note, held-note, stop and track isolation checks passed. The separate MIDI engine suite passed 586 checks. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-04 | `basics/look-chain` at `88b15ee2` | Compute selection duration between tempo-mapped endpoints. Window seat. | Peerless selections spanning and following a tempo change, backwards selection and marker time passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -187,6 +188,10 @@ Previously neither indicator was drawn. At 1200 × 720 Compact the focused panel
 ### SC-63
 
 The MIDI dots keep their bounds. In a Compact Arrangement strip with I/O enabled the meter is `(183, 1, 8, 84)` and the first dot is `(184.25, 1, 5.5, 5.5)`. In a 219 px Mixer View strip with Sends off the meter is `(53, 25, 11, 190)` and the first dot is `(55.25, 25, 5.5, 5.5)`. Dot pitch is 8 px. Before, the meter stayed dark `#161616`. A MIDI onset lights it in Dark accent `#ffad3b` for at least 100 ms, including a whole short note between frames. A held note keeps it lit. A separate track's dots remain dark.
+
+### SC-04
+
+At 1440 × 900 Compact, the Status Bar's message well stays `(35, 870, 1021, 22)` and its text box `(43, 870, 1005, 22)`. A selection from bar 2 to bar 4, through the test's 120 to 60 BPM change at bar 3, changes `Duration: 0:04` to `Duration: 0:06`. A selection wholly after the change goes from `0:02` to `0:04`. The marker at bar 4 still reads absolute time `0:08`.
 
 ## For the director
 
