@@ -374,8 +374,7 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
 void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProject& media, const LaunchSection& section,
                              const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
     const auto gain = gains.range(block, section);
-    if (capture && section.clip != 0 && (section.regionIsLiveEdit ||
-        (gain.beforeFrames > 0 && gain.before != 1.0f) ||
+    if (capture && section.clip != 0 && ((gain.beforeFrames > 0 && gain.before != 1.0f) ||
         (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
     if (section.arrangement || section.frames <= 0 || tracks_.empty())
         return;
@@ -397,8 +396,9 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
         static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source)) {
         const auto first = block.sample + section.offset;
-        (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + section.frames, source});
-    }
+        (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + section.frames, source,
+            section.regionIsLiveEdit});
+    } else if (capture && section.regionIsLiveEdit) capture->markSourceEdit();
     if (gain.beforeFrames > 0)
         ranges.items.data()[ranges.size++] = {base + section.offset, gain.beforeFrames, pcm, source,
             section.velocity * gain.before, fade};

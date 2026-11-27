@@ -2275,11 +2275,12 @@ Arrangement ranges displaced by launches and stops. Applied scene tempo and
 meter can be recorded in the same changeset. Authored clock values resume
 outside the capture interval. The journal restores the recorded rows without
 running the launcher again.
-The `RenderBlock::observeLaunchCapture` tape detects performed gain or
-region overrides that require extra placement data before they can replay.
+The `RenderBlock::observeLaunchCapture` tape detects performed gain and
+region overrides. A region override needs complete PCM ranges for its run.
 For raw resident audio played at its source rate, the optional PCM range tape
-records each fractional loop wrap. Capture can place those ranges as linear
-Arrangement clips against the original verified source file.
+records fractional loop wraps and live region revisions. Capture can place
+those ranges as linear Arrangement clips against the original verified source
+file.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every

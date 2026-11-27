@@ -134,15 +134,15 @@ void pcmRangeOrderingAndErrors() {
     LaunchCaptureBuffer recorded(edges,pcm,tracks);
     check(recorded.capturesPcm() && recorded.appendPcmRange({2,51,71,105,110,51}) &&
           recorded.appendPcmRange({1,41,70,100,110,10}) && recorded.appendPcmRange({2,51,71,110,117,56}) &&
-          recorded.appendPcmRange({1,41,70,110,120,20}) && recorded.appendPcmRange({1,41,70,120,128,1}) &&
+          recorded.appendPcmRange({1,41,70,110,120,20,true}) && recorded.appendPcmRange({1,41,70,120,128,1}) &&
           recorded.appendPcmRange({2,51,71,117,121,63}),
           "per-track coalescing merges interleaved contiguous ranges even at storage capacity");
     const auto plan = planLaunchCapture(recorded,begin,end,initial);
     const std::vector<LaunchCapturedPcmRange> expected{
-        {1,41,70,100,120,10},{2,51,71,105,121,51},{1,41,70,120,128,1}};
+        {1,41,70,100,120,10,true},{2,51,71,105,121,51},{1,41,70,120,128,1}};
     check(plan.error == LaunchCaptureError::None && plan.pcmTraceEnabled && plan.pcmRanges == expected &&
           plan.spans.size() == 2 && plan.spans[0].run == 70 && plan.spans[1].run == 71,
-          "owner receives time-ordered literal ranges, stable runs and the real loop reset");
+          "owner receives ordered ranges, stable runs, the loop reset and merged region provenance");
     check(!recorded.appendPcmRange({1,41,70,128,130,0}) && recorded.pcmOverflowed() && recorded.overflowed(),
           "the next discontinuous range flags PCM storage overflow");
     const auto overflow = planLaunchCapture(recorded,begin,end,initial);

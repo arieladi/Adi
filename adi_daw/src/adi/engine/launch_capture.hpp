@@ -18,6 +18,7 @@ struct LaunchCapturedPcmRange {
     std::int64_t track = 0, clip = 0;
     std::uint64_t run = 0;
     std::int64_t beginSample = 0, endSample = 0, firstSourceFrame = 0;
+    bool liveRegionEdit = false;
     bool operator==(const LaunchCapturedPcmRange&) const = default;
 };
 

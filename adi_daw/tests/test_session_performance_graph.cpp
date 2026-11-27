@@ -5,6 +5,7 @@
 
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
@@ -121,7 +122,8 @@ struct SceneReceipts {
 };
 
 Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int64_t* endTick = nullptr,
-               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr, std::int32_t width = blockFrames) {
+               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr, std::int32_t width = blockFrames,
+               const LaunchClipRegion* liveRegion = nullptr) {
     Session session;
     session.graph().setFadeFrames(0);
     SessionSpec spec{1, sampleRate, width};
@@ -134,6 +136,15 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
     for (std::int64_t sample = 0; sample < frames; sample += width) {
         if (capture && (!firstSceneOnly || sample == 100))
             performCommand(project, session, sample);
+        if (liveRegion && sample == 200) {
+            std::array<LaunchTrackStatus, 1> tracks{};
+            LaunchStatusHeader status;
+            require(session.readLaunchStatus(tracks, status) && status.endSample == sample &&
+                    tracks[0].clip == 11 && tracks[0].run != 0,
+                    "address the live audio run after its first 100 samples");
+            require(session.postLaunchClipRegionEdit({1, 11, status.incarnation, tracks[0].run,
+                        *liveRegion, ClipUpdateRate::None}), "enable the loop for this live run only");
+        }
         require(session.clips()->prime(), "prime the render's Arrangement readers");
         auto* destination = result.data() + sample;
         AudioIo io;
@@ -335,6 +346,84 @@ void fractionalRawLoop() {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the optional PCM tape is callback-safe");
     std::puts("PASS -- raw Session loop wraps at frames 126, 150 and 175 replay bit-for-bit");
 }
+
+void liveRawRegion() {
+    Project project;
+    std::array<float, 2048> signal{};
+    for (std::size_t index = 0; index < signal.size(); ++index)
+        signal[index] = static_cast<float>(index) / 2048.0f;
+    project.media("edited-region.wav", 4, signal);
+    project.store->db().exec(
+        "UPDATE audio_clips SET media_id=4,src_start_frames=37,src_len_frames=1024 WHERE clip_id=11;"
+        "UPDATE clips SET length_ticks=240240 WHERE id=11;"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+    const auto arrangementBefore = render(*project.store);
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+
+    constexpr std::int64_t launchAt = 100, editAt = 200, sourceStart = 37;
+    constexpr std::int64_t loopFirst = 50, loopFrames = 25;
+    const LaunchClipRegion region{0, 240240, LaunchClipLoopRegion{12012, 18018}};
+    std::array<LaunchTransition, 4> noTapeEdges{};
+    LaunchCaptureBuffer noTape(noTapeEdges);
+    std::int64_t endTick = 0;
+    const auto withoutTape = render(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &region);
+    const auto refused = planLaunchCapture(noTape, {0, 0}, {frames, endTick}, {});
+    require(refused.error == LaunchCaptureError::SourceEdited,
+            "a transient geometry edit without a PCM tape cannot be replayed from authored geometry");
+
+    std::array<LaunchTransition, 4> events{};
+    std::array<LaunchCapturedPcmRange, 64> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer buffer(events, pcm, tracks);
+    const auto heard = render(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &region);
+    require(heard == withoutTape, "the trace leaves the live performance unchanged");
+    for (std::int64_t frame = 0; frame < frames; ++frame) {
+        const auto local = frame < editAt ? frame - launchAt : loopFirst + (frame - editAt) % loopFrames;
+        const auto expected = frame < launchAt ? 0.125f : signal[static_cast<std::size_t>(sourceStart + local)];
+        require(heard[static_cast<std::size_t>(frame)] == expected,
+                "the immediate edit wraps the unlooped raw run to the literal source frame at sample 200");
+    }
+    require(project.store->db().execAndGet("SELECT loop_enabled FROM clips WHERE id=11").getInt() == 0,
+            "the run-local edit leaves the frozen slot authored as a one-shot");
+    const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1 &&
+            plan.pcmRanges.size() == 1 + (frames - editAt) / loopFrames,
+            "the captured run keeps one identity and has one source range per audible region");
+    const auto& first = plan.pcmRanges.front();
+    require(first.beginSample == launchAt && first.endSample == editAt && first.firstSourceFrame == 0 &&
+            !first.liveRegionEdit, "the PCM tape distinguishes the authored prefix from edited playback");
+    for (std::size_t index = 1; index < plan.pcmRanges.size(); ++index) {
+        const auto& range = plan.pcmRanges[index];
+        const auto begin = editAt + static_cast<std::int64_t>(index - 1) * loopFrames;
+        require(range.run == first.run && range.beginSample == begin && range.endSample == begin + loopFrames &&
+                range.firstSourceFrame == loopFirst && range.liveRegionEdit,
+                "every performed loop range names its source cursor and live edit");
+    }
+
+    constexpr SessionPerformanceAudio playbackProof{Precision::Float32, true};
+    auto incomplete = plan;
+    ++incomplete.pcmRanges[1].beginSample;
+    require(!prepareSessionPerformance(*project.store, *source, incomplete, sampleRate, std::nullopt, playbackProof).ok,
+            "a region edit with a missing PCM sample cannot publish an Arrangement take");
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, playbackProof);
+    require(prepared.ok, prepared.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+            "the edited raw region replays bit-for-bit on an alternate Arrangement callback width");
+    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render(*project.store) == heard,
+            "one Undo and Redo restore the complete region edit take");
+    require(project.store->close(), "close the performed region capture");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render(*project.store) == heard, "reopen preserves the exact region edit take");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the edited raw PCM trace remains callback-safe");
+    std::puts("PASS -- a live raw loop enabled at frame 200 replays 1000 frames bit-for-bit through Undo, Redo and reopen");
+}
 } // namespace
 
 int main() {
@@ -343,6 +432,7 @@ int main() {
         proof(true);
         followThroughGraph();
         fractionalRawLoop();
+        liveRawRegion();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

@@ -590,12 +590,12 @@ std::int64_t nanosSample(std::int64_t nanos, std::int64_t rate) {
         ((nanos % nanosPerSecond) * rate + nanosPerSecond / 2) / nanosPerSecond;
 }
 
-void arrangeRawLoop(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
-                    std::span<const engine::LaunchCapturedPcmRange> ranges, const std::filesystem::path& path,
-                    const edit::TimeMap& placementClock, const engine::TempoMap& authored,
-                    const engine::TempoMap& fixed, std::uint32_t rate,
-                    const std::optional<SessionPerformanceAudio>& audioCapture, clip_edit::CopyIds& ids,
-                    std::vector<Payload>& incoming) {
+void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
+                   std::span<const engine::LaunchCapturedPcmRange> ranges, const std::filesystem::path& path,
+                   const edit::TimeMap& placementClock, const engine::TempoMap& authored,
+                   const engine::TempoMap& fixed, std::uint32_t rate,
+                   const std::optional<SessionPerformanceAudio>& audioCapture, clip_edit::CopyIds& ids,
+                   std::vector<Payload>& incoming) {
     const auto* audioRow = firstChild(image, "audio_clips");
     if (!audioRow || audioRow->at("warp_enabled") != 0 || audioRow->at("reverse") != 0 ||
         audioRow->at("transpose_semis") != 0 || audioRow->at("formant_shift") != 0 ||
@@ -624,7 +624,7 @@ void arrangeRawLoop(Store& store, const Payload& image, const engine::LaunchCapt
     const auto beginNanos = placementClock.nanos(span.begin.tick);
     const auto endNanos = placementClock.nanos(span.end.tick);
     if (nanosSample(beginNanos, rate) != span.begin.sample || nanosSample(endNanos, rate) != span.end.sample)
-        throw std::runtime_error("raw Session loop edge cannot meet the existing Arrangement at its recorded sample");
+        throw std::runtime_error("raw Session audio edge cannot meet the existing Arrangement at its recorded sample");
 
     // The driver's receipts are coalesced across callback boundaries.
     // Every remaining discontinuity needs a new linear Arrangement clip.
@@ -637,7 +637,7 @@ void arrangeRawLoop(Store& store, const Payload& image, const engine::LaunchCapt
         covered = range.endSample;
     }
     if (covered != span.end.sample)
-        throw std::runtime_error("performed Session PCM ranges do not cover the entire raw loop");
+        throw std::runtime_error("performed Session PCM ranges do not cover the entire run");
 
     auto placed = arrangeRun(store, image, span, authored, fixed, rate, audioCapture, ids, true, true);
     const auto first = incoming.size();
@@ -852,7 +852,8 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             if (pcm != pcmByRun.end() && std::any_of(pcm->second.begin(), pcm->second.end(),
                 [&](const auto& range) { return range.clip != span.clip; }))
                 throw std::runtime_error("performed Session PCM refers to a different clip in the same run");
-            const bool needsPcm = pcm != pcmByRun.end() && row.at("loop_enabled") == 1;
+            const bool needsPcm = pcm != pcmByRun.end() && (row.at("loop_enabled") == 1 ||
+                std::ranges::any_of(pcm->second, &engine::LaunchCapturedPcmRange::liveRegionEdit));
             Payload placed;
             if (!needsPcm)
                 placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids, authoredClock);
@@ -872,7 +873,7 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             if (needsPcm) {
                 if (!verified || row.at("kind") != "audio" || !frozen.residentClips.contains(span.clip))
                     throw std::runtime_error("performed Session PCM has no frozen resident audio clip");
-                arrangeRawLoop(store, image->second, span, pcm->second, verified->path, prospective, clock.clock,
+                arrangeRawPcm(store, image->second, span, pcm->second, verified->path, prospective, clock.clock,
                     fixed, rate, audio, ids, placement.incoming);
                 pcmByRun.erase(pcm);
                 continue;

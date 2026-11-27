@@ -71,6 +71,7 @@ bool LaunchCaptureBuffer::appendPcmRange(const LaunchCapturedPcmRange& range) no
         if (previous.clip == range.clip && previous.run == range.run &&
             previous.endSample == range.beginSample && next == range.firstSourceFrame) {
             previous.endSample = range.endSample;
+            previous.liveRegionEdit |= range.liveRegionEdit;
             return true;
         }
     }
