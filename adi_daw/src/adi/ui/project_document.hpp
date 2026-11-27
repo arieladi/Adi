@@ -32,8 +32,8 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
-#include <span>
 #include <string_view>
+#include <span>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -370,6 +370,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
+        // Capture the application's sample policy before dispatching the job.
+        std::optional<library::SampleWarpPolicy> shortSamplePolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
                             const ImportChoices &, std::int64_t nowUtc) const;

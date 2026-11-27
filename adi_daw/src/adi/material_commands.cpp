@@ -139,22 +139,11 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         audio::ShortSampleWarpPlan shortWarp{WarpAction::UseAutoWarp,{},{}};
         auto warpSettings=options.warpAnalysis;
         if(options.shortSamplePolicy) warpSettings.transientSensitivity=options.shortSamplePolicy->transientSensitivity;
-        auto shortSample=options.shortSample;
-        if(options.warp && !saved && !shortSample && options.shortSamplePolicy && info.frames>0 &&
-            info.frames<=static_cast<std::int64_t>(info.sampleRate)*audio::kShortSampleSeconds)
-            shortSample=library::readSampleWarpInput(*options.shortSamplePolicy,source,capturedHash,options.stop);
-        if(options.warp && !saved && shortSample && info.frames>0) {
-            if(!shortSample->contentHash.empty() && shortSample->contentHash!=capturedHash)
-                throw std::runtime_error("short sample Warp analysis is stale");
-            auto sample=shortSample->classification;
-            if(warpSettings.sourceBpm && sample.bpm!=warpSettings.sourceBpm) {
-                sample.bpm=warpSettings.sourceBpm;sample.bars.reset();
-            }
-            shortWarp=audio::planShortSampleWarp(audio::ShortSampleWarpTrigger::ImportWarp,
-                shortSample->mode,sample,static_cast<std::uint64_t>(info.frames),
-                static_cast<std::uint32_t>(info.sampleRate),warpSettings.tempoHint);
-            if(shortWarp.action==WarpAction::Invalid)throw std::runtime_error("invalid short sample Warp settings");
-        }
+        if(options.warp && !saved && info.frames>0)
+            shortWarp=library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::ImportWarp,
+                options.shortSample,options.shortSamplePolicy,source,capturedHash,
+                static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),
+                warpSettings,options.stop);
         if(options.warp && !saved && shortWarp.action!=WarpAction::KeepUnwarped) {
             if(referenceRate<44100 || referenceRate!=std::floor(referenceRate) || info.sampleRate<8000 ||
                info.sampleRate>768000 || info.channels<1 || info.channels>64 || info.frames<=0 || info.frames>0x7fffffff ||

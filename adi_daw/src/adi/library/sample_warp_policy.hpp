@@ -2,10 +2,14 @@
 #pragma once
 
 #include "adi/audio/short_sample_warp.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <nlohmann/json_fwd.hpp>
+#include <optional>
 #include <stop_token>
 #include <string>
+
+namespace adi::audio { struct AutoWarpOptions; }
 
 namespace adi::library {
 class Index;
@@ -23,6 +27,8 @@ struct SampleWarpPolicy {
 [[nodiscard]] SampleWarpPolicy sampleWarpPolicyFromSettings(const nlohmann::json& values,
     SampleAnalysisService* analysis = nullptr, const Index* library = nullptr);
 
-[[nodiscard]] audio::ShortSampleWarpInput readSampleWarpInput(const SampleWarpPolicy&,
-    const std::filesystem::path& source, const std::string& hash, std::stop_token);
+[[nodiscard]] audio::ShortSampleWarpPlan resolveSampleWarpPlan(audio::ShortSampleWarpTrigger,
+    const std::optional<audio::ShortSampleWarpInput>&, const std::optional<SampleWarpPolicy>&,
+    const std::filesystem::path& source, const std::string& hash, std::uint64_t frames,
+    std::uint32_t rate, const audio::AutoWarpOptions&, std::stop_token);
 }

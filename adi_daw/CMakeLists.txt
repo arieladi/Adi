@@ -1931,6 +1931,20 @@ target_link_libraries(adi_sample_file_tags_tests PRIVATE adi_sample_tags adi_war
 add_test(NAME adi_sample_file_tags_tests COMMAND adi_sample_file_tags_tests)
 
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
+target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)
+add_executable(adi_sample_defaults_tests tests/test_sample_defaults.cpp)
+target_link_libraries(adi_sample_defaults_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_defaults_tests COMMAND adi_sample_defaults_tests)
+
+
+target_link_libraries(adi_core PRIVATE adi_utf8proc Threads::Threads)
+add_executable(adi_library_tests tests/test_library.cpp)
+target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_library_tests COMMAND adi_library_tests)
+
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
 
 # ADR-0226's fixed-rate worker. Only the selected upstream sources build.
 include(cmake/warp_tracker.cmake)
@@ -1963,20 +1977,6 @@ endforeach()
 add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
 target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings)
 add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
-add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
-target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)
-add_executable(adi_sample_defaults_tests tests/test_sample_defaults.cpp)
-target_link_libraries(adi_sample_defaults_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_sample_defaults_tests COMMAND adi_sample_defaults_tests)
-
-
-target_link_libraries(adi_core PRIVATE adi_utf8proc Threads::Threads)
-add_executable(adi_library_tests tests/test_library.cpp)
-target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
-add_test(NAME adi_library_tests COMMAND adi_library_tests)
-
-set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.

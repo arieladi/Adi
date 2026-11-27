@@ -2104,6 +2104,7 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.warp = job.choices.warp;
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
+    options.shortSamplePolicy = job.shortSamplePolicy;
     options.stop = stop;
     out = clip_edit::prepareImportAudio(*store, options, job.rate);
     return out;

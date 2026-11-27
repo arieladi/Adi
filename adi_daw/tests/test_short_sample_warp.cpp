@@ -3,12 +3,14 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/short_sample_warp.hpp"
+#include "adi/history.hpp"
 #include "adi/library/sample_analysis.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
+#include "adi/ui/project_document.hpp"
 #include "adi/warp_commands.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -76,6 +78,33 @@ void throughProducers() {
           store->db().execAndGet("SELECT loop_len_ticks FROM clips WHERE id=3").getInt64() == textproj::kWhole,
           "the explicit import prompt reuses the same cached classification and one-bar result");
 
+    auto off = button;
+    off.enabled = false;
+    const auto disabled = clip_edit::prepareSetWarp(*store, 1, off, rate);
+    const auto warpAndLoop = [&] {
+        return store->db().execAndGet("SELECT 2*warp_enabled+loop_enabled FROM audio_clips "
+                                     "JOIN clips ON clips.id=audio_clips.clip_id WHERE clip_id=1").getInt();
+    };
+    History history(*store);
+    check(clip_edit::commitPrepared(*store, disabled).ok && warpAndLoop() == 0,
+          "turning Warp off on the generated full-source loop also turns looping off");
+    check(history.undo().ok && warpAndLoop() == 3 && history.redo().ok && warpAndLoop() == 0,
+          "undo and redo restore the captured Warp and loop states together");
+
+    ui::ProjectDocument::MaterialJob job;
+    job.project = store->path();
+    job.source = wave;
+    job.track = 1;
+    job.clipId = 9;
+    job.mediaId = 3;
+    job.rate = rate;
+    job.choices.warp = true;
+    job.shortSamplePolicy = library::sampleWarpPolicyFromSettings({{"record.shortSampleMode", "unwarpedOneShot"}}, &analysis);
+    auto fromDocument = ui::ProjectDocument::prepareMaterial(job);
+    check(clip_edit::commitMaterial(*store, fromDocument).ok &&
+          store->db().execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=9").getInt() == 0,
+          "the import worker honors the short-sample setting captured in the document's job");
+
     options.shortSamplePolicy = library::sampleWarpPolicyFromSettings({{"record.shortSampleMode", "warpedOneShot"}}, &analysis);
     options.clipId = 5;
     auto forced = clip_edit::prepareImportAudio(*store, options, rate);
@@ -134,6 +163,12 @@ int main() {
         check(longFile.action == ShortSampleWarpAction::UseAutoWarp && !longFile.sourceBpm && !longFile.loopMarkers,
               "long sample delegates an explicit Warp request to the ordinary producer");
     }
+    const auto shortLimit = static_cast<std::uint64_t>(kShortSampleSeconds) * rate;
+    check(planShortSampleWarp(press, "unwarpedOneShot", oneShot, shortLimit, rate).action ==
+              ShortSampleWarpAction::KeepUnwarped &&
+          planShortSampleWarp(press, "unwarpedOneShot", oneShot, shortLimit + 1, rate).action ==
+              ShortSampleWarpAction::UseAutoWarp,
+          "the named provisional boundary changes policy one source frame above the limit");
     for (const auto trigger : {press, import}) {
         const auto detected = planShortSampleWarp(trigger, "auto", loop, frames, rate, 127.0);
         check(detected.action == ShortSampleWarpAction::WarpedLoop && detected.sourceBpm == 100.0 &&
