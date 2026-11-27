@@ -35,6 +35,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-130 | `basics/browser-chain` at `766f8d607` | Clear the Browser search field with Escape or its x while retaining mode-specific text. Browser seat. | The headless suite verified both controls, immediate filtering, the text bounds and Hot-Swap mode restoration. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-131 | `basics/browser-chain` at `599e89c8d` | Rescan the Browser library in the background without reopening ADI. Browser and application seats. | A headless regression wrote and indexed a new sample through the rescan path and preserved selection, scroll, search, audition state and open folders. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-133 | `basics/browser-chain` at `01cf03a9b` | Persist Favorites and seven rebindable color marks for Browser items. Browser, window and Settings seats. | Headless key, popup, search and round-trip persistence checks passed. Debug Werror, all 18 no-display UI suites, Settings and all 3 acceptance suites passed. | Pushed |
+| SC-134 | `basics/browser-chain` at `66cdcb395` | List owned recordings and bounces under Current Project and in All. Project, library and Browser seats. | Headless fixtures committed recorded and bounced media, checked All deduplication, and measured the 200,000-file search. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -299,6 +300,45 @@ Browser-local coordinates, from the 308 × 443 peerless fixture. Before, Categor
 The existing result popup offers Add to Favorites or Remove from Favorites and a Collection Colors submenu. The numeric bindings 1–7 use the normal Browser shortcut registry. Favorites appears even empty. It contains any sample, built-in device, or plug-in carrying an explicit Favorite or color mark, and uses the Browser's usual search. Marks remain in application preferences. Samples use their normalized indexed paths, devices use their built-in UIDs, and plug-ins use format, UID, and an optional shell member.
 
 The Device, Mixer and Mix View software fixtures return to the exact Browser results pixels from before SC-127. The restored Favorites row lets the keyboard focus fixture exercise its original first-label path. The changed area is confined to the Browser results between `(133,84)` and `(310,474)`, exclusive.
+
+# SC-134 Current Project
+
+The isolated change is `ddd38eed4` on `5fa6cabac`. The integration candidate is `742f933d0` on `6850edac9`, preserving Favorites, Drums, Rescan and the other Browser items already there.
+
+The producer reads the open song's committed media catalog. It publishes regular audio files inside the project folder. This covers current `Samples/Recorded` takes, legacy `audio` takes, and the `audio/import-…` files created by Bounce. The recently committed file enters on the next app update. A first save or a project switch changes the Store connection, so the publication is redone against its new folder. Separate Export Audio/Video destinations are delivery files unless the user brings them into the song. A neighboring song's files and references outside the open project's folder do not join this Place.
+
+The Browser shows the label while a project is backed, including when the project has no audio. It lists files directly with the ordinary sample rows, matching and audition seams. All and Favorites reuse the project publication and suppress duplicate paths in the shared library.
+
+## Before and after bounds
+
+Default Compact layout, 1000 × 650 root, left Browser at `(8,35)`, sidebar scrolled to its top, one added Place, no sample preview shown. Each rectangle is x, y, width, height in root coordinates. The peerless fixture checks these relationships with the production bounds and prints the measured rectangles when the integrated suite runs.
+
+| Base | Element | Before | After |
+|---|---|---|---|
+| `5fa6cabac` | Current Project | Hidden | `(12,272,113,19)` |
+| `5fa6cabac` | First added Place | `(12,272,113,19)` | `(12,291,113,19)` |
+| `5fa6cabac` | Add Folder | `(12,291,113,19)` | `(12,310,113,19)` |
+| `6850edac9` | Current Project | Hidden | `(12,348,113,19)` |
+| `6850edac9` | First added Place | `(12,348,113,19)` | `(12,367,113,19)` |
+| `6850edac9` | Add Folder | `(12,367,113,19)` | `(12,386,113,19)` |
+
+The Browser frame, sidebar clipping pane and content viewport keep their bounds. The two project audio rows occupy 38 px of logical list height. They use the existing 19 px sample rows and reveal the ordinary preview strip on sample selection.
+
+## Proof
+
+Strict GCC Debug, DISPLAY unset, passed the library query suite with real recording-layout media commits, legacy media, an external link, a real Bounce preparation and commit, deduplication with the shared library, and opening a different song in the same folder. Strict syntax checked the app, Browser and peerless window fixture. The integrated window suite remains for the chain gate.
+
+A strict display-free service probe kept SC-421's 200,000 shared names and added a duplicate project sample plus a distinct one. Seven-trial Place medians were 0.002 ms for Q, QX and QXY and 0.003 ms for QXY 100000. All returned the expected deduplicated counts at 0.009, 0.007, 0.007 and 0.011 ms respectively. The broad Take query returned 200,001 distinct files in 36.481 ms across both sources.
+
+## Indexed shared-path lookup
+
+Follow-up `e1ee062aa` builds an immutable index of filesystem path hashes and listing indices on the worker. It verifies equality against the original path. During All search, only project hits look up a shared path and locate its position in the ordered shared results. A matching project name replaces that shared hit in place. Project-only hits follow in their original order. The index stores numeric entries alone, so it copies no paths and imposes no new lifetime constraints on snapshots.
+
+The final strict Debug test passed with DISPLAY unset. It covers two shared replacements, first-match duplicate handling, project-only order and names, and the real bounce commit. No visual bounds changed.
+
+On the same 200,000-file fixture with one overlapping and one project-only path, the broad All median of three seven-trial medians went from 34.291 to 13.499 ms and returned the same 200,001 distinct files. The four narrow queries remained under 0.013 ms across all sources after the change. Place Q, QX and QXY stayed at 0.002 ms. The two-word Place query took 0.003 ms after the change.
+
+The path index stores 3,200,000 bytes of entries at 200,000 files on this build. Isolated fill and sort took 121.545 ms median across seven runs. Full snapshot timings overlapped with concurrent build load and are recorded separately at `/tmp/browser-sc134-order-final.log`.
 
 ## For the director
 
