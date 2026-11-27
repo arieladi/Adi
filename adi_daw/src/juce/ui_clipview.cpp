@@ -2405,8 +2405,40 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         crop();
         return true;
     }
-    if (timeSelection()) {
+    if (const auto span = timeSelection()) {
         const bool both = mods.isCommandDown() && mods.isShiftDown() && !mods.isAltDown();
+        if (both && (code == 'e' || code == 'E')) {
+            const auto window = ClipWindow::of(*clip);
+            const auto from = std::max(span->first, window.pos), to = std::min(span->second, window.end());
+            if (from >= to || (from == window.pos && to == window.end()))
+                return true;
+            const auto snapshot = panel.root.current();
+            if (!snapshot)
+                return true;
+            const auto id = clip->id, track = clip->trackId;
+            const auto next = audio_drop_detail::newClipId(*snapshot);
+            const bool cutStart = from > window.pos, cutEnd = to < window.end();
+            const auto rate = panel.root.editRate();
+            auto &store = panel.root.editStore();
+            const auto first = clip_edit::TimePoint{0, cutStart ? from : to};
+            auto prepared = cutStart && cutEnd
+                ? clip_edit::prepareSplit(store, id, next, next + 1, first, {0, to}, rate)
+                : clip_edit::prepareSplit(store, id, next, first, rate);
+            if (panel.root.commitEdit(std::move(prepared))) {
+                auto &arrangement = panel.root.arrangement;
+                auto &selection = arrangement.geometry.selection;
+                selection.track = track;
+                selection.toTrack = 0;
+                selection.picked.clear();
+                selection.clip = cutStart ? next : id;
+                selection.pickedClips.clear();
+                selection.insert = selection.start = from;
+                selection.end = to;
+                selection.marked = true;
+                arrangement.changed();
+            }
+            return true;
+        }
         if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
             return timeCommand(TimeCommand::Duplicate), true;
         if (both && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey))
@@ -3145,6 +3177,7 @@ void SampleEditor::showClip() {
     fitPending_ = true;
     insert_.reset();
     selectedWarpFrame_.reset();
+    markerRegionSelected_ = false;
     drag_ = Drag::None;
 }
 void SampleEditor::updateSource() {
@@ -3234,6 +3267,12 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     downTick_ = tickAt(last_.x, e.mods);
+    if (markerRegionSelected_ && waveArea().contains(last_) && e.mods.isCommandDown() && !e.mods.isAltDown()) {
+        using Field = ClipViewPanel::Field;
+        panel.setField(e.mods.isShiftDown() ? Field::End : Field::Start, downTick_);
+        return;
+    }
+    markerRegionSelected_ = false;
     if (warpMarkerArea().contains(last_)) {
         if (const auto *marker = warpMarkerAt(last_.x)) {
             selectedWarpFrame_ = marker->sourceFrame;
@@ -3272,6 +3311,8 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
         insert_ = downTick_;
         repaint();
     }
+    markerRegionSelected_ = drag_ == Drag::Start || drag_ == Drag::End || drag_ == Drag::Loop ||
+                            drag_ == Drag::LoopStart || drag_ == Drag::LoopEnd;
     preview_ = original_;
 }
 void SampleEditor::mouseDrag(const juce::MouseEvent &e) {

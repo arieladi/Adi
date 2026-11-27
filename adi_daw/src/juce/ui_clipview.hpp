@@ -432,6 +432,7 @@ class SampleEditor final : public juce::Component {
     std::optional<std::int64_t> insert_;
     std::vector<WarpMarker> markers_;
     std::optional<std::int64_t> selectedWarpFrame_;
+    bool markerRegionSelected_ = false;
     juce::Rectangle<int> warpMarkerArea() const noexcept;
     const WarpMarker *warpMarkerAt(int x) const noexcept;
     bool deleteWarpMarker();

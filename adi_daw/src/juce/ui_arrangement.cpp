@@ -12,6 +12,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/recording_edits.hpp"
+#include "adi/warp_commands.hpp"
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
@@ -3654,6 +3655,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     moving_ = resizing_ = 0;
     copying_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
+    clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
@@ -3699,7 +3701,26 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         // The clip's title bar moves it; either edge of the bar changes its length (§6.7).
         std::int64_t track = 0;
         auto edge = ResizeEdge::None;
-        if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && edge != ResizeEdge::None) {
+        const auto *barClip = barAt(e.x, e.y, track, edge);
+        if (barClip && e.mods.isShiftDown() && e.mods.isAltDown() && !e.mods.isCommandDown()) {
+            // The title drag makes a range inside this clip, even when the pointer leaves it (§42.16).
+            const auto begin = barClip->posTicks, end = begin + barClip->lengthTicks;
+            clipTimeBounds_ = std::pair{begin, end};
+            auto &geo = view.geometry;
+            auto &sel = geo.selection;
+            const auto raw = geo.tick(e.x);
+            const auto snapped = geo.grid.snap ? geo.snap(raw, false) : raw;
+            sel.track = track;
+            sel.toTrack = sel.clip = 0;
+            sel.picked.clear();
+            sel.pickedClips.clear();
+            sel.marked = true;
+            sel.insert = sel.start = sel.end = std::clamp(snapped, begin, end);
+            view.locate();
+            view.changed();
+            return;
+        }
+        if (const auto *c = barClip; c != nullptr && edge != ResizeEdge::None) {
             view.geometry.selection.track = track;
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
@@ -3707,7 +3728,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.pickedClips.clear();
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
-            beginResize(*c, track, edge);
+            beginResize(*c, track, edge, e.mods.isShiftDown());
             view.changed();
             return;
         }
@@ -3887,6 +3908,16 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    if (clipTimeBounds_) {
+        if (e.mouseWasDraggedSinceMouseDown())
+            view.edgeScroll(e.x, e.y, true, false);
+        auto &geo = view.geometry;
+        const auto raw = geo.tick(e.x);
+        const auto snapped = geo.grid.snap ? geo.snap(raw, raw >= geo.selection.start) : raw;
+        geo.selection.end = std::clamp(snapped, clipTimeBounds_->first, clipTimeBounds_->second);
+        view.frame(true);
+        return;
+    }
     if (resizing_ != 0) {
         // Follow the mouse to the nearest grid line while snapping. The other edge stays anchored.
         const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true, false);
@@ -3980,6 +4011,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    clipTimeBounds_.reset();
     if (automationStroke_) {
         const bool drawing = view.root.automationMode() && view.root.drawMode();
         if (drawing)
@@ -4130,8 +4162,9 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
     view.changed();
     view.root.linkLoopToSelection(); // with the setting on, the brace follows a time selection made
 }
-void ArrangementCanvas::beginResize(const engine::ClipNode &clip, std::int64_t track, ResizeEdge edge) {
+void ArrangementCanvas::beginResize(const engine::ClipNode &clip, std::int64_t track, ResizeEdge edge, bool stretch) {
     resizing_ = clip.id;
+    stretching_ = stretch && clip.audio && clip.audio->warpEnabled;
     resizeTrack_ = track;
     resizeStart_ = clip.posTicks;
     resizeFrom_ = resizeLength_ = clip.lengthTicks;
@@ -4151,6 +4184,14 @@ std::optional<std::int64_t> ArrangementCanvas::commitResize() {
     const auto id = std::exchange(resizing_, 0);
     if (resizeLength_ == resizeFrom_)
         return std::nullopt;
+    if (stretching_) {
+        const bool left = resizeEdge_ == ResizeEdge::Left;
+        const auto begin = left ? resizeStart_ + resizeFrom_ - resizeLength_ : resizeStart_;
+        if (view.root.commitEdit(clip_edit::prepareStretchWarpedClip(view.root.editStore(), id,
+                begin, resizeLength_, view.root.editRate())))
+            return left ? begin : begin + resizeLength_;
+        return std::nullopt;
+    }
     if (resizeEdge_ == ResizeEdge::Right) {
         if (view.root.submitEdit("clip.resize", {{"id", id}, {"pos", resizeStart_}, {"length", resizeLength_}}, "Resize Clip"))
             return resizeStart_ + resizeLength_;

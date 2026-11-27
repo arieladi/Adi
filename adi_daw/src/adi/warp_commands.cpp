@@ -64,8 +64,9 @@ Payload capturedWarpMap(std::span<const WarpMarker> markers,std::uint64_t frames
     return Payload::binary(std::move(bytes));
 }
 
-}
-PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& options,double rate) {
+struct WarpStretch {std::int64_t position,length;};
+PreparedEdit prepareWarpChange(Store& store,std::int64_t clipId,const WarpOptions& options,double rate,
+                               std::optional<WarpStretch> stretch={}) {
     PreparedEdit result;
     try {
         cancelled(options.stop);
@@ -83,7 +84,9 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         const bool warped=integer(source,"warp_enabled")!=0;
         const bool looping=integer(root,"loop_enabled")!=0;
         const auto requested=options.enabled?options.analysis.sourceBpm:std::nullopt;
-        const bool retiming=warped && requested.has_value();
+        const bool retiming=warped && (requested || stretch);
+        if(stretch && (!warped || stretch->position<0 || stretch->length<=0))
+            throw std::runtime_error("Stretch needs a positive span on a warped clip.");
         if(requested && (!std::isfinite(*requested) || *requested<=0 || *requested>=1000))
             throw std::runtime_error("source BPM must be greater than zero and below 1000");
         const auto capture=[&](const edit::RowEdits& plan,const char* label) {
@@ -111,22 +114,41 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         const bool hasEnd=!properties.is_null() && !properties.at("end_marker_ticks").is_null();
         auto details=image.at("children").at("clip_playback_details").empty()?
             edit::defaultRow(store.db(),"clip_playback_details",{{"clip_id",clipId}}):image.at("children").at("clip_playback_details")[0];
-        const auto mediaId=integer(source,"media_id");const auto mediaRow=media::mediaRow(store.db(),mediaId);std::string mediaError;
-        const auto file=media::resolveMedia(media::projectFolder(store),mediaRow,mediaError);
-        if(file.empty())throw std::runtime_error(mediaError.empty()?"Warp source is missing":mediaError);
-        const auto hash=media::blake3File(file,options.stop);cancelled(options.stop);
-        if(!hash)throw std::runtime_error("cannot verify Warp source");
-        Decoded decoded(file);audio::WavReader reader(decoded.file);
         const auto start=integer(source,"src_start_frames"),storedLength=integer(source,"src_len_frames");
-        if(reader.frames()>0x7fffffff || start<0 || storedLength<0 || static_cast<std::uint64_t>(start)>=reader.frames())throw std::runtime_error("Warp source window is outside supported bounds");
-        const auto frames=storedLength>0?static_cast<std::uint64_t>(storedLength):reader.frames()-static_cast<std::uint64_t>(start);
-        if(frames==0 || frames>reader.frames()-static_cast<std::uint64_t>(start) || reader.channels()>64 || reader.sampleRate()<8000 || reader.sampleRate()>768000)
-            throw std::runtime_error("Warp source window is outside supported bounds");
-        const auto physicalNs=edit::nanosFromSeconds(static_cast<double>(frames)/reader.sampleRate());
+        std::filesystem::path file;
+        std::string expectedHash;
+        std::optional<Decoded> decoded;
+        std::optional<audio::WavReader> reader;
+        std::uint64_t frames=0;
+        if(stretch) {
+            if(start<0 || storedLength<=0 || storedLength>0x7fffffff)
+                throw std::runtime_error("Warp source window is outside supported bounds");
+            frames=static_cast<std::uint64_t>(storedLength);
+        } else {
+            const auto mediaId=integer(source,"media_id");
+            const auto mediaRow=media::mediaRow(store.db(),mediaId);
+            std::string mediaError;
+            file=media::resolveMedia(media::projectFolder(store),mediaRow,mediaError);
+            if(file.empty())throw std::runtime_error(mediaError.empty()?"Warp source is missing":mediaError);
+            const auto hash=media::blake3File(file,options.stop);cancelled(options.stop);
+            if(!hash)throw std::runtime_error("cannot verify Warp source");
+            expectedHash=hash.hex;
+            decoded.emplace(file);
+            reader.emplace(decoded->file);
+            if(reader->frames()>0x7fffffff || start<0 || storedLength<0 || static_cast<std::uint64_t>(start)>=reader->frames())
+                throw std::runtime_error("Warp source window is outside supported bounds");
+            frames=storedLength>0?static_cast<std::uint64_t>(storedLength):reader->frames()-static_cast<std::uint64_t>(start);
+            if(frames==0 || frames>reader->frames()-static_cast<std::uint64_t>(start) || reader->channels()>64 ||
+               reader->sampleRate()<8000 || reader->sampleRate()>768000)
+                throw std::runtime_error("Warp source window is outside supported bounds");
+        }
+        const auto physicalNs=reader?edit::nanosFromSeconds(static_cast<double>(frames)/reader->sampleRate()):0;
         edit::TimeMap time(store.db());const auto base=integer(root,"time_base");
-        const auto origin=base==0?integer(root,"pos_ticks"):time.ticks(integer(root,"pos_ns"));
-        const auto beginNs=base==0?time.nanos(origin):integer(root,"pos_ns");
-        const auto spanNs=base==0?time.duration(origin,integer(root,"length_ticks")):integer(root,"length_ns");
+        const auto oldOrigin=base==0?integer(root,"pos_ticks"):time.ticks(integer(root,"pos_ns"));
+        const auto oldBeginNs=base==0?time.nanos(oldOrigin):integer(root,"pos_ns");
+        const auto spanNs=base==0?time.duration(oldOrigin,integer(root,"length_ticks")):integer(root,"length_ns");
+        const auto origin=stretch?stretch->position:oldOrigin;
+        const auto beginNs=origin==oldOrigin?oldBeginNs:time.nanos(origin);
         const auto offsetTicks=integer(root,"content_offset_ticks");
         const auto storedMap=[&]{
             if(!source.at("warp_markers").is_binary())throw std::runtime_error("Warp needs a valid stored source map");
@@ -136,27 +158,39 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             return map;
         };
         const auto nanosAtFrame=[&](std::int64_t frame) {
-            return edit::nanosFromSeconds(static_cast<double>(frame)/reader.sampleRate());
+            return edit::nanosFromSeconds(static_cast<double>(frame)/reader->sampleRate());
         };
         const auto frameAtNanos=[&](std::int64_t nanos) {
-            return std::llround(static_cast<long double>(nanos)*reader.sampleRate()/1e9L);
+            return std::llround(static_cast<long double>(nanos)*reader->sampleRate()/1e9L);
         };
         const auto physicalToTicks=[&](std::int64_t nanos){return time.ticks(edit::addTime(beginNs,nanos))-origin;};
         std::vector<WarpMarker> markers;
         long double ratio=1;
         if(retiming) {
             markers=storedMap().markers;
-            ratio=correctWarpMap(markers,reader.sampleRate(),*requested);
+            const auto spanTicks=base==0?integer(root,"length_ticks"):
+                                 time.ticks(edit::addTime(oldBeginNs,spanNs))-oldOrigin;
+            if(stretch) {
+                if(spanTicks<=0 || edit::addTime(stretch->position,stretch->length)<=stretch->position)
+                    throw std::runtime_error("Stretch needs a positive span on a warped clip.");
+                ratio=static_cast<long double>(stretch->length)/static_cast<long double>(spanTicks);
+                for(auto& marker:markers)marker.tick=scaleWarpTicks(marker.tick,ratio);
+            } else {
+                ratio=correctWarpMap(markers,reader->sampleRate(),*requested);
+            }
             source["warp_markers"]=capturedWarpMap(markers,frames);
             const auto scale=[&](std::int64_t ticks){return scaleWarpTicks(ticks,ratio);};
-            const auto spanTicks=base==0?integer(root,"length_ticks"):
-                                 time.ticks(edit::addTime(beginNs,spanNs))-origin;
             const auto startTick=scale(offsetTicks);
-            const auto length=scale(edit::addTime(offsetTicks,spanTicks))-startTick;
+            const auto length=stretch?stretch->length:scale(edit::addTime(offsetTicks,spanTicks))-startTick;
             if(length<=0)throw std::runtime_error("source tempo collapses the visible clip");
             root["content_offset_ticks"]=startTick;
-            if(base==0)root["length_ticks"]=length;
-            else root["length_ns"]=time.duration(origin,length);
+            if(base==0) {
+                if(stretch)root["pos_ticks"]=origin;
+                root["length_ticks"]=length;
+            } else {
+                if(stretch)root["pos_ns"]=beginNs;
+                root["length_ns"]=time.duration(origin,length);
+            }
             if(hasEnd)properties["end_marker_ticks"]=scale(integer(properties,"end_marker_ticks"));
             const auto loopStart=integer(root,"loop_start_ticks");
             root["loop_start_ticks"]=scale(loopStart);
@@ -181,7 +215,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             if(source.at("warp_markers").is_null()) {
                 std::vector<std::uint64_t> onsets;
                 if(!requested) {
-                    auto detected=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
+                    auto detected=audio::detectTransients(*reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
                     cancelled(options.stop);
                     if(!detected)throw std::runtime_error("cannot analyze Warp source transients");
                     onsets=std::move(detected.frames);
@@ -191,7 +225,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
                 // clip may adopt its detected first beat as the origin.
                 if(requested || firstFrame!=0 || lastFrame!=static_cast<std::int64_t>(frames) || hasEnd)
                     analysisOptions.fromFirstBeat=false;
-                auto analysis=audio::autoWarpFromOnsets(onsets,frames,reader.sampleRate(),analysisOptions,options.stop);
+                auto analysis=audio::autoWarpFromOnsets(onsets,frames,reader->sampleRate(),analysisOptions,options.stop);
                 cancelled(options.stop);
                 if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?
                     "Warp needs a detected beat. Enter the source BPM in the Clip View.":"source timing cannot be analyzed with these Warp options");
@@ -203,7 +237,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             } else {
                 markers=storedMap().markers;
                 if(requested) {
-                    correctWarpMap(markers,reader.sampleRate(),*requested);
+                    correctWarpMap(markers,reader->sampleRate(),*requested);
                     source["warp_markers"]=capturedWarpMap(markers,frames);
                 }
             }
@@ -278,16 +312,24 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
                 else if(!domain.at(column).is_null())domain[column]=scaleWarpTicks(integer(domain,column),ratio);
             plan.set("clip_warp_fade_domains",clipId,domain);
         }
-        capture(plan,retiming?"Change Source Tempo":options.enabled?"Enable Warp":"Disable Warp");
-        result.options.beforeCommit=[file,expected=hash.hex,stop=options.stop](SQLite::Database&,std::int64_t,std::string& error) {
-            if(stop.stop_requested()){error="Warp edit cancelled";return false;}
-            const auto actual=media::blake3File(file,stop);
-            if(!actual || actual.hex!=expected){error="Warp source changed after analysis";return false;}
-            if(stop.stop_requested()){error="Warp edit cancelled";return false;}return true;
-        };
+        capture(plan,stretch?"Stretch Clip":retiming?"Change Source Tempo":options.enabled?"Enable Warp":"Disable Warp");
+        if(!stretch)
+            result.options.beforeCommit=[file,expected=std::move(expectedHash),stop=options.stop](SQLite::Database&,std::int64_t,std::string& error) {
+                if(stop.stop_requested()){error="Warp edit cancelled";return false;}
+                const auto actual=media::blake3File(file,stop);
+                if(!actual || actual.hex!=expected){error="Warp source changed after analysis";return false;}
+                if(stop.stop_requested()){error="Warp edit cancelled";return false;}return true;
+            };
         cancelled(options.stop);result.ok=true;
     } catch(const std::exception& exception){result.error=exception.what();}
     return result;
+}
+}
+PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& options,double rate) {
+    return prepareWarpChange(store,clipId,options,rate);
+}
+PreparedEdit prepareStretchWarpedClip(Store& store,std::int64_t clipId,std::int64_t position,std::int64_t length,double rate) {
+    return prepareWarpChange(store,clipId,WarpOptions{},rate,WarpStretch{position,length});
 }
 PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
                                   WarpMarker marker,double referenceRate) {
