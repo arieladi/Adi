@@ -7,6 +7,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-121 | `basics/browser-chain` at `da5adae5a` | Show an initial list and restore the last Browser label across projects and launches. Browser, application and Settings seats. | Headless startup, persistence and missing-Place behavior passed. Debug Werror, 18 no-display UI suites, the Settings suite and all 3 acceptance suites passed. | Pushed |
 | SC-120, SC-122 | `basics/browser-chain` at `0cb6389f1` | Use one indexed search for All, with independent tokens and search text per mode. Browser and library seats. | Peerless scope, plug-in, preset and mode checks passed. The indexed 200,000-file Browser fixture and library query suite passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-124 | `basics/browser-chain` at `e6ff43de1` | Scroll Browser labels by wheel and reveal keyboard selections. Browser seat. | Peerless wheel, keyboard, paint and refresh checks passed. Debug Werror, all 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-125, SC-132 | `basics/browser-chain` at `d205b620e` | Add and remove Places from the Browser, including folder drops and read-only folders. Browser, application and library seats. | Peerless chooser/menu/drop tests passed. A read-only folder and a copied User Library marker also passed a direct smoke test. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -45,6 +46,32 @@ Peerless Browser fixture at 308 × 443 logical px, corresponding to a Compact 12
 | With one earlier All label in the chain | The unscrolled Add Folder starts at y=427 in the default list. With 32 folders the final folder starts at y=1016 and Add Folder at y=1035. | The travel is 34 px by default and 642 px with 32 folders. The final two visible rows still occupy y=374 and y=393. |
 
 The SC-124 regression directs a synthetic wheel event at the sidebar, clicks a scrolled-in folder, uses Up to reveal the next keyboard selection, and checks that a regenerated listing keeps a visible selection and clamps a shortened list. It runs without a peer or a window and does not activate Add Folder. This change touches the window seat’s Browser and shell tests.
+
+## SC-125 · Add and remove Places
+
+The existing Add Folder row now opens a directory chooser. Arrow keys scroll to it and Enter opens the chooser without changing the selected category. A file-manager drop adds the directory entries in one edit. A right-click on an added folder offers **Remove from Places**, which removes the configured folder even if it has disconnected. Its files and any marker remain on disk. The User Library row has no Remove action. Settings’ own folder picker uses the same path deduplication, and Browser edits update the Settings list and start a fresh background listing.
+
+Compact measurements below use Browser-local logical pixels in the 1200×1000 headless fixture with the sidebar unscrolled. The sidebar begins at `(4, 27)` and is 113 px wide. Each row remains 113×19 px. SC-124’s scroll offset subtracts from y in smaller windows.
+
+| Target | Before `(x, y; width×height)` | After `(x, y; width×height)` |
+|---|---|---|
+| Add Folder with no added Place | `(4, 408; 113×19)`, placeholder response | `(4, 408; 113×19)`, chooser action |
+| First added Place | Absent in the empty fixture | `(4, 408; 113×19)` |
+| Second added Place | Absent in the empty fixture | `(4, 427; 113×19)` |
+| Add Folder after two configured Places | `(4, 446; 113×19)` for folders configured through Settings | `(4, 446; 113×19)` following chooser and drag |
+| Remove from Places | Absent | One menu item, anchored to a 1×1 logical px target at the clicked row’s screen position |
+
+The OS drop target covers the Browser component and uses its existing bounds. There are no new permanent controls. The chooser and context menu use the platform/JUCE sizing. Their dimensions were not measured on this headless run.
+
+## SC-132 · Read-only Places and synced User Library
+
+The existing library worker first attempts the portable marker and index path. When the folder cannot supply a usable identity, the worker walks it read-only and includes its files in the same searchable publication. It uses a listing-only key derived from the canonical folder path for selection and search scope, without registering a fabricated persistent volume ID or writing cache hashes into the index. The direct walk excludes symlink files and follows no symlink directories. Inaccessible or disconnected folders retain their Places row with an error, so the Browser can remove the configured entry.
+
+A writable User Library keeps `.adi-volume-id` as the existing portable identity. A sync service can carry that marker with the folder. Each installation uses its own ADI app-data index and probes case behavior where the synced folder is mounted. When two configured folders on one installation carry the same marker, the first uses its portable index entry and the other remains searchable individually via a listing-only key. Both marker files remain unchanged. No folder name, permission, or copied marker silently establishes a second persistent volume under the same identity.
+
+The headless shell test exercises chooser request, keyboard activation, settings persistence, mixed OS drops, same-name scope and removal, read-only search and marker copying. It substitutes callbacks for the chooser and context menu. The new files and edits concern the Browser seat, the app’s library worker, Settings’ folder edit and the shell suite. No native window or menu was shown.
+
+Commit `286b9e9ab` is based on the chain’s SC-124 preflight head `068670786`. The isolated Linux smoke ran with `DISPLAY` unset. It confirmed an actual mode-0555 folder refuses the marker probe but still lists its sample, cloned markers stay identical without merging two Places, only the indexed User Library writes index entries, removal leaves media on disk, and disconnected Places remain removable.
 
 ## For the director
 
