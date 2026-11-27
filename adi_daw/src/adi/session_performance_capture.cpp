@@ -487,7 +487,7 @@ void checkAudioPhase(const engine::LaunchCapturedSpan& span, const SourceExtent&
     const auto loopFrames = static_cast<long double>(loopTicks) * 60 * rate /
         (static_cast<long double>(textproj::kPPQ) * fixed.bpmAt(0));
     if (firstWrap != limit - start || loopFrames != std::round(loopFrames) ||
-        loopFrames != limit - sampleAt(fixed, source.loopBegin, rate))
+        loopFrames != static_cast<long double>(limit - sampleAt(fixed, source.loopBegin, rate)))
         throw std::runtime_error("fractional Session audio wrap requires a performed source range trace");
 }
 
