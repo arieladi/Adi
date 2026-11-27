@@ -40,6 +40,9 @@
 #include <span>
 #include <type_traits>
 #include <variant>
+namespace adi::automation {
+struct NativeSpliceKnot;
+}
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
@@ -823,6 +826,8 @@ class AdiRootComponent final : public juce::Component,
                              double value, bool exactValue = false);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     bool deleteAutomationPoint(std::int64_t track, const AutomationTarget &, std::uint64_t point);
+    bool replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
+                                std::span<const automation::NativeSpliceKnot>, const char *label);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                               std::int64_t begin, std::int64_t end,
                               const std::map<std::int64_t, double> &points, bool stepped,

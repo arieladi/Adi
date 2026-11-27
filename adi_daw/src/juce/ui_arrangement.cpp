@@ -4065,14 +4065,7 @@ bool ArrangementCanvas::commitAutomationDrag(const AutomationDrag &drag) {
                 const auto value = automationDragValue(*envelope.lane, lane.target, point.value, drag.valueDelta);
                 knots.push_back({{point.time, value, point.tension, point.curve, 0, 0, 0}, {}});
             }
-            auto prepared = automation::prepareEnvelopeSplice(view.root.editStore(), lane.lane, begin, end, knots,
-                                                               view.root.editRate(), automation::kSplicePointBudget,
-                                                               "Move Automation Segment");
-            if (!prepared.ok) {
-                view.root.say(std::move(prepared.error));
-                return false;
-            }
-            return view.root.submitEdits(std::move(prepared.requests));
+            return view.root.replaceAutomationRange(lane.lane, begin, end, knots, "Move Automation Segment");
         }
 
         auto points = Payload::array();

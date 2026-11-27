@@ -4367,6 +4367,14 @@ bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, const Automatio
     return !ops.empty() && submitEdits(std::move(ops));
 }
 
+bool AdiRootComponent::replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
+                                              std::span<const automation::NativeSpliceKnot> knots, const char *label) {
+    auto edit = automation::prepareEnvelopeSplice(submitter_.store(), lane, begin, end, knots, editRate(),
+                                                  automation::kSplicePointBudget, label, session_.advisory());
+    if (!edit.ok)
+        return fail(std::move(edit.error));
+    return edited(submitter_.submit(std::move(edit.requests)));
+}
 bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                                            std::int64_t begin, std::int64_t end,
                                            const std::map<std::int64_t, double> &points, bool stepped,
@@ -4398,11 +4406,7 @@ bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const Automation
         for (const auto &[tick, value] : points)
             knots.push_back({{tick, valueAt(value), 0.f, curve, 0, 0, 0}, {}});
         knots.push_back({{end, knots.back().point.value, 0.f, curve, 0, 0, 0}, {}});
-        auto edit = automation::prepareEnvelopeSplice(submitter_.store(), env.lane->id, begin, end, knots, rate,
-                                                       automation::kSplicePointBudget, label, session_.advisory());
-        if (!edit.ok)
-            return fail(edit.error);
-        return edited(submitter_.submit(std::move(edit.requests)));
+        return replaceAutomationRange(env.lane->id, begin, end, knots, label);
     }
 
     RowIds rows(submitter_.store().db());
