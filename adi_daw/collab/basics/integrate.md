@@ -71,6 +71,7 @@ The combined Safety build included JUCE, Pd, warnings as errors and the app. Sev
 | Item | Integration head | Change and verification |
 |---|---|---|
 | SC-261 | `f5811eb85bc0a4ef6a92a96eaf86e5d29216317b` | The Arrangement and Mixer choosers use the available routes and preserve configured inputs. Audio To updates the graph and rejects cycles. Main Out selects an enabled physical stereo pair. Combined Main routing with the Browser owner’s sparse channel map, Cue preview and missing-output notice. The focused shell passed 41 checks, including both views, Undo and Redo, and eight focused engine checks passed for sparse outputs, Cue, offline rendering and no allocations. |
+| SC-252 and SC-253 | `93de1ee4940ae3fdf7a977ffef36c12f9f984fd8` | Recordings that replace earlier material retain the displaced take. Arrangement exposes existing and empty take lanes, their audition and comp controls. Combined take lane and routing data in one snapshot and kept loop publication and the recording recovery receipt. The focused nested-take test passed comp and Undo. The combined playback, recording, MIDI and no-display window suites passed. |
 
 ## For the director
 
