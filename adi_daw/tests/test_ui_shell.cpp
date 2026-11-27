@@ -4722,6 +4722,56 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
     check(sel.insert == start + step && root.command(AppCommands::Undo), "the marker follows the trim and Undo is available");
     root.frame();
     checkSpan(start, "Undo restores the clip start and sample offset");
+
+    const auto selectMods = juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier |
+                            juce::ModifierKeys::altModifier;
+    const juce::Point<float> rangeStart{x(start + beat), y}, pastEnd{x(end + beat), y};
+    const auto undoBeforeSelection = root.undoTitle(false);
+    canvas.mouseDown(pressAt(canvas, rangeStart, juce::ModifierKeys(selectMods)));
+    canvas.mouseDrag(dragAt(canvas, rangeStart, pastEnd, juce::ModifierKeys(selectMods)));
+    canvas.mouseUp(dragAt(canvas, rangeStart, pastEnd));
+    root.frame();
+    check(sel.track == track && sel.toTrack == 0 && sel.clip == 0 && sel.start == start + beat && sel.end == end &&
+              root.undoTitle(false) == undoBeforeSelection,
+          "Shift+Alt dragging the title selects time within the clip and writes no edit");
+    checkSpan(start, "the time selection left the clip in place");
+
+    const auto id = audioClip() ? audioClip()->id : 0;
+    clip_edit::WarpOptions warp;
+    warp.analysis.sourceBpm = 120;
+    warp.analysis.fromFirstBeat = false;
+    if (id && root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), id, warp, root.editRate()))) {
+        root.frame();
+        const auto dragStretch = [&](float edge, std::int64_t target) {
+            const juce::ModifierKeys mods(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier);
+            const juce::Point<float> down{edge, y}, up{x(target), y};
+            canvas.mouseDown(pressAt(canvas, down, mods));
+            canvas.mouseDrag(dragAt(canvas, down, up, mods));
+            canvas.mouseUp(dragAt(canvas, down, up));
+            root.frame();
+        };
+        const auto mapEnd = [&] {
+            const auto *clip = audioClip();
+            if (!clip || !clip->audio || !clip->audio->warpMarkers)
+                return std::int64_t{0};
+            const auto map = audio::readWarpMap(*clip->audio->warpMarkers,
+                static_cast<std::uint64_t>(clip->audio->sourceLengthFrames));
+            return map ? map.markers.back().tick : std::int64_t{0};
+        };
+        dragStretch(x(end) - 1.f, end + 2 * beat);
+        check(audioClip() && audioClip()->posTicks == start && audioClip()->lengthTicks == 6 * beat &&
+                  mapEnd() == 6 * beat && root.undoTitle(false) == "Undo Stretch Clip",
+              "Shift and the right title edge stretch the Warp map and keep the start fixed");
+        check(root.command(AppCommands::Undo), "undo the right stretch");
+        root.frame();
+        check(audioClip() && audioClip()->lengthTicks == 4 * beat && mapEnd() == 4 * beat,
+              "one Undo restores both the placement and Warp map");
+        dragStretch(x(start) + 1.f, start - beat);
+        check(audioClip() && audioClip()->posTicks == start - beat && audioClip()->lengthTicks == 5 * beat && mapEnd() == 5 * beat,
+              "Shift and the left title edge stretch the Warp map and keep the end fixed");
+    } else {
+        check(false, "enable Warp before testing a stretch");
+    }
     commands.detach(root);
 }
 
@@ -8888,6 +8938,22 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     const int shift = juce::ModifierKeys::shiftModifier, command = juce::ModifierKeys::commandModifier;
     const auto song = [&](std::int64_t clipBeats) { return bar + clipBeats; }; // the clip starts at the song's second bar
 
+    const auto splitKey = key('e', command | shift);
+    check(!ed.keyPressed(splitKey), "without a time selection the Note Editor leaves the Export MIDI shortcut available");
+    ed.selectTime(song(2 * beat), song(4 * beat));
+    const bool split = ed.keyPressed(splitKey);
+    root.frame();
+    const auto *splitTrack = root.reader().findTrack(1);
+    const bool threePieces = splitTrack && splitTrack->clips.size() == 3;
+    check(split && threePieces && splitTrack->clips[0]->id == 11 &&
+              splitTrack->clips[0]->lengthTicks == 2 * beat && splitTrack->clips[1]->posTicks == song(2 * beat) &&
+              splitTrack->clips[1]->lengthTicks == 2 * beat && splitTrack->clips[2]->posTicks == song(4 * beat) &&
+              panel.clip() == splitTrack->clips[1]->id && submitter.nextUndo()->opCount == 1,
+          "Ctrl+Shift+E in the Note Editor splits the Arrangement clip at both selected boundaries and selects the middle");
+    if (threePieces)
+        check(undo() && panel.clip() == 11 && details().notes.size() == 5,
+              "one Undo restores the original MIDI clip and its notes");
+
     // The time commands, over the clip's beats 2 to 4.
     ed.selectTime(song(2 * beat), song(4 * beat));
     check(ed.keyPressed(key('d', command | shift)) && details().notes.size() == 6 && note(4).startTicks == 7 * beat && note(5).startTicks == 9 * beat &&
@@ -12945,6 +13011,27 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     drag(6 * beat, 5 * beat, y - 4);
     check(panel.details() && panel.details()->endMarkerTicks == 5 * beat,
           "drag the waveform's End marker");
+
+    const auto markerClick = [&](std::int64_t at, int where, int modifiers = 0) {
+        const juce::Point<float> point{x(at), static_cast<float>(where)};
+        edit.mouseDown(pressAt(edit, point, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier | modifiers)));
+        edit.mouseUp(pressAt(edit, point));
+        root.frame();
+    };
+    markerClick(5 * beat, y - 4);
+    markerClick(2 * beat, y + 5, juce::ModifierKeys::commandModifier);
+    const bool movedStart = panel.details() && panel.details()->startMarkerTicks == 2 * beat;
+    check(movedStart && root.undoTitle(false) == "Undo Set Clip Start",
+          "Ctrl clicking the waveform with a marker selected sets Start");
+    markerClick(6 * beat, y + 5, juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+    const bool movedEnd = panel.details() && panel.details()->endMarkerTicks == 6 * beat;
+    check(movedEnd && root.undoTitle(false) == "Undo Set Clip End",
+          "Ctrl+Shift clicking the waveform with a marker selected sets End");
+    if (movedEnd)
+        check(root.command(AppCommands::Undo), "undo the end marker shortcut");
+    if (movedStart)
+        check(root.command(AppCommands::Undo), "undo the start marker shortcut");
+    root.frame();
     clip_edit::WarpOptions warp;
     warp.analysis.sourceBpm = 120;
     warp.analysis.fromFirstBeat = false;
