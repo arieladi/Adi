@@ -180,7 +180,7 @@ this file by hand.
 | Setting | ADI | Status |
 |---|---|---|
 | File Type | WAV, promoted in place to RF64 if a take crosses 4 GiB (a JUNK chunk reserved for the ds64 header, as EBU Tech 3306 describes): under 4 GiB every tool reads it, over it nothing is lost. `bext` (BWF) timecode and iXML are options on any recording. | DECIDED ADR-0132 d1-d2 |
-| Bit Depth | `record.bitDepth` selects 16-bit PCM, 24-bit PCM or 32-bit float on the next WAV recording. The default is 32-bit float and every depth can promote to RF64. Export has its own depth. | SC-25 adds the depth setting to ADR-0132 d1, d5 |
+| Bit Depth | `record.bitDepth` selects 16-bit PCM, 24-bit PCM or 32-bit float on the next WAV recording. The default is 32-bit float and every depth can promote to RF64. Export has its own depth. | DECIDED (SC-25; ADR-0132 d1, d5) |
 | Count-In | Same place as Live 12: the metronome menu. Bitwig keeps *Pre-Roll* in Settings (§0.2.2.6); Live's placement wins. | DECIDED parity |
 | Exclusive Arm, Exclusive Solo | Same two switches | DECIDED parity |
 | Clip Update Rate | Same | DECIDED parity |
