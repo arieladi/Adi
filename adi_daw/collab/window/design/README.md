@@ -177,8 +177,22 @@ The large analyser screen, a page of the Mix View, reached by a click on the Inf
   correlation, clipped samples, what masks it, a note.
 - **Cost.** Nothing here costs processing while the view is closed (ADR-0237).
 
+## The Browser and the floating search, proposal 2 ([proposals/browser-2.png](proposals/browser-2.png))
+
+Drawn on 27 November 2026 after ADR-0261, with its source beside it (`proposals/browser-2.html`). It
+shows the Browser's column in four states (a sample search with the filters by what a sound measures,
+a device selected and so no preview row, AI chosen, AI with the column wider) and the floating search
+twice (opened on samples, and moved to AI). His four choices from it are ADR-0262: choosing AI widens
+the column by itself; the full list of a proposed change opens in a floating window; in the Mix View
+the floating search calls the agent and the column slides in; four buttons, Samples first. His word for
+the sheet, 27 November: "agreed". What is built from it is shown to him against it. Where this
+picture and the Arrangement's differ (the preview row always shown there, no AI label), this one and
+ADR-0261 win. Proposal 1 of the Browser (19 November, on `window/proposals`) was never shown to him
+and is overtaken.
+
 ## What is not on a sheet yet
 
-Each Pd device's panel; the Clip View; the Mixer and the track rows in detail; the Browser; menus,
+Each Pd device's panel; the Clip View; the Mixer and the track rows in detail; the Browser's plug-in list
+(folders by maker, Rescan); menus,
 dialogs and Settings; the contents of a channel's name tag in the Mix View. They are rows in
 `docs/DEFERRED.md` (DF-W20, DF-W23).

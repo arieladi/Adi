@@ -29,17 +29,25 @@ void fillWindow(Window w, std::span<float> out) noexcept {
     // endpoint, and an overlapping analysis then counts that sample twice --
     // which shows up as a slow ripple across the spectrogram rather than as
     // anything obviously wrong.
+    double mean = .5, fundamental = .5, secondHarmonic = 0.;
+    if (w == Window::Hamming) {
+        mean = .54;
+        fundamental = .46;
+    } else if (w == Window::Blackman) {
+        mean = .42;
+        secondHarmonic = .08;
+    }
     for (std::int32_t i = 0; i < n; ++i) {
         const double x = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(n);
-        out[static_cast<std::size_t>(i)] = static_cast<float>(0.5 - 0.5 * std::cos(x));
+        const double cosine = std::cos(x);
+        out[static_cast<std::size_t>(i)] = static_cast<float>(
+            mean - fundamental * cosine + secondHarmonic * (2. * cosine * cosine - 1.));
     }
 }
 
 double coherentGain(Window w, std::int32_t n) noexcept {
     if (n <= 0) return 0.0;
-    // Hann's mean is exactly 0.5 for a periodic window, but it is summed
-    // rather than asserted: the correction and the window must come from the
-    // same array, or a change to one silently stops matching the other.
+    // Use the samples actually fed to the FFT for the calibration.
     std::vector<float> win(static_cast<std::size_t>(n));
     fillWindow(w, win);
     double sum = 0.0;
