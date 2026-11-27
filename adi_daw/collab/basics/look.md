@@ -29,6 +29,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-266 | `basics/look-chain` at `040e4116` | Identify frozen tracks in Arrangement and Mixer. Per-track load awaits a track-attributed timing publication. Window seat. | Focused red/green peerless freeze and thaw probes passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-267 | `basics/look-chain` at `77f611a5` | Reveal keyboard and cross-view track selections. Keep manual scroll and editing gestures stable. Window seat. | Headless keys, Mixer to Arrangement selection, automation hit-testing and edit viewport checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-268 | `basics/look-chain` at `03505361` | Disable unavailable Reference Track controls with reasons and connect visibility for assigned roles. Window and Mix View seats. | Peerless menu and visibility tests passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-270 | `basics/look-chain` at `2affb764` | Wire Arrangement M and View Volume to the volume, pan and meter group. Window seat. | Peerless click, layout, menu state and per-window persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -212,6 +213,10 @@ Cross-view reveal is queued by an Arrangement or Mixer selection gesture. Undo a
 ### SC-268
 
 At 1440 × 900 Compact, Mix View controls keep these local rectangles before and after: strip `(4, 87, 1432, 28)`, REF `(214, 92, 38, 17)`, eye `(258, 92, 124, 17)`, timeline `(390, 92, 1038, 18)`. REF, the eye and the two menu entries are now visibly disabled with reasons when the song has no Reference. An existing assigned track enables the two visibility controls. Audition remains disabled with its audio connection reason.
+
+### SC-270
+
+At 1440 × 900 Compact, the Arrangement Names Bar's M hit box stays `(1301, 58, 18, 20)`. Its lit face turns dark when the mixer group is hidden. With I/O on, volume `(82, 20, 35, 13)`, pan `(132, 20, 45, 13)` and meter `(183, 1, 8, 84)` disappear from the track row. Send A moves from `(82, 37, 29, 13)` to `(82, 20, 29, 13)` and the visible Delay field from `(82, 54, 45, 13)` to `(82, 37, 45, 13)`. Routing and track switches remain usable. The approved sheet's M face is lit at `(1750, 103, 22, 16)`.
 
 ## For the director
 
