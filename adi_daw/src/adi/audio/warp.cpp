@@ -547,7 +547,8 @@ private:
             try { result = render(job, stop); }
             catch (const Failure& failure) { result = {failure.code, failure.text, {}}; }
             catch (const std::exception& failure) { result = {WarpError::Io, failure.what(), {}}; }
-            job.task->result_.store(std::make_shared<const WarpResult>(std::move(result)), std::memory_order_release);
+            job.task->result_ = std::make_shared<const WarpResult>(std::move(result));
+            job.task->ready_.store(true, std::memory_order_release);
         }
     }
 
@@ -561,7 +562,8 @@ private:
 };
 
 std::shared_ptr<const WarpResult> WarpTask::result() const noexcept {
-    return result_.load(std::memory_order_acquire);
+    if (!ready_.load(std::memory_order_acquire)) return {};
+    return result_;
 }
 std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan) {
     if (onAudioThread) return {};
