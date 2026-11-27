@@ -7,7 +7,6 @@ Codex took the library seat on 27 November 2026.
 - TM-MD-04. Feed exchanged derived key and tempo observations into the live catalog and Warp metadata path as well as returning them from the exchange codec.
 - TM-MD-07. Supply analysis jobs and stable source identities from each Browser listing generation to the headless publication and prioritize displayed files.
 - TM-MD-04, TM-WT-01 and TM-WT-05. Run the prepared workstation fixtures on Live 12.4 and record the remaining measurements. This execution environment has no Live 12.4 host.
-- TM-WT-01. Withhold bar placement when identical repeated beats establish a pulse without a clear downbeat.
 - TM-MD-04. Read native AIFF title and author chunks alongside embedded ID3 and Apple Loop data.
 - TM-WT-01. Enable the candidate in production playback after the timing rollout decision. The candidate currently has an opt-in engine path and measured comparison.
 - TM-MD-04. Resolve the appendix's Create Analysis Files switch against the existing always-cache decision.
@@ -89,6 +88,7 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 | TM-MD-04 and TM-WT-01, concurrent timing work | Chain `f48b0ac5c`. Native Warp and the catalog hold one in-flight timing computation for each cache folder, content hash and analyser settings. Two concurrent cold readers previously consumed two PCM passes. The same test now measures one pass and identical timing results. Cancellation, recursive acquisition and retry after a failed ADIA write passed. Both focused warnings-as-errors suites passed in 13.82 s. | Pushed. |
 | TM-MD-04 and TM-WT-05, authored metadata refresh | Chain `c6ec900a1`. The catalog applies committed BPM, key, tag and saved loop changes on its next read. A bounded change journal refreshes the affected hashes, and earlier snapshots keep their values. Browser filtering, preview classification and Warp agreed after save and clear, with zero new decodes. Bulk imports and rollback passed. Four warnings-as-errors suites passed in 3.64 s. | Pushed. |
 | Windows portability, library exchange | Chain `3be8a80db`. The library JSON reader and writer now call their local revision `exchangeVersion`, avoiding shadowing `Index::version`. The Linux Clang audit reproduced two shadow diagnostics and the focused compile is clean with both renamed. The wider audit checked 50 changed first-party units. | Pushed. Native MSVC confirmation belongs to the checker run. |
+| TM-WT-01, unaccented source and pickup | Chain `050569b20`. A steady train of identical beats holds its pulse grid and leaves the bar phase unknown. Opt-in Warp keeps the full source when no clear downbeat exists. The standalone regression and native cached-map regression failed first and passed after the fix. All four focused suites passed in 9.96 s. AWTM v2 invalidates previous derived timing. Timing and onset scores on all 32 recordings matched the previous benchmark exactly. | Pushed. |
 
 The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% tempo tolerance. A dash means the comparator supplied no matching labelled output.
 
