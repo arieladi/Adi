@@ -50,12 +50,13 @@ public:
 private:
     friend class Session;
     friend class LiveMidiInput;
-    bool start(std::vector<std::int64_t> targets, double sampleRate);
+    bool start(std::vector<std::int64_t> targets, double sampleRate, bool overdub);
     void deviceStopped() noexcept; ///< owner, with the driver already quiescent
     void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch, RecordingPunch,
                     const RecordingPunchWindow&) noexcept;
     void record(std::int64_t scheduledSample, std::int64_t inputSample, const Event&) noexcept;
     void endSlice() noexcept;
+    [[nodiscard]] bool overdubs(std::int64_t track) const noexcept; // driver, within a slice
 
     void finish(MidiCaptureState) noexcept;
     bool append(MidiCapturePacket) noexcept;
@@ -66,7 +67,9 @@ private:
     std::atomic<std::size_t> read_{0}, written_{0};
     std::atomic<std::uint64_t> epoch_{0}, stopEpoch_{0};
     std::atomic<MidiCaptureState> state_{MidiCaptureState::Idle};
-    std::vector<std::int64_t> tracks_; // owner-only; the tap observes one common Track stream
+    // Published with the epoch and read by the driver only during an open slice.
+    std::vector<std::int64_t> tracks_;
+    bool overdub_ = false;
     double sampleRate_ = 0;
 
     std::uint64_t driverEpoch_ = 0;

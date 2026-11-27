@@ -849,6 +849,20 @@ void testHeldNotesTable() {
     again.take(list, true);
     list.clear();
     check(!again.any(), "a note-on repeated with the same id is one note");
+
+    list.push(heldNote(EventType::NoteOn, 11, 60));
+    list.push(heldNote(EventType::NoteOn, 12, 60));
+    list.push(heldNote(EventType::NoteOn, 13, 100));
+    held.take(list, true);
+    list.clear();
+    const std::array<std::uint64_t, 2> keys{std::uint64_t{1} << 60, std::uint64_t{1} << 36};
+    check(held.keyMask() == keys, "the published keyboard mask includes pitches in both halves");
+    list.push(heldNote(EventType::NoteOff, 11, 60));
+    held.take(list, true);
+    check(held.keyMask() == keys, "releasing one of two notes on the same pitch leaves its key lit");
+    held.clear();
+    check(!held.any() && held.keyMask() == std::array<std::uint64_t, 2>{},
+          "releasing the graph clears the sounding key mask");
 }
 
 void testTailKeepsRunning() {

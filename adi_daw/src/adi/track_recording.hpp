@@ -20,5 +20,7 @@ struct TrackRecordingOptions {
 // No ambient settings read takes place when an op is replayed.
 [[nodiscard]] std::vector<OpRequest> trackRecordingDefaults(std::int64_t track,
     std::string_view recordChoice,bool keepMonitoringLatency);
+// A stored Rec-Q or Play-Q subdivision, expressed in project ticks. Unknown choices return zero.
+[[nodiscard]] std::int64_t trackRecordingGridTicks(std::string_view grid) noexcept;
 [[nodiscard]] std::span<const OpDescriptor> trackRecordingOps();
 }

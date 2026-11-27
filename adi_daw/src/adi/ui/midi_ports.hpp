@@ -74,12 +74,14 @@ struct MidiPortListing {
 // another identifier holds (one whose port is gone, or now lists another device), re-keyed to the port's new
 // identifier, as a keyboard on another USB socket keeps its switches. A record of its own is one at its identifier
 // that names it, or names nothing yet. Only an unambiguous match moves: one such record and one such port. Two
-// ports of one name (two keyboards of a kind) stay apart, a port of another name gets no record, and a record at
+// ports of one name (two keyboards of a kind) stay apart, a port only adopts its own name, and a record at
 // an identifier that now lists another device keeps its name, so its own device can still find it. Every move is
 // read from the record as it was, so two devices that swapped sockets both find theirs. The new value, or nothing
-// when the record already agrees.
+// when the record already agrees. An initial Track value applies only to an input with no possible
+// saved match. Save both on and off so preference changes leave the port's own Track switch alone.
 inline std::optional<settings::Value> reconcileMidiPorts(const settings::Value &ports,
-                                                         const std::vector<MidiPortListing> &listed) {
+                                                         const std::vector<MidiPortListing> &listed,
+                                                         std::optional<bool> trackForNewInputs = std::nullopt) {
     if (!ports.is_object())
         return std::nullopt;
     const auto direction = [](const std::string &id) { return id.substr(0, id.find(':') + 1); };
@@ -135,6 +137,24 @@ inline std::optional<settings::Value> reconcileMidiPorts(const settings::Value &
         out[port.id]["name"] = port.name;
         changed = true;
     }
+    if (trackForNewInputs.has_value()) {
+        const auto records = ports.items();
+        for (const auto &port : listed) {
+            if (!port.id.starts_with("in:") || out.contains(port.id))
+                continue;
+            const bool previousName = !port.name.empty() && std::any_of(records.begin(), records.end(),
+                [&](const auto &entry) {
+                    return entry.key().starts_with("in:") && nameAt(ports, entry.key()) == port.name;
+                });
+            if (previousName)
+                continue;
+            auto &record = out[port.id];
+            record["track"] = *trackForNewInputs;
+            if (!port.name.empty())
+                record["name"] = port.name;
+            changed = true;
+        }
+    }
     if (!changed)
         return std::nullopt;
     return out;
@@ -150,11 +170,11 @@ struct MidiPortEvent {
 };
 // One producer, one consumer; `Capacity` a power of two. `push` refuses when full (the event is lost
 // and counted), `pop` returns false when empty. Neither allocates, locks or waits.
-template <std::size_t Capacity = 1024> class MidiEventRing {
+template <std::size_t Capacity = 1024, class Event = MidiPortEvent> class MidiEventRing {
     static_assert(Capacity >= 2 && (Capacity & (Capacity - 1)) == 0, "a power of two");
 
   public:
-    bool push(const MidiPortEvent &e) noexcept {
+    bool push(const Event &e) noexcept {
         const auto w = write_.load(std::memory_order_relaxed);
         if (w - read_.load(std::memory_order_acquire) >= Capacity) {
             dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -164,7 +184,7 @@ template <std::size_t Capacity = 1024> class MidiEventRing {
         write_.store(w + 1, std::memory_order_release);
         return true;
     }
-    bool pop(MidiPortEvent &out) noexcept {
+    bool pop(Event &out) noexcept {
         const auto r = read_.load(std::memory_order_relaxed);
         if (r == write_.load(std::memory_order_acquire))
             return false;
@@ -172,10 +192,12 @@ template <std::size_t Capacity = 1024> class MidiEventRing {
         read_.store(r + 1, std::memory_order_release);
         return true;
     }
+    // Consumer only. Drop the queued prefix in bounded time while the producer stays live.
+    void discardPending() noexcept { read_.store(write_.load(std::memory_order_acquire), std::memory_order_release); }
     std::uint64_t dropped() const noexcept { return dropped_.load(std::memory_order_relaxed); }
 
   private:
-    std::array<MidiPortEvent, Capacity> slots_{};
+    std::array<Event, Capacity> slots_{};
     std::atomic<std::uint64_t> write_{0}, read_{0}, dropped_{0};
 };
 // What a MIDI 1.0 status byte's message carries: its length in bytes (1 to 3), or 0 for what a ring does

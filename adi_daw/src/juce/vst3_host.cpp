@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace adi::device {
@@ -1172,10 +1173,30 @@ std::vector<std::string> Vst3Device::stateRoles() const {
     return {"chunk"};
 }
 
+namespace {
+std::optional<unsigned> vst3StateStreams(const void* bytes, std::size_t size) {
+    if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        return std::nullopt;
+    const auto state = juce::AudioProcessor::getXmlFromBinary(bytes, static_cast<int>(size));
+    if (!state || !state->hasTagName("VST3PluginState"))
+        return std::nullopt;
+    return (state->getChildByName("IComponent") ? 1U : 0U) |
+           (state->getChildByName("IEditController") ? 2U : 0U);
+}
+}
+
 std::vector<std::uint8_t> Vst3Device::saveState(const std::string& role) const {
     if (inst_ == nullptr || role != "chunk") return {};
     juce::MemoryBlock mb;
     inst_->getStateInformation(mb);
+    // JUCE omits a stream whose getState refused while still serializing the
+    // wrapper. Preserve each stream in the last complete or loaded state.
+    // An omitted stream with no prior data can be optional, including for an
+    // entirely stateless plug-in, so its absence alone does not mean refusal.
+    const auto streams = vst3StateStreams(mb.getData(), mb.getSize());
+    if (!streams || (*streams & stateStreams_) != stateStreams_)
+        return {};
+    stateStreams_ = *streams;
     const auto* p = static_cast<const std::uint8_t*>(mb.getData());
     return std::vector<std::uint8_t>(p, p + mb.getSize());
 }
@@ -1190,6 +1211,8 @@ bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8
     HostMutationScope mute(*this);
     if(!mute.admitted)return false;
     inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
+    if (const auto streams = vst3StateStreams(b.data(), b.size()))
+        stateStreams_ = *streams;
     return true;
 }
 
