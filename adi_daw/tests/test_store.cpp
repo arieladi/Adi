@@ -142,6 +142,47 @@ void testNewProjectDefaults() {
           "the snapshot fallback also follows the new-project default");
 }
 
+void testProjectUuid() {
+    section("AGT-02: create and first writable open assign a stable project identity");
+    Scratch scratch("project_uuid");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto store = Store::create(path, error);
+    const auto imported = Store::createEmpty(scratch / "import.adi", error);
+    check(store && imported, "both independent projects are created");
+    if (!store || !imported) return;
+
+    const auto storedUuid = [](Store& project) {
+        return project.db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString();
+    };
+    const auto original = storedUuid(*store);
+    const auto other = storedUuid(*imported);
+    check(!original.empty() && !other.empty() && original != other,
+          "new files carry distinct project ids, including a converter's empty store");
+    store.reset();
+
+    auto reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader) == original, "the project id is durable on read-only reopen");
+    reader.reset();
+    {
+        SQLite::Database legacy(path.string(), SQLite::OPEN_READWRITE);
+        legacy.exec("UPDATE adi_meta SET value='' WHERE key='project_uuid'");
+    }
+    reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader).empty(), "read-only open leaves a legacy project without an id");
+    reader.reset();
+
+    store = Store::open(path, error);
+    check(store && !store->upgradedFromMinor(), "the legacy file is already at the current schema");
+    if (!store) return;
+    const auto backfilled = storedUuid(*store);
+    check(!backfilled.empty() && backfilled != other && !OpJournal(*store).headSeq(),
+          "first writable open fills the id without adding an undo step");
+    store.reset();
+    store = Store::open(path, error);
+    check(store && storedUuid(*store) == backfilled, "later writable opens keep the same id");
+}
+
 // --- SPEC 3.3: the WAL sidecar rule -----------------------------------------
 
 void testWalSidecarRule() {
@@ -411,6 +452,7 @@ int main() {
     std::printf("adi_store_tests -- SPEC 2, 3, 11 and ADR-0009\n\n");
     testCreateAndOpen();
     testNewProjectDefaults();
+    testProjectUuid();
     testWalSidecarRule();
     testIdentityAndVersionGates();
     testBlobRoundTrip();

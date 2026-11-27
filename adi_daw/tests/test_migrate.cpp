@@ -238,6 +238,10 @@ void testReadOnlyNeverWrites() {
     }
     check(readFile(p) == before, "the file's bytes are identical afterwards");
     check(userVersion(p) == 1001, "user_version is still 1001");
+    auto upgraded = Store::open(p, e);
+    check(upgraded && upgraded->upgradedFromMinor() == 1 &&
+              !upgraded->db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString().empty(),
+          "the first writable open both upgrades and assigns the project's id");
 }
 
 void testNewerMinorUntouched() {

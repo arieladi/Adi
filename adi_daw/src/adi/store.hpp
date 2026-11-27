@@ -67,7 +67,7 @@ struct StoreFileResult {
     std::string warning;
 };
 
-enum class StoreSaveKind { copy, saveAs };
+enum class StoreSaveKind { copy, saveAs, sessionCopy };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
     StoreSavePhase phase = StoreSavePhase::copying;
@@ -162,6 +162,9 @@ public:
     /// aliases refuse replacement. Rebase media
     /// paths in both rows and captured history so undo/redo still finds audio.
     [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// A session works on its own project. Give the staged copy a fresh
+    /// identity before publishing it and refuse an existing destination.
+    [[nodiscard]] StoreFileResult saveSessionCopy(const std::filesystem::path&) const;
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
@@ -183,6 +186,9 @@ public:
     [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
+    /// Stable across ordinary copies and Save As. Empty on an unassigned
+    /// read-only legacy project or a schema without a readable identity.
+    [[nodiscard]] std::string projectUuid() const;
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
     [[nodiscard]] int schemaMinor() const { return minor_; }
@@ -254,9 +260,11 @@ private:
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
     friend class StoreFileSave;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    CopyState saveCopyImpl(const std::filesystem::path&, StoreFileCollision,
+                           StoreSaveKind = StoreSaveKind::copy) const;
+    static void renewProjectUuid(SQLite::Database&);
     static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
-        const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision,
+        const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision, StoreSaveKind,
         const std::function<void(SQLite::Database&)>&, std::stop_token = {}, const StoreFileSave::Progress& = {},
         const StoreFileSave* pending = nullptr);
     StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,
