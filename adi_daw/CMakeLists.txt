@@ -430,6 +430,7 @@ add_library(adi_core STATIC
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
     src/adi/engine/remote_devices.cpp
+    src/adi/engine/clap_block_wire.cpp
     src/adi/engine/live_midi_input.cpp
     src/adi/engine/midi_input_capture.cpp
     src/adi/engine/session_runtime.cpp
@@ -1088,6 +1089,10 @@ add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 add_executable(adi_remote_device_tests tests/test_remote_device.cpp)
 target_link_libraries(adi_remote_device_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_remote_device_tests COMMAND adi_remote_device_tests)
+
+add_executable(adi_clap_block_wire_tests tests/test_clap_block_wire.cpp)
+target_link_libraries(adi_clap_block_wire_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clap_block_wire_tests COMMAND adi_clap_block_wire_tests)
 
 if(WIN32 AND NOT ADI_WITH_PD)
     target_link_libraries(adi_core PRIVATE Ws2_32)
