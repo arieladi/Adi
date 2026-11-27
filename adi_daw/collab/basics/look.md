@@ -36,6 +36,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-355 | `basics/look-chain` at `5c3b9050` | Switch the detail panes with Shift+Tab or F12 and show both on Alt-click. Window seat. | Headless keyboard, focus navigation, mouse modifier, layout and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-356 | `basics/look-chain` at `fbd63040` | Remove the inactive Arrangement and Session faces from the side rail. Window seat. | Software raster and component checks verified the two faces are gone and the track height control still works. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-357 | `basics/look-chain` at `8ebf288f` | Explain unavailable Mixer controls in the View and Mixer-arrow menus. Window seat. | Headless menu model checks verified all reasons and the working Arrangement Volume toggle. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-358 | — | Investigated Nudge Down and Nudge Up. Window and engine seats. | Measured both disabled controls in Compact and Open. Traced the clock through audio, MIDI, automation, count-in, recording and window positions. | Blocked on a runtime playback tempo override |
 
 ## Measurements
 
@@ -315,6 +316,23 @@ Measured the Linux Compact menu rows headlessly through the same JUCE Look and F
 
 The mixer Volume item stays ticked while unavailable. The Arrangement Volume item is already a working toggle through SC-270 and its tick reports the Arrangement setting. The arrow stays at (1391, 873), 8 × 16 px in a 1440 × 900 Compact root. Menu body heights remain 122 px for the arrow, 132 px for View › Mixer Controls, and 90 px for View › Arrangement Track Controls. Native screen placement depends on the screen and platform.
 
+### SC-358 — Nudge Down and Nudge Up
+
+Both versions draw the disabled buttons at 45% opacity. Their help text explains that temporary tempo changes are unavailable. The approved Arrangement sheet's shared Control Bar has no Nudge buttons.
+
+Measured at a 1920-point Control Bar by compiling and running its layout routine with the repository's two densities. Coordinates are local to the Control Bar and ordered x, y, width, height.
+
+| Density | Button | Before | After |
+|---|---|---|---|
+| Compact | Nudge Down | (125, 9, 17, 17) | (125, 9, 17, 17) |
+| Compact | Nudge Up | (144, 9, 16, 17) | (144, 9, 16, 17) |
+| Open | Nudge Down | (125, 11, 17, 20) | (125, 11, 17, 20) |
+| Open | Nudge Up | (144, 11, 16, 20) | (144, 11, 16, 20) |
+
+The layout probe passed with warnings treated as errors. The available Debug shell binary's peerless Arrangement subset ran with DISPLAY and WAYLAND_DISPLAY unset and reported 424 checks, 0 failures. Its Control Bar fixture checks that both buttons are dim, have no click or dropdown action, and explain their availability. That standalone subset emitted the existing JUCE palette-cache teardown diagnostics after reporting its checks.
+
+Blocked on a playback tempo override that can be applied and released at callback boundaries. The Link path builds a new playback generation off the audio thread, recompiles MIDI and automation, prepares warped sources, and primes disk pages. Its held BPM replaces later tempo changes, it refuses frozen render caches, and the recording path requires the authored tempo map. The window still resolves Locate and the playhead through the authored map. Scaling the transport's integer sample cursor alone would skip or repeat PCM. Invoking the Tempo field would write authored tempo and undo steps.
+
 ## For the director
 
 Confirm the Control Bar gesture rate and wheel feel in a real window when the window-driving session reaches the fields. Recommendation is to start with the implemented one step per wheel event and one per four logical px of drag.
@@ -326,3 +344,5 @@ The separate MIDI SC-71 candidate opens with a fixed 1/16 grid. Recommendation i
 SC-109 requires the window-driving session to exercise the second monitor, including the CLAP window path noted in the row. Recommendation is to carry the VST3 walk forward and add a two-monitor CLAP check there.
 
 SC-266’s per-track load remains blocked on the engine metric tracked by DEV-24 and MX-28. Recommendation is to use callback timing when that publication becomes available.
+
+SC-358 needs a continuous effective playback clock. Recommend an engine tempo override with a published beat position, then connect hold and release in the Control Bar.
