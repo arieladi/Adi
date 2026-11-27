@@ -11815,6 +11815,16 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     root.setSize(1440, 900);
     root.frame();
     root.frame();
+    const auto browserListsInstruments = [&] {
+        const auto &rows = root.browser.rows();
+        return std::any_of(rows.begin(), rows.end(), [](const auto &row) {
+            return row.device && row.device->name == "OneShot";
+        });
+    };
+    root.browser.setLibrarySnapshot(nullptr, false);
+    check(browserListsInstruments(), "SC-121: New lists instruments before the Browser library scan finishes");
+    root.browser.setListing({});
+    check(browserListsInstruments(), "SC-121: the first library publication retains the startup list");
     check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
               root.reader().findTrack(2)->name == "# MIDI" && root.reader().findTrack(5)->name == "# Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 2) == "1 MIDI" &&

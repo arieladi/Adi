@@ -424,7 +424,9 @@ void BrowserPanel::refill() {
                     heading = nullptr;
         }
     }
-    if (swappingDevices || (!chosen.heading && chosen.name == "Instruments")) {
+    // A newly opened project has a useful list while its library is still being indexed.
+    const bool startupInstruments = !hotSwap_ && selected_ < 0 && text.isEmpty();
+    if (swappingDevices || startupInstruments || (!chosen.heading && chosen.name == "Instruments")) {
         // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
         std::vector<const BuiltinInfo *> in;
         for (const auto &d : builtinCatalog())
