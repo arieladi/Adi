@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/audio/io_audit.hpp"
+#include "adi/audio/realtime_warp_r3.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
+#include "adi/engine/warp_r3_pages.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <numbers>
+#include <span>
+#include <vector>
+
+namespace {
+
+constexpr std::uint32_t sampleRate = 48000;
+constexpr double frequency = 440;
+
+void check(bool condition, const char* message) {
+    if (condition) return;
+    std::cerr << message << '\n';
+    std::exit(1);
+}
+
+struct Input {
+    bool ready = true;
+    bool variable = true;
+    std::int64_t framesRead = 0;
+
+    static bool read(void* context, std::int64_t frame, std::span<float> output) {
+        auto& input = *static_cast<Input*>(context);
+        if (!input.ready) return false;
+        const auto phase = 2 * std::numbers::pi * frequency * static_cast<double>(frame) / sampleRate;
+        output[0] = static_cast<float>(0.5 * std::sin(phase));
+        output[1] = 0.5f * output[0];
+        ++input.framesRead;
+        return true;
+    }
+
+    static double ratio(void* context, std::int64_t frame) noexcept {
+        if (!static_cast<Input*>(context)->variable) return 1;
+        const auto progress = std::clamp(static_cast<double>(frame) / sampleRate, 0.0, 1.0);
+        return 120 / (120 + 20 * progress);
+    }
+};
+
+double measurePitch(std::span<const float> pcm) {
+    double first = -1;
+    double last = -1;
+    std::size_t crossings = 0;
+    for (std::size_t i = 1; i < pcm.size(); ++i) {
+        if (pcm[i - 1] >= 0 || pcm[i] < 0) continue;
+        const auto fraction = static_cast<double>(-pcm[i - 1]) / (pcm[i] - pcm[i - 1]);
+        last = static_cast<double>(i - 1) + fraction;
+        if (crossings++ == 0) first = last;
+    }
+    return crossings > 1 ? static_cast<double>(crossings - 1) * sampleRate / (last - first) : 0;
+}
+
+void testVoice() {
+    using namespace adi::audio;
+    WarpRenderPlan plan;
+    plan.mode = WarpMode::Complex;
+    plan.outputRate = sampleRate;
+    RealtimeWarpR3 voice(plan, sampleRate, 2, 1.0);
+    check(voice.latencySamples() > 0, "R3 must declare its prepared latency");
+
+    Input input;
+    const R3WarpInput source{&input, Input::read, Input::ratio};
+    std::array<float, 2> frame{};
+    {
+        CallbackScope callback;
+        check(!voice.pull(frame, source) && !voice.restart(0, 1), "R3 worker boundary");
+    }
+    input.ready = false;
+    check(!voice.pull(frame, source) && frame == std::array<float, 2>{}, "missing source must be silent");
+    check(voice.nextInputFrame() == 0, "missing input must remain pending");
+
+    input.ready = true;
+    std::vector<float> pcm(40000);
+    float stereoError = 0;
+    for (auto& sample : pcm) {
+        check(voice.pull(frame, source), "primed R3 must deliver continuous output");
+        stereoError = std::max(stereoError, std::abs(frame[1] - 0.5f * frame[0]));
+        sample = frame[0];
+    }
+    const auto measured = measurePitch(std::span<const float>(pcm).subspan(8000));
+    const auto cents = std::abs(1200 * std::log2(measured / frequency));
+    check(cents < 5, "R3 tempo ramp must retain pitch");
+    check(stereoError < 1.0e-4f, "R3 channel timing or gain diverged");
+    check(input.framesRead > static_cast<std::int64_t>(pcm.size()), "ramping down stretch ratio consumes more input");
+
+    constexpr std::int64_t loc = 17001;
+    input.variable = false;
+    check(voice.restart(loc, 1), "R3 seek reset");
+    RealtimeWarpR3 fresh(plan, sampleRate, 2, 1);
+    check(fresh.restart(loc, 1), "fresh R3 seek reset");
+    std::array<float, 2> expected{};
+    for (int i = 0; i < 9600; ++i) {
+        check(voice.pull(frame, source) && fresh.pull(expected, source), "R3 stream after seek");
+        check(frame == expected, "R3 seek must discard old phase and audio");
+    }
+    check(!voice.restart(loc, 0.0), "R3 must refuse unsupported ratios");
+    std::cout << "R3 latency " << voice.latencySamples() << " frames at " << sampleRate
+              << " Hz, ramp pitch error " << cents << " cents, stereo peak error " << stereoError << '\n';
+}
+
+void testRepeatedRampPages() {
+    using namespace adi;
+    using namespace adi::engine;
+    constexpr int projectBeats = 32;
+    constexpr int loopBeats = 4;
+    constexpr int beatsPerRamp = 8;
+    constexpr int framesPerBeat = sampleRate / 2;
+    constexpr int sourceFrames = loopBeats * framesPerBeat;
+    constexpr std::int64_t beatTicks = textproj::kPPQ;
+    constexpr std::uint32_t pageFrames = 8192;
+    constexpr std::int64_t sourceOffset = 17;
+
+    std::vector<rows::TempoEvent> events;
+    for (int beat = 0; beat <= projectBeats; beat += beatsPerRamp) {
+        const auto bpm = beat % (2 * beatsPerRamp) == 0 ? 120.0 : 140.0;
+        events.push_back({beat * beatTicks, bpm, 1});
+    }
+    const WarpArrangementClock tempo(events, sampleRate);
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {sourceFrames, loopBeats * beatTicks}}};
+
+    audio::WarpRenderPlan plan;
+    plan.mode = audio::WarpMode::Complex;
+    plan.outputRate = sampleRate;
+    plan.sourceStart = sourceOffset;
+    plan.sourceFrames = sourceFrames;
+    WarpR3Pages pages(plan, sampleRate, 1, markers, tempo, 0, loopBeats * beatTicks, 0, loopBeats * beatTicks);
+
+    std::vector<float> pcm(sourceOffset + sourceFrames);
+    constexpr int pulseHalfWidth = 110;
+    for (int beat = 1; beat < loopBeats; ++beat) {
+        for (int offset = -pulseHalfWidth; offset <= pulseHalfWidth; ++offset) {
+            const auto frame = static_cast<std::size_t>(sourceOffset + beat * framesPerBeat + offset);
+            pcm[frame] = static_cast<float>(0.4 * (1 + std::cos(std::numbers::pi * offset / pulseHalfWidth)));
+        }
+    }
+    const WarpR3Source source{&pcm, [](void* context, std::uint64_t first, float* output, std::uint32_t count) {
+        const auto& input = *static_cast<const std::vector<float>*>(context);
+        check(first >= sourceOffset && first + count <= input.size(), "R3 page read must stay in source window");
+        check(count > 0 && count < pageFrames, "R3 pages must read bounded source chunks");
+        std::copy_n(input.data() + first, count, output);
+    }};
+
+    const auto expectedFrame = [](int beat) {
+        // Independently integrate the authored linear-in-beats ramps.
+        constexpr double slope = 20.0 / beatsPerRamp;
+        const auto fullRamps = beat / beatsPerRamp;
+        const auto ascending = fullRamps % 2 == 0;
+        const auto signedSlope = ascending ? slope : -slope;
+        const auto from = ascending ? 120.0 : 140.0;
+        const auto elapsed = fullRamps * (60 / slope) * std::log(140.0 / 120.0) +
+            (60 / signedSlope) * std::log1p(signedSlope * (beat % beatsPerRamp) / from);
+        return std::llround(elapsed * sampleRate);
+    };
+    const auto pulseError = [](std::span<const float> output, std::int64_t expected) {
+        constexpr auto radius = 1024;
+        const auto start = output.begin() + expected - radius;
+        const auto end = output.begin() + expected + radius + 1;
+        const auto peak = std::max_element(start, end);
+        check(*peak > 0.15f, "R3 loop pulse must remain audible");
+        return std::abs(peak - output.begin() - expected);
+    };
+    std::vector<float> output(static_cast<std::size_t>(expectedFrame(projectBeats)));
+    for (std::size_t first = 0; first < output.size(); first += pageFrames) {
+        const auto count = std::min<std::size_t>(pageFrames, output.size() - first);
+        check(pages.render(static_cast<std::int64_t>(first), static_cast<std::uint32_t>(count),
+                           output.data() + first, source), "R3 pages must fill through repeated ramps");
+    }
+    std::int64_t maximum = 0;
+    for (int beat = 1; beat < projectBeats; ++beat) {
+        if (beat % loopBeats != 0)
+            maximum = std::max(maximum, static_cast<std::int64_t>(pulseError(output, expectedFrame(beat))));
+    }
+
+    const auto target = expectedFrame(26);
+    constexpr std::int64_t lead = 4096;
+    std::array<float, pageFrames> cold{};
+    check(pages.render(target - lead, pageFrames, cold.data(), source), "R3 cold page after backward seek");
+    const auto seekError = pulseError(cold, lead);
+    check(maximum <= 64 && seekError <= 64, "R3 loop pulses must stay within 64 frames of the musical grid");
+    std::cout << "R3 page render at 48 kHz: maximum grid error " << maximum
+              << " frames over " << projectBeats << " beats, cold seek error " << seekError << " frames\n";
+}
+
+} // namespace
+
+int main() {
+    testVoice();
+    testRepeatedRampPages();
+}

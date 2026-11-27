@@ -41,10 +41,9 @@ the private directory created for that preparation. The type cannot be
 constructed or copied by callers, and its file/metadata cannot be changed.
 This file is temporary playback data, never a media-pool asset path.
 
-R3 runs offline, including study and exact-duration processing. Its prepared
-PCM is already aligned at output frame zero, so a paged reader of it adds
-zero live stretcher latency. A future live stretcher needs its own declared
-PDC delay. Preparation and destruction belong off the audio thread.
+The prepared R3 path runs offline, including study and exact-duration
+processing. Its PCM is already aligned at output frame zero. Preparation and
+destruction belong off the audio thread.
 
 src/adi/audio/warp_map.hpp defines AWRP's 16-byte frame/tick records and
 checked canonical maps (SPEC 6.4). Readers accept wider future records through
@@ -69,13 +68,13 @@ Copy-in publication allows an identical regular owned file retained by undo;
 it never replaces a different file or removes an existing file on SQL failure.
 Cancellation is checked again at commit, including deduplicated imports.
 
-ClipPlayback prepares enabled Warp clips off the callback and hands their
-private PCM to the ordinary paged reader. engine/warp_projection.hpp projects
+The prepared ClipPlayback path hands private PCM to the ordinary paged reader.
+engine/warp_projection.hpp projects
 source musical ticks through the project tempo integral, adding interior
 tempo junctions. It handles trimmed source clocks before project zero by
 extending the initial tempo. Source offsets, loop bounds and end markers use
-that musical clock; fixed nanosecond pins from earlier unwarped playback do
-not override it. A tempo change requires a new prepared playback generation.
+that musical clock and take precedence over earlier fixed nanosecond pins.
+This path needs a new prepared render for a tempo change.
 The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
 the default is zero. Reverse and channel aliases remain unsupported here.
 
@@ -97,5 +96,28 @@ pitch or trimmed extent, currently refuses this clean-import producer. Use the
 separate material APIs for split/copy; this API does not promise arbitrary
 edited-clip Warp toggling or individual catalogue marker setters.
 
-Import and playback connect all six modes;
-these tests establish generated-signal behavior, not measured Live parity.
+## Streaming warp playback (TM-WT-04)
+
+The Arrangement's native Beats, Texture and Re-Pitch players read the original
+source window through the bounded PCM page cache. A compiled clock integrates
+linear BPM ramps in musical time and maps each output frame to fractional AWRP
+ticks. A loop iteration uses the tempo at its own position. Tempo edits use
+the existing Session generation handover. Beats onset analysis stays off the
+callback and is reusable across tempo changes. Re-Pitch prepares its sinc
+kernel from the pinned sample-rate converter off the callback.
+
+On arrangements with linear ramps, supported Tones, Complex and Complex Pro
+clips can use a bounded worker-side R3 voice. It runs in real-time mode,
+supplies `getPreferredStartPad()` and discards `getStartDelay()` output
+frames. Sequential pages share the same voice. A cold seek primes from a
+bounded window before the seek. R3 reset can allocate, so the audio callback
+reads only published PCM pages. The track source delays its clips by the
+declared R3 latency, and the graph compensates parallel paths. The streaming
+R3 path supports time ratios and effective pitch scales from 0.5 to 2.
+The prepared path supplies steady-tempo R3 playback and serves as the fallback
+with a clip diagnostic when a ramp falls outside the streaming domain.
+
+The warp clock is scoped to Warp clip placement and playback. The shared
+tempo map and Bézier ramp timing are part of TM-TT-01. Generated audio
+fixtures exercise these engine paths. Live timing and listening measurements
+are tracked in the seat report.

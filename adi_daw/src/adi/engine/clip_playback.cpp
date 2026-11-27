@@ -5,7 +5,9 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/clip_sinc_441_to_480.hpp"
+#include "adi/engine/warp_clip_player.hpp"
 #include "adi/engine/warp_projection.hpp"
+#include "adi/engine/warp_r3_pages.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -58,6 +60,27 @@ static_assert(std::atomic<bool>::is_always_lock_free);
 // Clip and sample arithmetic is checked off-thread; leave generous headroom
 // for callback offsets, loop arithmetic and conversion guards.
 constexpr std::int64_t limit = std::int64_t{1} << 50;
+std::int32_t delayLeadIn(const Transport& transport, std::int32_t delay) noexcept {
+    return static_cast<std::int32_t>(std::max<std::int64_t>(0,delay-transport.streamedFrames()));
+}
+std::int64_t playbackSample(const Transport& transport, std::int32_t offset, std::int32_t delay) noexcept {
+    return delay ? transport.delayedSample(offset,delay) : transport.sampleAt(offset);
+}
+std::int32_t contiguousPlayback(const Transport& transport,std::int32_t offset,std::int32_t frames,
+                                std::int32_t delay) noexcept {
+    return transport.inputContiguousFrames(playbackSample(transport,offset,delay),frames);
+}
+bool supportsR3Ratios(std::span<const WarpMarker> markers,const WarpArrangementClock& clock) noexcept {
+    // A conservative clip-wide range preserves the prepared path for a source
+    // that would leave the bounded R3 ratio during a later ramp or loop lap.
+    for (std::size_t i=1; i<markers.size(); ++i) {
+        const double ticksPerSourceFrame = static_cast<double>(markers[i].tick-markers[i-1].tick) /
+            static_cast<double>(markers[i].sourceFrame-markers[i-1].sourceFrame);
+        if (!audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame/clock.maxTicksPerFrame()) ||
+            !audio::RealtimeWarpR3::supportsRatio(ticksPerSourceFrame/clock.minTicksPerFrame())) return false;
+    }
+    return true;
+}
 std::int64_t samples(double seconds, double rate) {
     const double n = seconds * rate;
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
@@ -150,6 +173,9 @@ struct Clip {
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
     std::shared_ptr<WarpSource> warp;
+    std::unique_ptr<WarpClipPlayer> streamingWarp;
+    std::unique_ptr<WarpR3Pages> r3Warp;
+    std::int32_t playbackDelay = 0;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
@@ -170,10 +196,16 @@ struct Clip {
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
     bool warpPending() const noexcept {
-        return warp && warp->pending.load(std::memory_order_acquire);
+        return (warp && warp->pending.load(std::memory_order_acquire)) ||
+            (streamingWarp && !streamingWarp->ready());
+    }
+    std::int64_t pageSourceEnd() const noexcept {
+        if (r3Warp) return end;
+        return streamingWarp ? static_cast<std::int64_t>(sourceLength) : length;
     }
     std::int64_t sourceAt(std::int64_t time) const noexcept {
         if (time < start || time >= end) return -1;
+        if (r3Warp) return time;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
         return n < length ? n : -1;
@@ -212,10 +244,11 @@ struct Clip {
         std::array<std::int64_t,slots> out; out.fill(-1);
         if (monitorInputOnly || !t.playing()) return out;
         std::size_t used = 0;
+        const auto sourceEnd = pageSourceEnd();
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
             // sourceAt never reads at or past the effective source End.
-            if(from<0 || from>=length || count<=0) return;
-            const auto last=std::min(length,from+count)-1;
+            if(from<0 || from>=sourceEnd || count<=0) return;
+            const auto last=std::min(sourceEnd,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -224,6 +257,13 @@ struct Clip {
             const auto to=from+std::min(count,end-from);
             from=std::max(from,start);
             if(to<=from) return;
+            if (r3Warp) { sourceRange(from,to-from); return; }
+            if (streamingWarp) {
+                streamingWarp->sourceRanges(from, to-1, [&](audio::WarpSourceRange range) {
+                    sourceRange(range.first, range.last-range.first);
+                });
+                return;
+            }
             auto n=from-start+offset;
             count=to-from;
             if(loopLength==0) { sourceRange(n,count); return; }
@@ -239,15 +279,20 @@ struct Clip {
             // or every repetition of a one-sample loop on the callback.
             if(count>0) sourceRange(loopBegin,std::min(count,loopLength));
         };
-        auto horizon = [&](std::int64_t count) {
-            const auto first=t.contiguousFrames(0,count);
-            timelineRange(t.sampleAt(0),first);
-            if(first<count) timelineRange(t.sampleAt(first),t.contiguousFrames(first,count-first));
+        auto horizon = [&](std::int32_t framesAhead) {
+            const auto begin = delayLeadIn(t,playbackDelay);
+            if (begin >= framesAhead) return;
+            const auto first=contiguousPlayback(t,begin,framesAhead-begin,playbackDelay);
+            timelineRange(playbackSample(t,begin,playbackDelay),first);
+            const auto wrap = begin+first;
+            if (wrap < framesAhead)
+                timelineRange(playbackSample(t,wrap,playbackDelay),
+                              contiguousPlayback(t,wrap,framesAhead-wrap,playbackDelay));
         };
         // Mandatory current-block pages first, then two scaled pages: at least
         // 16384/48000 seconds of lead at every session rate.
         horizon(frames);
-        if(lookAhead)horizon(pageFrames*2);
+        if(lookAhead)horizon(static_cast<std::int32_t>(std::ceil(16384.0*rate/48000.0)));
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -285,6 +330,35 @@ struct Clip {
         }
         return nullptr;
     }
+    struct StreamReader {
+        Clip& clip;
+        Page* page = nullptr;
+        std::int64_t number = -1;
+        bool missing = false;
+        ~StreamReader() { if (page) clip.release(page); }
+        audio::WarpStreamPcm pcm(std::int64_t frame) noexcept {
+            if (frame < 0 || static_cast<std::uint64_t>(frame) >= clip.sourceLength) return {};
+            const auto nextPage = frame / clip.pageFrames;
+            if (nextPage != number) {
+                if (page) clip.release(page);
+                page = clip.acquire(nextPage);
+                number = nextPage;
+            }
+            const auto offset = frame % clip.pageFrames;
+            const auto frames = static_cast<std::uint32_t>(std::min(clip.pageFrames-offset,
+                static_cast<std::int64_t>(clip.sourceLength)-frame));
+            if (!page) { missing = true; return {nullptr,frames}; }
+            return {page->data.get()+static_cast<std::size_t>(offset)*clip.channels,frames};
+        }
+        audio::WarpStreamInput input() noexcept {
+            return {this, [](void* context, std::int64_t frame, std::uint16_t channel) noexcept {
+                const auto found = static_cast<StreamReader*>(context)->pcm(frame);
+                return found.data ? found.data[channel] : 0.0f;
+            }, [](void* context,std::int64_t frame) noexcept {
+                return static_cast<StreamReader*>(context)->pcm(frame);
+            }};
+        }
+    };
     bool reserve(std::int64_t number) noexcept {
         for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return true;
         for(auto& page:admitted)if(!page){page=acquire(number);return page!=nullptr;}
@@ -348,9 +422,17 @@ struct Clip {
         } else {
             std::fill_n(p.data.get(),sampleCount,0.0f);
         }
-        const auto count=std::min(pageFrames,length-first);
-        if (rate==sourceRate) {
+        const auto count=std::min(pageFrames,pageSourceEnd()-first);
+        if (r3Warp) {
+            const WarpR3Source source{this, [](void* context,std::uint64_t frame,float* output,std::uint32_t frames) {
+                static_cast<Clip*>(context)->readSource(frame,output,frames);
+            }};
+            if (!r3Warp->render(first,static_cast<std::uint32_t>(count),p.data.get(),source))
+                throw std::runtime_error("R3 Warp rate or source is outside supported bounds");
+        } else if (streamingWarp || rate==sourceRate) {
             readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.get(),static_cast<std::uint32_t>(count));
+            if (streamingWarp) for (std::size_t i=0; i<static_cast<std::size_t>(count)*channels; ++i)
+                if (!std::isfinite(p.data[i])) p.data[i] = 0;
         } else if (static_cast<double>(rate) / sourceRate > 256.0) {
             std::vector<float> res = renderRange(first, count, rate);
             std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.get());
@@ -418,6 +500,15 @@ struct Clip {
 
     bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe,bool interleave) {
         if(failed)return false;
+        if (streamingWarp && !streamingWarp->ready()) {
+            try {
+                if (!streamingWarp->prepare()) return false;
+            } catch (...) {
+                failed=true;
+                errors.fetch_add(1,std::memory_order_relaxed);
+                return false;
+            }
+        }
         if(warp && !reader) {
             try {
                 reader = warp->open();
@@ -505,6 +596,7 @@ public:
     std::int32_t maxFrames;
     std::int32_t channels;
     std::int64_t track;
+    std::int32_t playbackDelay = 0;
     const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
@@ -519,6 +611,7 @@ public:
         :transport(t),maxFrames(f),channels(ch),track(id),
          wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}
     bool processesDouble() const noexcept override { return true; }
+    std::int32_t latencySamples() const noexcept override { return playbackDelay; }
     void process(const NodeIo& io) noexcept override {
         if(io.wide()) play<double>(io,io.out64);
         else play<float>(io,io.out);
@@ -542,16 +635,17 @@ public:
             }
             return;
         }
-        const auto offset = static_cast<std::int64_t>(io.blockOffset);
-        const auto firstSample = transport.sampleAt(offset);
-        const auto firstFrames = transport.contiguousFrames(offset, io.frames);
+        const auto offset = std::max(io.blockOffset, delayLeadIn(transport,playbackDelay));
+        const auto audibleFrames=std::max(0,io.blockOffset+io.frames-offset);
+        const auto firstSample = playbackSample(transport,offset,playbackDelay);
+        const auto firstFrames = contiguousPlayback(transport,offset,audibleFrames,playbackDelay);
         std::int64_t wrappedSample = 0, wrappedFrames = 0;
-        if (firstFrames < io.frames) {
+        if (firstFrames < audibleFrames) {
             const auto wrapOffset = offset + firstFrames;
-            wrappedSample = transport.sampleAt(wrapOffset);
+            wrappedSample = playbackSample(transport,wrapOffset,playbackDelay);
             // If the block wraps again, the second range already covers the
             // whole loop. Further laps visit only samples in that range.
-            wrappedFrames = transport.contiguousFrames(wrapOffset, io.frames - firstFrames);
+            wrappedFrames = contiguousPlayback(transport,wrapOffset,audibleFrames-firstFrames,playbackDelay);
         }
         const auto intersects = [](const Clip& clip, std::int64_t start, std::int64_t frames) {
             // Use a distance to avoid overflowing an exclusive end near the
@@ -585,16 +679,28 @@ public:
                (!intersects(*clip, firstSample, firstFrames) && !intersects(*clip, wrappedSample, wrappedFrames)))
                 continue;
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
-            for(std::int32_t i=0;i<io.frames;++i) {
-                const auto time=transport.sampleAt(io.blockOffset+i);
-                const auto n=clip->sourceAt(time);
-                if(n<0) continue;
-                if(n/clip->pageFrames!=number) {
-                    if(page) clip->release(page);
-                    number=n/clip->pageFrames; page=clip->acquire(number);
+            Clip::StreamReader streamReader{*clip};
+            const auto streamInput=streamReader.input();
+            std::array<float,64> warpedFrame;
+            for(std::int32_t i=offset-io.blockOffset;i<io.frames;++i) {
+                const auto time=playbackSample(transport,io.blockOffset+i,playbackDelay);
+                const float* sample = nullptr;
+                if (clip->streamingWarp) {
+                    if (time < clip->start || time >= clip->end) continue;
+                    streamReader.missing = false;
+                    clip->streamingWarp->renderFrame(time,streamInput,std::span(warpedFrame.data(),clip->channels));
+                    if (streamReader.missing) { ++missing; continue; }
+                    sample = warpedFrame.data();
+                } else {
+                    const auto n=clip->sourceAt(time);
+                    if(n<0) continue;
+                    if(n/clip->pageFrames!=number) {
+                        if(page) clip->release(page);
+                        number=n/clip->pageFrames; page=clip->acquire(number);
+                    }
+                    if(!page) { ++missing; continue; }
+                    sample=page->data.get()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 }
-                if(!page) { ++missing; continue; }
-                const auto* sample=page->data.get()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 if constexpr (std::is_same_v<T,float>) {
                     const float gain=clip->envelope(time);
                     for(std::int32_t c=0;c<io.channels;++c) {
@@ -621,6 +727,7 @@ struct ClipPlayback::Impl {
     Transport& transport;
     std::int32_t maxFrames;
     const bool synchronousReads;
+    std::optional<WarpArrangementClock> warpClock;
     std::vector<std::unique_ptr<Clip>> clips;
     std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
@@ -642,8 +749,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     TempoMap tempo;
     for(const auto& e:project->rows.tempo) tempo.events.push_back({e.posTicks,e.bpm,static_cast<int>(e.curve)});
     if(tempo.events.empty()) tempo.events.push_back({0,120,0});
-    if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
-        impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
+    impl_->warpClock.emplace(project->rows.tempo,rate);
+    const auto& warpClock = *impl_->warpClock;
     std::unordered_map<fs::path, SourceReaders> readers;
     std::unordered_map<const audio::WarpTask*, std::weak_ptr<WarpSource>> warpedReaders;
     for(const auto& row:timelineClips(project->rows)) {
@@ -653,6 +760,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
+            const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
+            if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
+            const bool nativeWarp = warpMode && (a->formantShift == 0) &&
+                (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
+                 (*warpMode == audio::WarpMode::RePitch && a->transposeSemis == 0));
+            const bool rampR3 = warpMode && warpClock.hasLinearRamp() &&
+                (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
+                 *warpMode==audio::WarpMode::ComplexPro);
             if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
             if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
@@ -686,6 +801,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     clip->channels=static_cast<std::uint16_t>(info.channels);
                     clip->sourceRate=info.sampleRate;
                     sourceFrames=info.frames;
+                    if ((nativeWarp || rampR3) && info.frames && *info.frames) {
+                        auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
+                        clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
+                    }
                 } else if(info.frames && *info.frames) {
                     auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
                     clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
@@ -714,40 +833,64 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(sourceFrames && (clip->sourceStart>*sourceFrames || clip->sourceLength>*sourceFrames-clip->sourceStart))
                 throw std::runtime_error("source window outside audio; silent");
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
+            audio::WarpRenderPlan spec;
+            audio::WarpMapRead map;
+            if (warpMode) {
+                if(row.contentOffsetTicks<0 || !a->warpMarkers)
+                    throw std::runtime_error("warp needs valid source offsets and a stored marker map");
+                map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
+                if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
+                if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)
+                    throw std::runtime_error("invalid warp formant shift");
+                spec.source=clip->path;
+                spec.sourceStart=clip->sourceStart;
+                spec.sourceFrames=clip->sourceLength;
+                spec.outputRate=clip->rate;
+                spec.mode=*warpMode;
+                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
+                spec.transposeSemis=a->transposeSemis;
+                spec.formantScale=std::exp2(a->formantShift/12);
+            }
+            const bool r3 = rampR3 && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
+                supportsR3Ratios(map.markers,warpClock);
+            const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
+            if (rampR3 && !stream)
+                impl_->problems.push_back(label+"real-time Warp ramp outside source format or rate bounds (prepared step-tempo render)");
+            if (stream && !r3)
+                clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));
             const auto beginNs = row.posNs.value_or(0);
             // Project stored nanoseconds as the edit clock and Snapshot do: an
             // integer nanosecond rounded below its originating tick maps back to it.
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
+            const auto warpOrigin = row.timeBase==0 ? static_cast<double>(origin) :
+                warpClock.tickAtFrame(static_cast<double>(beginNs)*rate*1e-9);
+            const auto warpSourceOrigin = warpOrigin - static_cast<double>(row.contentOffsetTicks);
+            const auto positionSeconds = [&](std::int64_t tick) {
+                return stream ? warpClock.frameAtTick(static_cast<double>(tick))/rate : tempo.ticksToSeconds(tick);
+            };
             auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
+                if (stream) return (warpClock.frameAtTick(warpOrigin+static_cast<double>(ticks))-
+                                    warpClock.frameAtTick(warpOrigin))/rate;
+                return positionSeconds(origin+ticks)-positionSeconds(origin);
             };
             auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
             if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
                 throw std::runtime_error("negative clip content offset needs an unwarped source clock");
             const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
-            auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
+            auto sourceDuration=[&](std::int64_t ticks) {
+                if (ticks < 0) throw std::runtime_error("negative Warp source duration");
+                if (stream) return samples((warpClock.frameAtTick(warpSourceOrigin+static_cast<double>(ticks))-
+                                            warpClock.frameAtTick(warpSourceOrigin))/rate, rate);
+                return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);
+            };
             if(a->warpEnabled) {
-                if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
-                const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
-                if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
-                audio::WarpRenderPlan spec;spec.source=clip->path;spec.workFolder=fs::temp_directory_path()/"adi-warp";
-                spec.sourceStart=clip->sourceStart;spec.sourceFrames=clip->sourceLength;spec.outputRate=clip->rate;
-                spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
-                const auto mode=audio::parseWarpMode(a->warpMode);if(!mode)throw std::runtime_error("warp mode is not available");
-                spec.mode=*mode;
-                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
-                if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
-                spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
-                // Page an unchanged take from its original WAV window. A source that needs
-                // decoding still goes through the Warp worker, even with an identity map.
-                const bool nativeIdentity = clip->reader && spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
-                    spec.transposeSemis == 0 && spec.formantScale == 1 &&
-                    std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
-                        return anchor.sourceFrame == anchor.outputFrame;
-                    });
-                if (!nativeIdentity) {
+                if (stream) {
+                    clip->length=sourceDuration(map.markers.back().tick);
+                } else {
+                    spec.workFolder=fs::temp_directory_path()/"adi-warp";
+                    spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
                     clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
                     clip->length=static_cast<std::int64_t>(clip->sourceLength);
                     auto task = audio::requestWarp(std::move(spec));
@@ -759,6 +902,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                         shared = clip->warp;
                     }
                     clip->reader.reset();
+                    clip->progressive.reset();
                 }
             }
             std::int64_t endTicks=origin;
@@ -766,16 +910,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                clip->start=samples(tempo.ticksToSeconds(origin),rate);
-                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
+                clip->start=samples(positionSeconds(origin),rate);
+                clip->end=samples(positionSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
                 if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
                     throw std::runtime_error("invalid clip duration");
                 const auto endNs = beginNs + nanos;
-                endTicks=tempo.storedNanosecondsToTicks(endNs);
                 clip->start=samplesAtNs(beginNs,clip->rate);
                 clip->end=samplesAtNs(endNs,clip->rate);
+                if (stream) {
+                    const auto tick = std::floor(warpClock.tickAtFrame(static_cast<double>(endNs)*rate*1e-9));
+                    if (tick >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                        throw std::runtime_error("Warp clip end exceeds the musical clock range");
+                    endTicks=static_cast<std::int64_t>(tick);
+                } else {
+                    endTicks=tempo.storedNanosecondsToTicks(endNs);
+                }
             }
             auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
@@ -825,7 +976,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto tickSpan = endTicks - origin;
             const auto frameSpan = clip->end - clip->start;
             clip->fadeOut = row.fadeOutTicks > 0 && row.fadeOutTicks >= tickSpan ? frameSpan : std::min(frameSpan,
-                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
+                samples(positionSeconds(endTicks) - positionSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
@@ -838,31 +989,50 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 clip->loopLength=!a->warpEnabled && row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:sourceDuration(row.loopStartTicks+loopTicks)-clip->loopBegin;
                 if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
             }
+            if (stream) {
+                const auto tail = map.markers.back().tick;
+                const auto end = row.loopEnabled ? tail : std::min(tail,row.endMarkerTicks.value_or(tail));
+                const auto loopStart=static_cast<double>(row.loopEnabled ? row.loopStartTicks : 0);
+                const auto loopLength=static_cast<double>(row.loopEnabled ? row.loopLenTicks.value_or(0) : 0);
+                if (r3) {
+                    clip->r3Warp=std::make_unique<WarpR3Pages>(spec,clip->sourceRate,clip->channels,
+                        map.markers,warpClock,warpSourceOrigin,static_cast<double>(end),loopStart,loopLength);
+                } else {
+                    clip->streamingWarp=std::make_unique<WarpClipPlayer>(warpClock,std::move(spec),
+                        std::move(map.markers),clip->sourceRate,clip->channels,warpSourceOrigin,
+                        static_cast<double>(end),loopStart,loopLength);
+                }
+            }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
+            if (clip->r3Warp)
+                (*track)->playbackDelay=std::max((*track)->playbackDelay,clip->r3Warp->latencySamples());
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
     impl_->externalSources.reserve(impl_->clips.size());
     for(auto& clip:impl_->clips)
         impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
-    for(auto& t:impl_->tracks) t->owner=impl_;
+    for(auto& t:impl_->tracks) {
+        t->owner=impl_;
+        for(auto* clip:t->clips) clip->playbackDelay=t->playbackDelay;
+    }
     if(impl_->clips.empty() || impl_->synchronousReads) return;
     // A single worker handles native-rate playback and small conversion jobs.
     // Spread heavier conversion work without increasing the number of workers
     // with every added clip. Each clip still has exactly one page writer.
     constexpr std::size_t maxWorkers=4, conversionsPerWorker=4;
-    const auto converted=static_cast<std::size_t>(std::count_if(impl_->clips.begin(),impl_->clips.end(),
-        [](const auto& clip){return clip->rate!=clip->sourceRate;}));
+    const auto needsConversion=[](const auto& clip){return clip->r3Warp || (!clip->streamingWarp && clip->rate!=clip->sourceRate);};
+    const auto converted=static_cast<std::size_t>(std::count_if(impl_->clips.begin(),impl_->clips.end(),needsConversion));
     const auto hardware=static_cast<std::size_t>(std::thread::hardware_concurrency());
     const auto workerCount=std::max(std::size_t{1},std::min({hardware,maxWorkers,
         (converted+conversionsPerWorker-1)/conversionsPerWorker}));
     std::vector<std::vector<Clip*>> shards(workerCount);
     std::size_t native=0, resampled=0;
     for(const auto& clip:impl_->clips) {
-        auto& next=clip->rate==clip->sourceRate?native:resampled;
+        auto& next=needsConversion(clip)?resampled:native;
         shards[next++%workerCount].push_back(clip.get());
     }
     impl_->workers.reserve(workerCount);
@@ -932,6 +1102,10 @@ std::vector<std::string> ClipPlayback::decodeProblems() const {
             else if(clip->errors.load(std::memory_order_relaxed))
                 result.push_back("clips#"+std::to_string(clip->clipId)+": cannot read prepared Warp source");
         }
+        if (clip->streamingWarp && clip->errors.load(std::memory_order_relaxed) && !clip->progressive)
+            result.push_back("clips#"+std::to_string(clip->clipId)+": cannot prepare or read streaming Warp source");
+        if (clip->r3Warp && clip->errors.load(std::memory_order_relaxed))
+            result.push_back("clips#"+std::to_string(clip->clipId)+": cannot render a real-time Warp output page at this rate or source position");
     }
     return result;
 }
@@ -943,11 +1117,19 @@ bool ClipPlayback::waitForWarp(std::stop_token stop) const {
     if(audio::onAudioThread)return false;
     while(!stop.stop_requested()) {
         bool ready=true;
-        for(const auto& clip:impl_->clips)if(clip->warp) {
+        for(const auto& clip:impl_->clips) {
+            if (!clip->warp && !clip->streamingWarp && !clip->r3Warp) continue;
             if(clip->errors.load(std::memory_order_relaxed))return false;
-            const auto state=clip->warp->task->result();
-            if(state && !*state)return false;
-            if(!state)ready=false;
+            if (clip->warp) {
+                const auto state=clip->warp->task->result();
+                if(state && !*state)return false;
+                if(!state)ready=false;
+            }
+            if (clip->streamingWarp && !clip->streamingWarp->ready()) {
+                if (impl_->synchronousReads) (void)clip->service(nullptr,false);
+                if (clip->errors.load(std::memory_order_relaxed)) return false;
+                ready=ready && clip->streamingWarp->ready();
+            }
         }
         if(ready)return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -976,7 +1158,10 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
                 releaseAll();
                 return false;
             }
-            if(allowFailedSources && clip->warpPending())continue;
+            if (clip->warpPending()) {
+                if (allowFailedSources) continue;
+                if (clip->streamingWarp) { releaseAll(); return false; }
+            }
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
                 if(!clip->reserve(number)){releaseAll();return false;}
@@ -1031,12 +1216,19 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
         for(auto& clip:impl_->clips) {
             if(clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)) {
-                if(!waitForPendingWarp && clip->warp)continue;
+                if(!waitForPendingWarp && (clip->warp || clip->streamingWarp))continue;
                 releaseAll();
                 return false;
             }
             if(!waitForPendingWarp && clip->warpPending())continue;
-            (void)wanted(*clip,pages);
+            if (clip->streamingWarp && !clip->streamingWarp->ready()) {
+                if (synchronous && !impl_->stalled.load(std::memory_order_acquire))
+                    (void)clip->service(impl_->requestProbe.load(std::memory_order_acquire),false);
+                ready=false;
+                continue;
+            }
+            if (!wanted(*clip,pages)) { releaseAll(); return false; }
+            if (clip->streamingWarp) clip->request(pages);
             bool serviced=false;
             for(const auto number:pages) {
                 if(number<0 || clip->reserve(number))continue;
