@@ -210,7 +210,10 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     addAndMakeVisible(search);
     baseEntries_ = sidebar_.size();
     // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
-    search.onTextChange = [this] { refill(); };
+    search.onTextChange = [this] {
+        revealedSample_.reset();
+        refill();
+    };
     search.onReturnKey = [this] { enterList(); };
     search.addKeyListener(&searchKeys_);
     list.setTitle("Browser content");
@@ -316,6 +319,26 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         if (sidebar_[i].name == keep.name && sidebar_[i].heading == keep.heading &&
             (sidebar_[i].place == keep.place || (keep.name == "User Library" && i < baseEntries_)))
             selected_ = static_cast<int>(i);
+    if (revealedSample_ && !hotSwap_) {
+        revealSample(revealedSample_->path);
+        return;
+    }
+    refill();
+    repaint();
+}
+void BrowserPanel::revealSample(std::filesystem::path path) {
+    cancelHotSwap();
+    const auto &samples = listing().samples;
+    const bool indexed = std::any_of(samples.begin(), samples.end(),
+                                     [&path](const auto &file) { return file.path == path; });
+    const auto entry = std::find_if(sidebar_.begin(), sidebar_.end(), [indexed](const auto &label) {
+        return indexed ? label.samples : label.name == "Current Project";
+    });
+    if (entry == sidebar_.end())
+        return;
+    selected_ = static_cast<int>(entry - sidebar_.begin());
+    revealedSample_ = LibraryFile{media::pathUtf8(path.filename()), std::move(path), {}};
+    search.setText({}, false);
     refill();
     repaint();
 }
@@ -371,6 +394,8 @@ void BrowserPanel::refill() {
     const auto query = text.trim().toLowerCase();
     if (library_ && (samples || !chosen.place.empty()))
         library_->appendSamples(query.toRawUTF8(), samples ? nullptr : &chosen.place, shown_);
+    if (revealedSample_ && chosen.name == "Current Project")
+        shown_.push_back(&*revealedSample_);
     rows_.clear();
     rows_.reserve(shown_.size());
     for (const auto *f : shown_)
@@ -487,6 +512,13 @@ void BrowserPanel::refill() {
     list.updateContent();
     list.deselectAllRows();
     lastSelected_ = -1;
+    if (revealedSample_ && !hotSwap_) {
+        const auto row = std::find_if(shown_.begin(), shown_.end(), [this](const auto *file) {
+            return file->path == revealedSample_->path;
+        });
+        if (row != shown_.end())
+            list.selectRow(static_cast<int>(row - shown_.begin()));
+    }
     list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
@@ -826,6 +858,7 @@ void BrowserPanel::choose(int i) {
     if (hotSwap_)
         return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
+        revealedSample_.reset();
         selected_ = i;
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on

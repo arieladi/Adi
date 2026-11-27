@@ -57,6 +57,8 @@ std::filesystem::path pathFromUtf8(const std::string&);
 // Resolution verifies the first existing candidate; a mismatch is fatal.
 std::filesystem::path resolveMedia(const std::filesystem::path& folder,
                                   const Payload& row, std::string& error);
+// A Browser reveal uses the pool's existing file path without reading audio bytes.
+std::filesystem::path mediaPathForBrowser(const Store&, std::int64_t id, std::string& error);
 Payload mediaRow(SQLite::Database&, std::int64_t id);
 // Registry callbacks: captured payloads only, no filesystem access.
 bool importApply(OpContext&, const Payload&, std::string&);

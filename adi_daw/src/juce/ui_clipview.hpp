@@ -709,6 +709,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> titleArea() const noexcept;
     juce::Rectangle<int> mainArea() const noexcept;
     juce::Rectangle<int> headerArea() const noexcept;
+    juce::Rectangle<int> sampleNameBox() const noexcept;
     // The Note Editor's Fold switch, in the header (manual 10.2).
     juce::Rectangle<int> foldBox() const noexcept;
     // Its Draw Mode switch beside it (manual 10.4.1).
@@ -719,6 +720,7 @@ class ClipViewPanel final : public juce::Component {
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {
         juce::String start, end, position, length, signature, scale, grid, transpose, range, title;
+        juce::String sampleName, sampleProperties;
         bool loop = false;
         // With several clips shown (manual 10.8): some loop and some do not.
         bool loopMixed = false;
@@ -750,6 +752,7 @@ class ClipViewPanel final : public juce::Component {
     bool commit(TrackEdit);
     bool loopAvailable() const noexcept;
     bool fieldEnabled(Field) const noexcept;
+    juce::Rectangle<int> sampleMetadataArea() const noexcept;
     bool setGain(double db);
     bool setWarp(bool enabled, std::optional<double> sourceBpm = {});
     double draggedGain() const noexcept;

@@ -108,6 +108,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     const LibraryListing &listing() const noexcept;
     // Selects a label, as a click on it does.
     void choose(int);
+    // Selects this exact sample, with a temporary Current Project row for an unindexed source.
+    void revealSample(std::filesystem::path);
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
     // A row of the list: a sample, a folder heading, a device or a saved preset.
@@ -186,6 +188,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::String idleSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    std::optional<LibraryFile> revealedSample_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;

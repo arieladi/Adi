@@ -12674,6 +12674,39 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     root.frame();
     auto &panel = root.clipView;
     auto &edit = panel.sample;
+    const auto readings = panel.readings();
+    check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
+              readings.sampleProperties == "48000 Hz   16 bit   1 ch" &&
+              panel.headerArea().contains(panel.sampleNameBox()) && !panel.sampleNameBox().isEmpty(),
+          "the Sample Editor header gives the source filename and format independently of the clip name");
+    const auto sourcePath = std::filesystem::weakly_canonical(wav);
+    const auto sameName = sourcePath.parent_path() / "another-folder" / sourcePath.filename();
+    const auto revealSample = [&] {
+        panel.mouseDown(pressAt(panel, panel.sampleNameBox().getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+    };
+    const auto selectedSource = [&]() -> std::filesystem::path {
+        const auto i = root.browser.list.getSelectedRow();
+        const auto &rows = root.browser.rows();
+        if (i >= 0 && i < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(i)].file)
+            return rows[static_cast<std::size_t>(i)].file->path;
+        return {};
+    };
+    const bool browserWasVisible = root.browser.isVisible();
+    if (browserWasVisible)
+        root.command(AppCommands::ToggleBrowser);
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"},
+                                   {"sample-gestures.wav", sourcePath, "source"}}, {}});
+    root.browser.search.setText("exclude this sample", false);
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name opens the Browser on its exact indexed file, even with another sample of the same name");
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"}}, {}});
+    check(selectedSource() == sourcePath, "a library refresh keeps the revealed project source selected");
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name reveals the project's source even outside the indexed library");
+    if (!browserWasVisible && root.browser.isVisible())
+        root.command(AppCommands::ToggleBrowser);
     using Field = ClipViewPanel::Field;
     check(!panel.toggleLoop() && !panel.setField(Field::Position, beat) &&
               !panel.setField(Field::Length, 2 * beat) && !panel.setFieldHere(Field::Length),

@@ -3,6 +3,7 @@
 #include "adi/warp_commands.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -3360,7 +3361,10 @@ juce::Rectangle<int> ClipViewPanel::panelsEdge() const noexcept {
     return !details_ || !midi() || panelsFolded_ ? juce::Rectangle<int>() : juce::Rectangle<int>(panelWidth() - 3, 0, 5, getHeight());
 }
 void ClipViewPanel::mouseMove(const juce::MouseEvent &e) {
-    setMouseCursor(panelsEdge().contains(e.getPosition()) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+    const auto at = e.getPosition();
+    setMouseCursor(panelsEdge().contains(at) ? juce::MouseCursor::LeftRightResizeCursor
+                   : sampleNameBox().contains(at) ? juce::MouseCursor::PointingHandCursor
+                                                  : juce::MouseCursor::NormalCursor);
 }
 void ClipViewPanel::foldPanels(bool fold) {
     if (fold == panelsFolded_)
@@ -3978,6 +3982,15 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.title = !others_.empty() ? juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips"
                 : !d.name.empty() ? juce::String(d.name)
                                   : juce::String(juce::CharPointer_UTF8(trackName_.data()), juce::CharPointer_UTF8(trackName_.data() + trackName_.size()));
+    if (node_ && node_->audio && node_->audio->mediaInfo) {
+        const auto &media = *node_->audio->mediaInfo;
+        out.sampleName = juce::String(media.originalName);
+        const auto measure = [](std::optional<std::int64_t> value, const char *unit) {
+            return (value ? juce::String(static_cast<juce::int64>(*value)) : juce::String("—")) + unit;
+        };
+        out.sampleProperties = measure(media.sampleRate, " Hz") + "   " + measure(media.bitDepth, " bit") + "   " +
+                               measure(media.channels, " ch");
+    }
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
@@ -4551,6 +4564,21 @@ juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
         return {};
     return {header.getX() + 72, header.getY() + 2, 52, 13};
 }
+juce::Rectangle<int> ClipViewPanel::sampleMetadataArea() const noexcept {
+    const auto header = headerArea();
+    const auto right = std::max({header.getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
+                                 sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
+    return header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84);
+}
+juce::Rectangle<int> ClipViewPanel::sampleNameBox() const noexcept {
+    if (!node_ || !node_->audio || !node_->audio->mediaInfo || node_->audio->mediaInfo->originalName.empty())
+        return {};
+    const auto area = sampleMetadataArea();
+    if (problem_.empty() && area.getWidth() >= 220)
+        return area.withWidth(std::min(168, area.getWidth() - 148));
+    const auto head = headerArea().withTrimmedLeft(8).withTrimmedRight(84);
+    return head.withWidth(std::min(60, head.getWidth()));
+}
 juce::Rectangle<int> ClipViewPanel::warpModeBox() const noexcept {
     constexpr int width = 84;
     const auto warp = warpBox();
@@ -4945,6 +4973,17 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (panelsEdge().contains(at)) {
         edgeDrag_ = true;
         edgeFrom_ = at.x;
+        return;
+    }
+    if (sampleNameBox().contains(at)) {
+        std::string error;
+        auto path = media::mediaPathForBrowser(root.editStore(), node_->audio->mediaId, error);
+        if (path.empty()) {
+            root.say("The sample could not be revealed: " + error);
+        } else if (!root.state().panels.find(Panel::Browser)->collapsed || root.command(AppCommands::ToggleBrowser)) {
+            root.browser.revealSample(std::move(path));
+            focusIfShowing(root.browser.list);
+        }
         return;
     }
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length})
@@ -5568,15 +5607,20 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         controls::chooser(g, box.toFloat(), label, look::fontSmall, node_->audio->warpEnabled);
         labels_.push_back(box);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
-         juce::Justification::centredLeft, look::text, look::fontBody, true);
-    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
-    if (!problem_.empty()) {
-        const auto right = std::max({header.getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
-                                     sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
-        text(juce::String(problem_), header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84), juce::Justification::centredLeft,
-             look::text, look::fontLabel);
+    const auto name = sampleNameBox();
+    const auto metadata = sampleMetadataArea();
+    if (midi() || (audio() && (name.isEmpty() || metadata.contains(name))))
+        text(midi() ? "Notes" : "Sample", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+             juce::Justification::centredLeft, look::text, look::fontBody, true);
+    if (!name.isEmpty())
+        text(r.sampleName, name, juce::Justification::centredLeft, look::textBright, look::fontLabel, true);
+    if (problem_.empty() && !r.sampleProperties.isEmpty() && !metadata.isEmpty()) {
+        const auto properties = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
+        text(r.sampleProperties, properties, juce::Justification::centredLeft, look::text, look::fontLabel);
     }
+    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
+    if (!problem_.empty())
+        text(juce::String(problem_), metadata, juce::Justification::centredLeft, look::text, look::fontLabel);
     if (!midi() && !audio()) {
         g.setColour(look::lane);
         g.fillRect(editorArea());
