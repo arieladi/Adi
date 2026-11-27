@@ -556,15 +556,13 @@ class ArrangementView final : public juce::Component {
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
     // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
-    // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
-    // Color to Grouped Tracks and Clips (manual 18.3).
+    // and Ungroup, then Live's clip colour assignment and colour chooser (manual 8.1.1.3, 18.3).
     juce::PopupMenu headerMenu(std::int64_t contextTrack = 0);
     // The colour chooser's pick: the colour at `index` of Live's palette on every selected track, one
     // undo step ("Recolour Track").
     bool recolour(std::int64_t index);
     // Live's Assign Track Color to Grouped Tracks and Clips: the selected group's colour, its own or
-    // the one its place gives it, on every track it holds, one undo step. ADI's clips take their
-    // track's colour.
+    // the one its place gives it, on every track and clip it holds in one undo step.
     bool assignGroupColour(std::int64_t group = 0);
     // The colour index a track shows: its own, or the one its place in the arrangement gives it.
     std::int64_t colourIndex(std::int64_t track) const;
@@ -658,6 +656,7 @@ class ArrangementView final : public juce::Component {
     void firstShownIfHidden();
 
   private:
+    bool assignColourToClips(std::int64_t track, bool grouped);
     std::optional<LiveTake> liveTake_;
     bool hadLiveMidiTake_ = false;
     void refreshTree();

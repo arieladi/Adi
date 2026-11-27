@@ -25,6 +25,9 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
                "double-click to see all of it.");
 }
 namespace {
+constexpr auto kAssignClipColour = "Assign Track Color to Clips";
+constexpr auto kAssignGroupedClipColour = "Assign Track Color to Grouped Tracks and Clips";
+
 template <typename FrameAt>
 void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int from, int to, float top, float bottom,
                       std::span<const std::uint32_t> channelMap, FrameAt frameAt,
@@ -1657,9 +1660,9 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     juce::PopupMenu menu;
     menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
     menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
-    if (geometry.selection.track == 0)
-        return menu;
     const auto track = contextTrack != 0 ? contextTrack : geometry.selection.track;
+    if (track == 0)
+        return menu;
     const auto addTrackAction = [&](int command, const char *name, bool enabled, std::function<void()> action) {
         juce::PopupMenu::Item item(name);
         const auto keys = commands.manager.getKeyMappings()->getKeyPressesAssignedToCommand(command);
@@ -1760,7 +1763,7 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     // gives what it holds its colour (manual 18.3).
     menu.addSeparator();
     if (isGroup) {
-        menu.addItem("Assign Track Color to Grouped Tracks and Clips", [safe = SafePointer<ArrangementView>(this), track] {
+        menu.addItem(kAssignGroupedClipColour, [safe = SafePointer<ArrangementView>(this), track] {
             if (safe)
                 safe->assignGroupColour(track);
         });
@@ -1769,6 +1772,11 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
         menu.addItem("Insert Return Track in Group", [safe = SafePointer<ArrangementView>(this), track] {
             if (safe)
                 safe->root.insertReturnTrack(track);
+        });
+    } else if (target && (!target->clips.empty() || !target->takeClips.empty())) {
+        menu.addItem(kAssignClipColour, [safe = SafePointer<ArrangementView>(this), track] {
+            if (safe)
+                safe->assignColourToClips(track, false);
         });
     }
     menu.addCustomItem(1, std::make_unique<ColourChooser>(*this, colourIndex(track)), nullptr,
@@ -1854,19 +1862,34 @@ bool ArrangementView::recolour(std::int64_t index) {
     return edit.ops.empty() || root.submitEdits(std::move(edit.ops));
 }
 bool ArrangementView::assignGroupColour(std::int64_t groupId) {
+    return assignColourToClips(groupId != 0 ? groupId : geometry.selection.track, true);
+}
+bool ArrangementView::assignColourToClips(std::int64_t trackId, bool grouped) {
     const auto current = root.current();
-    const auto *group = current ? current->findTrack(groupId != 0 ? groupId : geometry.selection.track) : nullptr;
-    if (group == nullptr || group->kind != "group") {
-        root.say("Select a group track to give what it holds its colour.");
+    const auto *source = current ? current->findTrack(trackId) : nullptr;
+    if (!source || grouped != (source->kind == "group")) {
+        root.say(grouped ? "Select a group track to give what it holds its colour." : "That track is gone.");
         return false;
     }
-    // Its colour from the CURRENT cell (ADR-0201), so a colour picked a moment ago counts; the one its
-    // place gives it otherwise.
-    const auto &own = group->color;
-    const auto index = own && *own >= 0 && *own < kPaletteColours ? *own : colourIndex(group->id);
-    auto edit = colourTracks(current->tracks, heldBy(current->tracks, group->id), index,
-                             "Assign Track Color to Grouped Tracks and Clips");
-    return edit.ops.empty() || root.submitEdits(std::move(edit.ops));
+    // Read the current palette index when the menu action runs (ADR-0201).
+    const auto &own = source->color;
+    const auto index = own && *own >= 0 && *own < kPaletteColours ? *own : colourIndex(trackId);
+    if (index < 0)
+        return false;
+    auto tracks = grouped ? heldBy(current->tracks, trackId) : std::vector<std::int64_t>{};
+    const auto *label = grouped ? kAssignGroupedClipColour : kAssignClipColour;
+    auto edit = grouped ? colourTracks(current->tracks, tracks, index, label) : TrackEdit{};
+    tracks.push_back(trackId);
+    for (const auto id : tracks) {
+        const auto *track = current->findTrack(id);
+        if (!track)
+            continue;
+        for (const auto *clips : {&track->clips, &track->takeClips})
+            for (const auto &clip : *clips)
+                if (clip && clip->color != index)
+                    edit.ops.push_back(track_edits_detail::op("clip.setColor", {{"id", clip->id}, {"color", index}}, label));
+    }
+    return root.submitEdits(std::move(edit.ops));
 }
 void ArrangementView::addGridItems(juce::PopupMenu &menu) {
     using Geometry = ArrangementGeometry;
