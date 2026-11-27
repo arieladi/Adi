@@ -149,6 +149,9 @@ std::atomic<double> g_mappedMemberBend{-1.0};
 std::atomic<double> g_processorDrive{-1.0};
 // SC-332: "Drive" is renamed on demand, as a plug-in renames a macro, and the host told so.
 std::atomic<bool> g_driveRenamed{false};
+// This fixture implements both interfaces with one method. JUCE asks the component first,
+// then the controller, so each bit can independently refuse its turn in a capture.
+std::atomic<unsigned> g_refusedStateStreams{0}, g_stateCalls{0};
 IComponentHandler* g_lastHandler = nullptr;
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
@@ -297,6 +300,11 @@ public:
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (stream == nullptr) return kInvalidArgument;
+        const auto refused = g_refusedStateStreams.load(std::memory_order_relaxed);
+        if (refused != 0) {
+            const auto call = g_stateCalls.fetch_add(1, std::memory_order_relaxed);
+            if ((refused & (1u << (call % 2u))) != 0) return kResultFalse;
+        }
         unsigned char b[kStateBytes] = {};
         std::memcpy(b, kStateMagic, sizeof kStateMagic);
         const int32 patch = patch_;
@@ -911,6 +919,10 @@ extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.loa
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureWorkerProcessCalls() { return g_workerProcessCalls.load(); }
 extern "C" SMTG_EXPORT_SYMBOL std::uint64_t adiFixtureCompletedProcessCalls() {
     return g_completedProcessCalls.load(std::memory_order_relaxed);
+}
+extern "C" SMTG_EXPORT_SYMBOL void adiFixtureRefuseStateStreams(unsigned streams) {
+    g_stateCalls.store(0, std::memory_order_relaxed);
+    g_refusedStateStreams.store(streams, std::memory_order_relaxed);
 }
 extern "C" SMTG_EXPORT_SYMBOL void adiFixtureReadTransport(double* output) {
     for (std::size_t i = 0; i < g_transport.size(); ++i)

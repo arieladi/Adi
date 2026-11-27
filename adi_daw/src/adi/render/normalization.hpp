@@ -9,6 +9,7 @@
 #include <vector>
 namespace adi::render {
 enum class NormalizeMode {Off,Peak,Loudness};
+inline constexpr unsigned maxLoudnessEncodingPasses = 4;
 struct Normalization {
     NormalizeMode mode=NormalizeMode::Off;
     double targetLufs=-14,truePeakCeilingDb=-1;
@@ -33,7 +34,8 @@ public:
     NormalizationCapture& operator=(const NormalizationCapture&)=delete;
     void append(std::span<const double> interleaved,std::uint32_t frames);
     NormalizationReport finish(const std::filesystem::path& privateWav,audio::WavFormat,
-        audio::WavDither,std::uint64_t seed,const std::function<void()>& service={});
+        audio::WavDither,std::uint64_t seed,const std::function<void()>& service={},
+        const std::function<void(std::uint32_t)>& advanceFrames={});
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
