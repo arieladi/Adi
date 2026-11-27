@@ -22,6 +22,7 @@
 
 #include "adi/changeset.hpp"
 #include "adi/control/headless_project.hpp"
+#include "adi/control/jobs.hpp"
 #include "adi/control/mcp.hpp"
 #include "adi/control/methods.hpp"
 #include "adi/control/stdio_server.hpp"
@@ -1579,12 +1580,51 @@ void testProjectReadConsent() {
           "the client's wire data cannot declare its own consent destination");
 }
 
+void testJobTools() {
+    section("AGT-04: MCP job status, events and cancellation are owner scoped");
+    GrantTable grants;
+    Service service(inlineExecutor(), grants);
+    ProjectSet projects;
+    ChangesetQueue queue;
+    ControlContext ctx{projects, queue, agent::Limits{}, [] { return kT0; }, {}, "adi", "test", "adi-mcp"};
+    JobBook jobs;
+    ctx.jobs = &jobs;
+    registerControlMethods(service, ctx);
+    McpEndpoint endpoint(service, projects, {"adi", "ADI", "test"});
+    McpEndpoint::Session owner;
+    owner.credential = "owner";
+    McpEndpoint::Session another;
+    another.credential = "another";
+    grants.grant(owner.credential, Tier::Observe);
+    grants.grant(another.credential, Tier::Apply);
+    const auto queued = jobs.enqueue(owner.credential, {"analysis", "project", JobRevisionPolicy::CheckAtStartOnly});
+    if (!queued) { check(false, "the fixture has a job"); return; }
+    const auto request = [&](McpEndpoint::Session& session, const char* name, const Json& args) {
+        const auto message = parseMessage(dumpJson({{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+            {"params", modern({{"name", name}, {"arguments", args}})}}));
+        const auto reply = endpoint.handle(message, session);
+        return Json::parse(reply.value()).at("result");
+    };
+
+    const Json job = {{"id", queued->id}};
+    check(request(owner, "jobs_get", job).at("structuredContent").at("status") == "pending",
+          "an Observe client can watch its own work");
+    check(isToolError(request(another, "jobs_get", job)) && isToolError(request(another, "jobs_cancel", job)),
+          "an Apply grant does not reveal or cancel another owner's job");
+    check(request(owner, "jobs_poll", Json::object()).at("structuredContent").at("events").size() == 1 &&
+              request(owner, "jobs_poll", Json::object()).at("structuredContent").at("events").empty(),
+          "poll hands out the original event once");
+    check(request(owner, "jobs_cancel", job).at("structuredContent").at("status") == "cancelled" &&
+              !jobs.start(queued->id), "the owner cancels queued work without starting it");
+}
+
 int runAll() {
     testHandshakes();
     testToolsAndReads();
     testProposeLeavesTheFile();
     testMarkerRunWaitsForReview();
     testProjectReadConsent();
+    testJobTools();
     testApplyBoundary();
     testRefusals();
     testEchoesAreClipped();

@@ -42,6 +42,7 @@ public:
     [[nodiscard]] bool answerConsent(const ConsentRequest&, ConsentTerm);
     [[nodiscard]] std::vector<QueuedChangeset> proposals() const;
     [[nodiscard]] agent::ApplyResult review(std::string_view id, bool approve);
+    [[nodiscard]] JobBook& jobs();
 
 private:
     class Impl;

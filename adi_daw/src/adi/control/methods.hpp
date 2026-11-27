@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The control methods (docs/CONTROL-MCP.md §5.1). Every transport reaches the
-// same nine: the MCP projection maps its four tools and its resources onto
-// them, and the loopback WebSocket (CTL-04) will expose them as they are.
+// The control methods (docs/CONTROL-MCP.md §5.1). The MCP projection and the
+// loopback WebSocket use the same methods.
 //
 //   system.describe    project.list       project.read      project.manifest
 //   project.graph      project.telemetry  ops.describe      changeset.propose
@@ -28,6 +27,8 @@
 
 namespace adi::control {
 
+class JobBook;
+
 struct ControlContext {
     ProjectSet& projects;
     ChangesetQueue& queue;
@@ -51,9 +52,10 @@ struct ControlContext {
     ConsentLedger* consentLedger = nullptr;
     /// The app can post this question to its owner thread for the local user.
     std::function<void(ConsentRequest)> askConsent = {};
+    JobBook* jobs = nullptr;
 };
 
-/// Registers the nine methods. `context` must outlive `service`.
+/// Registers the control methods. `context` must outlive `service`.
 void registerControlMethods(Service& service, ControlContext& context);
 
 }  // namespace adi::control

@@ -45,6 +45,9 @@ constexpr ToolDef kTools[] = {
     {"changeset_status", "changeset.status", "Changeset status",
      "Whether a changeset you proposed is awaiting review, applied, rejected, stale or expired.",
      true, true},
+    {"jobs_get", "jobs.get", "Job status", "Read the latest status of a job you own.", true, true},
+    {"jobs_poll", "jobs.poll", "Job events", "Read and consume pending job progress and status events.", true, false},
+    {"jobs_cancel", "jobs.cancel", "Cancel job", "Request cancellation of a job you own.", false, true},
 };
 
 const ToolDef* findTool(std::string_view name) {

@@ -2,6 +2,7 @@
 #include "adi/control/methods.hpp"
 
 #include "adi/control/consent_scope.hpp"
+#include "adi/control/jobs.hpp"
 #include "adi/control/projection.hpp"
 #include "adi/control/telemetry.hpp"
 #include "adi/media/blake3.hpp"
@@ -341,10 +342,65 @@ bool diffIncludesRemarkText(std::string_view diff) {
     return false;
 }
 
+Json jobJson(const JobInfo& job, bool redact) {
+    Json data = {{"id", job.id},
+                 {"kind", job.spec.kind},
+                 {"project", job.spec.project},
+                 {"status", std::string(toString(job.state))},
+                 {"progress", job.progress},
+                 {"cancelRequested", job.cancelRequested},
+                 {"revisionPolicy", std::string(toString(job.spec.revision))}};
+    if (job.conflict) data["conflict"] = true;
+    if (!job.error.empty()) data["error"] = redact ? "job failed" : job.error;
+    return data;
+}
+
+void registerJobMethods(Service& service, JobBook& jobs) {
+    for (const bool cancel : {false, true}) {
+        MethodSpec method;
+        method.name = cancel ? "jobs.cancel" : "jobs.get";
+        method.summary = cancel ? "Cancel a job you own at its next safe point" : "Read a job you own";
+        // Cancellation changes job state only, so an Observe client can cancel
+        // its own analysis without receiving a grant to edit the project.
+        method.paramsSchema = {{"type", "object"},
+                               {"properties", {{"id", {{"type", "string"}, {"maxLength", 128}}}}},
+                               {"required", Json::array({"id"})}, {"additionalProperties", false}};
+        method.run = [&jobs, cancel](CallContext& call, const Json& params) -> Outcome {
+            if (auto error = closedKeys(params, {"id"})) return failWith(*error);
+            const auto id = params.find("id");
+            if (id == params.end() || !id->is_string() || id->get_ref<const std::string&>().size() > 128)
+                return Outcome::fail(errc::InvalidParams, "id is the job's identifier");
+            const auto& value = id->get_ref<const std::string&>();
+            const auto job = cancel ? jobs.cancel(call.who.credential, value) : jobs.get(call.who.credential, value);
+            if (!job) return Outcome::fail(errc::InvalidParams, "no job of yours has that id");
+            return Outcome::ok(jobJson(*job, external(call)));
+        };
+        service.add(std::move(method));
+    }
+    MethodSpec poll;
+    poll.name = "jobs.poll";
+    poll.summary = "Read and consume the next progress and state events for jobs you own";
+    poll.paramsSchema = {{"type", "object"},
+                         {"properties", {{"maximum", {{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}}}},
+                         {"additionalProperties", false}};
+    poll.run = [&jobs](CallContext& call, const Json& params) -> Outcome {
+        if (auto error = closedKeys(params, {"maximum"})) return failWith(*error);
+        RpcError error;
+        std::optional<std::int64_t> maximum;
+        if (!readInt(params, "maximum", 1, 128, maximum, error)) return failWith(error);
+        Json events = Json::array();
+        for (const auto& job : jobs.poll(call.who.credential, static_cast<std::size_t>(maximum.value_or(128))))
+            events.push_back(jobJson(job, external(call)));
+        return Outcome::ok({{"events", std::move(events)}});
+    };
+    service.add(std::move(poll));
+}
+
 }  // namespace
 
 void registerControlMethods(Service& service, ControlContext& ctx) {
     if (!ctx.steadyMs) ctx.steadyMs = [&service] { return service.now(); };
+    if (ctx.jobs) registerJobMethods(service, *ctx.jobs);
 
     // --- system.describe ---------------------------------------------------------
     {

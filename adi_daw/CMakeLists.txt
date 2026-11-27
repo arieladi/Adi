@@ -865,6 +865,9 @@ add_library(adi_control STATIC
     src/adi/control/consent.cpp
     src/adi/control/consent_file.cpp
     src/adi/control/consent_scope.cpp
+    src/adi/control/jobs.cpp
+    src/adi/control/render_jobs.cpp
+    src/adi/control/stem_jobs.cpp
     src/adi/control/session_discovery.cpp
     src/adi/control/loopback_listener.cpp
     src/adi/control/loopback_bridge.cpp
@@ -903,6 +906,14 @@ add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
 add_executable(adi_consent_tests tests/test_consent.cpp)
 target_link_libraries(adi_consent_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
+
+add_executable(adi_jobs_tests tests/test_jobs.cpp)
+target_link_libraries(adi_jobs_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_jobs_tests COMMAND adi_jobs_tests)
+
+add_executable(adi_tracked_render_queue_tests tests/test_tracked_render_queue.cpp)
+target_link_libraries(adi_tracked_render_queue_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_tracked_render_queue_tests COMMAND adi_tracked_render_queue_tests)
 
 add_executable(adi_loopback_listener_tests tests/test_loopback_listener.cpp)
 target_include_directories(adi_loopback_listener_tests SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
@@ -2227,7 +2238,7 @@ target_compile_definitions(adi_aac_import_tests PRIVATE
 add_test(NAME adi_aac_import_tests COMMAND adi_aac_import_tests)
 
 add_executable(adi_separated_stems_tests tests/test_separated_stems.cpp)
-target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_warnings)
+target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_control adi_warnings)
 add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)

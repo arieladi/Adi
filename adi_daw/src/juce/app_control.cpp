@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/app_control.hpp"
 
+#include "adi/control/jobs.hpp"
 #include "adi/control/live_project.hpp"
 #include "adi/control/loopback_listener.hpp"
 #include "adi/control/mcp.hpp"
@@ -57,6 +58,7 @@ public:
         context.appTier = [this] { return options.tier; };
         context.maxOpsPerMinute = [this] { return options.maxOpsPerMinute; };
         context.consentLedger = &ledger;
+        context.jobs = &jobs;
         context.askConsent = [this](ConsentRequest question) {
             std::lock_guard lock(questionMutex);
             if (questions.size() < 64) questions.push_back(std::move(question));
@@ -219,6 +221,7 @@ public:
     Service service;
     ProjectSet projects;
     ChangesetQueue queue;
+    JobBook jobs;
     ConsentLedger ledger;
     ControlContext context;
     McpEndpoint mcp;
@@ -265,6 +268,8 @@ std::vector<QueuedChangeset> AppControl::proposals() const {
     impl_->queue.expire(impl_->service.now());
     return impl_->queue.forReview();
 }
+
+JobBook& AppControl::jobs() { return impl_->jobs; }
 
 agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
     auto entries = proposals();
