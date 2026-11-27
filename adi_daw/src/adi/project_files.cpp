@@ -194,7 +194,18 @@ bool rebasePaths(Payload& paths,const fs::path& oldFolder,const fs::path& newFol
     if(!primary.empty()) {
         if(!primary.is_absolute())throw std::runtime_error("media path hint is not absolute");
         if(untitled && untitled->relocate(paths,oldFolder,primary))return paths!=before;
+#ifdef _WIN32
+        // On Windows one folder has several spellings: a short (8.3) name, another case. primary is built
+        // from the old folder as it was given and newFolder comes from the staged copy, and the two may
+        // spell a shared parent differently, as under a runner's temporary folder. Compared as text they
+        // then share no parent and the stored path climbs out through the alias. Compare physical paths.
+        std::error_code aliasError,folderError;
+        const auto physical=fs::weakly_canonical(primary,aliasError);
+        const auto physicalFolder=fs::weakly_canonical(newFolder,folderError);
+        const auto relative=(aliasError?primary:physical).lexically_relative(folderError?newFolder:physicalFolder);
+#else
         const auto relative=primary.lexically_relative(newFolder);
+#endif
         if(!relative.empty() && !relative.is_absolute()) {
             paths["rel_path"]=media::pathUtf8(relative);
             if(*relative.begin()==".." && paths.at("abs_path_hint").is_null())
