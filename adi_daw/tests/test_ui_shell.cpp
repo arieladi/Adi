@@ -29,6 +29,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/library_listing.hpp"
+#include "adi/ui/starter_drums.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -6771,7 +6772,7 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
             labels.add(entry.name);
         return labels;
     };
-    const juce::StringArray roster{"Categories", "All", "Sounds", "Instruments", "Audio Effects", "Pd Devices",
+    const juce::StringArray roster{"Categories", "All", "Sounds", "Drums", "Instruments", "Audio Effects", "Pd Devices",
                                    "Plug-Ins", "Samples", "", "Places", "User Library", "Add Folder..."};
     check(names() == roster, "SC-127: the empty Browser has the ordered built roster and no empty Collections group");
     const juce::Rectangle<int> first(4, 28, 113, 19);
@@ -6822,6 +6823,100 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.rows().size() == 1 && browser.load(0) && picked == written &&
               preset::read(picked).name == "Dusty Keys",
           "SC-127: Sounds filters by word through LibraryQuery and uses the saved-preset loader");
+}
+void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto source = fs::path(ADI_UI_REFERENCES).parent_path().parent_path().parent_path() /
+                        "content" / "starter-drums";
+    const auto prefix = dir / "starter-drums-package";
+    const auto installed = prefix / "share" / "adi" / "starter-drums";
+    const auto developer = prefix / "bin" / "starter-drums";
+    const auto executable = prefix / "bin" / "ADI";
+    const fs::path relative = fs::path("..") / "share" / "adi" / "starter-drums";
+    fs::create_directories(installed.parent_path());
+    fs::create_directories(developer.parent_path());
+    fs::copy(source, installed, fs::copy_options::recursive);
+    check(starterDrumsDirectory(executable, relative) == installed,
+          "SC-128: a relocated install finds the exact shipped root");
+    fs::create_directories(developer / "Hits");
+    check(starterDrumsDirectory(executable, relative) == installed,
+          "SC-128: a partial adjacent copy does not hide the installed kit");
+    fs::create_directories(developer / "Loops");
+    check(starterDrumsDirectory(executable, relative) == developer,
+          "SC-128: a development copy works beside the executable");
+
+    std::string error;
+    auto index = library::Index::open(prefix / "index.sqlite", error, false);
+    auto document = ProjectDocument::open(prefix / "test.adi", true, {}, error);
+    check(index && document, "SC-128: create library index and project");
+    if (!index || !document)
+        return;
+    const auto userDrums = prefix / "user" / "Drums";
+    fs::create_directories(userDrums);
+    std::ofstream(userDrums / "User Kick.wav") << "test";
+    struct MarkerSpy final : library::VolumeIdentityProvider {
+        library::MarkerVolumeProvider provider;
+        std::vector<fs::path> probed;
+        bool identify(const fs::path &path, library::Volume &volume, std::string &why) override {
+            probed.push_back(path);
+            return provider.identify(path, volume, why);
+        }
+    } markers;
+    const auto hits = installed / "Hits";
+    std::vector<LibraryFolder> folders{{"Manual duplicate", installed}, {"Hits", hits},
+                                       {"Drums", userDrums}, {"Starter Drums", installed, false, true}};
+    auto listing = scanLibrary(*index, folders, markers);
+    const auto readOnlyKit = [&](const LibraryListing &scanned) {
+        return scanned.error.empty() && scanned.places.size() == 3 && scanned.samples.size() == 17 &&
+               std::ranges::count(scanned.samples, std::string(kStarterDrumsVolumeId), &LibraryFile::volumeId) == 16 &&
+               markers.probed == std::vector{userDrums} && !fs::exists(installed / ".adi-volume-id") &&
+               !fs::exists(hits / ".adi-volume-id") && index->entries().size() == 1;
+    };
+    check(readOnlyKit(listing), "SC-128: a manually added kit root is skipped and a child stays read-only");
+    markers.probed.clear();
+    std::reverse(folders.begin(), folders.end());
+    check(readOnlyKit(scanLibrary(*index, folders, markers)),
+          "SC-128: kit files keep one listing and the same identity in either scan order");
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "starter-drums");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    browser.setListing(listing);
+    const auto &sidebar = browser.sidebar();
+    const auto drumsRow = std::ranges::find(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name);
+    const int drums = static_cast<int>(drumsRow - sidebar.begin());
+    check(drums == 3 && browser.sidebarRowBounds(drums) == juce::Rectangle<int>(4, 85, 113, 19) &&
+              browser.list.getBounds() == juce::Rectangle<int>(119, 46, 185, 393) &&
+              browser.list.getRowHeight() == 19 &&
+              std::ranges::count(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name) == 2 &&
+              std::ranges::none_of(sidebar, [](const auto &entry) { return entry.name == "Starter Drums"; }),
+          "SC-128: the category and the user's same-named Place stay separate");
+    browser.choose(drums);
+    check(browser.shown().size() == 16 &&
+              std::ranges::count_if(browser.shown(), [](const auto *file) {
+                  return file->path.parent_path().filename() == "Loops";
+              }) == 4,
+          "SC-128: Drums lists the twelve hits and four loops");
+    browser.search.setText("128 loop", false);
+    browser.search.onTextChange();
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "Starter Loop Skips 128 BPM.wav",
+          "SC-128: loops in the kit are scoped and matched by search words");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
+    const auto samples = std::ranges::find(sidebar, true, &BrowserPanel::Entry::samples);
+    browser.choose(static_cast<int>(samples - sidebar.begin()));
+    check(browser.shown().size() == 17, "SC-128: Samples includes both shipped and user audio once");
+    const auto hitsRow = std::ranges::find(sidebar, juce::String("Hits"), &BrowserPanel::Entry::name);
+    browser.choose(static_cast<int>(hitsRow - sidebar.begin()));
+    check(hitsRow != sidebar.end() && !hitsRow->place.empty() && browser.shown().size() == 12,
+          "SC-128: a configured kit subfolder remains an ordinary browsable Place");
+    int removeMenus = 0;
+    browser.removeFolder = [](const auto &) {};
+    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()>) { ++removeMenus; };
+    const auto popup = juce::ModifierKeys::rightButtonModifier;
+    browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(drums).getCentre().toFloat(), popup));
+    check(removeMenus == 0, "SC-128: Drums never offers Remove from Places");
 }
 void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -25913,6 +26008,7 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
+    trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });

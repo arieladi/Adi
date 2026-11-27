@@ -1,6 +1,6 @@
 # ADI base installer
 
-The `adi_base` install component contains ADI, its plug-in scanner and the licence files. The scanner stays beside ADI so plug-in discovery works from the installed copy. This is the base tier of ADR-0204. A binary release should accompany the exact corresponding source and build instructions, including the pinned dependencies in `tools/fetch_external.sh`.
+The `adi_base` install component contains ADI, its plug-in scanner, licence files and the original starter drum kit. The scanner stays beside ADI so plug-in discovery works from the installed copy. This is the base tier of ADR-0204. A binary release should accompany the exact corresponding source and build instructions, including the pinned dependencies in `tools/fetch_external.sh`. The kit contains twelve synthesized hits and four one-bar loops. Recreate its WAV files with `python3 adi_daw/tools/generate_starter_drums.py`.
 
 ## Linux
 

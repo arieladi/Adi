@@ -150,10 +150,20 @@ if(ADI_WITH_JUCE)
         ICON_BIG "${adi_program_icon}"
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "ADI uses audio input to record audio tracks.")
+    set(_adi_starter_drums "${CMAKE_CURRENT_SOURCE_DIR}/content/starter-drums")
     if(APPLE)
+        juce_add_bundle_resources_directory(adi_app "${_adi_starter_drums}")
+        target_compile_definitions(adi_app PRIVATE ADI_STARTER_DRUMS_RELATIVE="../Resources/starter-drums")
         add_test(NAME adi_ui_microphone_usage_tests
             COMMAND /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription"
                 "$<TARGET_BUNDLE_CONTENT_DIR:adi_app>/Info.plist")
+    endif()
+    if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # The build tree works without an install. Only the installer decides where to stage the kit.
+        add_custom_target(adi_starter_drums
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory "${_adi_starter_drums}"
+                    "$<TARGET_FILE_DIR:adi_app>/starter-drums" VERBATIM)
+        add_dependencies(adi_app adi_starter_drums)
     endif()
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.

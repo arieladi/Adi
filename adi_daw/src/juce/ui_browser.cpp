@@ -120,6 +120,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
     sidebar_ = {{"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
+                {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx},
                 {"Pd Devices", Pd}, {"Plug-Ins", PlugIns}, {"Samples", Samples, false, true},
                 {{}, None, true}, {"Places", None, true}, {"User Library", User},
@@ -342,6 +343,8 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
         if (e.name == "User Library" && !e.heading)
             e.place.clear();
     for (const auto &place : listing().places) {
+        if (place.starterDrums)
+            continue;
         if (place.userLibrary) {
             for (auto &e : sidebar_)
                 if (e.name == "User Library" && !e.heading)
@@ -443,6 +446,10 @@ void BrowserPanel::refill(int selectRow) {
         });
     } else if (library_ && !browsePlace && (samples || !chosen.place.empty())) {
         library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
+    }
+    if (library_ && chosen.glyph == Drums) {
+        static const std::string drumVolume{kStarterDrumsVolumeId};
+        library_->appendSamples(query, &drumVolume, shown_);
     }
     std::unordered_set<const preset::Entry *> unusedPresets(hits.presets.begin(), hits.presets.end());
     rows_.clear();
@@ -1098,7 +1105,7 @@ void BrowserPanel::sidebarClick(int row, const juce::MouseEvent &e) {
     if (!removeFolder || entry.place.empty()) return;
     const auto &places = listing().places;
     const auto place = std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
-    if (place == places.end() || place->userLibrary) return;
+    if (place == places.end() || place->userLibrary || place->starterDrums) return;
     juce::Component::SafePointer<BrowserPanel> safe(this);
     auto remove = [safe, path = place->root] {
         if (safe && safe->removeFolder) safe->removeFolder(path);
@@ -1171,7 +1178,7 @@ void BrowserPanel::choose(int i) {
         }
         if (entry.glyph == All || entry.glyph == Sounds)
             return;
-        const bool library = entry.samples || entry.glyph == User;
+        const bool library = entry.samples || entry.glyph == User || entry.glyph == Drums;
         if (!entry.place.empty()) {
             const auto &places = listing().places;
             const auto place = std::ranges::find(places, entry.place, &LibraryPlace::volumeId);
@@ -1194,7 +1201,7 @@ void BrowserPanel::choose(int i) {
         } else if (library && !ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
         else if (library && rows_.empty())
-            root_.say(listing().places.empty() || (!entry.samples && entry.place.empty())
+            root_.say(entry.glyph != Drums && (listing().places.empty() || (!entry.samples && entry.place.empty()))
                           ? "Choose Add Folder in the Browser to list samples."
                           : (entry.name + " holds no audio files.").toStdString());
     }

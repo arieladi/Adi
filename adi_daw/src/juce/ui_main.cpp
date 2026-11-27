@@ -15,6 +15,7 @@
 #include "adi/ui/export_preferences.hpp"
 #include "adi/ui/export_interruption.hpp"
 #include "adi/ui/library_folder_settings.hpp"
+#include "adi/ui/starter_drums.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -502,6 +503,13 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         libraryPreferences_ = preferences;
         std::vector<LibraryFolder> folders;
+#ifdef ADI_STARTER_DRUMS_RELATIVE
+        const auto executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        auto starterDrums = starterDrumsDirectory(pathFromUtf8(executable.getFullPathName().toStdString()),
+                                                  pathFromUtf8(ADI_STARTER_DRUMS_RELATIVE));
+        if (!starterDrums.empty())
+            folders.push_back({"Starter Drums", std::move(starterDrums), false, true});
+#endif
         auto userLibrary = userLibraryPath();
         if (!userLibrary.empty() && user == "" && !file.empty() && smokeOutput_ == juce::File{}) {
             std::string why;

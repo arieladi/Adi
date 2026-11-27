@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 namespace adi::ui {
+inline constexpr char kStarterDrumsVolumeId[] = "factory:starter-drums";
+
 // The browser's Samples and Places (Live 12 manual 4.1, 4.6, 4.7; MR 3.1; worklist D1, N15's index
 // part): the folders the settings name (`library.userLibrary`, `library.contentFolders`) are
 // registered as volumes of the library index (#102) and scanned into it; what the index then holds
@@ -26,18 +28,19 @@ struct LibraryPlace {
     bool userLibrary = false;  // the User Library's, which Live's own Places label shows
     std::string problem{};
     std::vector<std::filesystem::path> directories{}; // relative paths, including empty folders
+    bool starterDrums = false;
 };
 struct LibraryFile {
     std::string name;            // the file's name, as Live's list shows it
     std::filesystem::path path;  // absolute
     std::string volumeId;        // the place it is under
 };
-// One folder the settings name: what the browser calls it, where it is, and whether it is the User
-// Library.
+// A configured folder or built-in content root. The shipped kit is listed without index writes.
 struct LibraryFolder {
     std::string name;
     std::filesystem::path root;
     bool userLibrary = false;
+    bool starterDrums = false;
 };
 struct LibraryListing {
     std::vector<LibraryPlace> places;
@@ -110,14 +113,34 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
     try {
         std::map<std::string, std::size_t> byVolume;
         std::set<fs::path> seen, roots;
+        const auto starterDrums = std::ranges::find(folders, true, &LibraryFolder::starterDrums);
         for (const auto &folder : folders) {
             if (stop.stop_requested())
                 break;
             if (folder.root.empty())
                 continue;
+            // A manually added kit root is redundant. Its subfolders remain browsable without
+            // probing any part of the installed kit for write access, even through a link.
+            bool starterSubfolder = false;
+            if (!folder.starterDrums && starterDrums != folders.end()) {
+                std::error_code status;
+                const auto canonical = fs::canonical(folder.root, status);
+                if (!status) {
+                    if (fs::equivalent(canonical, starterDrums->root, status))
+                        continue;
+                    for (auto parent = canonical.parent_path(); !parent.empty(); parent = parent.parent_path()) {
+                        if (fs::equivalent(parent, starterDrums->root, status)) {
+                            starterSubfolder = true;
+                            break;
+                        }
+                        if (parent == parent.root_path())
+                            break;
+                    }
+                }
+            }
             library::Volume volume;
             std::string why;
-            const bool identified = volumes.identify(folder.root, volume, why);
+            const bool identified = !folder.starterDrums && !starterSubfolder && volumes.identify(folder.root, volume, why);
             auto root = volume.root;
             if (!identified) {
                 std::error_code status;
@@ -127,7 +150,9 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
             }
             if (!roots.insert(root).second) continue;
 
-            LibraryPlace place{folder.name, root, "folder:" + media::pathUtf8(root), folder.userLibrary};
+            auto id = folder.starterDrums ? kStarterDrumsVolumeId : "folder:" + media::pathUtf8(root);
+            LibraryPlace place{folder.name, root, std::move(id), folder.userLibrary};
+            place.starterDrums = folder.starterDrums;
             if (identified && !byVolume.contains(volume.id)) {
                 auto scanned = index.scan(volume, {}, stop);
                 if (scanned.cancelled) break;
@@ -144,9 +169,15 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
                 try {
                     auto files = readUnindexedPlace(place, stop);
                     if (stop.stop_requested()) break;
-                    for (auto &file : files)
-                        if (seen.insert(file.path).second)
+                    for (auto &file : files) {
+                        if (seen.insert(file.path).second) {
+                            // Place membership is path-based. The shared sample keeps its factory
+                            // identity regardless of which Place saw it first.
+                            if (starterSubfolder)
+                                file.volumeId = kStarterDrumsVolumeId;
                             out.samples.push_back(std::move(file));
+                        }
+                    }
                 } catch (const fs::filesystem_error &error) {
                     place.problem = folder.name + " could not be read: " + error.code().message();
                 }
