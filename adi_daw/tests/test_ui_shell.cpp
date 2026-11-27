@@ -6563,8 +6563,8 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             check(surface.isInterestedInDragSource(sample), "the track control accepts a Browser sample");
             surface.itemDropped(sample);
             root.frame();
-            const auto added = clipsOn(1);
-            check(added.size() == before + 1 && added.back().first == "Clap" && added.back().second == bar5,
+            const auto dropped = clipsOn(1);
+            check(dropped.size() == before + 1 && dropped.back().first == "Clap" && dropped.back().second == bar5,
                   "SC-286: the sample goes to the track under the drop at the insert marker");
             check(root.command(AppCommands::Undo), "undo the sample drop");
             root.frame();
@@ -9495,9 +9495,9 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             return ids;
         };
         const auto letGo = [&] {
-            const juce::Point<float> empty(xAt(9 * beat) + 4.f, static_cast<float>(ed.notesArea().getY() + 3));
-            ed.mouseDown(pressAt(ed, empty));
-            ed.mouseUp(pressAt(ed, empty));
+            const juce::Point<float> emptyCell(xAt(9 * beat) + 4.f, static_cast<float>(ed.notesArea().getY() + 3));
+            ed.mouseDown(pressAt(ed, emptyCell));
+            ed.mouseUp(pressAt(ed, emptyCell));
         };
         ed.keyPressed(key(juce::KeyPress::escapeKey));
         ed.select({});
@@ -11714,11 +11714,11 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
         canvas.mouseUp(pressAt(canvas, clipTitle(track)));
         return geo.selection.insert;
     };
-    const auto trackOnly = [&](std::int64_t track, std::int64_t insert) {
+    const auto trackOnly = [&](std::int64_t track, std::int64_t markerTick) {
         const auto &sel = geo.selection;
         return sel.track == track && sel.toTrack == 0 && sel.picked.empty() && sel.clip == 0 &&
-               sel.pickedClips.empty() && sel.marked && sel.insert == insert && sel.start == insert &&
-               sel.end == insert;
+               sel.pickedClips.empty() && sel.marked && sel.insert == markerTick && sel.start == markerTick &&
+               sel.end == markerTick;
     };
     const auto sameTrackInsert = pickClip(1);
     check(geo.selection.clip == 11, "SC-177 fixture selects the clip on track 1");
@@ -20318,8 +20318,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mix.analysis.detail.freezeButton.setToggleState(true, juce::dontSendNotification); mix.analysis.detail.freezeButton.onClick();
                 const auto spectralPicture = mix.analysis.detail.view.snapshot(); const auto spectralBefore = broker->stats();
                 const auto image = [&] {
-                    juce::Image picture(juce::Image::RGB, mix.analysis.detail.view.getWidth(), mix.analysis.detail.view.getHeight(), true);
-                    juce::Graphics graphics(picture); mix.analysis.detail.view.paint(graphics); return picture;
+                    juce::Image rendered(juce::Image::RGB, mix.analysis.detail.view.getWidth(), mix.analysis.detail.view.getHeight(), true);
+                    juce::Graphics graphics(rendered); mix.analysis.detail.view.paint(graphics); return rendered;
                 };
                 const auto beforeImage = image();
                 check(spectralPicture && mix.analysis.detail.view.frozen(), "palette rollback fixture retains a frozen spectrogram");
@@ -21299,10 +21299,10 @@ void launchIsolation(AppCommands &commands) {
 // hardware is opened. A type that refuses inputs stands for a default input that cannot open.
 struct ListedAudioType final : juce::AudioIODeviceType {
     struct Device final : juce::AudioIODevice {
-        Device(const juce::String &out, const juce::String &in, bool refused, bool outputHeld = false)
+        Device(const juce::String &out, const juce::String &in, bool refuseInput, bool outputHeld = false)
             : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
               outs(out.isNotEmpty() ? 2 : 0),
-              error(refused && in.isNotEmpty()       ? "The input will not open."
+              error(refuseInput && in.isNotEmpty()   ? "The input will not open."
                     : outputHeld && out.isNotEmpty() ? "The device is in use by another program."
                                                      : "") {}
         int ins, outs;
@@ -24879,8 +24879,8 @@ int main(int argc, char **argv) {
         MidiPortHost portHost([&settings] { return settings.get("midi.ports"); }, {keys, pads},
                               [&](const settings::Value &ports) {
                                   ++writes;
-                                  std::string why;
-                                  return settings.set("midi.ports", ports, {}, why);
+                                  std::string writeReason;
+                                  return settings.set("midi.ports", ports, {}, writeReason);
                               });
         const auto after = settings.get("midi.ports");
         const auto moved = std::find_if(portHost.ports().begin(), portHost.ports().end(),

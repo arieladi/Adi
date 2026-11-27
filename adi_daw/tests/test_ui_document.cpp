@@ -1567,8 +1567,8 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     const auto recallHead = OpJournal(recall->store()).headSeq();
     const auto originalAudio = renderNote(*recall);
     const auto originalAutomation = [&] {
-        const auto snapshot = recall->view().current();
-        const auto *row = snapshot->findAutomationLane(lane.id);
+        const auto recallSnapshot = recall->view().current();
+        const auto *row = recallSnapshot->findAutomationLane(lane.id);
         return row && row->ownerId == device && row->paramRef == lane.paramRef;
     };
     auto unsupported = values;
