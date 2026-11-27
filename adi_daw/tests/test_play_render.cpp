@@ -112,14 +112,14 @@ bool persistentCatalogueContracts() {
         canonical.uid = "AD1E00014D5045319F2A0C1100000001";
         adi::rows::Device remote;
         remote.remoteHostId = 7;
-        adi::engine::DeviceRequest request;
-        request.device = &remote;
-        request.ref = &canonical;
+        adi::engine::DeviceRequest fallbackRequest;
+        fallbackRequest.device = &remote;
+        fallbackRequest.ref = &canonical;
         std::string fallbackError;
         auto fallback = loader.fn({}, [&](std::string_view uid) -> std::optional<std::string> {
             if (uid == canonical.uid) return vstRef.uid;
             return {};
-        })(request, fallbackError);
+        })(fallbackRequest, fallbackError);
         if (!check(fallback && fallback->loaded() && fallback->identity().uid == canonical.uid &&
                    fallbackError.find("playing the local plug-in") != std::string::npos,
                    "unavailable server falls back through the local class ID mapping")) return false;

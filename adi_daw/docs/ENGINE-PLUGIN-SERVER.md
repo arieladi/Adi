@@ -223,6 +223,15 @@ showed that sending the same 69,314-byte stock state back through the
 stock server silenced Surge XT, despite exact state readback. This is
 an outstanding stock-compatibility case.
 
+The stock comparison also ran across separate veth network namespaces
+with the server at `198.18.0.2:55056`. The first block was silent,
+and all 64,000 compensated samples again matched the local reference
+bit for bit. Setup took 1.238 s. Across 501 audio exchanges, RTT
+p50/p95/p99/max was 74.092/1,723.52/5,800.62/26,054.5 µs.
+Thirty exchanges exceeded the 1,333.333 µs period. A second run produced
+the same PCM and exceeded the period on 37 of 501 exchanges. The runs
+used offline waits, stock server logging and the scheduler fallback.
+
 The native run drove identical authored MIDI through two ADI Sessions,
 with the remote CLAP loaded in a separate process. Two overlapping notes
 on the same key reached the server as distinct runtime IDs at offsets

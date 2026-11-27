@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/remote_devices.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/store.hpp"
@@ -167,6 +168,27 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
     require(refused.state == render::JobState::Failed && refused.error.find(fixtureName) != std::string::npos &&
             !fs::exists(project.dir.path() / "unauthorized.wav") && localLoads == 2,
             "unavailable offline server did not fail by name before publishing");
+
+    {
+        const std::vector<std::uint8_t> bytes{7, 25, 193};
+        const auto hash = media::blake3Bytes(std::as_bytes(std::span(bytes))).hex;
+        SQLite::Statement blob(project.store->db(), "INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,3)");
+        blob.bind(1, hash);
+        blob.bind(2, bytes.data(), static_cast<int>(bytes.size()));
+        blob.exec();
+        SQLite::Statement state(project.store->db(),
+            "INSERT INTO plugin_state(device_id,stream_role,state_hash) VALUES(1,'chunk',?)");
+        state.bind(1, hash);
+        state.exec();
+        engine::Session live;
+        require(live.load(*project.store, engine::withRemoteDevices({}), {2, sampleRate, blockSize}), live.error());
+        const auto* instance = live.instanceFor(1);
+        require(live.stats().placeholders == 1 && instance && instance->identity().uid == fixtureId &&
+                instance->saveState("chunk") == bytes && std::ranges::any_of(live.problems(), [](const auto& issue) {
+                    return issue.find("server #7") != std::string::npos;
+                }), "a missing server and local plug-in must retain a named placeholder and its saved state");
+        project.store->db().exec("DELETE FROM plugin_state WHERE device_id=1;");
+    }
 
     const net::PluginServerAddress endpoint{"127.0.0.1", port};
     const auto grant = net::makePluginServerLoader(
