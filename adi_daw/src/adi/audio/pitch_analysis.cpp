@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <new>
 #include <numbers>
 #include <numeric>
@@ -27,6 +28,11 @@ constexpr double pitchChangeCents = 45;
 constexpr double maximumCentsMagnitude = 24000;
 constexpr std::size_t minimumNoteHops = 6; // about 30 ms
 constexpr std::size_t minimumLegatoNoteHops = 20; // about 100 ms
+constexpr std::size_t boundaryContextHops = 4; // about 20 ms on each side
+constexpr std::size_t rapidContextHops = 5;
+constexpr double rapidStepCents = 75;
+constexpr auto allBoundaryReasons = PitchBoundaryReason::AperiodicTransition |
+    PitchBoundaryReason::RapidPitchChange | PitchBoundaryReason::CompetingPeriodicity;
 
 bool validRate(std::uint32_t rate) noexcept {
     return rate >= minimumSourceRate && rate <= maximumSourceRate;
@@ -38,8 +44,38 @@ bool validCents(double cents) noexcept {
 
 struct Observation {
     double cents = 0;
+    double energy = 0;
     bool voiced = false;
+    bool interpolated = false;
+    bool competing = false;
 };
+
+struct PeriodTrough {
+    double samples = 0;
+    double error = 1;
+};
+
+PeriodTrough troughAt(std::span<const double> difference, std::size_t lag) {
+    const double left = difference[lag - 1];
+    const double middle = difference[lag];
+    const double right = difference[lag + 1];
+    if (middle > left || middle >= right) return {};
+    const double offset = 0.5 * (left - right) / (left + right - 2 * middle);
+    return {static_cast<double>(lag) + offset, middle + 0.25 * (right - left) * offset};
+}
+
+bool hasCompetingPeriods(std::span<const double> difference, std::size_t minLag, double primary) {
+    constexpr double plausibleTrough = 0.28;
+    constexpr double harmonicTolerance = 0.08;
+    for (std::size_t lag = minLag; lag + 1 < difference.size(); ++lag) {
+        const auto alternative = troughAt(difference, lag);
+        if (alternative.error > plausibleTrough) continue;
+        if (primary == 0) primary = alternative.samples;
+        const double ratio = std::max(primary, alternative.samples) / std::min(primary, alternative.samples);
+        if (std::abs(ratio - std::round(ratio)) > harmonicTolerance) return true;
+    }
+    return false;
+}
 
 // Cumulative-mean normalized difference (YIN). Comparing pairs symmetric about
 // the observation center avoids a lag-dependent bias in the contour's timing.
@@ -54,7 +90,10 @@ Observation pitchAt(std::span<const double> signal, std::size_t center, double r
         squares += sample * sample;
     }
     const auto count = static_cast<double>(energy.size());
-    if (squares - sum * sum / count < count * silenceRms * silenceRms) return {};
+    Observation observed;
+    const double centeredSquares = squares - sum * sum / count;
+    observed.energy = centeredSquares / count;
+    if (centeredSquares < count * silenceRms * silenceRms) return observed;
 
     const auto maxLag = difference.size() - 1;
     const auto pairs = std::min(static_cast<std::size_t>(rate * 0.018), signal.size() - maxLag);
@@ -75,25 +114,19 @@ Observation pitchAt(std::span<const double> signal, std::size_t center, double r
     // The first credible trough is the shortest period. In less periodic
     // frames accept only an actual local minimum, never a descending edge.
     const auto minLag = std::max<std::size_t>(2, static_cast<std::size_t>(rate / maximumF0));
-    double period = 0;
-    double lowest = fallbackPeriod;
+    PeriodTrough selected{0, fallbackPeriod};
     for (std::size_t lag = minLag; lag < maxLag; ++lag) {
-        const double left = difference[lag - 1];
-        const double middle = difference[lag];
-        const double right = difference[lag + 1];
-        if (middle > left || middle >= right) continue;
-        const double offset = 0.5 * (left - right) / (left + right - 2 * middle);
-        const double trough = middle + 0.25 * (right - left) * offset;
-        if (trough < lowest) {
-            lowest = trough;
-            period = static_cast<double>(lag) + offset;
-        }
-        if (lowest < trustedPeriod) break;
+        const auto candidate = troughAt(difference, lag);
+        if (candidate.error < selected.error) selected = candidate;
+        if (selected.error < trustedPeriod) break;
     }
-    if (period == 0) return {};
-    const double frequency = rate / period;
-    if (frequency < minimumF0 || frequency > maximumF0) return {};
-    return {6900.0 + 1200.0 * std::log2(frequency / 440.0), true};
+    observed.competing = hasCompetingPeriods(difference, minLag, selected.samples);
+    if (selected.samples == 0) return observed;
+    const double frequency = rate / selected.samples;
+    if (frequency < minimumF0 || frequency > maximumF0) return observed;
+    observed.cents = 6900.0 + 1200.0 * std::log2(frequency / 440.0);
+    observed.voiced = true;
+    return observed;
 }
 
 // Suppress single-observation octave slips and bridge dropouts of at most
@@ -120,7 +153,9 @@ void stabilize(std::span<Observation> observations) {
         if (std::abs(left - right) > 50) continue;
         for (std::size_t frame = start; frame < index; ++frame) {
             const double fraction = static_cast<double>(frame - start + 1) / static_cast<double>(index - start + 1);
-            observations[frame] = {std::lerp(left, right, fraction), true};
+            observations[frame].cents = std::lerp(left, right, fraction);
+            observations[frame].voiced = true;
+            observations[frame].interpolated = true;
         }
     }
 }
@@ -265,6 +300,134 @@ bool segment(PitchAnalysis& result, std::span<const Observation> observations, s
     return !stop.stop_requested();
 }
 
+bool aperiodicTransition(std::span<const Observation> context) {
+    double loudestVoiced = 0;
+    for (const auto& sample : context) {
+        if (sample.voiced && !sample.interpolated) loudestVoiced = std::max(loudestVoiced, sample.energy);
+    }
+    // Do not label a genuine silence or faint background floor as a boundary.
+    const double floor = std::max(0.003 * 0.003, loudestVoiced * 0.003);
+    unsigned consecutive = 0;
+    for (const auto& sample : context) {
+        if ((!sample.voiced || sample.interpolated) && sample.energy >= floor) {
+            if (++consecutive == 2) return true;
+        } else {
+            consecutive = 0;
+        }
+    }
+    return false;
+}
+
+std::optional<double> localVoicedPitch(std::span<const Observation, rapidContextHops> context) {
+    std::array<double, rapidContextHops> pitches;
+    pitches.fill(std::numeric_limits<double>::infinity());
+    std::size_t count = 0;
+    for (const auto& sample : context) {
+        if (sample.voiced && !sample.interpolated) pitches[count++] = sample.cents;
+    }
+    if (count < 2) return {};
+    std::ranges::sort(pitches);
+    return std::midpoint(pitches[(count - 1) / 2], pitches[count / 2]);
+}
+
+double rapidStep(std::span<const Observation> observations, std::size_t boundary) {
+    const auto context = observations.subspan(boundary - rapidContextHops, 2 * rapidContextHops);
+    if (std::ranges::any_of(context, [](const auto& sample) { return sample.energy < silenceRms * silenceRms; })) return 0;
+    // A few aperiodic frames at a quick step do not erase voiced evidence on
+    // either side. A quiet rest still breaks the fast-change suggestion.
+    const auto before = localVoicedPitch(context.first<rapidContextHops>());
+    const auto after = localVoicedPitch(context.last<rapidContextHops>());
+    return before && after ? std::abs(*after - *before) : 0;
+}
+
+std::optional<std::uint64_t> nearbyBoundary(std::span<const std::uint64_t> boundaries, std::uint64_t frame,
+                                            std::uint64_t tolerance) {
+    const auto right = std::ranges::lower_bound(boundaries, frame);
+    if (right != boundaries.begin()) {
+        const auto left = *(right - 1);
+        if (frame - left <= tolerance && (right == boundaries.end() || frame - left <= *right - frame)) return left;
+    }
+    if (right != boundaries.end() && *right - frame <= tolerance) return *right;
+    return {};
+}
+
+bool assessBoundaries(PitchAnalysis& result, std::span<const Observation> observations, std::uint64_t hop,
+                      std::stop_token stop) {
+    auto& hints = *result.boundaryUncertainty;
+    const auto frameAt = [&](std::size_t index) { return std::min(index * hop, result.sourceFrames); };
+    std::vector<std::uint64_t> boundaries;
+    boundaries.reserve(result.notes.size() * 2);
+    for (const auto& note : result.notes) {
+        boundaries.push_back(note.startFrame);
+        boundaries.push_back(note.endFrame);
+    }
+    for (const auto boundary : boundaries) {
+        if (stop.stop_requested()) return false;
+        const auto index = static_cast<std::size_t>(boundary / hop);
+        const auto first = index - std::min(index, boundaryContextHops);
+        const auto last = std::min(observations.size(), index + boundaryContextHops);
+        const auto context = observations.subspan(first, last - first);
+        auto reasons = aperiodicTransition(context) ? PitchBoundaryReason::AperiodicTransition : PitchBoundaryReason::None;
+        if (std::ranges::count_if(context, [](const auto& sample) { return sample.competing; }) >= 3)
+            reasons = reasons | PitchBoundaryReason::CompetingPeriodicity;
+        if (reasons != PitchBoundaryReason::None) hints.push_back({boundary, reasons});
+    }
+
+    // A run of nearby rapid steps can outrun the longer plateaus used to split
+    // notes. Suggest those boundaries without replacing the current geometry.
+    std::vector<std::size_t> steps;
+    for (std::size_t index = rapidContextHops; index + rapidContextHops <= observations.size();) {
+        if (stop.stop_requested()) return false;
+        auto score = rapidStep(observations, index);
+        if (score < rapidStepCents) {
+            ++index;
+            continue;
+        }
+        auto strongest = index;
+        for (++index; index + rapidContextHops <= observations.size(); ++index) {
+            const auto candidate = rapidStep(observations, index);
+            if (candidate < rapidStepCents) break;
+            if (candidate > score) {
+                score = candidate;
+                strongest = index;
+            }
+        }
+        steps.push_back(strongest);
+    }
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        const auto frame = frameAt(steps[index]);
+        const auto assigned = nearbyBoundary(boundaries, frame, 3 * hop);
+        const bool closeSteps = (index > 0 && steps[index] - steps[index - 1] < minimumLegatoNoteHops) ||
+            (index + 1 < steps.size() && steps[index + 1] - steps[index] < minimumLegatoNoteHops);
+        if (!assigned || closeSteps)
+            hints.push_back({assigned.value_or(frame), PitchBoundaryReason::RapidPitchChange});
+    }
+
+    for (std::size_t index = 0; index < observations.size();) {
+        if (stop.stop_requested()) return false;
+        const auto first = index;
+        while (index < observations.size() && observations[index].competing) ++index;
+        if (index - first >= 3) {
+            for (const auto frame : {frameAt(first), frameAt(index)}) {
+                hints.push_back({nearbyBoundary(boundaries, frame, 2 * hop).value_or(frame),
+                                 PitchBoundaryReason::CompetingPeriodicity});
+            }
+        }
+        if (first == index) ++index;
+    }
+
+    std::ranges::sort(hints, {}, &PitchBoundaryUncertainty::frame);
+    std::size_t unique = 0;
+    for (const auto hint : hints) {
+        if (unique > 0 && hints[unique - 1].frame == hint.frame)
+            hints[unique - 1].reasons = hints[unique - 1].reasons | hint.reasons;
+        else
+            hints[unique++] = hint;
+    }
+    hints.resize(unique);
+    return !stop.stop_requested();
+}
+
 PitchAnalysisResult analyze(std::span<const float> mono, std::uint32_t sourceRate, std::stop_token stop) {
     const auto stride = std::max<std::size_t>(1, sourceRate / targetAnalysisRate);
     const double rate = static_cast<double>(sourceRate) / static_cast<double>(stride);
@@ -273,7 +436,7 @@ PitchAnalysisResult analyze(std::span<const float> mono, std::uint32_t sourceRat
     const auto observations = (decimated - 1) / hop + 1;
     if (observations > maximumObservations) return {PitchAnalysisError::Resource, {}};
 
-    PitchAnalysis analysis{sourceRate, mono.size(), {}};
+    PitchAnalysis analysis{sourceRate, mono.size(), {}, std::vector<PitchBoundaryUncertainty>{}};
     std::vector<double> signal(decimated);
     // Four low-pass poles before decimation limit high-frequency aliases.
     // At native analysis rates the same filter weights the fundamental.
@@ -305,6 +468,7 @@ PitchAnalysisResult analyze(std::span<const float> mono, std::uint32_t sourceRat
     }
     stabilize(curve);
     if (!segment(analysis, curve, hop * stride, stop)) return {PitchAnalysisError::Cancelled, {}};
+    if (!assessBoundaries(analysis, curve, hop * stride, stop)) return {PitchAnalysisError::Cancelled, {}};
     return {PitchAnalysisError::None, std::move(analysis)};
 }
 } // namespace
@@ -317,6 +481,15 @@ bool validPitchAnalysis(const PitchAnalysis& analysis) noexcept {
             !validCents(note.pitchCents) || !validCents(note.driftCents) || !validCents(note.vibratoCents) ||
             note.vibratoCents < 0 || !validCurve(note)) return false;
         previousEnd = note.endFrame;
+    }
+    if (analysis.boundaryUncertainty) {
+        std::optional<std::uint64_t> previous;
+        for (const auto& hint : *analysis.boundaryUncertainty) {
+            const auto mask = static_cast<std::uint8_t>(hint.reasons);
+            if (mask == 0 || (mask & ~static_cast<std::uint8_t>(allBoundaryReasons)) != 0 ||
+                hint.frame > analysis.sourceFrames || (previous && hint.frame <= *previous)) return false;
+            previous = hint.frame;
+        }
     }
     return true;
 }

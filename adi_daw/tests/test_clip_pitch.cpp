@@ -3,6 +3,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/pitch_render.hpp"
+#include "adi/audio/pitch_segments.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
@@ -39,9 +40,12 @@ void run() {
     std::array<float, frames> mono{};
     {
         std::array<float, 2 * frames> pcm{};
+        std::uint32_t random = 27;
         for (std::size_t frame = 0; frame < frames; ++frame) {
             const auto phase = 2 * std::numbers::pi * 220 * static_cast<double>(frame) / rate;
-            pcm[2 * frame] = static_cast<float>(0.6 * std::sin(phase));
+            random = random * 1664525u + 1013904223u;
+            const double noise = 1.3 * (static_cast<double>(random >> 8) / 16777216.0 - 0.5);
+            pcm[2 * frame] = static_cast<float>(frame >= 3000 && frame < 21000 ? 0.6 * std::sin(phase) : noise);
             pcm[2 * frame + 1] = pcm[2 * frame] * 0.5f;
             mono[frame] = (pcm[2 * frame] + pcm[2 * frame + 1]) * 0.5f;
         }
@@ -81,6 +85,10 @@ void run() {
           std::abs(fresh.data->analysis.notes.front().pitchCents - 5700) < 5,
           "decoded stereo file analyzes as a 220 Hz single voice within 5 cents");
     if (fresh.data->analysis.notes.size() != 1) throw std::runtime_error("expected one source note");
+    check(fresh.data->analysis.boundaryUncertainty && !fresh.data->analysis.boundaryUncertainty->empty(),
+          "audible aperiodic edges yield source boundary hints suitable for cache round trip");
+    if (!fresh.data->analysis.boundaryUncertainty || fresh.data->analysis.boundaryUncertainty->empty())
+        throw std::runtime_error("boundary uncertainty fixture did not mark an edge");
     audio::PitchEditState edit;
     const std::array commands{audio::PitchEditCommand{0, audio::PitchSetShift{100}}};
     check(audio::applyPitchEdits(fresh.data->analysis, edit, commands) == audio::PitchEditError::None,
@@ -95,6 +103,21 @@ void run() {
           "pitch is written into the same ADIA envelope as other sections");
     if (!sections || !sections.data->sections.contains("PNOT"))
         throw std::runtime_error("pitch section missing from ADIA");
+    const auto& firstNote = fresh.data->analysis.notes.front();
+    const auto encodedSize = static_cast<std::size_t>(8 + 48) + 16 * firstNote.curve.size();
+    const auto& payload = sections.data->sections.at("PNOT");
+    constexpr std::array boundaryTag{std::byte{0x42}, std::byte{0x4e}, std::byte{0x44}, std::byte{0x31}};
+    check(payload.version == kPitchAnalysisVersion && payload.configuration == kPitchAnalysisConfiguration &&
+          payload.bytes.size() == encodedSize + 12 + 9 * fresh.data->analysis.boundaryUncertainty->size() &&
+          std::ranges::equal(std::span(payload.bytes).subspan(encodedSize, 4), boundaryTag),
+          "PNOT preserves its existing identity and appends bounded BND1 records after note data");
+    const auto warm = buildClipPitchAnalysis(*store, 11, {}, &decoded, &analysed);
+    check(warm && warm.data->analysis == fresh.data->analysis, "cache restores exact uncertainty frames and reasons");
+
+    const audio::PitchSegmentation moved{{{1, firstNote.startFrame + 1, firstNote.endFrame}}, 2};
+    const auto draft = audio::draftPitchSegments(fresh.data->analysis, {}, &moved);
+    check(draft && draft.draft->analysis.boundaryUncertainty == fresh.data->analysis.boundaryUncertainty,
+          "derived segment geometry retains the source uncertainty evidence");
 
     auto broken = sections.data->sections.at("PNOT");
     broken.bytes.pop_back();
@@ -105,9 +128,17 @@ void run() {
     check(builtAgain && builtAgain.data->analysis.notes.size() == fresh.data->analysis.notes.size() &&
           rebuilt && rebuilt.data->sections.at("PNOT") == sections.data->sections.at("PNOT"),
           "corrupt pitch payload is rebuilt byte-for-byte from verified audio");
+    auto invalidFlags = payload;
+    invalidFlags.bytes.back() = std::byte{128};
+    check(analysed.update(identity, "PNOT", invalidFlags, error) == AnalysisCacheProblem::None,
+          "fixture stores an otherwise valid uncertainty trailer with an unknown reason bit");
+    const auto repairedFlags = buildClipPitchAnalysis(*store, 11, {}, &decoded, &analysed);
+    check(repairedFlags && repairedFlags.data->analysis == fresh.data->analysis,
+          "an unknown uncertainty reason causes an optional-cache rebuild");
 
     database.exec("UPDATE media_files SET sample_rate=NULL WHERE id=1");
     auto legacy = sections.data->sections.at("PNOT");
+    legacy.bytes.resize(encodedSize);
     constexpr std::size_t firstPitchOffset = 8 + 2 * 8;
     auto word = std::bit_cast<std::uint64_t>(5701.0);
     for (std::size_t index = 0; index < 8; ++index) {
@@ -116,10 +147,19 @@ void run() {
     }
     check(analysed.update(identity, "PNOT", legacy, error) == AnalysisCacheProblem::None,
           "legacy cache fixture has a distinguishable valid note");
+    const auto cachedMono = buildSourcePitchAnalysisFromMono(identity, mono, &analysed);
+    check(cachedMono && !cachedMono.analysis->boundaryUncertainty && cachedMono.analysis->notes.front().pitchCents == 5701,
+          "prepared playback can immediately reuse unassessed legacy notes");
     const auto withoutPoolRate = buildClipPitchAnalysis(*store, 11, {}, &decoded, &analysed);
     check(withoutPoolRate && withoutPoolRate.data->analysis.notes.size() == 1 &&
-          withoutPoolRate.data->analysis.notes.front().pitchCents == 5701,
-          "a legacy media row reuses pitch analysis after probing decoded dimensions");
+          withoutPoolRate.data->analysis.notes.front().pitchCents == 5701 &&
+          withoutPoolRate.data->analysis.boundaryUncertainty == fresh.data->analysis.boundaryUncertainty &&
+          withoutPoolRate.data->analysisVersion == kPitchAnalysisVersion,
+          "a direct clip analysis enriches legacy notes without replacing their cached geometry or pitch statistics");
+    const auto enriched = analysed.read(identity);
+    check(enriched && enriched.data->sections.at("FUTR") == other &&
+          enriched.data->sections.at("PNOT").bytes.size() == payload.bytes.size(),
+          "the enriched payload persists with unrelated analysis sections intact");
     database.exec("UPDATE media_files SET sample_rate=48000 WHERE id=1");
     check(analysed.update(identity, "PNOT", sections.data->sections.at("PNOT"), error) ==
           AnalysisCacheProblem::None, "restore the measured cache fixture");
@@ -139,8 +179,14 @@ void run() {
     check(shared && shared.data->sourceStartFrame == 5000 && shared.data->sourceEndFrame == 10000 &&
           shared.data->reversed && shared.data->source == fresh.data->source &&
           shared.data->analysis.notes.size() == 1 &&
-          shared.data->analysis.notes.front().pitchCents == fresh.data->analysis.notes.front().pitchCents,
+          shared.data->analysis == fresh.data->analysis,
           "second clip reads the same source pitch even when the file is missing");
+    check(analysed.update(identity, "PNOT", legacy, error) == AnalysisCacheProblem::None,
+          "restore a legacy payload with the original source unavailable");
+    const auto offlineLegacy = buildClipPitchAnalysis(*store, 12, {}, &decoded, &analysed);
+    check(offlineLegacy && offlineLegacy.data->analysis.notes.size() == 1 &&
+          offlineLegacy.data->analysis.notes.front().pitchCents == 5701 && !offlineLegacy.data->analysis.boundaryUncertainty,
+          "legacy cache remains usable with unavailable source and explicitly unassessed boundaries");
     using Milliseconds = std::chrono::duration<double, std::milli>;
     std::printf("0.5 s stereo source: first analysis %.2f ms, cache reuse %.2f ms\n",
                 Milliseconds(ready - start).count(), Milliseconds(warmReady - warmStart).count());

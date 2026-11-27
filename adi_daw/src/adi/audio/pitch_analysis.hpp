@@ -25,12 +25,37 @@ struct PitchNote {
     friend bool operator==(const PitchNote&, const PitchNote&) = default;
 };
 
+enum class PitchBoundaryReason : std::uint8_t {
+    None = 0,
+    AperiodicTransition = 1,
+    RapidPitchChange = 2,
+    CompetingPeriodicity = 4,
+};
+
+[[nodiscard]] constexpr PitchBoundaryReason operator|(PitchBoundaryReason left, PitchBoundaryReason right) noexcept {
+    return static_cast<PitchBoundaryReason>(static_cast<std::uint8_t>(left) | static_cast<std::uint8_t>(right));
+}
+
+[[nodiscard]] constexpr bool hasPitchBoundaryReason(PitchBoundaryReason mask, PitchBoundaryReason reason) noexcept {
+    return (static_cast<std::uint8_t>(mask) & static_cast<std::uint8_t>(reason)) != 0;
+}
+
+struct PitchBoundaryUncertainty {
+    std::uint64_t frame = 0; // source clock; can address the exclusive source end
+    PitchBoundaryReason reasons = PitchBoundaryReason::None;
+    friend bool operator==(const PitchBoundaryUncertainty&, const PitchBoundaryUncertainty&) = default;
+};
+
 struct PitchAnalysis {
     std::uint32_t sampleRate = 0;
     std::uint64_t sourceFrames = 0;
     // Source-relative bounds. Notes are ordered and disjoint, and each note
     // contains a nonempty, strictly time-ordered curve within its bounds.
     std::vector<PitchNote> notes;
+    // Strictly time-ordered suggestions from acoustic evidence. A suggestion
+    // can mark an existing boundary or a possible one within a merged note.
+    // Absence means unassessed. An empty vector means no hints were found.
+    std::optional<std::vector<PitchBoundaryUncertainty>> boundaryUncertainty{};
     friend bool operator==(const PitchAnalysis&, const PitchAnalysis&) = default;
 };
 

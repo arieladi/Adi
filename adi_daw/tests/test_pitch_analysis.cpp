@@ -181,6 +181,93 @@ void smoothLegato() {
     }
 }
 
+std::uint64_t uncertaintyDistance(const PitchAnalysis& analysis, PitchBoundaryReason reason, std::uint64_t expected) {
+    auto nearest = std::numeric_limits<std::uint64_t>::max();
+    if (!analysis.boundaryUncertainty) return nearest;
+    for (const auto& hint : *analysis.boundaryUncertainty) {
+        if (hasPitchBoundaryReason(hint.reasons, reason))
+            nearest = std::min(nearest, hint.frame >= expected ? hint.frame - expected : expected - hint.frame);
+    }
+    return nearest;
+}
+
+void boundaryEvidence() {
+    constexpr std::uint32_t rate = 48000;
+    const auto tone = [](std::size_t frame, double hz) {
+        return std::sin(2 * std::numbers::pi * hz * static_cast<double>(frame) / rate);
+    };
+    std::vector<float> harmonic(rate / 2);
+    for (std::size_t frame = 0; frame < harmonic.size(); ++frame)
+        harmonic[frame] = static_cast<float>(0.2 * tone(frame, 220) + 0.31 * tone(frame, 440) + 0.12 * tone(frame, 660));
+    const auto stable = analyzePitch(harmonic, rate);
+    check(stable && stable.analysis->notes.size() == 1 && stable.analysis->boundaryUncertainty &&
+          stable.analysis->boundaryUncertainty->empty(), "stable harmonics are not competing periods");
+
+    constexpr auto onset = rate / 8;
+    constexpr auto release = rate * 3 / 8;
+    std::vector<float> breath(rate / 2);
+    std::uint32_t random = 27;
+    for (std::size_t frame = onset - rate / 20; frame < release + rate / 20; ++frame) {
+        random = random * 1664525u + 1013904223u;
+        const double noise = static_cast<double>(random >> 8) / 16777216.0 - 0.5;
+        breath[frame] = static_cast<float>(frame >= onset && frame < release ? 0.35 * tone(frame, 220) : 0.9 * noise);
+    }
+    const auto edged = analyzePitch(breath, rate);
+    check(edged && !edged.analysis->notes.empty(), "aperiodic edge fixture retains a voiced note");
+    if (edged) {
+        const auto first = uncertaintyDistance(*edged.analysis, PitchBoundaryReason::AperiodicTransition, onset);
+        const auto last = uncertaintyDistance(*edged.analysis, PitchBoundaryReason::AperiodicTransition, release);
+        check(first < rate / 40 && last < rate / 40, "audible unpitched material marks both note edges for review");
+        if (first < rate / 40 && last < rate / 40)
+            std::printf("Aperiodic candidate edges at %.2f/%.2f ms absolute from the known changes\n",
+                        1000.0 * static_cast<double>(first) / rate, 1000.0 * static_cast<double>(last) / rate);
+    }
+
+    constexpr std::array pitches{60, 62, 65, 63, 67, 64, 69};
+    constexpr std::size_t shortNote = rate * 65 / 1000;
+    std::vector<float> quick(shortNote * pitches.size());
+    double phase = 0;
+    for (std::size_t frame = 0; frame < quick.size(); ++frame) {
+        const double hz = 440.0 * std::exp2((pitches[frame / shortNote] - 69.0) / 12);
+        quick[frame] = static_cast<float>(0.24 * std::sin(phase) + 0.1 * std::sin(2 * phase));
+        phase = std::remainder(phase + 2 * std::numbers::pi * hz / rate, 2 * std::numbers::pi);
+    }
+    const auto fast = analyzePitch(quick, rate);
+    check(fast && fast.analysis->notes.size() < pitches.size(), "short legato runs exercise ambiguous unsegmented events");
+    if (fast) {
+        std::size_t covered = 0;
+        std::uint64_t worst = 0;
+        for (std::size_t index = 1; index < pitches.size(); ++index) {
+            const auto error = uncertaintyDistance(*fast.analysis, PitchBoundaryReason::RapidPitchChange, index * shortNote);
+            if (error > rate / 50) continue;
+            ++covered;
+            worst = std::max(worst, error);
+        }
+        check(covered >= 5, "rapid suggestions expose skipped candidate boundaries without introducing notes");
+        std::printf("65 ms run: %zu/%zu suggested edges within 20 ms, worst matched %.2f ms\n", covered, pitches.size() - 1,
+                    1000.0 * static_cast<double>(worst) / rate);
+    }
+
+    constexpr auto doubledStart = rate / 3;
+    constexpr auto doubledEnd = rate * 2 / 3;
+    std::vector<float> doubled(rate);
+    for (std::size_t frame = 0; frame < doubled.size(); ++frame) {
+        const double second = frame >= doubledStart && frame < doubledEnd ? 0.19 * tone(frame, 350) : 0;
+        doubled[frame] = static_cast<float>(0.24 * tone(frame, 220) + second);
+    }
+    const auto unsure = analyzePitch(doubled, rate);
+    check(static_cast<bool>(unsure), "a summed two-period fixture still returns monophonic analysis");
+    if (unsure) {
+        const auto first = uncertaintyDistance(*unsure.analysis, PitchBoundaryReason::CompetingPeriodicity, doubledStart);
+        const auto last = uncertaintyDistance(*unsure.analysis, PitchBoundaryReason::CompetingPeriodicity, doubledEnd);
+        check(first < rate / 25 && last < rate / 25, "non-harmonic alternate periods mark the mixed portion's boundaries");
+        if (first < rate / 25 && last < rate / 25)
+            std::printf("Competing periods in two-tone overlap marked at %.2f/%.2f ms absolute from the known edges\n",
+                        1000.0 * static_cast<double>(first) / rate, 1000.0 * static_cast<double>(last) / rate);
+        check(validPitchAnalysis(*unsure.analysis), "uncertainties share a bounded, unique source coordinate order");
+    }
+}
+
 void invalidUnvoicedAndGuards() {
     const auto silent = analyzePitch(std::vector<float>(1600), 8000);
     check(silent && silent.analysis->notes.empty(), "silence is a successful empty note analysis");
@@ -225,6 +312,15 @@ void invalidUnvoicedAndGuards() {
     invalid.notes.pop_back();
     invalid.notes.front().curve.front().cents = std::numeric_limits<double>::max();
     check(!validPitchAnalysis(invalid), "validation refuses out-of-domain values before contour arithmetic");
+
+    invalid.notes.front().curve.front().cents = 6000;
+    invalid.boundaryUncertainty.emplace().push_back({1000, PitchBoundaryReason::AperiodicTransition});
+    check(validPitchAnalysis(invalid), "uncertainty can mark the exclusive source end");
+    invalid.boundaryUncertainty->push_back({1000, PitchBoundaryReason::RapidPitchChange});
+    check(!validPitchAnalysis(invalid), "uncertainty refuses duplicate coordinates");
+    invalid.boundaryUncertainty->pop_back();
+    invalid.boundaryUncertainty->front().reasons = static_cast<PitchBoundaryReason>(128);
+    check(!validPitchAnalysis(invalid), "uncertainty refuses unknown evidence bits");
 }
 } // namespace
 
@@ -232,6 +328,7 @@ int main() {
     scale();
     contoursAndRests();
     smoothLegato();
+    boundaryEvidence();
     invalidUnvoicedAndGuards();
     return failures != 0;
 }

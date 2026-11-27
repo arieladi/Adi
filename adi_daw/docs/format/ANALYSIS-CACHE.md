@@ -53,6 +53,16 @@ the envelope's source frame count. Each has at least one point and its
 points are strictly increasing inside the note. A source with no voiced notes
 has a zero count. The payload is limited to 16 MiB.
 
+An optional `BND1` trailer follows the final note. The four ASCII bytes are
+followed by a little-endian 64-bit hint count, then that many records. Each
+record has a little-endian 64-bit source frame and a one-byte reason mask.
+Bits 0, 1 and 2 mark an aperiodic transition, a rapid pitch change and competing
+periodicity, respectively. At least one reason is set and the remaining bits
+are zero. Frames increase strictly and may equal the source frame count for an
+exclusive end boundary. An absent trailer means the boundaries were not
+assessed. A zero count means the assessment found no hints. Hints are evidence
+for reviewing boundaries and leave the note geometry and identities intact.
+
 Other tags stay opaque and survive ordinary same-process updates. An invalid
 optional envelope or pitch payload can be rebuilt. Authored clip edits belong
 in project rows.

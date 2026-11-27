@@ -30,6 +30,9 @@ struct ClipPitchResult {
 // Use an owner-worker Store handle. Notes cover the entire source. Consumers
 // use the clip's original-frame window, direction and Warp mapping to project
 // them. Discard a result if the source identity or clip view has since changed.
+// Older cached note geometry is kept while source access permits refreshing
+// optional boundary evidence. An unavailable source can still supply those
+// notes with unassessed boundary evidence.
 [[nodiscard]] ClipPitchResult buildClipPitchAnalysis(const Store&, std::int64_t clipId,
                                                       std::stop_token = {});
 // Null decode uses the process decoder; null analysis disables persistence.
@@ -39,6 +42,7 @@ struct ClipPitchResult {
 
 // Worker seam for a caller that already verified the source and downmixed it.
 // mono covers the entire identified source at its original sample rate.
+// Prepared playback can reuse legacy cached notes without refreshing evidence.
 [[nodiscard]] audio::PitchAnalysisResult buildSourcePitchAnalysisFromMono(
     const AnalysisIdentity&, std::span<const float> mono, AnalysisCache*, std::stop_token = {});
 

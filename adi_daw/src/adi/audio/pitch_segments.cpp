@@ -192,7 +192,7 @@ PitchSegmentDraftResult draftPitchSegments(const PitchAnalysis& source, const Pi
         return {PitchEditError::None, PitchSegmentDraft{originalGeometry(source), source, edits}};
     }
     if (!validPitchSegmentation(*geometry, source.sourceFrames)) return {PitchEditError::InvalidState, {}};
-    PitchAnalysis effective{source.sampleRate, source.sourceFrames, {}};
+    PitchAnalysis effective{source.sampleRate, source.sourceFrames, {}, source.boundaryUncertainty};
     effective.notes.reserve(geometry->segments.size());
     std::vector<double> scratch;
     for (const auto& span : geometry->segments) {

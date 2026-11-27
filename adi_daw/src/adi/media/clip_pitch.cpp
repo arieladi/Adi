@@ -10,6 +10,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <new>
 
@@ -18,6 +19,8 @@ namespace {
 
 constexpr auto pitchTag = "PNOT";
 constexpr std::size_t countBytes = 8, noteBytes = 48, pointBytes = 16;
+constexpr std::array boundaryTag{std::byte{0x42}, std::byte{0x4e}, std::byte{0x44}, std::byte{0x31}}; // BND1
+constexpr std::size_t boundaryHeaderBytes = boundaryTag.size() + countBytes, boundaryBytes = 9;
 constexpr std::size_t maxPayloadBytes = 16u * 1024 * 1024;
 constexpr std::uint64_t maxSourceFrames = 64u * 1024 * 1024; // 256 MiB of mono PCM
 
@@ -95,6 +98,12 @@ std::optional<AnalysisSection> encodeNotes(const audio::PitchAnalysis& pitch) {
         if (note.curve.size() > (maxPayloadBytes - size) / pointBytes) return {};
         size += pointBytes * note.curve.size();
     }
+    if (pitch.boundaryUncertainty) {
+        if (maxPayloadBytes - size < boundaryHeaderBytes) return {};
+        size += boundaryHeaderBytes;
+        if (pitch.boundaryUncertainty->size() > (maxPayloadBytes - size) / boundaryBytes) return {};
+        size += pitch.boundaryUncertainty->size() * boundaryBytes;
+    }
     AnalysisSection section{kPitchAnalysisVersion, kPitchAnalysisConfiguration, {}};
     section.bytes.reserve(size);
     appendWord(section.bytes, pitch.notes.size());
@@ -108,6 +117,14 @@ std::optional<AnalysisSection> encodeNotes(const audio::PitchAnalysis& pitch) {
         for (const auto& point : note.curve) {
             appendWord(section.bytes, point.frame);
             appendWord(section.bytes, std::bit_cast<std::uint64_t>(point.cents));
+        }
+    }
+    if (pitch.boundaryUncertainty) {
+        section.bytes.insert(section.bytes.end(), boundaryTag.begin(), boundaryTag.end());
+        appendWord(section.bytes, pitch.boundaryUncertainty->size());
+        for (const auto& hint : *pitch.boundaryUncertainty) {
+            appendWord(section.bytes, hint.frame);
+            section.bytes.push_back(static_cast<std::byte>(static_cast<std::uint8_t>(hint.reasons)));
         }
     }
     return section;
@@ -137,7 +154,20 @@ std::optional<audio::PitchAnalysis> decodeNotes(const AnalysisIdentity& source,
             note.curve.push_back({readWord(bytes), std::bit_cast<double>(readWord(bytes))});
         pitch.notes.push_back(std::move(note));
     }
-    if (!bytes.empty() || !audio::validPitchAnalysis(pitch)) return {};
+    if (!bytes.empty()) {
+        if (bytes.size() < boundaryHeaderBytes || !std::equal(boundaryTag.begin(), boundaryTag.end(), bytes.begin())) return {};
+        bytes = bytes.subspan(boundaryTag.size());
+        const auto count = readWord(bytes);
+        if (bytes.size() % boundaryBytes != 0 || count != bytes.size() / boundaryBytes) return {};
+        auto& hints = pitch.boundaryUncertainty.emplace();
+        hints.reserve(static_cast<std::size_t>(count));
+        for (std::uint64_t index = 0; index < count; ++index) {
+            const auto frame = readWord(bytes);
+            hints.push_back({frame, static_cast<audio::PitchBoundaryReason>(std::to_integer<std::uint8_t>(bytes.front()))});
+            bytes = bytes.subspan(1);
+        }
+    }
+    if (!audio::validPitchAnalysis(pitch)) return {};
     return pitch;
 }
 
@@ -158,8 +188,18 @@ ClipPitchResult success(std::int64_t id, Source source, audio::PitchAnalysis pit
 }
 
 audio::PitchAnalysisResult analyzeAndCache(const AnalysisIdentity& identity, std::span<const float> mono,
-                                          AnalysisCache* cache, std::stop_token stop) {
+                                          AnalysisCache* cache, std::stop_token stop,
+                                          std::optional<audio::PitchAnalysis> legacy) {
     auto result = audio::analyzePitch(mono, identity.sampleRate, stop);
+    if (stop.stop_requested() || result.error == audio::PitchAnalysisError::Cancelled)
+        return {audio::PitchAnalysisError::Cancelled, {}};
+    if (legacy) {
+        if (!result) return {audio::PitchAnalysisError::None, std::move(legacy)};
+        // The existing note geometry and statistics are the authored edits'
+        // identity. A metadata refresh adds suggestions on the source clock.
+        legacy->boundaryUncertainty = std::move(result.analysis->boundaryUncertainty);
+        result.analysis = std::move(legacy);
+    }
     if (result && cache && !stop.stop_requested()) {
         try {
             std::string detail;
@@ -207,7 +247,7 @@ audio::PitchAnalysisResult buildSourcePitchAnalysisFromMono(const AnalysisIdenti
             if (stop.stop_requested()) return {Error::Cancelled, {}};
             if (pitch) return {Error::None, std::move(pitch)};
         }
-        return analyzeAndCache(identity, mono, cache, stop);
+        return analyzeAndCache(identity, mono, cache, stop, {});
     } catch (const std::bad_alloc&) {
         return {Error::Resource, {}};
     }
@@ -223,8 +263,16 @@ ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std:
                                        audio::DecodeCache* decoding, AnalysisCache* cache) {
     if (audio::onAudioThread) return fail(ClipPitchProblem::Realtime);
     if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+    std::optional<Source> selected;
+    std::optional<audio::PitchAnalysis> legacy;
+    const auto withFallback = [&](ClipPitchResult failure) {
+        if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+        if (selected && legacy && failure.problem != ClipPitchProblem::Cancelled)
+            return success(id, std::move(*selected), std::move(*legacy));
+        return failure;
+    };
     try {
-        auto selected = findSource(store, id);
+        selected = findSource(store, id);
         if (!selected) return fail(ClipPitchProblem::NotAudio);
         auto& source = *selected;
         auto& identity = source.identity;
@@ -234,13 +282,14 @@ ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std:
         if (cache && hasDimensions) {
             auto pitch = readNotes(*cache, identity, stop);
             if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
-            if (pitch) return success(id, std::move(source), std::move(*pitch));
+            if (pitch && pitch->boundaryUncertainty) return success(id, std::move(source), std::move(*pitch));
+            legacy = std::move(pitch);
         }
 
         std::string detail;
         const auto path = resolveMedia(projectFolder(store), source.pathFields, detail, stop);
         if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
-        if (path.empty()) return fail(ClipPitchProblem::InvalidSource, std::move(detail));
+        if (path.empty()) return withFallback(fail(ClipPitchProblem::InvalidSource, std::move(detail)));
         auto& decode = decoding ? *decoding : audio::defaultDecodeCache();
         const auto playable = decode.playable(path, stop);
         struct Pin {
@@ -253,40 +302,41 @@ ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std:
         if ((identity.sampleRate && identity.sampleRate != reader.sampleRate()) ||
             (identity.channels && identity.channels != reader.channels()) ||
             (identity.frames && identity.frames != reader.frames()) || source.end > reader.frames())
-            return fail(ClipPitchProblem::InvalidSource, "source dimensions changed");
+            return withFallback(fail(ClipPitchProblem::InvalidSource, "source dimensions changed"));
         identity.sampleRate = reader.sampleRate();
         identity.channels = reader.channels();
         identity.frames = reader.frames();
         if (cache && !hasDimensions) {
             auto pitch = readNotes(*cache, identity, stop);
             if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
-            if (pitch) return success(id, std::move(source), std::move(*pitch));
+            if (pitch && pitch->boundaryUncertainty) return success(id, std::move(source), std::move(*pitch));
+            legacy = std::move(pitch);
         }
         if (identity.frames > maxSourceFrames)
-            return fail(ClipPitchProblem::Resource, "source exceeds pitch analysis PCM budget");
+            return withFallback(fail(ClipPitchProblem::Resource, "source exceeds pitch analysis PCM budget"));
         std::vector<float> mono(static_cast<std::size_t>(identity.frames));
         if (!loadMono(reader, mono, stop))
-            return fail(stop.stop_requested() ? ClipPitchProblem::Cancelled : ClipPitchProblem::Read);
+            return withFallback(fail(ClipPitchProblem::Read));
         const auto verified = blake3File(path, stop);
         if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
         if (!verified || verified.hex != identity.hash)
-            return fail(ClipPitchProblem::InvalidSource, "source changed during pitch analysis read");
+            return withFallback(fail(ClipPitchProblem::InvalidSource, "source changed during pitch analysis read"));
 
-        auto result = analyzeAndCache(identity, mono, cache, stop);
+        auto result = analyzeAndCache(identity, mono, cache, stop, std::move(legacy));
         if (stop.stop_requested() || result.error == audio::PitchAnalysisError::Cancelled)
             return fail(ClipPitchProblem::Cancelled);
         if (!result) return fail(result.error == audio::PitchAnalysisError::Resource ?
                                  ClipPitchProblem::Resource : ClipPitchProblem::InvalidSource);
         return success(id, std::move(source), std::move(*result.analysis));
     } catch (const std::bad_alloc&) {
-        return fail(ClipPitchProblem::Resource);
+        return withFallback(fail(ClipPitchProblem::Resource));
     } catch (const audio::DecodeError& error) {
         if (error.problem() == audio::DecodeProblem::Cancelled) return fail(ClipPitchProblem::Cancelled);
-        return fail(ClipPitchProblem::Read, error.what());
+        return withFallback(fail(ClipPitchProblem::Read, error.what()));
     } catch (const std::invalid_argument& error) {
-        return fail(ClipPitchProblem::InvalidSource, error.what());
+        return withFallback(fail(ClipPitchProblem::InvalidSource, error.what()));
     } catch (const std::exception& error) {
-        return fail(ClipPitchProblem::Read, error.what());
+        return withFallback(fail(ClipPitchProblem::Read, error.what()));
     }
 }
 
