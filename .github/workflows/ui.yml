@@ -1,784 +1,103 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-name: Recording chain Linux headless verification
+name: Step 7 UI
 on:
+  pull_request:
+    # GitHub's default three, plus ready_for_review: a draft runs nothing (the
+    # `if` on `changes`), so marking it ready is what builds it.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
+  push:
+    branches: [main]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   workflow_dispatch:
 permissions:
   contents: read
+# A pull request's run is cancelled by its next push; main's never is, so every
+# merge burst still ends in a finished run on main. The reasoning is in ci.yml.
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  headless:
+  # Whether the shell builds at all: not on a draft, and not for a pull request
+  # that changes only Markdown no build reads (the rule is ci.yml's, in
+  # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
+  # more than this one Linux job does. Its name must not begin "GUI shell /",
+  # which is how land_top.sh finds the three shell checks. land_checks.py reads
+  # this job's name, the workflow's and the matrix's size (a Markdown-only
+  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
+  # they drift from what is written here.
+  changes:
+    name: 'ui: which jobs run'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    if: ${{ !github.event.pull_request.draft }}
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 3ca5a798d4433c89fab2a1ea140594299842486f
-          persist-credentials: false
-      - name: Verify the candidate tree
+          fetch-depth: 2
+      - name: Only Markdown no build reads?
+        id: changes
+        env:
+          # code=false only when the base is main: a stack's top lands with no
+          # new run, so a stacked pull request always builds (the script says why).
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
+  shell:
+    name: GUI shell / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
         shell: bash
-        run: |
-          sed 's/^|//; s/|$//' > "$RUNNER_TEMP/recording-candidate.patch" <<'PATCH'
-          |diff --git a/adi_daw/collab/window/parity-recording.md b/adi_daw/collab/window/parity-recording.md|
-          |index 93fd9187..4ab9d6c7 100644|
-          |--- a/adi_daw/collab/window/parity-recording.md|
-          |+++ b/adi_daw/collab/window/parity-recording.md|
-          |@@ -26,8 +26,8 @@ open while Session View is P2. ADI's own additions name their N row or ADR in th|
-          | | 12 | With several tracks selected, a click on one Monitor button sets them all | §17.1, p. 369 | `setMonitor` takes the selection as `armTracks` does | partial: no check proves it ||
-          | | 13 | Delete, with the In/Out section shown, or the Edit menu's Return to Default, puts the Monitor switches back to their default | §17.1, p. 369 | Not done | open ||
-          | | 14 | A track monitoring In shows its Track Activator in blue, so it can be seen with In/Out hidden | §17.1, p. 369 | The activator is orange whatever the monitoring (`ui_mixer.cpp`) | open ||
-          |-| 15 | Keep Monitoring Latency in Recorded Audio: on by default with In or Auto, switched from a right-click on either; it shifts a take to match what was heard | §17.1, p. 369 | A right-click on In or Auto, and Live's Keep Latency toggle in the Mixer View's Track Options, write `track.setKeepMonitoringLatency`, one undo step (C6, N31); New writes it on, from `audio.keepMonitoringLatency` (on by default, as Live's) | partial: the recorder ignores it (N31's open part, #406) ||
-          |-| 16 | Recording with monitoring Off, the Audio Settings' Overall Latency corrects the placement | §17.1, p. 369 | Driver Error Compensation and the measured round trip are not built | open: MX-09 (M4) ||
-          |+| 15 | Keep Monitoring Latency in Recorded Audio applies with Monitor In or Auto | §17.1, p. 369 | A right-click on In or Auto and the Mixer View Track Options toggle write `track.setKeepMonitoringLatency` in one undo step. SC-255 captures the choice at the start of a linear audio take and keeps the monitored timing when enabled | open for loop recording ||
-          |+| 16 | Recording with monitoring Off uses the driver latency and signed Driver Error Compensation | §17.1, p. 369 | SC-22 and SC-255 apply that correction to linear audio placement with Monitor Off or Keep Monitoring Latency disabled | Measure round trip remains open under MX-09 ||
-          | | 17 | The Control Bar's Arrangement Record switch starts a recording; F9 | §19.3.1, p. 407; §41.20, p. 1001 | Arrangement Record and F9 run one command (`AdiRootComponent::toggleRecord`); the switch is lit while recording | built ||
-          | | 18 | Start Playback with Record (Record, Warp & Launch Settings): on, Record starts the transport; off, recording waits for Play (or a Session clip's launch, row 47); Shift with Record does the other | §19.3.1, p. 407; §41.20, p. 1001 | Record from stopped always starts the transport (`toggleRecord` writes `transport.play`), Live's default; `record.startPlaybackWithRecord` is in the registry and read by nothing; Shift adds nothing and Shift+F9 is unbound | partial: the setting followed and Shift's opposite; §41.20 lists Shift+F9 as Arm Recording in Arrangement View: measure what it does on Live 12 (Shift+Record's opposite, or something else) ||
-          | | 19 | Recording makes a new clip on every armed track | §19.3.1, p. 407; §3.17, p. 55 | Every armed audio track records; the takes land together, a clip per track named after it (`ProjectDocument::landTake`, `recording::prepareCommit`) | built (audio; MIDI is row 20) ||
-          |diff --git a/adi_daw/src/adi/engine/audio_recording.cpp b/adi_daw/src/adi/engine/audio_recording.cpp|
-          |index e25e04e8..dde399e8 100644|
-          |--- a/adi_daw/src/adi/engine/audio_recording.cpp|
-          |+++ b/adi_daw/src/adi/engine/audio_recording.cpp|
-          |@@ -25,6 +25,19 @@ std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,|
-          |     return offsetSamples > startSample ? 0 : startSample - offsetSamples;|
-          | }|
-          | |
-          |+std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,|
-          |+                                        double errorMilliseconds) noexcept {|
-          |+    if (!std::isfinite(sampleRate) || sampleRate <= 0 || sampleRate > 768000 |||
-          |+        !std::isfinite(errorMilliseconds) || std::abs(errorMilliseconds) > 150)|
-          |+        return driverSamples;|
-          |+    const auto errorSamples = static_cast<std::int64_t>(std::llround(errorMilliseconds * sampleRate / 1000.0));|
-          |+    if (errorSamples > 0 && driverSamples > std::numeric_limits<std::int64_t>::max() - errorSamples)|
-          |+        return std::numeric_limits<std::int64_t>::max();|
-          |+    if (errorSamples < 0 && driverSamples < std::numeric_limits<std::int64_t>::min() - errorSamples)|
-          |+        return std::numeric_limits<std::int64_t>::min();|
-          |+    return driverSamples + errorSamples;|
-          |+}|
-          |+|
-          | std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std::uint64_t frames,|
-          |     std::int64_t offsetSamples,const RecordingPunchWindow& punch) noexcept {|
-          |     constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();|
-          |@@ -46,8 +59,13 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std|
-          |                         keptStart,keptEnd};|
-          | }|
-          | |
-          |-AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames) const noexcept {|
-          |+AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames,|
-          |+    std::optional<std::int64_t> trackOffsetSamples) const noexcept {|
-          |     const auto frames = std::max(peaks.frames, acceptedFrames);|
-          |+    if (!loop && trackOffsetSamples) {|
-          |+        const auto placed = recordingPlacementRange(rawStartSample, frames, *trackOffsetSamples, {});|
-          |+        return placed ? Range{placed->timelineStartSample, 0, placed->frames} : Range{startSample, 0, 0};|
-          |+    }|
-          |     if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample |||
-          |         startSample < 0 || startSample >= loop->endSample)|
-          |         return {startSample, 0, frames};|
-          |@@ -194,6 +212,7 @@ struct Job {|
-          |             try {|
-          |                 const auto start = firstSample.load(std::memory_order_relaxed);|
-          |                 const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;|
-          |+                accumulatingPreview.rawStartSample = start;|
-          |                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);|
-          |                 if (punchWindow.active())|
-          |                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};|
-          |@@ -206,6 +225,8 @@ struct Job {|
-          |                 for (std::size_t target = 0; target < spec.targets.size(); ++target) {|
-          |                     AudioRecordingPreview::Track track;|
-          |                     track.trackId = spec.targets[target].trackId;|
-          |+                    if (!spec.loop)|
-          |+                        track.placementOffsetSamples = spec.targets[target].placementOffsetSamples;|
-          |                     track.channels.reserve(mappings[target].size());|
-          |                     for (const auto channel : mappings[target])|
-          |                         track.channels.push_back(static_cast<std::uint32_t>(channel));|
-          |@@ -424,7 +445,8 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error|
-          |         for(std::size_t index=0;index<spec.targets.size();++index) {|
-          |             const auto& target=spec.targets[index];const auto file=owned/("take-"+std::to_string(index)+".wav");|
-          |             const auto width=static_cast<std::uint16_t>(target.channels.size());|
-          |-            job->tracks.push_back({target.trackId,width,file});std::vector<std::size_t> mapping;|
-          |+            job->tracks.push_back({target.trackId,width,file,spec.loop ? std::nullopt : target.placementOffsetSamples});|
-          |+            std::vector<std::size_t> mapping;|
-          |             for(const auto channel:target.channels)mapping.push_back(static_cast<std::size_t>(std::lower_bound(job->inputChannels.begin(),job->inputChannels.end(),channel)-job->inputChannels.begin()));|
-          |             job->mappings.push_back(std::move(mapping));job->output.emplace_back(4096*target.channels.size());|
-          |             auto writer=factory?factory(file,spec.sampleRate,width,spec.format):std::make_unique<WaveSink>(file,spec.sampleRate,width,spec.format);|
-          |diff --git a/adi_daw/src/adi/engine/audio_recording.hpp b/adi_daw/src/adi/engine/audio_recording.hpp|
-          |index 0a286114..456d1846 100644|
-          |--- a/adi_daw/src/adi/engine/audio_recording.hpp|
-          |+++ b/adi_daw/src/adi/engine/audio_recording.hpp|
-          |@@ -24,6 +24,7 @@ struct AudioMemoryTakeSpec {|
-          | struct RecordingTarget {|
-          |     std::int64_t trackId=0;|
-          |     std::vector<std::uint32_t> channels; // indices in the current AudioIo.in|
-          |+    std::optional<std::int64_t> placementOffsetSamples{}; // linear take override for this track|
-          | };|
-          | /// Explicit frozen sample-domain loop contract. One row per nonempty pass,|
-          | /// allocated before callback publication. Musical loop retiming ends this job.|
-          |@@ -40,6 +41,8 @@ struct RecordedPass {|
-          | // at song zero. An unrepresentable sample position cannot be placed.|
-          | [[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,|
-          |                                                                  std::int64_t offsetSamples) noexcept;|
-          |+[[nodiscard]] std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,|
-          |+                                                      double errorMilliseconds) noexcept;|
-          | // Intersect a latency-corrected linear take with its captured punch bounds.|
-          | [[nodiscard]] std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,|
-          |     std::uint64_t frames,std::int64_t offsetSamples,const RecordingPunchWindow&) noexcept;|
-          |@@ -57,13 +60,16 @@ struct RecordedTrack {|
-          |     std::int64_t trackId=0;|
-          |     std::uint16_t channels=0;|
-          |     std::filesystem::path file;|
-          |+    std::optional<std::int64_t> placementOffsetSamples{};|
-          | };|
-          | struct AudioRecordingPreview {|
-          |     struct Track {|
-          |         std::int64_t trackId=0;|
-          |         std::vector<std::uint32_t> channels; // indices into the preview's unique input channels|
-          |+        std::optional<std::int64_t> placementOffsetSamples{}; // linear track override|
-          |     };|
-          |-    std::int64_t startSample=0; // clip position on the timeline after the placement correction|
-          |+    std::int64_t startSample=0; // clip position on the timeline after the default placement correction|
-          |+    std::int64_t rawStartSample=0; // captured start used by a track's linear override|
-          |     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input|
-          |     std::vector<Track> tracks;|
-          |     struct PunchedPlacement {|
-          |@@ -76,7 +82,8 @@ struct AudioRecordingPreview {|
-          |         std::int64_t startSample;|
-          |         std::uint64_t sourceStartFrame, frames;|
-          |     };|
-          |-    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames) const noexcept;|
-          |+    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames,|
-          |+                                   std::optional<std::int64_t> trackOffsetSamples = {}) const noexcept;|
-          | };|
-          | /// A completed/failed capture is retained on disk for retry/recovery. Only|
-          | /// discard() or successful publication removes its newly owned directory.|
-          |diff --git a/adi_daw/src/adi/recording_commands.cpp b/adi_daw/src/adi/recording_commands.cpp|
-          |index 01cfd4e9..df0f0e3b 100644|
-          |--- a/adi_daw/src/adi/recording_commands.cpp|
-          |+++ b/adi_daw/src/adi/recording_commands.cpp|
-          |@@ -329,7 +329,7 @@ engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemor|
-          |     }|
-          | }|
-          | std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& store,const engine::AudioRecordingResult& recorded,|
-          |-    std::span<const ClipIds> ids,RecordingEdit& result) {|
-          |+    std::span<const ClipIds> ids,RecordingEdit& result,std::span<const std::size_t> sourceIndices) {|
-          |     if(store.readOnly())throw std::runtime_error("project is read-only");|
-          |     if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");|
-          |     result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();|
-          |@@ -347,10 +347,14 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store&|
-          |     const auto ownedFolder=fs::weakly_canonical(folder);|
-          |     RecordingFileNames names(folder);|
-          |     auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;|
-          |+    const auto chosen = sourceIndices.empty() ? ids.size() : sourceIndices.size();|
-          |+    // The private directory still owns every raw source until the caller can recover the skipped tracks.|
-          |+    files->keepPrivate = chosen != ids.size();|
-          |     std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;|
-          |     std::vector<PreparedSource> sources;|
-          |-    sources.reserve(ids.size());|
-          |-    for(std::size_t index=0;index<ids.size();++index) {|
-          |+    sources.reserve(chosen);|
-          |+    for(std::size_t ordinal=0;ordinal<chosen;++ordinal) {|
-          |+        const auto index = sourceIndices.empty() ? ordinal : sourceIndices[ordinal];|
-          |         const auto& target=recorded.tracks[index];const auto& wanted=ids[index];|
-          |         if(wanted.clip<=0 || wanted.media<=0 || !clipIds.insert(wanted.clip).second || !mediaIds.insert(wanted.media).second)|
-          |             throw std::runtime_error("recording needs distinct positive clip and media allocation ids");|
-          |@@ -461,41 +465,59 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco|
-          |                 recorded.frames > static_cast<std::uint64_t>(ceiling - recorded.startSample) |||
-          |                 recorded.sampleRate < 8000 || recorded.sampleRate > 768000)|
-          |                 throw std::runtime_error("recording is not a completed attachable take");|
-          |-            const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames,|
-          |-                                                               placementOffsetSamples, punch);|
-          |-            if (!range) {|
-          |-                result.audioOutsidePunch = punch.active() &&|
-          |-                    engine::recordingPlacementRange(recorded.startSample, recorded.frames, placementOffsetSamples, {}).has_value();|
-          |-                throw std::runtime_error(result.audioOutsidePunch ? "no audio remains within the compensated punch range"|
-          |-                                                                  : "recording latency placement overflows the song clock");|
-          |+            if (ids.empty() || ids.size() != recorded.tracks.size())|
-          |+                throw std::runtime_error("recording needs one clip and media allocation per captured track");|
-          |+            struct Placement {|
-          |+                engine::RecordedPass range;|
-          |+                std::int64_t beginTick, endTick;|
-          |+            };|
-          |+            std::vector<Placement> placements;|
-          |+            std::vector<std::size_t> sourceIndices;|
-          |+            placements.reserve(ids.size());|
-          |+            sourceIndices.reserve(ids.size());|
-          |+            for (std::size_t index = 0; index < ids.size(); ++index) {|
-          |+                const auto offset = recorded.tracks[index].placementOffsetSamples.value_or(placementOffsetSamples);|
-          |+                const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, punch);|
-          |+                if (!range) {|
-          |+                    if (punch.active() && engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, {}))|
-          |+                        continue;|
-          |+                    throw std::runtime_error("recording latency placement overflows the song clock");|
-          |+                }|
-          |+                // Several ticks can project to the same sample. Prefer the authored brace at a clipped edge.|
-          |+                const auto beginTick = punch.in && range->timelineStartSample == punch.in->sample|
-          |+                    ? punch.in->tick : tickAt(tempo, range->timelineStartSample, recorded.sampleRate);|
-          |+                const auto endTick = punch.out && range->timelineEndSample == punch.out->sample|
-          |+                    ? punch.out->tick : tickAt(tempo, range->timelineEndSample, recorded.sampleRate);|
-          |+                if (endTick <= beginTick)|
-          |+                    throw std::runtime_error("recording has no representable musical extent");|
-          |+                placements.push_back({*range, beginTick, endTick});|
-          |+                sourceIndices.push_back(index);|
-          |+            }|
-          |+            if (placements.empty()) {|
-          |+                result.audioOutsidePunch = true;|
-          |+                throw std::runtime_error("no audio remains within the compensated punch range");|
-          |             }|
-          |             if (punch.in)|
-          |                 validatePunchBoundary(tempo, *punch.in, recorded.sampleRate);|
-          |             if (punch.out)|
-          |                 validatePunchBoundary(tempo, *punch.out, recorded.sampleRate);|
-          |-            const auto start = range->timelineStartSample;|
-          |-            const auto end = range->timelineEndSample;|
-          |-            // Several ticks can project to the same sample. Use the authored|
-          |-            // brace at a clipped edge so even the edit range stays inside it.|
-          |-            const auto beginTick = punch.in && start == punch.in->sample|
-          |-                ? punch.in->tick : tickAt(tempo, start, recorded.sampleRate);|
-          |-            const auto endTick = punch.out && end == punch.out->sample|
-          |-                ? punch.out->tick : tickAt(tempo, end, recorded.sampleRate);|
-          |-            if (endTick <= beginTick)|
-          |-                throw std::runtime_error("recording has no representable musical extent");|
-          |-            auto sources = prepareSources(store, recorded, ids, result);|
-          |-            for (std::size_t index = 0; index < ids.size(); ++index) {|
-          |+            auto sources = prepareSources(store, recorded, ids, result, sourceIndices);|
-          |+            for (std::size_t ordinal = 0; ordinal < placements.size(); ++ordinal) {|
-          |+                const auto index = sourceIndices[ordinal];|
-          |                 const auto& target = recorded.tracks[index];|
-          |                 const auto& wanted = ids[index];|
-          |-                auto& source = sources[index];|
-          |+                const auto& [range, beginTick, endTick] = placements[ordinal];|
-          |+                auto& source = sources[ordinal];|
-          |                 if (source.mediaEdit) {|
-          |                     source.mediaEdit->label = label;|
-          |                     result.requests.push_back(std::move(*source.mediaEdit));|
-          |                 }|
-          |-                const RecordedPiece take{wanted.clip, start, end, range->sourceStartFrame,|
-          |-                    wanted.name.empty() ? std::string("Recording") : wanted.name, std::pair{beginTick,endTick}};|
-          |+                const RecordedPiece take{wanted.clip, range.timelineStartSample, range.timelineEndSample,|
-          |+                    range.sourceStartFrame, wanted.name.empty() ? std::string("Recording") : wanted.name,|
-          |+                    std::pair{beginTick, endTick}};|
-          |                 place(recordedImage(store, tempo, take, target.trackId, source.mediaId, recorded.sampleRate),|
-          |                       target.trackId, beginTick, endTick);|
-          |+                result.placedAudioClips.push_back(wanted.clip);|
-          |             }|
-          |         } else {|
-          |             result.sourceProject = identity(store);|
-          |diff --git a/adi_daw/src/adi/recording_commands.hpp b/adi_daw/src/adi/recording_commands.hpp|
-          |index e4619daf..fd9da47d 100644|
-          |--- a/adi_daw/src/adi/recording_commands.hpp|
-          |+++ b/adi_daw/src/adi/recording_commands.hpp|
-          |@@ -46,6 +46,7 @@ struct MidiTakePass {|
-          | struct RecordingEdit {|
-          |     bool ok=false;|
-          |     bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch|
-          |+    std::vector<std::int64_t> placedAudioClips; // linear clip IDs prepared from the placeable tracks|
-          |     std::string error,sourceProject;|
-          |     std::vector<OpRequest> requests;|
-          |     CommitOptions options;|
-          |@@ -57,7 +58,7 @@ private:|
-          |     struct PreparedSource;|
-          |     std::vector<std::size_t> groupEnds_;|
-          |     static std::vector<PreparedSource> prepareSources(Store&,const engine::AudioRecordingResult&,|
-          |-        std::span<const ClipIds>,RecordingEdit&);|
-          |+        std::span<const ClipIds>,RecordingEdit&,std::span<const std::size_t> sourceIndices={});|
-          |     static RecordingEdit prepareLinear(Store&,const engine::AudioRecordingResult*,std::span<const ClipIds>,|
-          |         std::span<const MidiLinearTake>,double,std::int64_t);|
-          |     std::shared_ptr<Files> files_;|
-          |@@ -84,8 +85,8 @@ private:|
-          | /// current musical clock exactly. Does not change project rows or publish files.|
-          | /// Opted-in loop captures are refused, including a single partial pass: their|
-          | /// take-lane/main-copy publication and per-pass history are a separate contract.|
-          |-/// Subtract the caller's signed latency offset from the timeline start. A|
-          |-/// correction past song zero places the first captured frame at zero.|
-          |+/// Subtract each track's captured signed latency offset from the timeline start,|
-          |+/// using the caller's offset for tracks without one. Clamp the start at song zero.|
-          | [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,|
-          |     std::int64_t placementOffsetSamples=0);|
-          | /// Publish a linear audio and MIDI take together in one placement and Undo.|
-          |diff --git a/adi_daw/src/adi/settings/registry.cpp b/adi_daw/src/adi/settings/registry.cpp|
-          |index 20adf139..468f56c1 100644|
-          |--- a/adi_daw/src/adi/settings/registry.cpp|
-          |+++ b/adi_daw/src/adi/settings/registry.cpp|
-          |@@ -348,8 +348,9 @@ void catalogueSettings(std::vector<Setting>& r) {|
-          |     r.push_back(choice("audio.srcQuality", "Audio", "Default SR & Pitch Conversion",|
-          |                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));|
-          |     r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver Error Compensation",|
-          |-                       "Milliseconds added to what the driver reports; Measure round trip fills it in.",|
-          |-                       0.0, -100, 100));|
-          |+                       "Signed milliseconds added to the driver's correction for linear audio takes when Monitor "|
-          |+                       "is Off or Keep Monitoring Latency is disabled.",|
-          |+                       0.0, -150, 150));|
-          |     r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test Tone", "Play a sine tone to the output.", false));|
-          |     r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone Volume",|
-          |                        "The test tone's level, in dB.", -36.0, -70, 0));|
-          |diff --git a/adi_daw/src/adi/ui/project_document.cpp b/adi_daw/src/adi/ui/project_document.cpp|
-          |index 42c1d86c..b0a0d0c4 100644|
-          |--- a/adi_daw/src/adi/ui/project_document.cpp|
-          |+++ b/adi_daw/src/adi/ui/project_document.cpp|
-          |@@ -2191,7 +2191,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input|
-          |             return false;|
-          |         }|
-          |     }|
-          |-    spec.placementOffsetSamples = deviceLatencySamples;|
-          |+    spec.placementOffsetSamples = spec.loop ? 0 : deviceLatencySamples;|
-          |     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));|
-          |     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));|
-          |     spec.format = format;|
-          |@@ -2208,7 +2208,10 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input|
-          |                      ". Choose an enabled input under Audio From.";|
-          |             return false;|
-          |         }|
-          |-        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end())});|
-          |+        const bool keep = !spec.loop && track->recording.keepMonitoringLatency &&|
-          |+                          recordState(states, id).monitor != Monitor::Off;|
-          |+        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end()),|
-          |+                                keep ? std::optional<std::int64_t>{0} : std::nullopt});|
-          |     }|
-          |     std::string why;|
-          |     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {|
-          |@@ -2362,6 +2365,7 @@ void ProjectDocument::landTake() {|
-          |     std::vector<std::int64_t> lastPassClips;|
-          |     recording::RecordingEdit edit;|
-          |     std::string unplacedAudio;|
-          |+    std::size_t skippedAudioTracks = 0;|
-          |     try {|
-          |         RowIds rows(store_->db());|
-          |         std::vector<recording::ClipIds> ids;|
-          |@@ -2386,7 +2390,6 @@ void ProjectDocument::landTake() {|
-          |                 auto name = shownTrackName(current, track.trackId);|
-          |                 const auto clip = rows.next("clips");|
-          |                 ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : name, std::move(name)});|
-          |-                outcome.clips.push_back(clip);|
-          |             }|
-          |         }|
-          |         std::vector<recording::MidiLinearTake> takes;|
-          |@@ -2407,7 +2410,6 @@ void ProjectDocument::landTake() {|
-          |                 auto name = shownTrackName(current, span.track);|
-          |                 takes.push_back({span.track, clip, span.start, span.end - span.start,|
-          |                                  name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});|
-          |-                outcome.clips.push_back(clip);|
-          |             }|
-          |         }|
-          |         if (!loopTake) {|
-          |@@ -2416,10 +2418,14 @@ void ProjectDocument::landTake() {|
-          |             if (edit.audioOutsidePunch && hasMidi) {|
-          |                 unplacedAudio = std::move(edit.error);|
-          |                 hasAudio = false;|
-          |-                outcome.clips.clear();|
-          |+                edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);|
-          |+            }|
-          |+            if (edit.ok) {|
-          |+                if (hasAudio)|
-          |+                    skippedAudioTracks = ids.size() - edit.placedAudioClips.size();|
-          |+                outcome.clips = std::move(edit.placedAudioClips);|
-          |                 for (const auto &take : takes)|
-          |                     outcome.clips.push_back(take.clip);|
-          |-                edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);|
-          |             }|
-          |         }|
-          |     } catch (const std::exception &error) {|
-          |@@ -2482,6 +2488,11 @@ void ProjectDocument::landTake() {|
-          |         else if (!audioProblem.empty())|
-          |             outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."|
-          |                                        : outcome.message + " Audio recording ended: " + audioProblem + "." + audioLocation;|
-          |+        if (skippedAudioTracks > 0) {|
-          |+            outcome.message += skippedAudioTracks == 1 ? " Audio on one track fell outside its compensated punch range."|
-          |+                : " Audio on " + std::to_string(skippedAudioTracks) + " tracks fell outside their compensated punch ranges.";|
-          |+            outcome.message += audioLocation;|
-          |+        }|
-          |     }|
-          |     if (!midiProblem.empty())|
-          |         outcome.message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";|
-          |diff --git a/adi_daw/src/adi/ui/project_document.hpp b/adi_daw/src/adi/ui/project_document.hpp|
-          |index b4ed3414..e396342f 100644|
-          |--- a/adi_daw/src/adi/ui/project_document.hpp|
-          |+++ b/adi_daw/src/adi/ui/project_document.hpp|
-          |@@ -167,7 +167,7 @@ class ProjectDocument final : public engine::BlockProcessor {|
-          |     // starts at the song start or the insert marker after the saved Count-In. While playing, it records|
-          |     // from the playhead. False with `error()` saying why.|
-          |     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.|
-          |-    // The driver's round-trip latency is captured in samples at the recording's rate.|
-          |+    // The driver's round-trip latency and signed driver error are supplied in samples at the recording's rate.|
-          |     // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.|
-          |     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,|
-          |                         std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},|
-          |diff --git a/adi_daw/src/adi/ui/recording_edits.hpp b/adi_daw/src/adi/ui/recording_edits.hpp|
-          |index 8b4d49bb..cb2c9bc2 100644|
-          |--- a/adi_daw/src/adi/ui/recording_edits.hpp|
-          |+++ b/adi_daw/src/adi/ui/recording_edits.hpp|
-          |@@ -42,9 +42,6 @@ inline audio::WavFormat recordingWavFormat(int bitDepth) noexcept {|
-          | // recordings get ([1/16] or [Free]), and Play-Q, the live quantization of what is played, on a MIDI|
-          | // track's header; Keep Monitoring Latency in Recorded Audio, from a right-click on the In or Auto|
-          | // monitor button. Each change is one op, one undo step, from the snapshot the command lands on.|
-          |-//|
-          |-// Nothing follows a choice yet: Play-Q is not scheduled, nothing records MIDI, and the recorder|
-          |-// ignores Keep Monitoring Latency (#406). The window stores them and says nothing of the sound.|
-          | inline constexpr std::array<const char *, 4> kQuantizeGrids{"1/4", "1/8", "1/16", "1/32"};|
-          | // What Rec-Q shows: its grid, or Free when off. Play-Q: its grid, or Off.|
-          | inline std::string recordQuantizeText(const TrackRecordingOptions &o) { return o.recordEnabled ? o.recordGrid : "Free"; }|
-          |diff --git a/adi_daw/src/adi/ui/waveform.hpp b/adi_daw/src/adi/ui/waveform.hpp|
-          |index 7db38dd7..167b4400 100644|
-          |--- a/adi_daw/src/adi/ui/waveform.hpp|
-          |+++ b/adi_daw/src/adi/ui/waveform.hpp|
-          |@@ -28,10 +28,12 @@ struct PunchedPreviewRange {|
-          | |
-          | inline std::optional<PunchedPreviewRange> punchedPreviewRange(|
-          |     const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,|
-          |-    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {|
-          |+    std::uint32_t sampleRate, const engine::TempoMap &tempo,|
-          |+    std::optional<std::int64_t> trackOffset = {}) noexcept {|
-          |     if (sampleRate == 0)|
-          |         return std::nullopt;|
-          |-    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);|
-          |+    const auto offset = trackOffset.value_or(punch.offsetSamples);|
-          |+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, offset, punch.window);|
-          |     if (!range)|
-          |         return std::nullopt;|
-          |     const auto rate = static_cast<double>(sampleRate);|
-          |diff --git a/adi_daw/src/juce/device_bridge.hpp b/adi_daw/src/juce/device_bridge.hpp|
-          |index 0111895a..ce4a868b 100644|
-          |--- a/adi_daw/src/juce/device_bridge.hpp|
-          |+++ b/adi_daw/src/juce/device_bridge.hpp|
-          |@@ -105,6 +105,14 @@ public:|
-          |         // never takes this lock.|
-          |         const std::lock_guard lock(errorMutex_);|
-          |         pendingError_ = message;|
-          |+        lastError_ = message;|
-          |+    }|
-          |+|
-          |+    // The last error a driver reported, kept for a tool's receipt (adi_play). The window takes its|
-          |+    // problems once, through takeDeviceProblem.|
-          |+    [[nodiscard]] juce::String lastError() const {|
-          |+        const std::lock_guard lock(errorMutex_);|
-          |+        return lastError_;|
-          |     }|
-          | |
-          |     // The owner's explicit Settings change may replace a device or turn audio off.|
-          |@@ -142,8 +150,9 @@ private:|
-          |     OpenResult last_;|
-          |     DeviceName currentDevice_;|
-          |     std::optional<DeviceName> stoppedDevice_; // owner thread, like open/close|
-          |-    std::mutex errorMutex_;|
-          |+    mutable std::mutex errorMutex_;|
-          |     std::optional<juce::String> pendingError_;|
-          |+    juce::String lastError_;|
-          | };|
-          | |
-          | /// The timer that ticks `DeviceHost`, and the only JUCE-shaped part of it.|
-          |diff --git a/adi_daw/src/juce/ui_arrangement.cpp b/adi_daw/src/juce/ui_arrangement.cpp|
-          |index 3430dd8e..9612a741 100644|
-          |--- a/adi_daw/src/juce/ui_arrangement.cpp|
-          |+++ b/adi_daw/src/juce/ui_arrangement.cpp|
-          |@@ -2625,11 +2625,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {|
-          |             const auto *tempo = preview && preview->loop && preview->loop->tempo|
-          |                 ? preview->loop->tempo.get() : snapshot ? snapshot->tempo.get() : nullptr;|
-          |             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;|
-          |+            const engine::AudioRecordingPreview::Track *mapping = nullptr;|
-          |             double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;|
-          |             if (havePreview) {|
-          |+                const auto track = std::find_if(preview->tracks.begin(), preview->tracks.end(),|
-          |+                    [&](const auto &item) { return item.trackId == t->id; });|
-          |+                if (track != preview->tracks.end())|
-          |+                    mapping = &*track;|
-          |+                const auto offset = mapping ? mapping->placementOffsetSamples : std::nullopt;|
-          |                 if (const auto &punch = preview->punchedPlacement; !preview->loop && punch) {|
-          |                     const auto frames = std::max(preview->peaks.frames, live->capturedFrames);|
-          |-                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);|
-          |+                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo, offset);|
-          |                     if (range) {|
-          |                         start = range->startTicks;|
-          |                         end = range->endTicks;|
-          |@@ -2641,7 +2647,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {|
-          |                     }|
-          |                 } else {|
-          |                     const auto rate = static_cast<double>(preview->peaks.sampleRate);|
-          |-                    const auto pass = preview->latestPass(live->capturedFrames);|
-          |+                    const auto pass = preview->latestPass(live->capturedFrames, offset);|
-          |                     startSeconds = static_cast<double>(pass.startSample) / rate;|
-          |                     sourceStartFrame = static_cast<double>(pass.sourceStartFrame);|
-          |                     sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, pass.sourceStartFrame + pass.frames));|
-          |@@ -2667,20 +2673,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {|
-          |                     g.fillRect(left, top, width, static_cast<float>(h - 4));|
-          |                     g.setColour(look::record.darker(0.3f));|
-          |                     g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));|
-          |-                    if (havePreview) {|
-          |-                        const auto mapping = std::find_if(preview->tracks.begin(), preview->tracks.end(),|
-          |-                            [&](const auto &track) { return track.trackId == t->id; });|
-          |-                        if (mapping != preview->tracks.end() && !mapping->channels.empty()) {|
-          |-                            g.setColour(look::ink.withAlpha(0.85f));|
-          |-                            const int from = std::max(0, static_cast<int>(std::floor(left)));|
-          |-                            const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));|
-          |-                            paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,|
-          |-                                             top + static_cast<float>(h - 4), mapping->channels,|
-          |-                                             [&](int x) -> std::optional<double> {|
-          |-                                const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;|
-          |-                                return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);|
-          |-                            }, sourceEndFrame);|
-          |-                        }|
-          |+                    if (mapping && !mapping->channels.empty()) {|
-          |+                        g.setColour(look::ink.withAlpha(0.85f));|
-          |+                        const int from = std::max(0, static_cast<int>(std::floor(left)));|
-          |+                        const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));|
-          |+                        paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,|
-          |+                                         top + static_cast<float>(h - 4), mapping->channels,|
-          |+                                         [&](int x) -> std::optional<double> {|
-          |+                            const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;|
-          |+                            return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);|
-          |+                        }, sourceEndFrame);|
-          |                     }|
-          |                     if (right - left > 6.f) {|
-          |                         g.setColour(look::ink);|
-          |diff --git a/adi_daw/src/juce/ui_main.cpp b/adi_daw/src/juce/ui_main.cpp|
-          |index b5fa39de..cb6ab9f4 100644|
-          |--- a/adi_daw/src/juce/ui_main.cpp|
-          |+++ b/adi_daw/src/juce/ui_main.cpp|
-          |@@ -1036,10 +1036,12 @@ class AdiApplication final : public juce::JUCEApplication,|
-          |             }|
-          |             applyInputChannels();|
-          |             const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();|
-          |-            const auto latency = device::reportedRoundTripLatency(*audioDevice);|
-          |+            const auto correction = engine::recordingLatencyCorrection(|
-          |+                device::reportedRoundTripLatency(*audioDevice), audioDevice->getCurrentSampleRate(),|
-          |+                settings_->get("audio.driverErrorCompensationMs").get<double>());|
-          |             const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();|
-          |             const auto format = recordingWavFormat(settings_->get("record.bitDepth").get<int>());|
-          |-            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder, format)) {|
-          |+            if (!document_->startRecording(insertTick, inputs, playing, correction, recordFolder, format)) {|
-          |                 root_->say(document_->error());|
-          |                 return false;|
-          |             }|
-          |diff --git a/adi_daw/src/juce/ui_mixer.cpp b/adi_daw/src/juce/ui_mixer.cpp|
-          |index 9ec9d53c..86c6e17d 100644|
-          |--- a/adi_daw/src/juce/ui_mixer.cpp|
-          |+++ b/adi_daw/src/juce/ui_mixer.cpp|
-          |@@ -394,8 +394,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {|
-          |     };|
-          |     delay.updateText();|
-          |     keepLatency.setTitle("Keep Latency");|
-          |-    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio, stored with the track; recording does not "|
-          |-                           "follow it yet. Right-click In or Auto for the same switch.");|
-          |+    keepLatency.setTooltip("Keep the monitored timing of audio takes outside loop recording when Monitor is In or Auto. "|
-          |+                           "Turn off to apply the driver's latency correction.");|
-          |     keepLatency.setClickingTogglesState(false);|
-          |     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };|
-          |     addChildComponent(keepLatency);|
-          |diff --git a/adi_daw/tests/test_ui_document.cpp b/adi_daw/tests/test_ui_document.cpp|
-          |index 96f2c1fc..1da9d8ac 100644|
-          |--- a/adi_daw/tests/test_ui_document.cpp|
-          |+++ b/adi_daw/tests/test_ui_document.cpp|
-          |@@ -1957,7 +1957,11 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {|
-          |     OpRequest arm;|
-          |     arm.opType = "track.setArm";|
-          |     arm.payload = {{"id", 4}, {"armed", true}};|
-          |-    check(doc->ops().submit(arm).ok && doc->synchronise(), "SC-22: arm the audio track");|
-          |+    OpRequest monitor;|
-          |+    monitor.opType = "track.setMonitorMode";|
-          |+    monitor.payload = {{"id", 4}, {"mode", 0}};|
-          |+    check(doc->ops().submit(arm).ok && doc->ops().submit(monitor).ok && doc->synchronise(),|
-          |+          "SC-22: arm the audio track with Monitor Off for loopback compensation");|
-          | |
-          |     constexpr int rate = 48000, frames = 64;|
-          |     constexpr int startSample = rate, referenceClick = 256;|
-          |@@ -2019,6 +2023,91 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {|
-          |               audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,|
-          |           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");|
-          | }|
-          |+void mixedRecordingLatency(const std::filesystem::path &dir) {|
-          |+    constexpr int rate = 48000, frames = 64, reportedSamples = 32;|
-          |+    constexpr const char *setting = "audio.driverErrorCompensationMs";|
-          |+    settings::AppSettings preferences(appdata::App::Daw, dir / "device-dec.json");|
-          |+    std::string error;|
-          |+    check(preferences.set(setting, 150.0, {}, error) && preferences.set(setting, -150.0, {}, error) &&|
-          |+              !preferences.set(setting, 150.01, {}, error),|
-          |+          "SC-255: Settings accepts both 150 ms bounds and refuses values outside them");|
-          |+    check(engine::recordingLatencyCorrection(reportedSamples, rate, 150.0) == 7232 &&|
-          |+              engine::recordingLatencyCorrection(reportedSamples, rate, -150.0) == -7168 &&|
-          |+              engine::recordingLatencyCorrection(reportedSamples, rate, 150.01) == reportedSamples,|
-          |+          "SC-255: the 48 kHz correction uses the same bounds as Settings");|
-          |+    struct Case { double milliseconds; int capturedAt; std::int64_t correctedStart; const char *file; };|
-          |+    const std::array examples{Case{1.25, 128, 36, "positive-dec.adi"},|
-          |+                              Case{-1.25, 128, 156, "negative-dec.adi"},|
-          |+                              Case{111.90, 8192, 2789, "calibrated-dec.adi"}};|
-          |+    for (const auto example : examples) {|
-          |+        if (!preferences.set(setting, example.milliseconds, {}, error))|
-          |+            throw std::runtime_error(error);|
-          |+        auto doc = ui::ProjectDocument::open(dir / example.file, true, {}, error);|
-          |+        if (!doc)|
-          |+            throw std::runtime_error(error);|
-          |+        const auto set = [&](const char *type, Payload payload) {|
-          |+            OpRequest request;|
-          |+            request.opType = type;|
-          |+            request.payload = std::move(payload);|
-          |+            if (!doc->ops().submit(request).ok)|
-          |+                throw std::runtime_error("could not configure the latency fixture");|
-          |+        };|
-          |+        struct Target { int id, mode; bool keep; std::int64_t start; };|
-          |+        const std::array targets{Target{4, 0, true, example.correctedStart}, Target{5, 2, true, example.capturedAt},|
-          |+                                 Target{8, 1, false, example.correctedStart}};|
-          |+        set("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Monitored"}});|
-          |+        for (const auto &track : targets) {|
-          |+            set("track.setArm", {{"id", track.id}, {"armed", true}});|
-          |+            set("track.setMonitorMode", {{"id", track.id}, {"mode", track.mode}});|
-          |+            set("track.setKeepMonitoringLatency", {{"id", track.id}, {"on", track.keep}});|
-          |+        }|
-          |+        if (!doc->synchronise())|
-          |+            throw std::runtime_error(doc->error());|
-          |+        doc->prepare(rate, frames);|
-          |+        const auto tempo = doc->view().current()->tempo;|
-          |+        const auto tick = tempo->secondsToTicks(static_cast<double>(example.capturedAt) / rate);|
-          |+        const auto correction = engine::recordingLatencyCorrection(|
-          |+            reportedSamples, rate, preferences.get(setting).get<double>());|
-          |+        if (example.milliseconds == 111.90)|
-          |+            check(correction - reportedSamples == 5371, "SC-255: 111.90 ms adds 5371 samples at 48 kHz");|
-          |+        if (!doc->startRecording(tick, 1, false, correction))|
-          |+            throw std::runtime_error(doc->error());|
-          |+        // The job keeps the choices it read when Record was pressed.|
-          |+        set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", false}});|
-          |+        set("track.setKeepMonitoringLatency", {{"id", 8}, {"on", true}});|
-          |+        if (!doc->synchronise())|
-          |+            throw std::runtime_error(doc->error());|
-          |+        std::array<float, frames> input{}, left{}, right{};|
-          |+        input[7] = .5f;|
-          |+        const float *inputs[]{input.data()};|
-          |+        float *outputs[]{left.data(), right.data()};|
-          |+        doc->process({outputs, inputs, 2, 1, frames, 0});|
-          |+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);|
-          |+        auto preview = doc->session().recording().preview();|
-          |+        while (!preview && std::chrono::steady_clock::now() < deadline) {|
-          |+            std::this_thread::sleep_for(std::chrono::milliseconds(1));|
-          |+            preview = doc->session().recording().preview();|
-          |+        }|
-          |+        doc->release();|
-          |+        check(doc->settleRecording(), "SC-255: settle simultaneous takes with different monitoring timing");|
-          |+        const auto landed = doc->takeLanded();|
-          |+        check(landed && landed->ok && landed->clips.size() == targets.size(), "SC-255: the armed tracks all land");|
-          |+        if (!preview)|
-          |+            throw std::runtime_error("the recording preview did not arrive");|
-          |+        const auto snapshot = doc->view().current();|
-          |+        for (const auto &target : targets) {|
-          |+            const auto *track = snapshot->findTrack(target.id);|
-          |+            const auto item = std::find_if(preview->tracks.begin(), preview->tracks.end(),|
-          |+                                           [&](const auto &entry) { return entry.trackId == target.id; });|
-          |+            check(track && track->clips.size() == 1 && item != preview->tracks.end() &&|
-          |+                      preview->latestPass(preview->peaks.frames, item->placementOffsetSamples).startSample == target.start &&|
-          |+                      track->clips.front()->audio && track->clips.front()->audio->warpEnabled &&|
-          |+                      std::llround(tempo->ticksToSeconds(track->clips.front()->posTicks) * rate) == target.start,|
-          |+                  "SC-255: the per-track preview and warped clip share the start from its latched timing");|
-          |+        }|
-          |+    }|
-          |+}|
-          |+|
-          | void countInPositionFeedback(const std::filesystem::path &dir) {|
-          |     std::string error;|
-          |     auto doc = ui::ProjectDocument::open(dir / "count-in.adi", true, {}, error);|
-          |@@ -2216,7 +2305,7 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {|
-          |     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,|
-          |           "one Undo and one Redo for the whole take");|
-          | }|
-          |-void mixedPunchKeepsMidi(const std::filesystem::path &dir) {|
-          |+void mixedPunchKeepsMidi(const std::filesystem::path &dir, bool keepSecondAudio = false) {|
-          |     std::string error;|
-          |     auto doc = ui::ProjectDocument::open(dir / "mixed-punch.adi", true, {}, error);|
-          |     check(doc != nullptr, "SC-26: a project for a mixed punch take");|
-          |@@ -2238,6 +2327,9 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {|
-          |         !set("track.setArm", {{"id", 4}, {"armed", true}}) |||
-          |         !set("track.setMonitorMode", {{"id", 2}, {"mode", 0}}) |||
-          |         !set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) |||
-          |+        (keepSecondAudio && (!set("track.setArm", {{"id", 5}, {"armed", true}}) |||
-          |+                             !set("track.setMonitorMode", {{"id", 5}, {"mode", 1}}) |||
-          |+                             !set("track.setKeepMonitoringLatency", {{"id", 5}, {"on", true}}))) |||
-          |         !set("transport.setLoop", {{"on", false}, {"start", start}, {"end", end}}) |||
-          |         !set("transport.setPunch", {{"in", true}, {"out", true}}) || !doc->synchronise())|
-          |         throw std::runtime_error("could not configure the mixed punch take");|
-          |@@ -2280,25 +2372,41 @@ void mixedPunchKeepsMidi(const std::filesystem::path &dir) {|
-          |         if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))|
-          |             capture = entry.path();|
-          |     const auto landed = doc->takeLanded();|
-          |-    check(landed && landed->ok && landed->clips.size() == 1 &&|
-          |+    const int expectedClips = keepSecondAudio ? 2 : 1;|
-          |+    check(landed && landed->ok && landed->clips.size() == static_cast<std::size_t>(expectedClips) &&|
-          |               landed->message.find("compensated punch range") != std::string::npos && !capture.empty() &&|
-          |               landed->message.find(media::pathUtf8(capture)) != std::string::npos,|
-          |-          "SC-26: preserve the MIDI take and report the rejected audio's full directory");|
-          |-    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,|
-          |-          "SC-26: the retained audio is not added to the project's media pool");|
-          |-    if (landed && landed->clips.size() == 1) {|
-          |-        const auto detail = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);|
-          |+          "preserve the placeable tracks and report the rejected audio's full directory");|
-          |+    auto &db = doc->store().db();|
-          |+    check(db.execAndGet("SELECT count(*) FROM media_files").getInt() == (keepSecondAudio ? 1 : 0) &&|
-          |+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=4").getInt() == 0,|
-          |+          "the fully clipped track has no clip or imported audio");|
-          |+    if (landed && landed->clips.size() == static_cast<std::size_t>(expectedClips)) {|
-          |+        if (keepSecondAudio) {|
-          |+            SQLite::Statement kept(db, "SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames,a.warp_enabled "|
-          |+                                       "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=? AND c.track_id=5");|
-          |+            kept.bind(1, landed->clips.front());|
-          |+            check(kept.executeStep() && kept.getColumn(0).getInt64() == start &&|
-          |+                      kept.getColumn(1).getInt64() == end - start && kept.getColumn(2).getInt64() == 0 &&|
-          |+                      kept.getColumn(3).getInt64() == 2 * frames && kept.getColumn(4).getInt() == 1,|
-          |+                  "SC-255: the monitored track keeps its own authored, sample-exact Warp interval");|
-          |+            kept.reset();|
-          |+        }|
-          |+        const auto detail = engine::readClipDetails(doc->store(), landed->clips.back(), true, true);|
-          |         check(detail.clip && detail.clip->kind == "midi" && detail.clip->trackId == 2 &&|
-          |                   detail.clip->posTicks == start && detail.clip->lengthTicks == end - start &&|
-          |                   detail.clip->notes.size() == 1 && detail.clip->notes.front().key == 64,|
-          |               "SC-26: the MIDI clip lands at the authored brace without overwriting either side");|
-          |-        check(doc->ops().undo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&|
-          |-                  doc->ops().redo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 1,|
-          |-              "SC-26: the MIDI take can be undone and redone as one edit");|
-          |+        check(doc->ops().undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&|
-          |+                  doc->ops().redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == expectedClips,|
-          |+              "the landed tracks are undone and redone as one edit");|
-          |     }|
-          |     const auto wav = capture / "take-0.wav";|
-          |     const bool retained = !capture.empty() && std::filesystem::is_regular_file(wav);|
-          |     check(retained, "SC-26: the private WAV remains available for recovery");|
-          |+    if (keepSecondAudio)|
-          |+        check(!capture.empty() && std::filesystem::is_regular_file(capture / "take-1.wav"),|
-          |+              "SC-255: partial publication retains the entire original recording directory");|
-          |     if (retained) {|
-          |         audio::WavReader reader(wav);|
-          |         std::array<float, 2 * frames> samples{};|
-          |@@ -2702,6 +2810,10 @@ void punchedWaveformBounds() {|
-          |           "SC-26: preview uses the exact authored Punch-Out tick and stops at the trimmed source end");|
-          |     punch.offsetSamples = 256;|
-          |     check(!ui::punchedPreviewRange(punch, 128, rate, tempo), "SC-26: a fully clipped preview draws no take");|
-          |+    const auto kept = ui::punchedPreviewRange(punch, 128, rate, tempo, 0);|
-          |+    check(kept && kept->startTicks == punch.window.in->tick && kept->endTicks == punch.window.out->tick &&|
-          |+              kept->sourceStartFrame == 0 && kept->sourceEndFrame == 128,|
-          |+          "SC-255: an armed monitored lane previews its own unshifted interval");|
-          | }|
-          | void recordedWaveformHandoff() {|
-          |     auto clip = std::make_shared<engine::ClipNode>();|
-          |@@ -2938,8 +3050,12 @@ int main(int argc, char **argv) {|
-          |         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);|
-          |         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");|
-          |         mixedPunchKeepsMidi(punchRecoveryDir.path());|
-          |+        test::TempDirectory partialPunchDir("ui_document", "mixed-punch-partial");|
-          |+        mixedPunchKeepsMidi(partialPunchDir.path(), true);|
-          |         test::TempDirectory latencyDir("ui_document", "latency");|
-          |         recordWithDeviceLatency(latencyDir.path());|
-          |+        test::TempDirectory mixedLatencyDir("ui_document", "mixed-latency");|
-          |+        mixedRecordingLatency(mixedLatencyDir.path());|
-          |         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};|
-          |         refusedRecordingKeepsAudio(refusedPublicationDir.path());|
-          |         test::TempDirectory loopClockDir("ui_document", "loop-clock-admission");|
-          PATCH
-          git apply --index "$RUNNER_TEMP/recording-candidate.patch"
-          test "$(git write-tree)" = 5665f43ae6b58d4a62e87912e35220c8cc4e07d2
-          echo "Verified candidate 3e714c094573c8a63674fa619e31f285ffe95631"
-      - name: Install Linux JUCE build dependencies
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Linux build headers (no display server)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxrandr-dev libxinerama-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
-      - name: Fetch pinned ADI dependencies
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
+      - name: Fetch pinned sources
         run: bash adi_daw/tools/fetch_external.sh --with-juce
-      - name: Build Debug UI tests
-        shell: bash
+      - name: Select a short build path
         run: |
-          cmake -S adi_daw -B "$RUNNER_TEMP/adi" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON \
-            "-DCMAKE_C_FLAGS_DEBUG=-O0 -g1" "-DCMAKE_CXX_FLAGS_DEBUG=-O0 -g1 -fno-var-tracking-assignments"
-          mapfile -t suites < <(ninja -C "$RUNNER_TEMP/adi" -t targets all | sed -nE 's/^(adi_ui_[a-z0-9_]+_tests):.*/\1/p' | sort -u)
-          test "${#suites[@]}" -ge 15
-          cmake --build "$RUNNER_TEMP/adi" --parallel 2 --target "${suites[@]}"
-      - name: Run every UI suite with DISPLAY unset
-        run: env -u DISPLAY -u WAYLAND_DISPLAY ADI_HOME="$RUNNER_TEMP/adi-test-home" ctest --test-dir "$RUNNER_TEMP/adi" -R '^adi_ui_' --output-on-failure --timeout 1800
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "ADI_UI_BUILD=C:/b/adi-ui-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          else
+            echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
+          fi
+      - name: Build root window and UI test tiers
+        run: |
+          cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests adi_ui_stack_model_tests adi_ui_shared_analysis_tests adi_ui_shared_spectrum_tests adi_ui_mix_functions_tests adi_ui_eq_pages_tests adi_ui_param_capture_tests adi_mix_document_tests adi_mix_pipeline_document_tests adi_mix_limiter_tests adi_mix_limiter_owner_tests adi_mix_clip_tests adi_mix_limit_chain_tests adi_mix_functions_tests adi_mix_render_intent_tests adi_mix_pdc_pin_tests adi_mix_eq_tests adi_mix_eq_host_tests adi_mix_eq_pipeline_tests adi_mix_parameter_feed_tests adi_analyser_taps_tests adi_ui_analysis_comparison_tests adi_ui_spectrum_slope_tests adi_ui_spectrum_average_tests adi_ui_triggered_scope_tests --parallel 2
+      - name: Peerless software renders and synthesised keyboard events
+        run: |
+          # An unset DISPLAY deliberately proves the Linux offscreen path.
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_(ui_(shell|window_state|document|stack_model|shared_analysis|shared_spectrum|mix_functions|eq_pages|param_capture|analysis_comparison|spectrum_slope|spectrum_average|triggered_scope)|mix_(document|pipeline_document|limiter|limiter_owner|clip|limit_chain|functions|render_intent|pdc_pin|eq|eq_host|eq_pipeline|parameter_feed)|analyser_taps)_tests$' --output-on-failure
+      - name: Windows native window smoke (no audio device)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
+          # WTS-01: the smoke run keeps its settings and logs in a home of its own, never the runner's.
+          $env:ADI_HOME = "$env:ADI_UI_BUILD/home"
+          New-Item -ItemType Directory -Force -Path $env:ADI_HOME | Out-Null
+          $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0 -or -not (Test-Path "$env:ADI_UI_BUILD/native-actual.png")) { throw 'Native window smoke failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-renders-${{ matrix.os }}
+          path: ${{ env.ADI_UI_BUILD }}/*-actual.png
+          if-no-files-found: ignore
