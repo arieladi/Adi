@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026, 23:31 IST — seats/pitch-chain `34e21e163684e556f25f5b9496d78afcb3b1285a`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 298 registered CTest suites passed.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 27 November 2026 — seats/pitch-chain `34e21e16`, Apple-width follow-up
 
 The new head still fails the `-mlong-double-64` syntax check. Both errors are `-Wimplicit-int-float-conversion` in `adi_daw/src/adi/pitch_midi.cpp`. They moved to `196:84` for the source-frame delta and `197:68` for the tick delta.
