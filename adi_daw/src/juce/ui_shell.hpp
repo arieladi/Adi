@@ -782,6 +782,9 @@ class AdiRootComponent final : public juce::Component,
     // Window state, kept while the window lives.
     AutomationTarget automationTarget(std::int64_t track) const;
     std::vector<AutomationTarget> automationChoices(std::int64_t track) const;
+    // The chooser reads its track's declarations on demand, independently
+    // of Device View's subscriptions for live control values.
+    std::function<std::shared_ptr<const ParameterPublication>(std::int64_t track)> automationParameters;
     // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
     void showAutomation(std::int64_t track, const AutomationTarget &target);
     // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
@@ -792,10 +795,6 @@ class AdiRootComponent final : public juce::Component,
                                                                                    const std::string &parameter) const;
     // The target's value now, where its control stands: the line drawn while its lane has no point.
     double automationCurrent(const AutomationTarget &target) const;
-    // The feed publishes a device's parameters only to a surface that demands it: while Automation
-    // Mode is on, or a chooser is built, this window demands every device, so any track's chooser lists
-    // its devices' parameters. Off, the demand goes.
-    void demandAutomationDevices(bool on);
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
@@ -977,7 +976,6 @@ class AdiRootComponent final : public juce::Component,
     bool midiIn_ = false;
     bool automationMode_ = false;
     std::map<std::int64_t, AutomationTarget> automationTargets_;
-    std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
     bool infoPressed_ = false;
     void applyInfoAnalyserMode();
