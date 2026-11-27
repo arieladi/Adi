@@ -3686,7 +3686,7 @@ bool AdiRootComponent::toggleArm(std::optional<std::int64_t> clicked, bool add) 
     }
     return true;
 }
-bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+bool AdiRootComponent::setMonitor(std::int64_t id, std::optional<Monitor> mode) {
     const auto current = view_.current();
     if (!current)
         return fail("Monitoring needs an open project.");

@@ -750,7 +750,8 @@ class AdiRootComponent final : public juce::Component,
     // and the selected tracks together; and its monitoring switch In, Auto, Off (manual 21.4). Each
     // one batch.
     bool armTrack(std::int64_t id, bool add);
-    bool setMonitor(std::int64_t id, Monitor mode);
+    // An empty mode restores each affected track's own default.
+    bool setMonitor(std::int64_t id, std::optional<Monitor> mode);
     bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.

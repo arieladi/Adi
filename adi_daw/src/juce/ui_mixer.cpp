@@ -37,6 +37,7 @@ float fallen(float shown, float now, double seconds) noexcept {
 }
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
+const juce::Identifier kButtonLit{"adi.lit"};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
 // silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
 // on: -70 dB is quiet, not silent.
@@ -162,26 +163,18 @@ const juce::StringArray &monitorLabels() {
     static const juce::StringArray labels{"In", "Auto", "Off"};
     return labels;
 }
-juce::Rectangle<float> monitorBox(float x, float y, float gap) noexcept {
-    return {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f};
+juce::Rectangle<int> monitorBox(int x, int y, int gap) noexcept {
+    return {x, y, 16 + 23 + 19 + 2 * gap, 13};
 }
 int monitorIndex(Monitor m) noexcept { return m == Monitor::In ? 0 : m == Monitor::Auto ? 1 : 2; }
-void drawMonitor(juce::Graphics &g, float x, float y, float gap, Monitor lit) {
-    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), monitorIndex(lit));
-}
 // The choice whose cell holds `at`, if any.
-std::optional<Monitor> monitorCellAt(float x, float y, float gap, juce::Point<int> at) {
-    const auto box = monitorBox(x, y, gap);
+std::optional<Monitor> monitorCellAt(juce::Rectangle<float> box, juce::Point<int> at) {
+    if (!box.contains(at.toFloat()))
+        return std::nullopt;
     for (int i = 0; i < 3; ++i)
         if (controls::oneOfCell(box, monitorLabels(), i).contains(at.toFloat()))
             return i == 0 ? Monitor::In : i == 1 ? Monitor::Auto : Monitor::Off;
     return std::nullopt;
-}
-// Where In and Auto are drawn, together: the cells the one-of gives them.
-bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
-    const auto box = monitorBox(x, y, gap);
-    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
-    return in.getUnion(automatic).contains(at.toFloat());
 }
 } // namespace
 PrimaryButtonSlider::PrimaryButtonSlider() = default;
@@ -283,6 +276,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(pane
     // Focus is explicit for the channel's title menu and for Esc during a live drag (MX-23).
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
+    addChildComponent(monitor_);
     if (panel.vertical()) {
         // Live's Mixer View: the fader is the ◁ beside the meter, on the meter's scale.
         volume.setSliderStyle(juce::Slider::LinearVertical);
@@ -530,6 +524,8 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     g.fillEllipse(getLocalBounds().toFloat().withSizeKeepingCentre(8, 8));
 }
 void MixerStrip::bind(std::int64_t id) {
+    if (track_ != id && monitor_.hasKeyboardFocus(false))
+        monitor_.giveAwayKeyboardFocus();
     track_ = id;
     position_ = number_ = 0;
     peak_ = rms_ = 0;
@@ -597,9 +593,13 @@ void MixerStrip::frame(bool changed) noexcept {
     }
     // The track's arm and monitoring as the session's rows hold them (MX-09): lit when they change.
     if (const auto record = panel_.root.recordState(track_); record != record_) {
+        if ((record.monitor == Monitor::In) != (record_.monitor == Monitor::In)) {
+            active.getProperties().set(kButtonLit, record.monitor == Monitor::In ? "value" : "accent");
+            active.repaint();
+        }
         record_ = record;
         arm.setToggleState(record.armed, juce::dontSendNotification);
-        repaint();
+        monitor_.repaint();
     }
     // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
     const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
@@ -806,6 +806,7 @@ void MixerStrip::resized() {
         io_ = sections.inOut;
         delay_ = sections.trackDelay;
         shown_ = sections.sends;
+        layoutMonitor();
         // Live's figure: the box across the strip, the "ms" box at its right edge.
         delay.setVisible(delay_ > 0);
         delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
@@ -843,6 +844,7 @@ void MixerStrip::resized() {
     }
     // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row
     // shows only when the track is tall enough for it.
+    layoutMonitor();
     const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
     const int rows = std::max(1, (getHeight() - 1) / 17);
     const bool levels = audio_ && panel_.root.state().trackMixer;
@@ -1097,8 +1099,6 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(0, midi_ ? "All Ins" : "Ext. In", true);
     chooser(1, midi_ ? "All Channels" : audioInputLabel(),
             midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
-    if (rows > 2)
-        drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
 }
@@ -1162,15 +1162,50 @@ void MixerStrip::showAudioInputMenu() {
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition(),
                        [reading = std::move(reading)](int) mutable { reading.reset(); });
 }
-std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
-    // The same places as `onMonitorInOrAuto` below, every one of the three cells.
-    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
-        return std::nullopt;
+juce::Rectangle<int> MixerStrip::monitorBounds() const noexcept {
+    if (kind_ != "audio" && kind_ != "midi" && kind_ != "instrument")
+        return {};
     if (panel_.vertical())
-        return io_ > 0 ? monitorCellAt(4.f, static_cast<float>(kMixerTop + 59), 3, at) : std::nullopt;
+        return io_ > 0 ? monitorBox(4, kMixerTop + 59, 3) : juce::Rectangle<int>{};
     if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
-        return std::nullopt;
-    return monitorCellAt(5.f, 37.f, 6, at);
+        return {};
+    return monitorBox(5, 37, 6);
+}
+void MixerStrip::layoutMonitor() {
+    const auto bounds = monitorBounds();
+    monitor_.setBounds(bounds);
+    monitor_.setVisible(!bounds.isEmpty());
+}
+std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
+    return monitorCellAt(monitorBounds().toFloat(), at);
+}
+MixerStrip::MonitorSwitch::MonitorSwitch(MixerStrip &strip) : strip_(strip) {
+    setTitle("Monitor");
+    setTooltip("Choose In, Auto or Off. Delete restores the track's default.");
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+bool MixerStrip::MonitorSwitch::hitTest(int x, int y) {
+    // A short Arrangement row can draw the lowest pixels of the switch on the track's resize band.
+    return (strip_.panel_.vertical() || getY() + y < strip_.getHeight() - TrackHeaderList::kSplitLine) &&
+           juce::Component::hitTest(x, y);
+}
+void MixerStrip::MonitorSwitch::paint(juce::Graphics &g) {
+    const auto bounds = getLocalBounds().toFloat();
+    controls::oneOf(g, bounds, monitorLabels(), monitorIndex(strip_.record_.monitor));
+    if (hasKeyboardFocus(false)) {
+        g.setColour(look::accent);
+        g.drawRoundedRectangle(bounds.reduced(look::hairline / 2), look::radiusControl, look::hairline);
+    }
+}
+void MixerStrip::MonitorSwitch::mouseDown(const juce::MouseEvent &event) {
+    strip_.mouseDown(event.getEventRelativeTo(&strip_));
+}
+bool MixerStrip::MonitorSwitch::keyPressed(const juce::KeyPress &key) {
+    if (!isVisible() || (key != juce::KeyPress::deleteKey && key != juce::KeyPress::backspaceKey))
+        return false;
+    strip_.panel_.root.setMonitor(strip_.track_, std::nullopt);
+    return true;
 }
 bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
     if (kind_ != "master")
@@ -1203,16 +1238,11 @@ void MixerStrip::cueOutMenu() {
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cueOut));
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
-    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
-    // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
-    // y 37, 6 apart), each in the cells the one-of gives In and Auto.
-    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+    const auto box = monitorBounds().toFloat();
+    if (box.isEmpty())
         return false;
-    if (panel_.vertical())
-        return io_ > 0 && onInOrAuto(4.f, static_cast<float>(kMixerTop + 59), 3, at);
-    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
-        return false;
-    return onInOrAuto(5.f, 37.f, 6, at);
+    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
+    return in.getUnion(automatic).contains(at.toFloat());
 }
 juce::PopupMenu MixerStrip::monitorMenu() {
     juce::PopupMenu menu;
@@ -1269,7 +1299,6 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     chooser(31, midi_ ? "All Channels" : audioInputLabel(),
             midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
     label(46, "Monitor");
-    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");
     chooser(87, outputLabel(), true);
     chooser(103, "", false);
@@ -1536,8 +1565,10 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
         // together when it is among them.
         if (e.eventComponent == this)
-            if (const auto mode = monitorAt(e.getPosition()))
+            if (const auto mode = monitorAt(e.getPosition())) {
+                focusIfShowing(monitor_);
                 panel_.root.setMonitor(track_, *mode);
+            }
         return;
     }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {

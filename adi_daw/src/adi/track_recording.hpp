@@ -7,6 +7,10 @@
 namespace adi {
 // SC-249: a new audio track requires an explicit choice to monitor its input.
 inline constexpr std::int64_t kNewAudioTrackMonitorMode = 0; // Off
+inline constexpr std::int64_t initialTrackMonitorMode(std::string_view kind) noexcept {
+    if (kind == "audio") return kNewAudioTrackMonitorMode;
+    return kind == "midi" || kind == "instrument" ? 2 : 0; // Auto for MIDI and instruments
+}
 
 struct TrackRecordingOptions {
     bool recordEnabled=true,playEnabled=false,keepMonitoringLatency=true;

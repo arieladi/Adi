@@ -234,6 +234,22 @@ class MixerStrip final : public juce::Component,
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
     void showAudioInputMenu();
+    juce::Rectangle<int> monitorBounds() const noexcept;
+    void layoutMonitor();
+    class MonitorSwitch final : public juce::Component, public juce::SettableTooltipClient {
+      public:
+        explicit MonitorSwitch(MixerStrip &);
+        bool hitTest(int, int) override;
+        void paint(juce::Graphics &) override;
+        void mouseDown(const juce::MouseEvent &) override;
+        bool keyPressed(const juce::KeyPress &) override;
+        void focusGained(FocusChangeType) override { repaint(); }
+        void focusLost(FocusChangeType) override { repaint(); }
+
+      private:
+        MixerStrip &strip_;
+    };
+    MonitorSwitch monitor_{*this};
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
