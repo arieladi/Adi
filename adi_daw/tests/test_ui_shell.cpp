@@ -21670,6 +21670,11 @@ int main(int argc, char **argv) {
             });
             check(compensation != audio.rows().end() && (*compensation)->getY() == y("Driver Error Compensation"),
                   "a held row stands at its line");
+            // SC-380: Live's Hardware Setup under the device's lines; with no device open, there is no panel.
+            check(page != nullptr && y("Channel Configuration") < y("Hardware Setup") && y("Hardware Setup") < y("Sample Rate") &&
+                      page->hardware.isShowing() && !page->hardware.isEnabled() &&
+                      page->hardware.getTooltip().isNotEmpty(),
+                  "Hardware Setup stands under Channel Configuration, off with no device open, and says why");
             // The two pages at twice their size, for the PR's pictures (ADI_UI_PARITY).
             if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
                 pictures.isNotEmpty())

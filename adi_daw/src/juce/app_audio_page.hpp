@@ -61,6 +61,10 @@ class AudioDevicePage final : public juce::Component, public SettingsPageHead, p
         void resized() override;
         juce::TextButton input{"Input Config"}, output{"Output Config"};
     } channels;
+    // SC-380: Live's Hardware Setup: the driver's own control panel (an ASIO driver's, where many set their
+    // buffer size). Enabled while the open device has one; the device reopens after it, as the panel may
+    // have changed what the driver grants.
+    juce::TextButton hardware{"Hardware Setup"};
     // The open dialog, if any.
     ChannelConfigPanel *configPanel() const;
     // A setup attempt or a saved Input/Output Config edit, including names alone.

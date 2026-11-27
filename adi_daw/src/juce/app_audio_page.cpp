@@ -142,6 +142,20 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
         addAndMakeVisible(c);
     addAndMakeVisible(channels);
     channels.input.onClick = [this] { openConfig(true); };
+    addAndMakeVisible(hardware);
+    hardware.onClick = [this] {
+        auto *device = manager_.getCurrentAudioDevice();
+        if (device == nullptr || !device->hasControlPanel())
+            return;
+        // As JUCE's own device selector: the panel is the driver's; when it says something changed, the
+        // device is closed and opened again, and the page shows what it grants now.
+        if (device->showControlPanel()) {
+            manager_.closeAudioDevice();
+            error_ = manager_.restartLastAudioDevice() == nullptr ? juce::String("The device did not reopen after its Hardware Setup.")
+                                                                 : juce::String();
+        }
+        finishSetupChange();
+    };
     channels.output.onClick = [this] { openConfig(false); };
     driver_.onChange = [this] {
         manager_.setCurrentAudioDeviceType(driver_.getText(), true);
@@ -216,6 +230,7 @@ std::vector<AudioDevicePage::Line> AudioDevicePage::lines(std::array<int, 3> &he
             chooser("Audio Input Device", input_, SettingRow::kWide);
             chooser("Audio Output Device", output_, SettingRow::kWide);
             chooser("Channel Configuration", channels, SettingRow::kWide);
+            chooser("Hardware Setup", hardware, SettingRow::kNarrow);
             held(s);
             break;
         case 1:
@@ -350,6 +365,10 @@ void AudioDevicePage::refresh() {
     auto *open = manager_.getCurrentAudioDevice();
     channels.input.setEnabled(open != nullptr && !open->getInputChannelNames().isEmpty());
     channels.output.setEnabled(open != nullptr && !open->getOutputChannelNames().isEmpty());
+    hardware.setEnabled(open != nullptr && open->hasControlPanel());
+    hardware.setTooltip(open == nullptr ? juce::String("No device is open.")
+                        : open->hasControlPanel() ? "Opens " + open->getName() + "'s own control panel."
+                                                  : juce::String("This driver has no control panel of its own (ASIO drivers do)."));
     if (auto *device = open) {
         int item = 1;
         for (const auto rate : device->getAvailableSampleRates())
