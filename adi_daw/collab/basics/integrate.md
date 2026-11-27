@@ -57,6 +57,8 @@ Advanced integrate-2 to the verified integrate-1 head `33d91d39ca9c777da3cbc567d
 
 SC-134 portability follow-up `eda52db1c842508aea974ec0b289c325e5a74f84` uses the same binary search and path equality for Browser deduplication without the range operation rejected by Clang 14. The three affected library units passed strict Clang 14 syntax. The rebuilt app, player and two library suites passed.
 
+SC-133 portability follow-up `b75d2277fbaf645c4f37bbab98c577e92dfc86cc` renames the All-label iterator that shadowed the shell test’s focus fixture. Clang 14 accepted all seven audited Browser and Safety units, including the shell fixture with shadow warnings treated as errors. The final Linux head passed the combined validators, Win’s landing-check tests, both library suites, all 18 no-display window suites, all three acceptance suites and the relocated Linux installer smoke.
+
 ## Safety on integrate-2
 
 | Item | Integration head | Change and verification |
