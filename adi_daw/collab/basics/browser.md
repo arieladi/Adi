@@ -8,6 +8,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-120, SC-122 | `basics/browser-chain` at `0cb6389f1` | Use one indexed search for All, with independent tokens and search text per mode. Browser and library seats. | Peerless scope, plug-in, preset and mode checks passed. The indexed 200,000-file Browser fixture and library query suite passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-124 | `basics/browser-chain` at `e6ff43de1` | Scroll Browser labels by wheel and reveal keyboard selections. Browser seat. | Peerless wheel, keyboard, paint and refresh checks passed. Debug Werror, all 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-125, SC-132 | `basics/browser-chain` at `d205b620e` | Add and remove Places from the Browser, including folder drops and read-only folders. Browser, application and library seats. | Peerless chooser/menu/drop tests passed. A read-only folder and a copied User Library marker also passed a direct smoke test. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-126 | `basics/browser-chain` at `2a3da1da4` | Show a Place as a directory tree while typed searches stay flat. Browser and library seats. | Peerless keyboard, folder, duplicate name and search checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -72,6 +73,26 @@ A writable User Library keeps `.adi-volume-id` as the existing portable identity
 The headless shell test exercises chooser request, keyboard activation, settings persistence, mixed OS drops, same-name scope and removal, read-only search and marker copying. It substitutes callbacks for the chooser and context menu. The new files and edits concern the Browser seat, the app’s library worker, Settings’ folder edit and the shell suite. No native window or menu was shown.
 
 Commit `286b9e9ab` is based on the chain’s SC-124 preflight head `068670786`. The isolated Linux smoke ran with `DISPLAY` unset. It confirmed an actual mode-0555 folder refuses the marker probe but still lists its sample, cloned markers stay identical without merging two Places, only the indexed User Library writes index entries, removal leaves media on disk, and disconnected Places remain removable.
+
+# SC-126 Sample Places
+
+Coordinates are logical pixels in the root component for a Compact 1440 × 900 window, with the Browser left and Info visible. The bounds follow the component layout and JUCE’s 19 px row geometry. The fixture is peerless.
+
+The Browser is `(8,35,308,623)`. The list is `(127,81,185,546)` before and after. Each visible row is 185 × 19. The sample icon is 13 × 13 and is centered vertically. Each child adds 12 px of indentation.
+
+| Fixture row | Before | After, collapsed | After, both branches open |
+|---|---|---|---|
+| Empty folder | Absent | `(127,81,185,19)` | `(127,81,185,19)` |
+| Drums folder | Absent | `(127,100,185,19)` | `(127,100,185,19)` |
+| Drums / Acoustic folder | Absent | Hidden | `(127,119,185,19)` |
+| Drums / Acoustic / Clap.wav | `(127,81,185,19)` | Hidden | `(127,138,185,19)` |
+| Loops folder | Absent | `(127,119,185,19)` | `(127,157,185,19)` |
+| Loops / Clap.wav | `(127,100,185,19)` | Hidden | `(127,176,185,19)` |
+| Top.wav | `(127,119,185,19)` | `(127,138,185,19)` | `(127,195,185,19)` |
+
+The closed Drums triangle draws in `(137,105.5,5,8)`, and the open triangle draws in `(135,107.5,8,5)`. The indented Clap samples use x = 175 and 163 for their text, respectively. The corresponding text previously started at x = 151 for both. A typed `clap` search uses two flat rows at y = 81 and 100 and gives each its full original path on hover.
+
+The peerless shell fixture covers disclosure clicks, Right, Left, Enter, duplicate filenames, file-only drag, and clearing the search. An additional fixture checks empty folders in indexed and read-only Places. The shared query tests and a direct hierarchy smoke check ran with DISPLAY unset and warnings as errors. The integrated window gate is separate.
 
 ## For the director
 
