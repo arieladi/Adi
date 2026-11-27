@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/clip_commands.hpp"
 #include "adi/audio/progressive_decode.hpp"
+#include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/automation_time_edit.hpp"
@@ -525,6 +526,22 @@ PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t medi
                 } else {
                     stored=nullptr;
                 }
+            }
+            // A legacy Warp-off loop can wrap its offset or fall back to the
+            // start of the file. The retained Start must be playable for a one-shot.
+            if(source.at("warp_enabled")==0 && core.at("loop_enabled")==0) {
+                const auto rate=audio::pitchedSampleRate(static_cast<double>(sampleRate),source.at("transpose_semis").get<double>());
+                const auto& clocks=clip.at("children").at("clip_playback_details");
+                long double retainedStart;
+                if(!clocks.empty() && !clocks.front().at("content_offset_ns").is_null()) {
+                    retainedStart=static_cast<long double>(detail::signedInteger(clocks.front().at("content_offset_ns")))/1e9L;
+                } else {
+                    const edit::TimeMap time(store.db());
+                    retainedStart=time.durationSeconds(originTicks(core,time),detail::signedInteger(core.at("content_offset_ticks")));
+                }
+                const auto window=detail::signedInteger(source.at("src_len_frames"));
+                if(rate>0 && retainedStart>=static_cast<long double>(window)/rate)
+                    throw std::runtime_error("The replacement sample ends at or before the clip's Start at its current Pitch.");
             }
             source["media_id"]=mediaId;
         }
