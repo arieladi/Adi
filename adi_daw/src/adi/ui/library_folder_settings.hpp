@@ -28,8 +28,12 @@ inline settings::Value editContentFolders(settings::Value folders, std::span<con
         };
         if (edit == ContentFolderEdit::Remove)
             folders.erase(std::remove_if(folders.begin(), folders.end(), matches), folders.end());
-        else if (std::none_of(folders.begin(), folders.end(), matches))
-            folders.push_back(media::pathUtf8(path));
+        else if (std::none_of(folders.begin(), folders.end(), matches)) {
+            // Written as the system writes it, since Settings shows this text: on Windows with
+            // backslashes, the same text the folder chooser hands over.
+            const auto native = fs::path(path).make_preferred().u8string();
+            folders.push_back(std::string(reinterpret_cast<const char *>(native.data()), native.size()));
+        }
     }
     return folders;
 }

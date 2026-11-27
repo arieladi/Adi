@@ -242,6 +242,8 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(root.browser.sidebarArea() + at);
             g.fillRect(root.browser.search.getBounds() + at);
             g.fillRect(root.browser.contentArea().withHeight(19) + at);
+            // The names in the content list are words as well; each row's icon, left of them, stays.
+            g.fillRect(root.browser.contentArea().withTrimmedTop(19).withTrimmedLeft(22) + at);
         }
         g.fillRect(area.getX(), area.getBottom() - ArrangementView::kTimeRulerHeight, area.getWidth(),
                    ArrangementView::kTimeRulerHeight);
@@ -20281,10 +20283,14 @@ void mixerMonitorControls(AppCommands &commands, const std::filesystem::path &di
     if (!peer || !strip || !row || !otherStrip)
         return;
     const auto drawActivator = [](juce::TextButton &button) {
-        juce::Image image(juce::Image::ARGB, button.getWidth(), button.getHeight(), true);
-        juce::Graphics graphics(image);
-        button.getLookAndFeel().drawButtonBackground(graphics, button, button.findColour(juce::TextButton::buttonColourId),
-                                                     false, false);
+        // A plain memory picture, and the drawing closed before a pixel is read: Windows' own
+        // picture type holds its pixels back while a Graphics is open on it.
+        juce::Image image(juce::Image::ARGB, button.getWidth(), button.getHeight(), true, juce::SoftwareImageType());
+        {
+            juce::Graphics graphics(image);
+            button.getLookAndFeel().drawButtonBackground(graphics, button,
+                                                         button.findColour(juce::TextButton::buttonColourId), false, false);
+        }
         return image.getPixelAt(image.getWidth() / 2, image.getHeight() / 2);
     };
     auto &selection = root.arrangement.geometry.selection;
