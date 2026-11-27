@@ -575,7 +575,7 @@ void channelBendExtraction() {
     note.dur_ticks = longSustain.lengthTicks;
     note.tuning_cents = 0;
     longSustain.notes.push_back(note);
-    longSustain.pitchCurves = {{note.note_id, {point(0, -1), point(note.dur_ticks, 1)}}};
+    longSustain.pitchCurves = {{note.note_id, {makePoint(0, -1), makePoint(note.dur_ticks, 1)}}};
     const auto budget = projectPitchMidiChannelBend(longSustain, PitchMidiBendMode::Continuous, 2);
     check(budget.problem == PitchMidiProblem::Edits && !budget.data && budget.detail &&
           budget.detail->find("sample budget") != std::string::npos,
