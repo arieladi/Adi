@@ -4,18 +4,72 @@
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <unordered_set>
 namespace adi::ui {
 namespace {
+constexpr int kSearchClearSlot = 21;
 constexpr int kFolderIndent = 12, kFolderDisclosureWidth = 20;
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
 constexpr auto kLastLabel = "browser.lastLabel";
 constexpr auto kAllLabel = "label:All";
 constexpr auto kFirstLabel = "label:Instruments";
+constexpr std::string_view kSampleMarkPrefix = "sample:";
+constexpr auto kFavoriteSlot = 0u;
+constexpr auto kFavoriteMarkSize = 5, kFavoriteMarkPitch = 7, kFavoriteMarkInset = 5;
+struct CollectionColour {
+    const char *name;
+    std::int64_t palette;
+};
+// Use ADI's existing palette until the Collections sheet is checked.
+constexpr std::array<CollectionColour, 7> kCollectionColours{{
+    CollectionColour{"Red", 2}, {"Orange", 4}, {"Yellow", 5}, {"Green", 7},
+    {"Blue", 11}, {"Purple", 13}, {"Gray", -1},
+}};
+juce::Colour collectionColour(std::size_t i) {
+    const auto palette = kCollectionColours[i].palette;
+    return palette >= 0 ? look::paletteColour(palette) : look::textDim;
+}
+int favoriteMarkWidth(unsigned marks) { return std::popcount(marks) * kFavoriteMarkPitch; }
+void paintFavoriteMarks(juce::Graphics &g, unsigned marks, int width, int height) {
+    if (marks == 0)
+        return;
+    int x = width - kFavoriteMarkInset;
+    const int y = (height - kFavoriteMarkSize) / 2;
+    if ((marks & (1u << kFavoriteSlot)) != 0) {
+        x -= kFavoriteMarkPitch;
+        g.setColour(look::favourite);
+        g.drawRect(x, y, kFavoriteMarkSize, kFavoriteMarkSize);
+    }
+    for (std::size_t i = 0; i < kCollectionColours.size(); ++i) {
+        if ((marks & (2u << i)) != 0) {
+            x -= kFavoriteMarkPitch;
+            g.setColour(collectionColour(i));
+            g.fillRect(x, y, kFavoriteMarkSize, kFavoriteMarkSize);
+        }
+    }
+}
+
+juce::String nativeFilePath(const std::filesystem::path &path) {
+    const auto native = std::filesystem::path(path).make_preferred().u8string();
+    return juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size()));
+}
 bool presetNameLess(const preset::Entry &a, const preset::Entry &b) {
     const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
     return order != 0 ? order < 0 : a.path < b.path;
+}
+juce::String rowName(const BrowserPanel::Row &row) {
+    if (row.folder)
+        return juce::String::fromUTF8(row.folder->name.c_str());
+    if (row.device)
+        return juce::String::fromUTF8(row.device->name.data(), static_cast<int>(row.device->name.size()));
+    if (row.plugin)
+        return juce::String::fromUTF8(row.plugin->name.c_str());
+    if (row.savedPreset)
+        return juce::String::fromUTF8(row.savedPreset->name.c_str());
+    return row.file ? juce::String::fromUTF8(row.file->name.c_str()) : row.heading;
 }
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     g.setColour(look::text);
@@ -119,7 +173,8 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
 BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     // Live's sidebar, its names and order (manual 3.3). "Max for Live" is ADI's Pd tier
     // (Master Reference 9.3), Live's place for the same thing.
-    sidebar_ = {{"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
+    sidebar_ = {{"Collections", None, true}, {"Favorites", Favorite}, {{}, None, true},
+                {"Categories", None, true}, {"All", All}, {"Sounds", Sounds},
                 {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx},
                 {"Pd Devices", Pd}, {"Plug-Ins", PlugIns}, {"Samples", Samples, false, true},
@@ -139,12 +194,11 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     search.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     search.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible(search);
+    addChildComponent(searchClear_);
+    searchClear_.onClick = [this] { clearSearch(); };
     baseEntries_ = sidebar_.size();
     // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
-    search.onTextChange = [this] {
-        refill();
-        startSearchPluginScan();
-    };
+    search.onTextChange = [this] { searchEdited(); };
     search.onReturnKey = [this] { enterList(); };
     search.addKeyListener(&searchKeys_);
     list.setTitle("Browser content");
@@ -156,11 +210,54 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
     list.onPreviewKey = [this](const juce::KeyPress &k) { return previewKey(k); };
+    list.onFavoriteKey = [this](const juce::KeyPress &key) {
+        const auto command = root_.commands().manager.getKeyMappings()->findCommandForKeyPress(key);
+        return command >= AppCommands::ToggleFavorite && command <= AppCommands::ToggleCollectionGray &&
+               root_.command(command);
+    };
+
     addAndMakeVisible(list);
+    appendFavoritesToMenu = [this](juce::PopupMenu &menu, const Row &row) { appendContextFavorites(menu, row); };
     previewToggle.onClick = [this] { root_.command(AppCommands::ToggleBrowserPreview); };
     addChildComponent(previewToggle);
     selected_ = findLabel(kFirstLabel);
     refill();
+}
+BrowserPanel::SearchClearButton::SearchClearButton() : juce::Button("Clear Search") {
+    setTitle("Clear Search");
+    setTooltip("Clear the Browser search.");
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void BrowserPanel::SearchClearButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto centre = getLocalBounds().toFloat().getCentre();
+    constexpr float radius = 3.5f;
+    g.setColour(down ? look::textBright : over ? look::text : look::textDim);
+    g.drawLine(centre.x - radius, centre.y - radius, centre.x + radius, centre.y + radius, 1.2f);
+    g.drawLine(centre.x + radius, centre.y - radius, centre.x - radius, centre.y + radius, 1.2f);
+}
+void BrowserPanel::syncSearchClearButton() {
+    auto field = search.getBounds();
+    const bool shown = !search.isEmpty() && field.getWidth() >= 2 * kSearchClearSlot;
+    searchClear_.setBounds(shown ? field.removeFromRight(kSearchClearSlot).reduced(1) : juce::Rectangle<int>{});
+    searchClear_.setVisible(shown);
+    auto border = searchBorder_;
+    if (shown)
+        border.setRight(border.getRight() + kSearchClearSlot);
+    if (search.getBorder() != border)
+        search.setBorder(border);
+}
+void BrowserPanel::searchEdited() {
+    syncSearchClearButton();
+    refill();
+    startSearchPluginScan();
+}
+bool BrowserPanel::clearSearch() {
+    if (search.isEmpty())
+        return false;
+    search.setText({}, false);
+    searchEdited();
+    return true;
 }
 BrowserPanel::PreviewToggle::PreviewToggle() : juce::Button("Browser Preview") {
     setTitle("Browser Preview");
@@ -179,8 +276,10 @@ void BrowserPanel::PreviewToggle::paintButton(juce::Graphics &g, bool over, bool
 }
 const LibraryFile *BrowserPanel::selectedSample() const noexcept {
     const int row = list.getLastRowSelected();
-    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
-        ? rows_[static_cast<std::size_t>(row)].file : nullptr;
+    if (row < 0 || static_cast<std::size_t>(row) >= rows_.size())
+        return nullptr;
+    const auto *file = rows_[static_cast<std::size_t>(row)].file;
+    return file && file->isSample() ? file : nullptr;
 }
 void BrowserPanel::syncPreviewToggle() {
     const bool enabled = root_.commands().browserPreviewEnabled();
@@ -247,9 +346,13 @@ int BrowserPanel::firstItem() const {
     return -1;
 }
 void BrowserPanel::selectedRowsChanged(int row) {
+    if (restoringListSelection_)
+        return;
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
         lastSelected_ = row;
         updatePreviewSelection();
+        if (labelSettings_)
+            root_.commands().manager.commandStatusChanged();
         return;
     }
     // Past the heading, the way the selection moved; at the list's top, down to the first entry.
@@ -268,7 +371,7 @@ void BrowserPanel::selectedRowsChanged(int row) {
 }
 bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
     if (k == juce::KeyPress::escapeKey)
-        return panel.cancelHotSwap();
+        return panel.cancelHotSwap() || panel.clearSearch();
     if (k != juce::KeyPress::downKey)
         return false;
     panel.enterList();
@@ -278,11 +381,10 @@ juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *
     juce::StringArray paths;
     // The native spelling, as a file dragged from the desktop arrives: JUCE names a file by its last
     // native separator, so a generic path on Windows would name the clip after the whole path.
-    for (const auto *f : files) {
-        const auto native = std::filesystem::path(f->path).make_preferred().u8string();
-        paths.add(juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size())));
-    }
-    return "adi-sample:" + paths.joinIntoString("\n");
+    for (const auto *file : files)
+        if (file->isSample())
+            paths.add(nativeFilePath(file->path));
+    return paths.isEmpty() ? juce::String{} : "adi-sample:" + paths.joinIntoString("\n");
 }
 juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
     if (!description.isString())
@@ -317,6 +419,7 @@ int BrowserPanel::findLabel(std::string_view key) const {
 }
 void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     labelSettings_ = &settings;
+    loadFavoriteMarks();
     const auto saved = settings.get(kLastLabel).get<std::string>();
     selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
     pendingLabel_.clear();
@@ -330,11 +433,17 @@ void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     repaint();
 }
 void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library, bool ready) {
+    ready_ = ready;
+    if (library_ == library) {
+        if (ready_) pendingLabel_.clear();
+        return;
+    }
     const auto priorLabel = labelKey(selected_);
     const auto keep = pendingLabel_.empty() ? labelKey(selected_) : pendingLabel_;
     const bool keepInView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
-    library_ = std::move(library);
-    ready_ = ready;
+    // The old rows still borrow these sample and folder identities until the refill finishes.
+    const auto priorLibrary = std::exchange(library_, std::move(library));
+    updateMarkedSamples();
     // Live's added folders stand among the Places, after Current Project and before Add Folder; the
     // User Library's own label is Live's.
     auto addFolder = std::move(sidebar_.back());
@@ -362,10 +471,45 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     setSidebarScroll(sidebarScroll_);
     if (keepInView)
         revealSidebarSelection();
-    refill();
-    if (!hotSwap_ && labelKey(selected_) != priorLabel)
+    const bool sameLabel = labelKey(selected_) == priorLabel;
+    refill(-1, hotSwap_ || sameLabel);
+    if (!hotSwap_ && !sameLabel)
         setPreviewRowShown(false);
     repaint();
+}
+void BrowserPanel::setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrarySnapshot> library) {
+    if (projectLibrary_ == library)
+        return;
+    // Keep the previous publication alive until the rows that borrowed it have been cleared.
+    const auto previous = std::exchange(projectLibrary_, std::move(library));
+    updateMarkedSamples();
+    bool keepListPosition = true;
+    if (static_cast<bool>(previous) != static_cast<bool>(projectLibrary_)) {
+        const auto key = labelKey(selected_);
+        const bool inView = selected_ >= 0 && sidebarArea_.intersects(sidebarRowBounds(selected_));
+        if (projectLibrary_) {
+            sidebar_.insert(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1), {"Current Project", Project});
+            ++baseEntries_;
+        } else {
+            --baseEntries_;
+            sidebar_.erase(sidebar_.begin() + static_cast<std::ptrdiff_t>(baseEntries_ - 1));
+        }
+        selected_ = findLabel(key);
+        if (selected_ < 0) {
+            selected_ = findLabel(kAllLabel);
+            setPreviewRowShown(false);
+            keepListPosition = false;
+        }
+        setSidebarScroll(sidebarScroll_);
+        if (inView)
+            revealSidebarSelection();
+        repaint();
+    }
+    if (!hotSwap_ && selected_ >= 0) {
+        const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
+        if (glyph == Project || glyph == All || glyph == Favorite)
+            refill(-1, keepListPosition);
+    }
 }
 void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
     devicePresets_.clear();
@@ -388,6 +532,7 @@ void BrowserPanel::setHotSwap(std::optional<HotSwapFilter> filter) {
         search.setText(std::exchange(idleSearch_, {}), false);
     }
     hotSwap_ = std::move(filter);
+    syncSearchClearButton();
     list.setMultipleSelectionEnabled(!hotSwap_);
     refill();
     setPreviewRowShown(false);
@@ -414,13 +559,227 @@ void BrowserPanel::appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folde
         if (expanded)
             appendPlaceRows(folders, child, depth + 1, open);
     }
-    for (const auto sample : parent.samples) {
-        const auto *file = &listing().samples[sample];
+    for (const auto index : parent.files) {
+        const auto *file = &listing().files[index];
         shown_.push_back(file);
         rows_.push_back({file, nullptr, {}, nullptr, depth});
     }
 }
-void BrowserPanel::refill(int selectRow) {
+bool BrowserPanel::favoritesShown() const noexcept {
+    return !hotSwap_ && selected_ >= 0 && sidebar_[static_cast<std::size_t>(selected_)].glyph == Favorite;
+}
+const BrowserPanel::Row *BrowserPanel::favoriteSelection() const noexcept {
+    const int index = list.getLastRowSelected();
+    if (!labelSettings_ || index < 0 || static_cast<std::size_t>(index) >= rows_.size())
+        return nullptr;
+    const auto &row = rows_[static_cast<std::size_t>(index)];
+    return (row.file && row.file->isSample()) || row.device || row.plugin ? &row : nullptr;
+}
+bool BrowserPanel::canMarkSelection() const noexcept {
+    return favoriteSelection() != nullptr;
+}
+std::string BrowserPanel::favoriteKey(const Row &row) {
+    if (row.file && row.file->isSample())
+        return std::string(kSampleMarkPrefix) + media::pathUtf8(row.file->path);
+    if (row.device)
+        return "device:" + std::string(row.device->uid);
+    if (row.plugin) {
+        const auto &plugin = *row.plugin;
+        const auto shell = plugin.shellId ? settings::Value(*plugin.shellId) : settings::Value();
+        return "plugin:" + settings::Value::array({plugin.format, plugin.uid, shell}).dump();
+    }
+    return {};
+}
+unsigned BrowserPanel::favoriteMarks(const Row &row) const {
+    if (row.file && row.file->isSample()) {
+        const auto found = sampleMarks_.find(row.file->path);
+        return found == sampleMarks_.end() ? 0u : found->second;
+    }
+    if (favoriteMarks_.empty())
+        return 0;
+    const auto found = favoriteMarks_.find(favoriteKey(row));
+    return found == favoriteMarks_.end() ? 0u : found->second;
+}
+void BrowserPanel::loadFavoriteMarks() {
+    favoriteMarks_.clear();
+    sampleMarks_.clear();
+    const auto snapshot = labelSettings_->get(settings::kBrowserFavoriteMarksKey);
+    for (const auto &[key, value] : snapshot.items()) {
+        const auto marks = value.get<unsigned>();
+        if (key.starts_with(kSampleMarkPrefix))
+            sampleMarks_.emplace(media::pathFromUtf8(key.substr(kSampleMarkPrefix.size())), marks);
+        else
+            favoriteMarks_.emplace(key, marks);
+    }
+    updateMarkedSamples();
+}
+void BrowserPanel::updateMarkedSamples() {
+    markedSamples_.clear();
+    if (sampleMarks_.empty())
+        return;
+    std::unordered_set<std::filesystem::path> projectMarks;
+    if (projectLibrary_)
+        for (const auto &sample : projectLibrary_->listing().files)
+            if (sample.isSample() && sampleMarks_.contains(sample.path)) {
+                markedSamples_.push_back(&sample);
+                projectMarks.insert(sample.path);
+            }
+    for (const auto &sample : listing().files)
+        if (sample.isSample() && sampleMarks_.contains(sample.path) && !projectMarks.contains(sample.path))
+            markedSamples_.push_back(&sample);
+}
+bool BrowserPanel::toggleSelectionMark(unsigned slot) {
+    const auto *row = favoriteSelection();
+    return row && toggleFavoriteMark(favoriteKey(*row), slot);
+}
+bool BrowserPanel::toggleFavoriteMark(const std::string &identity, unsigned slot) {
+    if (!labelSettings_ || identity.empty() || slot > kCollectionColours.size())
+        return false;
+    auto snapshot = labelSettings_->get(settings::kBrowserFavoriteMarksKey);
+    const auto before = snapshot.value(identity, 0u);
+    const auto next = before ^ (1u << slot);
+    if (next == 0)
+        snapshot.erase(identity);
+    else
+        snapshot[identity] = next;
+    std::string error;
+    if (!labelSettings_->set(settings::kBrowserFavoriteMarksKey, snapshot, {}, error)) {
+        root_.say(std::move(error));
+        return true;
+    }
+    loadFavoriteMarks();
+    if (favoritesShown() && ((before == 0) != (next == 0)))
+        refill(-1, true);
+    else
+        list.repaint();
+    root_.commands().manager.commandStatusChanged();
+    if (!labelSettings_->save(error))
+        root_.say(std::move(error));
+    return true;
+}
+void BrowserPanel::appendContextFavorites(juce::PopupMenu &menu, const Row &row) {
+    if (!labelSettings_)
+        return;
+    const auto key = favoriteKey(row);
+    if (key.empty())
+        return;
+    const auto marks = favoriteMarks(row);
+    const auto toggle = [owner = SafePointer<BrowserPanel>(this), key](unsigned slot) {
+        if (owner)
+            owner->toggleFavoriteMark(key, slot);
+    };
+    const auto *keys = root_.commands().manager.getKeyMappings();
+    const auto add = [&](juce::PopupMenu &to, juce::PopupMenu::Item item, unsigned slot) {
+        const auto shortcuts = keys->getKeyPressesAssignedToCommand(AppCommands::ToggleFavorite + static_cast<int>(slot));
+        if (!shortcuts.isEmpty())
+            item.shortcutKeyDescription = shortcuts[0].getTextDescriptionWithIcons();
+        to.addItem(std::move(item).setAction([toggle, slot] { toggle(slot); }));
+    };
+    const bool favorite = (marks & (1u << kFavoriteSlot)) != 0;
+    add(menu, juce::PopupMenu::Item(favorite ? "Remove from Favorites" : "Add to Favorites"), kFavoriteSlot);
+    juce::PopupMenu colours;
+    for (std::size_t i = 0; i < kCollectionColours.size(); ++i) {
+        add(colours, juce::PopupMenu::Item(kCollectionColours[i].name)
+                         .setColour(collectionColour(i)).setTicked((marks & (2u << i)) != 0),
+            static_cast<unsigned>(i) + 1u);
+    }
+    menu.addSubMenu("Collection Colors", colours);
+}
+void BrowserPanel::refillFavorites(const LibraryQuery &query) {
+    rows_.clear();
+    for (const auto *sample : markedSamples_)
+        if (query.matches(sample->name)) {
+            shown_.push_back(sample);
+            rows_.push_back({sample, nullptr, {}});
+        }
+    if (favoriteMarks_.empty())
+        return;
+    for (const auto &device : builtinCatalog()) {
+        Row row{nullptr, &device, {}};
+        if (favoriteMarks(row) && query.matches(device.name))
+            rows_.push_back(row);
+    }
+    for (const auto &plugin : pluginScan_.listing.plugins) {
+        Row row{nullptr, nullptr, {}, &plugin};
+        if (favoriteMarks(row) && query.matches(plugin.name, plugin.vendor))
+            rows_.push_back(row);
+    }
+}
+namespace {
+const std::filesystem::path *browserRowPath(const BrowserPanel::Row &row) {
+    if (row.file) return &row.file->path;
+    if (row.folder) return &row.folder->path;
+    if (row.savedPreset) return &row.savedPreset->path;
+    return nullptr;
+}
+const void *browserCatalogueRow(const BrowserPanel::Row &row) {
+    return row.device ? static_cast<const void *>(row.device) : row.plugin;
+}
+struct BrowserListPosition {
+    std::unordered_set<std::filesystem::path> paths;
+    std::unordered_set<const void *> catalogue;
+    const std::filesystem::path *primaryPath = nullptr;
+    const void *primaryCatalogue = nullptr;
+    juce::Point<int> scroll;
+};
+} // namespace
+void BrowserPanel::refill(int selectRow, bool keepListPosition) {
+    std::optional<BrowserListPosition> previous;
+    if (keepListPosition) {
+        auto &position = previous.emplace();
+        position.scroll = list.getViewport()->getViewPosition();
+        const int primary = list.getLastRowSelected();
+        const auto selection = list.getSelectedRows();
+        for (int i = 0; i < selection.getNumRanges(); ++i) {
+            const auto range = selection.getRange(i);
+            for (int row = range.getStart(); row < range.getEnd(); ++row) {
+                const auto &item = rows_[static_cast<std::size_t>(row)];
+                if (const auto *path = browserRowPath(item)) {
+                    position.paths.insert(*path);
+                    if (row == primary) position.primaryPath = path;
+                } else if (const auto *catalogue = browserCatalogueRow(item)) {
+                    position.catalogue.insert(catalogue);
+                    if (row == primary) position.primaryCatalogue = catalogue;
+                }
+            }
+        }
+    }
+    refillRows();
+    sortRows();
+    if (previous) {
+        juce::SparseSet<int> selected;
+        int primary = -1;
+        if (!previous->paths.empty() || !previous->catalogue.empty())
+            for (int row = 0; row < static_cast<int>(rows_.size()); ++row) {
+                const auto &item = rows_[static_cast<std::size_t>(row)];
+                const auto *path = browserRowPath(item);
+                const auto *catalogue = browserCatalogueRow(item);
+                if ((path && previous->paths.contains(*path)) || (catalogue && previous->catalogue.contains(catalogue))) {
+                    selected.addRange({row, row + 1});
+                    if ((path && previous->primaryPath && *path == *previous->primaryPath) ||
+                        (catalogue && catalogue == previous->primaryCatalogue))
+                        primary = row;
+                }
+            }
+        {
+            const juce::ScopedValueSetter restoring(restoringListSelection_, true);
+            list.updateContent();
+            if (primary >= 0) list.selectRow(primary, true);
+            list.setSelectedRows(selected, juce::dontSendNotification);
+            lastSelected_ = list.getLastRowSelected();
+        }
+        updatePreviewSelection();
+        list.getViewport()->setViewPosition(previous->scroll);
+    } else {
+        list.updateContent();
+        list.deselectAllRows();
+        lastSelected_ = -1;
+        if (selectRow >= 0)
+            list.selectRow(selectRow);
+    }
+    list.repaint();
+}
+void BrowserPanel::refillRows() {
     shown_.clear();
     const Entry none{};
     const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
@@ -431,21 +790,30 @@ void BrowserPanel::refill(int selectRow) {
     using Role = ::adi::detail::DeviceRole;
     const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
     const LibraryQuery query{search.getText().toStdString()};
+    if (favoritesShown()) {
+        refillFavorites(query);
+        return;
+    }
     // Keep the typed results separate from how a panel groups them for display.
-    const bool samples = hotSwap_ ? hotSwap_->samples : all || chosen.samples;
+    const bool samples = hotSwap_ ? hotSwap_->samples : chosen.samples;
     const bool browsePlace = !samples && query.empty() && !chosen.place.empty();
     LibraryQueryResults hits;
     if (all) {
-        hits.samples.swap(shown_);
-        queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_}, hits);
-        hits.samples.swap(shown_);
+        hits.files.swap(shown_);
+        queryLibrary(query, {library_.get(), builtinCatalog(), pluginScan_.listing.plugins, &devicePresets_,
+                             projectLibrary_.get()}, hits);
+        hits.files.swap(shown_);
+    } else if (chosen.glyph == Project && projectLibrary_) {
+        projectLibrary_->appendSamples(query, nullptr, shown_);
     } else if (sounds) {
         queryLibrary(query, {nullptr, {}, {}, &devicePresets_}, hits);
         std::ranges::sort(hits.presets, presetNameLess, [](const preset::Entry *entry) -> const preset::Entry & {
             return *entry;
         });
-    } else if (library_ && !browsePlace && (samples || !chosen.place.empty())) {
-        library_->appendSamples(query, samples ? nullptr : &chosen.place, shown_);
+    } else if (library_ && samples) {
+        library_->appendSamples(query, nullptr, shown_);
+    } else if (library_ && !browsePlace && !chosen.place.empty()) {
+        library_->appendFiles(query, &chosen.place, shown_);
     }
     if (library_ && chosen.glyph == Drums) {
         static const std::string drumVolume{kStarterDrumsVolumeId};
@@ -571,12 +939,52 @@ void BrowserPanel::refill(int selectRow) {
             rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
-    list.updateContent();
-    list.deselectAllRows();
-    lastSelected_ = -1;
-    if (selectRow >= 0)
-        list.selectRow(selectRow);
-    list.repaint();
+}
+void BrowserPanel::sortRows() {
+    if (!nameSortAscending_ || hotSwap_ || rows_.size() < 2)
+        return;
+    const auto count = rows_.size();
+    std::vector<std::size_t> ends(count);
+    std::vector<juce::String> names;
+    names.reserve(rows_.size());
+    for (const auto &row : rows_)
+        names.push_back(rowName(row));
+    // Each contiguous branch includes its more deeply indented descendants.
+    for (auto index = count; index > 0;) {
+        --index;
+        auto end = index + 1;
+        while (end < count && rows_[end].depth > rows_[index].depth)
+            end = ends[end];
+        ends[index] = end;
+    }
+    auto original = std::move(rows_);
+    rows_.clear();
+    rows_.reserve(original.size());
+    shown_.clear();
+    const auto append = [&](std::size_t index) {
+        if (const auto *file = original[index].file)
+            shown_.push_back(file);
+        rows_.push_back(std::move(original[index]));
+    };
+    const auto appendSorted = [&](auto &&self, std::size_t first, std::size_t end) -> void {
+        std::vector<std::size_t> siblings;
+        for (auto index = first; index < end; index = ends[index])
+            siblings.push_back(index);
+        std::stable_sort(siblings.begin(), siblings.end(), [&](std::size_t a, std::size_t b) {
+            const auto order = names[a].compareIgnoreCase(names[b]);
+            return *nameSortAscending_ ? order < 0 : order > 0;
+        });
+        for (const auto index : siblings) {
+            append(index);
+            if (index + 1 < ends[index])
+                self(self, index + 1, ends[index]);
+        }
+    };
+    // Scan progress is a status line and the progress callback updates row zero.
+    const bool scanNotice = pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
+    if (scanNotice)
+        append(0);
+    appendSorted(appendSorted, scanNotice ? 1u : 0u, count);
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 juce::String BrowserPanel::getNameForRow(int row) {
@@ -647,19 +1055,32 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         const bool canLoad = hotSwap_ ? bool(swapChoice) : bool(root_.loadPlugin);
         g.setColour(canLoad ? look::text : look::textDim);
         g.setFont(look::font(look::fontHeading));
-        g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0, width - 28 - in, height,
+        const auto marks = favoriteMarks(r);
+        g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0,
+                   std::max(0, width - 28 - in - favoriteMarkWidth(marks)), height,
                    juce::Justification::centredLeft, true);
+        paintFavoriteMarks(g, marks, width, height);
         return;
     }
     const bool device = r.device != nullptr;
     const int indent = kFolderIndent * r.depth;
-    icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
+    int glyph = Samples;
+    if (device)
+        glyph = r.device->category == "Instruments" ? Instruments : AudioFx;
+    else if (r.file->kind == LibraryFile::Kind::Project)
+        glyph = Project;
+    else if (r.file->kind == LibraryFile::Kind::Midi)
+        glyph = Sounds;
+    icon(g, glyph,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
     g.setFont(look::font(look::fontHeading));
     const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
-    g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
+    const auto marks = favoriteMarks(r);
+    g.drawText(name, 24 + indent, 0, std::max(0, width - 28 - indent - favoriteMarkWidth(marks)), height,
+               juce::Justification::centredLeft, true);
+    paintFavoriteMarks(g, marks, width, height);
 }
 juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
     if (hotSwap_)
@@ -683,7 +1104,8 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
             if (row.file != nullptr)
                 files.push_back(row.file);
         }
-    return files.empty() ? juce::var() : juce::var(dragDescription(files));
+    const auto description = dragDescription(files);
+    return description.isEmpty() ? juce::var{} : juce::var(description);
 }
 std::string BrowserPanel::unavailable(const BuiltinInfo &d) {
     if (d.available)
@@ -734,7 +1156,9 @@ bool BrowserPanel::pluginsShown() const {
     if (selected_ < 0 || selected_ >= static_cast<int>(sidebar_.size()))
         return false;
     const auto glyph = sidebar_[static_cast<std::size_t>(selected_)].glyph;
-    return glyph == PlugIns || glyph == All;
+    const auto firstPlugin = favoriteMarks_.lower_bound("plugin:");
+    return glyph == PlugIns || glyph == All ||
+           (glyph == Favorite && firstPlugin != favoriteMarks_.end() && firstPlugin->first.starts_with("plugin:"));
 }
 void BrowserPanel::startSearchPluginScan() {
     if (!hotSwap_ && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted && pluginsShown())
@@ -756,7 +1180,7 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     if (!(hotSwap_ ? !hotSwap_->samples : pluginsShown()))
         return;
     if (countOnly) {
-        if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
+        if (!favoritesShown() && !rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
             rows_.front().heading = juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str());
             list.repaint();
         }
@@ -799,7 +1223,7 @@ bool BrowserPanel::loadHotSwap(const Row &row) {
         return swapChoice({Kind::Plugin, {}, *row.plugin, {}});
     if (row.savedPreset)
         return swapChoice({Kind::Preset, {}, {}, row.savedPreset->path});
-    if (row.file)
+    if (row.file && row.file->isSample())
         return swapChoice({Kind::Sample, {}, {}, row.file->path});
     return false;
 }
@@ -821,6 +1245,17 @@ bool BrowserPanel::load(int row) {
     }
     auto track = root_.arrangement.geometry.selection.track;
     if (entry.file) {
+        if (entry.file->kind == LibraryFile::Kind::Project) {
+            // The application can replace the root while opening the file.
+            auto open = root_.openProjectFile;
+            if (!open)
+                return false;
+            const juce::File file(nativeFilePath(entry.file->path));
+            open(file);
+            return true;
+        }
+        if (!entry.file->isSample())
+            return false;
         const auto &selection = root_.arrangement.geometry.selection;
         if (track == 0) {
             root_.say("Select a track to load " + entry.file->name + " onto.");
@@ -952,6 +1387,7 @@ void BrowserPanel::resized() {
     const auto r = getLocalBounds();
     const int edge = look::border;
     search.setBounds(kStripWidth + edge, edge, std::max(0, r.getWidth() - kStripWidth - 2 * edge), 21);
+    syncSearchClearButton();
     const int top = kBarHeight, bottom = r.getHeight() - (previewRowShown_ ? kBarHeight : 0) - edge;
     const bool keepInView = selected_ >= 0 &&
         (sidebarArea_.isEmpty() || sidebarArea_.intersects(sidebarRowBounds(selected_)));
@@ -986,12 +1422,9 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.fillRoundedRectangle(0, bar - 4, w, h - bar - footer + 8, look::radiusControl);
     if (previewRowShown_)
         g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
-    // The round buttons: show/hide the browser at the top, the groove pool at the foot.
-    // Round, in the shared button's colours at rest (language.png part B).
-    for (const float y : {0.5f, h - 19.5f}) {
-        controls::roundButton(g, {0, y, 19, 19}, controls::ButtonState::Rest);
-        look::triangle(g, {7, y + 5, 7, 9}, 0, controls::labelColour(controls::ButtonState::Rest));
-    }
+    // The top round button hides the Browser. MI-05 will bring in the Groove Pool.
+    controls::roundButton(g, {0, 0.5f, 19, 19}, controls::ButtonState::Rest);
+    look::triangle(g, {7, 5.5f, 7, 9}, 0, controls::labelColour(controls::ButtonState::Rest));
     // The search field.
     g.setColour(look::panel);
     g.fillRect(search.getBounds());
@@ -1031,7 +1464,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.drawRect(sidebarArea_, 1);
     }
     // The content pane's header, as Live's list.
-    const juce::Rectangle<int> header(contentArea_.getX(), contentArea_.getY(), contentArea_.getWidth(), 19);
+    const auto header = nameHeaderArea();
     g.setColour(look::columnHead);
     g.fillRect(header);
     g.setFont(look::font(look::fontField, true));
@@ -1043,8 +1476,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
     } else {
         g.setColour(look::text);
         g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
+        const auto angle = nameSortAscending_.value_or(true) ? juce::MathConstants<float>::halfPi
+                                                           : -juce::MathConstants<float>::halfPi;
         look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
-                       juce::MathConstants<float>::halfPi, look::textDim);
+                       angle, look::textDim);
     }
     // The preview row: Live's headphones switch at its left.
     const auto preview = previewArea();
@@ -1106,6 +1541,18 @@ void BrowserPanel::revealSidebarSelection() {
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
+    if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu()) {
+        if (hideButtonArea().contains(e.getPosition())) {
+            root_.command(AppCommands::ToggleBrowser);
+            return;
+        }
+        if (!hotSwap_ && nameHeaderArea().contains(e.getPosition())) {
+            nameSortAscending_ = !nameSortAscending_.value_or(true);
+            refill(-1, true);
+            repaint(nameHeaderArea());
+            return;
+        }
+    }
     const auto wave = previewWaveformArea();
     if (!e.mods.isPopupMenu() && previewPeaks_ && wave.contains(e.getPosition()) && selectedSample()) {
         previewSelected(static_cast<double>(e.x - wave.getX()) / std::max(1, wave.getWidth() - 1));
@@ -1251,7 +1698,9 @@ void BrowserPanel::choose(int i) {
                 return;
             }
         }
-        if (entry.glyph == All || entry.glyph == Sounds)
+        if (entry.glyph == Project && projectLibrary_ && !projectLibrary_->listing().error.empty())
+            root_.say(projectLibrary_->listing().error);
+        if (entry.glyph == All || entry.glyph == Sounds || entry.glyph == Project || entry.glyph == Favorite)
             return;
         const bool library = entry.samples || entry.glyph == User || entry.glyph == Drums;
         if (!entry.place.empty()) {
@@ -1275,10 +1724,12 @@ void BrowserPanel::choose(int i) {
                 root_.say(pluginScanStatus(pluginScan_));
         } else if (library && !ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
-        else if (library && rows_.empty())
+        else if (library && rows_.empty()) {
+            const bool audioOnly = entry.samples || entry.glyph == Drums;
             root_.say(entry.glyph != Drums && (listing().places.empty() || (!entry.samples && entry.place.empty()))
                           ? "Choose Add Folder in the Browser to list samples."
-                          : (entry.name + " holds no audio files.").toStdString());
+                          : (entry.name + (audioOnly ? " holds no audio files." : " holds no supported files.")).toStdString());
+        }
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {

@@ -468,6 +468,20 @@ void catalogueSettings(std::vector<Setting>& r) {
                        0, 0, 1000000));
     r.push_back(make("browser.lastLabel", Type::Text, "", "Last Browser label",
                      "The Browser label to restore when a project opens.", ""));
+    {
+        auto marks = make(kBrowserFavoriteMarksKey, Type::Record, "", "Browser Favorites",
+                          "The Browser's favorite and collection color marks.", Value::object());
+        marks.check = [](const Value &value, std::string &why) {
+            for (const auto &[identity, mark] : value.items()) {
+                if (identity.empty() || !mark.is_number_integer() || mark < 1 || mark > 255) {
+                    why = "Browser Favorites needs an identity and at least one valid mark per item.";
+                    return false;
+                }
+            }
+            return true;
+        };
+        r.push_back(std::move(marks));
+    }
     r.push_back(make(kBrowserPreviewEnabledKey, Type::Bool, "", "Browser Preview",
                      "Play an audio file when it is selected in the Browser.", kBrowserPreviewStartsEnabled));
     r.push_back(ranged(kStandalonePreviewLevelKey, Type::Real, "", "Preview level without a song",

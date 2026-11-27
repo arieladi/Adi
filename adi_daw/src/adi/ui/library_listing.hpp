@@ -7,6 +7,7 @@
 #include <cctype>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 #include <stop_token>
 #include <string>
@@ -18,9 +19,8 @@ inline constexpr char kStarterDrumsVolumeId[] = "factory:starter-drums";
 // The browser's Samples and Places (Live 12 manual 4.1, 4.6, 4.7; MR 3.1; worklist D1, N15's index
 // part): the folders the settings name (`library.userLibrary`, `library.contentFolders`) are
 // registered as volumes of the library index (#102) and scanned into it; what the index then holds
-// under them is listed. Places are those folders, by name; Samples are their audio files. The index
-// records every file; the listing keeps the ones whose extension is an audio format the engine
-// decodes. A scan blocks for its whole walk, so the app runs this on a worker of its own.
+// under them is listed. Places show supported audio, MIDI and project files. Samples shows their
+// audio only. A scan blocks for its whole walk, so the app runs this on a worker of its own.
 struct LibraryPlace {
     std::string name;
     std::filesystem::path root;
@@ -31,9 +31,12 @@ struct LibraryPlace {
     bool starterDrums = false;
 };
 struct LibraryFile {
+    enum class Kind { Audio, Midi, Project };
     std::string name;            // the file's name, as Live's list shows it
     std::filesystem::path path;  // absolute
     std::string volumeId;        // the place it is under
+    Kind kind = Kind::Audio;
+    bool isSample() const noexcept { return kind == Kind::Audio; }
 };
 // A configured folder or built-in content root. The shipped kit is listed without index writes.
 struct LibraryFolder {
@@ -44,9 +47,15 @@ struct LibraryFolder {
 };
 struct LibraryListing {
     std::vector<LibraryPlace> places;
-    std::vector<LibraryFile> samples; // by name, case-insensitive
+    std::vector<LibraryFile> files; // by name, case-insensitive
     std::string error;                // the first folder that could not be read, and why
 };
+inline void sortLibraryFiles(std::vector<LibraryFile> &samples) {
+    std::stable_sort(samples.begin(), samples.end(), [](const LibraryFile &a, const LibraryFile &b) {
+        return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
+                                            [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+    });
+}
 // Provision a new default User Library once. An existing library belongs to
 // the user, who may move or remove any of its initial folders.
 inline bool provisionDefaultUserLibrary(const std::filesystem::path& root, std::string& error) {
@@ -78,14 +87,19 @@ inline bool provisionDefaultUserLibrary(const std::filesystem::path& root, std::
     }
     return true;
 }
-// The extensions the engine's decoders read (adi/audio/decode.hpp's formats).
-inline bool isAudioFile(const std::filesystem::path &path) {
+// Classify at publication time so an existing index and a read-only walk use the same rules.
+inline std::optional<LibraryFile::Kind> libraryFileKind(const std::filesystem::path &path) {
+    using Kind = LibraryFile::Kind;
     auto ext = media::pathUtf8(path.extension());
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext == ".adi")
+        return Kind::Project;
+    if (ext == ".mid" || ext == ".smf" || ext == ".midi")
+        return Kind::Midi;
     for (const char *audio : {".wav", ".wave", ".aif", ".aiff", ".aifc", ".flac", ".mp3", ".ogg", ".m4a", ".aac"})
         if (ext == audio)
-            return true;
-    return false;
+            return Kind::Audio;
+    return std::nullopt;
 }
 // A place without a usable portable marker can still be read on the library worker. Its key only
 // scopes this listing. It is never registered as a volume or used to reuse the index's cached hashes.
@@ -97,14 +111,16 @@ inline std::vector<LibraryFile> readUnindexedPlace(LibraryPlace &place, std::sto
         const auto status = it->symlink_status();
         if (fs::is_directory(status))
             directories.push_back(it->path().lexically_relative(place.root));
-        else if (fs::is_regular_file(status) && isAudioFile(it->path()))
-            files.push_back({media::pathUtf8(it->path().filename()), it->path(), place.volumeId});
+        else if (fs::is_regular_file(status)) {
+            if (const auto kind = libraryFileKind(it->path()))
+                files.push_back({media::pathUtf8(it->path().filename()), it->path(), place.volumeId, *kind});
+        }
     }
     place.directories = std::move(directories);
     return files;
 }
 
-// Lists each audio path once, including read-only Places. A missing folder still has a Places row
+// Lists each supported file once, including read-only Places. A missing folder still has a Places row
 // so it can be removed from Settings there. A stopped scan leaves the index's last complete scan intact.
 inline LibraryListing scanLibrary(library::Index &index, const std::vector<LibraryFolder> &folders,
                                   library::VolumeIdentityProvider &volumes, std::stop_token stop = {}) {
@@ -171,11 +187,11 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
                     if (stop.stop_requested()) break;
                     for (auto &file : files) {
                         if (seen.insert(file.path).second) {
-                            // Place membership is path-based. The shared sample keeps its factory
+                            // Place membership is path-based. The shared file keeps its factory
                             // identity regardless of which Place saw it first.
                             if (starterSubfolder)
                                 file.volumeId = kStarterDrumsVolumeId;
-                            out.samples.push_back(std::move(file));
+                            out.files.push_back(std::move(file));
                         }
                     }
                 } catch (const fs::filesystem_error &error) {
@@ -191,17 +207,15 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
                 continue;
             const auto &where = out.places[place->second];
             auto path = (where.root / media::pathFromUtf8(entry.relativePath)).lexically_normal();
-            if (!isAudioFile(path) || !seen.insert(path).second)
+            const auto kind = libraryFileKind(path);
+            if (!kind || !seen.insert(path).second)
                 continue;
-            out.samples.push_back({media::pathUtf8(path.filename()), std::move(path), where.volumeId});
+            out.files.push_back({media::pathUtf8(path.filename()), std::move(path), where.volumeId, *kind});
         }
     } catch (const std::exception &e) {
         out.error = std::string("The library index could not be read: ") + e.what();
     }
-    std::stable_sort(out.samples.begin(), out.samples.end(), [](const LibraryFile &a, const LibraryFile &b) {
-        return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
-                                            [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
-    });
+    sortLibraryFiles(out.files);
     return out;
 }
 } // namespace adi::ui

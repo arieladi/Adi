@@ -28,11 +28,14 @@ class BrowserList final : public juce::ListBox {
     std::function<void()> onLeft;
     std::function<bool()> onEscape;
     std::function<bool(const juce::KeyPress &)> onPreviewKey;
+    std::function<bool(const juce::KeyPress &)> onFavoriteKey;
     bool keyPressed(const juce::KeyPress &k) override {
         if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
             return true;
         if ((k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) && onFolderArrow &&
             onFolderArrow(getSelectedRow(), k == juce::KeyPress::rightKey))
+            return true;
+        if (onFavoriteKey && onFavoriteKey(k))
             return true;
         if (onPreviewKey && onPreviewKey(k))
             return true;
@@ -94,6 +97,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The logical row before clipping to the scrolling sidebar pane.
     juce::Rectangle<int> sidebarRowBounds(int row) const noexcept;
     juce::Rectangle<int> contentArea() const noexcept { return contentArea_; }
+    juce::Rectangle<int> nameHeaderArea() const noexcept { return contentArea_.withHeight(kRowHeight); }
+    static juce::Rectangle<int> hideButtonArea() noexcept { return {0, 0, 19, 20}; }
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the
     // search and preview rows, the dark edge.
     static constexpr int kStripWidth = 20, kSidebarWidth = 113, kRowHeight = 19, kBarHeight = 27;
@@ -117,6 +122,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
     void setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapshot>, bool ready = true);
+    void setCurrentProjectSnapshot(std::shared_ptr<const BrowserLibrarySnapshot>);
     void setListing(LibraryListing, bool ready = true);
     const LibraryListing &listing() const noexcept;
     void restoreLabel(settings::AppSettings &);
@@ -132,7 +138,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a library folder, a heading, a device or a saved preset.
+    // A row of the list: a library file or folder, a heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
@@ -146,7 +152,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     };
     std::function<void(juce::PopupMenu &, const Row &)> appendFavoritesToMenu;
     const std::vector<Row> &rows() const noexcept { return rows_; }
-    // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
+    bool canMarkSelection() const noexcept;
+    bool toggleSelectionMark(unsigned slot);
+
+    // Activates the row (double-click or Enter).
     bool load(int row);
     void setDevicePresets(std::vector<preset::Entry>);
     std::function<bool(const std::filesystem::path &)> loadDevicePreset;
@@ -186,7 +195,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The drag's description of these files: what the lanes accept as a drop (`dropDescription`).
     static juce::String dragDescription(const std::vector<const LibraryFile *> &);
     static juce::StringArray droppedFiles(const juce::var &description);
-    // The search field's own keys: the down arrow goes into the list.
+    // The search field's own keys: Down enters the list and Escape clears the search.
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
@@ -197,6 +206,15 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void presentContextMenu(juce::PopupMenu, const juce::MouseEvent &);
     void addRevealItem(juce::PopupMenu &, const std::filesystem::path &, bool builtin = false);
     void addRescanItem(juce::PopupMenu &);
+    void searchEdited();
+    bool clearSearch();
+    void syncSearchClearButton();
+    class SearchClearButton final : public juce::Button {
+      public:
+        SearchClearButton();
+        void paintButton(juce::Graphics &, bool over, bool down) override;
+    } searchClear_;
+    const juce::BorderSize<int> searchBorder_ = search.getBorder();
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
@@ -204,7 +222,20 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::string labelKey(int) const;
     int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
-    void refill(int selectRow = -1);
+    void refill(int selectRow = -1, bool keepListPosition = false);
+    void refillRows();
+    void sortRows();
+    // The rows are borrowed only while constructing a menu. Actions own the identity.
+    void appendContextFavorites(juce::PopupMenu &, const Row &);
+    void refillFavorites(const LibraryQuery &);
+    void loadFavoriteMarks();
+    void updateMarkedSamples();
+    bool favoritesShown() const noexcept;
+    const Row *favoriteSelection() const noexcept;
+    static std::string favoriteKey(const Row &);
+    unsigned favoriteMarks(const Row &) const;
+    bool toggleFavoriteMark(const std::string &identity, unsigned slot);
+
     void appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder>, std::size_t folder, int depth,
                          const std::set<std::filesystem::path> &open);
     bool folderArrow(int row, bool right);
@@ -226,14 +257,21 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::optional<double> previewPosition_;
     bool previewRowShown_ = false;
     bool canRepeatPreview_ = false;
+    std::optional<bool> nameSortAscending_;
     int firstItem() const;
     int lastSelected_ = -1;
+    bool restoringListSelection_ = false;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
+    std::map<std::string, unsigned, std::less<>> favoriteMarks_;
+    std::map<std::filesystem::path, unsigned> sampleMarks_;
+    std::vector<const LibraryFile *> markedSamples_;
+
     std::optional<HotSwapFilter> hotSwap_;
     juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    std::shared_ptr<const BrowserLibrarySnapshot> projectLibrary_;
     std::map<std::string, std::set<std::filesystem::path>> openFolders_;
     bool ready_ = false;
     PluginScan pluginScan_;

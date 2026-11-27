@@ -140,3 +140,11 @@
 29067 Preview Selected: Shift+Return, Right
 29068 Hot-Swap: Q
 29069 Manage Project Files...: 
+29070 Toggle Favorite: 
+29071 Toggle Red Collection: 1
+29072 Toggle Orange Collection: 2
+29073 Toggle Yellow Collection: 3
+29074 Toggle Green Collection: 4
+29075 Toggle Blue Collection: 5
+29076 Toggle Purple Collection: 6
+29077 Toggle Gray Collection: 7

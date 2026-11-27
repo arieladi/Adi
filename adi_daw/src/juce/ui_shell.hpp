@@ -191,7 +191,15 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         PreviewSelected,
         HotSwap,
         ManageProjectFiles,
-        LastId = ManageProjectFiles
+        ToggleFavorite,
+        ToggleCollectionRed,
+        ToggleCollectionOrange,
+        ToggleCollectionYellow,
+        ToggleCollectionGreen,
+        ToggleCollectionBlue,
+        ToggleCollectionPurple,
+        ToggleCollectionGray,
+        LastId = ToggleCollectionGray
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -520,7 +528,7 @@ class AdiRootComponent final : public juce::Component,
     std::function<bool(int)> applicationCommand;
     std::function<void()> openAudioSettings;
     bool needsFirstSave = false;
-    std::function<void(const juce::File &)> openRecentProject;
+    std::function<void(const juce::File &)> openProjectFile;
     std::function<void()> openProjectBackup;
     std::function<void()> afterEdit;
     // The app stops audio and reloads the document for cross-checkpoint navigation.
