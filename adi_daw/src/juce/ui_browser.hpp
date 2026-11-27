@@ -80,8 +80,6 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
     void setListing(LibraryListing, bool ready = true);
-    // Where the list must stop, in this panel's coordinates: above the AI tab at the panes' foot.
-    void setFootLimit(int y);
     const LibraryListing &listing() const noexcept { return listing_; }
     // Selects a label, as a click on it does.
     void choose(int);
@@ -164,7 +162,6 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
-    int footLimit_ = 1 << 20;
     // The search's down arrow goes into the list (§41.4.1.6).
     struct SearchKeys final : juce::KeyListener {
         BrowserPanel &panel;

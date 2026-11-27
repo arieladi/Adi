@@ -419,6 +419,11 @@ private:
     std::vector<std::uint32_t> followedSeen_;    ///< message thread: the sequence last handed over
     std::atomic<std::uint32_t> followedEpoch_{0};
     std::uint32_t followedHanded_ = 0;           ///< message thread
+    // SC-332: the plug-in said its parameters' titles changed (restartComponent(kParamTitlesChanged),
+    // from any thread); the next message-thread pump reads the names and units again.
+    std::atomic<std::uint32_t> titlesEpoch_{0};
+    std::uint32_t titlesRead_ = 0;               ///< message thread
+    void readTitles();
     /// Each VST3 ParamID with its index, sorted, for the audio thread's lookup (no allocation).
     std::vector<std::pair<std::uint32_t, std::int32_t>> wireIndex_;
     /// Audio thread: record that the processor was sent `value` for `wireId`.

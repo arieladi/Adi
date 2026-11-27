@@ -463,6 +463,9 @@ int main() {
         const auto old = views.load("old-stack");
         check(old.zoom == 1.5 && old.mixStackSearch.empty() && !old.mixStackBaseHeight,
               "invalid optional Stack fields keep the rest of the window geometry");
+        check(old.follow == WindowState::kDefaultFollow &&
+                  views.load("other").follow == WindowState::kDefaultFollow,
+              "a fresh window and a saved window without a Follow setting share the default");
         constexpr std::array<std::int64_t, 1> first{7}, second{99};
         check(views.saveStackPins({}, first, error) && views.saveStackPins({}, second, error) &&
                   views.stackPins().ids == std::vector<std::int64_t>{7, 99},
@@ -529,7 +532,10 @@ int main() {
     state.gridFixedQuarters = .125;
     check(views.save("main", state, error), "save view");
     const auto restored = views.load("main");
-    check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
+    auto followOff = restored;
+    followOff.follow = false;
+    check(restored.follow && views.save("follow-off", followOff, error) && !views.load("follow-off").follow,
+          "explicit Follow settings persist independently in each window");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
     check(!restored.sends && views.load("other").sends, "so are the sends (Hide/Show Sends, §42.1)");
