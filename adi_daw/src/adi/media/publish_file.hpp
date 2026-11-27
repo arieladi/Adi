@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <cstdint>
@@ -28,6 +29,17 @@ struct FileIdentity {
 // publisher's native volume/file key; this is not a persistent content hash or
 // an open-file lease. Failure retains the native error (no path-only fallback).
 [[nodiscard]] std::optional<FileIdentity> readFileIdentity(const std::filesystem::path&,
+                                                          std::error_code&) noexcept;
+/// Revision of one regular file from the same native stat or handle. Change
+/// time catches in-place edits even when a writer restores modification time.
+struct FileRevision {
+    FileIdentity identity;
+    std::uint64_t size;
+    std::array<std::int64_t,2> modified, changed;
+    friend bool operator==(const FileRevision&,const FileRevision&) = default;
+};
+/// Like readFileIdentity, but refuses a final symlink or reparse point.
+[[nodiscard]] std::optional<FileRevision> readFileRevision(const std::filesystem::path&,
                                                           std::error_code&) noexcept;
 // Roll back one exposed publication only when a Windows DELETE handle proves
 // its expected identity. The handle denies concurrent opens/rename/delete and

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -100,25 +101,187 @@ void store(OpContext& c, const Payload& p, const Bytes* bytes, bool exists) {
     q.bind(4, value, size);
     q.exec();
 }
+Payload bytesPayload(std::span<const std::byte> source) {
+    std::vector<std::uint8_t> bytes(source.size());
+    if (!bytes.empty()) std::memcpy(bytes.data(), source.data(), bytes.size());
+    return Payload::binary(std::move(bytes));
+}
+Payload fullState(const Data& data) {
+    return {{"present", data.present}, {"bytes", bytesPayload(data.bytes)}, {"ranges", data.ranges}};
+}
 bool capture(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
-        const auto d = read(c, p); inv = address(p); inv["state"] = {{"present", d.present}};
-        std::vector<std::uint8_t> bytes(d.bytes.size());
-        if (!bytes.empty()) std::memcpy(bytes.data(), d.bytes.data(), bytes.size());
-        inv["state"]["bytes"] = Payload::binary(std::move(bytes));
-        inv["state"]["ranges"] = d.ranges; return true;
+        inv = address(p);
+        inv["state"] = fullState(read(c, p));
+        return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool rangeSurvives(const AutomationPoint& oldLeft, const AutomationPoint* oldRight,
+                   const AutomationPoint& newLeft, const AutomationPoint* newRight) {
+    return oldLeft.value == newLeft.value && oldLeft.curve == newLeft.curve && oldLeft.tension == newLeft.tension &&
+           (oldRight ? newRight && oldRight->point_id == newRight->point_id && oldRight->value == newRight->value
+                     : newRight == nullptr);
+}
+std::size_t ordinal(const Payload& value, std::size_t count) {
+    const auto index = integer(value);
+    if (index < 0 || static_cast<std::uint64_t>(index) >= count)
+        throw std::runtime_error("automation: record index outside stream");
+    return static_cast<std::size_t>(index);
+}
+Payload droppedRanges(const Payload& ranges, const std::vector<AutomationPoint>& original,
+                      const std::vector<AutomationPoint>& edited) {
+    std::vector<std::size_t> order(edited.size()), newPosition(edited.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return edited[a].time < edited[b].time; });
+    for (std::size_t i = 0; i < order.size(); ++i) newPosition[order[i]] = i;
+
+    Payload dropped = Payload::array();
+    for (const auto& range : ranges) {
+        const auto old = ordinal(range.at("record_index"), original.size());
+        const auto now = newPosition[old];
+        const auto* oldRight = old + 1 < original.size() ? &original[old + 1] : nullptr;
+        const auto* newRight = now + 1 < order.size() ? &edited[order[now + 1]] : nullptr;
+        if (!rangeSurvives(original[old], oldRight, edited[old], newRight)) dropped.push_back(range);
+    }
+    return dropped;
+}
+bool captureMove(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto data = read(c, p);
+        inv = address(p);
+        const StreamReader<AutomationPoint> reader(data.bytes, FourCC::Automation);
+        if (!data.present || !reader.ok()) {
+            inv["state"] = fullState(data);
+            return true;
+        }
+        struct Position { std::int64_t time; double value; };
+        std::map<std::uint64_t, Position> selected;
+        const auto& points = p.at("points");
+        if (!points.is_array() || points.empty()) throw std::runtime_error("automation: empty selection");
+        for (const auto& point : points) {
+            const Position position{integer(point.at("time")), point.at("value").get<double>()};
+            if (!selected.emplace(identity(point.at("id")), position).second)
+                throw std::runtime_error("automation: duplicate selected ID");
+        }
+        // For dense selections, per-record journal metadata can make a delta
+        // larger than the old AAUT image.
+        if (selected.size() > reader.count() / 2) {
+            inv["state"] = fullState(data);
+            return true;
+        }
+        Payload moved = Payload::array();
+        std::vector<AutomationPoint> original, edited;
+        const bool hasRanges = !data.ranges.empty();
+        if (hasRanges) {
+            original.reserve(reader.count());
+            edited.reserve(reader.count());
+        }
+        const auto raw = std::span(data.bytes);
+        std::int64_t previous = INT64_MIN;
+        for (std::uint32_t i = 0; i < reader.count(); ++i) {
+            auto point = *reader.at(i);
+            // A forward edit will also sort unrelated records in a legacy
+            // unsorted stream. Keep the old full inverse in that case.
+            if (point.time < previous) {
+                inv["state"] = fullState(data);
+                return true;
+            }
+            previous = point.time;
+            if (hasRanges) original.push_back(point);
+            const auto move = selected.find(point.point_id);
+            if (move != selected.end()) {
+                const auto offset = sizeof(StreamHeader) + static_cast<std::size_t>(i) * reader.recSize();
+                moved.push_back({{"ordinal", i}, {"record", bytesPayload(raw.subspan(offset, reader.recSize()))}});
+                point.time = move->second.time;
+                point.value = move->second.value;
+            }
+            if (hasRanges) edited.push_back(point);
+        }
+        if (moved.size() != selected.size()) throw std::runtime_error("automation: selected point missing or duplicated");
+        inv["state"] = {{"count", reader.count()}, {"moved", std::move(moved)},
+                        {"ranges", hasRanges ? droppedRanges(data.ranges, original, edited) : Payload::array()}};
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+void restoreMove(OpContext& c, const Payload& p, const Payload& state, const Data& data) {
+    const StreamReader<AutomationPoint> reader(data.bytes, FourCC::Automation);
+    if (!data.present || !reader.ok() || integer(state.at("count")) != static_cast<std::int64_t>(reader.count()))
+        throw std::runtime_error("automation: moved stream shape differs");
+    const auto& moved = state.at("moved");
+    const auto& dropped = state.at("ranges");
+    if (!moved.is_array() || moved.empty() || moved.size() > reader.count() || !dropped.is_array())
+        throw std::runtime_error("automation: invalid move inverse");
+    const std::size_t count = reader.count(), stride = reader.recSize();
+    std::vector<const Payload::binary_t*> originals(count, nullptr);
+    struct MovedPoint { std::size_t original; bool found = false; };
+    std::map<std::uint64_t, MovedPoint> movedPoints;
+    for (const auto& item : moved) {
+        const auto index = ordinal(item.at("ordinal"), count);
+        const auto& raw = item.at("record").get_binary();
+        if (raw.size() != stride || originals[index]) throw std::runtime_error("automation: invalid captured record");
+        AutomationPoint point{};
+        std::memcpy(&point, raw.data(), sizeof point);
+        if (!point.point_id || !movedPoints.emplace(point.point_id, MovedPoint{index}).second)
+            throw std::runtime_error("automation: invalid captured point ID");
+        originals[index] = &raw;
+    }
+    std::vector<std::size_t> restoredPosition(count, count);
+    std::size_t found = 0;
+    for (std::uint32_t i = 0; i < reader.count(); ++i) {
+        const auto point = *reader.at(i);
+        const auto move = movedPoints.find(point.point_id);
+        if (move == movedPoints.end()) continue;
+        if (move->second.found) throw std::runtime_error("automation: duplicate moved point");
+        move->second.found = true;
+        ++found;
+        restoredPosition[i] = move->second.original;
+    }
+    if (found != movedPoints.size()) throw std::runtime_error("automation: moved point missing");
+
+    // The forward stable sort retains the relative order of unselected
+    // records. Fill the old moved slots and merge those other records back
+    // in order, copying whole strides and leaving header and trailer intact.
+    Bytes out = data.bytes;
+    std::size_t next = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        auto* destination = out.data() + sizeof(StreamHeader) + i * stride;
+        if (originals[i]) {
+            std::memcpy(destination, originals[i]->data(), stride);
+            continue;
+        }
+        while (next < count && restoredPosition[next] != count) ++next;
+        if (next == count) throw std::runtime_error("automation: incomplete captured move");
+        std::memcpy(destination, data.bytes.data() + sizeof(StreamHeader) + next * stride, stride);
+        restoredPosition[next++] = i;
+    }
+    auto ranges = data.ranges;
+    for (auto& range : ranges)
+        range["record_index"] = restoredPosition[ordinal(range.at("record_index"), count)];
+    for (const auto& range : dropped) {
+        (void)ordinal(range.at("record_index"), count);
+        ranges.push_back(range);
+    }
+    std::sort(ranges.begin(), ranges.end(), [](const Payload& a, const Payload& b) {
+        return integer(a.at("id")) < integer(b.at("id"));
+    });
+    store(c, p, &out, true);
+    range_rows::replace(c.db, integer(p.at("id")), p.at("clip"), ranges);
 }
 bool restore(OpContext& c, const Payload& p, std::string& err) {
     try {
-        const bool exists = read(c, p).present;
-        const auto& bin = p.at("state").at("bytes").get_binary();
+        const auto data = read(c, p);
+        const auto& state = p.at("state");
+        if (state.contains("moved")) {
+            restoreMove(c, p, state, data);
+            return true;
+        }
+        const auto& bin = state.at("bytes").get_binary();
         Bytes bytes(bin.size());
         if (!bytes.empty()) std::memcpy(bytes.data(), bin.data(), bytes.size());
-        const bool present=p.at("state").at("present").get<bool>();
-        const auto ranges=p.at("state").value("ranges",Payload::array());
+        const bool present=state.at("present").get<bool>();
+        const auto ranges=state.value("ranges",Payload::array());
         if(!present && !ranges.empty())throw std::runtime_error("automation: absent data with curve ranges");
-        store(c,p,present?&bytes:nullptr,exists);
+        store(c,p,present?&bytes:nullptr,data.present);
         range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),ranges);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -211,13 +374,9 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
             const auto& record=records[index];const auto old=originalRanges.find(record.original);
             if(old==originalRanges.end())continue;
             const auto& left=originalPoints[record.original];
-            if(record.point.value!=left.value || record.point.curve!=left.curve || record.point.tension!=left.tension)continue;
-            const bool oldNext=record.original+1<originalPoints.size(),newNext=index+1<records.size();
-            if(oldNext!=newNext)continue;
-            if(oldNext){
-                const auto& right=originalPoints[record.original+1];const auto& next=records[index+1].point;
-                if(next.point_id!=right.point_id || next.value!=right.value)continue;
-            }
+            const auto* oldRight = record.original + 1 < originalPoints.size() ? &originalPoints[record.original + 1] : nullptr;
+            const auto* newRight = index + 1 < records.size() ? &records[index + 1].point : nullptr;
+            if (!rangeSurvives(left, oldRight, record.point, newRight)) continue;
             auto range=old->second;range["record_index"]=static_cast<std::int64_t>(index);retained.push_back(std::move(range));
         }
         store(c,p,&out,d.present);
@@ -234,7 +393,7 @@ const OpDescriptor ops[] = {
     {"automation.deletePoints", "Delete selected automation points", Scope::Edit, EngineImpact::Snapshot,
         idsFields, false, false, apply<Edit::Delete>, capture, "automation.restoreData"},
     {"automation.movePoints", "Move selected automation points", Scope::Edit, EngineImpact::Snapshot,
-        pointsFields, false, false, apply<Edit::Move>, capture, "automation.restoreData"},
+        pointsFields, false, false, apply<Edit::Move>, captureMove, "automation.restoreData"},
     {"automation.setCurve", "Shape selected automation segments", Scope::Edit, EngineImpact::Snapshot,
         curveFields, false, false, apply<Edit::Curve>, capture, "automation.restoreData"},
     {"automation.restoreData", "Restore captured automation bytes or absence", Scope::Edit, EngineImpact::Snapshot,
