@@ -2937,9 +2937,11 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     const bool rendered = graph_.process(block);
     // MIDI can still report Recording after a locate outside the punch. Only
     // a playing slice inside the punch can contribute to the capture gate.
-    const bool capturing = captureRecording && (!session_.recordingAudioTracks_.empty() ||
-        (transport.playing() && punch == RecordingPunch::Within &&
-         session_.midiInputCapture_->state() == MidiCaptureState::Recording));
+    const bool capturing = captureRecording
+        ? !session_.recordingAudioTracks_.empty() ||
+              (transport.playing() && punch == RecordingPunch::Within &&
+               session_.midiInputCapture_->state() == MidiCaptureState::Recording)
+        : transport.playing() && session_.recordingForDevices_.load(std::memory_order_acquire);
     session_.recordingAudioTracks_ = {};
     if (inputMonitors) {
         inputMonitors->input = nullptr;

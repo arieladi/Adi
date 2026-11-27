@@ -270,6 +270,30 @@ void metronomeOptions() {
         f.process(b);
     check(!hasClick(), "eighth-note playback keeps the Count-In on signature beats");
 }
+void automationOnlyRecordingClick() {
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&
+              f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),
+          "load a recording-only click with no armed audio or MIDI tracks");
+    Block block(64);
+    const auto hasClick = [&](bool playing) {
+        f.session.transport().locate(0);
+        f.session.transport().play(playing);
+        auto render = f.session.beginRender();
+        check(render.process(block.io, false), "render without audio or MIDI capture");
+        block.io.streamTimeSamples += block.io.frames;
+        return std::any_of(block.wide[2].begin(), block.wide[2].begin() + block.io.frames,
+                           [](double sample) { return std::abs(sample) > .01; });
+    };
+    f.session.setAutomationWriteState(true, true);
+    f.session.setRecordingForDevices(true);
+    check(!hasClick(false), "a recording request waits for playback before sounding the click");
+    check(hasClick(true), "a rolling automation-only recording sounds the recording-only click");
+    f.session.setRecordingForDevices(false);
+    f.session.setAutomationWriteState(true, false);
+    check(!hasClick(true), "the recording-only click stops when automation recording ends");
+}
 void compensatedPunchClick() {
     constexpr int latency = 100, punchFrames = 24, callbackFrames = 64;
     constexpr auto punchInTick = textproj::kPPQ / 2;
@@ -582,5 +606,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
