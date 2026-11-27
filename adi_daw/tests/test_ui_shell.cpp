@@ -15033,6 +15033,61 @@ void defaultTracksRenumber(AppCommands &commands, const std::filesystem::path &d
     check(distinct, "after the group no two tracks read alike");
     document->release();
 }
+void trackPalette(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-palette.adi", true, {}, error);
+    check(document != nullptr, "SC-434: open a project for the track palette");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-palette");
+    root.setSize(1000, 650);
+    root.frame();
+    root.arrangement.geometry.selection.track = 2;
+    root.publishSelection();
+    const auto menu = root.arrangement.headerMenu();
+    juce::PopupMenu::CustomComponent *chooser = nullptr;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        if (it.getItem().text == "Colour")
+            chooser = it.getItem().customComponent.get();
+    check(chooser != nullptr, "SC-434: the track's menu offers a colour chooser");
+    if (chooser == nullptr)
+        return;
+    int width = 0, height = 0;
+    chooser->getIdealSize(width, height);
+    check(width == 246 && height == 90, "SC-434: the chooser has five rows of fourteen swatches");
+    if (width != 246 || height != 90)
+        return;
+    chooser->setSize(width, height);
+    juce::Image image(juce::Image::ARGB, width, height, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics graphics(image);
+        chooser->paint(graphics);
+    }
+    const auto pointFor = [](int index) { return juce::Point<int>{11 + (index % 14) * 17, 11 + (index / 14) * 17}; };
+    bool painted = true;
+    for (int index = 0; index < 70; ++index) {
+        const auto centre = pointFor(index);
+        painted = painted && image.getPixelAt(centre.x, centre.y) == look::paletteColour(index);
+    }
+    check(painted, "SC-434: all seventy cells paint the shared palette renderer");
+    const auto colour = [&root] {
+        root.frame();
+        return root.reader().findTrack(2)->color;
+    };
+    chooser->mouseUp(pressAt(*chooser, pointFor(14).toFloat()));
+    check(colour() == 14, "SC-434: the second row starts at stored palette index 14");
+    chooser->mouseUp(pressAt(*chooser, pointFor(69).toFloat()));
+    check(colour() == 69 && root.undoTitle(false) == "Undo Recolour Track",
+          "SC-434: the last swatch stores index 69 in one undo step");
+    const auto head = OpJournal(document->store()).headSeq();
+    for (const auto gap : {juce::Point<float>{18.f, 11.f}, {11.f, 18.f}, {2.f, 20.f}, {11.f, 88.f}})
+        chooser->mouseUp(pressAt(*chooser, gap));
+    check(colour() == 69 && OpJournal(document->store()).headSeq() == head,
+          "SC-434: the gaps and padding do not select a colour");
+    check(root.command(AppCommands::Undo) && colour() == 14, "SC-434: Undo restores the previous row's index");
+    std::printf("SC-434 chooser %dx%d, first/last swatch origins (4,4)/(225,72), swatches 14x14\n", width, height);
+}
 // A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
 // Track, Insert Return Track and Group Tracks recolour no other track, in the Arrangement or the Mixer
 // View, the returns and Main included; the new track stores its own (walk-A A2b).
@@ -32028,6 +32083,7 @@ int main(int argc, char **argv) {
     trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
     trace("projectFilesList", [&] { projectFilesList(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
+    trace("trackPalette", [&] { trackPalette(commands, temp.path()); });
     trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });

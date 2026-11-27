@@ -36,26 +36,29 @@ namespace adi::ui {
 namespace {
 class ColourChooser final : public juce::PopupMenu::CustomComponent {
   public:
-    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14;
+    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14, kInset = 4;
+    static constexpr int kRows = static_cast<int>(kPaletteColours) / kColumns;
+    static_assert(kRows * kColumns == kPaletteColours);
     ColourChooser(std::function<void(int)> pick, std::int64_t current)
         : juce::PopupMenu::CustomComponent(false), pick_(std::move(pick)), current_(current) {}
     void getIdealSize(int &width, int &height) override {
-        width = 8 + kColumns * kPitch;
-        height = kSwatch + 8;
+        width = 2 * kInset + kColumns * kPitch;
+        height = 2 * kInset + (kRows - 1) * kPitch + kSwatch;
     }
     void paint(juce::Graphics &g) override {
-        for (int i = 0; i < kColumns; ++i) {
-            const juce::Rectangle<float> r(static_cast<float>(4 + i * kPitch), 4.f, kSwatch, kSwatch);
+        for (int i = 0; i < kRows * kColumns; ++i) {
+            const juce::Rectangle<int> r(kInset + (i % kColumns) * kPitch, kInset + (i / kColumns) * kPitch,
+                                         kSwatch, kSwatch);
             g.setColour(look::paletteColour(i));
             g.fillRect(r);
             if (i == current_ || i == hover_) {
                 g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
-                g.drawRect(r.expanded(1.5f), 1.5f);
+                g.drawRect(r.toFloat().expanded(1.5f), 1.5f);
             }
         }
     }
     void mouseMove(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at != hover_) {
+        if (const int at = swatchAt(e.getPosition()); at != hover_) {
             hover_ = at;
             repaint();
         }
@@ -65,7 +68,7 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
         repaint();
     }
     void mouseUp(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at >= 0) {
+        if (const int at = swatchAt(e.getPosition()); at >= 0) {
             pick_(at);
             if (getParentComponent() != nullptr)
                 triggerMenuItem();
@@ -73,9 +76,12 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
     }
 
   private:
-    static int swatchAt(int x) noexcept {
-        const int i = (x - 4) / kPitch;
-        return x >= 4 && i < kColumns && (x - 4) % kPitch < kSwatch ? i : -1;
+    static int swatchAt(juce::Point<int> point) noexcept {
+        const int x = point.x - kInset, y = point.y - kInset;
+        if (x < 0 || y < 0 || x / kPitch >= kColumns || y / kPitch >= kRows ||
+            x % kPitch >= kSwatch || y % kPitch >= kSwatch)
+            return -1;
+        return (y / kPitch) * kColumns + x / kPitch;
     }
     std::function<void(int)> pick_;
     std::int64_t current_;
