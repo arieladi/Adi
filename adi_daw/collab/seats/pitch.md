@@ -3,7 +3,6 @@
 ## Still unbuilt
 
 - Separate wire op names for split and merge, pending reservation. The individual journal actions have exact Undo and Redo through `clip.setPitchEdits`.
-- Boundary uncertainty marks for aperiodic transitions, fast runs and competing periodicity.
 - Original/corrected playback at one playhead.
 - Native 1.27 activation, its migration/text-projection checks and the installed-DAW reference runs.
 - Durable MIDI extraction provenance, channel-wide pitch bend and plug-in-specific extraction modes.
@@ -93,3 +92,4 @@ A. The reference manual describes both whole-event and selected-segment flatteni
 | Pitch and timing nudges | Signed fractional-cent nudges and sample-exact destination-boundary nudges reuse atomic edits without snapping. | 54 command checks passed under strict GCC and ASan/UBSan. The no-op baseline failed 11. A two-note nudge measured +0.125 cents and a shared boundary moved exactly 1 frame (0.020833 ms at 48 kHz). | Pushed `14ece718`. |
 | Drift straightening | The ordinary drift command subtracts fitted drift and preserves residual vibrato. Hard straightening remains a separate action. | 62 edit checks passed under strict GCC and ASan/UBSan. Fitted slope moved from 63.8450 to 0 cents, and vibrato RMS remained 16.7530 cents. The previous default failed two regression checks. | Pushed `a4511315`. |
 | Split, merge and start/end correction | Separate edit producers record one journal step per action and keep exact source and destination frame mappings. | 31 focused checks passed. Split placed source frame 300 at destination frame 1300 (1.5×), retained the compatible correction controls and reopened with byte-exact Undo and Redo. The regression that removed intent labels failed 10 checks. | Pushed `0f22571f`. Distinct wire names await reservation. |
+| Uncertain note boundaries | Source-frame hints mark aperiodic attacks and releases, rapid pitch changes and competing periodicity. They survive the optional PNOT cache and leave note identities intact. | Noisy edges and six 65 ms fast-run transitions localized within 5 ms. A two-tone overlap localized within 3.33 ms. Three signal regressions failed with hints suppressed and 28 cache checks passed. | Pushed `d0ba1792`. Competing periods are review hints. Close-unison doubles can remain indistinguishable. |
