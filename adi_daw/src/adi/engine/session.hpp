@@ -526,6 +526,11 @@ public:
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
     bool configureArrangementLoopRecording(AudioRecordingSpec&, std::string& error) const;
+    /// The published recording start is at or beyond Loop End. An active
+    /// roll passes its driver position; a stopped start uses the song start
+    /// override or insert marker, like RenderBlock::startPlayback.
+    [[nodiscard]] bool recordingStartsAfterLoop(std::int64_t insertTick,
+                                                std::optional<std::int64_t> playingSample) const noexcept;
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Selection arming is a live session choice. Explicit arms stay in the project.

@@ -319,6 +319,15 @@ void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) 
 }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::recordingStartsAfterLoop(std::int64_t insertTick,
+                                       std::optional<std::int64_t> playingSample) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing || !timing->settings.loopEnabled || !timing->settings.hasLoop)
+        return false;
+    const auto start = playingSample ? *playingSample
+                                     : timing->sampleForTick(timing->settings.songStartTicks.value_or(insertTick));
+    return start >= timing->loopEnd;
+}
 bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std::string& error) const {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!timing || !timing->settings.loopEnabled || !timing->settings.hasLoop) {
@@ -3175,7 +3184,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
             if (boundary && boundary->sample > position && boundary->sample - position < prefix)
                 prefix = static_cast<std::int32_t>(boundary->sample - position);
         }
-        if (looping || timing->settings.loopEnabled)
+        if (looping)
             punchWindow = {}; // only linear takes use these bounds for placement
     }
     if ((remaining > 0 || prefix < io.frames) && timing &&

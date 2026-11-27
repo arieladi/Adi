@@ -20726,8 +20726,10 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
-        loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
+        loop.payload = {{"on", true}, {"start", 0}, {"end", 4 * textproj::kPPQ}};
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
+        root.arrangement.placeInsertMarker(textproj::kPPQ);
+        block();
         frame();
         check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
                   root.error().find("MIDI") != std::string::npos,

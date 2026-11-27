@@ -3538,7 +3538,8 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     engine::AudioRecordingSpec spec;
-    if (current->transport.loopEnabled) {
+    const auto playingSample = playing ? std::optional{mailbox_.position()} : std::nullopt;
+    if (current->transport.loopEnabled && !session_.recordingStartsAfterLoop(insertTick, playingSample)) {
         if (!armed.midi.empty()) {
             error_ = "Loop recording supports audio tracks. Disarm MIDI tracks or turn off the loop.";
             return false;

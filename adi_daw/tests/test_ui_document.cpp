@@ -4414,6 +4414,100 @@ void manyTrackMemory(const std::filesystem::path &dir) {
     doc.reset();
     report("close", nullptr, processMemory());
 }
+void metronomeAndLoopPlayback(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "transport.adi", true, {}, error);
+    if (!document)
+        throw std::runtime_error(error);
+    auto &mailbox = document->mailbox();
+    using Command = ui::TransportMailbox::Command;
+    const auto set = [&](const char *type, Payload values) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(values);
+        return document->ops().submit(request).ok && document->synchronise();
+    };
+    constexpr int blockFrames = 256;
+    constexpr auto beatSamples = 24000;
+    const auto q = textproj::kPPQ;
+    device::DeviceCore driver;
+    check(driver.open(*document, 48000, blockFrames, blockFrames).opened, "SC-441: synthetic stereo device opens");
+    std::array<float, blockFrames> left{}, right{}, input{};
+    input.fill(.125f);
+    float *outputs[]{left.data(), right.data()};
+    const float *inputs[]{input.data()};
+    const auto callback = [&] {
+        driver.process(outputs, 2, inputs, 1, blockFrames, engine::OutputChannelMap{3});
+    };
+    const auto loud = [&](float threshold) {
+        return std::ranges::any_of(left, [threshold](float sample) { return std::abs(sample) > threshold; });
+    };
+    check(set("transport.setMetronome", {{"on", true}}) && mailbox.post(Command::Play),
+          "SC-441: enable metronome during ordinary playback with the default Cue pair");
+    callback();
+    check(mailbox.playing() && loud(.1f) && left == right && !readTransportSettings(document->store()).loopEnabled,
+          "SC-441: ordinary Play clicks through physical outputs 1/2 with no loop or record");
+    check(mailbox.post(Command::Locate, beatSamples + beatSamples / 2), "SC-441: locate between quarter notes");
+    callback();
+    bool nextBeat = false;
+    for (int i = 0; i < beatSamples / blockFrames; ++i) {
+        callback();
+        if (mailbox.position() > 2 * beatSamples && loud(.1f)) {
+            nextBeat = true;
+            break;
+        }
+    }
+    check(nextBeat && left == right, "SC-441: ordinary playback also clicks on the next beat after an off-grid locate");
+    mailbox.post(Command::Stop);
+    callback();
+
+    const auto wav = dir / "late.wav";
+    const std::vector<float> pcm(beatSamples, .5f);
+    {
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(pcm.data(), static_cast<std::uint32_t>(pcm.size()));
+    }
+    ui::AudioImport imported;
+    if (!document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, imported))
+        throw std::runtime_error(document->error());
+    constexpr auto lateBeat = 17;
+    auto dropped = ui::dropAudio(*document->view().current(), 4, lateBeat * q, "Late clip", imported);
+    check(dropped.refusal.empty() && document->ops().submit(std::move(dropped.ops)).ok && document->synchronise() &&
+              set("transport.setLoop", {{"on", true}, {"start", 0}, {"end", 16 * q}}),
+          "SC-445: a real clip lies beyond the enabled empty four-bar loop");
+    check(mailbox.post(Command::Locate, lateBeat * beatSamples) && mailbox.post(Command::Play),
+          "SC-445: Play from the later clip through the ordinary mailbox");
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        callback();
+        if (mailbox.playing()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < until);
+    check(mailbox.playing() && mailbox.position() == lateBeat * beatSamples + blockFrames && loud(.22f) &&
+              readTransportSettings(document->store()).loopEnabled,
+          "SC-445: the later program audio is heard and the saved Loop switch stays on");
+    mailbox.post(Command::Stop);
+    callback();
+    const bool started = set("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                         document->startRecording(lateBeat * q, 1, false);
+    check(started, "SC-445: Record can start after the enabled brace");
+    if (started) {
+        callback();
+        auto &session = document->session();
+        check(!session.transport().looping() &&
+                  session.recording().acceptedFrames() == blockFrames &&
+                  mailbox.position() == lateBeat * beatSamples + blockFrames,
+              "SC-445: the after-End recording uses a linear take on the actual playback clock");
+    }
+    driver.close();
+    if (started) {
+        const bool settled = document->settleRecording();
+        const auto landed = document->takeLanded();
+        check(settled && landed && landed->ok && landed->clips.size() == 1,
+              "SC-445: the linear recording lands as one clip with Loop still enabled");
+    }
+}
+
 // walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
 // let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
 // clip sounds. Blocks run back to back, as a callback does, with no time for a cold reader to catch up.
@@ -5806,6 +5900,8 @@ int main(int argc, char **argv) {
         mixerDragHeard(dragDir.path());
         test::TempDirectory commitDir("ui_document", "commit");
         commitKeepsClipSounding(commitDir.path());
+        test::TempDirectory metronomeLoopDir("ui_document", "metronome-loop");
+        metronomeAndLoopPlayback(metronomeLoopDir.path());
         test::TempDirectory stoppedDir("ui_document", "stopped-commit");
         playRightAfterAStoppedCommit(stoppedDir.path());
         test::TempDirectory speedDir("ui_document", "large-song");
