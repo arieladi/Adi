@@ -737,6 +737,71 @@ void selectedTrackScrollsIntoView(AppCommands &commands, const std::filesystem::
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
 // Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
 // application reads it.
+void anchoredTrackResize(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "anchored-track-resize.adi", true, {}, error);
+    check(document != nullptr, "SC-435: create a project for foot-row resizing");
+    if (!document) return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "anchored-resize");
+    root->afterEdit = [&] { document->synchronise(); };
+    root->setSize(1440, 900);
+    root->frame();
+    const bool inserted = root->insertReturnTrack();
+    check(inserted, "SC-435: a Return is anchored above Main");
+    if (!inserted) return;
+    root->frame();
+    auto &geometry = root->arrangement.geometry;
+    auto &headers = root->arrangement.headers;
+    const auto rows = geometry.rows(root->reader());
+    const auto main = rows[rows.size() - 1].track->id;
+    const auto ret = rows[rows.size() - 2].track->id;
+    geometry.largeTracks = true;
+    geometry.resizeTrack(main, 40);
+    geometry.resizeTrack(ret, 40);
+    root->arrangement.changed();
+    root->frame();
+    const auto top = [&](std::int64_t id) { return geometry.rowTop(root->reader(), id); };
+    const auto foot = [&](std::int64_t id) { return top(id) + geometry.heightFor(id); };
+    const int mainTop = top(main), mainFoot = foot(main), retTop = top(ret);
+    const auto from = juce::Point<float>{60.f, static_cast<float>(mainTop + 2)};
+    headers.mouseMove(pressAt(headers, {from.x, static_cast<float>(mainFoot - 2)}));
+    const bool mainFootPlain = headers.getMouseCursor() == juce::MouseCursor::NormalCursor;
+    headers.mouseMove(pressAt(headers, from));
+    check(mainFootPlain && headers.getMouseCursor() == juce::MouseCursor::UpDownResizeCursor,
+          "SC-435: Main shows a resize cursor at its top only");
+    const auto grown = from.translated(0, -24.f);
+    headers.mouseDown(pressAt(headers, from));
+    headers.mouseDrag(dragAt(headers, from, grown));
+    check(geometry.heightFor(main) == 64 && top(main) == mainTop - 24 && foot(main) == mainFoot &&
+              top(ret) == retTop - 24,
+          "SC-435: Main grows up from its top and keeps the foot fixed while pushing Returns above it");
+    headers.mouseUp(dragAt(headers, from, grown));
+    root->frame();
+
+    const auto &strips = root->mixer.strips();
+    const auto strip = std::ranges::find_if(strips, [ret](const auto &candidate) {
+        return candidate->isVisible() && candidate->track() == ret;
+    });
+    check(strip != strips.end(), "SC-435: the Return has an Arrangement mixer strip");
+    if (strip == strips.end()) return;
+    auto &controls = **strip;
+    const auto corner = juce::Point<float>{20.f, 2.f};
+    controls.mouseMove(pressAt(controls, {corner.x, static_cast<float>(controls.getHeight() - 2)}));
+    const bool retFootPlain = controls.getMouseCursor() == juce::MouseCursor::NormalCursor;
+    controls.mouseMove(pressAt(controls, corner));
+    check(retFootPlain && controls.getMouseCursor() == juce::MouseCursor::UpDownResizeCursor,
+          "SC-435: a pinned Return also shows the resize cursor from the top of its controls");
+    const int before = top(ret), bottom = foot(ret);
+    const auto raised = corner.translated(0, -16.f);
+    controls.mouseDown(pressAt(controls, corner));
+    controls.mouseDrag(dragAt(controls, corner, raised));
+    check(geometry.heightFor(ret) == 56 && top(ret) == before - 16 && foot(ret) == bottom &&
+              foot(main) == mainFoot,
+          "SC-435: growing a Return from the mixer keeps its bottom and Main anchored");
+    controls.mouseUp(dragAt(controls, corner, raised));
+    root->frame();
+}
 void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "groups.adi", err);
@@ -28064,6 +28129,7 @@ int main(int argc, char **argv) {
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
         trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
+        trace("anchoredTrackResize", [&] { anchoredTrackResize(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         trace("mixerSendOverflow", [&] { mixerSendOverflow(commands, temp.path()); });
@@ -31917,6 +31983,7 @@ int main(int argc, char **argv) {
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
+    trace("anchoredTrackResize", [&] { anchoredTrackResize(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("arrangementTakeLanes", [&] { arrangementTakeLanes(commands, temp.path()); });

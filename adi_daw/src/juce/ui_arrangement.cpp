@@ -738,8 +738,8 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
     setTitle("Track headers");
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
-    setTooltip("Click to select a track; drag its lower part to resize it, with Alt to resize "
-               "all. Right-click for the track's commands.");
+    setTooltip("Click to select a track. Drag its edge to resize, with Alt to resize all. "
+               "Main and Returns at the foot resize from the top. Right-click for track commands.");
 }
 ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
     addChildComponent(clipEditor);
@@ -2880,6 +2880,8 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
     const auto position = e.getPosition();
     const bool popup = e.mods.isPopupMenu();
+    const bool anchored = at < rows.size() && rows[at].place.foot();
+    const bool split = at < rows.size() && onResizeEdge(e.y - top, view.geometry.heightFor(rows[at].track->id), anchored);
     foldPressed_ = false;
     resizeId = moveId_ = 0;
     moving_ = false;
@@ -2919,7 +2921,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             }
             return;
         }
-        if (!popup) {
+        if (!popup && !(anchored && split)) {
             // The fold switch and header controls operate without selecting the track.
             if (foldSwitch(depth, top).expanded(2.f).contains(e.position)) {
                 foldPressed_ = true;
@@ -2967,10 +2969,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.contextMenu(e.getScreenPosition(), true);
             return;
         }
-        // The split line at the row's foot resizes it; the rest of the title moves it, Main and
-        // the returns aside.
-        const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
-        const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
+        // The split line resizes the row. The rest of the title moves it, except Main.
         const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !popup;
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
@@ -2996,11 +2995,12 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         }
         // A title chooses tracks. The insert marker can stay at its previous position.
         sel.clearMaterial();
-        if (split)
+        if (split) {
             resizeId = t->id;
-        else if (!popup && pressed < rows.size() && !rows[pressed].place.main) {
+            resizeFromTop_ = anchored;
+        } else if (!popup && at < rows.size() && !rows[at].place.main) {
             moveId_ = t->id;
-            movingReturn_ = rows[pressed].place.ret;
+            movingReturn_ = rows[at].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
             beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         }
@@ -3017,8 +3017,8 @@ void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-    const int height = at < rows.size() ? view.geometry.heightFor(rows[at].track->id) : 0;
-    const bool split = height > 0 && e.y >= top + height - kSplitLine && e.y < top + height;
+    const bool split = at < rows.size() && onResizeEdge(e.y - top, view.geometry.heightFor(rows[at].track->id),
+                                                        rows[at].place.foot());
     setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
@@ -3185,8 +3185,8 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
 }
 void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
     if (resizeId) {
-        view.geometry.resizeTrack(resizeId, initialHeight + e.getDistanceFromDragStartY(),
-                                  e.mods.isAltDown());
+        const int dy = e.getDistanceFromDragStartY();
+        view.geometry.resizeTrack(resizeId, initialHeight + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
         view.frame(true);
     } else if (moveId_ != 0 && (moving_ || std::abs(e.getDistanceFromDragStartY()) > 4)) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other

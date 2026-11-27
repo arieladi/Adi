@@ -177,9 +177,11 @@ class TrackHeaderList final : public juce::Component,
     void filesDropped(const juce::StringArray &, int, int) override;
 
     bool keyPressed(const juce::KeyPress &) override;
-    // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
-    // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
+    // Main and the Returns at the foot grow upwards. Other rows resize at their bottom edge.
     static constexpr int kSplitLine = 5;
+    static constexpr bool onResizeEdge(int y, int height, bool anchored) noexcept {
+        return y >= 0 && y < height && (anchored ? y < kSplitLine : y >= height - kSplitLine);
+    }
     // Where tracks dragged by their titles would land with the mouse at `y` (Live: "dragging them
     // above or below other tracks", "into or out of the group"): a line at `y`, at the depth they
     // would stand, or the folded or empty group `into`, which they would go to the end of.
@@ -221,6 +223,7 @@ class TrackHeaderList final : public juce::Component,
     ArrangementView &view;
     std::int64_t resizeId = 0, renaming_ = 0;
     int initialHeight = 0;
+    bool resizeFromTop_ = false;
     // The track whose title was pressed, to move once the mouse has gone far enough; whether it
     // is moving; whether the press, on one of several selected tracks, selects it alone on release
     // without a drag (Live keeps the selection for the drag).

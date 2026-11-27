@@ -1623,12 +1623,17 @@ void MixerStrip::filesDropped(const juce::StringArray &files, int, int) {
     if (track_ != 0)
         panel_.root.dropAudioPaths(files, track_, panel_.root.arrangement.geometry.selection.insert);
 }
-bool MixerStrip::onSplitLine(const juce::MouseEvent &e) const noexcept {
-    return !panel_.vertical() && track_ != 0 && e.eventComponent == this &&
-           e.y >= getHeight() - TrackHeaderList::kSplitLine;
+std::optional<bool> MixerStrip::splitLine(const juce::MouseEvent &e) const noexcept {
+    if (panel_.vertical() || track_ == 0 || e.eventComponent != this) return {};
+    const auto rows = panel_.root.arrangement.geometry.rows(panel_.root.reader());
+    const auto at = rows.find(track_);
+    if (at >= rows.size()) return {};
+    const bool anchored = rows[at].place.foot();
+    if (!TrackHeaderList::onResizeEdge(e.y, getHeight(), anchored)) return {};
+    return anchored;
 }
 void MixerStrip::mouseMove(const juce::MouseEvent &e) {
-    setMouseCursor(onSplitLine(e) ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+    setMouseCursor(splitLine(e) ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 void MixerStrip::mouseDrag(const juce::MouseEvent &e) {
     if (titleDrag_) {
@@ -1651,7 +1656,8 @@ void MixerStrip::mouseDrag(const juce::MouseEvent &e) {
     if (resizeFrom_ < 0)
         return;
     auto &view = panel_.root.arrangement;
-    view.geometry.resizeTrack(track_, resizeFrom_ + e.getDistanceFromDragStartY(), e.mods.isAltDown());
+    const int dy = e.getDistanceFromDragStartY();
+    view.geometry.resizeTrack(track_, resizeFrom_ + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
     view.frame(true);
 }
 void MixerStrip::mouseUp(const juce::MouseEvent &e) {
@@ -1711,9 +1717,10 @@ void MixerStrip::selectTitle(std::int64_t track) {
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     if (std::exchange(titleDrag_, std::nullopt))
         panel_.previewTrackDrop(std::nullopt);
-    if (onSplitLine(e) && !e.mods.isPopupMenu()) {
+    if (const auto edge = splitLine(e); edge && !e.mods.isPopupMenu()) {
         // Kept bound to its track while the drag resizes the rows (MixerPanel::place).
         resizeFrom_ = panel_.root.arrangement.geometry.heightFor(track_);
+        resizeFromTop_ = *edge;
         dragging_ = true;
         return;
     }
