@@ -40,6 +40,19 @@ a size mismatch produces a cache miss, never a partial successful record.
 
 `APKS`, version 1/configuration 0, embeds the existing APKS waveform codec
 including its own source identity/dimensions. The consumer validates that codec
-and matches those fields to the media pool. Other tags remain opaque and survive
-ordinary same-process updates. An inconsistent or invalid optional envelope can
-be rebuilt; user Warp/clip settings must never be stored here.
+and matches those fields to the media pool.
+
+`PNOT`, version 1/configuration 0, contains monophonic pitch notes measured from
+the equal-weight average of the source channels. The payload begins with a
+64-bit note count. Each note is six 64-bit words in order: start frame, exclusive
+end frame, median pitch, fitted drift, RMS vibrato and curve point count. A
+point is a 64-bit source frame followed by the measured pitch. Pitch, drift and
+vibrato are little-endian IEEE 754 binary64 values in cents, with absolute
+MIDI cents for pitch (A4 is 6900). Notes are ordered, disjoint and bounded by
+the envelope's source frame count. Each has at least one point and its
+points are strictly increasing inside the note. A source with no voiced notes
+has a zero count. The payload is limited to 16 MiB.
+
+Other tags stay opaque and survive ordinary same-process updates. An invalid
+optional envelope or pitch payload can be rebuilt. Authored clip edits belong
+in project rows.

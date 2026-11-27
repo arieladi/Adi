@@ -161,6 +161,11 @@ Payload mediaRow(SQLite::Database& db, std::int64_t id) {
     return row;
 }
 fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+    return resolveMedia(folder, row, error, {});
+}
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error,
+                      std::stop_token stop) {
+    if (stop.stop_requested()) return {};
     std::vector<fs::path> candidates;
     if (!row.at("rel_path").is_null()) {
         const auto relative = pathFromUtf8(row.at("rel_path").get<std::string>());
@@ -174,10 +179,12 @@ fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& e
         candidates.push_back(hint.is_absolute() ? hint : fs::path{});
     }
     for (const auto& path : candidates) {
+        if (stop.stop_requested()) return {};
         if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
         std::error_code ec;
         if (!fs::exists(path, ec)) { if (ec) { error = "cannot inspect " + pathUtf8(path); return {}; } continue; }
-        const auto hash = blake3File(path);
+        const auto hash = blake3File(path, stop);
+        if (hash.error == HashError::cancelled) return {};
         if (!hash) { error = "cannot hash " + pathUtf8(path); return {}; }
         if (hash.hex != row.at("hash_blake3").get<std::string>()) { error = "hash mismatch: " + pathUtf8(path); return {}; }
         return path;

@@ -1851,6 +1851,22 @@ add_executable(adi_analysis_cache_trim_tests tests/test_analysis_cache_trim.cpp)
 target_link_libraries(adi_analysis_cache_trim_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analysis_cache_trim_tests COMMAND adi_analysis_cache_trim_tests)
 
+target_sources(adi_core PRIVATE
+    src/adi/audio/pitch_analysis.cpp src/adi/audio/pitch_edit.cpp
+    src/adi/audio/pitch_render.cpp src/adi/media/clip_pitch.cpp)
+add_executable(adi_pitch_analysis_tests tests/test_pitch_analysis.cpp)
+target_link_libraries(adi_pitch_analysis_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_analysis_tests COMMAND adi_pitch_analysis_tests)
+add_executable(adi_clip_pitch_tests tests/test_clip_pitch.cpp)
+target_link_libraries(adi_clip_pitch_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clip_pitch_tests COMMAND adi_clip_pitch_tests)
+add_executable(adi_pitch_edit_tests tests/test_pitch_edit.cpp)
+target_link_libraries(adi_pitch_edit_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_edit_tests COMMAND adi_pitch_edit_tests)
+add_executable(adi_pitch_render_tests tests/test_pitch_render.cpp)
+target_link_libraries(adi_pitch_render_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_render_tests COMMAND adi_pitch_render_tests)
+
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")

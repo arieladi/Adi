@@ -57,6 +57,8 @@ std::filesystem::path pathFromUtf8(const std::string&);
 // Resolution verifies the first existing candidate; a mismatch is fatal.
 std::filesystem::path resolveMedia(const std::filesystem::path& folder,
                                   const Payload& row, std::string& error);
+std::filesystem::path resolveMedia(const std::filesystem::path& folder,
+                                  const Payload& row, std::string& error, std::stop_token);
 Payload mediaRow(SQLite::Database&, std::int64_t id);
 // Registry callbacks: captured payloads only, no filesystem access.
 bool importApply(OpContext&, const Payload&, std::string&);

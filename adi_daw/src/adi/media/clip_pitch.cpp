@@ -1,0 +1,269 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/media/clip_pitch.hpp"
+
+#include "adi/audio/decode.hpp"
+#include "adi/audio/io_audit.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/media/blake3.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/store.hpp"
+
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
+#include <bit>
+#include <new>
+
+namespace adi::media {
+namespace {
+
+constexpr auto pitchTag = "PNOT";
+constexpr std::uint32_t pitchVersion = 1;
+constexpr std::uint32_t pitchConfiguration = 0; // equal-weight channel mean
+constexpr std::size_t countBytes = 8, noteBytes = 48, pointBytes = 16;
+constexpr std::size_t maxPayloadBytes = 16u * 1024 * 1024;
+constexpr std::uint64_t maxSourceFrames = 64u * 1024 * 1024; // 256 MiB of mono PCM
+
+struct Source {
+    AnalysisIdentity identity;
+    std::uint64_t start, end;
+    bool reversed;
+    Payload pathFields;
+};
+
+ClipPitchResult fail(ClipPitchProblem problem) { return {problem, {}, {}}; }
+
+ClipPitchResult fail(ClipPitchProblem problem, std::string detail) {
+    return {problem, {}, std::move(detail)};
+}
+
+std::optional<Source> findSource(const Store& store, std::int64_t clipId) {
+    SQLite::Statement row(store.db(),
+        "SELECT a.src_start_frames,a.src_len_frames,a.reverse,m.hash_blake3,"
+        "m.sample_rate,m.channels,m.frames,m.orig_name,m.rel_path,m.abs_path_hint "
+        "FROM audio_clips AS a JOIN clips AS c ON c.id=a.clip_id "
+        "JOIN media_files AS m ON m.id=a.media_id WHERE a.clip_id=? AND c.kind='audio'");
+    row.bind(1, clipId);
+    if (!row.executeStep()) return {};
+    const auto start = row.getColumn(0).getInt64();
+    const auto length = row.getColumn(1).getInt64();
+    const auto rate = row.getColumn(4).getInt64();
+    const auto channels = row.getColumn(5).getInt64();
+    const auto frames = row.getColumn(6).getInt64();
+    if (start < 0 || length <= 0 || rate < 0 || rate > audio::kMaxDecodeRate ||
+        channels < 0 || channels > audio::kMaxDecodeChannels || frames < 0 ||
+        (rate == 0 && !row.getColumn(4).isNull()) ||
+        (channels == 0 && !row.getColumn(5).isNull()) ||
+        (frames == 0 && !row.getColumn(6).isNull()))
+        throw std::invalid_argument("invalid pitch analysis source dimensions");
+    const auto text = [&row](int index) -> Payload {
+        const auto column = row.getColumn(index);
+        if (column.isNull()) return nullptr;
+        return column.getString();
+    };
+    const auto hash = row.getColumn(3).getString();
+    if (hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    })) throw std::invalid_argument("invalid pitch analysis source identity");
+    return Source{
+        {hash, static_cast<std::uint32_t>(rate), static_cast<std::uint32_t>(channels),
+         static_cast<std::uint64_t>(frames)},
+        static_cast<std::uint64_t>(start),
+        static_cast<std::uint64_t>(start) + static_cast<std::uint64_t>(length),
+        row.getColumn(2).getInt() != 0,
+        {{"hash_blake3", hash}, {"orig_name", text(7)}, {"rel_path", text(8)}, {"abs_path_hint", text(9)}}
+    };
+}
+
+void appendWord(std::vector<std::byte>& bytes, std::uint64_t value) {
+    for (unsigned index = 0; index < 8; ++index) {
+        bytes.push_back(static_cast<std::byte>(value & 0xffu));
+        value >>= 8;
+    }
+}
+
+std::uint64_t readWord(std::span<const std::byte>& bytes) {
+    std::uint64_t value = 0;
+    for (unsigned index = 0; index < 8; ++index)
+        value |= static_cast<std::uint64_t>(std::to_integer<unsigned>(bytes[index])) << (8 * index);
+    bytes = bytes.subspan(8);
+    return value;
+}
+
+std::optional<AnalysisSection> encodeNotes(const audio::PitchAnalysis& pitch) {
+    std::size_t size = countBytes;
+    for (const auto& note : pitch.notes) {
+        if (maxPayloadBytes - size < noteBytes) return {};
+        size += noteBytes;
+        if (note.curve.size() > (maxPayloadBytes - size) / pointBytes) return {};
+        size += pointBytes * note.curve.size();
+    }
+    AnalysisSection section{pitchVersion, pitchConfiguration, {}};
+    section.bytes.reserve(size);
+    appendWord(section.bytes, pitch.notes.size());
+    for (const auto& note : pitch.notes) {
+        appendWord(section.bytes, note.startFrame);
+        appendWord(section.bytes, note.endFrame);
+        appendWord(section.bytes, std::bit_cast<std::uint64_t>(note.pitchCents));
+        appendWord(section.bytes, std::bit_cast<std::uint64_t>(note.driftCents));
+        appendWord(section.bytes, std::bit_cast<std::uint64_t>(note.vibratoCents));
+        appendWord(section.bytes, note.curve.size());
+        for (const auto& point : note.curve) {
+            appendWord(section.bytes, point.frame);
+            appendWord(section.bytes, std::bit_cast<std::uint64_t>(point.cents));
+        }
+    }
+    return section;
+}
+
+std::optional<audio::PitchAnalysis> decodeNotes(const AnalysisIdentity& source,
+                                                const AnalysisSection& section) {
+    if (section.version != pitchVersion || section.configuration != pitchConfiguration ||
+        section.bytes.size() < countBytes || section.bytes.size() > maxPayloadBytes) return {};
+    std::span<const std::byte> bytes(section.bytes);
+    const auto noteCount = readWord(bytes);
+    if (noteCount > bytes.size() / (noteBytes + pointBytes)) return {};
+    audio::PitchAnalysis pitch{source.sampleRate, source.frames, {}};
+    pitch.notes.reserve(static_cast<std::size_t>(noteCount));
+    for (std::uint64_t index = 0; index < noteCount; ++index) {
+        if (bytes.size() < noteBytes) return {};
+        audio::PitchNote note;
+        note.startFrame = readWord(bytes);
+        note.endFrame = readWord(bytes);
+        note.pitchCents = std::bit_cast<double>(readWord(bytes));
+        note.driftCents = std::bit_cast<double>(readWord(bytes));
+        note.vibratoCents = std::bit_cast<double>(readWord(bytes));
+        const auto pointCount = readWord(bytes);
+        if (pointCount == 0 || pointCount > bytes.size() / pointBytes) return {};
+        note.curve.reserve(static_cast<std::size_t>(pointCount));
+        for (std::uint64_t point = 0; point < pointCount; ++point)
+            note.curve.push_back({readWord(bytes), std::bit_cast<double>(readWord(bytes))});
+        pitch.notes.push_back(std::move(note));
+    }
+    if (!bytes.empty() || !audio::validPitchAnalysis(pitch)) return {};
+    return pitch;
+}
+
+std::optional<audio::PitchAnalysis> readNotes(AnalysisCache& cache, const AnalysisIdentity& identity,
+                                              std::stop_token stop) {
+    const auto cached = cache.read(identity, stop);
+    if (!cached || stop.stop_requested()) return {};
+    const auto found = cached.data->sections.find(pitchTag);
+    if (found == cached.data->sections.end()) return {};
+    return decodeNotes(identity, found->second);
+}
+
+ClipPitchResult success(std::int64_t id, Source source, audio::PitchAnalysis pitch) {
+    return {ClipPitchProblem::None,
+            ClipPitchAnalysis{id, std::move(source.identity), source.start, source.end,
+                              source.reversed, pitchVersion, pitchConfiguration, std::move(pitch)}, {}};
+}
+
+bool loadMono(audio::WavReader& reader, std::span<float> mono, std::stop_token stop) {
+    constexpr std::uint32_t blockFrames = 4096;
+    const auto channels = reader.channels();
+    std::vector<float> block(static_cast<std::size_t>(blockFrames) * channels);
+    for (std::size_t position = 0; position < mono.size();) {
+        if (stop.stop_requested()) return false;
+        const auto frames = static_cast<std::uint32_t>(
+            std::min<std::size_t>(blockFrames, mono.size() - position));
+        if (reader.read(block.data(), frames) != frames) return false;
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            double sum = 0;
+            for (std::size_t channel = 0; channel < channels; ++channel)
+                sum += block[frame * channels + channel];
+            mono[position + frame] = static_cast<float>(sum / channels);
+        }
+        position += frames;
+    }
+    return true;
+}
+
+} // namespace
+
+ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std::stop_token stop) {
+    if (audio::onAudioThread) return fail(ClipPitchProblem::Realtime);
+    if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+    return buildClipPitchAnalysis(store, id, stop, nullptr, &defaultAnalysisCache());
+}
+
+ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std::stop_token stop,
+                                       audio::DecodeCache* decoding, AnalysisCache* cache) {
+    if (audio::onAudioThread) return fail(ClipPitchProblem::Realtime);
+    if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+    try {
+        auto selected = findSource(store, id);
+        if (!selected) return fail(ClipPitchProblem::NotAudio);
+        auto& source = *selected;
+        auto& identity = source.identity;
+        if (identity.frames != 0 && source.end > identity.frames)
+            return fail(ClipPitchProblem::InvalidSource, "clip read window exceeds the source");
+        const bool hasDimensions = identity.sampleRate && identity.channels && identity.frames;
+        if (cache && hasDimensions) {
+            auto pitch = readNotes(*cache, identity, stop);
+            if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+            if (pitch) return success(id, std::move(source), std::move(*pitch));
+        }
+
+        std::string detail;
+        const auto path = resolveMedia(projectFolder(store), source.pathFields, detail, stop);
+        if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+        if (path.empty()) return fail(ClipPitchProblem::InvalidSource, std::move(detail));
+        auto& decode = decoding ? *decoding : audio::defaultDecodeCache();
+        const auto playable = decode.playable(path, stop);
+        struct Pin {
+            audio::DecodeCache& cache;
+            const std::filesystem::path& file;
+            ~Pin() { cache.release(file); }
+        } pin{decode, playable};
+
+        audio::WavReader reader(playable);
+        if ((identity.sampleRate && identity.sampleRate != reader.sampleRate()) ||
+            (identity.channels && identity.channels != reader.channels()) ||
+            (identity.frames && identity.frames != reader.frames()) || source.end > reader.frames())
+            return fail(ClipPitchProblem::InvalidSource, "source dimensions changed");
+        identity.sampleRate = reader.sampleRate();
+        identity.channels = reader.channels();
+        identity.frames = reader.frames();
+        if (cache && !hasDimensions) {
+            auto pitch = readNotes(*cache, identity, stop);
+            if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+            if (pitch) return success(id, std::move(source), std::move(*pitch));
+        }
+        if (identity.frames > maxSourceFrames)
+            return fail(ClipPitchProblem::Resource, "source exceeds pitch analysis PCM budget");
+        std::vector<float> mono(static_cast<std::size_t>(identity.frames));
+        if (!loadMono(reader, mono, stop))
+            return fail(stop.stop_requested() ? ClipPitchProblem::Cancelled : ClipPitchProblem::Read);
+        const auto verified = blake3File(path, stop);
+        if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+        if (!verified || verified.hex != identity.hash)
+            return fail(ClipPitchProblem::InvalidSource, "source changed during pitch analysis read");
+
+        auto result = audio::analyzePitch(mono, identity.sampleRate, stop);
+        if (stop.stop_requested() || result.error == audio::PitchAnalysisError::Cancelled)
+            return fail(ClipPitchProblem::Cancelled);
+        if (!result) return fail(result.error == audio::PitchAnalysisError::Resource ?
+                                 ClipPitchProblem::Resource : ClipPitchProblem::InvalidSource);
+        if (cache) {
+            try {
+                if (auto section = encodeNotes(*result.analysis))
+                    (void)cache->update(identity, pitchTag, *section, detail, stop);
+            } catch (const std::exception&) {
+                // Rebuildable cache failures leave the worker result usable.
+            }
+        }
+        if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
+        return success(id, std::move(source), std::move(*result.analysis));
+    } catch (const std::bad_alloc&) {
+        return fail(ClipPitchProblem::Resource);
+    } catch (const audio::DecodeError& error) {
+        if (error.problem() == audio::DecodeProblem::Cancelled) return fail(ClipPitchProblem::Cancelled);
+        return fail(ClipPitchProblem::Read, error.what());
+    } catch (const std::invalid_argument& error) {
+        return fail(ClipPitchProblem::InvalidSource, error.what());
+    } catch (const std::exception& error) {
+        return fail(ClipPitchProblem::Read, error.what());
+    }
+}
+
+} // namespace adi::media
