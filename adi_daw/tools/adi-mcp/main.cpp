@@ -23,6 +23,7 @@
 #include "adi/settings/store.hpp"
 #include "adi/version.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -105,6 +106,7 @@ int run(const std::vector<fs::path>& args) {
     // agent.maxOpsPerRequest is the per-request cap (ADR-0203 d20).
     Tier tier = Tier::Propose;
     adi::agent::Limits limits;
+    std::size_t maxOpsPerMinute = 6000;
     try {
         const auto settings = adi::settings::AppSettings::forApp(adi::appdata::App::Daw);
         const auto t = settings.get("agent.tier");
@@ -112,6 +114,9 @@ int run(const std::vector<fs::path>& args) {
         const auto cap = settings.get("agent.maxOpsPerRequest");
         if (cap.is_number_integer() && cap.get<std::int64_t>() > 0)
             limits.maxOps = static_cast<std::size_t>(cap.get<std::int64_t>());
+        const auto minute = settings.get("agent.maxOpsPerMinute");
+        if (minute.is_number_integer() && minute.get<std::int64_t>() > 0)
+            maxOpsPerMinute = static_cast<std::size_t>(minute.get<std::int64_t>());
     } catch (const std::exception& e) {
         std::cerr << "adi-mcp: settings unreadable, using defaults: " << e.what() << '\n';
     }
@@ -128,6 +133,7 @@ int run(const std::vector<fs::path>& args) {
         std::cerr << "adi-mcp: " << error << '\n';
         return 1;
     }
+    if (const auto cap = headless->agentTierOverride()) tier = std::min(tier, *cap);
 
     GrantTable grants;
     const std::string credential = processSecret();
@@ -148,6 +154,8 @@ int run(const std::vector<fs::path>& args) {
         using namespace std::chrono;
         return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
     };
+    context.appTier = [tier] { return tier; };
+    context.maxOpsPerMinute = [maxOpsPerMinute] { return maxOpsPerMinute; };
     registerControlMethods(service, context);
 
     McpEndpoint endpoint(service, projects, McpServerInfo{"adi-mcp", "ADI", adi::kVersion});

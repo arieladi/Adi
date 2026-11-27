@@ -267,6 +267,58 @@ void testPreviewDoesNotWrite() {
           "SC-01: a changeset cannot delete Main in either preview or apply");
 }
 
+void testBulkClipImpact() {
+    section("AGT-09: measured clip writes, including cascades, count by distinct clip");
+    Fixture f("clip-impact");
+    if (!f.store) return;
+    Store& s = *f.store;
+    f.db().exec("INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES"
+                "(1,1,'midi','One',0,960),(2,1,'midi','Two',960,960),"
+                "(3,2,'midi','Three',0,960),(4,2,'midi','Four',960,960),(5,2,'midi','Five',1920,960)");
+    const auto originalHead = OpJournal(s).headSeq();
+    const auto originalOps = count(s, "SELECT COUNT(*) FROM ops");
+    const auto originalDigest = digestProject(s).text;
+
+    Limits limits;
+    limits.measureClipImpact = true;
+    auto renames = begin(s, "rename clips", "m", kT0);
+    renames.ops = {op("clip.setName", {{"id", 1}, {"name", "Temporary"}}),
+                   op("clip.setName", {{"id", 1}, {"name", "One"}})};
+    const auto normal = preview(s, renames);
+    check(normal.ok && !normal.bulkClipEdit, "measurement is opt-in");
+    const auto one = preview(s, renames, limits);
+    check(one.ok && one.bulkClipEdit == false, "one clip touched twice is exactly 20%: " + one.error);
+    renames.ops.push_back(op("clip.setName", {{"id", 2}, {"name", "Temporary"}}));
+    renames.ops.push_back(op("clip.setName", {{"id", 2}, {"name", "Two"}}));
+    const auto two = preview(s, renames, limits);
+    check(two.ok && two.bulkClipEdit == true && two.unifiedDiff.empty(),
+          "two clips touched still count after their changes were reversed: " + two.error);
+
+    auto remove = begin(s, "remove a track", "m", kT0);
+    remove.ops.push_back(op("track.delete", {{"id", 1}}));
+    const auto cascaded = preview(s, remove, limits);
+    check(cascaded.ok && cascaded.bulkClipEdit == true,
+          "the track delete also touches both clips it removes: " + cascaded.error);
+
+    auto signatures = begin(s, "change clip signatures", "m", kT0);
+    signatures.ops = {op("clip.setTimeSignature", {{"id", 1}, {"num", 3}, {"den", 4}}),
+                      op("clip.setTimeSignature", {{"id", 2}, {"num", 3}, {"den", 4}})};
+    const auto sideTable = preview(s, signatures, limits);
+    check(sideTable.ok && sideTable.bulkClipEdit == true,
+          "editing clip properties in a child table touches both clips: " + sideTable.error);
+
+    auto marker = begin(s, "rename a marker", "m", kT0);
+    marker.ops.push_back(op("marker.create", {{"id", 1}, {"pos", 0}, {"name", "Intro"}}));
+    const auto nonClip = preview(s, marker, limits);
+    check(nonClip.ok && nonClip.bulkClipEdit == false, "non-clip edits do not touch clips: " + nonClip.error);
+
+    check(count(s, "SELECT COUNT(*) FROM ops") == originalOps && OpJournal(s).headSeq() == originalHead &&
+              digestProject(s).text == originalDigest,
+          "measured previews leave the head, op journal and project unchanged");
+    check(count(s, "SELECT COUNT(*) FROM temp.sqlite_schema WHERE name LIKE 'adi_agent_%'") == 0,
+          "rolling back also removes the temporary counter and triggers");
+}
+
 void testDescribeByContent() {
     section("paired ops are told apart by content, not key count (R4.6)");
     Fixture f("describe");
@@ -648,6 +700,7 @@ int runAll() {
     std::printf("adi_changeset_tests -- ADR-0145 d9, AI-AGENT 6, ADR-0148\n\n");
     testGuardrails();
     testPreviewDoesNotWrite();
+    testBulkClipImpact();
     testDescribeByContent();
     testApplyIsOneStep();
     testStale();

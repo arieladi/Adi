@@ -327,6 +327,26 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         finish(Outcome::fail(errc::NotGranted, kNotGranted));
         return pending;
     }
+    const auto restrictTier = [spec](Tier grant, const Json& args) {
+        return spec->restrictTier ? std::min(grant, spec->restrictTier(grant, args)) : grant;
+    };
+    Tier ingressTier;
+    try {
+        ingressTier = restrictTier(*tier, params);
+    } catch (const std::exception& e) {
+        pending->take();
+        finish(internalError(methodName, e.what()));
+        return pending;
+    } catch (...) {
+        pending->take();
+        finish(internalError(methodName, "unknown exception"));
+        return pending;
+    }
+    if (ingressTier < spec->minTier) {
+        pending->take();
+        finish(Outcome::fail(errc::NotGranted, kNotGranted));
+        return pending;
+    }
     // 3. The idempotent replay: the same credential, method and key, and the
     //    same params. The digest is of the params as sent, before the screen
     //    normalises them, so equal requests match byte for byte (an object's
@@ -365,7 +385,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     //    normalised, payloads validated, before the owner sees anything.
     Json prepared = params;
     if (spec->screen) {
-        CallContext screenCtx{who, *tier, meta};
+        CallContext screenCtx{who, ingressTier, meta};
         std::optional<Outcome> refusal;
         try {
             refusal = spec->screen(screenCtx, prepared);
@@ -387,7 +407,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     // 5. The deadline, and the hop to the owner.
     const std::int64_t deadlineAt = now() + meta.deadlineMs.value_or(options_.defaultDeadlineMs);
     Task run = [this, spec, who, meta, params = std::move(prepared), cacheKey, paramsDigest, deadlineAt,
-                pending, finish]() mutable {
+                pending, finish, restrictTier, ingressTier]() mutable {
         if (!pending->take()) return;   // the transport abandoned it and answered
         if (now() > deadlineAt) {
             // It waited past its deadline and nobody abandoned it: refuse
@@ -405,16 +425,24 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
             finish(Outcome::fail(errc::NotGranted, kNotGranted));
             return;
         }
-        CallContext ctx{who, *granted, meta};
         Outcome out;
         try {
+            const auto ownerTier = restrictTier(std::min(ingressTier, *granted), params);
+            if (ownerTier < spec->minTier) {
+                finish(Outcome::fail(errc::NotGranted, kNotGranted));
+                return;
+            }
+            CallContext ctx{who, ownerTier, meta};
             out = spec->run(ctx, params);
         } catch (const std::exception& e) {
             out = internalError(spec->name, e.what());
         } catch (...) {
             out = internalError(spec->name, "unknown exception");
         }
-        if (!cacheKey.empty() && !(out.error && out.error->code == errc::Internal))
+        // The rate window and policy can change before the same call retries.
+        if (!cacheKey.empty() && !(out.error && (out.error->code == errc::Internal ||
+                                                out.error->code == errc::OverLimit ||
+                                                out.error->code == errc::NotGranted)))
             remember(cacheKey, paramsDigest, out);
         finish(std::move(out));
     };

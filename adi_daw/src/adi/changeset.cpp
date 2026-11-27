@@ -81,6 +81,45 @@ Refusal checkHead(const Store& store, const Changeset& cs, std::string& error) {
     return Refusal::None;
 }
 
+// Track the writes rather than inferring a clip from its op's name or
+// comparing the final projections. A parent delete can cascade into clips,
+// note edits write a stream, and one op can undo an earlier op's effect.
+void trackClipWrites(SQLite::Database& db) {
+    db.exec("CREATE TEMP TABLE adi_agent_touched_clips(id INTEGER PRIMARY KEY)");
+    for (const std::string_view table : {"clips", "clip_properties", "clip_playback_details",
+                                         "clip_warp_fade_domains", "event_streams", "note_expression",
+                                         "audio_clips", "automation_lanes", "automation_data",
+                                         "automation_segment_ranges"}) {
+        const auto record = [table](std::string_view row) {
+            const std::string column = std::string(row) + ".";
+            std::string id = column + "clip_id";
+            if (table == "clips") {
+                id = column + "id";
+            } else if (table == "automation_lanes") {
+                id = "CASE WHEN " + column + "owner_kind = 'clip' THEN " + column + "owner_id END";
+            } else if (table == "automation_data") {
+                id = "COALESCE(" + id + ", (SELECT owner_id FROM automation_lanes WHERE id = " +
+                     column + "lane_id AND owner_kind = 'clip'))";
+            } else if (table == "automation_segment_ranges") {
+                id = "COALESCE(" + id + ", (SELECT COALESCE(d.clip_id, l.owner_id) FROM automation_data d "
+                     "LEFT JOIN automation_lanes l ON l.id = d.lane_id AND l.owner_kind = 'clip' "
+                     "WHERE d.id = " + column + "data_id))";
+            }
+            return "INSERT INTO adi_agent_touched_clips SELECT touched.id FROM (SELECT " + id +
+                   " AS id) touched WHERE touched.id IS NOT NULL AND NOT EXISTS "
+                   "(SELECT 1 FROM adi_agent_touched_clips WHERE id = touched.id); ";
+        };
+
+        const std::string before = record("OLD");
+        const std::string after = record("NEW");
+        const std::string trigger = "CREATE TEMP TRIGGER adi_agent_clip_impact_" + std::string(table);
+        const std::string onTable = " ON main." + std::string(table) + " BEGIN ";
+        db.exec(trigger + "_insert AFTER INSERT" + onTable + after + "END");
+        db.exec(trigger + "_update AFTER UPDATE" + onTable + before + after + "END");
+        db.exec(trigger + "_delete BEFORE DELETE" + onTable + before + "END");
+    }
+}
+
 /// What the review list says an op targets. The caller's own target wins;
 /// otherwise the op's domain and the first id-like key in its payload.
 void targetOf(const OpRequest& q, Change& c) {
@@ -389,6 +428,11 @@ Preview preview(Store& store, const Changeset& cs, const Limits& limits) {
         // is not written and nothing is logged; what the user reviews is what
         // Apply will do, computed by the same handlers.
         SQLite::Transaction scratch(db);
+        std::int64_t clipsBefore = 0;
+        if (limits.measureClipImpact) {
+            clipsBefore = db.execAndGet("SELECT COUNT(*) FROM main.clips").getInt64();
+            trackClipWrites(db);
+        }
         for (const auto& q : cs.ops) {
             const auto* d = OpRegistry::instance().find(q.opType);
             std::optional<Payload> inverse;
@@ -412,6 +456,12 @@ Preview preview(Store& store, const Changeset& cs, const Limits& limits) {
         rows::Model after = rows::readModel(store);
         dropReadTransactionNote(after);
         p.textAfter = textproj::project(textproj::buildTree(after)).text;
+        if (limits.measureClipImpact) {
+            const auto touched = db.execAndGet("SELECT COUNT(*) FROM temp.adi_agent_touched_clips").getInt64();
+            // Count distinct touched IDs, including insertions. Integer division
+            // implements the exact strict threshold without multiplying counts.
+            p.bulkClipEdit = touched > clipsBefore / 5;
+        }
     } catch (const std::exception& e) {
         p.refusal = Refusal::Invalid;
         p.error = e.what();

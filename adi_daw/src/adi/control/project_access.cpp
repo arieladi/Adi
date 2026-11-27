@@ -1,9 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/project_access.hpp"
+#include "adi/store.hpp"
+
+#include <SQLiteCpp/SQLiteCpp.h>
 
 #include <utility>
 
 namespace adi::control {
+
+std::optional<Tier> readProjectAgentTier(const Store& store) {
+    if (!store.db().tableExists("session_state")) return std::nullopt;
+    SQLite::Statement row(const_cast<SQLite::Database&>(store.db()),
+                          "SELECT value FROM session_state WHERE key='agent.tier'");
+    if (!row.executeStep()) return std::nullopt;
+    const auto value = Json::parse(row.getColumn(0).getString(), nullptr, false);
+    if (!value.is_string()) return Tier::Observe;
+    return tierFromString(value.get_ref<const std::string&>()).value_or(Tier::Observe);
+}
+
+bool setProjectAgentTier(Store& store, std::optional<Tier> tier) {
+    if (store.readOnly()) return false;
+    if (!tier) {
+        store.db().exec("DELETE FROM session_state WHERE key='agent.tier'");
+    } else {
+        SQLite::Statement row(store.db(),
+            "INSERT INTO session_state(key,value) VALUES('agent.tier',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+        row.bind(1, Json(toString(*tier)).dump());
+        row.exec();
+    }
+    return true;
+}
 
 void ProjectSet::add(std::shared_ptr<ProjectAccess> project) {
     if (!project) return;

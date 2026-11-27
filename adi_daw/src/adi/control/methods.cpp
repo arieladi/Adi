@@ -234,6 +234,28 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
     return std::nullopt;
 }
 
+void recordRemarkRead(ControlContext& ctx, const CallContext& call) {
+    if (call.meta.runPolicy) {
+        call.meta.runPolicy->readRemarks.store(true);
+    } else {
+        std::lock_guard lock(ctx.remarkMutex);
+        ctx.clientsThatReadRemarks.insert(call.who.credential);
+    }
+}
+
+bool diffIncludesRemarkText(std::string_view diff) {
+    // The canonical projection uses a `text` attribute only for remarks.
+    while (!diff.empty()) {
+        const auto lineEnd = diff.find('\n');
+        const auto line = diff.substr(0, lineEnd);
+        const auto content = line.find_first_not_of(" +-");
+        if (content != std::string_view::npos && line.substr(content).starts_with("text ")) return true;
+        if (lineEnd == std::string_view::npos) break;
+        diff.remove_prefix(lineEnd + 1);
+    }
+    return false;
+}
+
 }  // namespace
 
 void registerControlMethods(Service& service, ControlContext& ctx) {
@@ -309,7 +331,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
               {"toBar", {{"type", "integer"}, {"minimum", -100000}, {"maximum", 100000},
                          {"description", "levels 1-2: to this bar (exclusive)"}}}}},
             {"additionalProperties", false}};
-        m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
+        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project", "level", "tracks", "clips", "fromBar", "toBar"}))
                 return failWith(*e);
             RpcError e;
@@ -346,8 +368,11 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             std::string err;
             const auto snapshot = project->read(err);
             if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
-            return Outcome::ok(projectLevel(snapshot.model, static_cast<int>(level.value_or(0)), scope,
-                                            snapshot.head, project->handle()));
+            auto result = projectLevel(snapshot.model, static_cast<int>(level.value_or(0)), scope,
+                                       snapshot.head, project->handle());
+            if (result.contains("remarks") && !result.at("remarks").empty())
+                recordRemarkRead(ctx, call);
+            return Outcome::ok(std::move(result));
         };
         service.add(std::move(m));
     }
@@ -491,12 +516,20 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         MethodSpec m;
         m.name = "changeset.propose";
         m.summary =
-            "Propose ops as ONE changeset: it is previewed (every op run and rolled back) and queued "
-            "for the user; nothing is written until the user applies it, as one undo step";
+            "Preview ops as one changeset. At Apply it can commit as one undo step. "
+            "Other edits wait for the user's review.";
         m.minTier = Tier::Propose;
         m.ownerThread = true;
         m.idempotent = true;
         m.readOnly = false;
+        const auto scopedTier = [&ctx](Tier grant, const Json& params) {
+            const auto app = ctx.appTier ? ctx.appTier() : Tier::Propose;
+            const auto ceiling = std::min(grant, app);
+            RpcError error;
+            const auto project = ctx.projects.resolve(params, error);
+            return project ? std::min(ceiling, project->agentTierOverride().value_or(ceiling)) : ceiling;
+        };
+        m.restrictTier = scopedTier;
         m.paramsSchema = {
             {"type", "object"},
             {"properties",
@@ -528,7 +561,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.screen = [&ctx](CallContext& call, Json& p) -> std::optional<Outcome> {
             return screenProposal(ctx, call.meta, p);
         };
-        m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
+        m.run = [&ctx, &service, scopedTier](CallContext& call, const Json& p) -> Outcome {
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
@@ -585,7 +618,9 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                 cs.ops.push_back(std::move(q));
             }
 
-            const agent::Preview pv = project->preview(cs, ctx.limits);
+            auto limits = ctx.limits;
+            limits.measureClipImpact = call.tier == Tier::Apply && project->allowsAutomaticApply();
+            const agent::Preview pv = project->preview(cs, limits);
             if (!pv.ok) {
                 Json data = {{"refusal", agent::toString(pv.refusal)}};
                 if (pv.refusal == agent::Refusal::Stale) {
@@ -650,8 +685,46 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
             entry.createdMs = ctx.steadyMs();
-            entry.requiresReview = markerRun;
+            const auto run = call.meta.runPolicy;
+            bool requiresReview = markerRun || pv.bulkClipEdit.value_or(limits.measureClipImpact) ||
+                                  (run && (run->egress || run->readRemarks.load()));
+            if (!run) {
+                std::lock_guard lock(ctx.remarkMutex);
+                requiresReview = requiresReview || ctx.clientsThatReadRemarks.contains(call.who.credential);
+            }
+            entry.requiresReview = requiresReview;
+
+            const auto latestGrant = service.grants().tierOf(call.who.credential);
+            const Tier tier = latestGrant ? scopedTier(std::min(call.tier, *latestGrant), p) : Tier::Observe;
+            if (tier < Tier::Propose)
+                return Outcome::fail(errc::NotGranted, "not granted");
+            if (tier == Tier::Apply && project->allowsAutomaticApply() && !requiresReview) {
+                const auto cap = ctx.maxOpsPerMinute ? ctx.maxOpsPerMinute() : std::size_t{6000};
+                auto budget = ctx.applyRateLimit.reserve(call.who.credential, entry.changeset.ops.size(),
+                                                         cap, ctx.steadyMs());
+                if (!budget)
+                    return refusal(errc::OverLimit, "changeset exceeds the per-minute Apply cap",
+                                   "too many ops", {{"cap", cap}});
+                const auto applied = project->applyChangeset(entry.changeset, limits);
+                if (!applied.ok) {
+                    const auto code = applied.refusal == agent::Refusal::Stale ? errc::Stale : errc::InvalidParams;
+                    return refusal(code, applied.error, agent::toString(applied.refusal));
+                }
+                budget->commit(ctx.steadyMs());
+                entry.state = Review::Applied;
+                proposal["status"] = std::string(toString(entry.state));
+                proposal["txnId"] = applied.txnId;
+                proposal.erase("apply");
+                entry.proposal = proposal;
+            }
             ctx.queue.add(std::move(entry));
+            if (diffIncludesRemarkText(proposal.at("diff").get_ref<const std::string&>()) ||
+                std::any_of(pv.changes.begin(), pv.changes.end(), [](const agent::Change& change) {
+                    return change.opType.starts_with("remark.") &&
+                           change.before && change.before->contains("text");
+                })) {
+                recordRemarkRead(ctx, call);
+            }
             return Outcome::ok(std::move(proposal));
         };
         service.add(std::move(m));

@@ -887,14 +887,21 @@ void testResources() {
 /// app host (CTL-09) will provide.
 class LiveProject final : public ProjectAccess {
 public:
-    LiveProject(std::shared_ptr<HeadlessProject> inner, const TelemetryBoard& board)
-        : inner_(std::move(inner)), board_(board) {}
+    LiveProject(std::shared_ptr<HeadlessProject> inner, const TelemetryBoard& board, Store* writer = nullptr)
+        : inner_(std::move(inner)), board_(board), writer_(writer) {}
     const std::string& handle() const override { return inner_->handle(); }
     std::string label() const override { return inner_->label(); }
     ReadSnapshot read(std::string& e) override { return inner_->read(e); }
     std::optional<std::int64_t> head(std::string& e) override { return inner_->head(e); }
     std::string fileSchema() override { return inner_->fileSchema(); }
-    agent::Preview preview(const agent::Changeset& c, const agent::Limits& l) override { return inner_->preview(c, l); }
+    agent::Preview preview(const agent::Changeset& c, const agent::Limits& l) override {
+        return writer_ ? agent::preview(*writer_, c, l) : inner_->preview(c, l);
+    }
+    std::optional<Tier> agentTierOverride() override { return inner_->agentTierOverride(); }
+    bool allowsAutomaticApply() const override { return writer_ != nullptr; }
+    agent::ApplyResult applyChangeset(const agent::Changeset& c, const agent::Limits& l) override {
+        return writer_ ? agent::apply(*writer_, c, l) : ProjectAccess::applyChangeset(c, l);
+    }
     bool wasApplied(const std::string& a) override { return inner_->wasApplied(a); }
     bool live() const override { return true; }
     std::shared_ptr<const TelemetryFrame> telemetry() const override { return board_.latest(); }
@@ -903,7 +910,130 @@ public:
 private:
     std::shared_ptr<HeadlessProject> inner_;
     const TelemetryBoard& board_;
+    Store* writer_;
 };
+
+void testApplyBoundary() {
+    section("AGT-09 and DF-C6: project and run boundaries, idempotency and the Apply cap");
+    ProjectFile file("apply_policy");
+    StoreError error = StoreError::Ok;
+    auto writer = Store::open(file.path, error, false);
+    if (!writer) throw std::runtime_error("fixture: cannot open the project writer");
+    TelemetryBoard board;
+    Bridge bridge(std::make_shared<LiveProject>(openHeadless(file.path), board, writer.get()), Tier::Apply);
+    const Principal who{bridge.session.credential, "ADI agent"};
+    const Principal other{"another-credential", "ADI agent"};
+    bridge.grants.grant(other.credential, Tier::Apply);
+    std::int64_t now = 100;
+    Tier app = Tier::Propose;
+    bridge.ctx.steadyMs = [&] { return now; };
+    bridge.ctx.appTier = [&] { return app; };
+    bridge.ctx.maxOpsPerMinute = [] { return std::size_t{1}; };
+    OpJournal journal(*writer);
+    const auto head = [&] {
+        const auto current = journal.headSeq();
+        return current ? Json(*current) : Json(nullptr);
+    };
+    const auto volume = [](const Json& base, double db) {
+        return Json{{"baseHead", base}, {"request", "Lower the bass"},
+                    {"ops", Json::array({{{"op", "mixer.setVolume"},
+                                          {"payload", {{"id", 3}, {"db", db}}}}})}};
+    };
+    const auto call = [&](const Principal& caller, const Json& args, RequestMeta meta = {}) {
+        Outcome out;
+        bridge.service.call(caller, "changeset.propose", args, meta,
+                            [&](Outcome result) { out = std::move(result); });
+        return out;
+    };
+    const auto waiting = [](const Outcome& out) {
+        return !out.error && out.result.value("status", "") == "awaiting_review";
+    };
+    const auto applied = [](const Outcome& out) {
+        return !out.error && out.result.value("status", "") == "applied";
+    };
+
+    const auto start = head();
+    check(waiting(call(who, volume(start, -1))) && head() == start, "the app tier caps the grant");
+    app = Tier::Apply;
+    check(setProjectAgentTier(*writer, Tier::Propose) && readProjectAgentTier(*writer) == Tier::Propose,
+          "the project override lives in session state");
+    RequestMeta queuedKey;
+    queuedKey.idempotencyKey = "downgrade";
+    check(waiting(call(who, volume(start, -2), queuedKey)) && head() == start,
+          "the project's Propose cap wins over app Apply");
+    check(setProjectAgentTier(*writer, Tier::Observe), "the user lowers the project tier to Observe");
+    const auto replay = call(who, volume(start, -2), queuedKey);
+    check(replay.error && replay.error->code == errc::NotGranted && head() == start,
+          "Observe refuses a proposal even when cached under that request key");
+    check(setProjectAgentTier(*writer, std::nullopt), "the user clears the project cap");
+
+    RequestMeta marker;
+    marker.runOrigin = RunOrigin::MarkerPrompt;
+    check(waiting(call(who, volume(start, -3), marker)) && head() == start,
+          "a marker run waits even in a project that allows immediate Apply");
+    RequestMeta external;
+    external.runPolicy = std::make_shared<RunPolicy>(true);
+    check(waiting(call(who, volume(start, -4), external)) && head() == start,
+          "a run with egress waits for review");
+
+    RequestMeta firstKey;
+    firstKey.idempotencyKey = "first-apply";
+    const auto firstArgs = volume(start, -5);
+    const auto first = call(who, firstArgs, firstKey);
+    check(applied(first) && head() != start, "an untainted Apply commits in one transaction");
+    const auto firstHead = head();
+    const auto retry = call(who, firstArgs, firstKey);
+    check(!retry.error && retry.result == first.result && head() == firstHead,
+          "retry replays the applied result and leaves the head alone");
+    RequestMeta secondKey;
+    secondKey.idempotencyKey = "second-apply";
+    const auto secondArgs = volume(firstHead, -6);
+    const auto over = call(who, secondArgs, secondKey);
+    check(over.error && over.error->code == errc::OverLimit && head() == firstHead,
+          "the second op in the same minute is refused without writing");
+    now += 59'999;
+    const auto early = call(who, secondArgs, secondKey);
+    check(early.error && early.error->code == errc::OverLimit, "the window is rolling");
+    ++now;
+    check(applied(call(who, secondArgs, secondKey)), "a rate refusal can retry when capacity returns");
+    check(applied(call(other, volume(head(), -7))), "another credential has its own budget");
+
+    for (int id = 1; id <= 5; ++id) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", id}, {"track", 1}, {"kind", "midi"},
+                        {"name", "Clip"}, {"pos", id * 100}, {"length", 50}};
+        check(journal.commit(clip).ok, "create a clip for the bulk threshold");
+    }
+    const auto bulkHead = head();
+    Json bulk = {{"baseHead", bulkHead}, {"request", "Remove two clips"},
+                 {"ops", Json::array({{{"op", "clip.delete"}, {"payload", {{"id", 1}}}},
+                                       {{"op", "clip.delete"}, {"payload", {{"id", 2}}}}})}};
+    check(waiting(call(who, bulk)) && head() == bulkHead,
+          "touching more than 20 percent queues even when outstanding rate capacity is zero");
+
+    writer->db().exec("INSERT INTO remarks(id,target_kind,target_id,author,text,created_utc) "
+                      "VALUES(1,'track',3,'user','Change the bass',0)");
+    const auto remarksHead = head();
+    RequestMeta ownRun;
+    ownRun.runPolicy = std::make_shared<RunPolicy>(false);
+    bridge.service.call(who, "project.read", {{"level", 1}}, ownRun, [](Outcome) {});
+    check(ownRun.runPolicy->readRemarks.load() && waiting(call(who, volume(remarksHead, -8), ownRun)) &&
+              head() == remarksHead, "returning a remark taints the host-owned run");
+    bridge.grants.grant(other.credential, Tier::Propose);
+    bridge.service.call(other, "project.read", {{"level", 1}}, {}, [](Outcome) {});
+    bridge.grants.grant(other.credential, Tier::Apply);
+    check(waiting(call(other, volume(remarksHead, -9))) && head() == remarksHead,
+          "a client that received remarks at Propose stays tainted after an Apply grant");
+
+    RequestMeta diffRun;
+    diffRun.runPolicy = std::make_shared<RunPolicy>(false);
+    app = Tier::Propose;
+    Json remarkRemoval = {{"baseHead", remarksHead}, {"request", "Remove the old remark"},
+                          {"ops", Json::array({{{"op", "remark.remove"}, {"payload", {{"id", 1}}}}})}};
+    check(waiting(call(who, remarkRemoval, diffRun)) && diffRun.runPolicy->readRemarks.load(),
+          "remarks shown in a preview also taint the run that received it");
+}
 
 void testTelemetry() {
     section("telemetry: what the engine already publishes, labelled honestly");
@@ -1357,6 +1487,7 @@ int runAll() {
     testToolsAndReads();
     testProposeLeavesTheFile();
     testMarkerRunWaitsForReview();
+    testApplyBoundary();
     testRefusals();
     testEchoesAreClipped();
     testExpectHead();

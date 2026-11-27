@@ -16,6 +16,7 @@
 
 #include "adi/changeset.hpp"
 #include "adi/control/jsonrpc.hpp"
+#include "adi/control/service.hpp"
 #include "adi/store_rows.hpp"
 
 #include <cstdint>
@@ -29,6 +30,11 @@
 namespace adi::control {
 
 struct TelemetryFrame;
+
+/// A project carries only a cap. Raising it is a host-side user action and
+/// it cannot raise the application's ceiling or a credential's grant.
+[[nodiscard]] std::optional<Tier> readProjectAgentTier(const Store&);
+[[nodiscard]] bool setProjectAgentTier(Store&, std::optional<Tier>);
 
 /// The rows and the undo head, read under ONE read transaction: a read never
 /// pairs one state's rows with a later head, so a changeset built on what was
@@ -61,6 +67,14 @@ public:
     /// the projection diffed. Headless, on a snapshot of the current head.
     [[nodiscard]] virtual agent::Preview preview(const agent::Changeset&,
                                                  const agent::Limits&) = 0;
+    /// Any thread. A live host can use its read-only project connection.
+    [[nodiscard]] virtual std::optional<Tier> agentTierOverride() { return std::nullopt; }
+    [[nodiscard]] virtual bool allowsAutomaticApply() const { return false; }
+    /// The owner thread only. The headless backend never takes this path.
+    [[nodiscard]] virtual agent::ApplyResult applyChangeset(const agent::Changeset&,
+                                                            const agent::Limits&) {
+        return {false, agent::Refusal::ReadOnly, "project is open read-only"};
+    }
     /// The owner thread: whether a changeset carrying this actor detail was
     /// applied (its agent_requests row exists).
     [[nodiscard]] virtual bool wasApplied(const std::string& actorDetail) = 0;

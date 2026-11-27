@@ -78,6 +78,13 @@ private:
 
 enum class RunOrigin { Direct, MarkerPrompt };
 
+/// One host-owned model run. All tools dispatched for the run share this state.
+struct RunPolicy {
+    explicit RunPolicy(bool usesEgress) : egress(usesEgress) {}
+    const bool egress;
+    std::atomic<bool> readRemarks{false};
+};
+
 /// The wire's `meta` (ADR-0232 d2) and trusted metadata from the run host.
 struct RequestMeta {
     /// Outer: check at all. Inner nullopt: the root, nothing done yet.
@@ -87,6 +94,7 @@ struct RequestMeta {
     /// The host sets this when the user starts a run from a marker. It is
     /// never set from JSON: a model cannot change the origin of its run.
     RunOrigin runOrigin = RunOrigin::Direct;
+    std::shared_ptr<RunPolicy> runPolicy = {};
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
@@ -138,6 +146,9 @@ struct MethodSpec {
     /// of op payloads -- then costs the owner thread nothing.
     std::function<std::optional<Outcome>(CallContext&, Json& params)> screen;
     std::function<Outcome(CallContext&, const Json& params)> run;
+    /// Project and application tier caps. Checked before replay and again on
+    /// the owner. The API cannot give the caller a higher tier.
+    std::function<Tier(Tier, const Json& params)> restrictTier = {};
 };
 
 enum class CallState : int { Pending = 0, Taken = 1, Abandoned = 2 };

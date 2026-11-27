@@ -355,6 +355,13 @@ bool HeadlessProject::refreshSnapshotLocked(std::string& error) {
     return true;
 }
 
+std::optional<Tier> HeadlessProject::agentTierOverride() {
+    std::string error;
+    auto reader = openReader(error);
+    if (!reader) return Tier::Observe;
+    return readProjectAgentTier(*reader);
+}
+
 agent::Preview HeadlessProject::preview(const agent::Changeset& cs, const agent::Limits& limits) {
     std::lock_guard lock(mutex_);
     std::string error;

@@ -43,6 +43,8 @@ struct Limits {
     /// default a request gets when nobody set one: ADR-0203 d20's 6000, the
     /// default of `agent.maxOpsPerRequest`, which adi-mcp reads (AGT-01).
     std::size_t maxOps = 6000;
+    /// AGT-09: measure distinct clips touched during the rolled-back preview.
+    bool measureClipImpact = false;
 };
 
 struct Changeset {
@@ -90,6 +92,9 @@ struct Preview {
     std::string textAfter;      // ... and as the changeset would leave it
     std::string unifiedDiff;    // of the two, `--- before` / `+++ after`
     std::vector<Change> changes;
+    /// Available when the successful preview measured clip impact. True
+    /// when it touched more than 20% of the clips present before the edit.
+    std::optional<bool> bulkClipEdit;
 };
 
 /// Runs every op inside a transaction that is always rolled back, projects

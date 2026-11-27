@@ -54,6 +54,7 @@ public:
     [[nodiscard]] std::optional<std::int64_t> head(std::string& error) override;
     [[nodiscard]] std::string fileSchema() override;
     [[nodiscard]] agent::Preview preview(const agent::Changeset&, const agent::Limits&) override;
+    [[nodiscard]] std::optional<Tier> agentTierOverride() override;
     [[nodiscard]] bool wasApplied(const std::string& actorDetail) override;
     [[nodiscard]] bool live() const override { return false; }
     [[nodiscard]] std::shared_ptr<const TelemetryFrame> telemetry() const override { return nullptr; }
