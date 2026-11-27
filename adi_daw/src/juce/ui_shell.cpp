@@ -5154,7 +5154,8 @@ bool AdiRootComponent::focusView(int id) {
             focusIfShowing(browser);
             return true;
         }
-        // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
+        // Ctrl/Cmd+F always searches All, with the library search text ready to type over.
+        browser.searchAll();
         focusIfShowing(browser.search);
         browser.search.selectAll();
         return true;

@@ -6547,6 +6547,109 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         browser.setListing({});
     }
 }
+void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-search-all.adi", true, {}, error);
+    check(document != nullptr, "SC-120: a project for Browser search");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-search-all");
+    root.setSize(1280, 800);
+    root.frame();
+    auto &browser = root.browser;
+    const auto drums = dir / "Search Drums";
+    const auto other = dir / "Search Other";
+    LibraryListing library;
+    library.places = {{"Search Drums", drums, "drums"}, {"Search Other", other, "other"}};
+    library.samples = {{"808 Kick.wav", drums / "808 Kick.wav", "drums"},
+                       {"808 Snare.wav", drums / "808 Snare.wav", "drums"},
+                       {"909 Kick.wav", other / "909 Kick.wav", "other"},
+                       {"Big Reverb.wav", other / "Big Reverb.wav", "other"}};
+    browser.setListing(std::move(library));
+    const auto choose = [&](const juce::String &name) {
+        const auto &labels = browser.sidebar();
+        const auto label = std::ranges::find(labels, name, &BrowserPanel::Entry::name);
+        if (label != labels.end())
+            browser.choose(static_cast<int>(label - labels.begin()));
+        return label != labels.end();
+    };
+    const auto query = [&](const juce::String &text) {
+        browser.search.setText(text, false);
+        browser.search.onTextChange();
+    };
+    const auto hasDevice = [&](std::string_view name) {
+        return std::ranges::any_of(browser.rows(), [name](const BrowserPanel::Row &row) {
+            return row.device != nullptr && row.device->name == name;
+        });
+    };
+    const auto hasPlugin = [&](std::string_view name) {
+        return std::ranges::any_of(browser.rows(), [name](const BrowserPanel::Row &row) {
+            return row.plugin != nullptr && row.plugin->name == name;
+        });
+    };
+    check(choose("Search Drums"), "SC-120: locate the explicitly scoped Place");
+    query("kick");
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "808 Kick.wav",
+          "SC-120: the selected Place still bounds a typed search");
+    query("  KiCk   808  ");
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "808 Kick.wav",
+          "SC-122: a sample matches every word in any order");
+
+    PluginScan scan;
+    scan.candidates = 20;
+    scan.listing.plugins = {{"clap", "test.tape", "Tape Reverb", "Northwind Audio", "1", {}, PluginEntry::Kind::Effect},
+                            {"clap", "test.echo", "Tape Echo", "Other Audio", "1", {}, PluginEntry::Kind::Effect}};
+    int scans = 0;
+    browser.scanPlugins = [&] {
+        ++scans;
+        scan.phase = PluginScan::Phase::Scanning;
+        browser.setPluginScan(scan);
+    };
+    check(root.command(AppCommands::SearchBrowser) && browser.selected() >= 0 &&
+              browser.sidebar()[static_cast<std::size_t>(browser.selected())].name == "All" && scans == 1,
+          "SC-120: global Search selects All and requests plug-in discovery from a Place");
+    query("reverb");
+    check(hasDevice("Hybrid Reverb") && hasPlugin("Tape Reverb") &&
+              browser.shown().size() == 1 && browser.shown().front()->name == "Big Reverb.wav",
+          "SC-120: All returns an effect, a plug-in and a sample together");
+    const auto sampleRow = std::ranges::find_if(browser.rows(), [](const BrowserPanel::Row &row) { return row.file != nullptr; });
+    if (sampleRow != browser.rows().end()) {
+        const auto index = static_cast<int>(sampleRow - browser.rows().begin());
+        browser.list.selectRow(index);
+        scan.completed = 8;
+        browser.setPluginScan(scan);
+        check(browser.list.getSelectedRow() == index && browser.rows()[static_cast<std::size_t>(index)].heading.isEmpty(),
+              "SC-120: updating scan progress preserves the selected sample row in All");
+    }
+    query("northwind reverb");
+    check(hasPlugin("Tape Reverb") && !hasPlugin("Tape Echo") && !hasDevice("Hybrid Reverb") && browser.shown().empty(),
+          "SC-122: words can match both a plug-in maker and plug-in name");
+    browser.setDevicePresets({{"not-in-the-device-catalogue", "Bright Plate", dir / "plate.adipreset"}});
+    query("plate bright");
+    check(std::ranges::any_of(browser.rows(), [](const BrowserPanel::Row &row) {
+              return row.savedPreset && row.savedPreset->name == "Bright Plate";
+          }), "SC-120: All can find a preset whose device is currently absent");
+    browser.search.clear();
+    browser.search.onTextChange();
+    check(browser.shown().size() == 4 && hasDevice("OneShot") && hasPlugin("Tape Reverb"),
+          "SC-120: clearing the All query restores all result types");
+    query("reverb");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(browser.search.getText().isEmpty() && !hasDevice("OneShot"),
+          "SC-120: ordinary search text stays out of a first Hot-Swap");
+    query("kick 808");
+    check(root.command(AppCommands::SearchBrowser) && !browser.hotSwapActive() &&
+              browser.search.getText() == "reverb" && hasPlugin("Tape Reverb") && scans == 1,
+          "SC-120: global Search ends Hot-Swap and restores the All search text");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(browser.search.getText() == "kick 808" && browser.shown().size() == 1 &&
+              browser.shown().front()->name == "808 Kick.wav",
+          "SC-120: Hot-Swap retains its separate words between entries");
+    browser.setHotSwap(std::nullopt);
+    check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
+          "SC-120: the two modes keep separate text and results");
+}
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
@@ -6631,8 +6734,8 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
     browser.choose(user);
     check(browser.shown().size() == sampleCount - 1 && matches(0, "Take 1000000.wav"),
           "Browser search: blank User Library includes descendants and excludes the neighboring Place");
-    constexpr std::array queries{"Q", "QX", "QXY"};
-    constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3};
+    constexpr std::array queries{"Q", "QX", "QXY", "QXY 100000"};
+    constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3, 1};
     constexpr std::size_t trials = 7;
     std::array<std::array<double, trials>, queries.size()> timings{};
     for (std::size_t trial = 0; trial < trials; ++trial) {
@@ -6648,10 +6751,13 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         std::sort(times.begin(), times.end());
         medians[key] = times[trials / 2];
     }
-    std::printf("Browser search in a %d-file listing, median of %zu trials: Q %.3f ms, QX %.3f ms, QXY %.3f ms\n",
-                sampleCount, trials, medians[0], medians[1], medians[2]);
+    std::printf("Browser search in a %d-file listing, median of %zu trials:\n", sampleCount, trials);
+    for (std::size_t key = 0; key < queries.size(); ++key)
+        std::printf("  %s: %.3f ms\n", queries[key], medians[key]);
     check(std::ranges::all_of(medians, [](double ms) { return ms < 40.; }),
           "SC-421: a search keystroke in a large Place takes under 40 ms");
+    check(matches(0, "Take 1000004 QXylophone.wav"), "SC-122: the two-word query finds the sample with both words");
+    edit("QXY");
     check(matches(0, "Take 1000004 QXylophone.wav") && matches(1, "Take 1000027 qxyLead.wav") &&
               matches(2, "Take 1000200 AqxYtone.wav"),
           "Browser search: case-insensitive filename substrings keep library order");
@@ -25258,6 +25364,7 @@ int main(int argc, char **argv) {
     trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
