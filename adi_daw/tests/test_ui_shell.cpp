@@ -5687,7 +5687,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     // The later clip is between grid lines, so both must use the earlier clip's step size.
     arrangement.geometry.grid.fixed = true;
     arrangement.geometry.grid.fixedQuarters = 16.;
-    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
     root.frame();
     check(clipsOf(2) == Clips{{bar, bar / 2}, {4 * bar, bar}, {gapAt, bar / 4}} &&
               clipsOf(3) == between && clipsOf(20) == Clips{{6 * bar, bar / 2}},
@@ -23171,14 +23171,15 @@ int main(int argc, char **argv) {
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
                       C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
-                      C::About == C::ExportMidiClip + 1 && C::LastId == C::ImportAudioFile,
+                      C::About == C::ExportMidiClip + 1 && C::ImportAudioFile == C::About + 1 &&
+                      C::ConsolidateMidi == C::ImportAudioFile + 1 && C::LastId == C::ConsolidateMidi,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
-                  "Computer MIDI Keyboard, MIDI import and MIDI export");
+                  "Computer MIDI Keyboard, MIDI import and export, About, audio import and Consolidate");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
