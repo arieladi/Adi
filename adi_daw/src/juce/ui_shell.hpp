@@ -43,6 +43,11 @@
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
+
+struct AdditionalAutomationLane {
+    AutomationTarget target;
+    int height = 0;
+};
 class ProjectDocument;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
@@ -783,6 +788,17 @@ class AdiRootComponent final : public juce::Component,
     bool drawMode() const noexcept { return clipView.notes.drawMode(); }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue = false);
+    bool addAutomationPoint(std::int64_t track, const AutomationTarget &, std::int64_t tick, double value,
+                            bool exactValue = false);
+    const std::vector<AdditionalAutomationLane> &additionalAutomationLanes(std::int64_t track) const;
+    bool automationLanesExpanded(std::int64_t track) const;
+    bool automationOverlayShown(std::int64_t track) const;
+    bool addAutomationLane(std::int64_t track, const AutomationTarget &);
+    bool addAutomatedLanes(std::int64_t track);
+    bool removeAutomationLane(std::int64_t track, const AutomationTarget &);
+    void toggleAutomationLanes(std::int64_t track);
+    void hideAutomationOverlay(std::int64_t track);
+    bool automationTargetShown(std::int64_t track, const AutomationTarget &) const;
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.
@@ -803,7 +819,10 @@ class AdiRootComponent final : public juce::Component,
     double automationCurrent(const AutomationTarget &target) const;
     // For a typed value, tick is the point's expected, unchanged native time.
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value, bool exactValue = false);
+    bool moveAutomationPoint(std::int64_t track, const AutomationTarget &, std::uint64_t point, std::int64_t tick,
+                             double value, bool exactValue = false);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
+    bool deleteAutomationPoint(std::int64_t track, const AutomationTarget &, std::uint64_t point);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                               std::int64_t begin, std::int64_t end,
                               const std::map<std::int64_t, double> &points, bool stepped,
@@ -983,6 +1002,11 @@ class AdiRootComponent final : public juce::Component,
     bool automationMode_ = false;
     // Descriptor metadata for a selection whose device panel is hidden.
     mutable std::map<std::int64_t, AutomationTarget> automationTargets_;
+    std::map<std::int64_t, std::vector<AdditionalAutomationLane>> additionalAutomationLanes_;
+    std::shared_ptr<const engine::Snapshot> automationLaneSnapshot_;
+    std::shared_ptr<const ParameterPublication> automationLanePublication_;
+    void refreshAdditionalAutomationLanes();
+    void layoutAdditionalAutomationLanes();
     bool infoShown_ = true;
     bool infoPressed_ = false;
     void applyInfoAnalyserMode();

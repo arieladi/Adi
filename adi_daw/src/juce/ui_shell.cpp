@@ -1551,6 +1551,8 @@ void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
+    if (automationMode_)
+        refreshAdditionalAutomationLanes();
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
@@ -3829,6 +3831,7 @@ void AdiRootComponent::setAutomationMode(bool on) {
         arrangement.canvas.clearAutomationSelection();
         arrangement.canvas.resetAutomationValueInput();
     }
+    refreshAdditionalAutomationLanes();
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Choose an automation device and parameter on the track header, or click the control itself. "
              "Click the line to add a breakpoint, drag one to move it, or double-click one to delete it."
@@ -3876,7 +3879,7 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
                 if (device.metadata || !device.declarations().empty()) {
                     for (const auto &parameter : device.declarations()) {
                         if (cached != automationTargets_.end() && matches(cached->second) &&
-                            parameter.id != cached->second.nativeParamId)
+                            !cached->second.nativeParamId.empty() && parameter.id != cached->second.nativeParamId)
                             continue;
                         if (auto target = deviceTarget(device, parameter); target && matches(*target))
                             return std::move(*target);
@@ -3918,10 +3921,10 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
     if (!automationMode_)
         setAutomationMode(true);
 
-    bool changed = false;
+    bool changed = state_.hiddenAutomationOverlays.erase(track) != 0;
     auto &saved = state_.automationChoices;
     if (selected == volumeTarget(track))
-        changed = saved.erase(track) != 0;
+        changed = saved.erase(track) != 0 || changed;
     else {
         const WindowState::AutomationChoice choice{selected.ownerKind, selected.ownerId, selected.paramRef};
         const auto before = saved.find(track);
@@ -3942,6 +3945,297 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
         selected.paramName + ".");
     arrangement.repaint();
 }
+namespace {
+bool sameAutomationLaneStructure(const engine::Snapshot *a, const engine::Snapshot *b) {
+    if (a == b)
+        return true;
+    if (!a || !b)
+        return false;
+    const auto sameTrack = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id);
+    };
+    const auto sameSend = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id && left->sourceKind == right->sourceKind &&
+                                 left->sourceId == right->sourceId);
+    };
+    const auto sameLane = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id && left->ownerKind == right->ownerKind &&
+            left->ownerId == right->ownerId && left->paramRef == right->paramRef && left->paramName == right->paramName &&
+            left->visible == right->visible && left->height == right->height && left->valueDomain == right->valueDomain &&
+            left->unit == right->unit && left->minValue == right->minValue && left->maxValue == right->maxValue &&
+            left->defaultValue == right->defaultValue);
+    };
+    return std::equal(a->tracks.begin(), a->tracks.end(), b->tracks.begin(), b->tracks.end(), sameTrack) &&
+           std::equal(a->sends.begin(), a->sends.end(), b->sends.begin(), b->sends.end(), sameSend) &&
+           std::equal(a->automationLanes.begin(), a->automationLanes.end(), b->automationLanes.begin(),
+                      b->automationLanes.end(), sameLane);
+}
+
+bool sameAutomationLaneOwners(const ParameterPublication *a, const ParameterPublication *b) {
+    if (a == b)
+        return true;
+    return a && b && std::equal(a->begin(), a->end(), b->begin(), b->end(), [](const auto &left, const auto &right) {
+        return left.id == right.id && left.track == right.track && left.instance == right.instance &&
+               left.name == right.name;
+    });
+}
+
+std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
+    const engine::Snapshot &snapshot, const ParameterPublication *devices, const engine::AutomationLaneNode &lane) {
+    auto track = lane.ownerId;
+    AutomationTarget target;
+    if (lane.ownerKind == "track") {
+        if (lane.paramRef == "volume")
+            return std::pair{track, volumeTarget(track)};
+        if (lane.paramRef == "pan")
+            return std::pair{track, panTarget(track)};
+        if (lane.paramRef == "mute")
+            return std::pair{track, activatorTarget(track)};
+    } else if (lane.ownerKind == "routing") {
+        const auto send = std::find_if(snapshot.sends.begin(), snapshot.sends.end(), [&](const auto &entry) {
+            return entry && entry->id == lane.ownerId && entry->sourceKind == "track";
+        });
+        if (send == snapshot.sends.end())
+            return std::nullopt;
+        track = (*send)->sourceId;
+        if (lane.paramRef == "gain_db")
+            return std::pair{track, sendTarget(lane.ownerId, lane.paramName.empty() ? "Send" : lane.paramName)};
+    } else if (lane.ownerKind == "device" && devices) {
+        const auto dev = std::find_if(devices->begin(), devices->end(), [&](const auto &entry) {
+            return entry.id == lane.ownerId;
+        });
+        if (dev == devices->end())
+            return std::nullopt;
+        track = dev->track;
+        for (const auto &parameter : dev->declarations())
+            if (auto candidate = deviceTarget(*dev, parameter); candidate &&
+                automation_override_detail::sameParam(lane.ownerKind, lane.paramRef, candidate->paramRef))
+                return std::pair{track, std::move(*candidate)};
+        target.device = dev->name;
+    } else
+        return std::nullopt;
+    target.ownerKind = lane.ownerKind;
+    target.ownerId = lane.ownerId;
+    target.paramRef = lane.paramRef;
+    if (lane.ownerKind == "device") {
+        std::uint32_t parameter = 0;
+        if (parseDeviceParamRef(lane.paramRef, parameter))
+            target.paramRef = std::to_string(parameter);
+    }
+    target.paramName = lane.paramName.empty() ? lane.paramRef : lane.paramName;
+    target.valueDomain = lane.valueDomain;
+    target.unit = lane.unit;
+    target.defaultValue = lane.defaultValue;
+    target.minimum = lane.minValue.value_or(0.);
+    target.maximum = lane.maxValue.value_or(1.);
+    if (target.maximum <= target.minimum) {
+        target.minimum = 0.;
+        target.maximum = 1.;
+    }
+    target.footIsSilence = false;
+    return std::pair{track, std::move(target)};
+}
+} // namespace
+
+void AdiRootComponent::refreshAdditionalAutomationLanes() {
+    const auto snapshot = automationMode_ ? view_.current() : nullptr;
+    const auto published = snapshot && devices.publication ? devices.publication() : nullptr;
+    if (sameAutomationLaneStructure(automationLaneSnapshot_.get(), snapshot.get()) &&
+        sameAutomationLaneOwners(automationLanePublication_.get(), published.get())) {
+        automationLaneSnapshot_ = snapshot;
+        automationLanePublication_ = published;
+        return;
+    }
+    automationLaneSnapshot_ = snapshot;
+    automationLanePublication_ = published;
+    additionalAutomationLanes_.clear();
+    if (snapshot)
+        for (const auto &lane : snapshot->automationLanes) {
+            if (!lane || !lane->visible)
+                continue;
+            auto entry = additionalLaneTarget(*snapshot, published.get(), *lane);
+            if (!entry || !snapshot->findTrack(entry->first))
+                continue;
+            auto &trackLanes = additionalAutomationLanes_[entry->first];
+            if (std::any_of(trackLanes.begin(), trackLanes.end(), [&](const auto &existing) {
+                    return existing.target == entry->second;
+                }))
+                continue;
+            const auto height = lane->height == 0 ? 42 : static_cast<int>(std::clamp<std::int64_t>(lane->height, 24, 512));
+            trackLanes.push_back({std::move(entry->second), height});
+        }
+    layoutAdditionalAutomationLanes();
+}
+
+void AdiRootComponent::layoutAdditionalAutomationLanes() {
+    decltype(arrangement.geometry.automationLaneHeights) heights;
+    for (const auto &[track, lanes] : additionalAutomationLanes_)
+        if (automationLanesExpanded(track)) {
+            int height = 0;
+            for (const auto &lane : lanes) {
+                if (height > std::numeric_limits<int>::max() - ArrangementGeometry::kMaxTrackHeight - lane.height)
+                    break;
+                height += lane.height;
+            }
+            heights.emplace(track, height);
+        }
+    if (arrangement.geometry.automationLaneHeights != heights)
+        arrangement.geometry.automationLaneHeights = std::move(heights);
+    dirty_.mark(DirtySet::All);
+}
+
+const std::vector<AdditionalAutomationLane> &AdiRootComponent::additionalAutomationLanes(std::int64_t track) const {
+    static const std::vector<AdditionalAutomationLane> empty;
+    const auto found = additionalAutomationLanes_.find(track);
+    return found == additionalAutomationLanes_.end() ? empty : found->second;
+}
+
+bool AdiRootComponent::automationLanesExpanded(std::int64_t track) const {
+    return automationMode_ && !state_.collapsedAutomationLanes.contains(track);
+}
+
+bool AdiRootComponent::automationOverlayShown(std::int64_t track) const {
+    if (!automationMode_ || state_.hiddenAutomationOverlays.contains(track))
+        return false;
+    const auto &lanes = additionalAutomationLanes(track);
+    if (lanes.empty() || !automationLanesExpanded(track) || arrangement.geometry.foldedTracks.contains(track))
+        return true;
+    const auto selected = automationTarget(track);
+    return std::none_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == selected; });
+}
+
+bool AdiRootComponent::automationTargetShown(std::int64_t track, const AutomationTarget &target) const {
+    if (!automationMode_ || !arrangement.geometry.shown(track) || arrangement.geometry.foldedTracks.contains(track))
+        return false;
+    if (automationOverlayShown(track) && target == automationTarget(track))
+        return true;
+    const auto &lanes = additionalAutomationLanes(track);
+    return automationLanesExpanded(track) &&
+           std::any_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; });
+}
+
+bool AdiRootComponent::addAutomationLane(std::int64_t track, const AutomationTarget &target) {
+    const auto snapshot = view_.current();
+    if (!snapshot || !snapshot->findTrack(track))
+        return fail("That track is gone.");
+    auto chosen = automationTarget(track);
+    if (chosen != target) {
+        const auto choices = automationChoices(track);
+        const auto found = std::find(choices.begin(), choices.end(), target);
+        if (found == choices.end())
+            return fail("That control is no longer available.");
+        chosen = *found;
+    }
+    const auto envelope = envelopeOf(*snapshot, chosen);
+    if (!envelope.lane || !envelope.lane->visible) {
+        OpRequest request;
+        if (envelope.lane)
+            request = automation::setLaneVisible(envelope.lane->id, true);
+        else {
+            RowIds rows(submitter_.store().db());
+            auto lane = automationLaneSpec(chosen, automationCurrent(chosen), rows.next("automation_lanes"), true);
+            lane.visible = true;
+            request = automation::createLane(lane);
+        }
+        request.label = "Add Automation Lane";
+        if (!submitEdits({std::move(request)}))
+            return false;
+    }
+    if (!automationMode_)
+        setAutomationMode(true);
+    const bool wasCollapsed = state_.collapsedAutomationLanes.erase(track) != 0;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    if (wasCollapsed) {
+        layoutAdditionalAutomationLanes();
+        if (!persist())
+            say("Automation lane view could not be saved. " + error_);
+    }
+    return true;
+}
+
+bool AdiRootComponent::addAutomatedLanes(std::int64_t track) {
+    const auto snapshot = view_.current();
+    if (!snapshot || !snapshot->findTrack(track))
+        return fail("That track is gone.");
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    std::vector<OpRequest> requests;
+    for (const auto &lane : snapshot->automationLanes) {
+        if (!lane || lane->visible || std::none_of(lane->envelopes.begin(), lane->envelopes.end(), [](const auto &data) {
+                return data && !data->clipId && !data->points.empty();
+            }))
+            continue;
+        const auto target = additionalLaneTarget(*snapshot, published.get(), *lane);
+        if (target && target->first == track && envelopeOf(*snapshot, target->second).lane == lane.get()) {
+            auto request = automation::setLaneVisible(lane->id, true);
+            request.label = "Add Automated Lanes";
+            requests.push_back(std::move(request));
+        }
+    }
+    if (!submitEdits(std::move(requests)))
+        return false;
+    if (!automationMode_)
+        setAutomationMode(true);
+    const bool wasCollapsed = state_.collapsedAutomationLanes.erase(track) != 0;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    if (wasCollapsed) {
+        layoutAdditionalAutomationLanes();
+        if (!persist())
+            say("Automation lane view could not be saved. " + error_);
+    }
+    return true;
+}
+
+bool AdiRootComponent::removeAutomationLane(std::int64_t track, const AutomationTarget &target) {
+    const auto snapshot = view_.current();
+    const auto &lanes = additionalAutomationLanes(track);
+    if (!snapshot || std::none_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; }))
+        return fail("That automation lane is no longer visible.");
+    const auto envelope = envelopeOf(*snapshot, target);
+    if (!envelope.lane || !envelope.lane->visible)
+        return fail("That automation lane is no longer visible.");
+    auto request = automation::setLaneVisible(envelope.lane->id, false);
+    request.label = "Remove Automation Lane";
+    if (!submitEdits({std::move(request)}))
+        return false;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    return true;
+}
+
+void AdiRootComponent::toggleAutomationLanes(std::int64_t track) {
+    const auto &lanes = additionalAutomationLanes(track);
+    if (lanes.empty())
+        return;
+    const bool collapsing = state_.collapsedAutomationLanes.erase(track) == 0;
+    if (collapsing)
+        state_.collapsedAutomationLanes.insert(track);
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    layoutAdditionalAutomationLanes();
+    if (collapsing && state_.hiddenAutomationOverlays.contains(track)) {
+        showAutomation(track, lanes.front().target);
+        if (!state_.hiddenAutomationOverlays.contains(track))
+            return;
+    }
+    if (!persist())
+        say("Automation lane view could not be saved. " + error_);
+}
+
+void AdiRootComponent::hideAutomationOverlay(std::int64_t track) {
+    if (!state_.hiddenAutomationOverlays.insert(track).second)
+        return;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    if (!persist())
+        say("Automation lane view could not be saved. " + error_);
+    arrangement.repaint();
+}
+
 std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(
     std::int64_t device, const std::string &parameter) const {
     const auto published = devices.publication ? devices.publication() : nullptr;
@@ -4008,10 +4302,15 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
     return target.defaultValue;
 }
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue) {
+    return addAutomationPoint(track, automationTarget(track), tick, value, exactValue);
+}
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, const AutomationTarget &target, std::int64_t tick,
+                                          double value, bool exactValue) {
     const auto current = view_.current();
     if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
-    const auto target = automationTarget(track);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
     const auto envelope = envelopeOf(*current, target);
     if (exactValue) {
         if (!editableEnvelope(envelope))
@@ -4029,10 +4328,15 @@ bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick,
 }
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value,
                                           bool exactValue) {
+    return moveAutomationPoint(track, automationTarget(track), point, tick, value, exactValue);
+}
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, const AutomationTarget &target, std::uint64_t point,
+                                          std::int64_t tick, double value, bool exactValue) {
     const auto current = view_.current();
     if (!current)
         return false;
-    const auto target = automationTarget(track);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
     const auto envelope = envelopeOf(*current, target);
     if (exactValue) {
         if (!envelope.lane || !envelope.data)
@@ -4051,10 +4355,15 @@ bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t poi
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
+    return deleteAutomationPoint(track, automationTarget(track), point);
+}
+bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, const AutomationTarget &target, std::uint64_t point) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, automationTarget(track)), point);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
+    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, target), point);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 
@@ -4064,7 +4373,7 @@ bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const Automation
                                            std::uint64_t generation) {
     const auto current = view_.committed();
     if (!automationMode_ || !current || !current->tempo || !current->findTrack(track) ||
-        generation != view_.committedGeneration() || automationTarget(track) != target)
+        generation != view_.committedGeneration() || !automationTargetShown(track, target))
         return fail("The automation target changed during the stroke.");
     if (points.empty() || begin < 0 || points.begin()->first != begin || points.rbegin()->first >= end)
         return false;
@@ -4131,12 +4440,10 @@ std::vector<std::int64_t> matchingAutomation(const engine::Snapshot &snapshot, s
 
 bool AdiRootComponent::canDeleteShownAutomation() const {
     const auto current = view_.current();
-    const auto track = arrangement.geometry.selection.track;
-    if (!automationMode_ || !current || !current->findTrack(track) || clipView.notes.hasContext() ||
-        submitter_.store().readOnly())
+    if (!current || clipView.notes.hasContext() || submitter_.store().readOnly())
         return false;
-    const auto target = automationTarget(track);
-    return !matchingAutomation(*current, target.ownerKind, target.ownerId, target.paramRef).empty();
+    const auto target = arrangement.canvas.automationCommandTarget();
+    return target && !matchingAutomation(*current, target->ownerKind, target->ownerId, target->paramRef).empty();
 }
 
 bool AdiRootComponent::deleteAutomationLanes(const std::vector<std::int64_t> &ids, const char *label) {
@@ -4144,8 +4451,10 @@ bool AdiRootComponent::deleteAutomationLanes(const std::vector<std::int64_t> &id
         return false;
     std::vector<OpRequest> requests;
     requests.reserve(ids.size());
+    const auto current = view_.current();
     for (const auto id : ids) {
-        auto op = automation::deleteLane(id);
+        const auto *lane = current ? current->findAutomationLane(id) : nullptr;
+        auto op = lane && lane->visible ? automation::clearLane(id) : automation::deleteLane(id);
         op.label = label;
         requests.push_back(std::move(op));
     }
@@ -4924,9 +5233,10 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::DeleteAutomation: {
         if (!canDeleteShownAutomation())
             return false;
-        const auto target = automationTarget(arrangement.geometry.selection.track);
-        return deleteAutomationLanes(matchingAutomation(*view_.current(), target.ownerKind, target.ownerId,
-                                                        target.paramRef), "Delete Automation");
+        const auto target = arrangement.canvas.automationCommandTarget();
+        return target && deleteAutomationLanes(matchingAutomation(*view_.current(), target->ownerKind,
+                                                                  target->ownerId, target->paramRef),
+                                               "Delete Automation");
     }
     case AppCommands::DrawMode:
         clipView.notes.setDrawMode(!drawMode());

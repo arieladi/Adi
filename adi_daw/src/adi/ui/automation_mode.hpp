@@ -288,8 +288,8 @@ inline std::vector<OpRequest> deleteAutomationPoint(const TrackEnvelope &env, st
     std::vector<OpRequest> ops;
     if (env.lane == nullptr || env.data == nullptr || !editableEnvelope(env))
         return ops;
-    // The last breakpoint takes its lane with it, so the track plays its fader again, as before the lane.
-    const bool last = env.data->points.size() == 1 && env.data->points.front().id == point &&
+    // A separate lane remains available for editing after its last point goes.
+    const bool last = !env.lane->visible && env.data->points.size() == 1 && env.data->points.front().id == point &&
                       std::none_of(env.lane->envelopes.begin(), env.lane->envelopes.end(),
                                    [&](const auto &d) { return d && d.get() != env.data; });
     ops.push_back(last ? automation::deleteLane(env.lane->id)

@@ -9,6 +9,7 @@
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
@@ -16017,13 +16018,21 @@ void automationChooserControls(AppCommands &commands, const std::filesystem::pat
     const auto groups = headers.automationChooserMenu(2, true);
     std::vector<std::function<void()>> devices;
     std::vector<bool> authored;
-    for (juce::PopupMenu::MenuItemIterator it(groups); it.next();)
-        if (it.getItem().text == "UI knobs") {
-            devices.push_back(it.getItem().action);
-            authored.push_back(it.getItem().image != nullptr);
+    int mixerGroups = 0, noneChoices = 0;
+    for (juce::PopupMenu::MenuItemIterator it(groups); it.next();) {
+        const auto &item = it.getItem();
+        if (item.text == "UI knobs") {
+            devices.push_back(item.action);
+            authored.push_back(item.image != nullptr);
+        } else if (item.text == "Mixer") {
+            ++mixerGroups;
+        } else if (item.text == "None") {
+            ++noneChoices;
         }
-    check(groups.getNumItems() == 3 && devices.size() == 2 && authored == std::vector<bool>{true, false},
-          "Mixer is grouped once and the identically named devices keep separate rows and authored marks");
+    }
+    check(mixerGroups == 1 && noneChoices == 1 && devices.size() == 2 &&
+              authored == std::vector<bool>{true, false},
+          "Mixer and None each appear once and identically named devices keep separate authored marks");
     const auto checkCutoff = [&](std::int64_t owner, bool expected) {
         const auto menu = headers.automationChooserMenu(2, false);
         juce::PopupMenu::MenuItemIterator it(menu);
@@ -16062,6 +16071,179 @@ void automationChooserControls(AppCommands &commands, const std::filesystem::pat
             check(root.automationTarget(2) == volumeTarget(2),
                   "clicking the inline Volume value label shows its envelope in Automation Mode");
         }
+    }
+}
+void automationAdditionalLanes(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-additional-lanes.adi", true, {}, error);
+    check(document != nullptr, "a project for additional automation lanes");
+    if (!document)
+        return;
+    constexpr auto bar = textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 81}, {"track", 2}, {"kind", "midi"}, {"name", "Clip above automation"},
+                    {"pos", 0}, {"length", bar}};
+    automation::LaneSpec volume;
+    volume.id = 31;
+    volume.ownerId = 2;
+    volume.paramRef = "volume";
+    volume.paramName = "Volume";
+    volume.valueDomain = "real";
+    volume.unit = "dB";
+    volume.minValue = -150.;
+    volume.maxValue = 6.;
+    volume.height = 42;
+    auto pan = volume;
+    pan.id = 32;
+    pan.paramRef = "pan";
+    pan.paramName = "Pan";
+    pan.unit.clear();
+    pan.minValue = -1.;
+    pan.maxValue = 1.;
+    const auto write = [&](std::int64_t data, std::int64_t lane, double value) {
+        return automation::writePoints(data, lane, nullptr,
+            Payload::array({{{"id", 1}, {"time", bar / 2}, {"value", value}, {"curve", 1}, {"tension", 0.}}}));
+    };
+    check(document->ops().submit(std::vector<OpRequest>{std::move(clip), automation::createLane(volume),
+              automation::createLane(pan), write(41, volume.id, -32.), write(42, pan.id, 0.)}).ok &&
+              document->synchronise(), "a MIDI clip and Volume and Pan envelopes with the same point ID");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-additional-lanes");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    constexpr std::int64_t track = 2;
+    root.arrangement.geometry.resizeTrack(track, 112);
+    root.arrangement.geometry.scale = 48;
+    root.arrangement.geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.setAutomationMode(true);
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    const auto clickHeader = [&](const juce::Rectangle<int> &box) {
+        if (box.isEmpty())
+            return false;
+        const auto at = box.getCentre().toFloat();
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        headers.mouseDown(pressAt(headers, at, left));
+        headers.mouseUp(pressAt(headers, at, left));
+        root.frame();
+        return true;
+    };
+    const auto plus = [&] {
+        return clickHeader(headers.automationLaneButtonBox(track, 0, laneTop(root, track), true));
+    };
+    const auto choose = [](const juce::PopupMenu &menu, const char *label) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == label && it.getItem().isEnabled && it.getItem().action) {
+                it.getItem().action();
+                return true;
+            }
+        return false;
+    };
+    const auto visible = [&](const AutomationTarget &target) {
+        const auto &lanes = root.additionalAutomationLanes(track);
+        return std::any_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; });
+    };
+    const auto volumeTargetHere = volumeTarget(track);
+    const auto panTargetHere = panTarget(track);
+    check(plus() && !root.automationOverlayShown(track) && visible(volumeTargetHere),
+          "Plus promotes Volume below the clips and hides the main overlay");
+    const bool undone = root.command(AppCommands::Undo);
+    root.frame();
+    check(undone && root.automationOverlayShown(track) && root.automationTarget(track) == volumeTargetHere &&
+              !visible(volumeTargetHere), "Undo of promotion restores the Volume overlay");
+    const bool redone = root.command(AppCommands::Redo);
+    root.frame();
+    check(redone && !root.automationOverlayShown(track) && visible(volumeTargetHere),
+          "Redo shows the additional Volume lane again");
+    bool none = false;
+    const auto deviceMenu = headers.automationChooserMenu(track, true);
+    for (juce::PopupMenu::MenuItemIterator it(deviceMenu); it.next();)
+        if (it.getItem().text == "None")
+            none = it.getItem().isTicked;
+    check(none && headers.automationChooserMenu(track, false).getNumItems() == 0 &&
+              choose(deviceMenu, "Mixer") &&
+              choose(headers.automationChooserMenu(track, false), "Track Panning") &&
+              root.automationOverlayShown(track) && root.automationTarget(track) == panTargetHere,
+          "the track shows None after promotion, and Mixer then Track Panning restores a Pan overlay");
+    check(plus() && !root.automationOverlayShown(track) && visible(volumeTargetHere) && visible(panTargetHere),
+          "Plus adds Pan beneath Volume and hides the overlay again");
+
+    auto &canvas = root.arrangement.canvas;
+    const auto &clips = canvas.accessible();
+    const auto shown = std::find_if(clips.begin(), clips.end(), [](const auto &child) {
+        return child->isVisible() && child->clip == 81;
+    });
+    check(shown != clips.end(), "the parent track's MIDI clip is on screen");
+    if (shown == clips.end())
+        return;
+    const auto bottom = static_cast<float>((*shown)->getBottom());
+    const auto next = static_cast<float>(laneTop(root, 3));
+    std::vector<ArrangementCanvas::LaneBody> extra;
+    for (const auto &body : canvas.laneBodies())
+        if (body.track->id == 2 && body.top >= bottom)
+            extra.push_back(body);
+    std::sort(extra.begin(), extra.end(), [](const auto &a, const auto &b) { return a.top < b.top; });
+    check(extra.size() == 2 && extra[0].top < extra[0].bottom && extra[0].bottom <= extra[1].top &&
+              extra[1].top < extra[1].bottom && extra[1].bottom <= next,
+          "two separate automation bodies fit below track 2's clip and above track 3");
+    if (extra.size() != 2)
+        return;
+    check(extra[0].target == volumeTargetHere && extra[1].target == panTargetHere,
+          "the Volume and Pan rows retain their separate Volume and Pan targets");
+    const auto pixel = [&](std::int64_t tick) { return static_cast<float>(root.arrangement.geometry.x(tick)); };
+    const auto pointIn = [&](const auto &body) {
+        return juce::Point<float>{pixel(bar / 2), (body.top + body.scaleBottom) / 2};
+    };
+    for (const auto &body : extra) {
+        const auto hit = canvas.automationPointAt(pointIn(body));
+        check(hit && hit->track == track && hit->target == body.target && hit->point == 1,
+              "each visible lane hits its own breakpoint despite sharing the same point ID");
+    }
+    const auto hasOriginal = [&](const AutomationTarget &target) {
+        const auto envelope = envelopeOf(*root.current(), target);
+        return envelope.data && std::any_of(envelope.data->points.begin(), envelope.data->points.end(), [&](const auto &point) {
+            return point.id == 1 && point.time == bar / 2;
+        });
+    };
+    const auto clipIntact = [&] {
+        const auto *row = root.current()->findTrack(track);
+        return row && row->clips.size() == 1 && row->clips.front()->id == 81 &&
+               row->clips.front()->posTicks == 0 && row->clips.front()->lengthTicks == bar;
+    };
+    const auto point = pointIn(extra[0]);
+    canvas.mouseDown(pressAt(canvas, point));
+    canvas.mouseUp(pressAt(canvas, point));
+    const bool erased = canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(erased && !hasOriginal(volumeTargetHere) && hasOriginal(panTargetHere) && clipIntact() &&
+              visible(volumeTargetHere), "Delete on Volume removes only its point and leaves both rows and the clip");
+    if (erased && !hasOriginal(volumeTargetHere))
+        check(root.command(AppCommands::Undo) && hasOriginal(volumeTargetHere), "Undo restores the auxiliary Volume point");
+    root.frame();
+
+    const auto y = extra[1].bottom - 6.f;
+    const juce::Point<float> from(pixel(bar / 4) + 1.f, y), to(pixel(3 * bar / 4) - 1.f, y);
+    canvas.mouseDown(pressAt(canvas, from));
+    canvas.mouseDrag(dragAt(canvas, from, to));
+    canvas.mouseUp(dragAt(canvas, from, to));
+    const bool cut = root.command(AppCommands::Cut);
+    root.frame();
+    check(cut && hasOriginal(volumeTargetHere) && !hasOriginal(panTargetHere) && clipIntact(),
+          "Cut across the auxiliary Pan lane edits only its envelope");
+    if (cut && !hasOriginal(panTargetHere))
+        check(root.command(AppCommands::Undo) && hasOriginal(panTargetHere), "Undo restores the auxiliary Pan range");
+    commands.clipClipboard().held = std::monostate{};
+    root.frame();
+
+    const auto &lanes = root.additionalAutomationLanes(track);
+    if (!lanes.empty()) {
+        const auto top = laneTop(root, track) + root.arrangement.geometry.heightFor(track);
+        const auto minus = headers.automationLaneRemoveBox(0, top, lanes.front().height);
+        check(clickHeader(minus) && !visible(volumeTargetHere) && visible(panTargetHere) &&
+                  hasOriginal(volumeTargetHere) && hasOriginal(panTargetHere),
+              "Minus removes the Volume row without erasing its authored points or hiding Pan");
     }
 }
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
@@ -22867,6 +23049,7 @@ int main(int argc, char **argv) {
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
+    trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });

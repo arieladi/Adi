@@ -1886,7 +1886,7 @@ void MixerPanel::reveal(std::size_t index) {
         return;
     int top = 0;
     for (std::size_t i = 0; i < index; ++i)
-        top += geometry.heightFor(tracks[i].track->id);
+        top += geometry.stackHeightFor(tracks[i].track->id);
     const int bottom = top + geometry.heightFor(tracks[index].track->id);
     const int view = std::max(0, geometry.footTop(root.reader()));
     if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
@@ -2081,7 +2081,7 @@ void MixerPanel::place() {
         const int h = geometry.heightFor(tracks[i].track->id);
         if (inSight(i, y, h))
             ++wanted;
-        y += h;
+        y += geometry.stackHeightFor(tracks[i].track->id);
     }
     while (strips_.size() < wanted) {
         auto strip = std::make_unique<MixerStrip>(*this);
@@ -2105,7 +2105,7 @@ void MixerPanel::place() {
             if (i >= foot)
                 s.toFront(false);
         }
-        y += h;
+        y += geometry.stackHeightFor(id);
     }
     for (std::size_t i = used; i < strips_.size(); ++i)
         if (!strips_[i]->dragging())

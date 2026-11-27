@@ -239,6 +239,14 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
                     (kind == "track" || kind == "routing" || kind == "device"))
                     state.automationChoices.insert_or_assign(track, WindowState::AutomationChoice{kind, owner, ref});
             }
+        const auto readAutomationTracks = [&](const char *key, auto &tracks) {
+            if (const auto list = j.find(key); list != j.end() && list->is_array())
+                for (const auto &entry : *list)
+                    if (const auto id = integerOr(entry, 0); id > 0)
+                        tracks.insert(id);
+        };
+        readAutomationTracks("hiddenAutomationOverlays", state.hiddenAutomationOverlays);
+        readAutomationTracks("collapsedAutomationLanes", state.collapsedAutomationLanes);
         if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
             !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
             state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512)
@@ -354,6 +362,10 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             for (const auto &[track, choice] : state.automationChoices)
                 j["automationChoices"].push_back({track, choice.ownerKind, choice.ownerId, choice.paramRef});
         }
+        if (!state.hiddenAutomationOverlays.empty())
+            j["hiddenAutomationOverlays"] = state.hiddenAutomationOverlays;
+        if (!state.collapsedAutomationLanes.empty())
+            j["collapsedAutomationLanes"] = state.collapsedAutomationLanes;
         SQLite::Transaction transaction(store_.db());
         SQLite::Statement st(store_.db(),
                              "INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES "
