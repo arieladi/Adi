@@ -18,6 +18,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-436 | `basics/test-chain` at `51d7e02c3` | Update lane, header and mixer together throughout the drag. Arrangement and mixer seats. | Peerless divider pixels and actual strip bounds changed before release, including when pinned growth recycles the mixer slots. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-434 | `basics/test-chain` at `6684a5b50` | Offer all 70 track colour slots using the ADR-0211 fallback palette. Arrangement seat. | The display-free fixture painted and hit-tested all 70 slots, refused spacer clicks, and checked saved colour and Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-437 | `basics/test-chain` at `948ca190e` | New projects open with Main and four source tracks, with no factory Returns. Project and Store seats. | The bootstrap failed before and passed after. Explicit-return, render-intent and stem rollback fixtures and the acceptance project verified both defaults and authored routing. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-443 | `basics/test-chain` at `5a3379305` | Show a magnifier on the Arrangement zoom strips. Arrangement seat. | The peerless fixture checks the installed cursor on the ruler and Overview and keeps the scrub cue. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements and findings
 
@@ -118,6 +119,14 @@ Before, New seeded four source tracks, A Reverb, B Delay and Main. The two Retur
 The linked headless bootstrap failed on the old default and passed all 39 checks after the change, including initial silence and history. Return-specific fixtures explicitly author their Returns and sends, and the acceptance walkthrough creates them before testing routing.
 
 The linked Debug Linux shell passed 5,365 checks, the document suite passed 1,037, the view seams passed 629, and WTS01 had zero failures. Each ran with DISPLAY unset. WTS01 begins with the clean five-track song and creates its returns explicitly before checking send levels, group routing, reopening and a bit-identical export.
+
+### SC-443 · Magnifier on Arrangement zoom strips
+
+The baseline routes vertical dragging to zoom on the beat-time ruler and Overview, as ADR-0129 specifies. Commit `5a3379305` gives both surfaces the same custom magnifier cursor. The cursor is an 18×18 logical-px sprite rendered into a 36×36 software image. Its hotspot is `(7, 7)`. The lens spans `(2, 2; 10×10)` before stroke. The handle runs from `(11, 11)` to `(15.5, 15.5)`.
+
+The default 1440×900 Compact fixture has the beat-time ruler at `(328, 55; 788×29)` and the Overview at `(328, 39; 784×16)`, before and after. The scrub band remains at `(328, 84; 788×24)` with its pointing-hand cursor. The peerless test checks the two zoom surfaces share a custom cursor, while the scrub band, lane canvas and tempo editor retain their individual cues.
+
+The peerless before-and-after replay verified the shared JUCE cursor is distinct from Normal and Pointing Hand. It measured the same vertical drag zoom from 4.625000 to 5.648988 in both runs, with DISPLAY unset.
 
 ## For the director
 
