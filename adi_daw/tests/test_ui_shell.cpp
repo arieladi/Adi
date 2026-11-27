@@ -1525,6 +1525,15 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "SC-279: Ctrl/Cmd+Up moves a selected group and sibling above Bass with their selection intact");
         stepBack(previous);
 
+        clickTitle(14);
+        clickTitle(16, command);
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> disjointUp{
+            {10, 0}, {11, 1}, {12, 1}, {13, 0}, {14, 1}, {16, 1}, {17, 2}, {18, 2}, {15, 1}, {1, 0}};
+        check(arrow(up, command) && order() == disjointUp &&
+                  lanes.selectedTracks(root.reader()) == std::vector<std::int64_t>{14, 16},
+              "SC-279: a picked sibling at the edge stays while the other moves one place with its subtree");
+        stepBack(previous);
+
         blocked(14, up, "SC-279: the first child cannot move up out of its parent group");
         blocked(16, down, "SC-279: the last child cannot move down into its own children");
         if (root.command(AppCommands::InsertReturnTrack)) {
