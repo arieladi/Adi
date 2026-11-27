@@ -19,9 +19,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,7 +37,7 @@ namespace media { class ProjectFileLease; }
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
-namespace gesture::detail {struct Domain; struct DomainAccess;}
+namespace gesture::detail {struct Domain; struct DomainAccess; class NavigationPermit;}
 
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
@@ -63,6 +65,38 @@ struct StoreFileResult {
     bool ok = false;
     std::string error;
     std::string warning;
+};
+
+enum class StoreSaveKind { copy, saveAs };
+enum class StoreSavePhase { copying, relocating, publishing };
+struct StoreSaveProgress {
+    StoreSavePhase phase = StoreSavePhase::copying;
+    int pagesCopied = 0;
+    int totalPages = 0;
+};
+
+/// One prepared save. The owner pins the source snapshot, a file worker writes
+/// it, and the owner may then adopt the published copy for Save As.
+class StoreFileSave {
+public:
+    using Progress = std::function<void(StoreSaveProgress)>;
+    StoreFileSave();
+    ~StoreFileSave();
+    StoreFileSave(StoreFileSave&&) noexcept;
+    StoreFileSave& operator=(StoreFileSave&&) noexcept;
+    StoreFileSave(const StoreFileSave&) = delete;
+    StoreFileSave& operator=(const StoreFileSave&) = delete;
+
+    [[nodiscard]] StoreFileResult write(std::stop_token = {}, const Progress& = {});
+    /// Inspect after the file worker returns.
+    [[nodiscard]] bool cancelled() const noexcept;
+    /// File worker, after adoption. Folds the detached source's WAL.
+    [[nodiscard]] std::string closeReplacedProject();
+
+private:
+    struct Data;
+    std::unique_ptr<Data> data_;
+    friend class Store;
 };
 
 /// An open `.adi`.
@@ -133,6 +167,13 @@ public:
     /// statements. Refresh ProjectView/Session and the window's filename after
     /// success. A failed switch retains the source and a completed copy.
     [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail);
+    /// Owner preflight for a file worker. The private read connection pins the
+    /// committed database (including WAL) at invocation.
+    [[nodiscard]] StoreFileResult prepareFileSave(const std::filesystem::path&, StoreSaveKind, StoreFileSave&,
+                                                  StoreFileCollision = StoreFileCollision::Fail);
+    /// Owner finalization for Save As. Retains the completed copy and the
+    /// current Store if the source changed since preflight.
+    [[nodiscard]] StoreFileResult adoptFileSave(StoreFileSave&);
     /// Copy current and undo/branch media into audio/, verify their hashes and
     /// save the new locations atomically. Owner thread; no live SQL statements
     /// or transaction. Refresh readers after success. No undo step is appended.
@@ -212,7 +253,14 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
+    friend class StoreFileSave;
     CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
+        const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision,
+        const std::function<void(SQLite::Database&)>&, std::stop_token = {}, const StoreFileSave::Progress& = {},
+        const StoreFileSave* pending = nullptr);
+    StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,
+        std::unique_ptr<Store>& retired, const StoreFileSave* pending = nullptr);
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();
