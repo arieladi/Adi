@@ -1,6 +1,18 @@
-Ready for win: basics/integrate-1 at 9d6bfb23dda4d9fb76e00f4bd5c014878633ec21
-
 # Basics integration
+
+## Tenth stack, first review bundle
+
+| Step and source head | Integration head | Resolution and verification |
+|---|---|---|
+| Merge landed `origin/main` at `6e684bda45882118cbf073f4e31014f95749d57c` | `336f2200f679fc6a9439076ccbf379c3c3d35ab0` | Clean merge after the ninth stack landed. Preserved its Windows Save a Copy path-spelling fix and the serial `adi_library_tests` scheduling required by Win's checklist. The resulting tree matched the preflight merge. |
+
+The first bundle is Clips, Automation and Tracks. Edit's newer SC-179 tip appeared during Clips verification. It joins MIDI and Safety in the next bundle. The Browser tip already belongs to integrate-2. Routing's two newer named branches are still local, and their features already have verified integration commits.
+
+The [Windows checklist](https://github.com/arieladi/Adi/blob/4123d158894e3e3aa24c343e3a6d802141771727/adi_daw/collab/basics/wincheck.md) also lists Session and Pitch seat changes outside these bundles.
+
+## Ninth stack and earlier integration
+
+Final verification head for integrate-1 was `9d6bfb23dda4d9fb76e00f4bd5c014878633ec21`.
 
 Integration starts from `origin/land/basics-1127i` at `ed0f2aa18795792818fd3581793c6030e2a2a9b1`, ahead of main with the speed chain and two Clang 14 fixes.
 
