@@ -397,6 +397,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"create.import-audio-file", "Create"}, // ImportAudioFile
         {"browser.toggle-preview", "Browser"}, // ToggleBrowserPreview
         {"browser.preview-selected", "Browser"}, // PreviewSelected
+        {"browser.hot-swap", "Browser"}, // HotSwap
         {"file.manage-project-files", "File"}, // ManageProjectFiles
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
@@ -633,7 +634,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
                                   "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File...",
-                                  "Browser Preview", "Preview Selected", "Manage Project Files..."};
+                                  "Browser Preview", "Preview Selected", "Hot-Swap", "Manage Project Files..."};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
@@ -1037,6 +1038,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress(juce::KeyPress::rightKey, 0);
         info.setActive(active_ && active_->browser.selectedSample() && active_->playSamplePreview);
         break;
+    case HotSwap:
+        info.addDefaultKeypress('q', 0);
+        info.setActive(active_ && active_->devices.hasHotSwapContext());
+        break;
     case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
         info.setTicked(tabMovesFocus_);
         break;
@@ -1251,6 +1256,9 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         return allowComputerMidi && root.pressComputerMidiToggle(physical);
     if (id == PreviewSelected)
         return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
+    if (id == HotSwap && (!root.devices.hasHotSwapContext() ||
+                         (root.transport.keyboard.getToggleState() && key == juce::KeyPress('q'))))
+        return false;
     if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {
         // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.
         root.command(id);
@@ -5714,9 +5722,17 @@ bool AdiRootComponent::command(int id) {
         break;
     }
     case AppCommands::ToggleInfoView: {
+        const bool reopening = state_.panels.find(Panel::Browser)->collapsed;
+        if (reopening && !toggle(Panel::Browser))
+            return false;
+        const bool shown = commands_.infoView();
+        const bool showInfo = reopening || !shown;
         std::string why;
-        if (!commands_.setInfoView(!commands_.infoView(), why))
+        if (showInfo != shown && !commands_.setInfoView(showInfo, why)) {
+            if (reopening)
+                resized();
             return fail(why);
+        }
         infoShown_ = commands_.infoView();
         break;
     }
@@ -5733,6 +5749,8 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::PreviewSelected:
         return browser.previewSelected();
+    case AppCommands::HotSwap:
+        return devices.hotSwapFocused();
     case AppCommands::TabMovesFocus: {
         std::string why;
         if (!commands_.setTabMovesFocus(!commands_.tabMovesFocus(), why))

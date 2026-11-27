@@ -189,6 +189,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ImportAudioFile,
         ToggleBrowserPreview,
         PreviewSelected,
+        HotSwap,
         ManageProjectFiles,
         LastId = ManageProjectFiles
     };

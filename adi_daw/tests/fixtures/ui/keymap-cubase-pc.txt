@@ -138,4 +138,5 @@
 29065 Import Audio File...: 
 29066 Browser Preview: 
 29067 Preview Selected: Shift+Return, Right
-29068 Manage Project Files...: 
+29068 Hot-Swap: Q
+29069 Manage Project Files...: 

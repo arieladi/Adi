@@ -312,7 +312,7 @@ SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::vector<Declared
     addChildComponent(clear);
     addChildComponent(hotSwapButton);
     hotSwapButton.setTitle("Hot-Swap Sample");
-    hotSwapButton.setTooltip("Browse samples for this slot (Q).");
+    hotSwapButton.setTooltip("Browse samples for this slot.");
     addChildComponent(reveal);
     reveal.setTitle("Show Sample in Folder");
     reveal.onClick = [this] {
@@ -1071,7 +1071,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     };
     addChildComponent(hotSwapButton);
     hotSwapButton.setTitle("Hot-Swap Device");
-    hotSwapButton.setTooltip("Browse replacements for this device (Q).");
+    hotSwapButton.setTooltip("Browse replacements for this device.");
     hotSwapButton.onClick = [this] {
         if (data) requestHotSwap(*data, std::nullopt, menuEpoch_);
     };
@@ -1887,10 +1887,6 @@ bool DevicePanelView::requestHotSwap(DevicePanelData expected, std::optional<std
     return true;
 }
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
-    if (k == juce::KeyPress('q') && data && !rename.isVisible() && !strip.root.transport.keyboard.getToggleState() &&
-        dynamic_cast<const juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent()) == nullptr)
-        return requestHotSwap(*data, sample && sample->hasKeyboardFocus(true) ? std::optional{sample->slot} : std::nullopt,
-                              menuEpoch_);
     if (!validTarget())
         return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
@@ -2087,7 +2083,9 @@ juce::PopupMenu DevicePanelView::commands() {
     });
     if (strip.hotSwap && !mixCard_) {
         juce::PopupMenu::Item item("Hot-Swap");
-        item.shortcutKeyDescription = juce::KeyPress('q').getTextDescriptionWithIcons();
+        const auto keys = strip.root.commands().manager.getKeyMappings()->getKeyPressesAssignedToCommand(AppCommands::HotSwap);
+        if (!keys.isEmpty())
+            item.shortcutKeyDescription = keys[0].getTextDescriptionWithIcons();
         item.isEnabled = canHotSwap();
         if (item.isEnabled) {
             item.action = [safe, epoch, expected = *data] {
@@ -2784,6 +2782,25 @@ std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
         if (p->hasKeyboardFocus(true) && !p->rename.isVisible())
             return p->id;
     return std::nullopt;
+}
+DevicePanelView *DeviceChainStrip::focusedHotSwapPanel() const {
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (dynamic_cast<const juce::TextEditor *>(focused) != nullptr)
+        return nullptr;
+    // Ordinary Stack tiles share the strip's authority, including when Mix View is detached.
+    for (auto *component = focused; component != nullptr; component = component->getParentComponent())
+        if (auto *panel = dynamic_cast<DevicePanelView *>(component))
+            return &panel->strip == this && !panel->rename.isVisible() && panel->canHotSwap() ? panel : nullptr;
+    return nullptr;
+}
+bool DeviceChainStrip::hasHotSwapContext() const { return focusedHotSwapPanel() != nullptr; }
+bool DeviceChainStrip::hotSwapFocused() {
+    if (auto *panel = focusedHotSwapPanel()) {
+        const auto slot = panel->sample && panel->sample->hasKeyboardFocus(true) ? std::optional{panel->sample->slot}
+                                                                                : std::nullopt;
+        return panel->requestHotSwap(*panel->data, slot, panel->menuEpoch_);
+    }
+    return false;
 }
 bool DeviceChainStrip::canClipboard(Clip c) const {
     const auto device = focusedDevice();

@@ -30,6 +30,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/library_listing.hpp"
+#include "adi/ui/starter_drums.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -6834,7 +6835,7 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
             labels.add(entry.name);
         return labels;
     };
-    const juce::StringArray roster{"Categories", "All", "Sounds", "Instruments", "Audio Effects", "Pd Devices",
+    const juce::StringArray roster{"Categories", "All", "Sounds", "Drums", "Instruments", "Audio Effects", "Pd Devices",
                                    "Plug-Ins", "Samples", "", "Places", "User Library", "Add Folder..."};
     check(names() == roster, "SC-127: the empty Browser has the ordered built roster and no empty Collections group");
     const juce::Rectangle<int> first(4, 28, 113, 19);
@@ -6885,6 +6886,104 @@ void browserRoster(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.rows().size() == 1 && browser.load(0) && picked == written &&
               preset::read(picked).name == "Dusty Keys",
           "SC-127: Sounds filters by word through LibraryQuery and uses the saved-preset loader");
+}
+void browserStarterDrums(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto source = fs::path(ADI_UI_REFERENCES).parent_path().parent_path().parent_path() /
+                        "content" / "starter-drums";
+    const auto prefix = dir / "starter-drums-package";
+    const auto installed = prefix / "share" / "adi" / "starter-drums";
+    const auto developer = prefix / "bin" / "starter-drums";
+    const auto executable = prefix / "bin" / "ADI";
+    const fs::path relative = fs::path("..") / "share" / "adi" / "starter-drums";
+    fs::create_directories(installed.parent_path());
+    fs::create_directories(developer.parent_path());
+    fs::copy(source, installed, fs::copy_options::recursive);
+    check(starterDrumsDirectory(executable, relative) == installed,
+          "SC-128: a relocated install finds the exact shipped root");
+    fs::create_directories(developer / "Hits");
+    check(starterDrumsDirectory(executable, relative) == installed,
+          "SC-128: a partial adjacent copy does not hide the installed kit");
+    fs::create_directories(developer / "Loops");
+    check(starterDrumsDirectory(executable, relative) == developer,
+          "SC-128: a development copy works beside the executable");
+
+    std::string error;
+    auto index = library::Index::open(prefix / "index.sqlite", error, false);
+    auto document = ProjectDocument::open(prefix / "test.adi", true, {}, error);
+    check(index && document, "SC-128: create library index and project");
+    if (!index || !document)
+        return;
+    const auto userDrums = prefix / "user" / "Drums";
+    fs::create_directories(userDrums);
+    std::ofstream(userDrums / "User Kick.wav") << "test";
+    struct MarkerSpy final : library::VolumeIdentityProvider {
+        library::MarkerVolumeProvider provider;
+        std::vector<fs::path> probed;
+        bool identify(const fs::path &path, library::Volume &volume, std::string &why) override {
+            probed.push_back(path);
+            return provider.identify(path, volume, why);
+        }
+    } markers;
+    const auto hits = installed / "Hits";
+    std::vector<LibraryFolder> folders{{"Manual duplicate", installed}, {"Hits", hits},
+                                       {"Drums", userDrums}, {"Starter Drums", installed, false, true}};
+    auto listing = scanLibrary(*index, folders, markers);
+    const auto readOnlyKit = [&](const LibraryListing &scanned) {
+        return scanned.error.empty() && scanned.places.size() == 3 && scanned.samples.size() == 17 &&
+               std::ranges::count(scanned.samples, std::string(kStarterDrumsVolumeId), &LibraryFile::volumeId) == 16 &&
+               markers.probed == std::vector{userDrums} && !fs::exists(installed / ".adi-volume-id") &&
+               !fs::exists(hits / ".adi-volume-id") && index->entries().size() == 1;
+    };
+    check(readOnlyKit(listing), "SC-128: a manually added kit root is skipped and a child stays read-only");
+    markers.probed.clear();
+    std::reverse(folders.begin(), folders.end());
+    check(readOnlyKit(scanLibrary(*index, folders, markers)),
+          "SC-128: kit files keep one listing and the same identity in either scan order");
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "starter-drums");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    browser.setListing(listing);
+    const auto &sidebar = browser.sidebar();
+    const auto drumsRow = std::ranges::find(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name);
+    const int drums = static_cast<int>(drumsRow - sidebar.begin());
+    check(drums == 3 && browser.sidebarRowBounds(drums) == juce::Rectangle<int>(4, 85, 113, 19) &&
+              browser.list.getBounds() == juce::Rectangle<int>(119, 46, 185, 393) &&
+              browser.list.getRowHeight() == 19 &&
+              std::ranges::count(sidebar, juce::String("Drums"), &BrowserPanel::Entry::name) == 2 &&
+              std::ranges::none_of(sidebar, [](const auto &entry) { return entry.name == "Starter Drums"; }),
+          "SC-128: the category and the user's same-named Place stay separate");
+    browser.choose(drums);
+    check(browser.shown().size() == 16 &&
+              std::ranges::count_if(browser.shown(), [](const auto *file) {
+                  return file->path.parent_path().filename() == "Loops";
+              }) == 4,
+          "SC-128: Drums lists the twelve hits and four loops");
+    browser.search.setText("128 loop", false);
+    browser.search.onTextChange();
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "Starter Loop Skips 128 BPM.wav",
+          "SC-128: loops in the kit are scoped and matched by search words");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
+    const auto samples = std::ranges::find(sidebar, true, &BrowserPanel::Entry::samples);
+    browser.choose(static_cast<int>(samples - sidebar.begin()));
+    check(browser.shown().size() == 17, "SC-128: Samples includes both shipped and user audio once");
+    const auto hitsRow = std::ranges::find(sidebar, juce::String("Hits"), &BrowserPanel::Entry::name);
+    browser.choose(static_cast<int>(hitsRow - sidebar.begin()));
+    check(hitsRow != sidebar.end() && !hitsRow->place.empty() && browser.shown().size() == 12,
+          "SC-128: a configured kit subfolder remains an ordinary browsable Place");
+    int removeMenus = 0;
+    browser.removeFolder = [](const auto &) {};
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Remove from Places")
+                ++removeMenus;
+    };
+    const auto popup = juce::ModifierKeys::rightButtonModifier;
+    browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(drums).getCentre().toFloat(), popup));
+    check(removeMenus == 0, "SC-128: Drums never offers Remove from Places");
 }
 void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -6989,6 +7088,124 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
           "SC-120: the two modes keep separate text and results");
 }
+void browserContextMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-context.adi", true, {}, error);
+    check(document != nullptr, "SC-129: the Browser context fixture opens");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-context");
+    auto &browser = root.browser;
+    browser.setSize(308, 443);
+    const auto place = dir / "Context Library";
+    const auto nested = place / "Nested";
+    std::filesystem::create_directories(nested);
+    const auto wave = place / "Test Kick.wav", presetPath = place / "Test Preset.adipreset";
+    const auto plug = place / "Test Plug-in.vst3";
+    std::ofstream(wave) << "sample fixture";
+    std::ofstream(presetPath) << "preset fixture";
+    std::filesystem::create_directory(plug);
+    LibraryListing listing;
+    listing.places = {{"Context Library", place, "context-place", false, {}, {"Nested"}}};
+    listing.samples = {{"Test Kick.wav", wave, "context-place"}};
+    browser.setListing(listing);
+    browser.setDevicePresets({{preset::deviceKey({"internal", "org.adidaw.builtin.oneshot", {}}),
+                               "Test Preset", presetPath}});
+    PluginScan scan;
+    scan.phase = PluginScan::Phase::Done;
+    scan.listing.plugins = {{"vst3", "test.ctx", "Test Plug-in", "Test Vendor", "1",
+                             media::pathUtf8(plug), PluginEntry::Kind::Effect}};
+    browser.setPluginScan(scan);
+
+    juce::PopupMenu captured;
+    juce::Point<int> anchor;
+    int menus = 0, rescans = 0, favorited = 0, loads = 0;
+    std::filesystem::path revealed, removed;
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int> at) {
+        captured = std::move(menu);
+        anchor = at;
+        ++menus;
+    };
+    browser.revealInFileManager = [&](const std::filesystem::path &path) { revealed = path; };
+    browser.removeFolder = [&](const std::filesystem::path &path) { removed = path; };
+    browser.loadDevicePreset = [&](const std::filesystem::path &) { ++loads; return true; };
+    const auto item = [&](const char *text) -> std::optional<juce::PopupMenu::Item> {
+        for (juce::PopupMenu::MenuItemIterator it(captured); it.next();)
+            if (it.getItem().text == text)
+                return it.getItem();
+        return {};
+    };
+    const auto invoke = [&](const char *text) {
+        const auto row = item(text);
+        if (!row || !row->isEnabled || !row->action)
+            return false;
+        row->action();
+        return true;
+    };
+    const auto choose = [&](const juce::String &name) {
+        const auto found = std::ranges::find(browser.sidebar(), name, &BrowserPanel::Entry::name);
+        if (found == browser.sidebar().end())
+            return -1;
+        const int n = static_cast<int>(found - browser.sidebar().begin());
+        browser.choose(n);
+        return n;
+    };
+    const auto right = juce::ModifierKeys::rightButtonModifier;
+    const auto rowMenu = [&](const auto &isTarget) {
+        const auto found = std::ranges::find_if(browser.rows(), isTarget);
+        if (found == browser.rows().end())
+            return false;
+        const int n = static_cast<int>(found - browser.rows().begin());
+        const auto e = pressAt(browser.list, browser.list.getRowPosition(n, true).getCentre().toFloat(), right);
+        const int before = menus;
+        browser.list.getListBoxModel()->listBoxItemClicked(n, e);
+        return menus == before + 1 && anchor == e.getScreenPosition();
+    };
+
+    choose("Samples");
+    const bool sampleMenu = rowMenu([](const auto &row) { return row.file != nullptr; });
+    check(sampleMenu && captured.getNumItems() == 1 && item("Show in File Manager") &&
+              !item("Rescan Library") && !item("Add to Favorites"),
+          "SC-129: a sample popup offers reveal before the rescan and favorite services exist");
+    browser.setListing({}); // A popup can outlive the list from which its target came.
+    check(invoke("Show in File Manager") && revealed == wave,
+          "SC-129: a deferred reveal retains the clicked sample after its list is replaced");
+    browser.setListing(listing);
+
+    choose("Sounds");
+    check(rowMenu([](const auto &row) { return row.savedPreset != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == presetPath && loads == 0,
+          "SC-129: the preset popup uses its actual path and does not load the preset");
+    choose("Plug-Ins");
+    check(rowMenu([](const auto &row) { return row.plugin != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == plug,
+          "SC-129: a plug-in popup reveals the discovered bundle");
+    choose("Instruments");
+    const bool builtinMenu = rowMenu([](const auto &row) { return row.device != nullptr; });
+    const auto compiled = item("Show in File Manager (built-in)");
+    check(builtinMenu && compiled && !compiled->isEnabled && !compiled->action,
+          "SC-129: a compiled-in device has a popup with no fictitious file target");
+
+    browser.requestLibraryRescan = [&] { ++rescans; };
+    browser.appendFavoritesToMenu = [&](juce::PopupMenu &menu, const BrowserPanel::Row &row) {
+        if (row.file)
+            menu.addItem("Add to Favorites", [&] { ++favorited; });
+    };
+    choose("Samples");
+    check(rowMenu([](const auto &row) { return row.file != nullptr; }) &&
+              invoke("Rescan Library") && invoke("Add to Favorites") && rescans == 1 && favorited == 1,
+          "SC-129: the sample menu delegates both optional actions to their owners");
+    const int placeIndex = choose("Context Library");
+    check(rowMenu([](const auto &row) { return row.folder != nullptr; }) &&
+              invoke("Show in File Manager") && revealed == nested && !item("Remove from Places"),
+          "SC-129: a nested folder reveals itself without removing its parent Place");
+    if (placeIndex >= 0)
+        browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(placeIndex).getCentre().toFloat(), right));
+    check(placeIndex >= 0 && invoke("Show in File Manager") && revealed == place &&
+              invoke("Remove from Places") && removed == place && invoke("Rescan Library") && rescans == 2,
+          "SC-129: a Place's popup offers reveal, removal and the installed rescan action");
+}
 void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     const auto base = dir / "places-test";
@@ -7092,14 +7309,17 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.shown().size() == 1, "SC-132: the read-only sample is searchable");
     int menuRequests = 0;
     std::function<void()> remove;
-    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()> action) {
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
         ++menuRequests;
-        remove = std::move(action);
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Remove from Places")
+                remove = it.getItem().action;
     };
     const auto popup = juce::ModifierKeys::rightButtonModifier;
     browser.mouseDown(pressAt(browser, pointFor(userRow), popup));
+    check(menuRequests == 1 && !remove, "SC-125: User Library opens a menu without a Remove action");
     browser.mouseDown(pressAt(browser, pointFor(dropRow), popup));
-    check(menuRequests == 1 && remove, "SC-125: only configured extra Places offer Remove from Places");
+    check(menuRequests == 2 && remove, "SC-125: a configured extra Place offers Remove from Places");
     if (remove) remove();
     check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({media::pathUtf8(chosen)}) &&
               fs::is_regular_file(dropped / "Rim.wav"),
@@ -15546,14 +15766,48 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         swapped.reset();
         device.grabKeyboardFocus();
         auto *peer = host.getPeer();
-        check(peer && peer->handleKeyPress(juce::KeyPress('q')) && swapped && swapped->id == device.id,
-              "plain Q on the focused title opens Hot-Swap");
+        const juce::KeyPress defaultKey('q'), rebound(juce::KeyPress::F3Key);
+        auto *mapping = commands.manager.getKeyMappings();
+        check(AppCommands::commandFor("browser.hot-swap") == AppCommands::HotSwap &&
+                  mapping->findCommandForKeyPress(defaultKey) == AppCommands::HotSwap &&
+                  peer && peer->handleKeyPress(defaultKey) && swapped && swapped->id == device.id,
+              "SC-432: Q invokes the registered Hot-Swap command on the focused title");
         swapped.reset();
         root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
-        check(!device.keyPressed(juce::KeyPress('q')) && !swapped, "the Computer MIDI Keyboard keeps plain Q");
+        check(!commands.key(defaultKey, root) && !swapped, "the Computer MIDI Keyboard keeps plain Q");
         root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
-        check(!device.keyPressed(juce::KeyPress('q', juce::ModifierKeys::commandModifier, 0)) && !swapped,
-              "Cmd/Ctrl+Q keeps its existing action");
+        const juce::KeyPress quitKey('q', juce::ModifierKeys::commandModifier, 0);
+#if !JUCE_MAC
+        check(mapping->findCommandForKeyPress(quitKey) == AppCommands::Quit, "Ctrl+Q remains assigned to Quit");
+#endif
+        check(!device.keyPressed(quitKey) && !swapped, "the device leaves the Quit shortcut alone");
+        mapping->clearAllKeyPresses(AppCommands::HotSwap);
+        mapping->addKeyPress(AppCommands::HotSwap, rebound);
+        const auto reboundItem = swapItem(device.commands());
+        check(reboundItem && reboundItem->shortcutKeyDescription == rebound.getTextDescriptionWithIcons() &&
+                  commands.userKeys().value("browser.hot-swap", settings::Value{}) == settings::Value::array({"F3"}),
+              "SC-432: the context menu and stable shortcut record show the rebound key");
+        check(peer && !peer->handleKeyPress(defaultKey) && !swapped && peer->handleKeyPress(rebound) &&
+                  swapped && swapped->id == device.id,
+              "SC-432: the rebound key opens Hot-Swap and the old key stops doing so");
+        if (const auto target = swapped) {
+            DevicePanelView retained(root.devices, *target);
+            host.addAndMakeVisible(retained);
+            retained.setBounds(0, 0, 220, 140);
+            retained.grabKeyboardFocus();
+            swapped.reset();
+            check(commands.key(rebound, root, false) && swapped && swapped->id == retained.id,
+                  "SC-432: a retained Stack card outside the root's tree uses its owning Browser command");
+            swapped.reset();
+            retained.targetValid = [] { return false; };
+            check(!root.command(AppCommands::HotSwap) && !swapped,
+                  "SC-432: the command respects the retained card's current target guard");
+        }
+        commands.reload();
+        root.arrangement.canvas.grabKeyboardFocus();
+        check(!commands.key(defaultKey, root) && !root.command(AppCommands::HotSwap),
+              "SC-432: Q has no Hot-Swap target outside the Device View or a retained card");
+        device.grabKeyboardFocus();
         check(device.beginRename(), "the title can enter inline rename");
         if (peer) peer->handleKeyPress(juce::KeyPress('q', 0, 'q'));
         check(device.rename.getText() == "q" && !swapped, "Q typed in the name editor stays in the editor");
@@ -23613,6 +23867,23 @@ int main(int argc, char **argv) {
     check(commands.infoView() && !a.infoArea().isEmpty() && a.browserArea() == browserWithInfo &&
               a.browser.contentArea().getHeight() == contentWithInfo && a.deviceArea() == deviceWithInfo,
           "the Status Bar restores the Info dock and the Browser content shrinks back above it");
+    {
+        const auto reopen = [&](auto action) {
+            const bool hidden = a.command(AppCommands::ToggleBrowser) && a.browserArea().isEmpty() && a.infoArea().isEmpty();
+            const bool invoked = action();
+            return hidden && invoked && commands.infoView() && a.browserArea() == browserWithInfo &&
+                   !a.infoArea().isEmpty() && a.deviceArea() == deviceWithInfo;
+        };
+        check(reopen([&] { return a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)); }),
+              "SC-424: the Info shortcut reopens the Browser without hiding its Info dock");
+        check(a.command(AppCommands::ToggleInfoView) && !commands.infoView(), "turn off Info before closing the Browser");
+        check(reopen([&] {
+                  commands.activate(a);
+                  return commands.manager.invokeDirectly(AppCommands::ToggleInfoView, false);
+              }), "SC-424: the View menu command reopens the Browser and enables the Info dock");
+        check(reopen([&] { a.status.infoToggle.onClick(); return true; }),
+              "SC-424: the Status Bar's Info control reopens the Browser and its Info dock");
+    }
     if (restoreBrowserRight)
         check(a.command(AppCommands::SwapPanels), "restore the Browser side used by the surrounding fixtures");
     a.setSize(400, 540);
@@ -23993,15 +24264,15 @@ int main(int argc, char **argv) {
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
                       C::About == C::ExportMidiClip + 1 && C::ImportAudioFile == C::About + 1 &&
                       C::ToggleBrowserPreview == C::ImportAudioFile + 1 &&
-                      C::PreviewSelected == C::ToggleBrowserPreview + 1 &&
-                      C::ManageProjectFiles == C::PreviewSelected + 1 && C::LastId == C::ManageProjectFiles,
+                      C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::HotSwap == C::PreviewSelected + 1 &&
+                      C::ManageProjectFiles == C::HotSwap + 1 && C::LastId == C::ManageProjectFiles,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
-                  "Computer MIDI Keyboard, MIDI import and MIDI export");
+                  "Computer MIDI Keyboard, MIDI import and export, Browser Preview controls, Hot-Swap, and Manage Project Files");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -26591,7 +26862,9 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
+    trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
+    trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
