@@ -11,6 +11,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/textproj.hpp"
@@ -1461,6 +1462,50 @@ void decodedPins() {
     }
     check(pins()==0,"closing the session gives every pin back");
 }
+void compressedBeatsIdentity() {
+    struct Source {
+        fs::path path;
+        std::int64_t start;
+    };
+    const auto decodeFixtures = fs::path(ADI_DECODE_FIXTURES);
+    const std::array<Source, 2> sources{{
+        {decodeFixtures / "tone16.flac", 480},
+        {decodeFixtures.parent_path() / "pcm_stream" / "no-xing.mp3", 4096}
+    }};
+    constexpr int frames = 2400;
+    for (const auto& source : sources) {
+        Fixture f;
+        f.add(1, 0, frames, source.start, frames);
+        const auto mediaPath = f.dir.path() / source.path.filename();
+        fs::copy_file(source.path, mediaPath);
+        auto& db = f.store->db();
+        {
+            SQLite::Statement setMedia(db, "UPDATE media_files SET rel_path=?,format=?,hash_blake3=? WHERE id=1");
+            setMedia.bind(1, source.path.filename().string());
+            setMedia.bind(2, source.path.extension().string().substr(1));
+            setMedia.bind(3, media::blake3File(mediaPath).hex);
+            setMedia.exec();
+        }
+        f.load(frames);
+        const auto before = f.render(frames);
+        check(f.session.problems().empty() && std::ranges::any_of(before, [](float sample) { return sample != 0; }),
+              "the original compressed source window plays");
+
+        const std::array<WarpMarker, 2> markers{{{0, 0}, {frames, textproj::kPPQ / 10}}};
+        const auto map = audio::writeWarpMap(markers, frames);
+        if (!map) throw std::runtime_error("prepare identity Beats marker map");
+        {
+            SQLite::Statement setWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=1");
+            setWarp.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+            setWarp.exec();
+        }
+        if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+        f.session.transport().locate(0);
+        const auto after = f.render(frames);
+        check(after == before && f.session.problems().empty(),
+              "identity Beats preserves the original compressed source window");
+    }
+}
 void unsupported() {
     for(int kind=0;kind<3;++kind) {
         Fixture f;f.add(1,0,500,0,1000);
@@ -1662,6 +1707,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="highRates")highRates();
         if(only=="all" || only=="shared-wav")sharedWavReaders();
         if(only=="all" || only=="pins")decodedPins();
+        if(only=="all" || only=="identity-beats")compressedBeatsIdentity();
         if(only=="all" || only=="inputs")externalSourceSnapshots();
     }
     catch(const std::exception& e){check(false,e.what());}

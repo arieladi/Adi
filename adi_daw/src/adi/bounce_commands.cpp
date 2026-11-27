@@ -5,6 +5,7 @@
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/store.hpp"
+#include "adi/track_recording.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cmath>
 #include <limits>
@@ -40,7 +41,8 @@ Payload bouncedTrackContents(SQLite::Database &db, const Payload &track, Payload
     defaults.exec("PRAGMA foreign_keys=OFF");
     defaults.exec(table.getColumn(0).getString());
     detail::restoreRow(defaults, "tracks", {{"id", id}, {"kind", "audio"}, {"name", track.at("name")},
-        {"parent_id", track.at("parent")}, {"index_in_parent", track.at("index")}, {"monitor_mode", 2}});
+        {"parent_id", track.at("parent")}, {"index_in_parent", track.at("index")},
+        {"monitor_mode", kNewAudioTrackMonitorMode}});
     const auto root = detail::captureRow(defaults, "tracks", "id", id);
     if (!root)
         throw std::runtime_error("bounce cannot capture the new track");

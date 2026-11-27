@@ -677,17 +677,43 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
                 if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
                 spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
-                clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
-                clip->length=static_cast<std::int64_t>(clip->sourceLength);
-                auto task = audio::requestWarp(std::move(spec));
-                if(!task)throw std::runtime_error("cannot request Warp preparation here");
-                auto& shared = warpedReaders[task.get()];
-                clip->warp = shared.lock();
-                if(!clip->warp) {
-                    clip->warp = std::make_shared<WarpSource>(std::move(task));
-                    shared = clip->warp;
+                // Unchanged Beats timing can play the original source window directly.
+                const bool identity = spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
+                    spec.transposeSemis == 0 && spec.formantScale == 1 &&
+                    std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
+                        return anchor.sourceFrame == anchor.outputFrame;
+                    });
+                if (!identity) {
+                    clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
+                    clip->length=static_cast<std::int64_t>(clip->sourceLength);
+                    auto task = audio::requestWarp(std::move(spec));
+                    if(!task)throw std::runtime_error("cannot request Warp preparation here");
+                    auto& shared = warpedReaders[task.get()];
+                    clip->warp = shared.lock();
+                    if(!clip->warp) {
+                        clip->warp = std::make_shared<WarpSource>(std::move(task));
+                        shared = clip->warp;
+                    }
+                    clip->reader.reset();
+                } else if (!clip->reader) {
+                    // Warp inspection left compressed sources unopened for the worker.
+                    const auto& info = *opened.compressedInfo;
+                    if (info.frames && *info.frames) {
+                        auto& service = decoder ? *decoder : audio::defaultProgressiveDecoder();
+                        clip->progressive = service.openSaved(clip->path, info, media->hashBlake3);
+                    } else {
+                        clip->reader = opened.decoded.lock();
+                        if (!clip->reader) {
+                            clip->reader = std::make_shared<WavSource>(clip->path, true);
+                            opened.decoded = clip->reader;
+                        }
+                        const auto& wav = clip->reader->wav;
+                        if (wav.channels() != clip->channels || wav.sampleRate() != clip->sourceRate)
+                            throw std::runtime_error("decoded source format changed");
+                        if (clip->sourceStart > wav.frames() || clip->sourceLength > wav.frames() - clip->sourceStart)
+                            throw std::runtime_error("source window outside audio; silent");
+                    }
                 }
-                clip->reader.reset();
             }
             std::int64_t endTicks=origin;
             if(row.timeBase==0) {

@@ -552,7 +552,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
     juce::Rectangle<int> infoArea() const noexcept { return infoArea_; }
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
-    juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
     AppCommands &commands() noexcept { return commands_; }
     // The project as it is now: what an action lands on, never this window's last frame.
     std::shared_ptr<const engine::Snapshot> current() const { return view_.current(); }
@@ -564,7 +563,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playFrom(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
-    juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
     // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the
     // arrangement, which keeps its Show in step with the view chosen.
@@ -586,6 +584,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::function<std::string()> frame;
         // Whether the plug-in has dropped its editor: its window then closes.
         std::function<bool()> gone;
+        // Whether the plug-in says its editor can be resized: its window then is, from its edges and
+        // corner, and the plug-in is asked for each size (SC-328).
+        bool resizable = false;
     };
     std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
     FloatingHost *pluginHost = nullptr;
@@ -831,7 +832,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // meters, puts the insert marker and the playhead there; up and down step a bar from the play
     // position (the insert marker while stopped). Neither is an edit, so neither is an undo step.
     bool setPositionAt(const std::string &text);
-    bool stepPosition(int bars);
     const TapTempo &taps() const noexcept { return tap_; }
     // Live's metronome (manual 19.4.1): O and the control bar's switch, `transport.setMetronome`
     // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.
@@ -965,7 +965,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
+    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
