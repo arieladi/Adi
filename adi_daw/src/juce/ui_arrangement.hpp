@@ -467,6 +467,10 @@ class ArrangementCanvas final : public juce::Component,
     bool commitAutomationDrag(const AutomationDrag &);
     std::optional<AutomationDrag> automationDrag_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
+    enum class AutomationPointClick { None, Delete, Select };
+    AutomationPointClick automationPointClick_ = AutomationPointClick::None;
+    bool suppressAutomationDoubleClick_ = false, ignoringAutomationClick_ = false;
+    void finishAutomationPointClick(const AutomationPick &);
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
     double pointValue_ = 0;

@@ -4121,9 +4121,36 @@ bool ArrangementCanvas::commitAutomationDrag(const AutomationDrag &drag) {
     return true;
 }
 
+void ArrangementCanvas::finishAutomationPointClick(const AutomationPick &pick) {
+    if (automationPointClick_ == AutomationPointClick::None || !automationPickIsCurrent(pick))
+        return;
+    const auto current = view.root.current();
+    if (!current)
+        return;
+    const auto envelope = envelopeOf(*current, pick.target);
+    if (!envelope.data)
+        return;
+    const auto point = std::find_if(envelope.data->points.begin(), envelope.data->points.end(),
+                                    [&](const auto &entry) { return entry.id == pick.point; });
+    if (point == envelope.data->points.end())
+        return;
+    const auto tick = point->time;
+    if (automationPointClick_ == AutomationPointClick::Delete) {
+        chosenPoint_.reset();
+        suppressAutomationDoubleClick_ = view.root.deleteAutomationPoint(pick.track, pick.target, pick.point);
+        if (suppressAutomationDoubleClick_) {
+            focusAutomationKeyboardLane({pick.track, pick.target}, tick);
+            clearAutomationValueReadout();
+        }
+        return;
+    }
+    focusAutomationKeyboardLane({pick.track, pick.target}, tick, pick);
+    chosenPoint_ = pick;
+}
+
 bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
-    // In Automation Mode a click on a breakpoint chooses it and a drag moves it; on the envelope's line
-    // it adds one, on the grid as the view snaps (Live 12 manual 25.3, 25.5.2).
+    // With Draw Mode off, a plain breakpoint click deletes and a drag moves it
+    // (Live 12 manual 26.7.1). Alt-click selects it at the insert marker (41.5.2).
     if (!view.root.automationMode() || e.mods.isPopupMenu())
         return false;
     std::int64_t titleTrack = 0;
@@ -4132,9 +4159,20 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
         return false;
     if (view.root.drawMode())
         return beginAutomationStroke(e);
+    if (suppressAutomationDoubleClick_ && e.getNumberOfClicks() > 1) {
+        ignoringAutomationClick_ = true;
+        return true;
+    }
     const auto at = e.position;
     if (const auto hit = automationPointAt(at)) {
         chosenPoint_ = hit;
+        const auto mods = e.mods.withoutMouseButtons();
+        if (!e.mods.isMiddleButtonDown() && !e.mods.isRightButtonDown()) {
+            if (!mods.isAnyModifierKeyDown())
+                automationPointClick_ = AutomationPointClick::Delete;
+            else if (mods == juce::ModifierKeys(juce::ModifierKeys::altModifier))
+                automationPointClick_ = AutomationPointClick::Select;
+        }
         if (beginSelectedAutomationDrag(*hit, e))
             return true;
         pointDrag_ = hit;
@@ -4616,6 +4654,10 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     automationStroke_.reset();
     automationDrag_.reset();
     pointDrag_.reset();
+    automationPointClick_ = AutomationPointClick::None;
+    ignoringAutomationClick_ = false;
+    if (e.getNumberOfClicks() == 1)
+        suppressAutomationDoubleClick_ = false;
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
     keyboardAutomationLane_.reset();
     keyboardAutomationFocus_.reset();
@@ -4811,7 +4853,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
                                         : juce::MouseCursor::NormalCursor);
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu())
+    if (ignoringAutomationClick_ || e.mods.isPopupMenu())
         return;
     if (automationStroke_) {
         if (view.root.automationMode() && view.root.drawMode())
@@ -4960,6 +5002,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (ignoringAutomationClick_)
+        return;
     if (automationStroke_) {
         const bool drawing = view.root.automationMode() && view.root.drawMode();
         if (drawing)
@@ -4980,8 +5024,11 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         if (drag.movesSelection) {
             if (dragged || drag.cancelled)
                 chosenPoint_.reset();
-            else
+            else {
                 clearAutomationSelection();
+                if (const auto clicked = chosenPoint_)
+                    finishAutomationPointClick(*clicked);
+            }
         }
         if (dragged)
             commitAutomationDrag(drag);
@@ -4989,11 +5036,15 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         return;
     }
     if (pointDrag_) {
-        // One drag, one undo step; a click that did not move writes nothing.
+        // The same press can begin a drag or act on an existing breakpoint.
         const auto drag = *pointDrag_;
         pointDrag_.reset();
-        if (e.mouseWasDraggedSinceMouseDown() && automationPickIsCurrent(drag))
-            view.root.moveAutomationPoint(drag.track, drag.target, drag.point, pointTick_, pointValue_);
+        if (e.mouseWasDraggedSinceMouseDown()) {
+            if (automationPickIsCurrent(drag))
+                view.root.moveAutomationPoint(drag.track, drag.target, drag.point, pointTick_, pointValue_);
+        } else {
+            finishAutomationPointClick(drag);
+        }
         repaint();
         return;
     }
@@ -5286,17 +5337,9 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     // A breakpoint's hit slop does not cover a clip title.
     std::int64_t titleTrack = 0;
     bool titleEdge = false;
-    // In Automation Mode a double-click on a breakpoint deletes it (manual 25.3).
     if (view.root.automationMode() && barAt(e.x, e.y, titleTrack, titleEdge) == nullptr) {
-        if (view.root.drawMode())
+        if (view.root.drawMode() || ignoringAutomationClick_ || automationPointAt(e.position))
             return;
-        if (const auto hit = automationPointAt(e.position)) {
-            pointDrag_.reset();
-            chosenPoint_.reset();
-            view.root.deleteAutomationPoint(hit->track, hit->target, hit->point);
-            repaint();
-            return;
-        }
         // Elsewhere on a lane a double-click is the envelope's too: off the line it adds a breakpoint
         // there (manual 25.5.2; on the line the first press added it); it neither makes a clip nor opens one.
         for (const auto &body : laneBodies())

@@ -15428,9 +15428,8 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
           "the next Undo takes the return and its sends away together");
     document->release();
 }
-// AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
-// lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
-// Delete removes one; each one undo step.
+// AU-01: Automation Mode in the Arrangement. Click the line to add a breakpoint and click an existing
+// breakpoint to delete it. A drag moves the point, and Alt-click selects it at the insertion marker.
 void automationParameterDemand(AppCommands &commands, const std::filesystem::path &dir) {
     constexpr int firstTrack = 20, firstDevice = 100, count = 20;
     constexpr int lastTrack = firstTrack + count - 1;
@@ -15793,25 +15792,48 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
     check(root.command(AppCommands::Redo), "and Redo moves it again");
     root.frame();
-    // A double-click on it deletes it.
-    const auto moved = canvas.automationPointAt(
-        {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)});
-    check(moved.has_value(), "the moved breakpoint is found where it is drawn now");
-    if (moved) {
-        canvas.mouseDoubleClick(pressAt(canvas, {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)}));
+    const juce::Point<float> movedAt{twoBars, audio->bottom -
+        static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)};
+    if (const auto moved = canvas.automationPointAt(movedAt)) {
+        const auto beforeDelete = OpJournal(document->store()).headSeq();
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        const auto press = pressAt(canvas, movedAt, left);
+        canvas.mouseDown(press);
+        check(laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
+                  OpJournal(document->store()).headSeq() == beforeDelete,
+              "pressing a breakpoint waits to distinguish a click from a drag");
+        canvas.mouseUp(press);
         root.frame();
         check(laneOf().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation Point",
-              "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
-    }
-    // Chosen, Delete takes it away.
+              "one plain click deletes the last breakpoint and its lane");
+        const auto deleted = OpJournal(document->store()).headSeq();
+        const auto second = juce::MouseEvent{press.source, movedAt, left, 1.f, 0.f, 0.f, 0.f, 0.f, &canvas, &canvas,
+            press.eventTime, movedAt, press.eventTime, 2, false};
+        canvas.mouseDown(second);
+        canvas.mouseUp(second);
+        canvas.mouseDoubleClick(second);
+        root.frame();
+        check(deleted > beforeDelete && OpJournal(document->store()).headSeq() == deleted && laneOf().lane == nullptr,
+              "the second click in that JUCE sequence cannot add or remove a point");
+        check(root.command(AppCommands::Undo) && OpJournal(document->store()).headSeq() == beforeDelete &&
+                  canvas.automationPointAt(movedAt).has_value(),
+              "one Undo restores the clicked breakpoint");
+        check(root.command(AppCommands::Redo) && laneOf().lane == nullptr, "Redo removes the breakpoint again");
+    } else
+        check(false, "the moved breakpoint is found where it is drawn now");
+
     canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, lineY}));
     root.frame();
-    canvas.mouseDown(pressAt(canvas, {barX, lineY}));
-    canvas.mouseUp(pressAt(canvas, {barX, lineY}));
-    check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
+    const auto beforeSelect = OpJournal(document->store()).headSeq();
+    const juce::ModifierKeys select(juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier);
+    canvas.mouseDown(pressAt(canvas, {barX, lineY}, select));
+    canvas.mouseUp(pressAt(canvas, {barX, lineY}, select));
+    check(canvas.chosenAutomationPoint().has_value() && root.arrangement.geometry.selection.insert == textproj::kWhole &&
+              OpJournal(document->store()).headSeq() == beforeSelect,
+          "Alt-click selects the point and locates its tick without writing history");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
-          "Delete takes the chosen breakpoint away");
+          "Delete takes the Alt-selected breakpoint away");
     // A14: the press that adds a breakpoint on the line goes on to move it while it drags.
     canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
     canvas.mouseDrag(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
@@ -16437,9 +16459,14 @@ void automationBreakpointDrags(AppCommands &commands, const std::filesystem::pat
     press(first);
     canvas.mouseUp(pressAt(canvas, first));
     root.frame();
-    const auto chosen = canvas.chosenAutomationPoint();
-    check(chosen && chosen->point == 7 && !canvas.hasAutomationSelection() && undoStep() == baseline,
-          "a click without a drag still chooses a single breakpoint");
+    const auto survivor = readPoints();
+    check(survivor.size() == 1 && survivor.front().id == original[1].id &&
+              survivor.front().time == original[1].time && survivor.front().value == original[1].value &&
+              undoStep() != baseline && canvas.hasAutomationSelection() &&
+              geometry.selection.start == original[0].time && geometry.selection.end == original[0].time,
+          "a plain click deletes only the hit breakpoint and leaves its automation marker");
+    if (!undoGesture("one Undo restores the clicked point in the selected range"))
+        return;
     select();
     const bool selected = canvas.hasAutomationSelection() && geometry.selection.start == bar / 2 &&
                           geometry.selection.end == 5 * bar / 2;
