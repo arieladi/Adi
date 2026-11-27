@@ -19,6 +19,14 @@ struct RemoteBlock {
     std::optional<engine::DeviceTransport> transport;
 };
 
+/// The backend selector addresses the live plug-in. The descriptor's string
+/// ID is the project identity and survives reconnects and catalogue changes.
+struct RemoteParameter {
+    std::uint32_t selector = 0;
+    ParamDescriptor descriptor;
+    ParamValue current;
+};
+
 /// A connected plug-in's worker-side interface. All calls use one I/O thread,
 /// including activation and release. Implementations bound connection and
 /// exchange time; false ends this connection. `output` has the same layout
@@ -36,6 +44,13 @@ public:
     [[nodiscard]] virtual bool supportsState() const noexcept { return false; }
     virtual bool fetchState(std::vector<std::uint8_t>&, StateDeadline, std::string&) { return false; }
     virtual bool restoreState(std::span<const std::uint8_t>, StateDeadline, std::string&) { return false; }
+    // Owner controls use the same serialized worker and absolute deadline.
+    // A setter succeeds with the normalized value acknowledged by the plug-in.
+    virtual bool readParameters(std::vector<RemoteParameter>& out, StateDeadline, std::string&) {
+        out.clear();
+        return true;
+    }
+    virtual bool setParameter(std::uint32_t, double, double&, StateDeadline, std::string&) { return false; }
     virtual void release() noexcept {}
 };
 
@@ -71,12 +86,25 @@ public:
     [[nodiscard]] std::string_view stateCaptureIssue() const noexcept override { return captureIssue_; }
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& bytes) override;
 
+    // Owner-thread snapshot. A declaration pointer lasts until the next
+    // preparation or state restore. Its index remains attached to its ID.
+    [[nodiscard]] std::int32_t paramCount() const noexcept override;
+    [[nodiscard]] const ParamDescriptor* paramAt(std::int32_t index) const noexcept override;
+    [[nodiscard]] ParamValue getParam(const std::string& id) const noexcept override;
+    bool setParam(const std::string& id, const ParamValue& value) override;
+
     /// A late response does not get played during another packet's slot.
     /// One count per slot silenced, excluding intentional pipeline priming.
     [[nodiscard]] std::uint64_t droppedBlocks() const noexcept { return droppedBlocks_.load(std::memory_order_relaxed); }
 
 private:
     struct Pipeline;
+    struct ParameterSlot {
+        RemoteParameter parameter;
+        std::optional<double> explicitValue;
+    };
+    bool refreshParameters(Pipeline& pipeline);
+    static bool applyParameter(Pipeline& pipeline, ParameterSlot& slot, double value, std::string& error);
     DeviceIdentity identity_;
     std::int32_t channels_;
     engine::EventFlow eventFlow_;
@@ -86,8 +114,11 @@ private:
     std::string issuePrefix_;
     std::string ownerIssue_;
     std::string stateIssue_;
+    std::string parameterIssue_;
     mutable std::string captureIssue_;
     mutable std::vector<std::uint8_t> confirmedState_;
+    std::vector<ParameterSlot> parameters_;
+    bool parametersCurrent_ = false;
     bool requestedOffline_ = false;
     std::atomic<bool> loaded_{false};
     std::atomic<std::int32_t> latency_{0};

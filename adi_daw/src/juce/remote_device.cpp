@@ -12,7 +12,9 @@
 #include <exception>
 #include <future>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
 
 namespace adi::device {
 namespace {
@@ -22,15 +24,30 @@ static_assert(std::atomic<std::int32_t>::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
 
-constexpr auto kStateTimeout = std::chrono::milliseconds(500);
+constexpr auto kControlTimeout = std::chrono::milliseconds(500);
 
-struct StateRequest {
-    RemoteProcessor::StateDeadline deadline = std::chrono::steady_clock::now() + kStateTimeout;
+enum class ControlKind { FetchState, RestoreState, ReadParameters, SetParameter };
+
+struct ControlRequest {
+    explicit ControlRequest(ControlKind requested) : kind(requested) {}
+    const ControlKind kind;
+    const RemoteProcessor::StateDeadline deadline = std::chrono::steady_clock::now() + kControlTimeout;
     std::vector<std::uint8_t> bytes;
+    std::vector<RemoteParameter> parameters;
+    std::uint32_t selector = 0;
+    double normalized = 0;
+    double applied = std::numeric_limits<double>::quiet_NaN();
     std::string error;
     std::promise<bool> completion;
-    bool restoring = false;
 };
+
+bool normalizedValue(double value) noexcept {
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+bool validParameterValue(const ParamValue& value) noexcept {
+    return normalizedValue(value.normalized) && (!value.hasReal || std::isfinite(value.real));
+}
 
 // The SPSC cursors start 64 bytes apart. Explicit padding keeps the type at
 // the atomic's natural alignment and avoids MSVC's C4324 in containing types.
@@ -149,49 +166,81 @@ struct RemoteDevice::Pipeline {
     }
 
     bool requestState(bool restoring, std::vector<std::uint8_t>& bytes, std::string& error) {
+        const auto request = std::make_shared<ControlRequest>(restoring ? ControlKind::RestoreState : ControlKind::FetchState);
+        if (restoring) request->bytes = bytes;
+        if (!requestControl(request, error)) return false;
+        if (!restoring) bytes = std::move(request->bytes);
+        return true;
+    }
+
+    bool requestParameters(std::vector<RemoteParameter>& parameters, std::string& error) {
+        const auto request = std::make_shared<ControlRequest>(ControlKind::ReadParameters);
+        if (!requestControl(request, error)) return false;
+        parameters = std::move(request->parameters);
+        return true;
+    }
+
+    bool requestParameter(std::uint32_t selector, double normalized, double& applied, std::string& error) {
+        const auto request = std::make_shared<ControlRequest>(ControlKind::SetParameter);
+        request->selector = selector;
+        request->normalized = normalized;
+        if (!requestControl(request, error)) return false;
+        applied = request->applied;
+        return true;
+    }
+
+    bool requestControl(const std::shared_ptr<ControlRequest>& request, std::string& error) {
         if (workerFailed.load(std::memory_order_acquire)) {
             error = "the remote processing connection is closed";
             return false;
         }
-        const auto request = std::make_shared<StateRequest>();
-        request->restoring = restoring;
-        if (restoring) request->bytes = bytes;
         auto completion = request->completion.get_future();
         {
-            const std::lock_guard lock(stateOwner);
+            const std::lock_guard lock(controlOwner);
             // A prior owner wait may have expired before the worker could
             // pick it up. Replace it with the only current request.
-            pendingState = request;
-            stateWaiting.store(true, std::memory_order_release);
+            pendingControl = request;
+            controlWaiting.store(true, std::memory_order_release);
         }
         if (completion.wait_until(request->deadline) != std::future_status::ready) {
-            error = "the server did not answer the state request within 500 ms";
+            error = "the server did not answer the control request within 500 ms";
             return false;
         }
         if (!completion.get()) {
             error = std::move(request->error);
             return false;
         }
-        if (!restoring) bytes = std::move(request->bytes);
         return true;
     }
 
-    void processState(RemoteProcessor& processor) {
-        if (!stateWaiting.load(std::memory_order_acquire)) return;
-        std::shared_ptr<StateRequest> request;
+    void processControl(RemoteProcessor& processor) {
+        if (!controlWaiting.load(std::memory_order_acquire)) return;
+        std::shared_ptr<ControlRequest> request;
         {
-            const std::lock_guard lock(stateOwner);
-            request = std::move(pendingState);
-            stateWaiting.store(false, std::memory_order_release);
+            const std::lock_guard lock(controlOwner);
+            request = std::move(pendingControl);
+            controlWaiting.store(false, std::memory_order_release);
         }
         bool succeeded = false;
         try {
             if (std::chrono::steady_clock::now() >= request->deadline) {
-                request->error = "the state request expired before I/O started";
-            } else if (request->restoring) {
-                succeeded = processor.restoreState(request->bytes, request->deadline, request->error);
+                request->error = "the control request expired before I/O started";
             } else {
-                succeeded = processor.fetchState(request->bytes, request->deadline, request->error);
+                switch (request->kind) {
+                case ControlKind::FetchState:
+                    succeeded = processor.fetchState(request->bytes, request->deadline, request->error);
+                    break;
+                case ControlKind::RestoreState:
+                    succeeded = processor.restoreState(request->bytes, request->deadline, request->error);
+                    break;
+                case ControlKind::ReadParameters:
+                    succeeded = processor.readParameters(request->parameters, request->deadline, request->error);
+                    break;
+                case ControlKind::SetParameter:
+                    succeeded = processor.setParameter(request->selector, request->normalized, request->applied,
+                                                       request->deadline, request->error);
+                    break;
+                }
             }
         } catch (const std::exception& error) {
             request->error = error.what();
@@ -212,7 +261,7 @@ struct RemoteDevice::Pipeline {
             started.notify_one();
 
             while (!workerFailed.load(std::memory_order_relaxed) && !stop.stop_requested()) {
-                processState(processor);
+                processControl(processor);
                 const auto* request = requests.front();
                 if (request == nullptr) {
                     // The realtime producer performs only an atomic publish.
@@ -360,9 +409,9 @@ struct RemoteDevice::Pipeline {
     std::atomic<bool> workerFailed{false};
     std::atomic<std::uint64_t> completed{0};
     std::atomic<LocalIssue> localIssue{LocalIssue::None};
-    std::atomic<bool> stateWaiting{false};
-    std::mutex stateOwner;
-    std::shared_ptr<StateRequest> pendingState;
+    std::atomic<bool> controlWaiting{false};
+    std::mutex controlOwner;
+    std::shared_ptr<ControlRequest> pendingControl;
     std::string workerIssue;
     const std::string shapeIssue, eventIssue, queueIssue, prefix;
     std::uint64_t sequence = 1;
@@ -382,7 +431,100 @@ RemoteDevice::~RemoteDevice() = default;
 
 std::string_view RemoteDevice::processingIssue() const noexcept {
     const auto issue = pipeline_ ? pipeline_->issue() : std::string_view(ownerIssue_);
-    return issue.empty() ? std::string_view(stateIssue_) : issue;
+    if (!issue.empty()) return issue;
+    if (!stateIssue_.empty()) return stateIssue_;
+    return parameterIssue_;
+}
+
+std::int32_t RemoteDevice::paramCount() const noexcept {
+    return static_cast<std::int32_t>(parameters_.size());
+}
+
+const ParamDescriptor* RemoteDevice::paramAt(std::int32_t index) const noexcept {
+    if (index < 0 || index >= paramCount()) return nullptr;
+    return &parameters_[static_cast<std::size_t>(index)].parameter.descriptor;
+}
+
+ParamValue RemoteDevice::getParam(const std::string& id) const noexcept {
+    const auto found = std::find_if(parameters_.begin(), parameters_.end(), [&id](const ParameterSlot& slot) {
+        return slot.parameter.descriptor.id == id;
+    });
+    return found == parameters_.end() ? ParamValue{} : found->parameter.current;
+}
+
+bool RemoteDevice::setParam(const std::string& id, const ParamValue& value) {
+    if (audio::onAudioThread || !pipeline_ || !loaded() || !parametersCurrent_ || !normalizedValue(value.normalized))
+        return false;
+    const auto found = std::find_if(parameters_.begin(), parameters_.end(), [&id](const ParameterSlot& slot) {
+        return slot.parameter.descriptor.id == id;
+    });
+    if (found == parameters_.end() || found->parameter.descriptor.missing) return false;
+    std::string error;
+    return applyParameter(*pipeline_, *found, value.normalized, error);
+}
+
+bool RemoteDevice::applyParameter(Pipeline& pipeline, ParameterSlot& slot, double value, std::string& error) {
+    double applied = 0;
+    if (!pipeline.requestParameter(slot.parameter.selector, value, applied, error)) return false;
+    if (!normalizedValue(applied)) {
+        error = "the server reported an invalid parameter value";
+        return false;
+    }
+    const auto& descriptor = slot.parameter.descriptor;
+    slot.parameter.current = descriptor.hasRealRange
+        ? ParamValue::withReal(applied, std::lerp(descriptor.minReal, descriptor.maxReal, applied))
+        : ParamValue::fromNormalized(applied);
+    slot.explicitValue = applied;
+    return true;
+}
+
+bool RemoteDevice::refreshParameters(Pipeline& pipeline) {
+    parametersCurrent_ = false;
+    std::vector<RemoteParameter> fresh;
+    std::string error;
+    if (!pipeline.requestParameters(fresh, error)) {
+        parameterIssue_ = issuePrefix_ + "the remote parameter catalogue is unavailable";
+        if (!error.empty()) parameterIssue_ += " (" + error + ")";
+        return false;
+    }
+    std::map<std::string, std::size_t, std::less<>> byId;
+    std::set<std::uint32_t> selectors;
+    for (std::size_t i = 0; i < fresh.size(); ++i) {
+        const auto& parameter = fresh[i];
+        const auto& descriptor = parameter.descriptor;
+        if (descriptor.id.empty() || !validParameterValue(parameter.current) ||
+            !validParameterValue(descriptor.defaultValue) ||
+            (descriptor.hasRealRange && (!std::isfinite(descriptor.minReal) ||
+             !std::isfinite(descriptor.maxReal) || descriptor.minReal > descriptor.maxReal)) ||
+            !byId.emplace(descriptor.id, i).second || !selectors.insert(parameter.selector).second) {
+            parameterIssue_ = issuePrefix_ + "the remote parameter catalogue is invalid";
+            return false;
+        }
+    }
+
+    auto updated = parameters_;
+    std::vector<bool> retained(fresh.size(), false);
+    for (auto& slot : updated) {
+        const auto id = byId.find(slot.parameter.descriptor.id);
+        if (id == byId.end()) {
+            slot.parameter.descriptor.missing = true;
+            continue;
+        }
+        retained[id->second] = true;
+        slot.parameter = std::move(fresh[id->second]);
+    }
+    for (std::size_t i = 0; i < fresh.size(); ++i) {
+        if (retained[i]) continue;
+        if (updated.size() == static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+            parameterIssue_ = issuePrefix_ + "the remote parameter catalogue is too large";
+            return false;
+        }
+        updated.push_back({std::move(fresh[i]), {}});
+    }
+    parameters_ = std::move(updated);
+    parameterIssue_.clear();
+    parametersCurrent_ = true;
+    return true;
 }
 
 std::vector<std::string> RemoteDevice::stateRoles() const {
@@ -418,16 +560,20 @@ bool RemoteDevice::loadState(const std::string& role, const std::vector<std::uin
     }
     confirmedState_ = std::move(staged);
     stateIssue_.clear();
+    for (auto& slot : parameters_) slot.explicitValue.reset();
+    if (pipeline_ && loaded()) (void)refreshParameters(*pipeline_);
     return true;
 }
 
 void RemoteDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     if (pipeline_ && loaded() && pipeline_->sampleRate == sampleRate && pipeline_->frames == maxFrames &&
-        pipeline_->offline == requestedOffline_ && !pipeline_->workerFailed.load(std::memory_order_acquire)) return;
+        pipeline_->offline == requestedOffline_ && parameterIssue_.empty() &&
+        !pipeline_->workerFailed.load(std::memory_order_acquire)) return;
 
     const ReactivationGate::Hold hold(activation_);
     pipeline_.reset();
     loaded_.store(false, std::memory_order_release);
+    parametersCurrent_ = false;
     const auto previousLatency = latency_.exchange(0, std::memory_order_relaxed);
     if (processor_ == nullptr || !std::isfinite(sampleRate) || sampleRate <= 0.0 || channels_ <= 0 || maxFrames <= 0 ||
         static_cast<std::size_t>(maxFrames) > std::vector<float>().max_size() / static_cast<std::size_t>(channels_)) {
@@ -447,6 +593,18 @@ void RemoteDevice::prepare(double sampleRate, std::int32_t maxFrames) {
                     stateIssue_.clear();
                 }
             }
+            if (refreshParameters(*next)) {
+                for (auto& slot : parameters_) {
+                    if (slot.parameter.descriptor.missing || !slot.explicitValue) continue;
+                    std::string error;
+                    if (!applyParameter(*next, slot, *slot.explicitValue, error)) {
+                        parameterIssue_ = issuePrefix_ + "the remote connection could not reapply parameter '" +
+                                          slot.parameter.descriptor.id + "'";
+                        if (!error.empty()) parameterIssue_ += " (" + error + ")";
+                        break;
+                    }
+                }
+            }
             const auto latency = maxFrames + next->pluginLatency;
             latency_.store(latency, std::memory_order_relaxed);
             if (latency != previousLatency) latencyEpoch_.fetch_add(1, std::memory_order_relaxed);
@@ -462,6 +620,7 @@ void RemoteDevice::release() {
     const ReactivationGate::Hold hold(activation_);
     pipeline_.reset();
     loaded_.store(false, std::memory_order_release);
+    parametersCurrent_ = false;
     ownerIssue_ = issuePrefix_ + "remote plug-in is not prepared";
 }
 

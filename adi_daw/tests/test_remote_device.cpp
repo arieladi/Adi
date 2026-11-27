@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <thread>
 
 namespace {
@@ -18,6 +19,7 @@ int checks = 0;
 int failures = 0;
 using namespace adi;
 using namespace std::chrono_literals;
+enum class ParameterCatalogue { Empty, Forward, Reverse, GainOnly, Duplicate };
 
 void check(bool passed, const char* what) {
     ++checks;
@@ -35,8 +37,11 @@ struct Trace {
     std::atomic<bool> entered{false};
     std::atomic<int> prepared{0};
     std::atomic<bool> stateConnected{true};
+    std::atomic<ParameterCatalogue> catalogue{ParameterCatalogue::Empty};
+    std::atomic<bool> invalidParameterReply{false};
     bool stateSupported = false;
     std::vector<std::uint8_t> state{99, 3, 42};
+    std::array<double, 2> parameterValues{};
     int exchanges = 0;
     int releases = 0;
     int failAt = -1;
@@ -54,6 +59,7 @@ public:
         trace_.worker = std::this_thread::get_id();
         confirmThread();
         ++trace_.prepared;
+        trace_.parameterValues = {0.25, 0.75};
         latency = trace_.latency;
         if (trace_.failAt == 0) {
             error = "fixture server did not open";
@@ -95,12 +101,61 @@ public:
     bool restoreState(std::span<const std::uint8_t> bytes, StateDeadline, std::string&) override {
         confirmThread();
         trace_.state.assign(bytes.begin(), bytes.end());
+        trace_.parameterValues = {0.0, 0.25};
         return true;
+    }
+
+    bool readParameters(std::vector<device::RemoteParameter>& result, StateDeadline, std::string&) override {
+        confirmThread();
+        const auto catalogue = trace_.catalogue.load(std::memory_order_acquire);
+        if (catalogue == ParameterCatalogue::Empty) return true;
+        auto gain = parameter(0, "gain", "Gain");
+        gain.descriptor.hasRealRange = true;
+        gain.descriptor.minReal = -12.0;
+        gain.descriptor.maxReal = 12.0;
+        gain.current = device::ParamValue::withReal(gain.current.normalized,
+            std::lerp(-12.0, 12.0, gain.current.normalized));
+        auto tone = parameter(1, "tone", "Tone");
+        if (catalogue == ParameterCatalogue::GainOnly) result = {std::move(gain)};
+        else if (catalogue == ParameterCatalogue::Reverse) result = {std::move(tone), std::move(gain)};
+        else if (catalogue == ParameterCatalogue::Duplicate) result = {gain, gain};
+        else result = {std::move(gain), std::move(tone)};
+        return true;
+    }
+
+    bool setParameter(std::uint32_t selector, double proposed, double& applied,
+                      StateDeadline, std::string&) override {
+        confirmThread();
+        if (trace_.invalidParameterReply.load(std::memory_order_acquire)) {
+            applied = std::numeric_limits<double>::quiet_NaN();
+            return true;
+        }
+        for (std::size_t index = 0; index < trace_.parameterValues.size(); ++index) {
+            if (selector != selectorFor(index)) continue;
+            applied = std::round(4.0 * proposed) / 4.0;
+            trace_.parameterValues[index] = applied;
+            return true;
+        }
+        return false;
     }
 
     void release() noexcept override { confirmThread(); ++trace_.releases; }
 
 private:
+    [[nodiscard]] std::uint32_t selectorFor(std::size_t index) const noexcept {
+        const auto incarnation = static_cast<std::uint32_t>(trace_.prepared.load(std::memory_order_relaxed));
+        return 100 * incarnation + static_cast<std::uint32_t>(index);
+    }
+
+    [[nodiscard]] device::RemoteParameter parameter(std::size_t index, std::string id, std::string display) const {
+        device::RemoteParameter result;
+        result.selector = selectorFor(index);
+        result.descriptor.id = std::move(id);
+        result.descriptor.name = std::move(display);
+        result.current = device::ParamValue::fromNormalized(trace_.parameterValues[index]);
+        return result;
+    }
+
     void confirmThread() const noexcept {
         const auto now = std::this_thread::get_id();
         if (now == trace_.owner || now != trace_.worker || audio::onAudioThread)
@@ -356,6 +411,61 @@ void connectedState() {
     std::printf("Withheld state capture returned in %.3f ms\n", elapsed.count());
 }
 
+void parameterControls() {
+    using device::ParamValue;
+    Trace trace;
+    trace.stateSupported = true;
+    trace.catalogue.store(ParameterCatalogue::Forward, std::memory_order_release);
+    device::RemoteDevice remote(kIdentity, 2, std::make_unique<HalfGain>(trace));
+    remote.prepare(48000.0, 8);
+    const auto stable = [&] {
+        return remote.paramCount() == 2 && remote.paramAt(0)->id == "gain" && remote.paramAt(1)->id == "tone";
+    };
+    check(stable() && remote.paramAt(-1) == nullptr && remote.paramAt(2) == nullptr &&
+          remote.getParam("gain").normalized == 0.25 && remote.getParam("gain").real == -6.0,
+          "owner snapshot exposes stable IDs, valid bounds and the initial server values");
+    check(remote.setParam("gain", ParamValue::fromNormalized(0.62)) &&
+          remote.getParam("gain").normalized == 0.5 && remote.getParam("gain").real == 0.0 &&
+          remote.getParam("gain").hasReal,
+          "a setter publishes the acknowledged normalized value and its declared real equivalent");
+    check(!remote.setParam("absent", ParamValue::fromNormalized(0.25)) &&
+          !remote.setParam("gain", ParamValue::fromNormalized(1.5)), "an unknown ID and an out-of-range value are refused");
+    trace.invalidParameterReply.store(true, std::memory_order_release);
+    check(!remote.setParam("gain", ParamValue::fromNormalized(0.25)) && remote.getParam("gain").normalized == 0.5,
+          "a nonfinite acknowledgement does not overwrite the prior snapshot");
+    trace.invalidParameterReply.store(false, std::memory_order_release);
+    const std::string gainId = "gain";
+    const auto priorAllocations = allocations;
+    bool rejectedCallback = false;
+    {
+        const audio::CallbackScope callback;
+        rejectedCallback = !remote.setParam(gainId, ParamValue::fromNormalized(0.75));
+    }
+    check(rejectedCallback && allocations == priorAllocations, "the audio callback rejects an owner setter without allocating");
+
+    trace.catalogue.store(ParameterCatalogue::Reverse, std::memory_order_release);
+    remote.prepare(48000.0, 16);
+    check(stable() && remote.getParam("gain").normalized == 0.5,
+          "new ordering and selectors preserve slots and restore the explicit owner edit");
+    trace.catalogue.store(ParameterCatalogue::GainOnly, std::memory_order_release);
+    remote.prepare(48000.0, 24);
+    check(stable() && remote.paramAt(1)->missing && !remote.setParam("tone", ParamValue::fromNormalized(0.5)),
+          "a removed ID keeps its old slot and refuses writes to the old selector");
+    trace.catalogue.store(ParameterCatalogue::Forward, std::memory_order_release);
+    check(remote.loadState("chunk", {3}) && stable() && !remote.paramAt(1)->missing &&
+          remote.getParam("gain").normalized == 0.0 && remote.getParam("tone").normalized == 0.25,
+          "state recall refreshes the server values and restores removed IDs to their old slots");
+    remote.prepare(48000.0, 32);
+    check(remote.getParam("gain").normalized == 0.0,
+          "repreparing after explicit state recall keeps recalled values instead of older writes");
+
+    trace.catalogue.store(ParameterCatalogue::Duplicate, std::memory_order_release);
+    remote.prepare(48000.0, 40);
+    check(stable() && remote.processingIssue().find("remote parameter catalogue is invalid") != std::string_view::npos &&
+          !remote.setParam("gain", ParamValue::fromNormalized(0.75)) && trace.workerOnly.load(),
+          "an invalid reply retains the descriptor snapshot and blocks writes by invalid selectors");
+}
+
 void graphIsolation() {
     struct Tone final : engine::Node {
         explicit Tone(float value) : value_(value) {}
@@ -412,6 +522,7 @@ int main() {
     offlineFailure();
     unsupportedState();
     connectedState();
+    parameterControls();
     graphIsolation();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

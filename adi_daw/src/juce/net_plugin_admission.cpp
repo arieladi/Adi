@@ -65,6 +65,14 @@ public:
     bool restoreState(std::span<const std::uint8_t> state, StateDeadline deadline, std::string& error) override {
         return allowed(error) && processor_->restoreState(state, deadline, error);
     }
+    bool readParameters(std::vector<device::RemoteParameter>& parameters,
+                        StateDeadline deadline, std::string& error) override {
+        return allowed(error) && processor_->readParameters(parameters, deadline, error);
+    }
+    bool setParameter(std::uint32_t selector, double normalized, double& applied,
+                      StateDeadline deadline, std::string& error) override {
+        return allowed(error) && processor_->setParameter(selector, normalized, applied, deadline, error);
+    }
     void release() noexcept override { processor_->release(); }
 
 private:
