@@ -1,8 +1,10 @@
-Ready for review: basics/integrate-2 at f82b20ac7e106b3fb3be5efd780d8d3336accf9c
+Ready for review: basics/integrate-2 at f02bd171caca744ea91898f6c4a8d733488f2e3a
 
 # Basics integration
 
 ## Tenth stack, first review bundle
+
+Review head `f82b20ac7e106b3fb3be5efd780d8d3336accf9c`.
 
 | Step and source head | Integration head | Resolution and verification |
 |---|---|---|
@@ -13,9 +15,9 @@ Ready for review: basics/integrate-2 at f82b20ac7e106b3fb3be5efd780d8d3336accf9c
 
 The first bundle passed every configured GCC 14 Debug Ninja target with JUCE, Pd and warnings as errors, including `adi_app` and `adi_play`. The final head passed 295 non-performance suites, 18 window suites with DISPLAY unset, three acceptance suites, six validators and the landing-check tests. Main at `ed3da057c1b32166f3acb3743449037a4be32173` contributed a clean reservations update in `54a8888eed206f06c8049bff338ffeea5ee80835`.
 
-The next bundle contains the published Edit SC-179, MIDI and Safety tips. The Browser tip already belongs to integrate-2. The Routing owner’s newer branches remain local. Integrate-2 already has verified commits for those features. [Routing report](https://github.com/arieladi/Adi/blob/811a7fa3249168d1c38358ca75b2f6512d68c709/adi_daw/collab/basics/routing.md)
+The Browser tip `862cea353f80808d208ce54b773b82cf6a20a3e3` already belongs to integrate-2. The Routing owner’s newer branches remain unpublished, including SC-277 and SC-406. The branch retains the verified SC-261, SC-252/253, SC-404, SC-269 and SC-276 integrations. [Routing report](https://github.com/arieladi/Adi/blob/556c9c24ee889a7db6466b8d5de638f2642bfe34/adi_daw/collab/basics/routing.md)
 
-The Windows checklist also lists Session and Pitch seat changes outside these bundles. [Windows checklist](https://github.com/arieladi/Adi/blob/d4116822018450ff97fdcf0b239890639699d1d7/adi_daw/collab/basics/wincheck.md)
+The Windows checklist also lists Session and Pitch seat changes outside these bundles. [Windows checklist](https://github.com/arieladi/Adi/blob/94fd332a5b23b50d53110d1220eed3b5431acc80/adi_daw/collab/basics/wincheck.md)
 
 ## Follow-up review bundle
 
@@ -23,6 +25,9 @@ The Windows checklist also lists Session and Pitch seat changes outside these bu
 |---|---|---|
 | `basics/sc-179-multi-clip-clipboard` at `53ec8a7927a0e26468ba538cc6089231aa46418d` | `e503a8bc33f5b3d60ee7c1ab0693742db0dbec6e` | Resolved three conflicts in clip planning and shell commands. Sparse Copy, Cut, Paste and Duplicate preserve gaps and eligible clip IDs, honor the envelope lock, and keep take-lane and Reverse behavior. Kept the owner’s fixtures and added exact gap, Undo and take-lane coverage. Built the app, player and affected targets. Passed six focused suites, all 18 display-free window suites, three acceptance suites, six validators and the landing-check tests. |
 | `basics/midi-chain` at `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Merge `cf5f1b83a967dca9108876f0aa037ee7038fd198`, verified through `8912510327d0f9118ce8033629fa6bc0fc933c2f` | Resolved 26 conflicts. Combined note scrub, anchored edge scroll and controller lanes with the existing Clip View, exact physical MIDI filters and staged take publication. Play-Q applies to hosted and hardware destinations and preserves held releases. Controller capture shares the take transaction and keeps separate Record Quantize Undo. Kept existing command IDs, regenerated the one MIDI Clip View reference and checked the exact controller-aware Capture MIDI tooltip, disabled state and pitch-only case. Built app/player and affected targets. Passed 16 focused suites, all 18 display-free window suites, three acceptance suites, six validators and the landing-check tests. |
+| `basics/sc-151-playback-problems` at `08ab0ef5567f7931eb11a8cfad1c2ee568c84292` (includes SC-159 and SC-157) | Merge `71f23160320218de2b90b8780628a82b3ea2a382`, verified through `f02bd171caca744ea91898f6c4a8d733488f2e3a` | Resolved 18 conflicts. Combined durable synced-project journaling with the existing volume handling, then added revision-pinned backup rotation, identity checks and separate editable recovery. Kept both backup fixture sets and added the rebindable Open Backup command. Playback issues keep the missing-media and unsupported-formant diagnostics, add exact clip and device marks, and update the accessible scrollable list while it is open. Preserved the exact Capture MIDI fixture and reference. Focused Store and Project Files checks, strict GCC and Clang 14 syntax and the full gate passed. |
+
+The follow-up head passed every configured GCC 14 Debug Ninja target with JUCE, Pd and warnings as errors, including `adi_app` and `adi_play`. It passed 295 non-performance suites, 18 window suites with DISPLAY unset, 3 acceptance suites, six validators and the landing-check tests. The final main sync at `fbf74a4d1cf14fdc79f5be78fa4c372f97ebfec6` changed three documentation files. Every build target remained current and the validators passed again.
 
 ## Ninth stack and earlier integration
 
