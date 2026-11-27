@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/dsp/stereo_envelope_meter.hpp"
+#include "adi/dsp/auto_gain.hpp"
 #include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <cmath>
@@ -52,28 +53,53 @@ std::array<double, 5> upperSection(double rate, bool shelf) noexcept {
     for (std::size_t i = 0; i < value.size(); ++i) value[i] = std::lerp(value[i], next[i], position);
     return value;
 }
+
+constexpr double referenceKShelfHz = 1681.974450955533;
+Biquad referenceKShelf(double sampleRate) noexcept {
+    // The reference RMS meter uses the RBJ shelf with a specified midpoint.
+    // Express the shelf with the bilinear tangent, using the gain-adjusted
+    // midpoint to obtain the denominator's pole frequency.
+    const auto midpointGain = std::pow(10., 3.999843853973347 / 40.);
+    const auto pole = std::sqrt(midpointGain) * std::tan(std::numbers::pi * referenceKShelfHz / sampleRate);
+    const auto damping = pole / .7071752369554196;
+    const auto square = pole * pole;
+    const auto highGain = midpointGain * midpointGain;
+    const auto a0 = 1. + damping + square;
+    return {(highGain + midpointGain * damping + square) / a0,
+            2. * (square - highGain) / a0,
+            (highGain - midpointGain * damping + square) / a0,
+            2. * (square - 1.) / a0,
+            (1. - damping + square) / a0};
+}
 }
 
-bool StereoMeterWeighting::prepare(double sampleRate, Weighting weighting) noexcept {
+bool StereoMeterWeighting::prepare(double sampleRate, Weighting weighting, Purpose purpose) noexcept {
     if (!positiveFinite(sampleRate) || weighting < Weighting::Standard || weighting > Weighting::K ||
         (weighting != Weighting::Standard && sampleRate <= 2000.)) return false;
     std::array<Biquad, 4> filter{};
     std::size_t count = 0;
     if (weighting != Weighting::Standard) {
         const bool k = weighting == Weighting::K;
-        const auto pole = [sampleRate](double corner) {
-            const auto warped = std::tan(std::numbers::pi * corner / sampleRate);
-            return (1. - warped) / (1. + warped);
-        };
-        const auto hp = pole(k ? 38.1 : 20.6);
-        const auto upper = upperSection(sampleRate, k);
-        filter[0] = {1., -2., 1., -2. * hp, hp * hp};
-        filter[1] = {upper[0], upper[1], upper[2], upper[3], upper[4]};
         count = 2;
-        if (weighting == Weighting::A) {
-            filter[2] = {1., -1., 0., -pole(107.7), 0.};
-            filter[3] = {1., -1., 0., -pole(737.9), 0.};
-            count = 4;
+        // The reference shelf needs its midpoint below Nyquist. Keep the fitted
+        // response for Filter Listen and taps below that cutoff.
+        if (k && purpose == Purpose::Measurement && sampleRate > 2. * referenceKShelfHz) {
+            filter[0] = referenceKShelf(sampleRate);
+            filter[1] = AutoGain::kHighPass(sampleRate);
+        } else {
+            const auto pole = [sampleRate](double corner) {
+                const auto warped = std::tan(std::numbers::pi * corner / sampleRate);
+                return (1. - warped) / (1. + warped);
+            };
+            const auto hp = pole(k ? 38.1 : 20.6);
+            const auto upper = upperSection(sampleRate, k);
+            filter[0] = {1., -2., 1., -2. * hp, hp * hp};
+            filter[1] = {upper[0], upper[1], upper[2], upper[3], upper[4]};
+            if (weighting == Weighting::A) {
+                filter[2] = {1., -1., 0., -pole(107.7), 0.};
+                filter[3] = {1., -1., 0., -pole(737.9), 0.};
+                count = 4;
+            }
         }
         const auto z = std::polar(1., -2. * std::numbers::pi * 1000. / sampleRate);
         const auto z2 = z * z;
@@ -104,7 +130,7 @@ bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
     if (!std::isfinite(interval) || !(decay < 1) || !(powerStep > 0) || !(coincidenceStep > 0))
         return false;
     if (s.sampleRate >= static_cast<double>(std::numeric_limits<std::int64_t>::max()) * .5 ||
-        !weighting_.prepare(s.sampleRate, s.weighting)) return false;
+        !weighting_.prepare(s.sampleRate, s.weighting, StereoMeterWeighting::Purpose::Measurement)) return false;
     peakDecay_ = decay;
     powerStep_ = powerStep;
     coincidenceStep_ = coincidenceStep;

@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <numbers>
+#include <span>
 #include <vector>
 
 namespace {
@@ -261,6 +263,64 @@ void weightingCurves() {
     }
 }
 
+void referenceWeightingCurves() {
+    using Weighting = Meter::Weighting;
+    struct Point { double hz, gainDb; };
+    constexpr std::array aCurve{Point{31.5, -39.4}, Point{63., -26.2}, Point{100., -19.1},
+        Point{200., -10.9}, Point{500., -3.2}, Point{1000., 0.}, Point{2000., 1.2},
+        Point{4000., 1.0}, Point{8000., -1.1}, Point{10000., -2.5}};
+    constexpr std::array cCurve{Point{31.5, -3.0}, Point{63., -.8}, Point{125., -.2},
+        Point{250., 0.}, Point{1000., 0.}, Point{4000., -.8}, Point{8000., -3.0}, Point{10000., -4.4}};
+    // The Max test reports the raw K curve. The RMS meter normalises it at 1 kHz.
+    constexpr std::array kCurve{Point{20., -13.76}, Point{100., -1.62}, Point{1000., 0.},
+        Point{4000., 3.44}, Point{10000., 3.56}};
+    struct Curve { Weighting mode; std::span<const Point> points; };
+    const std::array curves{Curve{Weighting::A, aCurve}, Curve{Weighting::C, cCurve}, Curve{Weighting::K, kCurve}};
+    // The sample-rate ladder in adi/settings/registry.cpp.
+    constexpr std::array rates{44100., 48000., 88200., 96000., 176400., 192000., 352800., 384000., 705600., 768000.};
+    constexpr double amplitude = .1;
+    constexpr int probes = 101;
+    for (const double rate : rates) {
+        std::vector<float> tone;
+        for (const auto &curve : curves) {
+            for (const auto &point : curve.points) {
+                auto settings = testSettings;
+                settings.sampleRate = rate;
+                settings.meanSquareSeconds = .015;
+                settings.weighting = curve.mode;
+                const auto warmup = static_cast<std::size_t>(std::llround(.2 * rate));
+                // An integer number of power periods makes the result independent of the filter's phase.
+                const auto powerHz = 2. * point.hz;
+                const auto duration = std::ceil(.08 * powerHz) / powerHz;
+                tone.resize(warmup + static_cast<std::size_t>(std::llround(duration * rate)));
+                for (std::size_t frame = 0; frame < tone.size(); ++frame)
+                    tone[frame] = static_cast<float>(amplitude * std::sin(2. * std::numbers::pi * point.hz *
+                                                                          static_cast<double>(frame) / rate));
+                Meter meter;
+                const std::span<const float> input(tone);
+                bool processed = meter.prepare(settings) && meter.process(input.first(warmup), input.first(warmup));
+                auto begin = warmup;
+                double power = 0.;
+                for (int probe = 1; probe <= probes; ++probe) {
+                    const auto end = warmup + static_cast<std::size_t>(std::llround(duration * rate * probe / probes));
+                    const auto block = input.subspan(begin, end - begin);
+                    processed &= meter.process(block, block);
+                    const auto rms = meter.reading().sineReferencedRms[0];
+                    power += rms * rms;
+                    begin = end;
+                }
+                const auto measuredDb = 10. * std::log10(power / (probes * amplitude * amplitude));
+                const auto tolerance = curve.mode == Weighting::K ? .09 : point.hz >= 8000. && rate < 96000. ? 1.5 : .35;
+                if (!processed || !std::isfinite(measuredDb) || std::abs(measuredDb - point.gainDb) > tolerance) {
+                    std::fprintf(stderr, "FAIL weighting %u at %.0f Hz rate, %.1f Hz tone: %.3f dB, expected %.3f +/- %.2f\n",
+                        static_cast<unsigned>(curve.mode), rate, point.hz, measuredDb, point.gainDb, tolerance);
+                    ++failures;
+                }
+            }
+        }
+    }
+}
+
 void partitionAndSine() {
     constexpr std::size_t n = 64000;
     constexpr std::array<float, 4> cycle{0, .125f, 0, -.125f};
@@ -293,5 +353,6 @@ int main() {
     linkedDynamics();
     linkedPowerFloor();
     weightingCurves();
+    referenceWeightingCurves();
     return failures == 0 ? 0 : 1;
 }

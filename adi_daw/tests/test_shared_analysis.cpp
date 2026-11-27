@@ -1994,7 +1994,8 @@ void exactZeroSpectrum() {
 }
 void exactSilentStereoLanes() {
     for (const auto size : {32, 1024})
-        for (const auto window : {adi::dsp::Window::Hann, adi::dsp::Window::Rectangular}) {
+        for (const auto window : {adi::dsp::Window::Hann, adi::dsp::Window::Rectangular,
+                                  adi::dsp::Window::Hamming, adi::dsp::Window::Blackman}) {
             Fixture f;
             SharedAnalysis::Request request{1, ScopePoint::PostFader, size, SharedAnalysis::Channel::StereoPower, window};
             request.hopSize = size; request.outputs = 31;

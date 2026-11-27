@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include "adi/dsp/biquad.hpp"
+
 #include <array>
 #include <optional>
 #include <span>
@@ -12,10 +14,11 @@ namespace adi::dsp {
 class StereoMeterWeighting {
   public:
     enum class Weighting { Standard, A, C, K };
+    enum class Purpose { Audition, Measurement };
     struct State { double first = 0, second = 0; };
     using History = std::array<State, 4>;
 
-    bool prepare(double sampleRate, Weighting) noexcept;
+    bool prepare(double sampleRate, Weighting, Purpose = Purpose::Audition) noexcept;
     bool flat() const noexcept { return sectionCount_ == 0; }
     double process(double sample, History &history) const noexcept {
         for (std::size_t section = 0; section < sectionCount_; ++section) {
@@ -30,9 +33,6 @@ class StereoMeterWeighting {
     }
 
   private:
-    struct Biquad {
-        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-    };
     std::array<Biquad, 4> coefficients_{};
     std::size_t sectionCount_ = 0;
 };

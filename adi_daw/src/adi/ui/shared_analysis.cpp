@@ -34,7 +34,7 @@ bool valid(const SharedAnalysis::Request &r) {
     auto n = r.fftSize;
     for (const auto factor : {2, 3, 5}) while (n % factor == 0) n /= factor;
     const bool device = r.point == engine::ScopePoint::DeviceInput || r.point == engine::ScopePoint::DeviceOutput;
-    return n == 1 && (r.window == dsp::Window::Hann || r.window == dsp::Window::Rectangular) &&
+    return n == 1 && r.window >= dsp::Window::Hann && r.window <= dsp::Window::Blackman &&
            r.channel >= SharedAnalysis::Channel::Mid && r.channel <= SharedAnalysis::Channel::StereoPower &&
            r.point >= engine::ScopePoint::PostFader && r.point <= engine::ScopePoint::DeviceOutput &&
            (device ? r.device > 0 : r.device == 0);
