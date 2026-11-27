@@ -34,6 +34,26 @@
 #include <string_view>
 namespace adi::ui {
 namespace {
+const juce::MouseCursor &arrangementZoomCursor() {
+    static const juce::MouseCursor cursor = [] {
+        constexpr int size = 18, scale = 2;
+        juce::Image image(juce::Image::ARGB, size * scale, size * scale, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(static_cast<float>(scale)));
+            const juce::Rectangle<float> lens{2.f, 2.f, 10.f, 10.f};
+            const juce::Line<float> handle{11.f, 11.f, 15.5f, 15.5f};
+            g.setColour(juce::Colours::white);
+            g.drawEllipse(lens, 3.5f);
+            g.drawLine(handle, 4.f);
+            g.setColour(juce::Colours::black);
+            g.drawEllipse(lens, 1.5f);
+            g.drawLine(handle, 2.f);
+        }
+        return juce::MouseCursor(image, 7, 7, static_cast<float>(scale));
+    }();
+    return cursor;
+}
 class ColourChooser final : public juce::PopupMenu::CustomComponent {
   public:
     static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14, kInset = 4;
@@ -100,6 +120,7 @@ void paintPlaybackProblemMark(juce::Graphics &g, juce::Rectangle<float> bounds) 
 }
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
+    setMouseCursor(arrangementZoomCursor());
     setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
                "double-click to see all of it.");
 }
@@ -682,6 +703,7 @@ void ScrubArea::endMeterEdit() {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
+    setMouseCursor(arrangementZoomCursor());
     setTooltip("Drag sideways to scroll, up or down to zoom. Double-click to zoom to the selection. "
                "Right-click to insert or edit a tempo change.");
     addChildComponent(tempoEditor);

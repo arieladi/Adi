@@ -394,6 +394,11 @@ void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path 
     root.setSize(1440, 900);
     auto &arrangement = root.arrangement;
     auto &geo = arrangement.geometry;
+    const auto zoomCursor = arrangement.ruler.getMouseCursor();
+    check(zoomCursor != juce::MouseCursor::NormalCursor && zoomCursor == arrangement.overview.getMouseCursor() &&
+              arrangement.scrub.getMouseCursor() == juce::MouseCursor::PointingHandCursor &&
+              arrangement.canvas.getMouseCursor() != zoomCursor && arrangement.ruler.tempoEditor.getMouseCursor() != zoomCursor,
+          "SC-443: the drag-zoom strips share a custom cursor and the scrub, lane and tempo editor keep their own cues");
     const auto canvasBounds = root.getLocalArea(&arrangement.canvas, arrangement.canvas.getLocalBounds());
     const auto rulerBounds = root.getLocalArea(&arrangement.ruler, arrangement.ruler.getLocalBounds());
     std::printf("SC-70 canvas %d,%d %dx%d; beat ruler %d,%d %dx%d; bar %.2f px; grid %.2f quarters\n",
