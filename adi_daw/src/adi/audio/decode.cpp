@@ -177,6 +177,20 @@ public:
         if (!ok) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable WAV or AIFF file");
         open_ = true;
         channels = wav_.channels; rate = wav_.sampleRate; frames = wav_.totalPCMFrameCount;
+        // SC-391: a recorder that crashed leaves its size fields at zero (or at the streaming maximum): the
+        // data runs to the end of the file, whole frames of it, as a cut-short download's does.
+        if ((frames == 0 || wav_.dataChunkDataSize == 0xFFFFFFFFu) && wav_.fmt.blockAlign > 0) {
+            std::error_code ec;
+            const auto size = static_cast<std::uint64_t>(fs::file_size(p, ec));
+            if (!ec && size > wav_.dataChunkDataPos) {
+                auto bytes = size - wav_.dataChunkDataPos;
+                bytes -= bytes % wav_.fmt.blockAlign;
+                wav_.dataChunkDataSize = bytes;
+                wav_.bytesRemaining = bytes;
+                wav_.totalPCMFrameCount = bytes / wav_.fmt.blockAlign;
+                frames = wav_.totalPCMFrameCount;
+            }
+        }
     }
     ~WavDecoder() override { if (open_) drwav_uninit(&wav_); }
     std::uint64_t read(float* out, std::uint64_t n) override { return drwav_read_pcm_frames_f32(&wav_, n, out); }
@@ -335,7 +349,15 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
         WavWriter w(out, d->rate, static_cast<std::uint16_t>(d->channels), WavFormat::Float32);
         for (;;) {
             service();
-            const auto got = d->read(buffer.data(), block);
+            std::uint64_t got = 0;
+            try {
+                got = d->read(buffer.data(), block);
+            } catch (const DecodeError &failure) {
+                // SC-391: a download cut short plays as far as it goes: damage after some audio ends it there.
+                if (failure.problem() != DecodeProblem::Corrupt || done == 0)
+                    throw;
+                break;
+            }
             if (got == 0) break;
             w.write(buffer.data(), static_cast<std::uint32_t>(got));
             done += got;
@@ -347,9 +369,11 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
         throw DecodeError(DecodeProblem::CacheWrite, display(out) + ": " + e.what());
     }
     if (done == 0) throw DecodeError(DecodeProblem::Corrupt, display(source) + ": no audio decodes");
-    if (d->frames != 0 && done != d->frames)
+    // SC-391: fewer frames than the header declares is a file cut short: it plays as far as it goes. More
+    // than it declares is a damaged one.
+    if (d->frames != 0 && done > d->frames)
         throw DecodeError(DecodeProblem::Corrupt, display(source) + ": decoded " + std::to_string(done) +
-                                                      " of " + std::to_string(d->frames) + " frames; the file is truncated or damaged");
+                                                      " of " + std::to_string(d->frames) + " frames; the file is damaged");
 }
 
 bool isHash(const std::string& s) {
