@@ -130,7 +130,7 @@ bool step1(Session &s, Report &report) {
     Stereo heard;
     s.driver->run(188, &heard); // one second
     const double loud = peak(heard, 0, heard.size());
-    const bool layout = kinds == "1:master 2:midi 3:midi 4:audio 5:audio 6:return 7:return ";
+    const bool layout = kinds == "1:master 2:midi 3:midi 4:audio 5:audio ";
     const bool ok = layout && bpm == 120 && num == 4 && den == 4 && ops == 0 && !undo && engineRate == kRate &&
                     finite(heard) && loud == 0 && !snap->transport.loopEnabled && snap->transport.countInBars == 0;
     report.check("1", ok,
@@ -139,7 +139,7 @@ bool step1(Session &s, Report &report) {
                         kinds.c_str(), bpm, static_cast<long long>(num), static_cast<long long>(den),
                         static_cast<long long>(ops), undo ? 1 : 0, engineRate, static_cast<long long>(projectRate),
                         finite(heard) ? 1 : 0, loud, snap->transport.loopEnabled ? 1 : 0, snap->transport.countInBars),
-                 "Main 1, MIDI 2-3, audio 4-5, returns 6-7; 120 BPM 4/4; 0 ops, no undo; engine 48000 Hz; silence; "
+                 "Main 1, MIDI 2-3, audio 4-5, no returns; 120 BPM 4/4; 0 ops, no undo; engine 48000 Hz; silence; "
                  "loop off, count-in none");
     return true;
 }
@@ -437,6 +437,25 @@ void step4(Session &s, Report &report) {
 void step5(Session &s, Report &report) {
     auto &doc = *s.doc;
     auto &driver = *s.driver;
+    // Add the two returns used in this walkthrough at the first step that needs them.
+    for (const std::int64_t id : {6, 7}) {
+        const auto snap = doc.view().current();
+        auto edit = ui::insertReturnTrack(snap->tracks, 0, id);
+        if (edit.refusal.empty() && !edit.ops.empty()) {
+            for (auto &send : ui::newReturnSends(*snap, id, 0, "Insert Return Track"))
+                edit.ops.push_back(std::move(send));
+            if (submitEdits(doc, std::move(edit.ops)))
+                continue;
+        }
+        report.step("5a", V::Fail, "could not insert a return", "two explicitly inserted returns");
+        return;
+    }
+#if ADI_WITH_PD
+    if (!doc.insertBuiltin("org.adidaw.builtin.reverb", 6, std::nullopt)) {
+        report.step("5a", V::Fail, "could not put Reverb on A Return: " + doc.error(), "Reverb on A Return");
+        return;
+    }
+#endif
     // Track 5's material, imported the way the Browser's import with Copy does (ui_main.cpp: `materialJob`,
     // `prepareMaterial` on a worker, `commitMaterial`).
     const auto file = s.temp.path() / "Strings.wav";
@@ -455,9 +474,9 @@ void step5(Session &s, Report &report) {
     const auto clip = doc.commitMaterial(material, job);
     const auto importError = doc.error();
     driver.frame();
-    // A Return's Reverb switched off from its device strip (`devices.submit`).
-    const auto reverb = scalar(doc, "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=6");
-    const bool off = doc.deviceAction("device.setEnabled", Payload{{"id", reverb}, {"enabled", false}});
+    // Bypass A Return's Reverb from the device strip if this build has built-in effects.
+    const auto reverb = scalar(doc, "SELECT COALESCE(MAX(d.id),0) FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=6");
+    const bool off = reverb == 0 || doc.deviceAction("device.setEnabled", Payload{{"id", reverb}, {"enabled", false}});
     // Each send knob into A Return dragged up to 0 dB (ui_mixer.cpp, the knob's live drag; `setSend` when
     // the track has no row).
     std::string sends;

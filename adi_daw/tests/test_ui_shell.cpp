@@ -45,6 +45,7 @@
 #include "mix_seek_fixture.hpp"
 #include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -14950,14 +14951,13 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     check(browserListsInstruments(), "SC-121: New lists instruments before the Browser library scan finishes");
     root.browser.setListing({});
     check(browserListsInstruments(), "SC-121: the first library publication retains the startup list");
-    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
+    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
               root.reader().findTrack(2)->name == "# MIDI" && root.reader().findTrack(5)->name == "# Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 2) == "1 MIDI" &&
               shownName(root.arrangement.geometry, root.reader(), 3) == "2 MIDI" &&
               shownName(root.arrangement.geometry, root.reader(), 4) == "3 Audio" &&
-              shownName(root.arrangement.geometry, root.reader(), 5) == "4 Audio" &&
-              root.reader().findTrack(7)->name == "B Delay",
-          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
+              shownName(root.arrangement.geometry, root.reader(), 5) == "4 Audio",
+          "SC-437: New shows 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
     check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
           "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
     // DF-W29: a knob edit still held makes Undo act, a project's first edit included; Redo waits.
@@ -15001,14 +15001,13 @@ void defaultTracksRenumber(AppCommands &commands, const std::filesystem::path &d
             out.push_back(displayName(row.track->name, row.number()));
         return out;
     };
-    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "A Reverb", "B Delay", "Main"},
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "Main"},
           "New: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, Main");
     root.arrangement.geometry.selection.track = 3; // 2 MIDI
     root.publishSelection();
     check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track after 2 MIDI");
     const auto inserted = root.arrangement.geometry.selection.track;
-    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "5 Audio", "A Reverb", "B Delay",
-                                              "Main"} &&
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "5 Audio", "Main"} &&
               shownName(root.arrangement.geometry, root.reader(), inserted) == "3 Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 4) == "4 Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 5) == "5 Audio",
@@ -15091,10 +15090,20 @@ void trackPalette(AppCommands &commands, const std::filesystem::path &dir) {
 // A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
 // Track, Insert Return Track and Group Tracks recolour no other track, in the Arrangement or the Mixer
 // View, the returns and Main included; the new track stores its own (walk-A A2b).
+std::unique_ptr<ProjectDocument> openProjectWithReturns(const std::filesystem::path &path, std::string &error) {
+    StoreError result{};
+    auto authored = test::createProjectWithReturns(path, result);
+    if (!authored) {
+        error = toString(result);
+        return {};
+    }
+    authored.reset();
+    return ProjectDocument::open(path, false, {}, error);
+}
 void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "colours.adi", true, {}, error);
-    check(document != nullptr, "New opens a project to colour");
+    auto document = openProjectWithReturns(dir / "colours.adi", error);
+    check(document != nullptr, "open a project with two authored returns to check its colours");
     if (!document)
         return;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
@@ -15130,7 +15139,7 @@ void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
         asToday = asToday && colours.second == colours.first;
     check(asToday && before.at(2).first == look::trackColour(0) && before.at(7).first == look::trackColour(5) &&
               before.at(1).first == look::trackColour(6),
-          "New: 1 MIDI .. B Delay and Main in the palette's first seven, titles and strips alike");
+          "the project stores the first seven colours, titles and strips alike");
     auto unchanged = [&before](const Shown &now) {
         for (const auto &[id, colours] : before)
             if (now.count(id) == 0 || now.at(id) != colours)
@@ -15168,7 +15177,7 @@ void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
           "Group Tracks on 2 MIDI and 3 Audio: the group 1 MIDI's colour plus one; every track keeps its own");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
               root.command(AppCommands::Undo) && unchanged(shown()) && shown().size() == 7,
-          "four undos: the default Set as it was, colours and all");
+          "four undos restore the project and its colours");
     check(root.command(AppCommands::Redo) && own(audio) == 3 && unchanged(shown()),
           "a redo brings the new track back in its own colour");
     document->release();
@@ -16126,7 +16135,7 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
 // on the group's tracks only; A and B keep their letters; Group Tracks takes a return; one Undo each.
 void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "return-in-group.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "return-in-group.adi", error);
     check(document != nullptr, "a new project for a return inside a group");
     if (!document)
         return;
@@ -16158,7 +16167,7 @@ void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
         return out;
     };
     const auto topBefore = returns(0);
-    check(topBefore.size() == 2 && returns(40).empty(), "the default set's two returns, A and B, at the top");
+    check(topBefore.size() == 2 && returns(40).empty(), "the saved project's two returns, A and B, are at the top");
     check(root.insertReturnTrack(40), "Insert Return Track in Group on Drums");
     document->synchronise();
     root.frame();
@@ -20082,7 +20091,7 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
 }
 void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "routing-menus.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "routing-menus.adi", error);
     check(document != nullptr, "SC-261: a project for the routing menus");
     if (!document)
         return;
@@ -21567,7 +21576,7 @@ void exportPreferences(const std::filesystem::path &dir) {
 // the release, the selected tracks moving together by the same move, Esc putting them back.
 void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "drag-live.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "drag-live.adi", error);
     check(document != nullptr, "a project for the strip's drags");
     if (!document)
         return;
@@ -21874,7 +21883,7 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
 // overrides the lane, the manual value; Re-Enable Automation follows the lane again.
 void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "mixer-automation.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "mixer-automation.adi", error);
     check(document != nullptr, "a project with an automated fader");
     if (!document)
         return;
@@ -22110,7 +22119,7 @@ class SendTone final : public engine::Node {
     const char *name() const noexcept override { return "send tone"; }
 };
 // walk-A A10 (Live 12 manual 18.4): a return made with Insert Return Track has a send from every track,
-// fully down, in the same step, as New's A and B have; so the first drag of one, during playback, is
+// fully down, in the same step; the first drag of one during playback is
 // live and heard while it moves, lands as one undo step, and one Undo puts it back.
 void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -22148,18 +22157,18 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     root.frame();
     std::int64_t made = 0;
     for (const auto &t : root.reader().tracks())
-        if (t->kind == "return" && t->name == "C Return")
+        if (t->kind == "return" && t->name == "A Return")
             made = t->id;
-    // Its sends: one from each of the four tracks, at the floor; none from Main or from A and B.
+    // The first return gets one send from each of the four source tracks, at the floor.
     const auto current = root.current();
     int floor = 0;
     for (const std::int64_t source : {2, 3, 4, 5})
         if (const auto *s = current ? findSend(current->sends, source, made) : nullptr; s && s->gainDb == kSendSilenceDb && s->enabled)
             ++floor;
-    check(made != 0 && floor == 4 && current && findSend(current->sends, 6, made) == nullptr &&
-              findSend(current->sends, 7, made) == nullptr && routes() == routesBefore + 4 &&
+    check(made != 0 && floor == 4 && current && findSend(current->sends, 1, made) == nullptr &&
+              findSend(current->sends, made, made) == nullptr && routes() == routesBefore + 4 &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track",
-          "C Return comes with a send from every track, fully down, in its one step");
+          "A Return comes with a send from every track, fully down, in its one step");
     // In the Mixer View, where every strip is realised.
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
     root.resizeMixerView(420);
@@ -22173,7 +22182,7 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     for (std::size_t i = 0; three != nullptr && i < three->sendKnobs().size(); ++i)
         if (three->sendsTo(i) == made)
             knob = three->sendKnobs()[i].get();
-    check(knob != nullptr, "3 Audio's Send C");
+    check(knob != nullptr, "3 Audio's Send A");
     if (knob == nullptr) {
         document->release();
         return;
@@ -22217,7 +22226,7 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     knob->onValueChange();
     const double during = heard();
     check(document->mixerDragging() && during > base * 1.5 && opCount() == before && gainDb() == kSendSilenceDb,
-          "the first drag of C Return's send is live: heard at 0 dB while it moves, nothing written");
+          "the first drag of A Return's send is live: heard at 0 dB while it moves, nothing written");
     juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
     knob->onDragEnd();
     root.frame();
