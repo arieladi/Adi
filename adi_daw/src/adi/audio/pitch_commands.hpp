@@ -25,6 +25,11 @@ struct PitchMidiAssignment {
                                                 std::span<const std::size_t> selection,
                                                 double anchorTargetCents, PitchSnapMode);
 
+// Adds the same signed cents offset to the selected notes' current shifts.
+// Fractional offsets are supported. Zero and empty selections are no-ops.
+[[nodiscard]] PitchEditError nudgePitchSelection(const PitchAnalysis&, PitchEditState&,
+                                                 std::span<const std::size_t> selection, double deltaCents);
+
 // MIDI assignment places the anchor at the incoming note and moves the rest
 // by the same interval. MIDI inputs use the documented E0–C5 range (28–84
 // with C3 as middle C), pending measurement against the reference.
@@ -44,6 +49,11 @@ struct PitchMidiAssignment {
 // Other notes remain stationary. A crossing or empty span fails atomically.
 [[nodiscard]] PitchEditError retimePitchBoundary(const PitchAnalysis&, PitchEditState&, std::size_t noteIndex,
                                                 PitchBoundary, std::uint64_t destinationFrame);
+
+// Offsets the current destination boundary by a signed number of frames.
+// Shared boundaries and overlap obey the same rules as retimePitchBoundary.
+[[nodiscard]] PitchEditError nudgePitchBoundary(const PitchAnalysis&, PitchEditState&, std::size_t noteIndex,
+                                                PitchBoundary, std::int64_t deltaFrames);
 
 // Resets the selected authored dimension using the captured analysis. An
 // empty selection covers every note. Timing restores the original spans and

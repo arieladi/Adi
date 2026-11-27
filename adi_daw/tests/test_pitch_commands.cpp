@@ -70,6 +70,42 @@ void selectionSnap() {
                 nominal(analysis, relative, 1) - 6600, nominal(analysis, relative, 0) - 6300);
 }
 
+void pitchNudge() {
+    const auto analysis = fixture();
+    const std::array<std::size_t, 3> selected{1, 0, 1};
+    PitchEditState state;
+    const std::array initial{PitchEditCommand{0, PitchSetShift{13.75}}, PitchEditCommand{0, PitchSetTilt{12}},
+                             PitchEditCommand{0, PitchSetFormant{-125}}, PitchEditCommand{0, PitchSetDrift{0.6, true}}};
+    check(applyPitchEdits(analysis, state, initial) == PitchEditError::None, "fixture authors independent controls");
+    auto first = resolvePitchNoteEdit(analysis, state, 0);
+    auto second = resolvePitchNoteEdit(analysis, state, 1);
+    const auto priorShift = first.pitchShiftCents;
+    first.pitchShiftCents += 0.125;
+    second.pitchShiftCents += 0.125;
+    check(nudgePitchSelection(analysis, state, selected, 0.125) == PitchEditError::None &&
+          state.notes == std::vector{first, second}, "a fractional nudge preserves detuning and other authored controls");
+    std::printf("Measured selected pitch nudge %+.3f cents\n",
+                resolvePitchNoteEdit(analysis, state, 0).pitchShiftCents - priorShift);
+
+    first.pitchShiftCents -= 0.375;
+    second.pitchShiftCents -= 0.375;
+    check(nudgePitchSelection(analysis, state, selected, -0.375) == PitchEditError::None &&
+          state.notes == std::vector{first, second}, "a negative nudge applies once to each selected note");
+    const auto previous = state.notes;
+    check(nudgePitchSelection(analysis, state, selected, -0.0) == PitchEditError::None &&
+          nudgePitchSelection(analysis, state, {}, 0.5) == PitchEditError::None && state.notes == previous,
+          "zero and empty-selection nudges leave authored rows bit-stable");
+
+    const std::array atBound{PitchEditCommand{1, PitchSetShift{2400}}};
+    check(applyPitchEdits(analysis, state, atBound) == PitchEditError::None, "fixture authors the maximum shift");
+    const auto bounded = state.notes;
+    const std::array<std::size_t, 2> ordered{0, 1};
+    check(nudgePitchSelection(analysis, state, ordered, 0.125) == PitchEditError::InvalidValue &&
+          bounded == state.notes, "an out-of-range note rolls back the whole pitch nudge");
+    check(nudgePitchSelection(analysis, state, ordered, std::numeric_limits<double>::quiet_NaN()) ==
+          PitchEditError::InvalidValue && bounded == state.notes, "pitch nudges require finite cents");
+}
+
 void midiAssignment() {
     const auto analysis = fixture();
     const std::array<std::size_t, 2> selected{1, 0};
@@ -164,6 +200,36 @@ void boundaryRetime() {
           "neighbor matching uses the destination span even when source notes are reordered");
 }
 
+void boundaryNudge() {
+    const auto analysis = fixture();
+    PitchEditState state;
+    const auto original = resolvePitchNoteEdit(analysis, state, 1).startFrame;
+    check(nudgePitchBoundary(analysis, state, 1, PitchBoundary::Start, 1) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 0).endFrame == original + 1 &&
+          resolvePitchNoteEdit(analysis, state, 1).startFrame == original + 1,
+          "a one-frame nudge moves both sides of the shared destination boundary");
+    const auto moved = resolvePitchNoteEdit(analysis, state, 1).startFrame;
+    std::printf("Measured shared boundary nudge %.0f frame (%.6f ms)\n",
+                static_cast<double>(moved - original), static_cast<double>(moved - original) * 1000 / analysis.sampleRate);
+    check(nudgePitchBoundary(analysis, state, 1, PitchBoundary::Start, -1) == PitchEditError::None &&
+          state.notes.empty(), "undoing the frame displacement reaches the exact original sparse state");
+    check(nudgePitchBoundary(analysis, state, 1, PitchBoundary::End, 0) == PitchEditError::None &&
+          state.notes.empty(), "a zero-frame nudge leaves the state unchanged");
+
+    check(nudgePitchBoundary(analysis, state, 1, PitchBoundary::End, 1001) == PitchEditError::Overlap &&
+          state.notes.empty(), "a nudge across a gap refuses to overlap the next note");
+    check(nudgePitchBoundary(analysis, state, 1, PitchBoundary::Start, std::numeric_limits<std::int64_t>::min()) ==
+          PitchEditError::InvalidValue && state.notes.empty(), "an extreme negative nudge cannot wrap below zero");
+    check(nudgePitchBoundary(analysis, state, 3, PitchBoundary::End, std::numeric_limits<std::int64_t>::max()) ==
+          PitchEditError::InvalidValue && state.notes.empty(), "an extreme positive nudge cannot wrap beyond the source");
+    check(nudgePitchBoundary(analysis, state, 3, PitchBoundary::End, 1000) == PitchEditError::None &&
+          resolvePitchNoteEdit(analysis, state, 3).endFrame == analysis.sourceFrames,
+          "the boundary may land exactly at the source end");
+    const auto edge = state.notes;
+    check(nudgePitchBoundary(analysis, state, 3, PitchBoundary::End, 1) == PitchEditError::InvalidValue &&
+          edge == state.notes, "a one-frame nudge past the source end preserves the prior boundary");
+}
+
 void dimensionReset() {
     const auto analysis = fixture();
     const auto originalAnalysis = analysis;
@@ -242,6 +308,8 @@ void workerOnly() {
     check(movePitchSelection(analysis, state, one, 6200, PitchSnapMode::Free) == PitchEditError::Realtime &&
           assignPitchSelectionFromMidi(analysis, state, one, 62, true).error == PitchEditError::Realtime &&
           retimePitchBoundary(analysis, state, 0, PitchBoundary::End, 3200) == PitchEditError::Realtime &&
+          nudgePitchSelection(analysis, state, one, 0) == PitchEditError::Realtime &&
+          nudgePitchBoundary(analysis, state, 0, PitchBoundary::End, 0) == PitchEditError::Realtime &&
           resetPitchSelection(analysis, state, {}, PitchResetDimension::All) == PitchEditError::Realtime &&
           state.notes == before, "callback refusal occurs before staging any commands");
 }
@@ -250,9 +318,11 @@ void workerOnly() {
 
 int main() {
     selectionSnap();
+    pitchNudge();
     midiAssignment();
     partialCorrection();
     boundaryRetime();
+    boundaryNudge();
     dimensionReset();
     workerOnly();
     std::printf("%s -- %d checks\n", failures == 0 ? "PASS" : "FAILED", checks);

@@ -32,6 +32,22 @@ double currentPitch(const PitchAnalysis& analysis, const PitchEditState& state, 
     return analysis.notes[index].pitchCents + resolvePitchNoteEdit(analysis, state, index).pitchShiftCents;
 }
 
+PitchEditError applyDisplacement(const PitchAnalysis& analysis, PitchEditState& state,
+                                 std::span<const std::size_t> selection, double displacement, bool snap) {
+    if (!snap && displacement == 0) return PitchEditError::None;
+
+    std::vector<PitchEditCommand> commands;
+    commands.reserve(selection.size());
+    for (const auto index : selection) {
+        const auto shift = resolvePitchNoteEdit(analysis, state, index).pitchShiftCents;
+        const auto original = analysis.notes[index].pitchCents;
+        auto moved = shift + displacement;
+        if (snap) moved = nearestSemitone(original + moved) - original;
+        commands.push_back({index, PitchSetShift{moved}});
+    }
+    return applyPitchEdits(analysis, state, commands);
+}
+
 std::optional<std::size_t> nextByDestination(const PitchAnalysis& analysis, const PitchEditState& state,
                                               std::size_t anchor) noexcept {
     const auto end = resolvePitchNoteEdit(analysis, state, anchor).endFrame;
@@ -45,6 +61,38 @@ std::optional<std::size_t> nextByDestination(const PitchAnalysis& analysis, cons
         }
     }
     return next;
+}
+
+PitchEditError validateBoundaryTarget(const PitchAnalysis& analysis, const PitchEditState& state,
+                                      std::size_t noteIndex, PitchBoundary boundary) {
+    const auto current = validatePitchEdits(analysis, state);
+    if (current != PitchEditError::None) return current;
+    if (noteIndex >= analysis.notes.size()) return PitchEditError::UnknownNote;
+    if (boundary != PitchBoundary::Start && boundary != PitchBoundary::End) return PitchEditError::InvalidValue;
+    return PitchEditError::None;
+}
+
+PitchEditError applyBoundaryRetime(const PitchAnalysis& analysis, PitchEditState& state, const PitchNoteEdit& note,
+                                   PitchBoundary boundary, std::uint64_t destinationFrame) {
+    const bool start = boundary == PitchBoundary::Start;
+    const auto previousFrame = start ? note.startFrame : note.endFrame;
+    if (destinationFrame == previousFrame) return PitchEditError::None;
+
+    const auto timing = start ? PitchSetTiming{destinationFrame, note.endFrame} :
+                                PitchSetTiming{note.startFrame, destinationFrame};
+    std::array commands{PitchEditCommand{note.noteIndex, timing}, PitchEditCommand{}};
+    for (std::size_t index = 0; index < analysis.notes.size(); ++index) {
+        const auto adjacent = resolvePitchNoteEdit(analysis, state, index);
+        if (start && adjacent.endFrame == previousFrame) {
+            commands[1] = {index, PitchSetTiming{adjacent.startFrame, destinationFrame}};
+            return applyPitchEdits(analysis, state, commands);
+        }
+        if (!start && adjacent.startFrame == previousFrame) {
+            commands[1] = {index, PitchSetTiming{destinationFrame, adjacent.endFrame}};
+            return applyPitchEdits(analysis, state, commands);
+        }
+    }
+    return applyPitchEdits(analysis, state, std::span(commands).first(1));
 }
 
 } // namespace
@@ -67,18 +115,15 @@ PitchEditError movePitchSelection(const PitchAnalysis& analysis, PitchEditState&
         default:
             return PitchEditError::InvalidValue;
     }
-    if (snap != PitchSnapMode::Absolute && displacement == 0) return PitchEditError::None;
+    return applyDisplacement(analysis, state, selection, displacement, snap == PitchSnapMode::Absolute);
+}
 
-    std::vector<PitchEditCommand> commands;
-    commands.reserve(selection.size());
-    for (const auto index : selection) {
-        const auto shift = resolvePitchNoteEdit(analysis, state, index).pitchShiftCents;
-        const auto original = analysis.notes[index].pitchCents;
-        auto moved = shift + displacement;
-        if (snap == PitchSnapMode::Absolute) moved = nearestSemitone(original + moved) - original;
-        commands.push_back({index, PitchSetShift{moved}});
-    }
-    return applyPitchEdits(analysis, state, commands);
+PitchEditError nudgePitchSelection(const PitchAnalysis& analysis, PitchEditState& state,
+                                   std::span<const std::size_t> selection, double deltaCents) {
+    const auto current = validateSelection(analysis, state, selection);
+    if (current != PitchEditError::None || selection.empty()) return current;
+    if (!std::isfinite(deltaCents)) return PitchEditError::InvalidValue;
+    return applyDisplacement(analysis, state, selection, deltaCents, false);
 }
 
 PitchMidiAssignment assignPitchSelectionFromMidi(const PitchAnalysis& analysis, PitchEditState& state,
@@ -115,31 +160,26 @@ PitchEditError correctPitchSelection(const PitchAnalysis& analysis, PitchEditSta
 
 PitchEditError retimePitchBoundary(const PitchAnalysis& analysis, PitchEditState& state, std::size_t noteIndex,
                                   PitchBoundary boundary, std::uint64_t destinationFrame) {
-    const auto current = validatePitchEdits(analysis, state);
+    const auto current = validateBoundaryTarget(analysis, state, noteIndex, boundary);
     if (current != PitchEditError::None) return current;
-    if (noteIndex >= analysis.notes.size()) return PitchEditError::UnknownNote;
-    if (boundary != PitchBoundary::Start && boundary != PitchBoundary::End) return PitchEditError::InvalidValue;
+    return applyBoundaryRetime(analysis, state, resolvePitchNoteEdit(analysis, state, noteIndex), boundary, destinationFrame);
+}
 
+PitchEditError nudgePitchBoundary(const PitchAnalysis& analysis, PitchEditState& state, std::size_t noteIndex,
+                                 PitchBoundary boundary, std::int64_t deltaFrames) {
+    const auto current = validateBoundaryTarget(analysis, state, noteIndex, boundary);
+    if (current != PitchEditError::None || deltaFrames == 0) return current;
     const auto note = resolvePitchNoteEdit(analysis, state, noteIndex);
-    const bool start = boundary == PitchBoundary::Start;
-    const auto previousFrame = start ? note.startFrame : note.endFrame;
-    if (destinationFrame == previousFrame) return PitchEditError::None;
-
-    const auto timing = start ? PitchSetTiming{destinationFrame, note.endFrame} :
-                                PitchSetTiming{note.startFrame, destinationFrame};
-    std::array commands{PitchEditCommand{noteIndex, timing}, PitchEditCommand{}};
-    for (std::size_t index = 0; index < analysis.notes.size(); ++index) {
-        const auto adjacent = resolvePitchNoteEdit(analysis, state, index);
-        if (start && adjacent.endFrame == previousFrame) {
-            commands[1] = {index, PitchSetTiming{adjacent.startFrame, destinationFrame}};
-            return applyPitchEdits(analysis, state, commands);
-        }
-        if (!start && adjacent.startFrame == previousFrame) {
-            commands[1] = {index, PitchSetTiming{destinationFrame, adjacent.endFrame}};
-            return applyPitchEdits(analysis, state, commands);
-        }
+    const auto frame = boundary == PitchBoundary::Start ? note.startFrame : note.endFrame;
+    if (deltaFrames < 0) {
+        // Add one before negating to handle the minimum signed displacement.
+        const auto distance = static_cast<std::uint64_t>(-(deltaFrames + 1)) + 1;
+        if (distance > frame) return PitchEditError::InvalidValue;
+        return applyBoundaryRetime(analysis, state, note, boundary, frame - distance);
     }
-    return applyPitchEdits(analysis, state, std::span(commands).first(1));
+    const auto distance = static_cast<std::uint64_t>(deltaFrames);
+    if (distance > analysis.sourceFrames - frame) return PitchEditError::InvalidValue;
+    return applyBoundaryRetime(analysis, state, note, boundary, frame + distance);
 }
 
 PitchEditError resetPitchSelection(const PitchAnalysis& analysis, PitchEditState& state,
