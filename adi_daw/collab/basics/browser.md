@@ -6,6 +6,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 |---|---|---|---|---|
 | SC-121 | `basics/browser-chain` at `da5adae5a` | Show an initial list and restore the last Browser label across projects and launches. Browser, application and Settings seats. | Headless startup, persistence and missing-Place behavior passed. Debug Werror, 18 no-display UI suites, the Settings suite and all 3 acceptance suites passed. | Pushed |
 | SC-120, SC-122 | `basics/browser-chain` at `0cb6389f1` | Use one indexed search for All, with independent tokens and search text per mode. Browser and library seats. | Peerless scope, plug-in, preset and mode checks passed. The indexed 200,000-file Browser fixture and library query suite passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-124 | `basics/browser-chain` at `e6ff43de1` | Scroll Browser labels by wheel and reveal keyboard selections. Browser seat. | Peerless wheel, keyboard, paint and refresh checks passed. Debug Werror, all 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -32,6 +33,18 @@ GCC Debug with warnings as errors, DISPLAY unset, 200,000 synthetic names in thr
 Snapshot construction took 3,269.734 ms before and 3,133.703 ms after. Every measured query remained below 40 ms at the service boundary. The integrated shell fixture keeps its original SC-421 threshold and applies it to the two-word query as well.
 
 The new `adi_library_query_tests` fixtures passed in a standalone warning-as-error build with DISPLAY unset. `ui_browser.cpp` and `test_ui_shell.cpp` passed warning-as-error syntax checks. The integrated shell build and tests belong to the Browser chain.
+
+### SC-124
+
+Peerless Browser fixture at 308 × 443 logical px, corresponding to a Compact 1200 × 720 window with Info visible. The sidebar clipping pane is `(4,27,113,385)` in Browser coordinates and the existing 19 px row height stays fixed. The Browser's search, right-hand list and preview retain their dimensions.
+
+| Fixture | Before | After |
+|---|---|---|
+| Base snapshot, 21 labels and headings | Add Folder sits at `(4,408,113,19)`. The sidebar ends at y=412, so only the first 4 px of that row can paint. Wheel input has no effect. | The wheel can scroll by 15 px to bring Add Folder fully into `(4,393,113,19)`. |
+| Base snapshot with 32 added folders | The 32nd folder sits at `(4,997,113,19)` and Add Folder at `(4,1016,113,19)`, both below the viewport. | At the lower stop the 32nd folder fills `(4,374,113,19)`, and Add Folder fills `(4,393,113,19)`. The wheel travel is 623 px. |
+| With one earlier All label in the chain | The unscrolled Add Folder starts at y=427 in the default list. With 32 folders the final folder starts at y=1016 and Add Folder at y=1035. | The travel is 34 px by default and 642 px with 32 folders. The final two visible rows still occupy y=374 and y=393. |
+
+The SC-124 regression directs a synthetic wheel event at the sidebar, clicks a scrolled-in folder, uses Up to reveal the next keyboard selection, and checks that a regenerated listing keeps a visible selection and clamps a shortened list. It runs without a peer or a window and does not activate Add Folder. This change touches the window seat’s Browser and shell tests.
 
 ## For the director
 
