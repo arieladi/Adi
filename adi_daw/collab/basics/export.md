@@ -18,6 +18,8 @@ The basics-export session has claimed all nine Export and import rows assigned t
 
 The eight implementation branches were pushed at Win's request while Linux verification is pending. They form one chain on main through `de2a5b99`, with one branch per item. SC-394 stays local pending R36. The Windows host rebooted during the initial Linux build. The Debian VM and completed objects were recovered and verification resumed on the merged source.
 
+At the pushed tip `8a3fdca0`, MSVC Debug compiled the four files involved in the overnight conflict resolution with warnings as errors. The linked app and suite runs remain pending.
+
 ## For the director
 
 - For SC-398, please decide on the libFLAC and LAME dependency grants listed under EX-04 in
