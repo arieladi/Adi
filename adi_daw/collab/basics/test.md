@@ -9,6 +9,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-433 | `basics/test-chain` at `722582fc8` | Keep hover instructions and keys inside Info View. Window and Control Bar seats. | The peerless checks show only an icon title in the tooltip and full hover text in Info View. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-439, SC-175 | `basics/test-chain` at `82af8bf4c` | Keep a held lane click as an insert marker and draw its flag. Arrangement seat. | Peerless replay covered stationary repeats, genuine drags, the status label and marker pixels. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-441, SC-445 | `basics/test-chain` at `f06b67887` | Play on from at or after Loop End. Ordinary stereo metronome playback was audible in the synthetic device fixture. Engine, recording and project seats. | The transport and document rehearsals reproduced the Loop fault and verified forward clip playback, click audio and a linear take. Debug Werror, 4 targeted suites, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-440, SC-176 | `basics/test-chain` at `f06b67887` | Loop Selection and the time-selection context menu are already integrated. Arrangement seat. | The actual command and peerless menu model passed for a selected range, including range retention, brace placement and Loop enabled. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 
 ## Measurements and findings
 
@@ -37,6 +38,12 @@ On Linux, the original engine produced an audible click on both channels of a sy
 If the CoreAudio symptom persists, the missing reproduction data are the Cue Out pair, Cue Volume, and Click While Recording setting in the director’s project. The synthetic result supports keeping the selected Cue route while checking those settings.
 
 The existing SC-27 shell fixture now locates explicitly inside a one-bar brace. It continues to check both refusal with MIDI armed and audio admission within the loop. The new document rehearsal covers the complementary start beyond the brace.
+
+### SC-440 and SC-176 · Loop Selection
+
+The integration branch already contains Cmd/Ctrl+L from `a12f1cf75`, retention of a range when opening its menu from `493109bdc`, and the range actions and Loop Selection from `f19f5732f` and `a64c36e1f`, carried by merge `9d6bfb23d`. The window suite tests the native-independent command dispatch, persisted loop and corresponding brace fields, range retention and the enabled menu model. A headless measurement put the default four-bar brace at `(0,0,74,8)` in the scrub and the selected bars 3–5 at `(37,0,37,8)`.
+
+The broader clip-menu work still tracks Arrangement Crop and Consolidate separately.
 
 ## For the director
 
