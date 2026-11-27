@@ -155,10 +155,15 @@ bytes and mark the device stale, as SC-430 specifies. [Device interface][device]
 ## Engine increment
 
 The session owner injects a granted server loader with `withRemoteDevices`.
-The project row selects a requested server. The grant resolver must also
-check the server and plug-in identity before creating a connection. The
-default loader tries the installed plug-in for live playback and reports
-the server reference. Offline playback requires the authored server.
+The project's device row selects a requested server. The loader reads the
+current endpoint and project identity, then asks the application for a
+paired destination and the AGT-03 plug-in-hosting lease. The ledger scope
+includes the application, project UUID, connection and server fingerprint.
+The worker checks the lease before setup, processing and state exchange.
+Raw stock lookup tokens cannot serve as project plug-in identities.
+An unavailable server falls back to the installed plug-in for live
+playback, or the existing placeholder when both are unavailable.
+Offline playback requires the authored server.
 
 `RemoteDevice` uses two preallocated single-producer, single-consumer rings.
 The I/O worker owns connection setup, processing and teardown. The device

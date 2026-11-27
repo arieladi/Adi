@@ -151,7 +151,7 @@ public:
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
 
     /// The session's `DeviceLoader`. Valid while this object lives.
-    [[nodiscard]] engine::DeviceLoader fn();
+    [[nodiscard]] engine::DeviceLoader fn(engine::DeviceLoader grantedRemote = {});
 
     struct Stats {
         std::int64_t requests = 0;

@@ -687,7 +687,7 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Announcements from anything else are ignored (ADR-0145 d7).",
                      ""));
     r.push_back(make("sync.audioGridderDiscovery", Type::Bool, "Plug-Ins", "Find AudioGridder servers",
-                     "Find remote plug-in servers by mDNS/Bonjour (ADR-0053, ADR-0145 d6).", true));
+                     "Find remote plug-in servers by mDNS/Bonjour (ADR-0053, ADR-0145 d6).", false));
 
     // --- Engine (catalogue IV §1) ------------------------------------------------------------------
     r.push_back(ranged("engine.compensationHeadroomSamples", Type::Int, "Engine", "Compensation headroom",

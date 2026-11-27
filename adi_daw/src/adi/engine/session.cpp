@@ -582,6 +582,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
         rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -700,6 +701,7 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
         rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         std::string err;
         auto inst = loader_(rq, err);
         if (inst == nullptr) {

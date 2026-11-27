@@ -7,6 +7,7 @@
 #include "adi/store.hpp"
 #include "juce/audiogridder_transport.hpp"
 #include "juce/clap_host.hpp"
+#include "juce/net_plugin_admission.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -95,6 +96,7 @@ struct Project {
         require(store != nullptr, "could not create fixture project");
         store->db().exec(
             "INSERT INTO project(id,name,sample_rate) VALUES(1,'Remote test',48000);"
+            "UPDATE adi_meta SET value='remote-session-fixture' WHERE key='project_uuid';"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Master',1);"
             "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','input.wav','wav');"
@@ -148,6 +150,10 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
     const auto localAudio = samples(render::renderWav(project.job("local.wav"), engine::withRemoteDevices(local)));
 
     project.store->db().exec("UPDATE devices SET remote_host_id=7 WHERE id=1;");
+    SQLite::Statement location(project.store->db(), "UPDATE remote_hosts SET port=? WHERE id=?");
+    location.bind(1, static_cast<int>(port));
+    location.bind(2, requestedHost);
+    location.exec();
     auto noGrant = engine::withRemoteDevices(local);
     {
         engine::Session live;
@@ -162,22 +168,26 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
             !fs::exists(project.dir.path() / "unauthorized.wav") && localLoads == 2,
             "unavailable offline server did not fail by name before publishing");
 
-    const engine::DeviceLoader grant = [port](const engine::DeviceRequest& rq, std::string& error)
-        -> std::unique_ptr<device::DeviceInstance> {
-        if (rq.device->remoteHostId != requestedHost || rq.ref->format != "clap" || rq.ref->uid != fixtureId) {
-            error = "fixture grant does not cover this use";
-            return {};
-        }
-        // The v13 loopback fixture maps this wire token to the test CLAP child.
-        device::AudioGridderPlugin plugin;
-        plugin.serverToken = "VST3-12ab";
-        auto remote = std::make_unique<device::RemoteDevice>(
-            device::DeviceIdentity{rq.ref->format, rq.ref->uid, rq.ref->name, {}, {}}, rq.channels,
-            device::makeAudioGridderProcessor({"127.0.0.1", port}, std::move(plugin)));
-        remote->setOffline(rq.offline);
-        remote->prepare(rq.sampleRate, rq.maxFrames);
-        return remote;
-    };
+    const net::PluginServerAddress endpoint{"127.0.0.1", port};
+    const auto grant = net::makePluginServerLoader(
+        "adi-daw",
+        [&](const net::PluginServerLocation& location, const device::DeviceIdentity& identity)
+            -> std::optional<net::PluginServerBinding> {
+            if (location.id != requestedHost || location.address != endpoint ||
+                identity.format != "clap" || identity.uid != fixtureId) return {};
+            return net::PluginServerBinding{"fixture-connection", "fixture-server",
+                [](const net::PluginServerAddress& address) {
+                    // The v13 loopback fixture maps this token to the test CLAP child.
+                    device::AudioGridderPlugin plugin;
+                    plugin.serverToken = "VST3-12ab";
+                    return device::makeAudioGridderProcessor({address.host, address.port}, std::move(plugin));
+                }};
+        },
+        [&](const net::PluginHostingScope& scope) -> net::PluginHostingLease {
+            if (scope.projectUuid != "remote-session-fixture" || scope.address != endpoint ||
+                scope.serverFingerprint != "fixture-server") return {};
+            return [] { return true; };
+        });
     const auto job = project.job("remote.wav");
     const auto result = render::renderWav(job, engine::withRemoteDevices(local, grant));
     require(localLoads == 2, "remote render used a local instance");

@@ -129,6 +129,7 @@ struct DeviceRequest {
     std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
     bool exporting = false; ///< known before prepare, so the first block uses the intended bank
     bool offline = false; ///< an isolated render requires the device at its authored location
+    const Store* project = nullptr; ///< owner-only, valid for the synchronous loader call
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.

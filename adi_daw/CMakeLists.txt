@@ -312,6 +312,7 @@ add_library(adi_core STATIC
     src/juce/remote_device.cpp
     src/juce/audiogridder_transport.cpp
     src/juce/native_plugin_transport.cpp
+    src/juce/net_plugin_admission.cpp
     # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
     # with no dependencies, so the host side lives in adi_core and its tests
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
@@ -1090,6 +1091,10 @@ add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 add_executable(adi_remote_device_tests tests/test_remote_device.cpp)
 target_link_libraries(adi_remote_device_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_remote_device_tests COMMAND adi_remote_device_tests)
+
+add_executable(adi_plugin_admission_tests tests/test_plugin_admission.cpp)
+target_link_libraries(adi_plugin_admission_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_plugin_admission_tests COMMAND adi_plugin_admission_tests)
 
 add_executable(adi_clap_block_wire_tests tests/test_clap_block_wire.cpp)
 target_link_libraries(adi_clap_block_wire_tests PRIVATE adi_core adi_warnings)

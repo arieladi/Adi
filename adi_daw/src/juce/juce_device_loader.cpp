@@ -385,9 +385,9 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
     return result;
 }
 
-engine::DeviceLoader JuceDeviceLoader::fn() {
+engine::DeviceLoader JuceDeviceLoader::fn(engine::DeviceLoader grantedRemote) {
     return engine::withRemoteDevices(
-        [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); });
+        [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); }, std::move(grantedRemote));
 }
 
 std::vector<std::string> JuceDeviceLoader::knownPlugins() const {
