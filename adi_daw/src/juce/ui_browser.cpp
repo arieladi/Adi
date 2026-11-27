@@ -986,7 +986,8 @@ void BrowserPanel::refillRows() {
             const auto name = path.substring(path.lastIndexOfAnyOf("/\\") + 1);
             if (!query.matches(name.toStdString()))
                 continue;
-            const auto heading = (failure.state == scan::State::Quarantined ? "Blocked: " : "Scan failed: ") + name;
+            const auto heading = (failure.state == scan::State::Quarantined ? "Blocked: "
+                                 : failure.state == scan::State::UnreadablePath ? "Skipped: " : "Scan failed: ") + name;
             const auto reason = juce::String::fromUTF8(failure.error.c_str());
             const auto tooltip = reason.isEmpty() ? path : path + "\n" + reason;
             rows_.push_back({nullptr, nullptr, heading, nullptr, 0, nullptr, tooltip});

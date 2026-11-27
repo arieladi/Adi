@@ -141,11 +141,10 @@ public:
     /// project is not a thing this function will do quietly.
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
 
-    /// Application New: create the project row, Main and the Live default's
-    /// two MIDI/two audio tracks, A Reverb/B Delay returns and their sends,
-    /// native wet-only effects, mixer strips and 120 BPM / 4/4 maps at the
-    /// history root. No ops or protected UI undo step. Window callers replace
-    /// their track.create bootstrap with this single factory.
+    /// Application New: create the project row, Main, two MIDI and two audio
+    /// tracks, mixer strips and 120 BPM / 4/4 maps at the history root.
+    /// Returns, sends and effects can be added after New or loaded from an
+    /// existing project. New adds no ops or protected UI undo step.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
     /// Capture the caller's app recording defaults for the four initial
     /// tracks in the history root. Invalid choices create no file.

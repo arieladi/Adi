@@ -416,32 +416,17 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
     if (!store) return nullptr;
     try {
         SQLite::Transaction root(store->db());
-        // ADR-0209 section 10 d10 keeps Live's default Set. Templates such as
-        // CTZ are separate; New does not silently choose the CTZ hierarchy.
-        // Returns use compiled built-in identities (N15), wet-only, with the
-        // regular tracks' sends at the mixer's -infinity floor, Post by default.
-        // Each track stores its colour, the palette's first seven in order (ADR-0211 d2), so none
-        // moves when a track is inserted or grouped before it.
-        // Their names are numbered ones, "# MIDI" and "# Audio", shown "1 MIDI" … "4 Audio": as Live's,
-        // they renumber when a track is inserted or grouped before them (walk-B B13; manual 18.2).
+        // SC-437: New has four source tracks and Main. A saved project or template
+        // supplies its own tracks, devices and routing when opened.
+        // Store each colour so inserting or grouping a track does not recolour the rest.
+        // The numbered names display as 1 MIDI … 4 Audio and follow later track order.
         SQLite::Statement seedTracks(store->db(),
             "INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode,color) VALUES"
-            "(1,'master','Main',6,0,6),(2,'midi','# MIDI',0,2,0),(3,'midi','# MIDI',1,2,1),"
-            "(4,'audio','# Audio',2,:audioMonitor,2),(5,'audio','# Audio',3,:audioMonitor,3),"
-            "(6,'return','A Reverb',4,0,4),(7,'return','B Delay',5,0,5)");
+            "(1,'master','Main',4,0,6),(2,'midi','# MIDI',0,2,0),(3,'midi','# MIDI',1,2,1),"
+            "(4,'audio','# Audio',2,:audioMonitor,2),(5,'audio','# Audio',3,:audioMonitor,3)");
         seedTracks.bind(1, kNewAudioTrackMonitorMode);
         seedTracks.exec();
         store->db().exec("INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
-            "INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES"
-            "(1,'internal','org.adidaw.builtin.reverb','ADI','Reverb','1','effect'),"
-            "(2,'internal','org.adidaw.builtin.delay','ADI','Delay','1','effect');"
-            "INSERT INTO device_chains(id,track_id,name) VALUES(1,6,'Devices'),(2,7,'Devices');"
-            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(1,1,1,'Reverb'),(2,2,2,'Delay');"
-            "INSERT INTO plugin_params(device_id,param_id,name,normalized_value,real_value,display,unit) VALUES"
-            "(1,'31','Mix',1.0,100.0,'100 %','%'),(2,'25','Mix',1.0,100.0,'100 %','%');"
-            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pre_fader,enabled) "
-            "SELECT (t.id-2)*2+(r.id-5),'track',t.id,'track',r.id,'send',r.id-6,-150.0,0,1 "
-            "FROM tracks t CROSS JOIN tracks r WHERE t.id BETWEEN 2 AND 5 AND r.id IN(6,7);"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
         SQLite::Statement recording(store->db(),

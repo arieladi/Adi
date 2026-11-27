@@ -15,6 +15,7 @@
 // use-after-free under the design this one replaced.
 
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 
 #include "adi/automation_lanes.hpp"
 #include "adi/clip_commands.hpp"
@@ -1918,8 +1919,8 @@ void insertReturnTrackStandsBeforeMain() {
     section("Insert Return Track: after the returns, before Main; every index its own (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-return");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);
@@ -2653,11 +2654,11 @@ void anEmptyRenameGivesTheDefaultNameBack() {
           "a return and Main keep the name they have");
 }
 void insertTrackMovesTheReturnsAndMainDown() {
-    section("Insert Track in the default project: every later track down one, the returns and Main too (manual 18.2)");
+    section("Insert Track in a saved project: every later track down one, the returns and Main too (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-foot");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);

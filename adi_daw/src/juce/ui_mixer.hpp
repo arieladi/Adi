@@ -351,6 +351,7 @@ class MixerStrip final : public juce::Component,
     void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, const std::string &label);
     bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
+    bool resizeFromTop_ = false;
     struct TitleDrag {
         std::int64_t source;
         std::uint64_t generation;
@@ -360,7 +361,8 @@ class MixerStrip final : public juce::Component,
         bool moving = false;
     };
     std::optional<TitleDrag> titleDrag_;
-    bool onSplitLine(const juce::MouseEvent &) const noexcept;
+    // Empty away from an Arrangement split line, otherwise whether the line is at the top.
+    std::optional<bool> splitLine(const juce::MouseEvent &) const noexcept;
     // The engine's post-fader meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`),
     // written per callback by the audio thread and read here with relaxed loads; null until the
     // session has a strip for the track. The strips live as long as the session (ADR-0122's

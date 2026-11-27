@@ -20,6 +20,7 @@
 #include "adi/ui/automation_mode.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 #include "scoped_environment.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
@@ -1256,9 +1257,15 @@ void deviceRangeEdits(const std::filesystem::path &file) {
 void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
     constexpr std::int64_t existingTrack = 4;
     for (const auto *subtype : {"instrument", "midi_effect", "effect"}) {
+        const auto path = dir / (std::string("new-track-") + subtype + ".adi");
+        StoreError fixtureError{};
+        auto authored = test::createProjectWithReturns(path, fixtureError);
+        check(authored != nullptr, "SC-84/61: a saved project with authored returns");
+        if (!authored)
+            continue;
+        authored.reset();
         std::string error;
-        auto document = ui::ProjectDocument::open(dir / (std::string("new-track-") + subtype + ".adi"),
-                                                  true, test::knobsLoader(), error);
+        auto document = ui::ProjectDocument::open(path, false, test::knobsLoader(), error);
         check(document != nullptr, "SC-84/61: a document for dropping a device below the tracks");
         if (!document)
             continue;
@@ -4299,7 +4306,7 @@ void manyTrackMemory(const std::filesystem::path &dir) {
         if (!store)
             return;
         std::vector<OpRequest> tracks;
-        // A new Set already has four arrangement tracks, two returns and Main.
+        // New already has four Arrangement tracks and Main.
         for (std::int64_t i = 0; i < trackCount - 4; ++i) {
             auto &add = tracks.emplace_back();
             add.opType = "track.create";
@@ -4414,6 +4421,100 @@ void manyTrackMemory(const std::filesystem::path &dir) {
     doc.reset();
     report("close", nullptr, processMemory());
 }
+void metronomeAndLoopPlayback(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "transport.adi", true, {}, error);
+    if (!document)
+        throw std::runtime_error(error);
+    auto &mailbox = document->mailbox();
+    using Command = ui::TransportMailbox::Command;
+    const auto set = [&](const char *type, Payload values) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(values);
+        return document->ops().submit(request).ok && document->synchronise();
+    };
+    constexpr int blockFrames = 256;
+    constexpr auto beatSamples = 24000;
+    const auto q = textproj::kPPQ;
+    device::DeviceCore driver;
+    check(driver.open(*document, 48000, blockFrames, blockFrames).opened, "SC-441: synthetic stereo device opens");
+    std::array<float, blockFrames> left{}, right{}, input{};
+    input.fill(.125f);
+    float *outputs[]{left.data(), right.data()};
+    const float *inputs[]{input.data()};
+    const auto callback = [&] {
+        driver.process(outputs, 2, inputs, 1, blockFrames, engine::OutputChannelMap{3});
+    };
+    const auto loud = [&](float threshold) {
+        return std::ranges::any_of(left, [threshold](float sample) { return std::abs(sample) > threshold; });
+    };
+    check(set("transport.setMetronome", {{"on", true}}) && mailbox.post(Command::Play),
+          "SC-441: enable metronome during ordinary playback with the default Cue pair");
+    callback();
+    check(mailbox.playing() && loud(.1f) && left == right && !readTransportSettings(document->store()).loopEnabled,
+          "SC-441: ordinary Play clicks through physical outputs 1/2 with no loop or record");
+    check(mailbox.post(Command::Locate, beatSamples + beatSamples / 2), "SC-441: locate between quarter notes");
+    callback();
+    bool nextBeat = false;
+    for (int i = 0; i < beatSamples / blockFrames; ++i) {
+        callback();
+        if (mailbox.position() > 2 * beatSamples && loud(.1f)) {
+            nextBeat = true;
+            break;
+        }
+    }
+    check(nextBeat && left == right, "SC-441: ordinary playback also clicks on the next beat after an off-grid locate");
+    mailbox.post(Command::Stop);
+    callback();
+
+    const auto wav = dir / "late.wav";
+    const std::vector<float> pcm(beatSamples, .5f);
+    {
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(pcm.data(), static_cast<std::uint32_t>(pcm.size()));
+    }
+    ui::AudioImport imported;
+    if (!document->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, imported))
+        throw std::runtime_error(document->error());
+    constexpr auto lateBeat = 17;
+    auto dropped = ui::dropAudio(*document->view().current(), 4, lateBeat * q, "Late clip", imported);
+    check(dropped.refusal.empty() && document->ops().submit(std::move(dropped.ops)).ok && document->synchronise() &&
+              set("transport.setLoop", {{"on", true}, {"start", 0}, {"end", 16 * q}}),
+          "SC-445: a real clip lies beyond the enabled empty four-bar loop");
+    check(mailbox.post(Command::Locate, lateBeat * beatSamples) && mailbox.post(Command::Play),
+          "SC-445: Play from the later clip through the ordinary mailbox");
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        callback();
+        if (mailbox.playing()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < until);
+    check(mailbox.playing() && mailbox.position() == lateBeat * beatSamples + blockFrames && loud(.22f) &&
+              readTransportSettings(document->store()).loopEnabled,
+          "SC-445: the later program audio is heard and the saved Loop switch stays on");
+    mailbox.post(Command::Stop);
+    callback();
+    const bool started = set("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                         document->startRecording(lateBeat * q, 1, false);
+    check(started, "SC-445: Record can start after the enabled brace");
+    if (started) {
+        callback();
+        auto &session = document->session();
+        check(!session.transport().looping() &&
+                  session.recording().acceptedFrames() == blockFrames &&
+                  mailbox.position() == lateBeat * beatSamples + blockFrames,
+              "SC-445: the after-End recording uses a linear take on the actual playback clock");
+    }
+    driver.close();
+    if (started) {
+        const bool settled = document->settleRecording();
+        const auto landed = document->takeLanded();
+        check(settled && landed && landed->ok && landed->clips.size() == 1,
+              "SC-445: the linear recording lands as one clip with Loop still enabled");
+    }
+}
+
 // walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
 // let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
 // clip sounds. Blocks run back to back, as a callback does, with no time for a cold reader to catch up.
@@ -5806,6 +5907,8 @@ int main(int argc, char **argv) {
         mixerDragHeard(dragDir.path());
         test::TempDirectory commitDir("ui_document", "commit");
         commitKeepsClipSounding(commitDir.path());
+        test::TempDirectory metronomeLoopDir("ui_document", "metronome-loop");
+        metronomeAndLoopPlayback(metronomeLoopDir.path());
         test::TempDirectory stoppedDir("ui_document", "stopped-commit");
         playRightAfterAStoppedCommit(stoppedDir.path());
         test::TempDirectory speedDir("ui_document", "large-song");
@@ -5822,22 +5925,21 @@ int main(int argc, char **argv) {
         std::printf("%s\n", error.c_str());
         return 1;
     }
-    // New is the store's (#307, N2): Main and Live's default Set, at the history's root.
+    // New is the store's project root: four source tracks and Main.
     const auto *made = doc->view().current().get();
     // Its tracks are numbered ones, "# MIDI" and "# Audio", shown 1 MIDI ... 4 Audio (walk-B B13).
     const auto shownNew = made != nullptr ? ui::shownTrackNames(ui::SnapshotReader(doc->view().current()))
                                           : std::map<std::int64_t, std::string>{};
-    check(made != nullptr && made->tracks.size() == 7 && made->findTrack(1) != nullptr &&
+    check(made != nullptr && made->tracks.size() == 5 && made->findTrack(1) != nullptr &&
               made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "# MIDI" &&
               made->findTrack(3)->name == "# MIDI" && made->findTrack(4)->name == "# Audio" &&
-              made->findTrack(5)->name == "# Audio" && made->findTrack(6)->name == "A Reverb" &&
-              made->findTrack(7)->name == "B Delay" && shownNew.size() == 7 && shownNew.at(2) == "1 MIDI" &&
+              made->findTrack(5)->name == "# Audio" && shownNew.size() == 5 && shownNew.at(2) == "1 MIDI" &&
               shownNew.at(3) == "2 MIDI" && shownNew.at(4) == "3 Audio" && shownNew.at(5) == "4 Audio" &&
-              shownNew.at(6) == "A Reverb" && shownNew.at(7) == "B Delay" && shownNew.at(1) == "Main",
-          "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay (N41)");
+              shownNew.at(1) == "Main",
+          "SC-437: New opens as 1 MIDI, 2 MIDI, 3 Audio, 4 Audio and Main");
     check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
           "as the history's root: no op, no undo step");
-    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 7,
+    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 5,
           "creating the project cannot be undone (Live 5.4.2)");
     OpRequest add;
     add.opType = "track.create";
@@ -5884,7 +5986,7 @@ int main(int argc, char **argv) {
     check(!doc->mailbox().playing() && doc->mailbox().position() == 1024,
           "stop reaches driver without advancing");
     check(doc->ops().undo().ok && doc->synchronise(), "undo refreshes the real engine");
-    check(doc->session().model().tracks.size() == 7, "undo removes the added track and keeps the rest");
+    check(doc->session().model().tracks.size() == 5, "undo removes the added track and keeps the rest");
     check(doc->ops().redo().ok && doc->synchronise(), "redo restores graph rows");
     // Ctrl/Cmd+S takes a named snapshot (ADR-0203 d6, d13): history metadata, no op.
     const std::int64_t noon = 1'761'566'400'000'000; // 2025-10-27 12:00 UTC, in microseconds
@@ -5911,7 +6013,7 @@ int main(int argc, char **argv) {
     doc.reset();
     {
         auto reopen = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
-        check(reopen && reopen->view().current()->tracks.size() == 8,
+        check(reopen && reopen->view().current()->tracks.size() == 6,
               "every edit is in the file once it closes; there is nothing to save");
         check(reopen && reopen->ops().undo().ok, "a reopened project undoes its edits");
         check(reopen && !reopen->ops().canUndo() && !reopen->ops().undo().ok,
@@ -5953,7 +6055,7 @@ int main(int argc, char **argv) {
     {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
         // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
-        // Live's default Set (#307, with its two returns since N41), tracks 1 to 7, so the drop's audio track is an eighth.
+        // four source tracks and Main; this fixture places the drop on a separate audio track.
         {
             // A file imported AFTER Save As has its pool row in the new file only: the waveform
             // worker follows the document there (the outside review of 18 November; on main it kept
@@ -6204,25 +6306,25 @@ int main(int argc, char **argv) {
             // view, which the session has already caught up with.
             check(saving->view().generation() > generationBefore && saving->synchronise() &&
                       saving->view().current()->findTrack(8) != nullptr &&
-                      saving->session().model().tracks.size() == 8,
+                      saving->session().model().tracks.size() == 6,
                   "the view and the session read the new file");
             OpRequest second;
             second.opType = "track.create";
             second.payload = {{"id", 9}, {"kind", "audio"}, {"name", "After"}};
             check(saving->ops().submit(second).ok && saving->synchronise() &&
-                      saving->view().current()->tracks.size() == 9,
+                      saving->view().current()->tracks.size() == 7,
                   "the next edit lands in the new file");
             {
                 StoreError opened{};
                 auto old = Store::open(before, opened, true);
                 check(old && opened == StoreError::Ok &&
-                          old->db().execAndGet("SELECT count(*) FROM tracks").getInt() == 8 &&
+                          old->db().execAndGet("SELECT count(*) FROM tracks").getInt() == 6 &&
                           old->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeSave,
                       "and the old file is unchanged");
             }
             check(saving->ops().undo().ok && saving->synchronise() && saving->ops().undo().ok &&
-                      saving->synchronise() && saving->view().current()->tracks.size() == 7 &&
-                      saving->session().model().tracks.size() == 7,
+                      saving->synchronise() && saving->view().current()->tracks.size() == 5 &&
+                      saving->session().model().tracks.size() == 5,
                   "undo still reaches the edit made before Save As");
             check(!saving->saveAs(before) && saving->error().find("already exists") != std::string::npos &&
                       std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
@@ -6230,7 +6332,7 @@ int main(int argc, char **argv) {
             check(!saving->saveAs(temp.path() / "nowhere" / "lost.adi") && !saving->error().empty() &&
                       std::filesystem::equivalent(saving->store().path(), after),
                   "a folder that does not exist is refused with the store's reason");
-            check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
+            check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 6,
                   "and the history still redoes after a refusal");
             std::error_code identityError;
             const auto wrongTarget = media::readFileIdentity(after, identityError);
@@ -6242,7 +6344,7 @@ int main(int argc, char **argv) {
             check(saving->ops().submit(second).ok && saving->synchronise(), "an edit to distinguish the replacement");
             check(target && saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*target) &&
                       std::filesystem::equivalent(saving->store().path(), before) && saving->name() == "before" &&
-                      saving->store().db().execAndGet("SELECT count(*) FROM tracks").getInt() == 9,
+                      saving->store().db().execAndGet("SELECT count(*) FROM tracks").getInt() == 7,
                   "confirmed Save As replaces the approved closed project and switches the current document");
         }
     }
@@ -6430,7 +6532,7 @@ int main(int argc, char **argv) {
             effect.name = "An effect";
             effect.subtype = "effect";
             const bool loaded = fx->loadPlugin(effect, 4, {}, nullptr, true) && fx->loadPlugin(effect, 4, {}, nullptr, true);
-            // Counted on its track: the default Set's returns hold devices of their own.
+            // Count only the effects on this track.
             check(loaded && fx->store().db().execAndGet(
                                 "SELECT count(*) FROM devices JOIN device_chains ON device_chains.id = "
                                 "devices.chain_id WHERE device_chains.track_id = 4").getInt() == 2 &&
@@ -6527,9 +6629,7 @@ int main(int argc, char **argv) {
         check(strip != nullptr, "a project whose plug-ins the loader makes");
         // An exception here is a failed check with its text, not a CRT dialog on a desktop.
         if (strip) try {
-            // A chain on 1 MIDI and a device in it, after New's two returns (refs, chains and
-            // devices 1 and 2: Reverb and Delay); the plug-in reference is the catalogue's row,
-            // not an op.
+            // A chain on 1 MIDI and a device in it. The plug-in reference belongs to the catalogue.
             strip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
                                      test::kKnobsUid + "','UI knobs')");
             std::vector<OpRequest> make(2);
@@ -6544,7 +6644,7 @@ int main(int argc, char **argv) {
             const auto *entry = strip->session().entryFor(3);
             check(knobs != nullptr && entry != nullptr && !entry->placeholder && entry->name == "UI knobs",
                   "the loader made it and the session holds it under its name");
-            // The feed's panel for it, among the returns' two.
+            // The feed's panel for it.
             auto panelOf = [&](std::int64_t device) -> const ui::DevicePanelData * {
                 const auto feed = strip->parameterFeed().current();
                 if (feed)

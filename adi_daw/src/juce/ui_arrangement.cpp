@@ -34,28 +34,51 @@
 #include <string_view>
 namespace adi::ui {
 namespace {
+const juce::MouseCursor &arrangementZoomCursor() {
+    static const juce::MouseCursor cursor = [] {
+        constexpr int size = 18, scale = 2;
+        juce::Image image(juce::Image::ARGB, size * scale, size * scale, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(static_cast<float>(scale)));
+            const juce::Rectangle<float> lens{2.f, 2.f, 10.f, 10.f};
+            const juce::Line<float> handle{11.f, 11.f, 15.5f, 15.5f};
+            g.setColour(juce::Colours::white);
+            g.drawEllipse(lens, 3.5f);
+            g.drawLine(handle, 4.f);
+            g.setColour(juce::Colours::black);
+            g.drawEllipse(lens, 1.5f);
+            g.drawLine(handle, 2.f);
+        }
+        return juce::MouseCursor(image, 7, 7, static_cast<float>(scale));
+    }();
+    return cursor;
+}
 class ColourChooser final : public juce::PopupMenu::CustomComponent {
   public:
-    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14;
+    static constexpr int kSwatch = 14, kPitch = 17, kColumns = 14, kInset = 4;
+    static constexpr int kRows = static_cast<int>(kPaletteColours) / kColumns;
+    static_assert(kRows * kColumns == kPaletteColours);
     ColourChooser(std::function<void(int)> pick, std::int64_t current)
         : juce::PopupMenu::CustomComponent(false), pick_(std::move(pick)), current_(current) {}
     void getIdealSize(int &width, int &height) override {
-        width = 8 + kColumns * kPitch;
-        height = kSwatch + 8;
+        width = 2 * kInset + kColumns * kPitch;
+        height = 2 * kInset + (kRows - 1) * kPitch + kSwatch;
     }
     void paint(juce::Graphics &g) override {
-        for (int i = 0; i < kColumns; ++i) {
-            const juce::Rectangle<float> r(static_cast<float>(4 + i * kPitch), 4.f, kSwatch, kSwatch);
+        for (int i = 0; i < kRows * kColumns; ++i) {
+            const juce::Rectangle<int> r(kInset + (i % kColumns) * kPitch, kInset + (i / kColumns) * kPitch,
+                                         kSwatch, kSwatch);
             g.setColour(look::paletteColour(i));
             g.fillRect(r);
             if (i == current_ || i == hover_) {
                 g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
-                g.drawRect(r.expanded(1.5f), 1.5f);
+                g.drawRect(r.toFloat().expanded(1.5f), 1.5f);
             }
         }
     }
     void mouseMove(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at != hover_) {
+        if (const int at = swatchAt(e.getPosition()); at != hover_) {
             hover_ = at;
             repaint();
         }
@@ -65,7 +88,7 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
         repaint();
     }
     void mouseUp(const juce::MouseEvent &e) override {
-        if (const int at = swatchAt(e.x); at >= 0) {
+        if (const int at = swatchAt(e.getPosition()); at >= 0) {
             pick_(at);
             if (getParentComponent() != nullptr)
                 triggerMenuItem();
@@ -73,9 +96,12 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
     }
 
   private:
-    static int swatchAt(int x) noexcept {
-        const int i = (x - 4) / kPitch;
-        return x >= 4 && i < kColumns && (x - 4) % kPitch < kSwatch ? i : -1;
+    static int swatchAt(juce::Point<int> point) noexcept {
+        const int x = point.x - kInset, y = point.y - kInset;
+        if (x < 0 || y < 0 || x / kPitch >= kColumns || y / kPitch >= kRows ||
+            x % kPitch >= kSwatch || y % kPitch >= kSwatch)
+            return -1;
+        return (y / kPitch) * kColumns + x / kPitch;
     }
     std::function<void(int)> pick_;
     std::int64_t current_;
@@ -94,6 +120,7 @@ void paintPlaybackProblemMark(juce::Graphics &g, juce::Rectangle<float> bounds) 
 }
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
+    setMouseCursor(arrangementZoomCursor());
     setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
                "double-click to see all of it.");
 }
@@ -676,6 +703,7 @@ void ScrubArea::endMeterEdit() {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
+    setMouseCursor(arrangementZoomCursor());
     setTooltip("Drag sideways to scroll, up or down to zoom. Double-click to zoom to the selection. "
                "Right-click to insert or edit a tempo change.");
     addChildComponent(tempoEditor);
@@ -738,8 +766,8 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
     setTitle("Track headers");
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
-    setTooltip("Click to select a track; drag its lower part to resize it, with Alt to resize "
-               "all. Right-click for the track's commands.");
+    setTooltip("Click to select a track. Drag its edge to resize, with Alt to resize all. "
+               "Main and Returns at the foot resize from the top. Right-click for track commands.");
 }
 ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
     addChildComponent(clipEditor);
@@ -1514,6 +1542,14 @@ bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
         return false;
     geometry.left = left;
     return true;
+}
+void ArrangementView::dragTrackHeight(std::int64_t track, int height, bool all) {
+    geometry.resizeTrack(track, height, all);
+    frame(true);
+    if (root.mixer.isVisible()) {
+        root.mixer.frame(true);
+        root.mixer.repaint();
+    }
 }
 void ArrangementView::changed() {
     auto &state = root.state();
@@ -2880,6 +2916,8 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
     const auto position = e.getPosition();
     const bool popup = e.mods.isPopupMenu();
+    const bool anchored = at < rows.size() && rows[at].place.foot();
+    const bool split = at < rows.size() && onResizeEdge(e.y - top, view.geometry.heightFor(rows[at].track->id), anchored);
     foldPressed_ = false;
     resizeId = moveId_ = 0;
     moving_ = false;
@@ -2919,7 +2957,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             }
             return;
         }
-        if (!popup) {
+        if (!popup && !(anchored && split)) {
             // The fold switch and header controls operate without selecting the track.
             if (foldSwitch(depth, top).expanded(2.f).contains(e.position)) {
                 foldPressed_ = true;
@@ -2967,10 +3005,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.contextMenu(e.getScreenPosition(), true);
             return;
         }
-        // The split line at the row's foot resizes it; the rest of the title moves it, Main and
-        // the returns aside.
-        const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
-        const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
+        // The split line resizes the row. The rest of the title moves it, except Main.
         const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !popup;
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
@@ -2996,11 +3031,12 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         }
         // A title chooses tracks. The insert marker can stay at its previous position.
         sel.clearMaterial();
-        if (split)
+        if (split) {
             resizeId = t->id;
-        else if (!popup && pressed < rows.size() && !rows[pressed].place.main) {
+            resizeFromTop_ = anchored;
+        } else if (!popup && at < rows.size() && !rows[at].place.main) {
             moveId_ = t->id;
-            movingReturn_ = rows[pressed].place.ret;
+            movingReturn_ = rows[at].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
             beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         }
@@ -3017,8 +3053,8 @@ void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-    const int height = at < rows.size() ? view.geometry.heightFor(rows[at].track->id) : 0;
-    const bool split = height > 0 && e.y >= top + height - kSplitLine && e.y < top + height;
+    const bool split = at < rows.size() && onResizeEdge(e.y - top, view.geometry.heightFor(rows[at].track->id),
+                                                        rows[at].place.foot());
     setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
@@ -3185,9 +3221,8 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
 }
 void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
     if (resizeId) {
-        view.geometry.resizeTrack(resizeId, initialHeight + e.getDistanceFromDragStartY(),
-                                  e.mods.isAltDown());
-        view.frame(true);
+        const int dy = e.getDistanceFromDragStartY();
+        view.dragTrackHeight(resizeId, initialHeight + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
     } else if (moveId_ != 0 && (moving_ || std::abs(e.getDistanceFromDragStartY()) > 4)) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other
         // tracks"; the line shows where they would land.
@@ -3564,7 +3599,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (foot == rows.size())
         dropArea(y, getHeight());
-    // The insert marker, a thin blue line in the selected track.
+    // The insert marker has a one-pixel stem and a flag at the top of its lane.
     if (geo.selection.start == geo.selection.end && geo.selection.marked && !hasAutomationSelection()) {
         int top = -geo.scrollY;
         for (const auto row : rows) {
@@ -3576,8 +3611,19 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 const int bottom = row.position < foot && foot < rows.size()
                                        ? std::min(top + geo.heightFor(id), footY) - 2
                                        : top + geo.heightFor(id) - 2;
-                g.setColour(look::handleChosen);
-                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
+                if (bottom > top) {
+                    const auto x = static_cast<int>(geo.x(geo.selection.insert));
+                    g.setColour(look::handleChosen);
+                    g.fillRect(x, top, 1, bottom - top);
+                    const auto y = static_cast<float>(top);
+                    constexpr float flagHalfWidth = 3.5f;
+                    constexpr int flagHeight = 5;
+                    const float centre = static_cast<float>(x) + .5f;
+                    juce::Path flag;
+                    flag.addTriangle(centre - flagHalfWidth, y, centre + flagHalfWidth, y,
+                                     centre, y + static_cast<float>(std::min(flagHeight, bottom - top)));
+                    g.fillPath(flag);
+                }
             }
             top += geo.rowHeight(*row.track);
         }
@@ -5824,6 +5870,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     moving_ = resizing_ = 0;
     copying_ = false;
+    draggingTimeRange_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
@@ -6200,7 +6247,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
-            fadeTension_ = std::clamp(fadeTensionFrom_ - (e.y - fadeFromY_) / 60.0, -1.0, 1.0);
+            const double bend = (e.y - fadeFromY_) / 60.0;
+            fadeTension_ = std::clamp(fadeTensionFrom_ + (e.mods.isAltDown() ? -bend : bend), -1.0, 1.0);
         } else {
             for (const auto &b : clipBodies())
                 if (b.clip->id == fadeDrag_->clip) {
@@ -6215,9 +6263,13 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    // JUCE's held-drag timer can dispatch at the press point before any motion.
+    if (e.mouseWasDraggedSinceMouseDown() && e.position != e.mouseDownPosition)
+        draggingTimeRange_ = true;
     if (clipTimeBounds_) {
-        if (e.mouseWasDraggedSinceMouseDown())
-            view.edgeScroll(e.x, e.y, true, false);
+        if (!draggingTimeRange_)
+            return;
+        view.edgeScroll(e.x, e.y, true, false);
         auto &geo = view.geometry;
         const auto raw = geo.tick(e.x);
         const auto snapped = geo.grid.snap ? geo.snap(raw, raw >= geo.selection.start) : raw;
@@ -6304,12 +6356,13 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
+        if (!draggingTimeRange_)
+            return;
         auto &sel = view.geometry.selection;
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
         const bool envelopeSelection = hasAutomationSelection();
-        if (e.mouseWasDraggedSinceMouseDown())
-            view.edgeScroll(e.x, e.y, true);
+        view.edgeScroll(e.x, e.y, true);
         // A time selection covers whole grid cells while snapping (§6.10).
         const auto at = view.geometry.tick(e.x);
         sel.end = view.snaps(e.mods) ? view.geometry.snap(at, at >= sel.start) : at;

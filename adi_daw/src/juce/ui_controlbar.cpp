@@ -441,6 +441,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         // The bar remembers the control that last had the focus.
         info.item->onFocus = [this, item = info.item] { lastFocused_ = item; };
     }
+    for (auto *item : {&play, &stop, &record, &follow, &metronome, &loop})
+        item->getProperties().set(controls::iconTooltip, true);
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };

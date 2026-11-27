@@ -45,6 +45,7 @@
 #include "mix_seek_fixture.hpp"
 #include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -395,6 +396,11 @@ void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path 
     root.setSize(1440, 900);
     auto &arrangement = root.arrangement;
     auto &geo = arrangement.geometry;
+    const auto zoomCursor = arrangement.ruler.getMouseCursor();
+    check(zoomCursor != juce::MouseCursor::NormalCursor && zoomCursor == arrangement.overview.getMouseCursor() &&
+              arrangement.scrub.getMouseCursor() == juce::MouseCursor::PointingHandCursor &&
+              arrangement.canvas.getMouseCursor() != zoomCursor && arrangement.ruler.tempoEditor.getMouseCursor() != zoomCursor,
+          "SC-443: the drag-zoom strips share a custom cursor and the scrub, lane and tempo editor keep their own cues");
     const auto canvasBounds = root.getLocalArea(&arrangement.canvas, arrangement.canvas.getLocalBounds());
     const auto rulerBounds = root.getLocalArea(&arrangement.ruler, arrangement.ruler.getLocalBounds());
     std::printf("SC-70 canvas %d,%d %dx%d; beat ruler %d,%d %dx%d; bar %.2f px; grid %.2f quarters\n",
@@ -739,6 +745,71 @@ void selectedTrackScrollsIntoView(AppCommands &commands, const std::filesystem::
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
 // Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
 // application reads it.
+void anchoredTrackResize(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "anchored-track-resize.adi", true, {}, error);
+    check(document != nullptr, "SC-435: create a project for foot-row resizing");
+    if (!document) return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "anchored-resize");
+    root->afterEdit = [&] { document->synchronise(); };
+    root->setSize(1440, 900);
+    root->frame();
+    const bool inserted = root->insertReturnTrack();
+    check(inserted, "SC-435: a Return is anchored above Main");
+    if (!inserted) return;
+    root->frame();
+    auto &geometry = root->arrangement.geometry;
+    auto &headers = root->arrangement.headers;
+    const auto rows = geometry.rows(root->reader());
+    const auto main = rows[rows.size() - 1].track->id;
+    const auto ret = rows[rows.size() - 2].track->id;
+    geometry.largeTracks = true;
+    geometry.resizeTrack(main, 40);
+    geometry.resizeTrack(ret, 40);
+    root->arrangement.changed();
+    root->frame();
+    const auto top = [&](std::int64_t id) { return geometry.rowTop(root->reader(), id); };
+    const auto foot = [&](std::int64_t id) { return top(id) + geometry.heightFor(id); };
+    const int mainTop = top(main), mainFoot = foot(main), retTop = top(ret);
+    const auto from = juce::Point<float>{60.f, static_cast<float>(mainTop + 2)};
+    headers.mouseMove(pressAt(headers, {from.x, static_cast<float>(mainFoot - 2)}));
+    const bool mainFootPlain = headers.getMouseCursor() == juce::MouseCursor::NormalCursor;
+    headers.mouseMove(pressAt(headers, from));
+    check(mainFootPlain && headers.getMouseCursor() == juce::MouseCursor::UpDownResizeCursor,
+          "SC-435: Main shows a resize cursor at its top only");
+    const auto grown = from.translated(0, -24.f);
+    headers.mouseDown(pressAt(headers, from));
+    headers.mouseDrag(dragAt(headers, from, grown));
+    check(geometry.heightFor(main) == 64 && top(main) == mainTop - 24 && foot(main) == mainFoot &&
+              top(ret) == retTop - 24,
+          "SC-435: Main grows up from its top and keeps the foot fixed while pushing Returns above it");
+    headers.mouseUp(dragAt(headers, from, grown));
+    root->frame();
+
+    const auto &strips = root->mixer.strips();
+    const auto strip = std::ranges::find_if(strips, [ret](const auto &candidate) {
+        return candidate->isVisible() && candidate->track() == ret;
+    });
+    check(strip != strips.end(), "SC-435: the Return has an Arrangement mixer strip");
+    if (strip == strips.end()) return;
+    auto &controls = **strip;
+    const auto corner = juce::Point<float>{20.f, 2.f};
+    controls.mouseMove(pressAt(controls, {corner.x, static_cast<float>(controls.getHeight() - 2)}));
+    const bool retFootPlain = controls.getMouseCursor() == juce::MouseCursor::NormalCursor;
+    controls.mouseMove(pressAt(controls, corner));
+    check(retFootPlain && controls.getMouseCursor() == juce::MouseCursor::UpDownResizeCursor,
+          "SC-435: a pinned Return also shows the resize cursor from the top of its controls");
+    const int before = top(ret), bottom = foot(ret);
+    const auto raised = corner.translated(0, -16.f);
+    controls.mouseDown(pressAt(controls, corner));
+    controls.mouseDrag(dragAt(controls, corner, raised));
+    check(geometry.heightFor(ret) == 56 && top(ret) == before - 16 && foot(ret) == bottom &&
+              foot(main) == mainFoot,
+          "SC-435: growing a Return from the mixer keeps its bottom and Main anchored");
+    controls.mouseUp(dragAt(controls, corner, raised));
+    root->frame();
+}
 void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "groups.adi", err);
@@ -1452,8 +1523,23 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "Hats & Percs dropped on itself: nothing moves, no step");
         // The split line still resizes.
         const auto from = at(12, 38);
+        const int nextY = topOf(13);
         headers.mouseDown(pressAt(headers, from));
         headers.mouseDrag(dragAt(headers, from, from.translated(0, 20)));
+        const auto resized = std::ranges::find_if(root.mixer.strips(), [](const auto &s) {
+            return s->isVisible() && s->track() == 12;
+        });
+        const auto next = std::ranges::find_if(root.mixer.strips(), [](const auto &s) {
+            return s->isVisible() && s->track() == 13;
+        });
+        const auto &strips = root.mixer.strips();
+        auto &canvas = root.arrangement.canvas;
+        const int line = nextY + 18;
+        check(topOf(13) == nextY + 20 && resized != strips.end() && (*resized)->getHeight() == 60 &&
+                  next != strips.end() && (*next)->getY() == root.arrangement.topHeight() + nextY + 20 &&
+                  renderedPixel(headers, {headers.getWidth() - 2, line}) == look::separator &&
+                  renderedPixel(canvas, {canvas.getWidth() - 8, line}) == look::separator,
+              "SC-436: the following header, mixer row and lane move together before mouse-up");
         headers.mouseUp(dragAt(headers, from, from.translated(0, 20)));
         check(lanes.heightFor(12) == 60 && order() == tree, "a drag from the split line makes the track taller, and moves none");
         lanes.resizeTrack(12, 40);
@@ -5429,13 +5515,29 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     const juce::Point<float> body(static_cast<float>(geo.x(bar / 2)) + 1.f,
                                  static_cast<float>(laneTop(root, 2) + 20));
     canvas.mouseDown(pressAt(canvas, body));
+    canvas.mouseDrag(pressAt(canvas, body));
+    canvas.mouseDrag(dragAt(canvas, body, body));
     canvas.mouseUp(pressAt(canvas, body));
     check(sel.track == 2 && sel.marked && sel.insert == bar / 2 && sel.start == sel.end && sel.clip == 0,
           "SC-175: a plain clip body click places only the insert marker");
+    const auto markerX = static_cast<int>(geo.x(sel.insert)), markerTop = laneTop(root, sel.track);
+    check(root.selectionText().startsWith("Insert Mark") &&
+              renderedPixel(canvas, {markerX + 1, markerTop + 1}) == look::handleChosen &&
+              renderedPixel(canvas, {markerX, markerTop + 10}) == look::handleChosen &&
+              renderedPixel(canvas, {markerX + 1, markerTop + 10}) != look::handleChosen,
+          "SC-439: a body click shows an insert flag and a one-pixel stem, with no time selection");
     const auto clipsBeforeDelete = clipsOf(2);
     canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
     root.frame();
     check(clipsOf(2) == clipsBeforeDelete, "SC-175: Delete after a body click does not remove the clip");
+    const auto emptyTick = 2 * bar + bar / 4;
+    const juce::Point<float> empty(static_cast<float>(geo.x(emptyTick)) + 1.f, body.y);
+    canvas.mouseDown(pressAt(canvas, empty));
+    canvas.mouseDrag(dragAt(canvas, empty, empty));
+    canvas.mouseUp(pressAt(canvas, empty));
+    check(sel.track == 2 && sel.insert == emptyTick && sel.start == sel.end && sel.clip == 0 &&
+              root.selectionText().startsWith("Insert Mark"),
+          "SC-439: a click past the clip also sets an insert marker without marking a grid cell");
     const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
         const auto y = static_cast<float>(laneTop(root, track) + 20);
         const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
@@ -13756,9 +13858,13 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
     // From bar 1 on track 1, dragged to bar 3 on track 3: bars 1 to 3 on tracks 1, 2 and 3. A forward
     // selection snaps up to the next grid line, so the mouse lets go just short of bar 3's.
-    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
-    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
-    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    const auto dragTimeAcrossTracks = [&] {
+        const juce::Point<float> start{x(0) + 1, lane(1)}, end{x(2 * bar) - 1, lane(3)};
+        canvas.mouseDown(pressAt(canvas, start));
+        canvas.mouseDrag(dragAt(canvas, start, end));
+        canvas.mouseUp(dragAt(canvas, start, end));
+    };
+    dragTimeAcrossTracks();
     root.frame();
     check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start == 0 &&
               geo.selection.end == 2 * bar && geo.inSelection(root.reader(), 2) && !geo.inSelection(root.reader(), 4),
@@ -13807,9 +13913,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     check(geo.selection.track == 1 && geo.selection.toTrack == 2 && geo.selection.end == bar,
           "Shift+click extends or shortens the selection, across tracks too");
     // Delete on bars 1 to 3 of tracks 1 to 3: their clips go, as one step.
-    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
-    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
-    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    dragTimeAcrossTracks();
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
     root.frame();
     check(root.reader().findTrack(1)->clips.empty() && root.reader().findTrack(3)->clips.empty() &&
@@ -14510,6 +14614,26 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
           "a point in the foot finds a return or Main, never the track under it");
     check(lanes.trackAt(root.reader(), footY - 5) != nullptr && lanes.trackAt(root.reader(), footY - 5)->id != 2,
           "just above it, a track");
+    {
+        const int dy = std::min(72, footY - ArrangementGeometry::kMinTrackHeight);
+        const auto &strips = root.mixer.strips();
+        const auto found = std::ranges::find_if(strips, [](const auto &s) { return s->isVisible() && s->track() == 2; });
+        check(found != strips.end() && dy > 48, "SC-436: the Return can cover another visible row during a drag");
+        if (found != strips.end() && dy > 48) {
+            auto &active = **found;
+            const juce::Point<float> start{20.f, 2.f};
+            const auto up = start.translated(0, static_cast<float>(-dy));
+            active.mouseDown(pressAt(active, start));
+            active.mouseDrag(dragAt(active, start, up));
+            check(active.isVisible() && active.track() == 2 && active.getHeight() == 48 + dy &&
+                      active.getY() == root.arrangement.topHeight() + footY - dy && laneTop(root, 1) == footY + 96,
+                  "SC-436: resizing a pinned Return keeps its mixer control attached through visible row changes");
+            active.mouseUp(dragAt(active, start, up));
+            lanes.resizeTrack(2, 48);
+            root.arrangement.changed();
+            root.frame();
+        }
+    }
     // Scrolled: the tracks move, the foot does not.
     lanes.scrollY = 200;
     root.arrangement.changed();
@@ -14839,14 +14963,13 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     check(browserListsInstruments(), "SC-121: New lists instruments before the Browser library scan finishes");
     root.browser.setListing({});
     check(browserListsInstruments(), "SC-121: the first library publication retains the startup list");
-    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
+    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
               root.reader().findTrack(2)->name == "# MIDI" && root.reader().findTrack(5)->name == "# Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 2) == "1 MIDI" &&
               shownName(root.arrangement.geometry, root.reader(), 3) == "2 MIDI" &&
               shownName(root.arrangement.geometry, root.reader(), 4) == "3 Audio" &&
-              shownName(root.arrangement.geometry, root.reader(), 5) == "4 Audio" &&
-              root.reader().findTrack(7)->name == "B Delay",
-          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
+              shownName(root.arrangement.geometry, root.reader(), 5) == "4 Audio",
+          "SC-437: New shows 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
     check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
           "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
     // DF-W29: a knob edit still held makes Undo act, a project's first edit included; Redo waits.
@@ -14890,14 +15013,13 @@ void defaultTracksRenumber(AppCommands &commands, const std::filesystem::path &d
             out.push_back(displayName(row.track->name, row.number()));
         return out;
     };
-    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "A Reverb", "B Delay", "Main"},
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "Main"},
           "New: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, Main");
     root.arrangement.geometry.selection.track = 3; // 2 MIDI
     root.publishSelection();
     check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track after 2 MIDI");
     const auto inserted = root.arrangement.geometry.selection.track;
-    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "5 Audio", "A Reverb", "B Delay",
-                                              "Main"} &&
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "5 Audio", "Main"} &&
               shownName(root.arrangement.geometry, root.reader(), inserted) == "3 Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 4) == "4 Audio" &&
               shownName(root.arrangement.geometry, root.reader(), 5) == "5 Audio",
@@ -14922,13 +15044,78 @@ void defaultTracksRenumber(AppCommands &commands, const std::filesystem::path &d
     check(distinct, "after the group no two tracks read alike");
     document->release();
 }
+void trackPalette(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-palette.adi", true, {}, error);
+    check(document != nullptr, "SC-434: open a project for the track palette");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-palette");
+    root.setSize(1000, 650);
+    root.frame();
+    root.arrangement.geometry.selection.track = 2;
+    root.publishSelection();
+    const auto menu = root.arrangement.headerMenu();
+    juce::PopupMenu::CustomComponent *chooser = nullptr;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        if (it.getItem().text == "Colour")
+            chooser = it.getItem().customComponent.get();
+    check(chooser != nullptr, "SC-434: the track's menu offers a colour chooser");
+    if (chooser == nullptr)
+        return;
+    int width = 0, height = 0;
+    chooser->getIdealSize(width, height);
+    check(width == 246 && height == 90, "SC-434: the chooser has five rows of fourteen swatches");
+    if (width != 246 || height != 90)
+        return;
+    chooser->setSize(width, height);
+    juce::Image image(juce::Image::ARGB, width, height, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics graphics(image);
+        chooser->paint(graphics);
+    }
+    const auto pointFor = [](int index) { return juce::Point<int>{11 + (index % 14) * 17, 11 + (index / 14) * 17}; };
+    bool painted = true;
+    for (int index = 0; index < 70; ++index) {
+        const auto centre = pointFor(index);
+        painted = painted && image.getPixelAt(centre.x, centre.y) == look::paletteColour(index);
+    }
+    check(painted, "SC-434: all seventy cells paint the shared palette renderer");
+    const auto colour = [&root] {
+        root.frame();
+        return root.reader().findTrack(2)->color;
+    };
+    chooser->mouseUp(pressAt(*chooser, pointFor(14).toFloat()));
+    check(colour() == 14, "SC-434: the second row starts at stored palette index 14");
+    chooser->mouseUp(pressAt(*chooser, pointFor(69).toFloat()));
+    check(colour() == 69 && root.undoTitle(false) == "Undo Recolour Track",
+          "SC-434: the last swatch stores index 69 in one undo step");
+    const auto head = OpJournal(document->store()).headSeq();
+    for (const auto gap : {juce::Point<float>{18.f, 11.f}, {11.f, 18.f}, {2.f, 20.f}, {11.f, 88.f}})
+        chooser->mouseUp(pressAt(*chooser, gap));
+    check(colour() == 69 && OpJournal(document->store()).headSeq() == head,
+          "SC-434: the gaps and padding do not select a colour");
+    check(root.command(AppCommands::Undo) && colour() == 14, "SC-434: Undo restores the previous row's index");
+    std::printf("SC-434 chooser %dx%d, first/last swatch origins (4,4)/(225,72), swatches 14x14\n", width, height);
+}
 // A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
 // Track, Insert Return Track and Group Tracks recolour no other track, in the Arrangement or the Mixer
 // View, the returns and Main included; the new track stores its own (walk-A A2b).
+std::unique_ptr<ProjectDocument> openProjectWithReturns(const std::filesystem::path &path, std::string &error) {
+    StoreError result{};
+    auto authored = test::createProjectWithReturns(path, result);
+    if (!authored) {
+        error = toString(result);
+        return {};
+    }
+    authored.reset();
+    return ProjectDocument::open(path, false, {}, error);
+}
 void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "colours.adi", true, {}, error);
-    check(document != nullptr, "New opens a project to colour");
+    auto document = openProjectWithReturns(dir / "colours.adi", error);
+    check(document != nullptr, "open a project with two authored returns to check its colours");
     if (!document)
         return;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
@@ -14964,7 +15151,7 @@ void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
         asToday = asToday && colours.second == colours.first;
     check(asToday && before.at(2).first == look::trackColour(0) && before.at(7).first == look::trackColour(5) &&
               before.at(1).first == look::trackColour(6),
-          "New: 1 MIDI .. B Delay and Main in the palette's first seven, titles and strips alike");
+          "the project stores the first seven colours, titles and strips alike");
     auto unchanged = [&before](const Shown &now) {
         for (const auto &[id, colours] : before)
             if (now.count(id) == 0 || now.at(id) != colours)
@@ -15002,7 +15189,7 @@ void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
           "Group Tracks on 2 MIDI and 3 Audio: the group 1 MIDI's colour plus one; every track keeps its own");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
               root.command(AppCommands::Undo) && unchanged(shown()) && shown().size() == 7,
-          "four undos: the default Set as it was, colours and all");
+          "four undos restore the project and its colours");
     check(root.command(AppCommands::Redo) && own(audio) == 3 && unchanged(shown()),
           "a redo brings the new track back in its own colour");
     document->release();
@@ -15960,7 +16147,7 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
 // on the group's tracks only; A and B keep their letters; Group Tracks takes a return; one Undo each.
 void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "return-in-group.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "return-in-group.adi", error);
     check(document != nullptr, "a new project for a return inside a group");
     if (!document)
         return;
@@ -15992,7 +16179,7 @@ void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
         return out;
     };
     const auto topBefore = returns(0);
-    check(topBefore.size() == 2 && returns(40).empty(), "the default set's two returns, A and B, at the top");
+    check(topBefore.size() == 2 && returns(40).empty(), "the saved project's two returns, A and B, are at the top");
     check(root.insertReturnTrack(40), "Insert Return Track in Group on Drums");
     document->synchronise();
     root.frame();
@@ -16350,22 +16537,29 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     sel.start = 0;
     sel.end = bar;
     root.frame();
-    // The curve's diamond, dragged up, writes the fade's tension.
-    if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
-        const juce::Point<float> up(diamond->x, diamond->y - 30.f);
-        canvas.mouseDown(pressAt(canvas, *diamond));
-        canvas.mouseDrag(dragAt(canvas, *diamond, up));
-        canvas.mouseUp(dragAt(canvas, *diamond, up));
+    // The regular curve drag and the Option/Alt drag bend in opposite directions.
+    const Handle curve{first, 4, true, true};
+    for (const bool alt : {false, true}) {
+        const auto diamond = canvas.fadeHandlePoint(curve);
+        check(diamond.has_value(), "SC-444: the fade's curve handle is shown");
+        if (!diamond)
+            break;
+        const auto mods = alt ? juce::ModifierKeys(juce::ModifierKeys::altModifier) : juce::ModifierKeys{};
+        const auto up = diamond->translated(0.f, -30.f);
+        canvas.mouseDown(pressAt(canvas, *diamond, mods));
+        canvas.mouseDrag(dragAt(canvas, *diamond, up, mods));
+        const auto during = canvas.fadeHandlePoint(curve);
+        check(during && (alt ? during->y > diamond->y : during->y < diamond->y),
+              "SC-444: the fade follows the upward drag, and Alt bends it the other way");
+        canvas.mouseUp(dragAt(canvas, *diamond, up, mods));
         root.frame();
         const auto bent = engine::clipFadeShape(0.5, clips()[0]->fadeInCurve, clips()[0]->fadeInTension);
-        check(clips()[0]->fadeInTension.has_value() && std::abs(*clips()[0]->fadeInTension) > 0.2 &&
-                  clips()[0]->fadeInCurve == kBentFadeCurve && std::abs(bent - 0.5) > 0.05 &&
+        check(clips()[0]->fadeInTension.has_value() && (alt ? bent < 0.45 : bent > 0.55) &&
+                  clips()[0]->fadeInCurve == kBentFadeCurve && document->ops().nextUndo() &&
                   document->ops().nextUndo()->label == "Change Fade Curve",
-              "the diamond dragged up bends the curve, one step");
+              "SC-444: one-step curve edit plays the shape shown during the drag");
         check(root.command(AppCommands::Undo), "undo the curve");
         root.frame();
-    } else {
-        check(false, "the fade's diamond is shown");
     }
     // The chosen fade-in square and Delete: the fade goes.
     canvas.mouseDown(pressAt(canvas, *canvas.fadeHandlePoint(Handle{first, 4, true, false})));
@@ -19909,7 +20103,7 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
 }
 void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "routing-menus.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "routing-menus.adi", error);
     check(document != nullptr, "SC-261: a project for the routing menus");
     if (!document)
         return;
@@ -20719,8 +20913,10 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
-        loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
+        loop.payload = {{"on", true}, {"start", 0}, {"end", 4 * textproj::kPPQ}};
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
+        root.arrangement.placeInsertMarker(textproj::kPPQ);
+        block();
         frame();
         check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
                   root.error().find("MIDI") != std::string::npos,
@@ -21396,7 +21592,7 @@ void exportPreferences(const std::filesystem::path &dir) {
 // the release, the selected tracks moving together by the same move, Esc putting them back.
 void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "drag-live.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "drag-live.adi", error);
     check(document != nullptr, "a project for the strip's drags");
     if (!document)
         return;
@@ -21703,7 +21899,7 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
 // overrides the lane, the manual value; Re-Enable Automation follows the lane again.
 void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "mixer-automation.adi", true, {}, error);
+    auto document = openProjectWithReturns(dir / "mixer-automation.adi", error);
     check(document != nullptr, "a project with an automated fader");
     if (!document)
         return;
@@ -21939,7 +22135,7 @@ class SendTone final : public engine::Node {
     const char *name() const noexcept override { return "send tone"; }
 };
 // walk-A A10 (Live 12 manual 18.4): a return made with Insert Return Track has a send from every track,
-// fully down, in the same step, as New's A and B have; so the first drag of one, during playback, is
+// fully down, in the same step; the first drag of one during playback is
 // live and heard while it moves, lands as one undo step, and one Undo puts it back.
 void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -21977,18 +22173,18 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     root.frame();
     std::int64_t made = 0;
     for (const auto &t : root.reader().tracks())
-        if (t->kind == "return" && t->name == "C Return")
+        if (t->kind == "return" && t->name == "A Return")
             made = t->id;
-    // Its sends: one from each of the four tracks, at the floor; none from Main or from A and B.
+    // The first return gets one send from each of the four source tracks, at the floor.
     const auto current = root.current();
     int floor = 0;
     for (const std::int64_t source : {2, 3, 4, 5})
         if (const auto *s = current ? findSend(current->sends, source, made) : nullptr; s && s->gainDb == kSendSilenceDb && s->enabled)
             ++floor;
-    check(made != 0 && floor == 4 && current && findSend(current->sends, 6, made) == nullptr &&
-              findSend(current->sends, 7, made) == nullptr && routes() == routesBefore + 4 &&
+    check(made != 0 && floor == 4 && current && findSend(current->sends, 1, made) == nullptr &&
+              findSend(current->sends, made, made) == nullptr && routes() == routesBefore + 4 &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track",
-          "C Return comes with a send from every track, fully down, in its one step");
+          "A Return comes with a send from every track, fully down, in its one step");
     // In the Mixer View, where every strip is realised.
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
     root.resizeMixerView(420);
@@ -22002,7 +22198,7 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     for (std::size_t i = 0; three != nullptr && i < three->sendKnobs().size(); ++i)
         if (three->sendsTo(i) == made)
             knob = three->sendKnobs()[i].get();
-    check(knob != nullptr, "3 Audio's Send C");
+    check(knob != nullptr, "3 Audio's Send A");
     if (knob == nullptr) {
         document->release();
         return;
@@ -22046,7 +22242,7 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
     knob->onValueChange();
     const double during = heard();
     check(document->mixerDragging() && during > base * 1.5 && opCount() == before && gainDb() == kSendSilenceDb,
-          "the first drag of C Return's send is live: heard at 0 dB while it moves, nothing written");
+          "the first drag of A Return's send is live: heard at 0 dB while it moves, nothing written");
     juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
     knob->onDragEnd();
     root.frame();
@@ -28048,6 +28244,7 @@ int main(int argc, char **argv) {
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
         trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
+        trace("anchoredTrackResize", [&] { anchoredTrackResize(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         trace("mixerSendOverflow", [&] { mixerSendOverflow(commands, temp.path()); });
@@ -28844,6 +29041,12 @@ int main(int argc, char **argv) {
     a.hover(&a.transport.play);
     check(a.infoText().contains("Play") && a.infoText().contains("Space"),
           "the Info View describes the element under the mouse");
+    check(windowTooltipLabel(a.transport.play) == "Play" && windowTooltipLabel(a.status.infoToggle) == "Info View" &&
+              windowTooltipLabel(a.transport.tempo).isEmpty() && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
+          "SC-433: only an explicitly marked icon gets its short name in the tooltip");
+    a.hover(&a.arrangement.canvas);
+    check(a.infoText().contains("insert marker") && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
+          "SC-433: hovering the Arrangement shows its full directions only inside Info View");
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
     {
@@ -31895,6 +32098,7 @@ int main(int argc, char **argv) {
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
+    trace("anchoredTrackResize", [&] { anchoredTrackResize(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("arrangementTakeLanes", [&] { arrangementTakeLanes(commands, temp.path()); });
@@ -31904,6 +32108,7 @@ int main(int argc, char **argv) {
     trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
     trace("projectFilesList", [&] { projectFilesList(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
+    trace("trackPalette", [&] { trackPalette(commands, temp.path()); });
     trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });

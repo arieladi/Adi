@@ -1366,6 +1366,7 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        b->getProperties().set(controls::iconTooltip, true);
     }
     infoToggle.setTitle("Info View");
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
@@ -7147,6 +7148,21 @@ AdiWindow::~AdiWindow() {
 }
 juce::MenuBarModel *AdiWindow::menu() noexcept { return menu_.get(); }
 void AdiWindow::followSettings() { followTooltips(*this, commands_, tips_, tipDelayMs_); }
+juce::String windowTooltipLabel(const juce::Component &component) {
+    return static_cast<bool>(component.getProperties()[controls::iconTooltip]) ? component.getTitle() : juce::String{};
+}
+namespace {
+class IconTooltipWindow final : public juce::TooltipWindow {
+  public:
+    using juce::TooltipWindow::TooltipWindow;
+  private:
+    juce::String getTipFor(juce::Component &component) override {
+        const auto label = windowTooltipLabel(component);
+        // JUCE still owns foreground, modal and button-down suppression.
+        return label.isNotEmpty() && juce::TooltipWindow::getTipFor(component).isNotEmpty() ? label : juce::String{};
+    }
+};
+} // namespace
 void followTooltips(juce::Component &window, const AppCommands &commands,
                     std::unique_ptr<juce::TooltipWindow> &tips, int &delayMs) {
     if (!commands.tooltips()) {
@@ -7155,7 +7171,7 @@ void followTooltips(juce::Component &window, const AppCommands &commands,
     }
     if (tips == nullptr) {
         delayMs = commands.tooltipDelayMs();
-        tips = std::make_unique<juce::TooltipWindow>(&window, delayMs);
+        tips = std::make_unique<IconTooltipWindow>(&window, delayMs);
     } else if (delayMs != commands.tooltipDelayMs()) {
         delayMs = commands.tooltipDelayMs();
         tips->setMillisecondsBeforeTipAppears(delayMs);
