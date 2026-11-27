@@ -186,7 +186,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ExportMidiClip,
         About,
         ImportAudioFile,
-        LastId = ImportAudioFile
+        ToggleBrowserPreview,
+        PreviewSelected,
+        LastId = PreviewSelected
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -214,6 +216,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // App-scope view settings every window reads (ADR-0131, ADR-0203 d12).
     bool infoView() const noexcept { return infoView_; }
     bool setInfoView(bool on, std::string &why);
+    bool browserPreviewEnabled() const noexcept { return browserPreviewEnabled_; }
+    bool setBrowserPreviewEnabled(bool on, std::string &why);
     bool tooltips() const noexcept { return tooltips_; }
     int tooltipDelayMs() const noexcept { return tooltipDelayMs_; }
     // Live's Use Tab Key to Move Focus (§41.1.1), off by default.
@@ -312,6 +316,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     AdiRootComponent *active_ = nullptr;
     bool live_ = true;
     bool infoView_ = true;
+    bool browserPreviewEnabled_ = false;
     bool tooltips_ = true;
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
@@ -658,6 +663,9 @@ class AdiRootComponent final : public juce::Component,
     TransportBar transport;
     StatusBar status;
     BrowserPanel browser{*this};
+    std::function<void(std::filesystem::path)> selectSamplePreview;
+    std::function<void(std::filesystem::path, double fraction)> playSamplePreview;
+    std::function<void()> stopSamplePreview;
     BrowserResizer browserResizer{*this};
     void resizeBrowser(int width);
     // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the

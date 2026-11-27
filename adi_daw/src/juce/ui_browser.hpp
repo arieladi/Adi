@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_presets.hpp"
+#include "adi/media/peaks.hpp"
 #include "adi/ui/library_query.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -26,12 +27,17 @@ class BrowserList final : public juce::ListBox {
     std::function<bool(int, bool)> onFolderArrow;
     std::function<void()> onLeft;
     std::function<bool()> onEscape;
+    std::function<bool(const juce::KeyPress &)> onPreviewKey;
     bool keyPressed(const juce::KeyPress &k) override {
         if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
             return true;
         if ((k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) && onFolderArrow &&
             onFolderArrow(getSelectedRow(), k == juce::KeyPress::rightKey))
             return true;
+        if (onPreviewKey && onPreviewKey(k))
+            return true;
+        if (k.isKeyCode(juce::KeyPress::returnKey) && k.getModifiers().isAnyModifierKeyDown())
+            return false; // Modified Return belongs to commands, not the list's load action.
         if (k == juce::KeyPress::leftKey && onLeft) {
             onLeft();
             return true;
@@ -92,6 +98,20 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     static constexpr int kStripWidth = 20, kSidebarWidth = 113, kRowHeight = 19, kBarHeight = 27;
     juce::TextEditor search;
     BrowserList list;
+    class PreviewToggle final : public juce::Button {
+      public:
+        PreviewToggle();
+        void paintButton(juce::Graphics &, bool over, bool down) override;
+    } previewToggle;
+    juce::Rectangle<int> previewArea() const noexcept;
+    juce::Rectangle<int> previewWaveformArea() const noexcept;
+    const LibraryFile *selectedSample() const noexcept;
+    void syncPreviewToggle();
+    bool previewKey(const juce::KeyPress &);
+    bool previewSelected(double fraction = 0.);
+    using PreviewPeaks = std::vector<media::PeakBin>;
+    void setPreviewDisplay(std::shared_ptr<const PreviewPeaks>, std::optional<double> position,
+                           bool canRepeat = false);
     // What the library index holds, from the app's indexing worker: the Places join the sidebar
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
@@ -191,6 +211,11 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override;
     // A static heading is never selected: the selection steps past it, the way it was moving.
     void selectedRowsChanged(int lastRowSelected) override;
+    void updatePreviewSelection();
+    std::filesystem::path previewSelection_;
+    std::shared_ptr<const PreviewPeaks> previewPeaks_;
+    std::optional<double> previewPosition_;
+    bool canRepeatPreview_ = false;
     int firstItem() const;
     int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }

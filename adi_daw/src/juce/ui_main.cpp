@@ -2,6 +2,7 @@
 #include "adi/appdata.hpp"
 #include "adi/plugin_registry.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/sample_preview.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/audio/decode.hpp"
@@ -65,22 +66,33 @@ std::string withWarning(std::string message, const std::string &warning) {
 // the session's input, as `Session::enqueueMidiInput` asks of a producer whose sample clock restarts.
 class LiveMidiProcessor final : public engine::BlockProcessor {
   public:
-    LiveMidiProcessor(ProjectDocument &document, MidiInputFeed &feed) : document_(document), feed_(feed) {}
+    LiveMidiProcessor(ProjectDocument *document, MidiInputFeed &feed, engine::SamplePreview &preview,
+                      float standalonePreviewGain)
+        : document_(document), feed_(feed), preview_(preview), standalonePreviewGain_(standalonePreviewGain) {}
     void prepare(double sampleRate, std::int32_t maxFrames) override {
         rate_ = sampleRate;
         resetCpuLoad();
         feed_.restart();
-        document_.session().resetMidiInput();
-        document_.prepare(sampleRate, maxFrames);
+        if (document_) {
+            document_->session().resetMidiInput();
+            document_->prepare(sampleRate, maxFrames);
+        }
     }
     void process(const engine::AudioIo &io) noexcept override {
         const auto started = juce::Time::getMillisecondCounterHiRes();
-        auto &session = document_.session();
-        feed_.pump(io.streamTimeSamples, io.frames, rate_, started,
-                   [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
-                       return session.enqueueMidiInput(sample, event, inputSample);
-                   }, [&session]() noexcept { session.resetMidiInput(); });
-        document_.process(io);
+        if (document_) {
+            auto &session = document_->session();
+            feed_.pump(io.streamTimeSamples, io.frames, rate_, started,
+                       [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
+                           return session.enqueueMidiInput(sample, event, inputSample);
+                       }, [&session]() noexcept { session.resetMidiInput(); });
+            document_->process(io);
+        } else {
+            for (int channel = 0; io.out && channel < io.numOut; ++channel)
+                if (auto *samples = io.out[channel])
+                    std::fill_n(samples, io.frames, 0.f);
+            preview_.mix(io, rate_, 0, standalonePreviewGain_);
+        }
         testTone.mix(io, rate_);
         // JUCE's manager smooths its reading and clamps it to 100%. Measure the actual work
         // against this callback's frame count so Current and Average can show overloads.
@@ -98,7 +110,8 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     }
     void release() override {
         resetCpuLoad();
-        document_.release();
+        if (document_)
+            document_->release();
     }
     std::optional<TransportBar::CpuLoad> cpuLoad() noexcept {
         const auto events = cpuEvents_.exchange(0, std::memory_order_acquire);
@@ -116,8 +129,10 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
         averageCpuLoad_.store(-1.f, std::memory_order_relaxed);
         cpuEvents_.store(kDeviceReset, std::memory_order_release);
     }
-    ProjectDocument &document_;
+    ProjectDocument *document_;
     MidiInputFeed &feed_;
+    engine::SamplePreview &preview_;
+    const float standalonePreviewGain_;
     double rate_ = 0;
     static_assert(std::atomic<float>::is_always_lock_free && std::atomic<unsigned>::is_always_lock_free);
     std::atomic<float> currentCpuLoad_{-1.f}, averageCpuLoad_{-1.f};
@@ -1250,6 +1265,29 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_.reset();
         live_.reset();
     }
+    void auditionSample(std::filesystem::path path, double fraction) {
+        if (!document_ && !bridge_ && !noAudio_)
+            attachAudio();
+        previewError_.clear();
+        samplePreview_.play(std::move(path), fraction);
+    }
+    void refreshSamplePreview() {
+        const auto preview = samplePreview_.status();
+        const auto *selected = root_->browser.selectedSample();
+        std::shared_ptr<const BrowserPanel::PreviewPeaks> peaks;
+        if (selected && preview.waveform && selected->path == preview.waveform->path)
+            peaks = std::shared_ptr<const BrowserPanel::PreviewPeaks>(preview.waveform, &preview.waveform->bins);
+        const bool matches = selected && selected->path == preview.playingPath;
+        using Phase = engine::SamplePreview::Phase;
+        root_->browser.setPreviewDisplay(std::move(peaks),
+                                        matches && preview.phase == Phase::Playing
+                                            ? std::optional<double>{preview.position} : std::nullopt,
+                                        matches && preview.phase == Phase::Finished);
+        if (!preview.error.empty() && preview.error != previewError_) {
+            previewError_ = preview.error;
+            root_->say(previewError_);
+        }
+    }
     void closeProject(bool takeSettled) {
         if (!document_)
             return;
@@ -1329,6 +1367,8 @@ class AdiApplication final : public juce::JUCEApplication,
         exportPreferences_.forgetTrack();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        samplePreview_.stop();
+        samplePreview_.select({});
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
         const bool takeSettled = !document_ || document_->settleRecording();
@@ -1387,6 +1427,15 @@ class AdiApplication final : public juce::JUCEApplication,
             juce::MessageManager::callAsync(std::move(action));
         });
         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
+        document_->session().setSamplePreview(&samplePreview_);
+        root->selectSamplePreview = [this](std::filesystem::path path) { samplePreview_.select(std::move(path)); };
+        root->playSamplePreview = [this](std::filesystem::path path, double fraction) {
+            auditionSample(std::move(path), fraction);
+        };
+        root->stopSamplePreview = [this] {
+            samplePreview_.stop();
+            previewError_.clear();
+        };
         root->browser.restoreLabel(*settings_);
         root->browser.setLibrarySnapshot(library_, libraryReady_);
         root->browser.requestAddFolder = [this] { chooseBrowserFolder(); };
@@ -2009,17 +2058,20 @@ class AdiApplication final : public juce::JUCEApplication,
         // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
         else if (const auto error = openAudioDevice(manager_, setup, *settings_); error.isNotEmpty())
             report(error.toStdString());
-        document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
-            if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
-                return 0;
-            // The device callback also renders. The graph caps this further by its available work.
-            const auto cores = std::thread::hardware_concurrency();
-            return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
-                             : 0U;
-        }, settings::kGraphWorkersMinimumFrames);
+        if (document_)
+            document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
+                if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
+                    return 0;
+                // The device callback also renders. The graph caps this further by its available work.
+                const auto cores = std::thread::hardware_concurrency();
+                return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
+                                 : 0U;
+            }, settings::kGraphWorkersMinimumFrames);
         // The keyboard into the session (N60): the ports' rings drained in the device callback, in
         // front of the document's process.
-        live_ = std::make_unique<LiveMidiProcessor>(*document_, midiFeed_);
+        const auto levelDb = settings_->get(settings::kStandalonePreviewLevelKey).get<float>();
+        live_ = std::make_unique<LiveMidiProcessor>(document_.get(), midiFeed_, samplePreview_,
+                                                   juce::Decibels::decibelsToGain(levelDb));
         refreshTestTone();
         bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
@@ -2879,6 +2931,7 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->transport.setCpuLoad(live_ ? live_->cpuLoad() : std::nullopt);
             root_->setRecordStates(document_->recordStates());
             refreshRecordingPreview();
+            refreshSamplePreview();
             root_->transport.capture.setEnabled(document_->canCaptureMidi());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
@@ -2984,6 +3037,8 @@ class AdiApplication final : public juce::JUCEApplication,
     std::optional<media::FileIdentity> untitledIdentity_;
     std::filesystem::path untitledFolder_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
+    engine::SamplePreview samplePreview_;
+    std::string previewError_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).
     std::unique_ptr<LiveMidiProcessor> live_;

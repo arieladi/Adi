@@ -97,6 +97,7 @@ void AppCommands::clearRecentProjects(bool onlyUnavailable) {
 void AppCommands::reload() {
     live_ = settings_.get("shortcuts.preset") == "live";
     infoView_ = flag(settings_, "lookfeel.showInfoView", true);
+    browserPreviewEnabled_ = flag(settings_, settings::kBrowserPreviewEnabledKey, settings::kBrowserPreviewStartsEnabled);
     tooltips_ = flag(settings_, "lookfeel.showTooltips", true);
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
@@ -374,6 +375,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"file.export-midi-clip", "File"}, // ExportMidiClip
         {"help.about", "Help"}, // About
         {"create.import-audio-file", "Create"}, // ImportAudioFile
+        {"browser.toggle-preview", "Browser"}, // ToggleBrowserPreview
+        {"browser.preview-selected", "Browser"}, // PreviewSelected
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -468,6 +471,12 @@ bool AppCommands::setInfoView(bool on, std::string &why) {
     if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
         return false;
     infoView_ = on;
+    return true;
+}
+bool AppCommands::setBrowserPreviewEnabled(bool on, std::string &why) {
+    if (!settings_.set(settings::kBrowserPreviewEnabledKey, on, {}, why) || !settings_.save(why))
+        return false;
+    browserPreviewEnabled_ = on;
     return true;
 }
 std::optional<float> AppCommands::keptZoom(const std::string &window, const std::string &display) const {
@@ -602,7 +611,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
-                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File..."};
+                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File...",
+                                  "Browser Preview", "Preview Selected"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
@@ -998,6 +1008,14 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case SearchBrowser: // §41.4.1.6, §42.22
         info.addDefaultKeypress('f', cmd);
         break;
+    case ToggleBrowserPreview:
+        info.setTicked(browserPreviewEnabled_);
+        break;
+    case PreviewSelected:
+        info.addDefaultKeypress(juce::KeyPress::returnKey, shift);
+        info.addDefaultKeypress(juce::KeyPress::rightKey, 0);
+        info.setActive(active_ && active_->browser.selectedSample() && active_->playSamplePreview);
+        break;
     case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
         info.setTicked(tabMovesFocus_);
         break;
@@ -1210,6 +1228,8 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         id = ComputerMidiKeyboard;
     if (id == ComputerMidiKeyboard)
         return allowComputerMidi && root.pressComputerMidiToggle(physical);
+    if (id == PreviewSelected)
+        return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
     if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {
         // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.
         root.command(id);
@@ -1475,6 +1495,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     // Live's look for everything this window holds (ui_look.hpp).
     setLookAndFeel(&look::liveLook());
+    browser.syncPreviewToggle();
     undoHistory.setLookAndFeel(&look::liveLook());
     undoHistory.read = [this] { return submitter_.timeline(); };
     undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
@@ -1679,6 +1700,7 @@ void AdiRootComponent::vblankFrame() noexcept {
     vblankFrame_ = false;
 }
 void AdiRootComponent::frame() noexcept {
+    browser.syncPreviewToggle();
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
@@ -5504,6 +5526,19 @@ bool AdiRootComponent::command(int id) {
         infoShown_ = commands_.infoView();
         break;
     }
+    case AppCommands::ToggleBrowserPreview: {
+        const bool enable = !commands_.browserPreviewEnabled();
+        std::string why;
+        if (!commands_.setBrowserPreviewEnabled(enable, why))
+            return fail(why);
+        if (!enable && stopSamplePreview)
+            stopSamplePreview();
+        browser.syncPreviewToggle();
+        commands_.manager.commandStatusChanged();
+        return true;
+    }
+    case AppCommands::PreviewSelected:
+        return browser.previewSelected();
     case AppCommands::TabMovesFocus: {
         std::string why;
         if (!commands_.setTabMovesFocus(!commands_.tabMovesFocus(), why))

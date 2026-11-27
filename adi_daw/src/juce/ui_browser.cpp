@@ -153,9 +153,75 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.onFolderArrow = [this](int row, bool right) { return folderArrow(row, right); };
     list.onLeft = [this] { focusIfShowing(*this); };
     list.onEscape = [this] { return cancelHotSwap(); };
+    list.onPreviewKey = [this](const juce::KeyPress &k) { return previewKey(k); };
     addAndMakeVisible(list);
+    previewToggle.onClick = [this] { root_.command(AppCommands::ToggleBrowserPreview); };
+    addAndMakeVisible(previewToggle);
     selected_ = findLabel(kFirstLabel);
     refill();
+}
+BrowserPanel::PreviewToggle::PreviewToggle() : juce::Button("Browser Preview") {
+    setTitle("Browser Preview");
+    setTooltip("Automatically preview selected audio files through Cue Out.");
+}
+void BrowserPanel::PreviewToggle::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto ring = juce::Rectangle<float>(11, 11).withCentre(getLocalBounds().getCentre().toFloat());
+    const auto state = controls::stateOf(getToggleState(), over, down, isEnabled());
+    controls::roundButton(g, ring, state);
+    g.setColour(getToggleState() ? look::ink : look::focus);
+    g.drawEllipse(ring, 2.f);
+    if (hasKeyboardFocus(false)) {
+        g.setColour(look::accent);
+        g.drawRect(getLocalBounds().reduced(1), 1);
+    }
+}
+const LibraryFile *BrowserPanel::selectedSample() const noexcept {
+    const int row = list.getLastRowSelected();
+    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
+        ? rows_[static_cast<std::size_t>(row)].file : nullptr;
+}
+void BrowserPanel::syncPreviewToggle() {
+    const bool enabled = root_.commands().browserPreviewEnabled();
+    if (previewToggle.getToggleState() != enabled)
+        previewToggle.setToggleState(enabled, juce::dontSendNotification);
+}
+bool BrowserPanel::previewKey(const juce::KeyPress &key) {
+    const auto &commands = root_.commands();
+    if (commands.browserPreviewEnabled() || !selectedSample() || !root_.playSamplePreview ||
+        commands.manager.getKeyMappings()->findCommandForKeyPress(key) != AppCommands::PreviewSelected)
+        return false;
+    root_.command(AppCommands::PreviewSelected);
+    return true;
+}
+bool BrowserPanel::previewSelected(double fraction) {
+    if (const auto *file = selectedSample(); file && root_.playSamplePreview) {
+        canRepeatPreview_ = false;
+        root_.playSamplePreview(file->path, fraction);
+        return true;
+    }
+    return false;
+}
+void BrowserPanel::updatePreviewSelection() {
+    const auto *file = selectedSample();
+    const auto path = file ? file->path : std::filesystem::path{};
+    if (path == previewSelection_)
+        return;
+    previewSelection_ = path;
+    setPreviewDisplay({}, {}, false);
+    if (root_.selectSamplePreview)
+        root_.selectSamplePreview(path);
+    if (file && root_.commands().browserPreviewEnabled())
+        root_.command(AppCommands::PreviewSelected);
+    root_.commands().manager.commandStatusChanged();
+}
+void BrowserPanel::setPreviewDisplay(std::shared_ptr<const PreviewPeaks> peaks, std::optional<double> position,
+                                     bool canRepeat) {
+    canRepeatPreview_ = canRepeat;
+    if (peaks != previewPeaks_ || position != previewPosition_) {
+        previewPeaks_ = std::move(peaks);
+        previewPosition_ = position;
+        repaint(previewWaveformArea());
+    }
 }
 void BrowserPanel::enterList() {
     if (firstItem() >= 0) {
@@ -173,6 +239,7 @@ int BrowserPanel::firstItem() const {
 void BrowserPanel::selectedRowsChanged(int row) {
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
         lastSelected_ = row;
+        updatePreviewSelection();
         return;
     }
     // Past the heading, the way the selection moved; at the list's top, down to the first entry.
@@ -813,8 +880,16 @@ bool BrowserPanel::hitFolderDisclosure(int row, int x) const {
     return entry.folder != nullptr && x >= indent && x < indent + kFolderDisclosureWidth;
 }
 void BrowserPanel::listBoxItemClicked(int row, const juce::MouseEvent &event) {
-    if (event.getNumberOfClicks() == 1 && !event.mods.isPopupMenu() && hitFolderDisclosure(row, event.x))
+    if (event.getNumberOfClicks() != 1 || event.mods.isPopupMenu())
+        return;
+    if (hitFolderDisclosure(row, event.x)) {
         toggleFolder(row);
+        return;
+    }
+    // Selection already starts the first audition. Replaying the same row
+    // waits until that audition has finished.
+    if (row == list.getLastRowSelected() && canRepeatPreview_ && root_.commands().browserPreviewEnabled())
+        root_.command(AppCommands::PreviewSelected);
 }
 void BrowserPanel::listBoxItemDoubleClicked(int row, const juce::MouseEvent &event) {
     if (!hitFolderDisclosure(row, event.x))
@@ -837,6 +912,14 @@ void BrowserPanel::resized() {
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
     // The list fills the content pane below its header.
     list.setBounds(contentArea_.withTrimmedTop(19));
+    previewToggle.setBounds(previewArea().withWidth(26));
+}
+juce::Rectangle<int> BrowserPanel::previewArea() const noexcept {
+    return {kStripWidth + look::border, getHeight() - kBarHeight + 2,
+            std::max(0, getWidth() - kStripWidth - 2 * look::border), 21};
+}
+juce::Rectangle<int> BrowserPanel::previewWaveformArea() const noexcept {
+    return previewArea().withTrimmedLeft(26).reduced(look::border, 3);
 }
 void BrowserPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -908,16 +991,35 @@ void BrowserPanel::paint(juce::Graphics &g) {
                        juce::MathConstants<float>::halfPi, look::textDim);
     }
     // The preview row: Live's headphones switch at its left.
-    const juce::Rectangle<int> preview(kStripWidth + look::border, getHeight() - kBarHeight + 2,
-                                       getWidth() - kStripWidth - 2 * look::border, 21);
+    const auto preview = previewArea();
     g.setColour(look::panel);
     g.fillRect(preview);
-    // Round, in the shared button's colours at rest, its preview ring kept.
-    const auto headphones = juce::Rectangle<float>(11, 11).withCentre(
-        {static_cast<float>(preview.getX()) + 13, static_cast<float>(preview.getCentreY())});
-    controls::roundButton(g, headphones, controls::ButtonState::Rest);
-    g.setColour(look::focus);
-    g.drawEllipse(headphones, 2.f);
+    const auto wave = previewWaveformArea();
+    if (previewPeaks_ && !previewPeaks_->empty() && !wave.isEmpty()) {
+        const auto width = static_cast<std::size_t>(wave.getWidth());
+        const auto count = previewPeaks_->size();
+        const float middle = static_cast<float>(wave.getY()) + static_cast<float>(wave.getHeight()) / 2.f;
+        const float reach = static_cast<float>(wave.getHeight()) / 2.f - 1.f;
+        g.setColour(look::textDim);
+        for (std::size_t i = 0; i < width; ++i) {
+            const auto from = i * count / width;
+            const auto to = std::max(from + 1, (i + 1) * count / width);
+            auto [low, high] = (*previewPeaks_)[from];
+            for (std::size_t b = from + 1; b < to; ++b) {
+                low = std::min(low, (*previewPeaks_)[b].minimum);
+                high = std::max(high, (*previewPeaks_)[b].maximum);
+            }
+            const auto top = middle - reach * std::clamp(high, -1.f, 1.f);
+            const auto bottom = middle - reach * std::clamp(low, -1.f, 1.f);
+            g.fillRect(static_cast<float>(wave.getX()) + static_cast<float>(i), top, 1.f,
+                       std::max(1.f, bottom - top));
+        }
+        if (previewPosition_) {
+            const auto x = wave.getX() + juce::roundToInt(std::clamp(*previewPosition_, 0., 1.) * (wave.getWidth() - 1));
+            g.setColour(look::accent);
+            g.fillRect(x, wave.getY(), 1, wave.getHeight());
+        }
+    }
 }
 juce::Rectangle<int> BrowserPanel::sidebarRowBounds(int row) const noexcept {
     return {sidebarArea_.getX(), sidebarArea_.getY() + 1 + row * kRowHeight - juce::roundToInt(sidebarScroll_),
@@ -946,6 +1048,11 @@ void BrowserPanel::revealSidebarSelection() {
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
+    const auto wave = previewWaveformArea();
+    if (!e.mods.isPopupMenu() && previewPeaks_ && wave.contains(e.getPosition()) && selectedSample()) {
+        previewSelected(static_cast<double>(e.x - wave.getX()) / std::max(1, wave.getWidth() - 1));
+        return;
+    }
     const int y = e.y - sidebarRowBounds(0).getY();
     if (sidebarArea_.contains(e.getPosition()) && y >= 0)
         sidebarClick(y / kRowHeight, e);

@@ -3629,6 +3629,116 @@ void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) 
               !History(document->store()).head(),
           "the edge follows Browser visibility and width changes do not enter Undo History");
 }
+void browserPreview(const std::filesystem::path &dir) {
+    const auto settingsFile = dir / "browser-preview-settings.json";
+    settings::AppSettings settings(appdata::App::Daw, settingsFile);
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-preview.adi", true, {}, error);
+    check(document != nullptr, "SC-123: a project for Browser preview");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-preview");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    browser.setSize(256, 320);
+    using Audition = std::pair<std::filesystem::path, double>;
+    std::vector<Audition> auditions;
+    std::filesystem::path inspected;
+    int stopped = 0;
+    root.selectSamplePreview = [&](std::filesystem::path path) { inspected = std::move(path); };
+    root.playSamplePreview = [&](std::filesystem::path path, double fraction) {
+        auditions.emplace_back(std::move(path), fraction);
+    };
+    root.stopSamplePreview = [&] { ++stopped; };
+    const auto kick = dir / "Kick.wav";
+    const auto snare = dir / "Snare.flac";
+    LibraryListing listing;
+    listing.samples = {{"Kick.wav", kick, {}}, {"Snare.flac", snare, {}}};
+    browser.setListing(std::move(listing));
+    for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
+        if (browser.sidebar()[i].samples) {
+            browser.choose(static_cast<int>(i));
+            break;
+        }
+    check(browser.rows().size() == 2 && AppCommands::commandFor("browser.toggle-preview") == AppCommands::ToggleBrowserPreview &&
+              AppCommands::commandFor("browser.preview-selected") == AppCommands::PreviewSelected,
+          "SC-123: both preview commands have stable identifiers");
+    if (browser.rows().size() != 2)
+        return;
+    browser.list.selectRow(0);
+    check(inspected == kick && auditions.empty() && !browser.previewToggle.getToggleState(),
+          "SC-123: selection requests peaks without auditioning while Preview is off");
+    const auto right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto shiftedEnter = juce::KeyPress(juce::KeyPress::returnKey, juce::ModifierKeys::shiftModifier, 0);
+    check(!commands.key(right, root) && !browser.list.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)) &&
+              browser.list.keyPressed(right) && browser.list.keyPressed(shiftedEnter) &&
+              auditions == std::vector<Audition>{{kick, 0.}, {kick, 0.}},
+          "SC-123: Right and Shift+Enter audition from the list, and Space and the Arrangement's Right do not");
+    auto *keys = commands.manager.getKeyMappings();
+    const auto reassigned = juce::KeyPress(juce::KeyPress::F7Key);
+    keys->clearAllKeyPresses(AppCommands::PreviewSelected);
+    keys->addKeyPress(AppCommands::PreviewSelected, reassigned);
+    check(!browser.list.keyPressed(right) && browser.list.keyPressed(reassigned) && auditions.size() == 3,
+          "SC-123: the audition keys follow the user's command binding");
+
+    const auto wave = browser.previewWaveformArea();
+    const int seekX = wave.getCentreX();
+    browser.mouseDown(pressAt(browser, {static_cast<float>(seekX), static_cast<float>(wave.getCentreY())}));
+    check(auditions.size() == 3, "SC-123: an empty waveform area cannot seek");
+    browser.setPreviewDisplay(std::make_shared<const BrowserPanel::PreviewPeaks>(
+                                  BrowserPanel::PreviewPeaks{{-.8f, .8f}, {-.5f, .5f}}), .5);
+    juce::Image image(juce::Image::ARGB, browser.getWidth(), browser.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        browser.paintEntireComponent(g, true);
+    }
+    const int cursorX = wave.getX() + juce::roundToInt(.5 * (wave.getWidth() - 1));
+    check(browser.previewArea() == juce::Rectangle<int>(24, 295, 228, 21) &&
+              browser.previewToggle.getBounds() == juce::Rectangle<int>(24, 295, 26, 21) &&
+              wave == juce::Rectangle<int>(54, 298, 194, 15) &&
+              image.getPixelAt(cursorX, wave.getY()) == look::accent,
+          "SC-123: the waveform and cursor draw in the existing Compact preview row");
+    browser.mouseDown(pressAt(browser, {static_cast<float>(seekX), static_cast<float>(wave.getCentreY())}));
+    check(auditions.size() == 4 && auditions.back() == Audition{kick, static_cast<double>(seekX - wave.getX()) /
+                                                                       (wave.getWidth() - 1)},
+          "SC-123: a waveform click auditions from the corresponding fraction");
+
+    browser.previewToggle.onClick();
+    settings::AppSettings reopened(appdata::App::Daw, settingsFile);
+    check(browser.previewToggle.getToggleState() && reopened.get(settings::kBrowserPreviewEnabledKey) == true &&
+              auditions.size() == 4,
+          "SC-123: the switch is application-wide and enabling it waits for the next selection");
+    check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+              browser.list.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+              auditions == std::vector<Audition>{{kick, 0.}, {kick, 0.}, {kick, 0.},
+                  {kick, static_cast<double>(seekX - wave.getX()) / (wave.getWidth() - 1)}, {snare, 0.}, {kick, 0.}},
+          "SC-123: both arrows audition the newly selected sample while Preview is on");
+    check(root.command(AppCommands::ToggleBrowserPreview) && !browser.previewToggle.getToggleState() && stopped == 1 &&
+              !History(document->store()).head(),
+          "SC-123: the switch command stops audition outside the project's history");
+
+    keys->addKeyPress(AppCommands::PreviewSelected, right);
+    const auto place = dir / "Preview Place";
+    const auto nested = place / "Drums" / "Kick.wav";
+    LibraryListing folders;
+    folders.places = {{"Preview Place", place, "preview-test"}};
+    folders.samples = {{"Kick.wav", nested, "preview-test"}};
+    browser.setListing(std::move(folders));
+    const auto label = std::ranges::find(browser.sidebar(), "preview-test", &BrowserPanel::Entry::place);
+    check(label != browser.sidebar().end(), "SC-123: a Place for the folder and audition key regression");
+    if (label == browser.sidebar().end())
+        return;
+    browser.choose(static_cast<int>(label - browser.sidebar().begin()));
+    browser.list.selectRow(0);
+    check(browser.list.keyPressed(right) && browser.rows().size() == 2 && browser.rows()[0].folderOpen &&
+              browser.list.getSelectedRow() == 0 && auditions.size() == 6 && !browser.list.keyPressed(shiftedEnter),
+          "SC-123: Right opens a folder first and modified Return does not load it");
+    check(browser.list.keyPressed(right) && browser.list.getSelectedRow() == 1 && auditions.size() == 6 &&
+              browser.list.keyPressed(right) && auditions.back() == Audition{nested, 0.} && auditions.size() == 7,
+          "SC-123: Right enters an open folder, then auditions the selected child sample");
+}
 // D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
 // Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
 // build cannot load is dimmed and says why; double-click or Enter loads onto the selected track in
@@ -23062,7 +23172,9 @@ int main(int argc, char **argv) {
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
                       C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
-                      C::About == C::ExportMidiClip + 1 && C::LastId == C::ImportAudioFile,
+                      C::About == C::ExportMidiClip + 1 && C::ImportAudioFile == C::About + 1 &&
+                      C::ToggleBrowserPreview == C::ImportAudioFile + 1 &&
+                      C::PreviewSelected == C::ToggleBrowserPreview + 1 && C::LastId == C::PreviewSelected,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -25654,6 +25766,7 @@ int main(int argc, char **argv) {
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
+    trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });

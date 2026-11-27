@@ -2,6 +2,7 @@
 #include "adi/engine/cue_monitor.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/engine/publisher.hpp"
+#include "adi/engine/sample_preview.hpp"
 #include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <cmath>
@@ -115,6 +116,7 @@ struct Scene final:Sequenced {
 }
 struct CueMonitor::Impl {
     std::atomic<MainAudition> audition{MainAudition::Stereo};
+    SamplePreview* preview=nullptr; // attached while the driver is stopped
     std::map<std::int64_t,std::unique_ptr<Feed>> feeds;
     std::set<std::int64_t> present,selected;
     std::shared_ptr<Buffers> buffers;
@@ -228,6 +230,9 @@ void CueMonitor::release() noexcept {
 void CueMonitor::setMainAudition(MainAudition mode) noexcept {
     impl_->audition.store(mode, std::memory_order_relaxed);
 }
+void CueMonitor::setSamplePreview(SamplePreview* player) noexcept {
+    impl_->preview=player;
+}
 namespace {
 template<class T> void auditionStereo(T* const* output, int frames, MainAudition mode) noexcept {
     if (!output || !output[0] || !output[1] || output[0] == output[1]) return;
@@ -305,8 +310,11 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     } else if (!io.exporting && buffers.activeFilter != MainAudition::Stereo) {
         buffers.activeFilter = MainAudition::Stereo;
     }
+    const auto first=scene->settings.firstOutputChannel;
+    auto* preview=impl_->preview;
+    const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,first);
     const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
-    if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render) {
+    if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render && !sampleActive) {
         impl_->volume={scene->gain,scene->gain,0,0};
         return;
     }
@@ -326,7 +334,11 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
             if(copied)for(int c=0;c<2;++c)cue[c][i]+=scratch[buffers.channels==1?0:c][i]*gate;
         }
     }
-    if(click.render){AudioIo cueIo=io;cueIo.out=nullptr;cueIo.out64=cue;cueIo.numOut=2;click.render(click.context,cueIo);}
+    if(click.render || sampleActive) {
+        AudioIo cueIo=io;cueIo.out=nullptr;cueIo.out64=cue;cueIo.numOut=2;
+        if(click.render)click.render(click.context,cueIo);
+        if(sampleActive)preview->mix(cueIo,buffers.sampleRate,0,1.);
+    }
     if(scene->reference)impl_->lastReference=scene->reference;
     bool haveReference=false;
     if(impl_->lastReference) {
@@ -343,7 +355,6 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     }
     if(!wantReference || readyAt==0)impl_->referenceMix.set(wantReference?1.0:0.0,scene->ramp);
     impl_->volume.set(scene->gain,scene->ramp);
-    const auto first=scene->settings.firstOutputChannel;
     auto add=[&](int channel,int i,double value){
         if(channel>=io.numOut || value==0)return;
         if(io.out && io.out[channel])io.out[channel][i]+=static_cast<float>(value);

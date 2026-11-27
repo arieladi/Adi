@@ -1,0 +1,464 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/engine/sample_preview.hpp"
+#include "adi/audio/aac_codec.hpp"
+#include "adi/audio/pcm_stream.hpp"
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+namespace adi::engine {
+namespace {
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
+constexpr std::size_t kChunkFrames = 1024;
+constexpr std::size_t kQueueChunks = 128; // Enough source frames for a 4096-frame callback at 768 -> 44.1 kHz.
+constexpr std::size_t kWaveformBins = 512;
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+
+struct Cancelled {};
+void checkCancelled(std::stop_token stop) {
+    if (stop.stop_requested())
+        throw Cancelled{};
+}
+
+// The native AAC APIs may rewrap encoded packets in a private transport file.
+// This never holds decoded PCM and is unrelated to the decoding cache.
+class CodecScratch {
+  public:
+    CodecScratch() {
+        static std::atomic<std::uint64_t> serial{0};
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto root = fs::temp_directory_path();
+        for (unsigned attempt = 0; attempt != 128; ++attempt) {
+            auto candidate = root / ("adi-preview-" + std::to_string(stamp) + "-" +
+                                     std::to_string(serial.fetch_add(1, std::memory_order_relaxed)));
+            std::error_code error;
+            if (fs::create_directory(candidate, error)) {
+                directory_ = std::move(candidate);
+                return;
+            }
+            if (error && error != std::errc::file_exists)
+                throw std::runtime_error("Could not create a temporary AAC transport folder.");
+        }
+        throw std::runtime_error("Could not reserve a temporary AAC transport folder.");
+    }
+    ~CodecScratch() {
+        std::error_code error;
+        fs::remove_all(directory_, error);
+    }
+    fs::path file() const { return directory_ / "transport"; }
+
+  private:
+    fs::path directory_;
+};
+
+template <typename Info, typename Read>
+void streamPcm(const fs::path &path, std::stop_token stop, Info &&info, Read &&read) {
+    checkCancelled(stop);
+    const auto format = audio::sniff(path);
+    if (format == audio::SourceFormat::Mp4 || format == audio::SourceFormat::Adts) {
+        auto track = [&] {
+            if (format == audio::SourceFormat::Adts)
+                return audio::readAdts(path);
+            auto movie = audio::readAacAudioMovie(path);
+            return std::move(movie.tracks.front());
+        }();
+        const auto config = audio::aacConfig(track.config);
+        info(audio::PcmStreamInfo{format, config.sampleRate, config.channels, track.frames});
+        checkCancelled(stop);
+        const CodecScratch scratch;
+        audio::decodeAacPcm(track, scratch.file(), std::forward<Read>(read), [&] { checkCancelled(stop); });
+        return;
+    }
+    auto opened = audio::openPcmStream(path, stop);
+    checkCancelled(stop);
+    if (!opened.ready())
+        throw std::runtime_error(opened.error.empty() ? "This file cannot be previewed." : opened.error);
+    const auto &source = opened.stream->info();
+    info(source);
+    std::vector<float> buffer(kChunkFrames * source.channels);
+    for (;;) {
+        checkCancelled(stop);
+        const auto next = opened.stream->read(buffer, stop);
+        if (next.status == audio::PcmReadStatus::End)
+            return;
+        checkCancelled(stop);
+        if (next.status != audio::PcmReadStatus::Frames)
+            throw std::runtime_error(opened.stream->error().empty() ? "The preview could not read audio."
+                                                                   : opened.stream->error());
+        read(std::span<const float>(buffer).first(static_cast<std::size_t>(next.frames) * source.channels));
+    }
+}
+
+struct Stereo {
+    float left = 0, right = 0;
+};
+Stereo previewSample(std::span<const float> frame) noexcept {
+    // Use the first stereo pair and duplicate a mono source.
+    const auto left = std::isfinite(frame[0]) ? frame[0] : 0.f;
+    if (frame.size() == 1)
+        return {left, left};
+    return {left, std::isfinite(frame[1]) ? frame[1] : 0.f};
+}
+
+struct Request {
+    fs::path path;
+    std::uint64_t revision = 0;
+    double fraction = 0.;
+    std::optional<std::uint64_t> knownFrames;
+    std::stop_token stop;
+};
+struct WorkSlot {
+    std::stop_source cancel;
+    std::optional<Request> pending;
+
+    void replace(Request request) {
+        cancel.request_stop();
+        cancel = std::stop_source{};
+        request.stop = cancel.get_token();
+        pending = std::move(request);
+    }
+    void clear() noexcept {
+        cancel.request_stop();
+        pending.reset();
+    }
+};
+struct Chunk {
+    std::uint64_t revision = 0, first = 0;
+    std::uint32_t rate = 0;
+    std::size_t frames = 0;
+    std::array<Stereo, kChunkFrames> pcm;
+};
+
+void appendPeaks(SamplePreview::Waveform &wave, std::span<const float> pcm, std::size_t channels) {
+    for (std::size_t at = 0; at < pcm.size(); at += channels) {
+        const auto sample = previewSample(pcm.subspan(at, channels));
+        if (wave.frames % wave.framesPerBin == 0) {
+            if (wave.bins.size() == kWaveformBins) {
+                for (std::size_t i = 0; i < kWaveformBins / 2; ++i)
+                    wave.bins[i] = {std::min(wave.bins[i * 2].minimum, wave.bins[i * 2 + 1].minimum),
+                                    std::max(wave.bins[i * 2].maximum, wave.bins[i * 2 + 1].maximum)};
+                wave.bins.resize(kWaveformBins / 2);
+                wave.framesPerBin *= 2;
+            }
+            wave.bins.push_back({std::min(sample.left, sample.right), std::max(sample.left, sample.right)});
+        } else {
+            auto &bin = wave.bins.back();
+            bin.minimum = std::min({bin.minimum, sample.left, sample.right});
+            bin.maximum = std::max({bin.maximum, sample.left, sample.right});
+        }
+        ++wave.frames;
+    }
+}
+
+template <typename T> bool outputPair(T *const *out, int first) noexcept {
+    return out && out[first] && out[first + 1] && out[first] != out[first + 1];
+}
+} // namespace
+
+struct SamplePreview::Impl {
+    mutable std::mutex mutex;
+    std::condition_variable_any wake;
+    WorkSlot playback, selection;
+    std::uint64_t nextRevision = 0, selectionRevision = 0;
+    Status snapshot;
+    fs::path selectedPath;
+    std::uint64_t totalFrames = 0;
+    double requestedFraction = 0.;
+    std::string waveformError;
+
+    // A fixed single-producer/single-consumer queue. Replacing a request does
+    // not free or reallocate its PCM, including while the device is stopped.
+    std::array<Chunk, kQueueChunks> queue;
+    std::atomic<std::uint64_t> written{0}, consumed{0};
+    std::atomic<std::uint64_t> requested{0}, decoderEnded{0}, failed{0};
+    std::atomic<std::uint64_t> audible{0}, finished{0}, position{0};
+    std::uint64_t rendering = 0; // audio-thread-only
+    double offset = 0.;
+
+    std::jthread playbackThread, selectionThread; // join before releasing the queue and owner state
+    Impl() {
+        playbackThread = std::jthread([this](std::stop_token stop) {
+            run(playback, stop, &Impl::decodePlayback, true);
+        });
+        selectionThread = std::jthread([this](std::stop_token stop) {
+            run(selection, stop, &Impl::decodeWaveform, false);
+        });
+    }
+    ~Impl() {
+        playbackThread.request_stop();
+        selectionThread.request_stop();
+        std::lock_guard lock(mutex);
+        playback.clear();
+        selection.clear();
+    }
+
+    void run(WorkSlot &slot, std::stop_token stop, void (Impl::*work)(const Request &), bool audition) {
+        for (;;) {
+            Request request;
+            {
+                std::unique_lock lock(mutex);
+                if (!wake.wait(lock, stop, [&] { return slot.pending.has_value(); }))
+                    return;
+                request = std::move(*slot.pending);
+                slot.pending.reset();
+            }
+            try {
+                (this->*work)(request);
+            } catch (const Cancelled &) {
+                // A replacement or Stop has already changed the owner state.
+            } catch (const std::exception &error) {
+                std::lock_guard lock(mutex);
+                if (audition && requested.load(std::memory_order_relaxed) == request.revision) {
+                    snapshot.error = error.what();
+                    failed.store(request.revision, std::memory_order_release);
+                } else if (!audition && selectionRevision == request.revision)
+                    waveformError = error.what();
+            }
+        }
+    }
+
+    void requestWaveform(const fs::path &path) { // owner, with mutex
+        if (path == selectedPath)
+            return;
+        selectedPath = path;
+        snapshot.waveform.reset();
+        waveformError.clear();
+        selectionRevision = ++nextRevision;
+        if (path.empty())
+            selection.clear();
+        else
+            selection.replace({path, selectionRevision, 0., {}, {}});
+    }
+
+    void decodeWaveform(const Request &request) {
+        auto result = std::make_shared<Waveform>();
+        result->path = request.path;
+        result->bins.reserve(kWaveformBins);
+        std::size_t channels = 0;
+        streamPcm(request.path, request.stop, [&](const audio::PcmStreamInfo &info) {
+            channels = info.channels;
+            result->sampleRate = info.sampleRate;
+            if (info.frames && *info.frames > 0)
+                result->framesPerBin = 1 + (*info.frames - 1) / kWaveformBins;
+        }, [&](std::span<const float> pcm) {
+            checkCancelled(request.stop);
+            appendPeaks(*result, pcm, channels);
+        });
+        if (!result->frames)
+            throw std::runtime_error("This sample has no audio frames.");
+        std::lock_guard lock(mutex);
+        if (selectionRevision == request.revision)
+            snapshot.waveform = std::move(result);
+    }
+
+    void decodePlayback(const Request &request) {
+        std::uint64_t frame = 0, start = 0;
+        std::size_t channels = 0;
+        std::uint32_t rate = 0;
+        streamPcm(request.path, request.stop, [&](const audio::PcmStreamInfo &info) {
+            channels = info.channels;
+            rate = info.sampleRate;
+            const auto length = info.frames ? info.frames : request.knownFrames;
+            if (request.fraction > 0. && !length)
+                throw std::runtime_error("Wait for the waveform before seeking this sample.");
+            if (length && *length > 0) {
+                // The waveform's horizontal fraction measures the full
+                // interval [0, length). Its right edge plays the last frame.
+                start = request.fraction == 1. ? *length - 1 :
+                            static_cast<std::uint64_t>(static_cast<long double>(*length) * request.fraction);
+                std::lock_guard lock(mutex);
+                if (requested.load(std::memory_order_relaxed) == request.revision)
+                    totalFrames = *length;
+            }
+        }, [&](std::span<const float> pcm) {
+            const auto frames = pcm.size() / channels;
+            std::size_t at = 0;
+            if (frame < start) {
+                at = static_cast<std::size_t>(std::min<std::uint64_t>(start - frame, frames));
+                frame += at;
+            }
+            while (at < frames) {
+                checkCancelled(request.stop);
+                const auto next = written.load(std::memory_order_relaxed);
+                if (next - consumed.load(std::memory_order_acquire) >= queue.size()) {
+                    std::this_thread::sleep_for(2ms);
+                    continue;
+                }
+                auto &chunk = queue[static_cast<std::size_t>(next % queue.size())];
+                chunk.revision = request.revision;
+                chunk.rate = rate;
+                chunk.first = frame;
+                chunk.frames = std::min(chunk.pcm.size(), frames - at);
+                for (std::size_t i = 0; i < chunk.frames; ++i)
+                    chunk.pcm[i] = previewSample(pcm.subspan((at + i) * channels, channels));
+                at += chunk.frames;
+                frame += chunk.frames;
+                written.store(next + 1, std::memory_order_release);
+            }
+        });
+        if (frame <= start)
+            throw std::runtime_error("This sample has no audio at the preview start.");
+        std::lock_guard lock(mutex);
+        if (requested.load(std::memory_order_relaxed) == request.revision) {
+            totalFrames = frame;
+            decoderEnded.store(request.revision, std::memory_order_release);
+        }
+    }
+};
+
+SamplePreview::SamplePreview() : impl_(std::make_unique<Impl>()) {}
+SamplePreview::~SamplePreview() = default;
+
+void SamplePreview::select(fs::path path) {
+    auto &state = *impl_;
+    {
+        std::lock_guard lock(state.mutex);
+        state.requestWaveform(path);
+    }
+    state.wake.notify_all();
+}
+void SamplePreview::play(fs::path path, double fraction) {
+    if (path.empty()) {
+        stop();
+        return;
+    }
+    auto &state = *impl_;
+    {
+        std::lock_guard lock(state.mutex);
+        // Keep the selection supplied by the caller; a surface may audition a
+        // different file without taking the Browser's selection away.
+        if (state.selectedPath.empty())
+            state.requestWaveform(path);
+        const auto frames = state.snapshot.waveform && state.snapshot.waveform->path == path
+                                ? std::optional{state.snapshot.waveform->frames} : std::nullopt;
+        const auto revision = ++state.nextRevision;
+        state.requestedFraction = std::isfinite(fraction) ? std::clamp(fraction, 0., 1.) : 0.;
+        state.playback.replace({path, revision, state.requestedFraction, frames, {}});
+        state.snapshot.playingPath = std::move(path);
+        state.snapshot.error.clear();
+        state.totalFrames = 0;
+        state.requested.store(revision, std::memory_order_release);
+    }
+    state.wake.notify_all();
+}
+void SamplePreview::stop() {
+    auto &state = *impl_;
+    std::lock_guard lock(state.mutex);
+    state.playback.clear();
+    state.snapshot.playingPath.clear();
+    state.snapshot.error.clear();
+    state.requested.store(0, std::memory_order_release);
+}
+SamplePreview::Status SamplePreview::status() const {
+    const auto &state = *impl_;
+    std::lock_guard lock(state.mutex);
+    auto result = state.snapshot;
+    const auto revision = state.requested.load(std::memory_order_relaxed);
+    if (revision != 0) {
+        result.phase = Phase::Loading;
+        result.position = state.requestedFraction;
+        if (state.finished.load(std::memory_order_acquire) == revision) {
+            result.phase = Phase::Finished;
+            result.position = 1.;
+        } else if (state.failed.load(std::memory_order_acquire) == revision)
+            result.phase = Phase::Failed;
+        else if (state.audible.load(std::memory_order_acquire) == revision) {
+            result.phase = Phase::Playing;
+            auto length = state.totalFrames;
+            if (!length && result.waveform && result.waveform->path == result.playingPath)
+                length = result.waveform->frames;
+            if (length)
+                result.position = std::clamp(static_cast<double>(state.position.load(std::memory_order_relaxed)) /
+                                             static_cast<double>(length), 0., 1.);
+        }
+    } else if (!state.waveformError.empty())
+        result.error = state.waveformError;
+    return result;
+}
+
+bool SamplePreview::active() const noexcept {
+    const auto &state = *impl_;
+    const auto revision = state.requested.load(std::memory_order_acquire);
+    return revision != 0 && state.finished.load(std::memory_order_relaxed) != revision &&
+           state.failed.load(std::memory_order_acquire) != revision;
+}
+bool SamplePreview::canOutput(const AudioIo &io, int firstChannel) noexcept {
+    return !io.exporting && firstChannel >= 0 && io.numOut >= 2 && firstChannel <= io.numOut - 2 &&
+           (outputPair(io.out, firstChannel) || outputPair(io.out64, firstChannel));
+}
+void SamplePreview::mix(const AudioIo &io, double deviceRate, int firstChannel, double gain) noexcept {
+    if (io.frames <= 0 || !canOutput(io, firstChannel) || !(deviceRate >= 1.) || !std::isfinite(deviceRate) ||
+        !(gain >= 0.) || !std::isfinite(gain))
+        return;
+    auto &state = *impl_;
+    const auto wanted = state.requested.load(std::memory_order_acquire);
+    if (!wanted || state.finished.load(std::memory_order_relaxed) == wanted ||
+        state.failed.load(std::memory_order_acquire) == wanted)
+        return;
+    if (state.rendering != wanted) {
+        state.rendering = wanted;
+        state.offset = 0.;
+    }
+    auto next = state.consumed.load(std::memory_order_relaxed);
+    const bool ended = state.decoderEnded.load(std::memory_order_acquire) == wanted;
+    const auto available = state.written.load(std::memory_order_acquire);
+    while (next != available && state.queue[static_cast<std::size_t>(next % state.queue.size())].revision < wanted)
+        ++next;
+    const bool narrow = outputPair(io.out, firstChannel), wide = outputPair(io.out64, firstChannel);
+    for (std::int32_t i = 0; i < io.frames; ++i) {
+        while (next != available) {
+            const auto &candidate = state.queue[static_cast<std::size_t>(next % state.queue.size())];
+            if (candidate.revision != wanted || state.offset < static_cast<double>(candidate.frames))
+                break;
+            state.offset -= static_cast<double>(candidate.frames);
+            ++next;
+        }
+        if (next == available) {
+            if (ended)
+                state.finished.store(wanted, std::memory_order_release);
+            break;
+        }
+        const auto &chunk = state.queue[static_cast<std::size_t>(next % state.queue.size())];
+        if (chunk.revision != wanted)
+            break;
+        const auto at = static_cast<std::size_t>(state.offset);
+        const double fraction = state.offset - static_cast<double>(at);
+        const auto a = chunk.pcm[at];
+        auto b = a;
+        if (fraction > 0.) {
+            if (at + 1 < chunk.frames)
+                b = chunk.pcm[at + 1];
+            else if (next + 1 < available) {
+                const auto &following = state.queue[static_cast<std::size_t>((next + 1) % state.queue.size())];
+                if (following.revision == wanted)
+                    b = following.pcm[0];
+            }
+            else if (!ended)
+                break; // wait for interpolation's next source frame without changing position
+        }
+        const double left = std::lerp(static_cast<double>(a.left), static_cast<double>(b.left), fraction) * gain;
+        const double right = std::lerp(static_cast<double>(a.right), static_cast<double>(b.right), fraction) * gain;
+        if (narrow) {
+            io.out[firstChannel][i] += static_cast<float>(left);
+            io.out[firstChannel + 1][i] += static_cast<float>(right);
+        }
+        if (wide) {
+            io.out64[firstChannel][i] += left;
+            io.out64[firstChannel + 1][i] += right;
+        }
+        state.offset += static_cast<double>(chunk.rate) / deviceRate;
+        state.position.store(chunk.first + static_cast<std::uint64_t>(state.offset), std::memory_order_relaxed);
+        state.audible.store(wanted, std::memory_order_release);
+    }
+    state.consumed.store(next, std::memory_order_release);
+}
+} // namespace adi::engine

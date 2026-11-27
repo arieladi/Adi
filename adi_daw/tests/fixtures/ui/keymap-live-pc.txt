@@ -136,3 +136,5 @@
 29063 Export MIDI Clip...: Cmd+Shift+E
 29064 About ADI: 
 29065 Import Audio File...: 
+29066 Browser Preview: 
+29067 Preview Selected: Shift+Return, Right

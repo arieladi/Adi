@@ -71,6 +71,10 @@ inline constexpr int kGraphWorkersMinimumFrames = 1024;
 [[nodiscard]] bool graphWorkersEnabled(const Value& setting, int grantedFrames) noexcept;
 
 inline constexpr char kNewMidiInputTrackKey[] = "midi.trackOnForNewInputs";
+inline constexpr char kBrowserPreviewEnabledKey[] = "browser.previewEnabled";
+inline constexpr bool kBrowserPreviewStartsEnabled = false;
+inline constexpr char kStandalonePreviewLevelKey[] = "audio.standalonePreviewLevelDb";
+inline constexpr double kStandalonePreviewLevelDb = -12.;
 
 /// Every setting, including internal preferences. Displayed rows keep their
 /// page order and display order.

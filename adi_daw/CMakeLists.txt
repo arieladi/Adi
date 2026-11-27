@@ -439,6 +439,7 @@ add_library(adi_core STATIC
     src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/cue_monitor.cpp
+    src/adi/engine/sample_preview.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/audio_memory.cpp
     src/adi/engine/summing.cpp
@@ -1143,6 +1144,13 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 add_executable(adi_cue_monitor_tests tests/test_cue_monitor.cpp)
 target_link_libraries(adi_cue_monitor_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_cue_monitor_tests COMMAND adi_cue_monitor_tests)
+
+add_executable(adi_sample_preview_tests tests/test_sample_preview.cpp)
+target_link_libraries(adi_sample_preview_tests PRIVATE adi_core adi_warnings Threads::Threads)
+target_compile_definitions(adi_sample_preview_tests PRIVATE
+    ADI_PREVIEW_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
+    ADI_PREVIEW_AAC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
+add_test(NAME adi_sample_preview_tests COMMAND adi_sample_preview_tests)
 
 add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
 target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
