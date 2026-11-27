@@ -1,9 +1,9 @@
 ## Still unbuilt
 
-- Production app activation depends on the durable AGT-02/03 project grants
-  and the DEV-25 full-class-ID and stock parameter maps. The window and
-  authenticated production fork have separate rows. The server seat provides
-  the engine entry points and tests for those inputs.
+- Production app activation depends on the AGT-02 project identifier writer,
+  AGT-03 hosting grants and the DEV-25 full-class-ID and stock parameter maps.
+  The identifier writer is on `control/agent-chain` at `f3b2596bb`.
+  The window and authenticated production fork have separate rows.
 - Physical two-host PTP evidence needs separately clocked endpoints and PHC
   access. This runner supplies isolated network namespaces on one kernel.
 
@@ -33,6 +33,9 @@ I took the server engine seat on 27 November 2026.
 | DEV-27 remote control engine | Published stable remote parameter slots and acknowledged values, retained user values across connection rebuilds, refreshed state through bounded worker controls, and gated controls on the hosting lease. | 40 strict checks, zero callback allocations. Mutations caught missing replay and fabricated acknowledgements. Chain `a7f5109ec`. | Device control seam complete. |
 | DEV-27 native control and automation | Added opt-in native parameter manifests and set/readback, plus actual CLAP parameter testing. | The host applied the normalized gain event at frame 40; the real effect changed both voices at sample 47 with its declared DSP delay. Remote PCM matched all 256 aligned samples. An off-by-one mutant failed. Chain `79309a2ce`. | Native manual and sample-accurate controls proved. |
 | DEV-27 stock manual parameters | Added explicit trusted stock-index to project-ID mappings, bounded normalized control readback and separate manual-only presentation capability. | 19 stock fixture scenarios pass on Linux and Windows PE under Wine. Official stock VST3 Drive acknowledged 0.625. The fixture rejects ambiguous indices and verifies no send after grant revocation in the engine seam. Chain `33e8237fe`. | Scoped stock manual control complete. |
+| DEV-27 stored controls on Session open | Tested stock controls through `Session::load` and its normal `plugin_params` restore. | The authorized device and server both observe the stored 0.625. The strict full run passed all 291 tests. Chain `76e8b92c5`. | Session restore proved. |
+| DEV-27 native manifest validation | Made narrow wire integers shift in unsigned arithmetic under instrumentation. | Strict ASan and UBSan rejected all 118 truncated prefixes, duplicate selector, overlong field and nonfinite feedback. Windows native TCP passed after the fix. Chain `b1359ca50`. | Wire bytes and rejection behavior verified. |
+| DF-E92 main merge and SC-430 | Merged `origin/main` at `6e684bda4`. Shared ParamOps now uses main's best-effort stale-state receipt and keeps the remote worker's diagnostic for strict captures. | Chain `8fa1ac1e7`. The focused regression checks the strict diagnostic, preservation during a best-effort save and retention after reopening. The merged build is running. | Merge pushed. |
 
 ## For the director
 
@@ -61,3 +64,8 @@ suite compiled with warnings as errors and passed under private Xvfb,
 including full-class-ID local fallback and mono, four- and six-channel
 offline capture. Its existing JUCE MessageListener debug assertions during
 settings discovery were nonfatal. Verified chain `f42f89a44`.
+
+The strict GCC Debug continuation at `76e8b92c5` passed all 291 CTests in
+254.92 seconds. Windows PE under MinGW and Wine exercised the actual CLAP DLL
+over TCP with 256 exact compensated samples, and Windows UDP discovery and
+the SQLite catalogue in a Unicode path with one deduplicated mapped identity.
