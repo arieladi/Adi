@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026 — main `6f96847b`
+
+Headless Debug built with Pd, libc++ and the strict warning flags. All 278 CTest suites passed, including a rerun of `adi_clip_playback_tests`. The first run of that suite hit `decode.no_space` because the build left the host below the cache's minimum free space. It passed with the same binaries after reclaiming generated build files. No source fix was needed.
+
+The pinned JUCE probe configured. An application build with the libc++-linked JUCE helper is in progress.
+
 ### 27 November 2026 — seats/session-chain `82a6813e`
 
 Two translation units failed the Clang 20 syntax check with `-mlong-double-64`. This gives `long double` 53 mantissa bits, matching Apple Silicon's precision for these expressions. Both errors are `-Wimplicit-int-float-conversion`. The full headless build and suite are pending.
