@@ -50,6 +50,8 @@ The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, pa
 
 A. A longer or continuing R3 slot needs a jointly phased worker transition or the active worker's DSP history. In the 120→140 No Stop probe, the exact musical rebase moved the source read from frame 9,600 to 8,229 and put the next pulse within 16 samples. Switching the independently primed banks still caused a 0.258 FS sine step at that phase. The ordinary maximum was 0.019 FS. The tested unphased fade reduced a 128-frame window from 0.212 to 0.111 FS RMS. Both a queued replacement and a same-clip retrigger changed the live run and source phase after the owner forecast.
 
+A second probe supplied both fully primed banks from the real worker readers across 3,790 callback phases with zero allocations, file I/O or page underruns. Holding the measured lag through the overlap preserved at least 87.1% of the 440 Hz bank's short-window RMS. The same fit fell to 5.3% at 56.7 Hz and 18.0% on four nonharmonic partials. Pulse material also produced duplicate attacks. Complete page residency alone still leaves the phase-history problem.
+
 The driver needs to validate the run, source phase and bank generation before a tempo boundary can take effect. If the worker misses the chosen boundary, I recommend keeping the current scene and clock and returning a readiness result. A later launch request can choose a new boundary.
 
 ## Readings owed
