@@ -5300,7 +5300,7 @@ void ClipViewPanel::editSample() {
         root.say("Choose a Sample Editor in Settings > File & Folder.");
         return;
     }
-    if (root.transport.playing()) {
+    if (root.playing()) {
         root.say("Stop playback before editing the sample.");
         return;
     }
