@@ -429,10 +429,8 @@ class TrackHeightButton final : public juce::Button {
     TrackHeightButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
-// between Arrangement and Session View, then the track height, under the bar over the track names,
-// which holds the flip and the section selectors (the Arrangement sheet; DF-W25). Flipped, it moves to
-// the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
+// The strip down the Arrangement's outer edge holds the track height control. Flipped, it moves to
+// the window's left edge so the track controls meet the lanes (the director, 28 October 2026).
 class SideStrip final : public juce::Component {
   public:
     SideStrip();

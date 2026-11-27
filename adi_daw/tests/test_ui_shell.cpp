@@ -18671,6 +18671,19 @@ int main(int argc, char **argv) {
         check(first != 0 && a.state().largeTracks && a.strip.tracks.getToggleState() && ticked() &&
                   at.getY() >= a.namesBar.getBottom() && a.stripArea().contains(at),
               "large tracks by default: the button lit on the strip under the bar, the View menu ticked");
+        const auto stripBounds = a.strip.getLocalBounds();
+        juce::Image side(juce::Image::ARGB, stripBounds.getWidth(), stripBounds.getHeight(), true,
+                        juce::SoftwareImageType{});
+        juce::Graphics g(side);
+        a.strip.paintEntireComponent(g, false);
+        const auto oldSwitches = juce::Rectangle<int>(4, a.strip.tracks.getY() - 44, 19, 41);
+        bool clear = stripBounds.contains(oldSwitches);
+        if (clear)
+            for (int y = oldSwitches.getY(); y < oldSwitches.getBottom(); ++y)
+                for (int x = oldSwitches.getX(); x < oldSwitches.getRight(); ++x)
+                    clear = clear && side.getPixelAt(x, y) == look::band;
+        check(clear && a.strip.getNumChildComponents() == 1,
+              "SC-356: no painted Arrangement and Session buttons or invisible hit targets on the side strip");
         a.strip.tracks.onClick();
         a.frame();
         check(!a.state().largeTracks && !a.strip.tracks.getToggleState() && !ticked() &&

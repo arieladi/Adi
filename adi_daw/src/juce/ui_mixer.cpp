@@ -2184,24 +2184,11 @@ void SideStrip::setHead(int y) {
     repaint();
 }
 void SideStrip::resized() {
-    // Under the two view switches, the track height.
+    // Keep the track height control at its position under the names bar.
     tracks.setBounds(4, head_ + 47, 19, 14);
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
-    // At the strip's head, Live's switches between Arrangement and Session View; the
-    // Arrangement's is lit.
-    for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> r(4.f, static_cast<float>(head_) + 3.f + 22.f * static_cast<float>(i), 19, 19);
-        g.setColour(look::selectorEdge);
-        g.fillEllipse(r);
-        g.setColour(i == 0 ? look::accent : look::panel);
-        for (int line = 0; line < 3; ++line)
-            if (i == 0)
-                g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
-            else
-                g.fillRect(r.getX() + 6 + 3.f * static_cast<float>(line), r.getY() + 5, 1.6f, 9.f);
-    }
 }
 void MixerPanel::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
