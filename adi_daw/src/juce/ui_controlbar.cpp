@@ -408,7 +408,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&stop, "Stop", "Stops playback. Press while stopped to return to the start."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
         {&overdub, "MIDI Arrangement Overdub", "Unavailable until Arrangement Record can overdub MIDI clips.", false},
-        {&automationArm, "Automation Arm", "Unavailable until Arrangement Record can write automation.", false},
+        {&automationArm, "Automation Arm", "While on, moving a control during Arrangement Record writes automation."},
         {&reEnable, "Re-Enable Automation", "Lit while a control you moved overrides its automation. "
                                             "Click to follow every envelope again."},
         {&capture, "Capture MIDI", "Unavailable until the app can turn recently played MIDI into a clip.", false},
@@ -510,6 +510,14 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         }
         root_.reenableAutomation(); // a refusal says why; the snapshot unlights the switch
     };
+    automationArm.onClick = [this] {
+        if (!root_.automationArmed || !root_.armAutomation)
+            return;
+        root_.armAutomation(!root_.automationArmed());
+        root_.mark(DirtySet::Transport);
+    };
+    automationArm.setEnabled(false);
+    automationArm.setAlpha(.45f);
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
     record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {
         root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate
@@ -669,6 +677,10 @@ void TransportBar::refresh() {
     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);
+    const bool canArmAutomation = root_.automationArmed && root_.armAutomation;
+    automationArm.setEnabled(canArmAutomation);
+    automationArm.setAlpha(canArmAutomation ? 1.f : .45f);
+    automationArm.setToggleState(canArmAutomation && root_.automationArmed(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4).

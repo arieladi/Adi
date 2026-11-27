@@ -26,6 +26,7 @@
 #include "ui_look.hpp"
 #include "ui_place.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
 #include "ui_analysis.hpp"
@@ -259,13 +260,18 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // The Arrangement's clipboard holds captured material and outlives a window.
     struct ClipClipboard {
         // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, TrackCopy> held;
+        struct EnvelopeCopy {
+            edit::AutomationRangeCopy range;
+            std::string sourceFile;
+        };
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, TrackCopy, EnvelopeCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
         // The project file a copy names; a Time copy names it by its material.
         static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
         static std::string *fileOf(TrackCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(EnvelopeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(std::monostate &) { return nullptr; }
         std::string sourceFile() {
             auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
@@ -531,7 +537,7 @@ class AdiRootComponent final : public juce::Component,
     }
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
-    std::function<bool()> recording;
+    std::function<bool()> recording, capturingAudioTake;
     std::function<bool()> landingRecording;
     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
@@ -733,11 +739,13 @@ class AdiRootComponent final : public juce::Component,
     bool trackClipboard(ClipCommand);
     bool trackClipboardContext() const;
     bool trackGroupingContext() const;
+    bool deleteAutomationRange();
     bool canClipClipboard(ClipCommand) const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.
     bool canClipboard(int commandId) const;
     bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
+    bool automationClipboard(ClipCommand);
     // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
     std::int64_t pasteOrigin() const;
     // Live's …Time commands and Insert Silence (manual 6.11, 41.5; E3): across every track, from the
@@ -782,7 +790,7 @@ class AdiRootComponent final : public juce::Component,
     bool automationMode() const noexcept { return automationMode_; }
     bool drawMode() const noexcept { return clipView.notes.drawMode(); }
     void setAutomationMode(bool on);
-    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue = false);
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.
@@ -801,7 +809,8 @@ class AdiRootComponent final : public juce::Component,
                                                                                    const std::string &parameter) const;
     // The target's value now, where its control stands: the line drawn while its lane has no point.
     double automationCurrent(const AutomationTarget &target) const;
-    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
+    // For a typed value, tick is the point's expected, unchanged native time.
+    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value, bool exactValue = false);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                               std::int64_t begin, std::int64_t end,

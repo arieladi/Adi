@@ -209,6 +209,14 @@ inline TrackEnvelope trackEnvelope(const engine::Snapshot &snapshot, std::int64_
 // Whether the window edits this envelope: a lane in ticks (one in nanoseconds is shown as it is and
 // left alone); `laneOf` has already held it to its target's domain.
 inline bool editableEnvelope(const TrackEnvelope &env) { return env.lane == nullptr || env.lane->timeBase == 0; }
+// Text entry uses the stored lane's bounds. The dB floor on the screen is
+// distinct from quiet numeric dB values below it.
+inline bool validExactAutomationValue(const TrackEnvelope &env, const AutomationTarget &target, double value) noexcept {
+    const double minimum = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
+    return std::isfinite(value) &&
+           value >= (env.lane ? env.lane->minValue.value_or(minimum) : minimum) &&
+           value <= (env.lane ? env.lane->maxValue.value_or(target.maximum) : target.maximum);
+}
 // The ids an edit needs that the project does not hold yet: the next free lane, data and point ids.
 struct AutomationIds {
     std::int64_t lane = 0, data = 0;
@@ -229,17 +237,20 @@ inline automation::LaneSpec automationLaneSpec(const AutomationTarget &target, d
     spec.maxValue = target.maximum;
     return spec;
 }
-// A breakpoint added at `tick` with `value` (clamped to the target's travel): the lane and its data made
-// first when the target has none, all in one batch, one undo step. `currentValue` is the control's value
-// now, the lane's default.
+// Add a breakpoint and, when needed, its lane in one undo step. Pointer
+// values use the target's travel. Exact values use the lane's storage range.
 inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const AutomationTarget &target, std::int64_t tick,
-                                                 double value, double currentValue, const AutomationIds &ids) {
+                                                 double value, double currentValue, const AutomationIds &ids,
+                                                 bool exactValue = false) {
     std::vector<OpRequest> ops;
-    if (!editableEnvelope(env))
+    if (!editableEnvelope(env) || (exactValue && !validExactAutomationValue(env, target, value)))
         return ops;
     std::int64_t lane = 0, data = 0;
     if (env.lane == nullptr) {
-        ops.push_back(automation::createLane(automationLaneSpec(target, currentValue, ids.lane)));
+        auto spec = automationLaneSpec(target, currentValue, ids.lane);
+        if (exactValue && validExactAutomationValue(env, target, currentValue))
+            spec.defaultValue = currentValue;
+        ops.push_back(automation::createLane(spec));
         lane = ids.lane;
     } else
         lane = env.lane->id;
@@ -252,7 +263,7 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, const
         data, lane, nullptr,
         Payload::array({Payload{{"id", point},
                                 {"time", std::max<std::int64_t>(0, tick)},
-                                {"value", writtenAutomationValue(target, value)},
+                                {"value", exactValue ? value : writtenAutomationValue(target, value)},
                                 {"curve", target.stepped ? 0 : 1},
                                 {"tension", 0.0}}})));
     for (auto &op : ops)
@@ -280,6 +291,13 @@ inline std::vector<OpRequest> moveAutomationPoint(const TrackEnvelope &env, cons
 inline std::vector<OpRequest> moveAutomationPoint(const TrackEnvelope &env, const std::string &param, std::uint64_t point,
                                                   std::int64_t tick, double value) {
     return moveAutomationPoint(env, param == "pan" ? panTarget(0) : volumeTarget(0), point, tick, value);
+}
+// The caller validates the value and resolves the point in this envelope.
+inline OpRequest editAutomationPointValue(const TrackEnvelope &env, const engine::AutomationPointNode &point, double value) {
+    auto request = automation::movePoints(env.data->id, env.lane->id, nullptr,
+        Payload::array({Payload{{"id", point.id}, {"time", point.time}, {"value", value}}}));
+    request.label = "Edit Automation Point Value";
+    return request;
 }
 inline std::vector<OpRequest> deleteAutomationPoint(const TrackEnvelope &env, std::uint64_t point) {
     std::vector<OpRequest> ops;

@@ -26,6 +26,7 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -681,6 +682,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         if (active_ != nullptr && active_->devices.focusedDevice()) {
             info.shortName = "Delete";
             info.setActive(true);
+            break;
+        }
+        if (active_ != nullptr && active_->arrangement.canvas.hasAutomationSelection()) {
+            const auto &selection = active_->arrangement.geometry.selection;
+            info.shortName = "Delete Automation Range";
+            info.setActive(selection.start != selection.end);
             break;
         }
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
@@ -2304,39 +2311,23 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
     const auto current = view_.current();
     if (!current || places.empty())
         return fail("Select a clip to move.");
-    // The scope: every track a clip leaves or lands on, over the span from the earliest start to the
-    // latest end, where it was and where it goes.
-    std::vector<std::int64_t> tracks;
-    std::int64_t begin = std::numeric_limits<std::int64_t>::max(), end = 0;
     std::vector<edit_plan::Move> moves;
-    for (const auto &place : places) {
-        const engine::ClipNode *clip = nullptr;
-        std::int64_t from = 0;
-        for (const auto &t : current->tracks)
-            if (t)
-                for (const auto &c : t->clips)
-                    if (c && c->id == place.clip) {
-                        clip = c.get();
-                        from = t->id;
-                    }
-        if (clip == nullptr)
-            return fail("That clip is gone.");
-        for (const auto id : {from, place.track})
-            if (std::find(tracks.begin(), tracks.end(), id) == tracks.end())
-                tracks.push_back(id);
-        begin = std::min({begin, clip->posTicks, place.position});
-        end = std::max({end, clip->posTicks + clip->lengthTicks, place.position + clip->lengthTicks});
+    moves.reserve(places.size());
+    for (const auto &place : places)
         moves.push_back({place.clip, {place.track, std::nullopt}, {0, place.position}});
-    }
-    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks, {begin, std::max(end, begin + 1)});
     edit_plan::Options options;
     options.referenceRate = editRate();
     options.policy = edit_plan::capturePolicy(commands_.settings());
-    auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
+    auto prepared = edit_plan::prepareMove(submitter_.store(), moves, options);
     if (!prepared.ok) {
-        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
-        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
-        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        // Preserve the existing move for the planner's policy exclusions. A failed splice
+        // must stop the whole edit before moving any material.
+        if (options.policy.deleteOverlaps && !options.policy.mutedClipsAsDeleted &&
+            prepared.error != "frozen placement requires TM-FC-04 policy" &&
+            prepared.error != "frozen-group placement requires TM-FC-04 policy" &&
+            prepared.error != "change or detach the take lane explicitly before moving it" &&
+            prepared.error != edit_plan::toString(edit_plan::PlacementError::OverlappingIncoming))
+            return commitEdit(std::move(prepared));
         std::vector<OpRequest> ops;
         for (const auto &place : places) {
             OpRequest op;
@@ -2420,7 +2411,9 @@ bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
     // goes); Paste also at the chain's chosen end while the Arrangement holds no copy.
     if (!devices.canClipboard(clip))
         return false;
-    return devices.hasKeyboardFocus(true) || (clip == DeviceChainStrip::Clip::Paste && commands_.clipClipboard().empty());
+    return devices.hasKeyboardFocus(true) ||
+           (clip == DeviceChainStrip::Clip::Paste && commands_.clipClipboard().empty() &&
+            !arrangement.canvas.hasAutomationSelection());
 }
 bool AdiRootComponent::canClipboard(int id) const {
     using Clip = DeviceChainStrip::Clip;
@@ -2457,10 +2450,14 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (!current)
         return false;
     const auto &sel = arrangement.geometry.selection;
+    const auto &board = commands_.clipClipboard();
+    const bool envelopeCopy = std::holds_alternative<AppCommands::ClipClipboard::EnvelopeCopy>(board.held);
+    if (arrangement.canvas.hasAutomationSelection())
+        return command == ClipCommand::Paste ? envelopeCopy : sel.start != sel.end;
     if (command == ClipCommand::Paste) {
-        if (std::holds_alternative<AppCommands::TrackCopy>(commands_.clipClipboard().held))
+        if (std::holds_alternative<AppCommands::TrackCopy>(board.held))
             return trackClipboardContext();
-        return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
+        return !board.empty() && !envelopeCopy && pasteOrigin() != 0;
     }
     if (trackClipboardContext())
         if (const auto *track = current->findTrack(sel.track); track != nullptr && track->kind != "master")
@@ -2576,7 +2573,71 @@ bool AdiRootComponent::trackClipboard(ClipCommand command) {
         return fail(e.what());
     }
 }
+bool AdiRootComponent::deleteAutomationRange() {
+    const auto lanes = arrangement.canvas.automationRangeLanes();
+    if (!lanes)
+        return fail("Select the automation lanes again. A selected control is unavailable.");
+    const auto &sel = arrangement.geometry.selection;
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
+    if (from == to)
+        return fail("Select a time range in the automation lane first.");
+    auto prepared = edit::prepareDeleteAutomationRange(submitter_.store(), *lanes, from, to, editRate());
+    if (!prepared.requests.empty())
+        prepared.requests.front().label = "Delete Automation Range";
+    return commitEdit(std::move(prepared));
+}
+bool AdiRootComponent::automationClipboard(ClipCommand command) {
+    using EnvelopeCopy = AppCommands::ClipClipboard::EnvelopeCopy;
+    const auto lanes = arrangement.canvas.automationRangeLanes();
+    if (!lanes)
+        return fail("Select the automation lanes again. A selected control is unavailable.");
+    const auto &sel = arrangement.geometry.selection;
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
+    auto &store = submitter_.store();
+    auto &board = commands_.clipClipboard();
+    const auto rate = editRate();
+    const auto paste = [&](const edit::AutomationRangeCopy &copy, std::int64_t at, const char *label) {
+        if (at < 0 || copy.ticks <= 0 || copy.ticks > std::numeric_limits<std::int64_t>::max() - at)
+            return fail("The automation paste is outside the supported timeline.");
+        auto prepared = edit::preparePasteAutomationRange(store, copy, *lanes, at, rate);
+        if (!prepared.requests.empty())
+            prepared.requests.front().label = label;
+        if (!commitEdit(std::move(prepared)))
+            return false;
+        arrangement.canvas.selectAutomationSpan(at, at + copy.ticks);
+        return true;
+    };
+    if (command == ClipCommand::Paste) {
+        const auto *copy = std::get_if<EnvelopeCopy>(&board.held);
+        if (!copy)
+            return fail("Copy a time range in an automation lane first.");
+        if (copy->sourceFile != projectFile(store))
+            return fail("The clipboard holds automation from another project. Copy it again in this one.");
+        return paste(copy->range, from != to ? from : sel.insert, "Paste Automation Range");
+    }
+    if (from == to)
+        return fail("Select a time range in the automation lane first.");
+    auto copy = edit::copyAutomationRange(store, *lanes, from, to, rate);
+    if (!copy.ok)
+        return fail(copy.error);
+    if (command == ClipCommand::Duplicate)
+        return paste(copy, to, "Duplicate Automation Range");
+    if (command == ClipCommand::Cut) {
+        auto prepared = edit::prepareDeleteAutomationRange(store, *lanes, from, to, rate);
+        if (!prepared.requests.empty())
+            prepared.requests.front().label = "Cut Automation Range";
+        if (!commitEdit(std::move(prepared)))
+            return false;
+    }
+    board.held = EnvelopeCopy{std::move(copy), projectFile(store)};
+    error_.clear();
+    dirty_.mark(DirtySet::Status);
+    commands_.manager.commandStatusChanged();
+    return true;
+}
 bool AdiRootComponent::clipClipboard(ClipCommand command) {
+    if (arrangement.canvas.hasAutomationSelection())
+        return automationClipboard(command);
     const auto current = view_.current();
     if (!current)
         return fail("The clipboard needs an open project.");
@@ -2638,12 +2699,12 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
-            auto copy = clip_edit::copyClip(store, chosen.clip->id, rate);
+            auto copy = clip_edit::copyClip(store, chosen.clip->id, options);
             if (!copy.ok)
                 return fail(copy.error);
             board.held = std::move(copy);
         } else {
-            auto copy = clip_edit::copyRange(store, selection, rate);
+            auto copy = clip_edit::copyRange(store, selection, options);
             if (!copy.ok)
                 return fail(copy.error);
             board.held = std::move(copy);
@@ -2657,7 +2718,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     case ClipCommand::Cut: {
         // The copy is kept only once the cut is in, so a refused Cut leaves the clipboard as it was.
         if (chosen.clip != nullptr) {
-            auto cut = clip_edit::prepareCutClip(store, chosen.clip->id, rate);
+            auto cut = clip_edit::prepareCutClip(store, chosen.clip->id, options);
             if (!cut.copy.ok)
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))
@@ -2677,6 +2738,8 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         return true;
     }
     case ClipCommand::Paste: {
+        if (std::holds_alternative<AppCommands::ClipClipboard::EnvelopeCopy>(board.held))
+            return fail("Select an automation lane to paste its envelope.");
         if (board.empty())
             return fail("Copy a clip or a time selection first.");
         // At the insert marker, or a time selection's start.
@@ -3768,8 +3831,9 @@ bool AdiRootComponent::beginArrangementRecording(std::int64_t takeStart, bool ro
         return false;
     setRecordPending(false);
     // The armed audio tracks' lanes show the take as it grows.
-    if (const auto *current = reader().get())
-        arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);
+    if (!capturingAudioTake || capturingAudioTake())
+        if (const auto *current = reader().get())
+            arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);
     // A recording start plays the transport: the same op Play writes, so the history's transport state
     // agrees.
     if (!rolling) {
@@ -3805,6 +3869,10 @@ ExportChoices AdiRootComponent::exportDefaults() const {
 }
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
+    if (!on) {
+        arrangement.canvas.clearAutomationSelection();
+        arrangement.canvas.resetAutomationValueInput();
+    }
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
              "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
@@ -3862,6 +3930,8 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
     return volumeTarget(track);
 }
 void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
+    if(automationTarget(track)!=target)
+        arrangement.canvas.resetAutomationValueInput();
     automationTargets_[track] = target;
     if (!automationMode_)
         setAutomationMode(true);
@@ -3933,25 +4003,47 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
             }
     return target.defaultValue;
 }
-bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue) {
     const auto current = view_.current();
     if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
     const auto target = automationTarget(track);
+    const auto envelope = envelopeOf(*current, target);
+    if (exactValue) {
+        if (!editableEnvelope(envelope))
+            return fail("Adding a value requires an envelope in musical time.");
+        if (!validExactAutomationValue(envelope, target, value))
+            return fail("Enter a finite value in the envelope's range.");
+    }
     RowIds rows(submitter_.store().db()); // one allocation context for the edit (DF-E16)
     AutomationIds ids;
     ids.lane = rows.next("automation_lanes");
     ids.data = rows.next("automation_data");
     ids.point = 1;
-    return submitEdits(::adi::ui::addAutomationPoint(envelopeOf(*current, target), target, tick, value,
-                                                     automationCurrent(target), ids));
+    return submitEdits(::adi::ui::addAutomationPoint(envelope, target, tick, value,
+                                                     automationCurrent(target), ids, exactValue));
 }
-bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value,
+                                          bool exactValue) {
     const auto current = view_.current();
     if (!current)
         return false;
     const auto target = automationTarget(track);
-    auto ops = ::adi::ui::moveAutomationPoint(envelopeOf(*current, target), target, point, tick, value);
+    const auto envelope = envelopeOf(*current, target);
+    if (exactValue) {
+        if (!envelope.lane || !envelope.data)
+            return fail("That breakpoint is gone.");
+        const auto &points = envelope.data->points;
+        const auto found = std::find_if(points.begin(), points.end(), [point](const auto &entry) {
+            return entry.id == point;
+        });
+        if (found == points.end() || found->time != tick)
+            return fail("That breakpoint has changed. Open Edit Value again.");
+        if (!validExactAutomationValue(envelope, target, value))
+            return fail("Enter a finite value in the envelope's range.");
+        return found->value == value || submitEdits({editAutomationPointValue(envelope, *found, value)});
+    }
+    auto ops = ::adi::ui::moveAutomationPoint(envelope, target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
@@ -5065,6 +5157,8 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::DeleteTrack:
         if (devices.focusedDevice())
             return devices.deleteDevices();
+        if (arrangement.canvas.hasAutomationSelection())
+            return deleteAutomationRange();
         if (arrangement.selectedLocator != 0)
             return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)
@@ -5131,7 +5225,8 @@ bool AdiRootComponent::command(int id) {
                              : id == AppCommands::Copy ? ClipCommand::Copy
                              : id == AppCommands::Paste ? ClipCommand::Paste
                                                         : ClipCommand::Duplicate;
-        if (!canClipClipboard(command) && clip == Clip::Paste && commands_.clipClipboard().empty())
+        if (!arrangement.canvas.hasAutomationSelection() && !canClipClipboard(command) &&
+            clip == Clip::Paste && commands_.clipClipboard().empty())
             return fail("Copy a clip, a time selection or a device first.");
         return clipClipboard(command);
     }

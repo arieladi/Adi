@@ -164,6 +164,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     std::vector<PendingParameterGesture> pendingGestures() const;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&,std::int64_t,bool);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&,std::int64_t,bool);
+    void setNativeAutomation(NativeAutomation callback) {nativeAutomation_=std::move(callback);}
     gesture::DrainOutcome pumpGestures(std::int64_t);
     std::shared_ptr<Gesture> findGesture(const gesture::OwnerToken&) const;
     bool frontendGone_ = false;
@@ -241,6 +242,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     static void fillRequest(OpRequest& r, std::int64_t deviceId, const std::string& name,
                             const device::ParamDescriptor& d, double norm);
 
+    NativeAutomation nativeAutomation_;
     std::map<std::int64_t, Attached> devices_;
     std::set<std::pair<std::int64_t, std::int32_t>> touched_;   ///< decision 4
     std::vector<ParamEdit> scratch_;
@@ -537,6 +539,7 @@ struct ParamOps::Runtime::Gesture {
         const auto current=session->state();
         return current==gesture::State::Committed || current==gesture::State::Cancelled || current==gesture::State::SourceLost;
     }
+    bool nativeAutomation=false;
 };
 
 struct ParamOps::Runtime::DevicePresentation final : gesture::Presentation {
@@ -2316,13 +2319,22 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
                     task=beginGesture(id,descriptor->id,std::move(image),false);
                     if(!task)throw std::runtime_error("cannot retain callback gesture ownership");
                 }
+                if(activity.kind==ParamActivityKind::Value && nativeAutomation_ && descriptor->automatable && !descriptor->missing) {
+                    if(!task->owner)task->owner=std::make_shared<gesture::OwnerToken>(task->pending->owner());
+                    if(nativeAutomation_(id,*descriptor,ParamEventKind::Value,activity.before,activity.after,task->owner))
+                        task->nativeAutomation=true;
+                }
                 if(activity.kind==ParamActivityKind::Value || activity.kind==ParamActivityKind::End || activity.kind==ParamActivityKind::QuietEnd) {
                     task->input.parameters[descriptor->id]=activity.after;task->dirty=true;
                     const auto index=activity.event.paramIndex;
                     if(index>=0 && static_cast<std::size_t>(index)<attached.mirror.size())attached.mirror[static_cast<std::size_t>(index)]=activity.after;
                 }
                 if(activity.kind==ParamActivityKind::End || activity.kind==ParamActivityKind::QuietEnd) {
-                    task->complete=true;openGestures_.erase(key);
+                    if(task->nativeAutomation) {
+                        if(nativeAutomation_)nativeAutomation_(id,*descriptor,ParamEventKind::End,activity.before,activity.after,task->owner);
+                        task->cancelRequested=true; // Release the preview before the envelope transaction.
+                    } else task->complete=true;
+                    openGestures_.erase(key);
                 }
                 if(activity.fence) {
                     const auto acknowledged=activity.fence->acknowledge(*task->pending,1);
@@ -2525,6 +2537,7 @@ gesture::DrainOutcome ParamOps::Runtime::pumpGestures(std::int64_t nowMs) {
 
 ParamOps::ParamOps(std::int32_t capacity) : runtime_(std::make_shared<Runtime>(capacity)) {}
 ParamOps::~ParamOps() { runtime_->frontendEnded(); }
+void ParamOps::setNativeAutomation(NativeAutomation callback) {runtime_->setNativeAutomation(std::move(callback));}
 std::vector<PendingParameterGesture> ParamOps::pendingGestures() const {return runtime_->pendingGestures();}
 gesture::CommitOutcome ParamOps::commitPending(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,false);}
 gesture::CommitOutcome ParamOps::retryPendingCommit(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,true);}

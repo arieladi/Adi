@@ -9,6 +9,7 @@
 #include "adi/engine/warp_projection.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -248,7 +249,9 @@ MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::Dev
         result.edit.options.expectHead.emplace(expected);
         result.files->stop=control.stop;
         if(options.replace) {
-            const auto remove=prepareDeleteRange(store,*options.replace,job.session.sampleRate,options.destination.clipId);
+            edit_plan::Options placement{job.session.sampleRate,{}};
+            placement.policy.automationFollowsClips=false; // Replace material while leaving its mixer controls live.
+            const auto remove=prepareDeleteRange(store,*options.replace,placement,options.destination.clipId);
             if(!remove.ok)throw std::runtime_error(remove.error);
             result.edit.requests.insert(result.edit.requests.begin(),remove.requests.begin(),remove.requests.end());
         }

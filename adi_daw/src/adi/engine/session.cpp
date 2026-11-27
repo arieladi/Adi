@@ -2336,7 +2336,8 @@ bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string&
     const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
     if (!ref) return true;
     const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
-    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second)) return true;
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second) ||
+        writingAutomation_.contains(lane->second)) return true;
     overridden_.insert(lane->second);
     return rebuild();
 }
@@ -2587,6 +2588,9 @@ void Session::publishDriverClock() noexcept {
     // is a bounded atomic snapshot, never an audio-side lock or retry loop.
     driverClockSequence_.fetch_add(1);
     driverSample_.store(transport_.position());
+    driverStreamed_.store(transport_.streamedFrames());
+    driverLoopBegin_.store(transport_.looping() ? transport_.loopBegin() : 0);
+    driverLoopEnd_.store(transport_.looping() ? transport_.loopEnd() : 0);
     driverRevision_.store(transport_.revision());
     driverPlaying_.store(transport_.playing());
     driverClockSequence_.fetch_add(1);
@@ -2597,6 +2601,9 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
         if ((before & 1U) != 0) continue;
         DriverClock candidate;
         candidate.sample = driverSample_.load();
+        candidate.streamedFrames = driverStreamed_.load();
+        candidate.loopBegin = driverLoopBegin_.load();
+        candidate.loopEnd = driverLoopEnd_.load();
         candidate.revision = driverRevision_.load();
         candidate.playing = driverPlaying_.load();
         if (driverClockSequence_.load() == before) { result = candidate; return true; }

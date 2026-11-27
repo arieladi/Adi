@@ -1350,6 +1350,7 @@ class AdiApplication final : public juce::JUCEApplication,
         root->recording = [this] { return document_->recording(); };
         root->landingRecording = [this] { return document_->landingTake(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
+        root->capturingAudioTake = [this] { return document_->capturingAudioTake(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.

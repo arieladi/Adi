@@ -271,6 +271,13 @@ public:
     /// SC-333: a take is being recorded, so the transport a hosted plug-in is handed says it records
     /// while it plays. Set by the document as its recording starts and ends; read on the audio thread.
     void setRecordingForDevices(bool on) noexcept { recordingForDevices_.store(on, std::memory_order_release); }
+    struct DriverClock {
+        std::int64_t sample = 0, streamedFrames = 0, loopBegin = 0, loopEnd = 0;
+        std::uint64_t revision = 0;
+        bool playing = false;
+    };
+    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
+
     [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
     [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
     [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
@@ -610,16 +617,10 @@ private:
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;
     const std::function<bool()>* externalPublishGuard_ = nullptr; // synchronous owner call only
-    struct DriverClock {
-        std::int64_t sample = 0;
-        std::uint64_t revision = 0;
-        bool playing = false;
-    };
     void publishDriverClock() noexcept; // single audio driver only
-    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
     void primeWhilePlaying(ClipPlayback&, const TimingView&); // owner, an unpublished candidate only; stopped too (B12)
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
-    std::atomic<std::int64_t> driverSample_{0};
+    std::atomic<std::int64_t> driverSample_{0}, driverStreamed_{0}, driverLoopBegin_{0}, driverLoopEnd_{0};
     std::atomic<bool> driverPlaying_{false};
     std::atomic<bool> recordingForDevices_{false}; // SC-333
     bool loopApplied_=false,loopOn_=false;

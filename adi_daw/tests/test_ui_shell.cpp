@@ -2159,12 +2159,14 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
           "loop length drag, arrows and wheel preserve the brace's start");
 
     BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize, &bar.overdub,
-                                    &bar.automationArm, &bar.capture, &bar.sessionRecord, &bar.keyboard,
+                                    &bar.capture, &bar.sessionRecord, &bar.keyboard,
                                     &bar.key, &bar.midi};
     for (auto *item : unavailable)
         check(!item->isEnabled() && item->getAlpha() < 1.f && !item->onClick && !item->onDropdown &&
                   item->getTooltip().startsWith(item->getTitle() + ". Unavailable until "),
               "unavailable Control Bar actions are dimmed and explain why in their Info text");
+    check(!bar.automationArm.isEnabled() && bar.automationArm.getAlpha() < 1.f,
+          "Automation Arm is dimmed when the window has no automation session");
     check(bar.quantize.text == juce::String::charToString(0x2014) && bar.draw.isEnabled() && bar.draw.onClick &&
               bar.metronome.isEnabled() && bar.metronome.onDropdown && bar.cpu.isEnabled() && bar.cpu.onClick &&
               bar.punchIn.isEnabled() && bar.punchIn.onClick && bar.punchOut.isEnabled() && bar.punchOut.onClick,
@@ -4577,7 +4579,9 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}}, "the clip is trimmed at the selection");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    // Delete over a selection inside the clip cuts the middle out, one step.
+    // Delete over a selection inside the clip cuts the middle out, even on an automated track.
+    check(root.addAutomationPoint(2, 3 * bar / 4, -6.0), "a Volume breakpoint inside the selection");
+    root.frame();
     sel = {};
     sel.track = 2;
     sel.start = bar / 2;
@@ -4586,9 +4590,18 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     root.frame();
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar, bar}},
           "the middle is cut out; the two ends stay as clips");
+    const auto hasMiddlePoint = [&] {
+        const auto envelope = trackEnvelope(*root.current(), 2);
+        return envelope.data != nullptr &&
+               std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+                           [&](const auto &point) { return point.time == 3 * bar / 4; });
+    };
+    check(!hasMiddlePoint(), "the selected Volume breakpoint goes with the middle");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    check(clipsOf(2).size() == 1, "one undo makes it whole");
+    check(clipsOf(2).size() == 1 && hasMiddlePoint(), "one undo restores the clip and the breakpoint");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // 0 over 2 MIDI's clip's right edge: split there, the right part deactivated, one step.
     sel = {};
     sel.track = 3;
@@ -5268,7 +5281,9 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         juce::FileOutputStream out(file);
         juce::PNGImageFormat().writeImageToStream(image, out);
     };
-    // A range cut across two tracks and pasted at bar 3 comes back in its order.
+    // A range cut across two tracks and pasted at bar 3 comes back in its order, with automation.
+    check(root.addAutomationPoint(2, bar / 4, -6.0), "a Volume breakpoint on 1 MIDI");
+    root.frame();
     sel = {};
     sel.track = 2;
     sel.toTrack = 3;
@@ -5286,6 +5301,11 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
           "each track's material comes back on the track in its place, in order");
     check(sel.track == 2 && sel.toTrack == 3 && sel.start == 2 * bar && sel.end == 3 * bar && sel.clip == 0,
           "the pasted range is the time selection");
+    const auto envelope = trackEnvelope(*root.current(), 2);
+    check(envelope.data != nullptr &&
+              std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+                          [&](const auto &point) { return point.time == 2 * bar + bar / 4 && std::abs(point.value + 6.0) < 1e-9; }),
+          "the pasted range carries its Volume breakpoint to bar 3");
     picture("adi-clipboard-pasted.png");
     check(root.command(AppCommands::Undo), "undo the paste");
     root.frame();
@@ -5305,6 +5325,8 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo the cut");
     root.frame();
     check(clipsOf(2) == Clips{{0, bar}} && clipsOf(3) == Clips{{0, bar / 2}}, "both as they were again");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // A clip's copy: MIDI does not go on an audio track.
     clickClip(2, 50, 0, bar);
     check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::ClipCopy>(commands.clipClipboard().held),
@@ -5404,6 +5426,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         later.payload = {{"id", 60}, {"track", 3}, {"kind", "midi"}, {"pos", bar / 2}, {"length", bar / 2}};
         later.label = "Insert MIDI Clip";
         check(document->ops().submit(later).ok && document->synchronise(), "a second half bar on 2 MIDI, right after its clip");
+        check(root.addAutomationPoint(3, bar / 4, -6.0), "a Volume breakpoint on the clip to duplicate");
         root.frame();
         clickClip(3, 51, 0, bar / 2);
         check(root.keyPressed(duplicateKey), "Duplicate onto the clip after it");
@@ -5429,7 +5452,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
               "Undo restores both");
-        check(root.command(AppCommands::Undo), "undo the second clip");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the automation and the second clip");
         root.frame();
         check(idsOf(3) == std::vector<std::int64_t>{51}, "2 MIDI as before");
     }
@@ -10271,6 +10294,8 @@ void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
     // 1 MIDI's clip chosen, then dragged by its bar with Ctrl a bar on and down onto 2 MIDI: a copy
     // lands there, 1 MIDI's clip stays where it was, and the copy is what is selected.
     const juce::Point<float> grab(x(bar) + 6, barOf(1));
+    check(root.addAutomationPoint(1, bar + bar / 2, -6.0), "a Volume breakpoint on the clip to Ctrl-drag");
+    root.frame();
     click(grab);
     drag(grab, {x(2 * bar) + 6, barOf(2)}, copyKey);
     const auto two = clipsOn(2);
@@ -10283,6 +10308,8 @@ void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}},
           "one Undo takes the copy away");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // Ctrl/Cmd+click on 2 MIDI's bar picks its clip besides 1 MIDI's, and again lets it go; nothing is
     // copied or moved.
     const auto steps = submitter.nextUndo()->label;
@@ -10627,26 +10654,17 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
             for (const auto &c : root.reader().findTrack(3)->clips)
                 whole = whole || (c->id == 13 && c->posTicks == start && c->lengthTicks == length);
             check(whole, "one Undo gives 13 back whole");
-            // Where the planner does not place yet (here a track with an automation lane, AU-05), the clip
-            // moves as before, keeping what it lands on, and the Status Bar says why.
-            automation::LaneSpec volumeLane;
-            volumeLane.id = 77;
-            volumeLane.ownerKind = "track";
-            volumeLane.ownerId = 3;
-            volumeLane.paramRef = "volume";
-            volumeLane.paramName = "Volume";
-            check(submitter.submit(automation::createLane(volumeLane)).ok, "an automation lane on track 3");
+            check(root.addAutomationPoint(3, start + 3 * length / 4, -6.0), "a Volume breakpoint on track 3");
             root.frame();
-            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") &&
-                      root.error().rfind("Moved, keeping what the clips land on", 0) == 0,
-                  "with an automation lane the move still goes, saying it keeps what it lands on");
+            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") && root.error().empty(),
+                  "the move uses the planner on a track with automation");
             root.frame();
-            bool kept = false, moved = false;
+            bool trimmed = false, moved = false;
             for (const auto &c : root.reader().findTrack(3)->clips) {
-                kept = kept || (c->id == 13 && c->lengthTicks == length);
+                trimmed = trimmed || (c->id == 13 && c->posTicks == start && c->lengthTicks == length / 2);
                 moved = moved || (c->id == 12 && c->posTicks == start + length / 2);
             }
-            check(kept && moved, "12 moved, 13 kept whole");
+            check(trimmed && moved, "12 moved and replaced the second half of 13");
             check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the move and the lane");
             root.frame();
         }
@@ -14381,10 +14399,10 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     auto &reEnable = root.transport.reEnable;
     auto &arm = root.transport.automationArm;
-    check(!reEnable.getToggleState() && !arm.isEnabled() && !arm.getToggleState() &&
+    check(!reEnable.getToggleState() && arm.isEnabled() && arm.getToggleState() &&
               reEnable.getTitle() == "Re-Enable Automation" &&
               arm.getTitle() == "Automation Arm",
-          "Re-Enable Automation is unlit without an override; Automation Arm awaits recording support");
+          "Re-Enable Automation is unlit without an override and Automation Arm starts on");
     const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
                        root.devices.panels[0]->controls[0]->slider.isVisible();
     check(shown, "the strip shows the automated device's two controls");
@@ -14425,8 +14443,14 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     reEnable.onClick();
     root.frame();
     check(!reEnable.getToggleState() && root.error().empty(), "with nothing overridden a click changes nothing");
-    check(!arm.onClick && document->automationArmed(),
-          "the unavailable Control Bar switch leaves the session's default alone");
+    arm.onClick();
+    root.frame();
+    check(!arm.getToggleState() && !document->automationArmed(),
+          "Automation Arm turns off in the Control Bar and in the session");
+    arm.onClick();
+    root.frame();
+    check(arm.getToggleState() && document->automationArmed(),
+          "Automation Arm can be turned back on");
     check(document->setDelayCompensation(false) && document->setDelayCompensation(true) && document->error().empty(),
           "the session takes Delay Compensation off and on (MX-04)");
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): the knob's context menu offers it
@@ -14521,7 +14545,9 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     reEnable.onClick();
     check(root.error() == "Re-Enable Automation: no session holds automation to re-enable.",
           "without a session, Re-Enable Automation says so");
-    check(!arm.isEnabled() && !arm.onClick && !arm.getToggleState(),
+    root.mark(DirtySet::Transport);
+    root.frame();
+    check(!arm.isEnabled() && !arm.getToggleState(),
           "Automation Arm remains unavailable without a session");
     document->release();
 }
@@ -14825,6 +14851,7 @@ void recordWaitsForPlay(AppCommands &commands, settings::AppSettings &settings, 
           "Stop cancels a waiting Record even when it cannot queue a transport command");
 
     check(root.armTrack(4, false), "disarm the last audio track before testing refused Record starts");
+    document->setAutomationArmed(false); // SC-335 allows recording automation without an armed track.
     const auto plays = [&] {
         return document->store().db().execAndGet("SELECT count(*) FROM ops WHERE op_type='transport.play'").getInt64();
     };
@@ -15064,7 +15091,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     // The right press asks for the lanes' menu. It is counted here and not shown: a menu placed on the
     // screen makes a window of its own, which a run with no display cannot have.
     int laneMenus = 0;
-    lanes.onContextMenu = [&laneMenus](juce::Point<int>, bool, const engine::AutomationLaneNode *) { ++laneMenus; };
+    lanes.onContextMenu = [&laneMenus](juce::Point<int>,bool,const engine::AutomationLaneNode *,const juce::PopupMenu &) { ++laneMenus; };
     for (const int button : {juce::ModifierKeys::leftButtonModifier, juce::ModifierKeys::rightButtonModifier}) {
         const auto insert = lanes.geometry.selection.insert;
         const auto sample = transport.position();
@@ -16425,6 +16452,93 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(pressU() && canvas.automationPointAt(pointAt) &&
               root.undoTitle(false) == "Undo Add Automation Point",
           "unfold restores the same envelope and breakpoint without editing the project");
+    canvas.mouseMove(pressAt(canvas,pointAt));
+    check(canvas.automationValueReadout().contains("dB"),"hovering a Volume point shows its value in dB");
+    const auto menuAction = [&](juce::Point<float> at, const juce::String &label) {
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](juce::Point<int>,bool,const engine::AutomationLaneNode *,const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().isEnabled && item.getItem().text == label)
+                    action = item.getItem().action;
+        };
+        const auto right = juce::ModifierKeys::rightButtonModifier;
+        canvas.mouseDown(pressAt(canvas, at, right));
+        canvas.mouseUp(pressAt(canvas, at, right));
+        root.arrangement.onContextMenu = {};
+        return action;
+    };
+    const auto editLabel = juce::String::fromUTF8("Edit Value…");
+    const auto addLabel = juce::String::fromUTF8("Add Value…");
+    const auto enter = juce::KeyPress(juce::KeyPress::returnKey);
+    auto &valueEditor = canvas.automationValueEditor();
+    if (const auto edit = menuAction(pointAt, editLabel)) {
+        edit();
+        check(valueEditor.isVisible(), "Edit Value opens the inline value editor");
+        const auto beforeInvalid = root.undoTitle(false);
+        valueEditor.setText("not a value", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        check(valueEditor.isVisible() && laneOf().data && laneOf().data->points.size() == 1 &&
+                  std::abs(laneOf().data->points[0].value - level) < 1e-9 && root.undoTitle(false) == beforeInvalid,
+              "invalid value leaves the editor open and the breakpoint and Undo unchanged");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    } else {
+        check(false, "right-clicking a breakpoint offers Edit Value");
+    }
+    if (const auto edit = menuAction(pointAt, editLabel)) {
+        edit();
+        valueEditor.setText("-70 dB", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        const bool edited = laneOf().data && laneOf().data->points.size() == 1 &&
+                            laneOf().data->points[0].time == textproj::kWhole &&
+                            std::abs(laneOf().data->points[0].value + 70.) < 1e-9;
+        check(edited, "typing -70 dB writes exactly -70 dB at the same time");
+        if (edited)
+            check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points.size() == 1 &&
+                      std::abs(laneOf().data->points[0].value - level) < 1e-9, "one Undo restores the previous breakpoint value");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        root.frame();
+    } else {
+        check(false, "the breakpoint still offers Edit Value after invalid input");
+    }
+    const auto nextBar = 2 * textproj::kWhole;
+    const auto nextX = static_cast<float>(root.arrangement.geometry.x(nextBar));
+    if (const auto add = menuAction({nextX + 1, lineY}, addLabel)) {
+        add();
+        check(valueEditor.isVisible(), "Add Value opens the inline value editor");
+        constexpr double precise=-12.25000001234;
+        valueEditor.setText("-12.25000001234 dB", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        const auto added = laneOf();
+        const bool exact = added.data && added.data->points.size() == 2 && added.data->points[1].time == nextBar &&
+                           std::abs(added.data->points[1].value - precise) < 1e-13;
+        check(exact, "Add Value inserts the typed dB value at the chosen grid location");
+        if(exact) {
+            const float valueY=audio->scaleBottom-static_cast<float>((precise+70)/76)*(audio->scaleBottom-audio->top);
+            if(const auto edit=menuAction({nextX,valueY},editLabel)) {
+                edit();
+                const auto beforeEnter=root.undoTitle(false);
+                valueEditor.keyPressed(enter);
+                root.frame();
+                const auto same=laneOf();
+                check(!valueEditor.isVisible() && same.data && same.data->points.size()==2 &&
+                      std::abs(same.data->points[1].value - precise) < 1e-13 && root.undoTitle(false)==beforeEnter,
+                      "accepting the initial value preserves full precision and adds no undo step");
+            } else check(false,"the precisely typed point can be edited again");
+        }
+        if (exact)
+            check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points.size() == 1,
+                  "one Undo removes the added breakpoint");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        root.frame();
+    } else {
+        check(false, "right-clicking the envelope line offers Add Value");
+    }
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
     const float upper = audio->top + (audio->bottom - audio->top) * .25f;
     canvas.mouseDown(pressAt(canvas, pointAt));
@@ -16572,8 +16686,132 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
               "A typed into a text field is the field's");
         root.removeChildComponent(&field);
     }
+    // The breakpoint hit tolerance reaches into a clip title when the value tops the lane.
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 125}, {"track", 2}, {"kind", "midi"}, {"name", "Clip title by breakpoint"},
+                    {"pos", 0}, {"length", 2 * textproj::kWhole}};
+    check(document->ops().submit(clip).ok && document->synchronise(), "a MIDI clip behind the high breakpoint");
+    root.setAutomationMode(true);
+    check(root.addAutomationPoint(2, textproj::kWhole, 6.0), "a Volume breakpoint at the lane's top");
+    root.frame();
+    const auto titleBodies = canvas.laneBodies();
+    const auto midiBody = std::find_if(titleBodies.begin(), titleBodies.end(),
+                                      [](const auto &body) { return body.track->id == 2; });
+    check(midiBody != titleBodies.end(), "the MIDI lane with a clip title is visible");
+    if (midiBody != titleBodies.end()) {
+        const juce::Point<float> atTitle(barX, midiBody->top - 2);
+        check(!menuAction(atTitle, editLabel) && root.arrangement.geometry.selection.clip == 125,
+              "the clip title has priority over a nearby automation breakpoint");
+    }
     document->release();
 }
+void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
+    std::string error;
+    auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
+    check(document!=nullptr,"a project for envelope time selections");
+    if(!document)return;
+    constexpr auto bar=textproj::kWhole;
+    OpRequest clip;
+    clip.opType="clip.create";
+    clip.payload={{"id",81},{"track",2},{"kind","midi"},{"name","Material under the envelope"},{"pos",0},{"length",2*bar}};
+    check(document->ops().submit(clip).ok && document->synchronise(),"MIDI material beneath the selected range");
+    AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,document->views(),
+                          document->sessionState(),"automate-range");
+    UiPeerRoot peer;
+    peer.setSize(1440,900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit=[&] {document->synchronise();};
+    root.setSize(1440,900);
+    root.setAutomationMode(true);
+    root.frame();
+    check(root.addAutomationPoint(2,3*bar/4,-6) && root.addAutomationPoint(2,5*bar/4,-3),
+          "Volume breakpoints inside and outside the selected range");
+    root.frame();
+    auto &canvas=root.arrangement.canvas;
+    const auto bodies=canvas.laneBodies();
+    const auto body=std::find_if(bodies.begin(),bodies.end(),[](const auto &item) {return item.track->id==2;});
+    if(body==bodies.end()) {check(false,"the MIDI automation body is visible");return;}
+    auto &geometry = root.arrangement.geometry;
+    geometry.grid.fixed = true;
+    geometry.grid.fixedQuarters = 1.;
+    const float y = body->bottom - 4;
+    const auto at = [&](std::int64_t tick, float offset = 1.f) {
+        return juce::Point<float>(static_cast<float>(geometry.x(tick)) + offset, y);
+    };
+    const auto choose = [&](std::int64_t first, std::int64_t last) {
+        const auto from = at(first);
+        // The range includes the grid cell touched by the drag.
+        const auto to = at(last, last > first ? -1.f : 1.f);
+        canvas.mouseDown(pressAt(canvas, from));
+        canvas.mouseDrag(dragAt(canvas, from, to));
+        canvas.mouseUp(dragAt(canvas, from, to));
+        root.frame();
+        check(canvas.hasAutomationSelection() && geometry.selection.start == first && geometry.selection.end == last,
+              "the drag selects the intended automation time range");
+    };
+    const auto point=[&](const AutomationTarget &target,std::int64_t tick,double value) {
+        const auto env=envelopeOf(*root.current(),target);
+        return env.data && std::any_of(env.data->points.begin(),env.data->points.end(),[&](const auto &p) {
+            return p.time == tick && std::abs(p.value - value) < 1e-9;
+        });
+    };
+    const auto clipIntact=[&] {
+        const auto *track=root.reader().findTrack(2);
+        return track && track->clips.size()==1 && track->clips[0]->id==81 && track->clips[0]->lengthTicks==2*bar;
+    };
+    const auto volume=volumeTarget(2);
+    choose(bar/2,bar);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),"Delete is handled in the automation time range");
+    root.frame();
+    check(clipIntact() && !point(volume,3*bar/4,-6) && point(volume,5*bar/4,-3),
+          "Delete edits the selected envelope range while the MIDI clip stays whole");
+    check(root.command(AppCommands::Undo),"Undo the automation range edit");
+    root.frame();
+    check(clipIntact() && point(volume,3*bar/4,-6),"Undo restores the selected breakpoint");
+    auto savedClipboard=std::move(commands.clipClipboard());
+    choose(bar,bar/2);
+    check(root.command(AppCommands::Copy),"Copy handles a backward automation time selection");
+    const auto pan=panTarget(2);
+    root.showAutomation(2,pan);
+    canvas.mouseDown(pressAt(canvas,at(0)));
+    canvas.mouseUp(pressAt(canvas,at(0)));
+    root.frame();
+    check(root.command(AppCommands::Paste),"Paste can target another parameter at an automation insert marker");
+    root.frame();
+    const auto hasPanPoint=[&](std::int64_t tick) {
+        const auto env=envelopeOf(*root.current(),pan);
+        return env.data && std::any_of(env.data->points.begin(),env.data->points.end(),[&](const auto &p) {
+            return p.time==tick && p.value>0 && p.value<=1;
+        });
+    };
+    check(hasPanPoint(bar/4) && clipIntact() && point(volume,3*bar/4,-6),
+          "a cross-parameter paste creates the Pan envelope without editing other material");
+    check(root.command(AppCommands::Duplicate),"Duplicate follows the selected envelope");
+    root.frame();
+    check(hasPanPoint(3*bar/4) && clipIntact(),"Duplicate copies the Pan range beside itself");
+    check(root.command(AppCommands::Undo),"Undo the envelope duplicate");
+    root.frame();
+    check(root.command(AppCommands::Duplicate),"the restored range still edits automation after Undo");
+    root.frame();
+    check(hasPanPoint(3*bar/4) && clipIntact(),"duplicating that restored range leaves the clip whole");
+    check(root.command(AppCommands::Cut),"Cut takes the currently selected Pan range");
+    root.frame();
+    check(!hasPanPoint(3*bar/4) && point(volume,3*bar/4,-6) && clipIntact(),
+          "Cut leaves the neighbouring Volume envelope and clip intact");
+    check(root.command(AppCommands::Undo),"Undo the Pan cut");
+    root.frame();
+    check(hasPanPoint(3*bar/4),"Undo restores the Pan automation");
+    commands.clipClipboard()=std::move(savedClipboard);
+    // Clicking the material title is explicitly a clip selection even when the envelope is drawn.
+    canvas.mouseDown(pressAt(canvas,{at(bar/2).x,body->top-6}));
+    canvas.mouseUp(pressAt(canvas,{at(bar/2).x,body->top-6}));
+    check(root.arrangement.geometry.selection.clip==81,"a title click still chooses the material clip");
+    document->release();
+}
+
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
@@ -23274,6 +23512,7 @@ int main(int argc, char **argv) {
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });

@@ -15,6 +15,10 @@
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/automation_splice_store.hpp"
+#include "adi/clip_image.hpp"
+#include "adi/edit_time.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/gesture_presentation.hpp"
 #include "juce/builtin_samples.hpp"
 #include "juce/mix_function_host.hpp"
@@ -337,8 +341,99 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
         [this, lifetime](engine::ScopeSource source) {
             if (!lifetime.expired()) analysisSources_.erase(source);
         });
+    parameterOps_.setNativeAutomation([this](std::int64_t id,const device::ParamDescriptor &descriptor,
+                                             engine::ParamEventKind kind,double before,double after,
+                                             const std::shared_ptr<const gesture::OwnerToken> &owner) {
+        return observeNativeAutomation(id,descriptor,kind,before,after,owner);
+    });
 }
+void ProjectDocument::AutomationPass::append(std::int64_t sample,double value) {
+    AutomationPoint point{};point.time=sample;point.value=value;
+    point.curve=static_cast<std::uint8_t>(engine::CurveShape::Hold);
+    auto &span=spans.back();
+    if(!span.empty() && span.back().time==sample)span.back()=point;
+    else span.push_back(point);
+}
+void ProjectDocument::AutomationPass::advance(const engine::Session::DriverClock &clock) {
+    if(spans.empty() || !last.playing)return;
+    const double held=spans.back().back().value;
+    if(clock.revision!=last.revision || !clock.playing) {
+        append(last.sample,held);
+        if(clock.playing) {
+            spans.emplace_back();
+            append(clock.sample,held);
+        }
+    } else if(clock.loopEnd>clock.loopBegin &&
+              clock.streamedFrames-last.streamedFrames>clock.sample-last.sample) {
+        append(clock.loopEnd,held);
+        const auto remaining=clock.streamedFrames-last.streamedFrames-(clock.loopEnd-last.sample);
+        if(remaining>=clock.loopEnd-clock.loopBegin) {
+            spans.emplace_back();
+            append(clock.loopBegin,held);
+            append(clock.loopEnd,held);
+        }
+        spans.emplace_back();
+        append(clock.loopBegin,held);
+    }
+    last=clock;
+}
+void ProjectDocument::AutomationPass::value(const engine::Session::DriverClock &clock,double value) {
+    advance(clock);
+    if(!clock.playing)return;
+    if(spans.empty() || !last.playing)spans.emplace_back();
+    if(!spans.back().empty() && spans.back().back().value!=value)touched=true;
+    if(spans.back().empty() && target.defaultValue!=value)touched=true;
+    append(clock.sample,value);
+    last=clock;
+}
+void ProjectDocument::AutomationPass::close(const engine::Session::DriverClock &clock) {
+    advance(clock);
+    if(!spans.empty() && last.playing)append(last.sample,spans.back().back().value);
+}
+
+namespace {
+std::optional<automation::LaneSpec> mixerLane(Store &store,const OpRequest &request) {
+    automation::LaneSpec lane;
+    lane.ownerId=request.payload.at("id");
+    lane.valueDomain="real";
+    const char *sql=nullptr;
+    if(request.opType=="mixer.setVolume") {
+        lane.paramRef="volume";lane.paramName="Volume";lane.unit="dB";lane.minValue=-150;lane.maxValue=6;
+        sql="SELECT volume_db FROM mixer_strip WHERE track_id=?";
+    } else if(request.opType=="mixer.setPan") {
+        lane.paramRef="pan";lane.paramName="Pan";lane.minValue=-1;lane.maxValue=1;
+        sql="SELECT pan FROM mixer_strip WHERE track_id=?";
+    } else if(request.opType=="mixer.setPanLeft" || request.opType=="mixer.setPanRight") {
+        const bool left=request.opType=="mixer.setPanLeft";
+        lane.paramRef=left?"panLeft":"panRight";lane.paramName=left?"Left Pan":"Right Pan";
+        lane.defaultValue=left?-1:1;lane.minValue=-1;lane.maxValue=1;
+        sql=left?"SELECT pan_left FROM mixer_pan_settings WHERE track_id=?":
+                 "SELECT pan_right FROM mixer_pan_settings WHERE track_id=?";
+    } else if(request.opType=="routing.setGain") {
+        lane.ownerKind="routing";lane.paramRef="gain_db";lane.paramName="Send";lane.unit="dB";
+        lane.minValue=-150;lane.maxValue=0;
+        sql="SELECT gain_db FROM routing WHERE id=? AND kind='send'";
+    } else return std::nullopt;
+    SQLite::Statement value(store.db(),sql);value.bind(1,lane.ownerId);
+    if(value.executeStep())lane.defaultValue=value.getColumn(0).getDouble();
+    if(lane.minValue)lane.minValue=std::min(*lane.minValue,lane.defaultValue);
+    if(lane.maxValue)lane.maxValue=std::max(*lane.maxValue,lane.defaultValue);
+    return lane;
+}
+std::int64_t matchingLane(Store &store,const automation::LaneSpec &lane) {
+    SQLite::Statement lookup(store.db(),
+        "SELECT id FROM automation_lanes WHERE owner_kind=? AND owner_id=? AND param_ref=? AND value_domain=?"
+        " ORDER BY enabled DESC,id LIMIT 1");
+    lookup.bind(1,lane.ownerKind);lookup.bind(2,lane.ownerId);lookup.bind(3,lane.paramRef);lookup.bind(4,lane.valueDomain);
+    return lookup.executeStep()?lookup.getColumn(0).getInt64():0;
+}
+bool sameLane(const automation::LaneSpec &a,const automation::LaneSpec &b) {
+    return a.ownerKind==b.ownerKind && a.ownerId==b.ownerId && a.paramRef==b.paramRef;
+}
+} // namespace
+
 ProjectDocument::~ProjectDocument() {
+    parameterOps_.setNativeAutomation({});
     stopTrackRender();
     for (const auto& item : limiterReductionSources_)
         if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
@@ -874,8 +969,9 @@ bool ProjectDocument::reenableAutomation(std::int64_t laneId) {
     error_ = refusal;
     return ok;
 }
-void ProjectDocument::setAutomationArmed(bool armed) noexcept {
-    session_.setAutomationWriteState(armed, false);
+void ProjectDocument::setAutomationArmed(bool armed) {
+    if (!armed) closeAutomationWrites();
+    session_.setAutomationWriteState(armed, recording_);
 }
 std::int64_t ProjectDocument::captureNowMs() noexcept {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -918,6 +1014,7 @@ void ProjectDocument::pollParameterEdits() {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    advanceAutomationWrites();
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();
@@ -927,6 +1024,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // callback on, so the take is settled as the driver's is.
     pollRecording(deviceStopped_.load(std::memory_order_acquire));
     drainParameterEdits(1);
+    finishNativeAutomation();
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
     advanceSave();
@@ -2200,9 +2298,48 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
                 configuration = !d->automatable && d->configurable;
                 break;
             }
+    const auto key=std::make_pair(id,param);
+    if(kind==engine::ParamEventKind::End && parameterWrites_.contains(key))
+        return commitParameterAutomation(id,param);
+    AutomationPass *write=nullptr;
+    bool created=false;
+    engine::Session::DriverClock clock;
+    if(kind==engine::ParamEventKind::Value && instance && !configuration && recording_ &&
+       session_.automationArmed() && session_.readDriverClock(clock) && clock.playing) {
+        if(auto found=parameterWrites_.find(key);found!=parameterWrites_.end())write=&found->second;
+        else for(std::int32_t i=0;i<instance->paramCount();++i) {
+            const auto *desc=instance->paramAt(i);
+            if(!desc || desc->id!=param)continue;
+            if(auto pass=prepareParameterAutomation(id,*desc,instance->getParam(param).normalized,normalized)) {
+                write=&parameterWrites_.emplace(key,std::move(*pass)).first->second;
+                suspendParameterAutomation(*write);
+                created=true;
+            }
+            break;
+        }
+    }
     const bool taken = configuration
                            ? parameterOps_.uiConfigurationEvent(id, param, kind, normalized, captureNowMs(), requests)
                            : parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    // The drain within uiEvent may also observe a native gesture. Find the
+    // owned pass again before using it.
+    if(write) {
+        const auto found=parameterWrites_.find(key);
+        if(found!=parameterWrites_.end() && taken) {
+            auto &pass=found->second;
+            if(!pass.owner)
+                for(const auto &pending:parameterOps_.pendingGestures())
+                    if(pending.deviceId==id && pending.parameterId==param && pending.owner) {
+                        pass.owner=pending.owner;
+                        break;
+                    }
+            pass.value(clock,std::clamp(normalized,0.0,1.0));
+            pass.touched=true;
+        } else if(found!=parameterWrites_.end() && created) {
+            if(const auto lane=found->second.suspendedLane)session_.finishAutomationWrite(*lane,false);
+            parameterWrites_.erase(found);
+        }
+    }
     std::shared_ptr<const gesture::OwnerToken> newOwner;
     if (taken && kind == engine::ParamEventKind::Begin)
         for (const auto &pending : parameterOps_.pendingGestures())
@@ -2356,6 +2493,212 @@ bool ProjectDocument::waitForTake(bool forceDetached) {
     }
     return true;
 }
+void ProjectDocument::recordMixerValues(std::span<const OpRequest> requests) {
+    engine::Session::DriverClock clock;
+    if(!session_.automationArmed() || !recording_ || !session_.readDriverClock(clock) || !clock.playing)return;
+    // A relative preview omits values on their exact origin. Existing write
+    // passes still need that value if the fader returns there before release.
+    for(auto &pass:mixerWrites_) {
+        const auto found=std::find_if(requests.begin(),requests.end(),[&](const auto &request) {
+            const auto lane=mixerLane(*store_,request);
+            return lane && sameLane(pass.target,*lane);
+        });
+        if(found==requests.end())pass.value(clock,pass.target.defaultValue);
+    }
+    for(const auto &request:requests) {
+        const auto lane=mixerLane(*store_,request);
+        if(!lane)continue;
+        auto found=std::find_if(mixerWrites_.begin(),mixerWrites_.end(),[&](const auto &pass) {
+            return sameLane(pass.target,*lane);
+        });
+        if(found==mixerWrites_.end()) {
+            found=mixerWrites_.emplace(mixerWrites_.end());
+            found->target=*lane;
+        }
+        found->value(clock,request.payload.at(request.payload.contains("db")?"db":"pan").get<double>());
+        // Preview already established that the native value differs.
+        found->touched=true;
+    }
+}
+
+void ProjectDocument::advanceAutomationWrites() {
+    if(mixerWrites_.empty() && parameterWrites_.empty() && nativeWrites_.empty())return;
+    engine::Session::DriverClock clock;
+    if(!session_.readDriverClock(clock))return;
+    for(auto &pass:mixerWrites_)pass.advance(clock);
+    for(auto &[key,pass]:parameterWrites_){(void)key;pass.advance(clock);}
+    for(auto &pass:nativeWrites_)if(!pass.nativeReleased)pass.advance(clock);
+}
+
+void ProjectDocument::closeAutomationWrites() {
+    if(!mixerWrites_.empty())endMixerDrag();
+    while(!parameterWrites_.empty()) {
+        const auto key=parameterWrites_.begin()->first;
+        if(!commitParameterAutomation(key.first,key.second))break;
+    }
+    finishNativeAutomation(true);
+}
+
+bool ProjectDocument::commitAutomation(std::vector<AutomationPass> passes,std::vector<OpRequest> requests) {
+    std::vector<std::int64_t> follow;
+    bool ok=false;
+    try {
+        edit::RowEdits rows(store_->db());clip_edit::CopyIds ids(store_->db());
+        const edit::TimeMap time(store_->db());
+        engine::Session::DriverClock clock;
+        const bool observed=session_.readDriverClock(clock);
+        for(auto &pass:passes) {
+            const auto previous=matchingLane(*store_,pass.target);
+            if(pass.suspendedLane)follow.push_back(*pass.suspendedLane);
+            else if(previous && pass.touched && session_.overriddenLanes().contains(previous))follow.push_back(previous);
+            if(!pass.touched || (pass.device && !session_.resolveDevice(*pass.device)))continue;
+            if(!pass.nativeReleased)pass.close(observed?clock:pass.last);
+            const auto laneId=previous?previous:ids.next("automation_lanes");
+            if(!previous) {
+                const auto &target=pass.target;
+                const Payload low=target.minValue?Payload(*target.minValue):Payload(nullptr);
+                const Payload high=target.maxValue?Payload(*target.maxValue):Payload(nullptr);
+                rows.set("automation_lanes",laneId,edit::defaultRow(store_->db(),"automation_lanes",
+                    {{"id",laneId},{"owner_kind",target.ownerKind},{"owner_id",target.ownerId},
+                     {"param_ref",target.paramRef},{"param_name",target.paramName},{"value_domain",target.valueDomain},
+                     {"unit",target.unit},{"default_value",target.defaultValue},{"min_value",low},{"max_value",high}}));
+            }
+            const auto lane=rows.current("automation_lanes",laneId);
+            const int base=lane->at("time_base");
+            auto native=[&](std::int64_t sample) {
+                const auto nanos=edit::nanosFromSeconds(static_cast<double>(sample)/engineRate_);
+                return base==0?time.ticks(nanos):nanos;
+            };
+            for(auto &span:pass.spans) {
+                if(span.empty())continue;
+                std::vector<automation::NativeSpliceKnot> replacement;
+                const auto first=native(span.front().time);
+                const auto last=native(std::max(span.back().time,edit::addTime(span.front().time,1)));
+                if(first>=last)continue;
+                for(auto point:span) {
+                    point.time=native(point.time);
+                    if(!replacement.empty() && replacement.back().point.time==point.time)replacement.back().point=point;
+                    else replacement.push_back({point,{}});
+                }
+                if(replacement.back().point.time<last) {
+                    auto end=replacement.back();end.point.time=last;replacement.push_back(end);
+                }
+                automation::stageEnvelopeSplice(*store_,rows,ids,time,laneId,first,last,replacement,engineRate_);
+            }
+        }
+        auto changes=rows.changes();
+        if(!changes.empty()) {
+            OpRequest request;request.opType="arranger.splice";
+            request.payload={{"id",0},{"changes",std::move(changes)}};
+            requests.push_back(std::move(request));
+        }
+        for(auto &request:requests)request.label="Record Automation";
+        ok=commitCaptured(requests);
+        if(ok)error_.clear();
+    } catch(const std::exception &error) {
+        error_=error.what();
+    }
+    for(const auto lane:follow) {
+        if(session_.writingAutomationLanes().contains(lane))session_.finishAutomationWrite(lane);
+        else if(ok && session_.overriddenLanes().contains(lane))session_.reenableAutomation(lane);
+    }
+    followOverrides();
+    feed_.publish(session_,realisedGeneration_);
+    return ok;
+}
+
+std::optional<ProjectDocument::AutomationPass> ProjectDocument::prepareParameterAutomation(std::int64_t id,
+        const device::ParamDescriptor &descriptor,double before,double after) {
+    const auto *instance=session_.instanceFor(id);
+    if(!instance || !descriptor.automatable || descriptor.missing ||
+       !std::isfinite(before) || !std::isfinite(after) || before==std::clamp(after,0.0,1.0))return std::nullopt;
+    const auto ref=engine::automationParamRef(instance->identity().format,descriptor.id);
+    std::uint32_t numeric=0;
+    if(!ref || !parseDeviceParamRef(*ref,numeric))return std::nullopt;
+    AutomationPass pass;
+    pass.target.ownerKind="device";pass.target.ownerId=id;pass.target.paramRef=std::to_string(numeric);
+    pass.target.paramName=descriptor.name;pass.target.defaultValue=before;
+    pass.target.minValue=0;pass.target.maxValue=1;
+    pass.device=session_.deviceRuntimeToken(id);
+    return pass;
+}
+
+void ProjectDocument::suspendParameterAutomation(AutomationPass &pass) {
+    if(pass.suspendedLane)return;
+    if(const auto lane=matchingLane(*store_,pass.target);lane>0) {
+        (void)session_.beginAutomationWrite(lane);
+        if(session_.writingAutomationLanes().contains(lane))pass.suspendedLane=lane;
+    }
+}
+
+bool ProjectDocument::observeNativeAutomation(std::int64_t id,const device::ParamDescriptor &descriptor,
+        engine::ParamEventKind kind,double before,double after,
+        const std::shared_ptr<const gesture::OwnerToken> &owner) {
+    if(!owner)return false;
+    auto existing=std::find_if(nativeWrites_.begin(),nativeWrites_.end(),[&](const auto &pass) {
+        return pass.owner->sameOwner(*owner);
+    });
+    engine::Session::DriverClock clock;
+    if(kind==engine::ParamEventKind::End) {
+        if(existing==nativeWrites_.end())return false;
+        if(session_.readDriverClock(clock))existing->close(clock);
+        existing->nativeReleased=true;
+        return true;
+    }
+    if(!recording_ || !session_.automationArmed() || !session_.readDriverClock(clock) || !clock.playing)return false;
+    if(existing==nativeWrites_.end()) {
+        auto pass=prepareParameterAutomation(id,descriptor,before,after);
+        if(!pass)return false;
+        pass->owner=owner;
+        existing=nativeWrites_.emplace(nativeWrites_.end(),std::move(*pass));
+    }
+    existing->value(clock,std::clamp(after,0.0,1.0));
+    existing->touched=true;
+    return true;
+}
+
+void ProjectDocument::finishNativeAutomation(bool stop) {
+    for(std::size_t i=0;i<nativeWrites_.size();) {
+        if(!stop && !nativeWrites_[i].nativeReleased) {
+            // The parameter drain relies on the attached runtime. Change its
+            // playback ownership only after the drain releases it.
+            suspendParameterAutomation(nativeWrites_[i]);
+            ++i;
+            continue;
+        }
+        const auto owner=nativeWrites_[i].owner;
+        if(!releaseParameterPreview(owner)){++i;continue;}
+        std::vector<AutomationPass> passes;
+        passes.push_back(std::move(nativeWrites_[i]));
+        nativeWrites_.erase(nativeWrites_.begin()+static_cast<std::ptrdiff_t>(i));
+        (void)commitAutomation(std::move(passes));
+    }
+}
+
+bool ProjectDocument::releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken> &owner) {
+    if(!owner)return true;
+    for(const auto &pending:parameterOps_.pendingGestures()) {
+        if(!pending.owner || !pending.owner->sameOwner(*owner))continue;
+        const auto cancelled=pending.state==gesture::State::Cancelling
+            ? parameterOps_.retryPendingCancel(*owner,captureNowMs())
+            : parameterOps_.cancelPending(*owner,captureNowMs());
+        if(!cancelled.status.ok()) {
+            error_=cancelled.status.message;
+            return false;
+        }
+        break;
+    }
+    return true;
+}
+
+bool ProjectDocument::commitParameterAutomation(std::int64_t id,const std::string &param) {
+    const auto found=parameterWrites_.find({id,param});
+    if(found==parameterWrites_.end() || !releaseParameterPreview(found->second.owner))return false;
+    std::vector<AutomationPass> passes;
+    passes.push_back(std::move(found->second));parameterWrites_.erase(found);
+    return commitAutomation(std::move(passes));
+}
+
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)
@@ -2410,6 +2753,7 @@ bool ProjectDocument::mixerDrag(double coordinate) {
     }
     if (realised && committed == view_.committedGeneration())
         realisedGeneration_ = view_.generation();
+    if(updated.preview)recordMixerValues(updated.preview->requests());
     error_.clear();
     return true;
 }
@@ -2417,6 +2761,23 @@ bool ProjectDocument::endMixerDrag() {
     if (!mixerDrag_)
         return false;
     auto drag = std::move(mixerDrag_);
+    if(!mixerWrites_.empty()) {
+        std::vector<OpRequest> other;
+        if(const auto preview=drag->preview())
+            for(const auto &request:preview->requests()) {
+                const auto lane=mixerLane(*store_,request);
+                if(!lane || std::none_of(mixerWrites_.begin(),mixerWrites_.end(),[&](const auto &pass) {
+                    return sameLane(pass.target,*lane);
+                }))other.push_back(request);
+            }
+        const auto cancelled=drag->cancel();
+        if(!cancelled.status.ok()) {
+            error_=cancelled.status.message;
+            mixerWrites_.clear();
+            return false;
+        }
+        return commitAutomation(std::exchange(mixerWrites_,{}),std::move(other));
+    }
     const bool realised = realisedGeneration_ == view_.generation();
     const auto sequence = session_.realisedAppliedSequence();
     const auto graph = session_.graph().stats().published;
@@ -2441,6 +2802,7 @@ bool ProjectDocument::endMixerDrag() {
     return true;
 }
 void ProjectDocument::cancelMixerDrag() {
+    mixerWrites_.clear();
     if (!mixerDrag_)
         return;
     auto drag = std::move(mixerDrag_);
@@ -2484,8 +2846,23 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     const auto states = recordStates();
     const auto armed = armedTracks(current->tracks, states);
     if (armed.audio.empty() && armed.midi.empty()) {
-        error_ = "Arm a track to record into it.";
-        return false;
+        if (!automationArmed()) {
+            error_ = "Arm a track to record into it.";
+            return false;
+        }
+        if (deviceStopped_.load(std::memory_order_acquire)) {
+            error_ = "Recording needs an active audio device.";
+            return false;
+        }
+        if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
+            error_ = "Transport command queue is full";
+            return false;
+        }
+        recording_ = true;
+        session_.setAutomationWriteState(true, true);
+        session_.setRecordingForDevices(true);
+        error_.clear();
+        return true;
     }
     const auto availableInputs = static_cast<std::uint32_t>(std::max(0, inputs));
     if (!armed.audio.empty() && availableInputs == 0 && !externalAudioInputs_) {
@@ -2597,19 +2974,22 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     recording_ = true;
     session_.setRecordingForDevices(true); // SC-333
+    session_.setAutomationWriteState(automationArmed(), true);
     error_.clear();
     return true;
 }
 void ProjectDocument::stopRecording() {
     if (!recording_)
         return;
+    closeAutomationWrites();
     if (recordingAudio_)
         session_.recording().stop();
     if (midiRecording_)
         session_.midiInputCapture().stop();
     recording_ = false;
     session_.setRecordingForDevices(false);
-    landing_ = true;
+    landing_ = recordingAudio_ || midiRecording_ != nullptr;
+    session_.setAutomationWriteState(automationArmed(), false);
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
     const auto *midi = midiRecording_.get();
@@ -2624,6 +3004,11 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
         return;
     if (takePublication_) {
         pollTakePublication();
+        return;
+    }
+    if (!recordingAudio_ && !midiRecording_) {
+        if (deviceStopped)
+            stopRecording();
         return;
     }
     if (deviceStopped && midiRecording_)

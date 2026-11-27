@@ -77,6 +77,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -155,6 +156,11 @@ public:
     /// THIS event was accepted. Commit ALL appended requests (even on refusal:
     /// an older gesture may have completed), writing takeBlobs/writeBlobs first
     /// as for drain. Every call belongs to the same owner/message thread.
+    // Owner-side observation of accepted, non-echo hosted-editor input. Returning
+    // true consumes its scalar edit in favor of an Arrangement envelope pass.
+    using NativeAutomation = std::function<bool(std::int64_t,const device::ParamDescriptor&,ParamEventKind,
+        double,double,const std::shared_ptr<const gesture::OwnerToken>&)>;
+    void setNativeAutomation(NativeAutomation);
     bool uiEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
                  double value, std::int64_t nowMs, std::vector<OpRequest>& out);
     /// Explicit non-automatable configuration opt-in. Uses the same capture,
