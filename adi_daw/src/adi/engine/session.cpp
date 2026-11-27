@@ -1889,7 +1889,7 @@ std::optional<bool> Session::refreshLocalEdit(const Store& store, const ProjectV
     if (authored == model_.clips.end()) return {};
     if (delta->kind == Kind::MidiPlacement && spec_.performanceState && !spec_.exporting &&
         std::any_of(model_.tracks.begin(), model_.tracks.end(), [&](const rows::Track& track) {
-            return (track.id == delta->fromTrack || track.id == delta->toTrack) && track.recordArmed &&
+            return (track.id == delta->fromTrack || track.id == delta->toTrack) && recordArmed(track) &&
                    track.monitorMode == 2 && (track.kind == "midi" || track.kind == "instrument");
         })) {
         // Auto monitoring copies the Arrangement ranges into the audio
