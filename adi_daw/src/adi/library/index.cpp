@@ -658,11 +658,11 @@ std::string Index::exportJson(std::span<const SampleAnalysisMetadata> observatio
     if(audio::onAudioThread)return {};
     std::lock_guard lock(impl_->mutex); Json media = Json::object();
     SQLite::Statement q(*impl_->db,"SELECT hash,payload FROM annotations ORDER BY hash");
-    int version = 1;
+    int exchangeVersion = 1;
     while(q.executeStep()) {
         auto payload=libraryJson(q.getColumn(1).getString());
-        if (payload.contains("key")) version = 3;
-        else if (payload.contains("sample_settings")) version = std::max(version, 2);
+        if (payload.contains("key")) exchangeVersion = 3;
+        else if (payload.contains("sample_settings")) exchangeVersion = std::max(exchangeVersion, 2);
         media[q.getColumn(0).getString()]=std::move(payload);
     }
     for (const auto& observation : observations) {
@@ -672,9 +672,9 @@ std::string Index::exportJson(std::span<const SampleAnalysisMetadata> observatio
         auto& fields = media[observation.contentHash];
         if (fields.contains("analysis_metadata")) throw std::invalid_argument("duplicate analysis content hash");
         fields["analysis_metadata"] = std::move(metadata);
-        version = 3;
+        exchangeVersion = 3;
     }
-    auto encoded=Json{{"version",version},{"media",std::move(media)}}.dump(2);
+    auto encoded=Json{{"version",exchangeVersion},{"media",std::move(media)}}.dump(2);
     if(encoded.size()>maxLibraryJsonBytes)throw std::length_error("library JSON export exceeds 256 MiB");
     return encoded;
 }
@@ -685,7 +685,7 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
         if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() ||
             document.at("version") < 1 || document.at("version") > 3 || !document.at("media").is_object())
             throw std::runtime_error("invalid library JSON envelope");
-        const auto version = document.at("version").get<int>();
+        const auto exchangeVersion = document.at("version").get<int>();
         std::vector<SampleAnalysisMetadata> received;
         std::array<std::string_view, annotationJournalSize> changed{};
         std::size_t changedCount = 0;
@@ -702,7 +702,7 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
             bool update = incoming.empty();
             for(const auto& [key,value] : incoming.items()) {
                 if (key == "analysis_metadata") {
-                    if (version != 3) throw std::runtime_error("analysis metadata requires library JSON version 3");
+                    if (exchangeVersion != 3) throw std::runtime_error("analysis metadata requires library JSON version 3");
                     auto observed = readAnalysisMetadata(hash, value);
                     if (observations) received.push_back(std::move(observed));
                     continue;
@@ -717,7 +717,7 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
                     if(!value.is_null() && !validBpm(value)) throw std::runtime_error("invalid BPM");
                     merged[key]=value;
                 } else if (key=="key") {
-                    if (version != 3) throw std::runtime_error("authored key requires library JSON version 3");
+                    if (exchangeVersion != 3) throw std::runtime_error("authored key requires library JSON version 3");
                     if (value.is_null()) merged.erase(key);
                     else if (const auto parsed = readKey(value)) merged[key] = writeKey(*parsed);
                     else throw std::runtime_error("invalid authored key");
@@ -725,7 +725,7 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
                     if(!value.is_null() && (!value.is_number_integer() || value.get<std::int64_t>()<0 || value.get<std::int64_t>()>5)) throw std::runtime_error("invalid rating");
                     merged[key]=value;
                 } else if(key=="sample_settings") {
-                    if(version<2)throw std::runtime_error("sample defaults require library JSON version 2 or later");
+                    if(exchangeVersion<2)throw std::runtime_error("sample defaults require library JSON version 2 or later");
                     const auto decoded=decodeSampleSettings(value);if(!decoded)throw std::runtime_error("invalid imported sample defaults: "+decoded.error);
                     if(merged.contains(key)) {
                         const auto oldSettings=decodeSampleSettings(merged.at(key));if(!oldSettings)throw std::runtime_error("existing sample defaults are not editable by this version");
