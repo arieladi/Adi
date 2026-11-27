@@ -57,6 +57,41 @@ bool ParameterFeed::setDemand(const void *consumer, std::vector<std::int64_t> de
     demanded_ = std::move(next);
     return true;
 }
+
+std::shared_ptr<const ParameterPublication> ParameterFeed::describeForAutomation(engine::Session &session,
+                                                                                 std::int64_t track) {
+    auto result = std::make_shared<ParameterPublication>();
+    const auto &model = session.model();
+    for (const auto &chain : model.deviceChains) {
+        if (chain.trackId != track)
+            continue;
+        for (const auto &row : model.devices) {
+            if (row.chainId != chain.id)
+                continue;
+            const auto *entry = session.entryFor(row.id);
+            const auto *instance = session.instanceFor(row.id);
+            if (!entry || entry->retired || entry->parked || entry->resolvedPluginRef != row.pluginRefId || !instance)
+                continue;
+            DevicePanelData data;
+            data.track = track;
+            data.id = row.id;
+            data.name = row.name;
+            data.format = entry->resolvedFormat;
+            const bool available = instance->loaded();
+            const auto count = instance->paramCount();
+            for (std::int32_t index = 0; index < count; ++index) {
+                const auto *descriptor = instance->paramAt(index);
+                if (descriptor && descriptor->automatable) {
+                    data.declared.push_back({descriptor->id, descriptor->name, available && !descriptor->missing, true});
+                    data.defaults.emplace(descriptor->id, descriptor->defaultValue.normalized);
+                }
+            }
+            result->push_back(std::move(data));
+        }
+    }
+    return result;
+}
+
 void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevision) {
     auto next = std::make_shared<ParameterPublication>();
     const auto publication = ++publication_;

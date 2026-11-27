@@ -54,6 +54,8 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
     }
 }
 
+}  // namespace
+
 // --- notes ------------------------------------------------------------------
 
 /// Decode one clip's `ANOT` blob into notes.
@@ -62,7 +64,7 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
 /// `all()` refuses above 8.4M records rather than allocating on a corrupt
 /// header's word. Striding by the header's `rec_size` is what makes a v2 record
 /// readable by this v1 build (ADR-0023) -- never `sizeof(NoteRecord)`.
-void readNotesFor(Model& m, const Store& store, std::int64_t clipId) {
+void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
     const auto blob = store.getEventStream(clipId, "notes");
     if (!blob) return;
 
@@ -92,8 +94,6 @@ void readNotesFor(Model& m, const Store& store, std::int64_t clipId) {
         m.notes.push_back(n);
     }
 }
-
-}  // namespace
 
 Model readModel(const Store& store) {
     Model m;
@@ -614,7 +614,7 @@ Model readModel(const Store& store) {
     // because ADR-0009's granularity rule lives there and this should not be a
     // second place that knows how an event stream is addressed.
     for (const Clip& c : m.clips)
-        if (c.kind == "midi") readNotesFor(m, store, c.id);
+        if (c.kind == "midi") readClipNotes(m, store, c.id);
 
     query(m,db,"automation_segment_ranges",
           "SELECT id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges ORDER BY data_id,record_index",
