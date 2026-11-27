@@ -57,3 +57,4 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 | Item | Change and proof | State |
 |---|---|---|
 | TM-MD-04, JSON round trip | Chain `7d15f9b59`. Library JSON carries authored key plus observed key strength and BPM provenance. The authored settings and two kinds of observations round-tripped between databases, source precedence was checked, and malformed imports rolled back both results. GCC warnings-as-errors linked fixture passed 65 checks. | Exchange slice pushed. |
+| TM-MD-04, loudness | Chain `e655a3942`. The shared BS.1770 meter measures gated loudness in the same PCM pass and writes ALIB v2. A 1 kHz reference measured −15.0448 LUFS in mono and with an independent 5.1 LFE. Warm ADIA read-back was exact, and the sample-analysis suite passed 37 checks. | Loudness slice pushed. |
