@@ -44,6 +44,9 @@ public:
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
     std::vector<Node*> sourcesFor(std::int64_t trackId);
+    [[nodiscard]] static constexpr std::int32_t readAheadFrames(std::uint32_t rate) noexcept {
+        return static_cast<std::int32_t>((std::uint64_t{16384} * rate + 47999) / 48000);
+    }
     /// Driver-only lookahead for an idle source. Each candidate is a physical
     /// source window. Queue pages with the same worker used by playback.
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;

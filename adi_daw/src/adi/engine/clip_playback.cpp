@@ -329,7 +329,7 @@ struct Clip {
         // Mandatory current-block pages first, then two scaled pages: at least
         // 16384/48000 seconds of lead at every session rate.
         horizon(frames);
-        if(lookAhead)horizon(static_cast<std::int32_t>(std::ceil(16384.0*rate/48000.0)));
+        if(lookAhead)horizon(ClipPlayback::readAheadFrames(rate));
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -1557,7 +1557,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
         appendLaunchSource(*pagedProject,original,clip,clip.id,end);
         paged.push_back({clip.id,clip.id,fixedFrame(slot.startTick),
-            fixedFrame(slot.loopStartTick),fixedFrame(slot.loopEndTick)});
+            fixedFrame(slot.loopStartTick),fixedFrame(slot.loopEndTick),extent});
         pagedExtents.push_back(static_cast<std::uint64_t>(extent));
     };
     const auto add = [](std::int64_t a, std::int64_t b) {

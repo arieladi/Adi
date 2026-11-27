@@ -13,6 +13,7 @@ namespace adi::engine {
 struct LaunchPagedSource {
     std::int64_t clip = 0, sourceTrack = 0;
     std::int64_t firstFrame = 0, loopBeginFrame = 0, loopEndFrame = 0;
+    std::int64_t endFrame = 0;
 };
 
 /// One paged player for a published collection of unrolled slot sources. A
@@ -31,6 +32,8 @@ public:
     [[nodiscard]] bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
     [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
     [[nodiscard]] std::int32_t latencySamples(std::int64_t clip) const noexcept;
+    /// Owner query after prime for a newly published worker-backed bank.
+    [[nodiscard]] bool allWorkerPhasesPrimed(std::int64_t clip) const noexcept;
     /// Driver only. Queue an idle clip's upcoming source phase while keeping
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
@@ -48,7 +51,7 @@ public:
     }
 
 private:
-    struct Entry { LaunchPagedSource source; Node* playback; std::int32_t latency; };
+    struct Entry { LaunchPagedSource source; Node* playback; std::int32_t latency; bool primesAllPhases; };
     [[nodiscard]] const Entry* find(std::int64_t clip) const noexcept;
     Transport clock_;
     ClipPlayback pages_;

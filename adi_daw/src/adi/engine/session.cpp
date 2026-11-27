@@ -2336,6 +2336,9 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         });
     };
     bool keepStreamingBank = false;
+    bool missingWorkerLegato = false;
+    std::vector<std::int64_t> workerLegatoTargets;
+    constexpr auto legatoReadinessError = "a tempo scene needs the Legato R3 target's complete bounded playback window";
     if (bpm && tick > 0) {
         const auto& before = timing->launchAudio->mediaAt(sample - 1);
         if ((*bpm != before->bpm() || *bpm != timing->tempo.bpmAt(tick)) &&
@@ -2353,14 +2356,26 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     const auto cell = std::ranges::find_if(view.slots, [&](const LaunchSlot& slot) {
                         return slot.track == clip.trackId && slot.scene == scene;
                     });
-                    return cell != view.slots.end() && (cell->clip ? cell->legato : !cell->hasStop);
+                    if (cell == view.slots.end()) return false;
+                    if (!cell->clip) return !cell->hasStop;
+                    if (!cell->legato) return false;
+                    const auto* target = before->clip(cell->clip);
+                    if (!target || target->latencySamples() == 0) return true;
+                    if (!target->allWorkerPhasesPrimed()) {
+                        missingWorkerLegato = true;
+                        return true;
+                    }
+                    if (std::ranges::find(workerLegatoTargets,cell->clip) == workerLegatoTargets.end())
+                        workerLegatoTargets.push_back(cell->clip);
+                    return false;
                 };
                 const auto since = sceneTempoBanks_ ? sceneTempoBanks_->tick : 0;
                 if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
                     std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
                         return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
                     }) || std::ranges::any_of(model_.slotClips, needsRestart)) {
-                    error_ = "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
+                    error_ = missingWorkerLegato ? legatoReadinessError :
+                        "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
                     return false;
                 }
                 nextBanks = SceneTempoBanks{before, tick, *bpm};
@@ -2376,6 +2391,13 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         // A ratio or memory bound in the retimed clock may refuse a source.
         // Leave the old graph playing rather than publish an incomplete bank.
         if (keepStreamingBank && (!storedLaunchProject_ || !followsSceneTempo(*storedLaunchProject_))) return false;
+        if (std::ranges::any_of(workerLegatoTargets,[&](const auto id) {
+                const auto* target = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
+                return !target || !target->allWorkerPhasesPrimed();
+            })) {
+            missingWorkerLegato = true;
+            return false;
+        }
         DriverClock latest;
         return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
             (!latest.playing || sample - latest.sample >= maxFrames);
@@ -2414,7 +2436,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         performedSignatures_ = std::move(previousSignatures);
         preparedScene_ = previousScene;
         sceneTempoBanks_ = previousBanks;
-        if (keepStreamingBank && storedLaunchProject_ && !followsSceneTempo(*storedLaunchProject_) && !launchProblems_.empty())
+        if (missingWorkerLegato) error_ = legatoReadinessError;
+        else if (keepStreamingBank && storedLaunchProject_ && !followsSceneTempo(*storedLaunchProject_) && !launchProblems_.empty())
             error_ = launchProblems_.front();
     } else sceneClockRollback_ = std::move(previousClock);
     return admitted;

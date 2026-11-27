@@ -19,11 +19,16 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
         throw std::invalid_argument("invalid Session paged playback format");
     output_.resize(static_cast<std::size_t>(channels) * static_cast<std::size_t>(maxFrames));
     for (const auto& source : sources) {
-        if (source.clip <= 0 || source.sourceTrack <= 0 || source.firstFrame < 0 ||
+        if (source.clip <= 0 || source.sourceTrack <= 0 || source.firstFrame < 0 || source.endFrame < 0 ||
             source.loopBeginFrame < 0 || source.loopEndFrame < source.loopBeginFrame)
             throw std::invalid_argument("invalid Session paged source");
         const auto nodes = pages_.sourcesFor(source.sourceTrack);
-        if (nodes.size() == 1) sources_.push_back({source, nodes.front(), pages_.warpLatencyFor(source.sourceTrack)});
+        if (nodes.size() == 1) {
+            const auto latency = pages_.warpLatencyFor(source.sourceTrack);
+            const bool primesAll = latency > 0 && source.endFrame > 0 &&
+                source.endFrame <= ClipPlayback::readAheadFrames(sampleRate);
+            sources_.push_back({source, nodes.front(), latency, primesAll});
+        }
     }
     std::ranges::sort(sources_, {}, [](const Entry& entry) { return entry.source.clip; });
     if (std::ranges::adjacent_find(sources_, {}, [](const Entry& entry) { return entry.source.clip; }) != sources_.end())
@@ -38,9 +43,12 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         const auto& source = entry.source;
         Transport first, loop;
         const bool looping = source.loopEndFrame > source.loopBeginFrame;
-        first.loop(source.loopBeginFrame, source.loopEndFrame, looping);
+        // A small worker R3 slot can admit every phase in its unrolled
+        // window. Keep that request at launch preparation, including phases
+        // skipped by the slot's normal start point or loop head.
+        first.loop(source.loopBeginFrame, source.loopEndFrame, looping && !entry.primesAllPhases);
         loop.loop(source.loopBeginFrame, source.loopEndFrame, looping);
-        first.locate(source.firstFrame);
+        first.locate(entry.primesAllPhases ? 0 : source.firstFrame);
         first.play();
         loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
         loop.play();
@@ -66,6 +74,11 @@ bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
 std::int32_t LaunchPagedAudio::latencySamples(std::int64_t clip) const noexcept {
     const auto* source = find(clip);
     return source ? source->latency : 0;
+}
+
+bool LaunchPagedAudio::allWorkerPhasesPrimed(std::int64_t clip) const noexcept {
+    const auto* source = find(clip);
+    return source && source->primesAllPhases;
 }
 
 void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {

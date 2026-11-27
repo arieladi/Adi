@@ -140,6 +140,10 @@ std::int32_t LaunchAudioClip::latencySamples() const noexcept {
     return pages_ ? pages_->latencySamples(clip_) : 0;
 }
 
+bool LaunchAudioClip::allWorkerPhasesPrimed() const noexcept {
+    return pages_ && pages_->allWorkerPhasesPrimed(clip_);
+}
+
 std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const noexcept {
     if (!std::isfinite(bpm) || bpm <= 0)
         return -1;
