@@ -129,3 +129,4 @@
 29056 Delete Automation: Cmd+Backspace
 29057 Arm Selected Tracks: C
 29058 Volume, Pan and Meters: 
+29059 Switch Clip and Device Views: Shift+Tab, F12

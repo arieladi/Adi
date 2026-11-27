@@ -6346,9 +6346,57 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
           "let go at the foot it closes, and the Device View is as it was");
 
     // The Status Bar's selector and the command open it again.
-    root.status.clipToggle.onClick();
+    root.status.clipToggle.clicked({});
     check(root.state().clipView && ViewStateStore(*store).load("clip-view").clipView, "the Clip View Selector opens it, and that is kept");
     check(root.command(AppCommands::ToggleClipView) && !root.state().clipView, "and the command hides it");
+}
+void detailViewSwitch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "detail-switch.adi", true, {}, error);
+    check(document != nullptr, "a project for the Detail View shortcuts");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "detail-switch");
+    root.setSize(1440, 900);
+    const auto clipBounds = [&](int y) { return juce::Rectangle<int>(324, y, 1108, 286); };
+    const juce::Rectangle<int> deviceBounds(324, 666, 1108, 196);
+    const juce::KeyPress backTab(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0),
+        f12(juce::KeyPress::F12Key);
+    check(root.clipArea().isEmpty() && root.deviceArea() == deviceBounds, "the Device View starts in the lower dock");
+    check(root.keyPressed(backTab) && root.clipArea() == clipBounds(576) && root.deviceArea().isEmpty(),
+          "Shift+Tab changes from the Device View to the Clip View at the foot");
+    check(root.keyPressed(f12) && root.clipArea().isEmpty() && root.deviceArea() == deviceBounds,
+          "F12 switches back to the Device View");
+
+    const juce::ModifierKeys alt(juce::ModifierKeys::altModifier);
+    const auto altClick = [&](juce::Component &toggle) {
+        const auto centre = toggle.getLocalBounds().getCentre().toFloat();
+        toggle.mouseDown(pressAt(toggle, centre, alt.withFlags(juce::ModifierKeys::leftButtonModifier)));
+        toggle.mouseUp(pressAt(toggle, centre, alt));
+    };
+    altClick(root.status.detailToggle);
+    const auto saved = document->views().load("detail-switch");
+    check(root.clipArea() == clipBounds(372) && root.deviceArea() == deviceBounds && saved.clipView && saved.docked,
+          "Alt-click on the Device View toggle shows and saves both detail panes");
+    check(root.keyPressed(f12) && root.clipArea().isEmpty() && root.deviceArea() == deviceBounds,
+          "from both panes with focus outside them, F12 shows the Device View alone");
+    check(root.keyPressed(backTab) && root.clipArea() == clipBounds(576) && root.deviceArea().isEmpty(),
+          "switch to the Clip View before Alt-clicking its selector");
+    altClick(root.status.clipToggle);
+    check(root.clipArea() == clipBounds(372) && root.deviceArea() == deviceBounds,
+          "Alt-click on the Clip View toggle also shows both panes");
+
+    check(root.command(AppCommands::TabMovesFocus) && commands.tabMovesFocus(),
+          "turn on Tab navigation to check its backward key");
+    check(!root.keyPressed(backTab) && root.clipArea() == clipBounds(372) && root.deviceArea() == deviceBounds,
+          "Shift+Tab remains available to backward focus navigation");
+    check(root.keyPressed(f12) && root.clipArea().isEmpty() && root.deviceArea() == deviceBounds,
+          "F12 still switches views with Tab navigation on");
+    check(root.command(AppCommands::TabMovesFocus) && !commands.tabMovesFocus(), "restore the default Tab mode");
+    check(root.command(AppCommands::ToggleDeviceView) && root.clipArea().isEmpty() && root.deviceArea().isEmpty() &&
+              root.keyPressed(f12) && root.clipArea() == clipBounds(576) && root.deviceArea().isEmpty(),
+          "with both detail panes hidden, F12 opens the Clip View");
 }
 void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -8702,12 +8750,12 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "twenty pixels of the field are that share of the clip's two bars");
         statusBar.mouseDrag(dragAt(toggle, start, {start.x + 20.f, start.y + 15.f}));
         check(ed.time.scale > scale0, "dragged down, it zooms in");
-        statusBar.clipClicked();
+        statusBar.clipToggle.clicked({});
         check(root.state().clipView, "letting go after a drag is not the click that hides the view");
         statusBar.mouseDown(pressAt(toggle, start));
-        statusBar.clipClicked();
+        statusBar.clipToggle.clicked({});
         check(!root.state().clipView, "a press let go where it began still hides the Clip View");
-        statusBar.clipClicked();
+        statusBar.clipToggle.clicked({});
         root.frame();
         check(root.state().clipView && panel.details() != nullptr, "and shows it again");
         ed.fitWidth();
@@ -21855,6 +21903,7 @@ int main(int argc, char **argv) {
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
+    trace("detailViewSwitch", [&] { detailViewSwitch(commands, temp.path()); });
     trace("adaptiveSubQuarterGrid", [&] { adaptiveSubQuarterGrid(commands, temp.path()); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });

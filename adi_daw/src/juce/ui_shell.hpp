@@ -175,7 +175,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DeleteAutomation,
         ArmSelected,
         ToggleTrackMixer,
-        LastId = ToggleTrackMixer
+        SwitchDetailView,
+        LastId = SwitchDetailView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -332,19 +333,29 @@ class StatusBar final : public juce::Component {
     explicit StatusBar(AdiRootComponent &);
     void paint(juce::Graphics &) override;
     void resized() override;
-    juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // JUCE passes the activating gesture's modifiers to clicked().
+    class DetailButton final : public juce::TextButton {
+      public:
+        DetailButton(StatusBar &bar, bool clip) : bar_(bar), clip_(clip) {}
+        void clicked(const juce::ModifierKeys &) override;
+
+      private:
+        StatusBar &bar_;
+        bool clip_;
+    };
+    juce::TextButton infoToggle{""}, mixerToggle{"Mixer"};
+    DetailButton detailToggle{*this, false};
     juce::TextButton audioSettings{"Audio Settings"};
     void setAudioDeviceProblem(juce::String problem);
     const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
-    juce::TextButton clipToggle{""};
+    DetailButton clipToggle{*this, true};
     // A drag in the selector scrolls the Clip View's editor sideways, the whole field standing for
     // the whole clip, and zooms it up and down (manual 8.7); a press let go where it began is the
     // click that shows or hides the view. The part of the clip the editor shows is framed in it.
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
-    void clipClicked();
     juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
@@ -889,6 +900,7 @@ class AdiRootComponent final : public juce::Component,
     bool showDeviceView();
     // Shows the Clip View if it is hidden: a double-click on a clip (manual 8).
     bool showClipView();
+    bool setDetailViews(bool showClip, bool showDevices);
     // Live's Insert Empty MIDI Clip(s) (Ctrl/Cmd+Shift+M): an empty MIDI clip from `start` to `end`
     // on each MIDI track of `tracks`, one undo step; the first is selected.
     bool insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end);

@@ -311,6 +311,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"edit.delete-automation", "Edit"}, // DeleteAutomation
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
         {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
+        {"view.switch-detail-view", "View"}, // SwitchDetailView
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -536,7 +537,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks", "Volume, Pan and Meters"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -595,6 +596,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case SwitchDetailView:
+        info.addDefaultKeypress(juce::KeyPress::tabKey, shift);
+        info.addDefaultKeypress(juce::KeyPress::F12Key, 0);
+        info.setActive(active_ != nullptr && active_->arrangement.isVisible());
         break;
     case ToggleInfoView:
         // Shift+? : one platform reports the shifted character, the other the key.
@@ -1103,6 +1109,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
     const auto id = manager.getKeyMappings()->findCommandForKeyPress(key);
+    if (id == SwitchDetailView && tabMovesFocus_ &&
+        key == juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0))
+        return false;
     // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (id >= FoldToNotes && id <= HighlightScales)
@@ -1147,7 +1156,7 @@ bool AppCommands::perform(const InvocationInfo &info) {
 }
 StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     // Live's corners: the Info View's toggle on the left, the Detail View's on the right.
-    for (auto *b : {&infoToggle, &detailToggle}) {
+    for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     }
@@ -1155,15 +1164,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
     infoToggle.onClick = [this] { root_.command(AppCommands::ToggleInfoView); };
     detailToggle.setTitle("Detail View");
-    detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4.");
-    detailToggle.onClick = [this] { root_.command(AppCommands::ToggleDeviceView); };
+    detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4. Alt-click shows both views.");
     addAndMakeVisible(clipToggle);
     clipToggle.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     clipToggle.setColour(juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
     clipToggle.setTitle("Clip View");
-    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3.");
+    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3. Alt-click shows both views.");
     clipToggle.setClickingTogglesState(false);
-    clipToggle.onClick = [this] { clipClicked(); };
     clipToggle.addMouseListener(this, false);
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
@@ -1202,11 +1209,14 @@ void StatusBar::resized() {
     const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
     audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
 }
-void StatusBar::clipClicked() {
-    // The end of a drag in the selector is not a click.
-    if (std::exchange(selectorDragged_, false))
+void StatusBar::DetailButton::clicked(const juce::ModifierKeys &mods) {
+    // Letting go after a drag in the Clip View selector only finishes the drag.
+    if (clip_ && std::exchange(bar_.selectorDragged_, false))
         return;
-    root_.command(AppCommands::ToggleClipView);
+    if (mods.isAltDown())
+        bar_.root_.setDetailViews(true, true);
+    else
+        bar_.root_.command(clip_ ? AppCommands::ToggleClipView : AppCommands::ToggleDeviceView);
 }
 void StatusBar::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent != &clipToggle)
@@ -1295,7 +1305,7 @@ void StatusBar::paint(juce::Graphics &g) {
         g.strokePath(arrow, juce::PathStrokeType(look::line, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     // The corner buttons: round, in the shared button's colours, with Live's triangles.
-    for (auto *b : {&infoToggle, &detailToggle}) {
+    for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         const auto c = b->getBounds().toFloat();
         const auto state = controls::stateOf(false, b->isOver(), b->isDown(), b->isEnabled());
         controls::roundButton(g, c, state);
@@ -2011,13 +2021,16 @@ void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
     }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
-    // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
-    // nothing. In Live they switch to Session View, which ADI does not have yet.
+    // With Use Tab Key to Move Focus off, Shift+Tab switches the Detail View.
+    // Tab's Arrangement/Session switch waits for Session View.
     const auto mods = key.getModifiers();
     const bool plainTab = key.getKeyCode() == juce::KeyPress::tabKey && !mods.isCommandDown() &&
                           !mods.isCtrlDown() && !mods.isAltDown();
-    if (plainTab && !commands_.tabMovesFocus())
+    if (plainTab && !commands_.tabMovesFocus()) {
+        if (mods.isShiftDown())
+            commands_.key(key, *this);
         return true;
+    }
     // With Wrap Tab Navigation off, Tab stops at the area's last control (Shift+Tab at its
     // first) instead of going round to the other end.
     if (plainTab && !commands_.wrapTabNavigation())
@@ -4529,6 +4542,20 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
 }
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }
+bool AdiRootComponent::setDetailViews(bool showClip, bool showDevices) {
+    const bool previousClip = std::exchange(state_.clipView, showClip);
+    const bool previousDevices = std::exchange(state_.docked, showDevices);
+    if (!persist()) {
+        state_.clipView = previousClip;
+        state_.docked = previousDevices;
+        return fail(error_);
+    }
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    resized();
+    return true;
+}
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -4818,19 +4845,15 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleMixView:
         return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
-        state_.clipView = !state_.clipView;
-        if (!persist()) {
-            state_.clipView = !state_.clipView;
-            return fail(error_);
-        }
-        break;
+        return setDetailViews(!state_.clipView, state_.docked);
     case AppCommands::ToggleDeviceView:
-        state_.docked = !state_.docked;
-        if (!persist()) {
-            state_.docked = !state_.docked;
-            return fail(error_);
-        }
-        break;
+        return setDetailViews(state_.clipView, !state_.docked);
+    case AppCommands::SwitchDetailView: {
+        if (!arrangement.isVisible())
+            return false;
+        const bool showClip = !state_.clipView || (state_.docked && devices.hasKeyboardFocus(true));
+        return setDetailViews(showClip, !showClip);
+    }
     case AppCommands::Follow:
         state_.follow = !state_.follow;
         if (!persist()) {
@@ -5158,7 +5181,7 @@ const std::vector<MenuEntries> &menuBar() {
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
+          C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::SwitchDetailView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::AutomationMode, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
