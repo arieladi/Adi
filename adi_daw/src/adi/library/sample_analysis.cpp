@@ -4,6 +4,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/dsp/loudness.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
@@ -327,16 +328,23 @@ SampleAnalysisResult SampleAnalysisService::read(const std::string& hash, std::s
 }
 
 SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path& source,
-                                                    const std::string& expectedHash, std::stop_token stop) {
+                                                    const std::string& expectedHash, std::stop_token stop,
+                                                    std::optional<audio::WarpTimingSettings> timing) {
     if (audio::onAudioThread) return failure(SampleAnalysisProblem::Realtime);
     if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
     try {
         // The file can change between a published index entry and measurement.
         // Verify the bytes before decoding (including any decoder cache reuse)
         // and before publishing. Indexed cache hits already identify old bytes.
+        bool needsTiming = timing.has_value();
+        const auto readPrevious = [&](const std::string& contentHash) {
+            if (timing && audio::readWarpTimingByHash(analysis_, contentHash, *timing, stop)) needsTiming = false;
+            return read(contentHash, stop);
+        };
+        SampleAnalysisResult cached;
         if (!expectedHash.empty()) {
-            auto cached = read(expectedHash, stop);
-            if (cached || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
+            cached = readPrevious(expectedHash);
+            if ((cached && !needsTiming) || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
         }
         const auto hash = media::blake3File(source, stop);
         if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
@@ -344,8 +352,8 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         if (!expectedHash.empty() && expectedHash != hash.hex)
             return failure(SampleAnalysisProblem::SourceChanged);
         if (expectedHash.empty()) {
-            auto cached = read(hash.hex, stop);
-            if (cached || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
+            cached = readPrevious(hash.hex);
+            if ((cached && !needsTiming) || cached.problem == SampleAnalysisProblem::Cancelled) return cached;
         }
         const auto playable = decode_.playable(source, stop);
         struct Release {
@@ -356,27 +364,39 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         } release{decode_, playable, playable != source};
         audio::WavReader pcm(playable);
         const media::AnalysisIdentity identity{hash.hex, pcm.sampleRate(), pcm.channels(), pcm.frames()};
-        const auto metadata = readSampleFileTags(source, stop);
+        std::optional<audio::WarpTimingAnalyzer> timingAnalyzer;
+        if (needsTiming && identity.sampleRate >= 8000)
+            timingAnalyzer.emplace(identity.sampleRate, identity.channels, *timing);
+        if (cached && !timingAnalyzer) return cached;
+        const auto metadata = cached ? SampleFileTags{} : readSampleFileTags(source, stop);
         if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
-        audio::TransientAnalyzer transients(identity.sampleRate, identity.channels);
-        SampleDescriptorAnalyzer descriptors(identity.sampleRate, identity.channels);
-        SampleLoudness loudness(pcm);
+        std::optional<audio::TransientAnalyzer> transients;
+        std::optional<SampleDescriptorAnalyzer> descriptors;
+        std::optional<SampleLoudness> loudness;
         std::optional<SampleKeyAnalyzer> tonality;
-        if (identity.sampleRate >= 1000 && !metadata.tagKey) tonality.emplace(identity.sampleRate, identity.channels);
         const auto prefixFrames = static_cast<std::uint64_t>(identity.sampleRate) * sampleSimilarityWindowSeconds;
         std::optional<SampleDescriptorAnalyzer> prefix;
-        if (identity.frames > prefixFrames &&
-            identity.frames <= static_cast<std::uint64_t>(identity.sampleRate) * sampleSimilarityMaximumSeconds)
-            prefix.emplace(identity.sampleRate, identity.channels);
+        if (!cached) {
+            transients.emplace(identity.sampleRate, identity.channels);
+            descriptors.emplace(identity.sampleRate, identity.channels);
+            loudness.emplace(pcm);
+            if (identity.sampleRate >= 1000 && !metadata.tagKey) tonality.emplace(identity.sampleRate, identity.channels);
+            if (identity.frames > prefixFrames &&
+                identity.frames <= static_cast<std::uint64_t>(identity.sampleRate) * sampleSimilarityMaximumSeconds)
+                prefix.emplace(identity.sampleRate, identity.channels);
+        }
         std::vector<float> block(static_cast<std::size_t>(blockFrames) * identity.channels);
         for (std::uint64_t left = identity.frames; left != 0;) {
             if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
             const auto frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, blockFrames));
             if (pcm.read(block.data(), frames) != frames) return failure(SampleAnalysisProblem::Read);
             const auto samples = std::span(block).first(static_cast<std::size_t>(frames) * identity.channels);
-            loudness.append(samples, frames);
-            if (!transients.append(samples) || !descriptors.append(samples) || (tonality && !tonality->append(samples)))
+            if (timingAnalyzer && !timingAnalyzer->append(samples, stop))
+                return failure(stop.stop_requested() ? SampleAnalysisProblem::Cancelled : SampleAnalysisProblem::Read);
+            if (transients && (!transients->append(samples) || !descriptors->append(samples)))
                 return failure(SampleAnalysisProblem::Read);
+            if (loudness) loudness->append(samples, frames);
+            if (tonality && !tonality->append(samples)) return failure(SampleAnalysisProblem::Read);
             const auto offset = identity.frames - left;
             if (prefix && offset < prefixFrames) {
                 const auto remaining = std::min<std::uint64_t>(frames, prefixFrames - offset);
@@ -385,8 +405,22 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
             }
             left -= frames;
         }
-        const auto onsets = transients.finish();
-        const auto measured = descriptors.finish(onsets.frames);
+        const auto measuredTiming = timingAnalyzer ? timingAnalyzer->finish(stop) : std::optional<audio::WarpTimingAnalysis>{};
+        if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
+        if (timingAnalyzer && !measuredTiming) return failure(SampleAnalysisProblem::Read);
+        const auto verified = media::blake3File(source, stop);
+        if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
+        if (!verified || verified.hex != hash.hex) return failure(SampleAnalysisProblem::SourceChanged);
+
+        std::string error;
+        if (timingAnalyzer) {
+            const auto stored = audio::storeWarpTiming(analysis_, identity, *timing, *measuredTiming, error, stop);
+            if (stored == media::AnalysisCacheProblem::Cancelled) return failure(SampleAnalysisProblem::Cancelled);
+            if (stored != media::AnalysisCacheProblem::None) return failure(SampleAnalysisProblem::CacheWrite);
+            if (cached) return cached;
+        }
+        const auto onsets = transients->finish();
+        const auto measured = descriptors->finish(onsets.frames);
         if (!onsets || !measured) return failure(SampleAnalysisProblem::Read);
         const auto detectedKey = tonality ? tonality->finish() : std::optional<DetectedSampleKey>{};
         audio::SampleKindHints hints;
@@ -395,7 +429,7 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         SampleAnalysis value{};
         value.contentHash = identity.hash;
         value.lengthSeconds = static_cast<double>(identity.frames) / identity.sampleRate;
-        value.integratedLufs = loudness.read();
+        value.integratedLufs = loudness->read();
         value.classification = audio::classifySample(onsets.frames, identity.frames, identity.sampleRate, hints);
         value.descriptors = *measured;
         if (prefix) {
@@ -413,8 +447,8 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
         } else if (value.classification.bpm) {
             value.tempoBpm = value.classification.bpm;
         } else if (onsets.frames.size() >= 3) {
-            const auto timing = audio::autoWarpFromOnsets(onsets.frames, identity.frames, identity.sampleRate, {}, stop);
-            if (timing && timing.confidence >= 0.6) value.tempoBpm = timing.estimatedBpm;
+            const auto estimated = audio::autoWarpFromOnsets(onsets.frames, identity.frames, identity.sampleRate, {}, stop);
+            if (estimated && estimated.confidence >= 0.6) value.tempoBpm = estimated.estimatedBpm;
         }
         if (metadata.tagKey) {
             value.key = metadata.tagKey;
@@ -425,10 +459,6 @@ SampleAnalysisResult SampleAnalysisService::analyze(const std::filesystem::path&
             value.keyStrength = detectedKey->strength;
         }
 
-        const auto verified = media::blake3File(source, stop);
-        if (stop.stop_requested()) return failure(SampleAnalysisProblem::Cancelled);
-        if (!verified || verified.hex != hash.hex) return failure(SampleAnalysisProblem::SourceChanged);
-        std::string error;
         const auto stored = analysis_.update(identity, sectionTag, encode(value, identity), error, stop);
         if (stored == media::AnalysisCacheProblem::Cancelled) return failure(SampleAnalysisProblem::Cancelled);
         if (stored != media::AnalysisCacheProblem::None) return failure(SampleAnalysisProblem::CacheWrite);

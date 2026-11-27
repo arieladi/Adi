@@ -8,36 +8,48 @@
 #include <utility>
 
 namespace adi::audio {
-std::optional<WarpTimingAnalysis> analyzeWarpTiming(WavReader& source,
-    const std::string& contentHash, WarpTimingSettings settings, std::stop_token stop,
-    media::AnalysisCache* cache) {
-    if (onAudioThread || stop.stop_requested() || source.frames() == 0 || source.sampleRate() < 8000 ||
-        source.sampleRate() > 768000 || source.channels() > 64 || settings.numerator < 2 ||
-        settings.numerator > 16 || settings.sensitivity > 100) return {};
-    const media::AnalysisIdentity identity{contentHash, source.sampleRate(), source.channels(), source.frames()};
-    auto& store = cache ? *cache : media::defaultAnalysisCache();
-    if (auto previous = readWarpTiming(store, identity, settings, stop)) return previous;
-    if (stop.stop_requested()) return {};
+namespace {
+bool validTimingInput(std::uint32_t rate, std::uint32_t channels, WarpTimingSettings settings) {
+    return rate >= 8000 && rate <= 768000 && channels > 0 && channels <= 64 &&
+        settings.numerator >= 2 && settings.numerator <= 16 && settings.sensitivity <= 100;
+}
+} // namespace
 
-    SpectralOnsetAnalyzer transients(identity.sampleRate, identity.channels, static_cast<int>(settings.sensitivity));
-    WarpBeatCandidateAnalyzer beats(WarpBeatMeter{settings.numerator, settings.denominator, settings.quarterBpm});
-    WarpAnalysisPcm pcm(identity.sampleRate, identity.channels, [&](std::span<const float> mono) {
-        return beats.append(mono, stop);
-    });
-    constexpr std::uint32_t blockFrames = 4096;
-    std::vector<float> input(static_cast<std::size_t>(blockFrames) * identity.channels);
-    source.seek(0);
-    for (auto left = identity.frames; left != 0;) {
-        if (stop.stop_requested()) return {};
-        const auto frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, blockFrames));
-        if (source.read(input.data(), frames) != frames) return {};
-        const auto block = std::span(input).first(static_cast<std::size_t>(frames) * identity.channels);
-        if (!transients.append(block, stop) || !pcm.append(block, stop)) return {};
-        left -= frames;
-    }
-    if (!pcm.finish(stop)) return {};
-    auto onsets = transients.finish(stop);
-    auto grid = beats.finish(stop);
+struct WarpTimingAnalyzer::State {
+    State(std::uint32_t rate, std::uint32_t channels, WarpTimingSettings settings)
+        : transients(rate, channels, static_cast<int>(settings.sensitivity)),
+          beats(WarpBeatMeter{settings.numerator, settings.denominator, settings.quarterBpm}),
+          pcm(rate, channels, [this](std::span<const float> mono) { return beats.append(mono, stop); }) {}
+
+    SpectralOnsetAnalyzer transients;
+    WarpBeatCandidateAnalyzer beats;
+    std::stop_token stop;
+    WarpAnalysisPcm pcm;
+    bool failed = false;
+};
+
+WarpTimingAnalyzer::WarpTimingAnalyzer(std::uint32_t rate, std::uint32_t channels, WarpTimingSettings settings) {
+    if (!onAudioThread && validTimingInput(rate, channels, settings))
+        state_ = std::make_unique<State>(rate, channels, settings);
+}
+
+WarpTimingAnalyzer::~WarpTimingAnalyzer() = default;
+
+bool WarpTimingAnalyzer::append(std::span<const float> interleaved, std::stop_token stop) {
+    if (onAudioThread || !state_ || state_->failed) return false;
+    state_->stop = stop;
+    state_->failed = !state_->transients.append(interleaved, stop) || !state_->pcm.append(interleaved, stop);
+    return !state_->failed;
+}
+
+std::optional<WarpTimingAnalysis> WarpTimingAnalyzer::finish(std::stop_token stop) {
+    if (onAudioThread || !state_) return {};
+    auto state = std::move(state_);
+    if (state->failed || stop.stop_requested()) return {};
+    state->stop = stop;
+    if (!state->pcm.finish(stop)) return {};
+    auto onsets = state->transients.finish(stop);
+    auto grid = state->beats.finish(stop);
     if (!onsets || stop.stop_requested() || (!grid && grid.error != WarpBeatCandidateError::NoBeat)) return {};
 
     WarpTimingAnalysis result;
@@ -49,8 +61,35 @@ std::optional<WarpTimingAnalysis> analyzeWarpTiming(WavReader& source,
         result.ticksPerPulse = grid.ticksPerPulse;
         if (grid.medianBpm > 0) result.medianBpm = grid.medianBpm;
     }
+    return result;
+}
+
+std::optional<WarpTimingAnalysis> analyzeWarpTiming(WavReader& source,
+    const std::string& contentHash, WarpTimingSettings settings, std::stop_token stop,
+    media::AnalysisCache* cache) {
+    if (onAudioThread || stop.stop_requested() || source.frames() == 0 ||
+        !validTimingInput(source.sampleRate(), source.channels(), settings)) return {};
+    const media::AnalysisIdentity identity{contentHash, source.sampleRate(), source.channels(), source.frames()};
+    auto& store = cache ? *cache : media::defaultAnalysisCache();
+    if (auto previous = readWarpTiming(store, identity, settings, stop)) return previous;
+    if (stop.stop_requested()) return {};
+
+    WarpTimingAnalyzer analyzer(identity.sampleRate, identity.channels, settings);
+    constexpr std::uint32_t blockFrames = 4096;
+    std::vector<float> input(static_cast<std::size_t>(blockFrames) * identity.channels);
+    source.seek(0);
+    for (auto left = identity.frames; left != 0;) {
+        if (stop.stop_requested()) return {};
+        const auto frames = static_cast<std::uint32_t>(std::min<std::uint64_t>(left, blockFrames));
+        if (source.read(input.data(), frames) != frames) return {};
+        const auto block = std::span(input).first(static_cast<std::size_t>(frames) * identity.channels);
+        if (!analyzer.append(block, stop)) return {};
+        left -= frames;
+    }
+    auto result = analyzer.finish(stop);
+    if (!result) return {};
     std::string diagnostic;
-    (void)storeWarpTiming(store, identity, settings, result, diagnostic, stop);
+    (void)storeWarpTiming(store, identity, settings, *result, diagnostic, stop);
     if (stop.stop_requested()) return {};
     return result;
 }

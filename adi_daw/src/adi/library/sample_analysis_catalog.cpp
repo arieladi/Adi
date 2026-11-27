@@ -21,11 +21,12 @@ using Keys = std::unordered_set<std::string, TextHash, std::equal_to<>>;
 }
 
 struct SampleAnalysisCatalog::State {
-    State(media::AnalysisCache& analysis, audio::DecodeCache& decode, const Index* annotations)
-        : service(analysis, decode), index(annotations) {}
+    State(media::AnalysisCache& analysis, audio::DecodeCache& decode, const Index* annotations,
+          std::optional<audio::WarpTimingSettings> analysisTiming)
+        : service(analysis, decode), index(annotations), timing(analysisTiming) {}
 
     bool measure(const AnalysisJob& job, std::stop_token stop) {
-        auto result = service.analyze(job.source, job.hash, stop);
+        auto result = service.analyze(job.source, job.hash, stop, timing);
         if (!result || stop.stop_requested()) return false;
         if (index) result.analysis = applySampleOverrides(std::move(*result.analysis), index->analysisOverrides(result.hash));
 
@@ -40,6 +41,7 @@ struct SampleAnalysisCatalog::State {
 
     SampleAnalysisService service;
     const Index* index;
+    std::optional<audio::WarpTimingSettings> timing;
     std::mutex publicationMutex;
     mutable std::mutex mutex;
     Keys hashesWanted, keysWanted;
@@ -48,8 +50,8 @@ struct SampleAnalysisCatalog::State {
 };
 
 SampleAnalysisCatalog::SampleAnalysisCatalog(media::AnalysisCache& analysis, audio::DecodeCache& decode,
-                                             const Index* annotations)
-    : state_(std::make_unique<State>(analysis, decode, annotations)),
+                                             const Index* annotations, std::optional<audio::WarpTimingSettings> timing)
+    : state_(std::make_unique<State>(analysis, decode, annotations, timing)),
       worker_([this](const AnalysisJob& job, std::stop_token stop) { return state_->measure(job, stop); }) {}
 SampleAnalysisCatalog::~SampleAnalysisCatalog() = default;
 

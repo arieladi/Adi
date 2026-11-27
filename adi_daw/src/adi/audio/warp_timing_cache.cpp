@@ -63,18 +63,13 @@ bool valid(const WarpTimingAnalysis& value, std::uint64_t frames) {
                 std::isfinite(onset.peakDbfs);
         });
 }
-} // namespace
 
-std::optional<WarpTimingAnalysis> readWarpTiming(const media::AnalysisCache& cache,
-    const media::AnalysisIdentity& identity, WarpTimingSettings settings, std::stop_token stop) {
-    if (onAudioThread || stop.stop_requested()) return {};
-    const auto config = configuration(settings);
-    if (!config) return {};
-    const auto result = cache.read(identity, stop);
-    if (!result) return {};
-    const auto section = result.data->sections.find(tag);
-    if (section == result.data->sections.end() || section->second.version != version ||
-        section->second.configuration != *config || section->second.bytes.size() < headerSize) return {};
+std::optional<WarpTimingAnalysis> decodeTiming(const media::SampleAnalysis& record,
+    WarpTimingSettings settings, std::uint32_t config, std::stop_token stop) {
+    const auto& identity = record.identity;
+    const auto section = record.sections.find(tag);
+    if (section == record.sections.end() || section->second.version != version ||
+        section->second.configuration != config || section->second.bytes.size() < headerSize) return {};
     const auto& data = section->second.bytes;
     std::size_t at = 0;
     const auto get = [&](auto zero) {
@@ -117,6 +112,25 @@ std::optional<WarpTimingAnalysis> readWarpTiming(const media::AnalysisCache& cac
         if (!stop.stop_requested() && valid(decoded, canonicalFrames(identity))) return decoded;
     } catch (const std::exception&) {}
     return {};
+}
+} // namespace
+
+std::optional<WarpTimingAnalysis> readWarpTiming(const media::AnalysisCache& cache,
+    const media::AnalysisIdentity& identity, WarpTimingSettings settings, std::stop_token stop) {
+    if (onAudioThread || stop.stop_requested()) return {};
+    const auto config = configuration(settings);
+    if (!config) return {};
+    const auto result = cache.read(identity, stop);
+    return result ? decodeTiming(*result.data, settings, *config, stop) : std::nullopt;
+}
+
+std::optional<WarpTimingAnalysis> readWarpTimingByHash(const media::AnalysisCache& cache,
+    const std::string& contentHash, WarpTimingSettings settings, std::stop_token stop) {
+    if (onAudioThread || stop.stop_requested()) return {};
+    const auto config = configuration(settings);
+    if (!config) return {};
+    const auto result = cache.readByHash(contentHash, stop);
+    return result ? decodeTiming(*result.data, settings, *config, stop) : std::nullopt;
 }
 
 media::AnalysisCacheProblem storeWarpTiming(media::AnalysisCache& cache,

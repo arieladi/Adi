@@ -244,6 +244,35 @@ void gatedLoudness(Fixture& fixture) {
           "integrated loudness round-trips through the versioned ADIA section");
 }
 
+void oneDecodePass(Fixture& fixture) {
+    media::AnalysisCache cache(fixture.temp.path() / "combined-analysis");
+    audio::DecodeCache decode(fixture.temp.path() / "combined-decoded");
+    const auto hash = media::blake3File(fixture.loop);
+    if (!hash) { check(false, "combined analysis content hash"); return; }
+    const audio::WarpTimingSettings settings{4, 47};
+    {
+        library::SampleAnalysisCatalog catalog(cache, decode, nullptr, settings);
+        catalog.replaceFiles({{fixture.loop, hash.hex, "loop"}});
+        catalog.worker().resume();
+        check(catalog.worker().waitIdle() && catalog.worker().stats().failed == 0 && decode.stats().passthrough == 1,
+              "the analysis worker feeds descriptors and timing from one PCM owner pass");
+    }
+    const auto record = cache.readByHash(hash.hex);
+    const auto measured = audio::readWarpTimingByHash(cache, hash.hex, settings);
+    check(record && record.data->sections.contains("ALIB") && record.data->sections.contains("AWTM") &&
+          measured && !measured->onsets.empty(), "one worker job adds both sections under the source identity");
+    library::SampleAnalysisService service(cache, decode);
+    const auto previous = service.analyze(fixture.loop, hash.hex, {}, settings);
+    check(previous && previous.fromCache && decode.stats().passthrough == 1,
+          "the same settings reuse both sections without another PCM pass");
+    const audio::WarpTimingSettings changed{4, 62};
+    const auto revised = service.analyze(fixture.loop, hash.hex, {}, changed);
+    check(revised && revised.fromCache && decode.stats().passthrough == 2 &&
+          audio::readWarpTimingByHash(cache, hash.hex, changed) &&
+          !audio::readWarpTimingByHash(cache, hash.hex, settings),
+          "a changed timing configuration refreshes timing and retains cached descriptors");
+}
+
 void warpUsesPublishedAnswer(Fixture& fixture) {
     auto loop = fixture.analysis.analyze(fixture.loop);
     auto kick = fixture.analysis.analyze(fixture.kick);
@@ -319,6 +348,7 @@ int main() {
         measureAndRead(fixture);
         catalogAndRevision(fixture);
         gatedLoudness(fixture);
+        oneDecodePass(fixture);
         warpUsesPublishedAnswer(fixture);
     } catch (const std::exception& exception) {
         check(false, exception.what());

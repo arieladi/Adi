@@ -20,7 +20,8 @@ struct SampleAnalysisLookup {
 // borrows the owner's caches and index, which must outlive it.
 class SampleAnalysisCatalog {
 public:
-    SampleAnalysisCatalog(media::AnalysisCache&, audio::DecodeCache&, const Index* annotations = nullptr);
+    SampleAnalysisCatalog(media::AnalysisCache&, audio::DecodeCache&, const Index* annotations = nullptr,
+                          std::optional<audio::WarpTimingSettings> timing = {});
     ~SampleAnalysisCatalog();
     SampleAnalysisCatalog(const SampleAnalysisCatalog&) = delete;
     SampleAnalysisCatalog& operator=(const SampleAnalysisCatalog&) = delete;

@@ -58,3 +58,9 @@ to apply observations to the matching content hash. A user value precedes a
 file value, then ACID, then detection. A local value wins when the sources
 have equal priority. ADIL stores the authored values and `sample_settings`.
 The owner can release observations alongside the rest of its library analysis.
+
+An owner can give `SampleAnalysisCatalog` a captured `WarpTimingSettings`.
+The worker passes each decoded block to both the descriptor analysis and the
+fixed-rate Warp analyser. ALIB and AWTM publish under the same verified
+source hash. A warm job reuses both. A timing configuration change keeps
+the existing library descriptors and computes the requested timing once.

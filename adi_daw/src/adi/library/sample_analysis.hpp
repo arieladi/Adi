@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/audio/sample_classification.hpp"
+#include "adi/audio/warp_timing_cache.hpp"
 #include "adi/library/sample_descriptors.hpp"
 #include "adi/library/sample_tonality.hpp"
 #include <cstdint>
@@ -74,7 +75,8 @@ public:
         : analysis_(analysis), decode_(decode) {}
     [[nodiscard]] SampleAnalysisResult read(const std::string& hash, std::stop_token = {}) const;
     [[nodiscard]] SampleAnalysisResult analyze(const std::filesystem::path& source,
-        const std::string& expectedHash = {}, std::stop_token = {});
+        const std::string& expectedHash = {}, std::stop_token = {},
+        std::optional<audio::WarpTimingSettings> timing = {});
 
 private:
     media::AnalysisCache& analysis_;

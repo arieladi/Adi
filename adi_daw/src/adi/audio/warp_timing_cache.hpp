@@ -27,6 +27,10 @@ struct WarpTimingAnalysis {
 // requests refuse. A miss includes incompatible analysis settings or bytes.
 [[nodiscard]] std::optional<WarpTimingAnalysis> readWarpTiming(const media::AnalysisCache&,
     const media::AnalysisIdentity&, WarpTimingSettings, std::stop_token = {});
+// For indexed files with a known content hash and no source dimensions yet.
+// The dimensions in the ADIA envelope and timing section must agree.
+[[nodiscard]] std::optional<WarpTimingAnalysis> readWarpTimingByHash(const media::AnalysisCache&,
+    const std::string& contentHash, WarpTimingSettings, std::stop_token = {});
 [[nodiscard]] media::AnalysisCacheProblem storeWarpTiming(media::AnalysisCache&,
     const media::AnalysisIdentity&, WarpTimingSettings, const WarpTimingAnalysis&,
     std::string& error, std::stop_token = {});
