@@ -4539,10 +4539,25 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     sel.marked = true;
     check(root.command(AppCommands::Split), "Split over two selected tracks");
     root.frame();
-    check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2 && root.error().find("one undo step each") != std::string::npos,
-          "each selected track's clip splits, and the Status Bar says each is its own step");
-    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    const auto groupedSplit = document->ops().nextUndo();
+    check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2 && groupedSplit &&
+              groupedSplit->label == "Split Clips" && groupedSplit->opCount == 2 &&
+              root.error().find("in one undo step") != std::string::npos,
+          "each selected track's clip splits in the same Undo step");
+    check(root.command(AppCommands::Undo), "undo both selected-track splits");
     root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1, "one Undo restores both selected tracks");
+    sel = {};
+    sel.track = 2;
+    sel.toTrack = 3;
+    sel.start = bar / 2;
+    sel.end = bar;
+    check(root.command(AppCommands::Split), "Split at both edges over two selected tracks");
+    root.frame();
+    check(clipsOf(2).size() == 3 && clipsOf(3).size() == 3, "each selected track splits at both time edges");
+    check(root.command(AppCommands::Undo), "undo both time-selection splits");
+    root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1, "one Undo restores both original spans");
     check(settings.set("editing.splitAllWithNoSelection", true, {}, why) && (commands.reload(), commands.splitAllWithNoSelection()),
           "editing.splitAllWithNoSelection back on (its default)");
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
@@ -4592,8 +4607,9 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Split), "Split with no clip chosen");
     root.frame();
     check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2, "splits the clips under the marker on every track");
-    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    check(root.command(AppCommands::Undo), "undo every clip split under the marker");
     root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1, "one Undo restores every clip under the marker");
     // A track the lanes do not show (the project view leaves it out) is passed over.
     root.arrangement.geometry.hidden = {3};
     sel = {};

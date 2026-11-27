@@ -3258,13 +3258,7 @@ bool AdiRootComponent::splitAtMarker() {
     const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
     // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
     // selection, and Split cuts it at the marker.
-    const engine::ClipNode *chosen = nullptr;
-    if (sel.clip != 0)
-        for (const auto &t : current->tracks)
-            if (t)
-                for (const auto &c : t->clips)
-                    if (c && c->id == sel.clip && from == c->posTicks && to == c->posTicks + c->lengthTicks)
-                        chosen = c.get();
+    const auto *chosen = chosenClip(*current, sel).clip;
     const bool timeSelection = from != to && chosen == nullptr;
     if (!timeSelection && !sel.marked)
         return fail("Place the insert marker inside a clip to split it.");
@@ -3273,12 +3267,8 @@ bool AdiRootComponent::splitAtMarker() {
     // selection lies inside it (the two-point split); else the marker cuts the chosen clip, or with
     // no clip chosen the clips under it on the selected tracks, or on every track when
     // `editing.splitAllWithNoSelection` is on.
-    struct Cut {
-        std::int64_t clip = 0;
-        std::vector<std::int64_t> at;
-        std::string track; // its track's name, for the Status Bar
-    };
-    std::vector<Cut> cuts;
+    std::vector<clip_edit::ClipSplit> cuts;
+    std::vector<std::string> cutTracks;
     const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
         return at > c.posTicks && at < c.posTicks + c.lengthTicks;
     };
@@ -3296,71 +3286,63 @@ bool AdiRootComponent::splitAtMarker() {
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
-            Cut cut{c->id, {}, trackName};
-            if (timeSelection) {
-                if (!onTrack)
+            if (timeSelection && onTrack) {
+                const bool cutStart = inside(*c, from);
+                const bool cutEnd = inside(*c, to);
+                if (!cutStart && !cutEnd)
                     continue;
-                for (const auto at : {from, to})
-                    if (inside(*c, at))
-                        cut.at.push_back(at);
-            } else if ((chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
-                cut.at.push_back(sel.insert);
+                cuts.push_back({c->id, {0, cutStart ? from : to}, {}});
+                if (cutStart && cutEnd)
+                    cuts.back().second = clip_edit::TimePoint{0, to};
+            } else if (!timeSelection && (chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
+                cuts.push_back({c->id, {0, sel.insert}, {}});
+            } else {
+                continue;
             }
-            if (!cut.at.empty())
-                cuts.push_back(std::move(cut));
+            cutTracks.push_back(trackName);
         }
     }
     if (cuts.empty())
         return fail(timeSelection ? "No clip crosses the time selection's edges: there is nothing to split."
                                   : "Place the insert marker inside a clip to split it.");
-    // One clip is one undo step: each clip's split is prepared on the project as the last one left
-    // it, so their new pieces' identities cannot collide. A refused clip is reported, and the rest
-    // still split.
-    std::size_t done = 0, refused = 0;
-    std::string firstRefusal, refusedOn;
-    for (const auto &cut : cuts) {
-        const auto now = view_.current();
-        if (!now)
-            break;
-        const auto middle = audio_drop_detail::newClipId(*now);
-        auto prepared = cut.at.size() == 2
-                            ? clip_edit::prepareSplit(submitter_.store(), cut.clip, middle, middle + 1,
-                                                      clip_edit::TimePoint{0, cut.at[0]},
-                                                      clip_edit::TimePoint{0, cut.at[1]}, editRate())
-                            : clip_edit::prepareSplit(submitter_.store(), cut.clip, middle,
-                                                      clip_edit::TimePoint{0, cut.at[0]}, editRate());
-        if (commitEdit(std::move(prepared))) {
-            ++done;
-            // The chosen clip keeps its identity as the left piece, and stays chosen as that.
-            if (chosen != nullptr && cut.clip == sel.clip) {
-                sel.start = std::min(sel.start, sel.end);
-                sel.end = cut.at[0];
-            }
-            // A time selection in one track, now exactly one clip's span, selects that clip, as
-            // Live leaves the part split out selected: the arrow keys and Delete then act on it.
-            if (timeSelection && sel.toTrack == 0)
-                if (const auto after = view_.current())
-                    if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
-                        for (const auto &c : t->clips)
-                            if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
-                                sel.clip = c->id;
-        } else if (refused++ == 0) {
-            firstRefusal = error_;
-            refusedOn = cut.track;
-        }
+    auto prepared = clip_edit::prepareSplits(submitter_.store(), cuts, editRate());
+    const auto done = prepared.edit.requests.size();
+    const auto &refused = prepared.refused;
+    std::string refusal;
+    if (!refused.empty()) {
+        const auto first = std::find_if(cuts.begin(), cuts.end(), [&](const auto &cut) {
+            return cut.clipId == refused.front().clipId;
+        });
+        const auto index = static_cast<std::size_t>(std::distance(cuts.begin(), first));
+        refusal = "The clip on " + cutTracks.at(index) + " could not be split. " + refused.front().error;
+        if (refused.size() > 1)
+            refusal += " Other clips skipped: " + std::to_string(refused.size() - 1) + ".";
     }
-    if (refused > 0) {
-        const auto clipsWord = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " clip" : " clips"); };
-        // The first refused clip's track and the engine's reason (an alias clip: "split needs alias
-        // resolution").
-        const auto why = "the clip on " + refusedOn + " is not split: " + firstRefusal +
-                         (refused > 1 ? " (and " + clipsWord(refused - 1) + " more)" : std::string{});
-        fail(done > 0 ? clipsWord(done) + " split, one undo step each; " + why : "Split: " + why);
-        return done > 0;
+    if (!prepared.edit.ok && done == 0 && !refusal.empty())
+        return fail(std::move(refusal));
+    if (!commitEdit(std::move(prepared.edit)))
+        return false;
+
+    // The chosen clip keeps its identity as the left piece. A time selection
+    // in one track selects the piece cut out when both edges were inside it.
+    if (chosen != nullptr) {
+        sel.start = from;
+        sel.end = cuts.front().first.value;
+    } else if (timeSelection && sel.toTrack == 0) {
+        if (const auto after = view_.current())
+            if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
+                for (const auto &c : t->clips)
+                    if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
+                        sel.clip = c->id;
     }
+
     arrangement.changed();
-    if (done > 1)
-        say(std::to_string(done) + " clips split, one undo step each.");
+    if (!refusal.empty() || done > 1) {
+        auto message = std::to_string(done) + (done == 1 ? " clip split" : " clips split") + " in one undo step.";
+        if (!refusal.empty())
+            message += " " + refusal;
+        say(std::move(message));
+    }
     return true;
 }
 bool AdiRootComponent::edited(const SubmitResult &result) {
