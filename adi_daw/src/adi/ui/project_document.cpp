@@ -9,12 +9,18 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/midi_capture.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/automation_splice_store.hpp"
+#include "adi/clip_image.hpp"
+#include "adi/edit_time.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/gesture_presentation.hpp"
 #include "adi/library/index.hpp"
 #include "adi/sample_defaults.hpp"
@@ -26,10 +32,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <future>
 #include <mutex>
 #include <stdexcept>
 #include <system_error>
+#include <set>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -38,22 +46,58 @@ namespace adi::ui {
 // reads it at each build.
 struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
+    void waitForReader(const std::filesystem::path &retiredFile) {
+        std::unique_lock lock(mutex);
+        readerReleased.wait(lock, [&] { return activeReader != retiredFile; });
+    }
+
+    struct Read {
+        explicit Read(WaveformSource &owner) : source(owner) {
+            std::lock_guard lock(source.mutex);
+            file = source.path;
+            source.activeReader = file;
+            store = std::move(source.idleReader);
+        }
+        ~Read() {
+            {
+                std::lock_guard lock(source.mutex);
+                if (source.path == file)
+                    source.idleReader = std::move(store);
+                else
+                    store.reset();
+                source.activeReader.reset();
+            }
+            source.readerReleased.notify_all();
+        }
+
+        WaveformSource &source;
+        std::filesystem::path file;
+        std::unique_ptr<Store> store;
+    };
+
     std::mutex mutex;
+    std::condition_variable readerReleased;
     std::filesystem::path path;
+    std::optional<std::filesystem::path> activeReader;
+    std::unique_ptr<Store> idleReader;
 };
 struct ProjectDocument::MidiRecording {
     struct Track {
-        bool monitored = false;
-        std::int32_t instrumentArrival = 0;
+        struct Held {
+            std::size_t index = 0;
+            bool monitored = false;
+        };
+        std::optional<engine::Session::MidiRecordMonitor> monitor;
+        std::int64_t quantizeGrid = 0;
         std::vector<notes::NoteValues> notes;
-        std::map<std::uint64_t, std::size_t> held;
+        std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
     std::vector<Track> tracks;
     std::vector<LiveMidiTake> preview;
-    bool started = false;
+    bool started = false, overdub = false;
     std::int64_t firstStreamSample = 0;
     engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
     engine::RecordingPunchWindow punchWindow;
@@ -93,22 +137,29 @@ struct ProjectDocument::MidiRecording {
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             auto &take = preview[i];
-            // Live input goes directly to the instrument. A replayed clip passes through the
-            // upstream nodes first, so place it on the clock at the instrument's input.
-            const auto heard = tickAt(packet.timelineSample - track.instrumentArrival);
-            const auto at = std::clamp(track.monitored ? heard : played, take.start, take.end - 1);
             const auto held = track.held.find(event.noteId);
+            // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
+            bool monitored = held != track.held.end() && held->second.monitored;
+            if (event.type == engine::EventType::NoteOn && track.monitor) {
+                const auto& ranges = track.monitor->blockedRanges;
+                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
+                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
+                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
+            }
+            // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
+            const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
+            const auto at = std::clamp(tick, take.start, take.end - 1);
             if (event.type == engine::EventType::NoteOn) {
-                if (held != track.held.end() || (!track.monitored && packet.inputSample < firstStreamSample))
+                if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
                 const auto velocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
-                track.held.emplace(event.noteId, index);
+                track.held.emplace(event.noteId, Track::Held{index, monitored});
                 track.notes.push_back({at - take.start, 1, index + 1, event.dim, std::max(1, velocity), 0, event.channel});
                 take.notes.push_back({at, take.end, event.dim});
             } else if (held != track.held.end()) {
-                auto &note = track.notes[held->second];
-                auto &shown = take.notes[held->second];
+                auto &note = track.notes[held->second.index];
+                auto &shown = take.notes[held->second.index];
                 if (event.type == engine::EventType::NoteOff) {
                     shown.end = std::max(shown.start + 1, at);
                     note.duration = shown.end - shown.start;
@@ -144,9 +195,9 @@ struct ProjectDocument::MidiRecording {
                 ingest(packet);
         for (std::size_t i = 0; i < tracks.size(); ++i)
             for (const auto &item : tracks[i].held) {
-                auto &shown = preview[i].notes[item.second];
+                auto &shown = preview[i].notes[item.second.index];
                 shown.end = preview[i].end;
-                tracks[i].notes[item.second].duration = shown.end - shown.start;
+                tracks[i].notes[item.second.index].duration = shown.end - shown.start;
             }
     }
 
@@ -174,7 +225,7 @@ struct ProjectDocument::MidiRecording {
             auto name = shownTrackName(current, span.track);
             placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
                                        name.empty() ? std::string("Take") : std::move(name),
-                                       track.notes, placement.expressions[i]});
+                                       track.notes, placement.expressions[i], overdub});
         }
         return placement;
     }
@@ -206,11 +257,14 @@ struct ProjectDocument::SaveJob {
     using Phase = SaveProgress::Phase;
     std::filesystem::path path;
     SaveKind kind;
+    StoreFileCollision collision;
+    std::optional<media::FileIdentity> expectedTarget;
     Phase phase = Phase::waitingForRecording;
     bool wasRecording;
     bool keptTake = false;
     bool switched = false;
-    std::string adoptionWarning;
+    bool readersSwitched = false;
+    std::string adoptionWarning, stateWarning;
     std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::stop_source stop;
     StoreFileSave file;
@@ -219,8 +273,10 @@ struct ProjectDocument::SaveJob {
     std::future<StoreFileResult> copy;
     std::future<std::string> retirement;
 
-    SaveJob(std::filesystem::path output, SaveKind operation, bool recording)
-        : path(std::move(output)), kind(operation), wasRecording(recording) {}
+    SaveJob(std::filesystem::path output, SaveKind operation, bool recording, StoreFileCollision collisionMode,
+            const media::FileIdentity *confirmedTarget)
+        : path(std::move(output)), kind(operation), collision(collisionMode),
+          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt), wasRecording(recording) {}
     ~SaveJob() { stop.request_stop(); }
     bool terminal() const noexcept {
         return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
@@ -287,26 +343,18 @@ std::unique_ptr<library::Index> openSampleDefaults(const std::filesystem::path &
     return index;
 }
 
-// The waveform worker's build: its own read-only store on the project's file, opened on the worker
-// at its first build and kept for the next (the worker is the only caller).
-// The worker's reader follows the document's file: after Save As the pool rows of anything imported
-// since are in the new file only, and a reader left on the old one finds none of them.
+// The waveform worker checks out its read-only store for a build. A Save As
+// can release the idle reader immediately, and an in-flight build hands it
+// back only if the document still uses its file.
 WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
-    auto reader = std::make_shared<std::unique_ptr<Store>>();
-    auto opened = std::make_shared<std::filesystem::path>();
-    return [source = std::move(source), reader, opened](std::optional<std::int64_t> mediaId, const std::string &stateHash,
-                                                       std::stop_token stop) {
-        std::filesystem::path path;
-        {
-            std::lock_guard lock(source->mutex);
-            path = source->path;
-        }
-        if (!*reader || *opened != path) {
-            reader->reset();
+    return [source = std::move(source)](std::optional<std::int64_t> mediaId, const std::string &stateHash,
+                                       std::stop_token stop) {
+        WaveformSource::Read read(*source);
+        auto &reader = read.store;
+        if (!reader) {
             StoreError error{};
-            *reader = Store::open(path, error, true);
-            *opened = path;
-            if (!*reader) {
+            reader = Store::open(read.file, error, true);
+            if (!reader) {
                 media::PeakResult refused;
                 refused.problem = media::PeakProblem::database;
                 refused.detail = "the project could not be read for its waveforms: " + std::string(toString(error));
@@ -315,11 +363,11 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
         }
         constexpr std::uint32_t fineBinsPerChannel = 65536;
         if (mediaId)
-            return media::buildMediaPeaks(**reader, *mediaId, fineBinsPerChannel, stop, nullptr,
+            return media::buildMediaPeaks(*reader, *mediaId, fineBinsPerChannel, stop, nullptr,
                                          media::PeakCacheResolution::PreferRequested);
         try {
             if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
-            const auto bytes = (*reader)->getStateBlob(stateHash);
+            const auto bytes = reader->getStateBlob(stateHash);
             if (!bytes || bytes->empty() || bytes->size() > 40u * 1024u * 1024u)
                 return media::PeakResult{media::PeakProblem::invalidSource, "The embedded sample state is unavailable.", {}};
             const auto *data = reinterpret_cast<const std::uint8_t *>(bytes->data());
@@ -335,13 +383,12 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
       sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
       waveforms_(peaksFrom(waveformSource_), [source = waveformSource_](std::int64_t mediaId, const std::string &hash,
                                                                       std::stop_token stop) {
-          std::filesystem::path path;
-          {
-              std::lock_guard lock(source->mutex);
-              path = source->path;
+          WaveformSource::Read read(*source);
+          auto &reader = read.store;
+          if (!reader) {
+              StoreError error{};
+              reader = Store::open(read.file, error, true);
           }
-          StoreError error{};
-          auto reader = Store::open(path, error, true);
           return reader ? media::buildMediaTransients(*reader, mediaId, hash, stop) : std::vector<std::uint64_t>{};
       }) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
@@ -363,8 +410,99 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
         [this, lifetime](engine::ScopeSource source) {
             if (!lifetime.expired()) analysisSources_.erase(source);
         });
+    parameterOps_.setNativeAutomation([this](std::int64_t id,const device::ParamDescriptor &descriptor,
+                                             engine::ParamEventKind kind,double before,double after,
+                                             const std::shared_ptr<const gesture::OwnerToken> &owner) {
+        return observeNativeAutomation(id,descriptor,kind,before,after,owner);
+    });
 }
+void ProjectDocument::AutomationPass::append(std::int64_t sample,double value) {
+    AutomationPoint point{};point.time=sample;point.value=value;
+    point.curve=static_cast<std::uint8_t>(engine::CurveShape::Hold);
+    auto &span=spans.back();
+    if(!span.empty() && span.back().time==sample)span.back()=point;
+    else span.push_back(point);
+}
+void ProjectDocument::AutomationPass::advance(const engine::Session::DriverClock &clock) {
+    if(spans.empty() || !last.playing)return;
+    const double held=spans.back().back().value;
+    if(clock.revision!=last.revision || !clock.playing) {
+        append(last.sample,held);
+        if(clock.playing) {
+            spans.emplace_back();
+            append(clock.sample,held);
+        }
+    } else if(clock.loopEnd>clock.loopBegin &&
+              clock.streamedFrames-last.streamedFrames>clock.sample-last.sample) {
+        append(clock.loopEnd,held);
+        const auto remaining=clock.streamedFrames-last.streamedFrames-(clock.loopEnd-last.sample);
+        if(remaining>=clock.loopEnd-clock.loopBegin) {
+            spans.emplace_back();
+            append(clock.loopBegin,held);
+            append(clock.loopEnd,held);
+        }
+        spans.emplace_back();
+        append(clock.loopBegin,held);
+    }
+    last=clock;
+}
+void ProjectDocument::AutomationPass::value(const engine::Session::DriverClock &clock,double value) {
+    advance(clock);
+    if(!clock.playing)return;
+    if(spans.empty() || !last.playing)spans.emplace_back();
+    if(!spans.back().empty() && spans.back().back().value!=value)touched=true;
+    if(spans.back().empty() && target.defaultValue!=value)touched=true;
+    append(clock.sample,value);
+    last=clock;
+}
+void ProjectDocument::AutomationPass::close(const engine::Session::DriverClock &clock) {
+    advance(clock);
+    if(!spans.empty() && last.playing)append(last.sample,spans.back().back().value);
+}
+
+namespace {
+std::optional<automation::LaneSpec> mixerLane(Store &store,const OpRequest &request) {
+    automation::LaneSpec lane;
+    lane.ownerId=request.payload.at("id");
+    lane.valueDomain="real";
+    const char *sql=nullptr;
+    if(request.opType=="mixer.setVolume") {
+        lane.paramRef="volume";lane.paramName="Volume";lane.unit="dB";lane.minValue=-150;lane.maxValue=6;
+        sql="SELECT volume_db FROM mixer_strip WHERE track_id=?";
+    } else if(request.opType=="mixer.setPan") {
+        lane.paramRef="pan";lane.paramName="Pan";lane.minValue=-1;lane.maxValue=1;
+        sql="SELECT pan FROM mixer_strip WHERE track_id=?";
+    } else if(request.opType=="mixer.setPanLeft" || request.opType=="mixer.setPanRight") {
+        const bool left=request.opType=="mixer.setPanLeft";
+        lane.paramRef=left?"panLeft":"panRight";lane.paramName=left?"Left Pan":"Right Pan";
+        lane.defaultValue=left?-1:1;lane.minValue=-1;lane.maxValue=1;
+        sql=left?"SELECT pan_left FROM mixer_pan_settings WHERE track_id=?":
+                 "SELECT pan_right FROM mixer_pan_settings WHERE track_id=?";
+    } else if(request.opType=="routing.setGain") {
+        lane.ownerKind="routing";lane.paramRef="gain_db";lane.paramName="Send";lane.unit="dB";
+        lane.minValue=-150;lane.maxValue=0;
+        sql="SELECT gain_db FROM routing WHERE id=? AND kind='send'";
+    } else return std::nullopt;
+    SQLite::Statement value(store.db(),sql);value.bind(1,lane.ownerId);
+    if(value.executeStep())lane.defaultValue=value.getColumn(0).getDouble();
+    if(lane.minValue)lane.minValue=std::min(*lane.minValue,lane.defaultValue);
+    if(lane.maxValue)lane.maxValue=std::max(*lane.maxValue,lane.defaultValue);
+    return lane;
+}
+std::int64_t matchingLane(Store &store,const automation::LaneSpec &lane) {
+    SQLite::Statement lookup(store.db(),
+        "SELECT id FROM automation_lanes WHERE owner_kind=? AND owner_id=? AND param_ref=? AND value_domain=?"
+        " ORDER BY enabled DESC,id LIMIT 1");
+    lookup.bind(1,lane.ownerKind);lookup.bind(2,lane.ownerId);lookup.bind(3,lane.paramRef);lookup.bind(4,lane.valueDomain);
+    return lookup.executeStep()?lookup.getColumn(0).getInt64():0;
+}
+bool sameLane(const automation::LaneSpec &a,const automation::LaneSpec &b) {
+    return a.ownerKind==b.ownerKind && a.ownerId==b.ownerId && a.paramRef==b.paramRef;
+}
+} // namespace
+
 ProjectDocument::~ProjectDocument() {
+    parameterOps_.setNativeAutomation({});
     stopTrackRender();
     for (const auto& item : limiterReductionSources_)
         if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
@@ -481,6 +619,14 @@ void ProjectDocument::OpenJob::advance() {
         fail(error.what());
     }
 }
+namespace {
+void appendWarning(std::string &message, const std::string &addition) {
+    if (addition.empty()) return;
+    if (!message.empty()) message += ' ';
+    message += addition;
+}
+} // namespace
+
 History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
                                                       std::int64_t nowUtc, int utcOffsetMinutes) {
     if (store_->readOnly()) {
@@ -488,22 +634,27 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState()) {
+        History::SnapshotResult refused;
+        refused.error = error_;
+        return refused;
+    }
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
-bool ProjectDocument::saveAs(const std::filesystem::path &path) {
+bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave, StoreFileCollision collision,
+                             const media::FileIdentity *expectedTarget) {
     warning_.clear();
-    // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
-    // the name, since Live would have asked here and replaced it.
+    // The unconfirmed path checks before stopping a recording. The store also checks when publishing.
     std::error_code ignored;
-    if (std::filesystem::exists(path, ignored) ||
-        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+    if (collision == StoreFileCollision::Fail &&
+        (std::filesystem::exists(path, ignored) ||
+         std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored)))) {
         error_ = "Save As: " + media::pathUtf8(path.filename()) +
-                 " already exists; ADI never replaces a project. Choose another name.";
+                 " already exists. Confirm replacement or choose another name.";
         return false;
     }
     // A take recording or landing goes into the file it was recorded in, before the file switches
@@ -519,22 +670,34 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         stopTrackRender();
         trackRenderStatus_ = "Track render cancelled for Save As.";
     }
-    refreshReportedLatenciesForSave();
-    const auto result = store_->saveAs(path);
+    if (!capturePluginState())
+        return false;
+    StoreFileSave file;
+    const auto oldPath = store_->path();
+    const auto kind = firstSave ? StoreSaveKind::firstSave : StoreSaveKind::saveAs;
+    auto result = store_->prepareFileSave(path, kind, file, collision, expectedTarget);
+    if (result.ok) result = file.write();
+    if (result.ok) result = store_->adoptFileSave(file);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
         return false;
     }
-    followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    const bool readersSwitched = followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    waveformSource_->waitForReader(oldPath);
+    appendWarning(warning_, file.closeReplacedProject());
+    appendWarning(warning_, pluginStateWarning_);
+    if (readersSwitched && firstSave)
+        store_->finishUntitledSave();
     return true;
 }
-void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
+bool ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
     warning_ = result.warning;
     // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
     if (keptTake)
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
+        waveformSource_->idleReader.reset();
         waveformSource_->path = store_->path();
     }
     const auto stem = store_->path().stem().u8string();
@@ -557,6 +720,7 @@ void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake)
         warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
     error_.clear();
+    return refreshError.empty();
 }
 namespace {
 // The store never replaces a file; the Status Bar says so in the window's words, with the name.
@@ -575,24 +739,28 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
         return false;
     }
     warning_ = result.warning;
+    appendWarning(warning_, pluginStateWarning_);
     error_.clear();
     return true;
 }
 
-bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind) {
+bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind, StoreFileCollision collision,
+                                const media::FileIdentity *expectedTarget) {
     if (saveJob_) return false;
     warning_.clear();
-    const bool switching = kind == SaveKind::as;
-    if (refuseExisting(path, switching ? "Save As" : "Save a Copy", error_)) return false;
+    const bool switching = kind != SaveKind::copy;
+    if (collision == StoreFileCollision::Fail && refuseExisting(path, switching ? "Save As" : "Save a Copy", error_))
+        return false;
     error_.clear();
-    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_);
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget);
     if (saveJob_->wasRecording) stopRecording();
     advanceSave();
     return true;
@@ -615,17 +783,20 @@ void ProjectDocument::advanceSave() {
     using Phase = SaveProgress::Phase;
     using namespace std::chrono_literals;
     auto &job = *saveJob_;
-    const bool switching = job.kind == SaveKind::as;
+    const bool switching = job.kind != SaveKind::copy;
     const auto fail = [&](std::string why, std::string warning = {}) {
         error_ = std::string(switching ? "Save As failed: " : "Save a Copy failed: ") + why;
         warning_ = std::move(warning);
         job.phase = Phase::failed;
     };
     const auto finish = [&] {
+        appendWarning(warning_, job.stateWarning);
         error_.clear();
         job.phase = Phase::succeeded;
     };
     const auto finishRetirement = [&](std::string warning) {
+        if (job.kind == SaveKind::firstSave && job.readersSwitched)
+            store_->finishUntitledSave();
         warning_ = std::move(job.adoptionWarning);
         if (!warning.empty()) {
             if (!warning_.empty()) warning_ += ' ';
@@ -652,9 +823,15 @@ void ProjectDocument::advanceSave() {
                 return;
             }
             job.keptTake = job.wasRecording && landed_ && landed_->ok;
-            refreshReportedLatenciesForSave();
-            const auto kind = switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
-            const auto prepared = store_->prepareFileSave(job.path, kind, job.file);
+            if (!capturePluginState()) {
+                fail(error_);
+                return;
+            }
+            job.stateWarning = pluginStateWarning_;
+            const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
+                            : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
+            const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
+                                                          job.expectedTarget ? &*job.expectedTarget : nullptr);
             if (!prepared.ok) {
                 fail(prepared.error, prepared.warning);
                 return;
@@ -701,6 +878,7 @@ void ProjectDocument::advanceSave() {
                  result.warning);
             return;
         }
+        auto oldPath = store_->path();
         const auto adopted = store_->adoptFileSave(job.file);
         if (!adopted.ok) {
             fail(adopted.error, adopted.warning);
@@ -708,12 +886,16 @@ void ProjectDocument::advanceSave() {
         }
         job.switched = true;
         job.phase = Phase::finishing;
-        followSaveAs(adopted, job.keptTake);
+        job.readersSwitched = followSaveAs(adopted, job.keptTake);
         job.adoptionWarning = std::move(warning_);
+        const auto retire = [file = &job.file, source = waveformSource_, oldPath = std::move(oldPath)] {
+            source->waitForReader(oldPath);
+            return file->closeReplacedProject();
+        };
         try {
-            job.retirement = std::async(std::launch::async, [job = &job] { return job->file.closeReplacedProject(); });
+            job.retirement = std::async(std::launch::async, retire);
         } catch (const std::system_error &) {
-            finishRetirement(job.file.closeReplacedProject());
+            finishRetirement(retire());
         }
     } catch (const std::exception &error) {
         if (job.phase == Phase::finishing) {
@@ -726,7 +908,8 @@ void ProjectDocument::advanceSave() {
 
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->collectAllAndSave();
     warning_ = result.warning;
     if (!result.ok) {
@@ -742,21 +925,25 @@ bool ProjectDocument::collectAllAndSave() {
             warning_ += ' ';
         warning_ += "Collected, but the session did not re-read the project: " + error_;
     }
+    appendWarning(warning_, pluginStateWarning_);
     error_.clear();
     return true;
 }
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
+    out.stateWarning = pluginStateWarning_;
     error_.clear();
     return true;
 }
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        const auto result = media::collectExport(job.project, job.zip, control);
+        auto result = media::collectExport(job.project, job.zip, control);
+        appendWarning(result.warning, job.stateWarning);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
@@ -900,8 +1087,9 @@ bool ProjectDocument::reenableAutomation(std::int64_t laneId) {
     error_ = refusal;
     return ok;
 }
-void ProjectDocument::setAutomationArmed(bool armed) noexcept {
-    session_.setAutomationWriteState(armed, false);
+void ProjectDocument::setAutomationArmed(bool armed) {
+    if (!armed) closeAutomationWrites();
+    session_.setAutomationWriteState(armed, recording_);
 }
 std::int64_t ProjectDocument::captureNowMs() noexcept {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -920,23 +1108,140 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
-bool ProjectDocument::settleParameters() {
-    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
-    // drain dated that far on closes every one now. Each drain offers one finished gesture.
-    constexpr std::int64_t kQuietMs = 150;
+bool ProjectDocument::drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs) {
     std::vector<OpRequest> requests;
-    for (int round = 0; round < 256; ++round) {
+    for (int round = 0; round < gestureLimit; ++round) {
         requests.clear();
-        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+        if (parameterOps_.drain(captureNowMs() + quietDelayMs, requests) == 0)
             return true;
         if (!commitCaptured(requests))
             return false;
     }
     return true;
 }
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input.
+    constexpr std::int64_t kQuietMs = 150;
+    return drainParameterEdits(256, kQuietMs);
+}
+void ProjectDocument::pollParameterEdits() {
+    // Configure can follow several completed native gestures from one window update.
+    drainParameterEdits(256);
+    feed_.publish(session_, realisedGeneration_);
+}
+bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
+    return capturePluginStateImpl(deviceId, !deviceId);
+}
+bool ProjectDocument::requirePluginState() {
+    return capturePluginStateImpl({}, false);
+}
+bool ProjectDocument::capturePluginStateImpl(std::optional<std::int64_t> deviceId, bool bestEffort) {
+    pluginStateWarning_.clear();
+    if (store_->readOnly())
+        return true;
+    if (!synchronise())
+        return false;
+    if (deviceId) {
+        const auto *entry = session_.entryFor(*deviceId);
+        if (!entry || entry->placeholder || entry->parked || entry->retired)
+            return true;
+        // Native mix controls already write their edits through the journal.
+        // Saving their derived stream here would put a second Undo step before
+        // Copy or Remove. A document-wide save still captures the full state.
+        if (mix::functionForReference(entry->resolvedFormat, entry->resolvedUid))
+            return true;
+    }
+    if (!deviceId && mixerDrag_ && !endMixerDrag())
+        return false;
+    const auto now = captureNowMs();
+    const auto finish = engine::ParamOps::SnapshotGestures::FinishOpen;
+    using Policy = engine::ParamOps::SnapshotPolicy;
+    const auto policy = bestEffort ? Policy::UseStoredOnCaptureFailure : Policy::RequireAll;
+    const auto captured = deviceId ? parameterOps_.snapshotDeviceState(*deviceId, now, finish)
+                                   : parameterOps_.snapshotAll(now, finish, policy);
+    // Several independently committed devices may precede a refusal. Publish those writes too.
+    if (captured.journalOps != 0) {
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (!synchronise() && captured.ok())
+            return false;
+    }
+    if (!surfaceGestures_.empty()) {
+        const auto pending = parameterOps_.pendingGestures();
+        std::erase_if(surfaceGestures_, [&](const auto &item) {
+            return std::none_of(pending.begin(), pending.end(), [&](const auto &edit) {
+                return edit.owner && edit.owner->sameOwner(*item.second.owner);
+            });
+        });
+    }
+    if (bestEffort && (captured.ok() || !captured.staleDevices.empty()) &&
+        !markStalePluginStates(captured.staleDevices, captured.ok()))
+        return false;
+    if (!captured.ok()) {
+        const auto *entry = captured.failedDevice ? session_.entryFor(*captured.failedDevice) : nullptr;
+        error_ = "Could not save plug-in state";
+        if (entry)
+            error_ += " for " + entry->name;
+        error_ += captured.status.message.empty() ? "." : ": " + captured.status.message;
+        return false;
+    }
+    refreshReportedLatenciesForSave();
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::markStalePluginStates(std::span<const std::int64_t> stale, bool complete) {
+    try {
+        auto &db = store_->db();
+        std::string previousText;
+        {
+            SQLite::Statement read(db, "SELECT value FROM main.session_state WHERE key='devices.stale_state'");
+            if (read.executeStep()) previousText = read.getColumn(0).getString();
+        }
+        const auto previous = Payload::parse(previousText, nullptr, false);
+        auto report = Payload::object();
+        std::string names;
+        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+            const auto &entry = session_.entryAt(i);
+            if (entry.retired) continue;
+            const auto key = std::to_string(entry.deviceId);
+            const bool failed = std::find(stale.begin(), stale.end(), entry.deviceId) != stale.end();
+            const Payload identity{{"name", entry.name}, {"format", entry.resolvedFormat}, {"uid", entry.resolvedUid}};
+            const auto saved = previous.find(key);
+            const bool hadStaleState = saved != previous.end() && saved->contains("format") && saved->contains("uid") &&
+                                       saved->at("format") == entry.resolvedFormat && saved->at("uid") == entry.resolvedUid;
+            // Parked and missing devices supplied no fresh state. Keep a prior
+            // flag for the same device until a subsequent live capture succeeds.
+            if (!failed && !(hadStaleState && (!complete || entry.parked || entry.placeholder))) continue;
+            report[key] = identity;
+            if (!names.empty()) names += ", ";
+            names += entry.name.empty() ? "Device " + key : entry.name;
+        }
+        if (!names.empty())
+            pluginStateWarning_ = "Could not capture plug-in state for " + names + ". Using the last saved state (stale).";
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
+        if (report.empty()) {
+            if (previousText.empty()) return true;
+            db.exec("DELETE FROM main.session_state WHERE key='devices.stale_state'");
+        } else {
+            const auto reportText = report.dump();
+            if (reportText == previousText) return true;
+            SQLite::Statement write(db, "INSERT INTO main.session_state(key,value) VALUES('devices.stale_state',?) "
+                                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+            write.bind(1, reportText);
+            write.exec();
+        }
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
+        return true;
+    } catch (const std::exception &error) {
+        error_ = std::string("Could not mark stored plug-in state stale. ") + error.what();
+        return false;
+    }
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
-    synchronise();
+    const bool synced = synchronise();
     session_.tick(milliseconds);
+    advanceAutomationWrites();
+    if (synced && (!saveJob_ || saveJob_->terminal()))
+        store_->finishUntitledSave();
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();
@@ -945,9 +1250,8 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
     pollRecording(deviceStopped_.load(std::memory_order_acquire));
-    std::vector<OpRequest> requests;
-    parameterOps_.drain(captureNowMs(), requests);
-    commitCaptured(requests);
+    drainParameterEdits(1);
+    finishNativeAutomation();
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
     advanceSave();
@@ -1010,7 +1314,7 @@ void ProjectDocument::setParameterDemand(const void *consumer, const std::vector
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
 std::shared_ptr<const ParameterPublication> ProjectDocument::automationParameters(std::int64_t track) {
-    return ParameterFeed::describeForAutomation(session_, track);
+    return feed_.describeForAutomation(session_, track);
 }
 device::DeviceInstance* ProjectDocument::limiterReductionTarget(
     std::int64_t id, const engine::DeviceRuntimeToken& expected) {
@@ -1113,7 +1417,7 @@ bool ProjectDocument::startTrackRender(TrackRenderKind kind, std::int64_t track)
             throw std::runtime_error("The project is read-only.");
         if (recording_ || landing_)
             throw std::runtime_error("Stop recording before rendering a track.");
-        if (!settleParameters() || (mixerDragging() && !endMixerDrag()))
+        if (!requirePluginState())
             return false;
         const auto snapshot = view_.committed();
         const auto *node = snapshot ? snapshot->findTrack(track) : nullptr;
@@ -1277,6 +1581,8 @@ std::optional<std::string> ProjectDocument::takeTrackRenderStatus() {
 }
 
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
+    if (op == "device.remove" && !capturePluginState(payload.value("id", std::int64_t{})))
+        return false;
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
@@ -1294,21 +1600,27 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
-bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
-    auto copy = readDeviceCopy(*store_, id);
+namespace {
+bool readClipboardDevice(Store &store, std::int64_t id, DeviceCopy &out, std::string &error) {
+    auto copy = readDeviceCopy(store, id);
     if (!copy.ok) {
-        error_ = copy.error.empty() ? "The device could not be copied." : copy.error;
+        error = copy.error.empty() ? "The device could not be copied." : copy.error;
         return false;
     }
     // A rack with nested chains reads, but the engine cannot paste it (no nested chain image yet):
     // refused here, so a Cut never removes what could not come back.
     if (copy.hasNestedChains) {
-        error_ = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
+        error = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
         return false;
     }
     out = std::move(copy);
-    error_.clear();
+    error.clear();
     return true;
+}
+} // namespace
+
+bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
+    return capturePluginState(id) && readClipboardDevice(*store_, id, out, error_);
 }
 
 std::vector<DeviceMoveSource> ProjectDocument::deviceRange(std::span<const DevicePanelData> selected, bool mutation) {
@@ -1360,6 +1672,11 @@ bool ProjectDocument::removeDevices(std::span<const DevicePanelData> selected) {
 bool ProjectDocument::editDeviceRange(std::span<const DevicePanelData> selected, std::vector<DeviceCopy> *clipboard,
                                       bool remove) {
     try {
+        // Validate first, then let state capture finish its own journal writes. The range read and
+        // removal guards must see that committed state and still name the selected instances.
+        for (const auto &device : deviceRange(selected, remove))
+            if (!capturePluginState(device.device))
+                return false;
         std::vector<DeviceCopy> copied;
         std::vector<OpRequest> requests;
         OpTransactionInputs inputs;
@@ -1375,7 +1692,7 @@ bool ProjectDocument::editDeviceRange(std::span<const DevicePanelData> selected,
             for (const auto &device : devices) {
                 if (clipboard) {
                     DeviceCopy copy;
-                    if (!copyDevice(device.device, copy))
+                    if (!readClipboardDevice(*store_, device.device, copy, error_))
                         return false;
                     copied.push_back(std::move(copy));
                 }
@@ -1451,13 +1768,13 @@ PreparedBuiltinInsert prepareDeviceDrop(Store &store, bool midi, const Recording
 }
 } // namespace
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
-                                    const RecordingDefaults *defaults) {
+                                    const RecordingDefaults *defaults, bool exclusiveArm) {
     if (track != 0)
-        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId(), {}, exclusiveArm));
     const auto *info = findBuiltin(uid);
     return finishInsert(prepareDeviceDrop(*store_, info && info->instrument, defaults,
         [&](std::int64_t id, std::span<const OpRequest> newTrack) {
-            return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack);
+            return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack, exclusiveArm);
         }));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
@@ -1465,8 +1782,9 @@ bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t trac
     return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
 bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
-                                 const RecordingDefaults *defaults) {
+                                 const RecordingDefaults *defaults, bool exclusiveArm) {
     PluginInsertOptions options;
+    options.exclusiveArm = exclusiveArm;
     if (pluginRouteDefault)
         options.expressionRoute = pluginRouteDefault(ref.format, ref.uid);
     if (track == 0)
@@ -2049,6 +2367,44 @@ bool ProjectDocument::pasteDevices(std::span<const DeviceCopy> copies, std::int6
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
+std::optional<ProjectDocument::ClipRelinkTarget> ProjectDocument::clipRelinkTarget(std::int64_t clip) {
+    SQLite::Statement file(store_->db(), "SELECT m.id,m.hash_blake3,m.orig_name FROM audio_clips a "
+                                        "JOIN media_files m ON m.id=a.media_id WHERE a.clip_id=? AND m.embedded=0");
+    file.bind(1, clip);
+    if (!file.executeStep()) return std::nullopt;
+    return ClipRelinkTarget{clip, file.getColumn(0).getInt64(), file.getColumn(1).getString(),
+                                file.getColumn(2).getString()};
+}
+bool ProjectDocument::relinkClipMedia(const ClipRelinkTarget &target, const std::filesystem::path &path) {
+    const auto current = clipRelinkTarget(target.clipId);
+    if (!current || current->mediaId != target.mediaId || current->hash != target.hash) {
+        error_ = "The clip's sample changed while the file chooser was open. Choose it again.";
+        return false;
+    }
+    return relinkMediaFile(target.mediaId, path);
+}
+bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &path) {
+    const auto result = media::relinkMedia(*store_, mediaId, path);
+    if (!result.ok) {
+        error_ = result.error.starts_with("hash mismatch or unreadable file:")
+            ? "That file could not be read or does not match the original sample."
+            : "Sample relink failed: " + result.error;
+        return false;
+    }
+    try {
+        {
+            SQLite::Statement hash(store_->db(), "SELECT hash_blake3 FROM media_files WHERE id=?");
+            hash.bind(1, mediaId);
+            if (hash.executeStep()) waveforms_.retry(hash.getColumn(0).getString());
+        }
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (synchronise()) return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+    }
+    error_ = "Sample relinked. Playback could not refresh: " + error_;
+    return false;
+}
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
                                     const std::filesystem::path &defaultsIndex) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
@@ -2248,9 +2604,48 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
                 configuration = !d->automatable && d->configurable;
                 break;
             }
+    const auto key=std::make_pair(id,param);
+    if(kind==engine::ParamEventKind::End && parameterWrites_.contains(key))
+        return commitParameterAutomation(id,param);
+    AutomationPass *write=nullptr;
+    bool created=false;
+    engine::Session::DriverClock clock;
+    if(kind==engine::ParamEventKind::Value && instance && !configuration && recording_ &&
+       session_.automationArmed() && session_.readDriverClock(clock) && clock.playing) {
+        if(auto found=parameterWrites_.find(key);found!=parameterWrites_.end())write=&found->second;
+        else for(std::int32_t i=0;i<instance->paramCount();++i) {
+            const auto *desc=instance->paramAt(i);
+            if(!desc || desc->id!=param)continue;
+            if(auto pass=prepareParameterAutomation(id,*desc,instance->getParam(param).normalized,normalized)) {
+                write=&parameterWrites_.emplace(key,std::move(*pass)).first->second;
+                suspendParameterAutomation(*write);
+                created=true;
+            }
+            break;
+        }
+    }
     const bool taken = configuration
                            ? parameterOps_.uiConfigurationEvent(id, param, kind, normalized, captureNowMs(), requests)
                            : parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    // The drain within uiEvent may also observe a native gesture. Find the
+    // owned pass again before using it.
+    if(write) {
+        const auto found=parameterWrites_.find(key);
+        if(found!=parameterWrites_.end() && taken) {
+            auto &pass=found->second;
+            if(!pass.owner)
+                for(const auto &pending:parameterOps_.pendingGestures())
+                    if(pending.deviceId==id && pending.parameterId==param && pending.owner) {
+                        pass.owner=pending.owner;
+                        break;
+                    }
+            pass.value(clock,std::clamp(normalized,0.0,1.0));
+            pass.touched=true;
+        } else if(found!=parameterWrites_.end() && created) {
+            if(const auto lane=found->second.suspendedLane)session_.finishAutomationWrite(*lane,false);
+            parameterWrites_.erase(found);
+        }
+    }
     std::shared_ptr<const gesture::OwnerToken> newOwner;
     if (taken && kind == engine::ParamEventKind::Begin)
         for (const auto &pending : parameterOps_.pendingGestures())
@@ -2404,6 +2799,212 @@ bool ProjectDocument::waitForTake(bool forceDetached) {
     }
     return true;
 }
+void ProjectDocument::recordMixerValues(std::span<const OpRequest> requests) {
+    engine::Session::DriverClock clock;
+    if(!session_.automationArmed() || !recording_ || !session_.readDriverClock(clock) || !clock.playing)return;
+    // A relative preview omits values on their exact origin. Existing write
+    // passes still need that value if the fader returns there before release.
+    for(auto &pass:mixerWrites_) {
+        const auto found=std::find_if(requests.begin(),requests.end(),[&](const auto &request) {
+            const auto lane=mixerLane(*store_,request);
+            return lane && sameLane(pass.target,*lane);
+        });
+        if(found==requests.end())pass.value(clock,pass.target.defaultValue);
+    }
+    for(const auto &request:requests) {
+        const auto lane=mixerLane(*store_,request);
+        if(!lane)continue;
+        auto found=std::find_if(mixerWrites_.begin(),mixerWrites_.end(),[&](const auto &pass) {
+            return sameLane(pass.target,*lane);
+        });
+        if(found==mixerWrites_.end()) {
+            found=mixerWrites_.emplace(mixerWrites_.end());
+            found->target=*lane;
+        }
+        found->value(clock,request.payload.at(request.payload.contains("db")?"db":"pan").get<double>());
+        // Preview already established that the native value differs.
+        found->touched=true;
+    }
+}
+
+void ProjectDocument::advanceAutomationWrites() {
+    if(mixerWrites_.empty() && parameterWrites_.empty() && nativeWrites_.empty())return;
+    engine::Session::DriverClock clock;
+    if(!session_.readDriverClock(clock))return;
+    for(auto &pass:mixerWrites_)pass.advance(clock);
+    for(auto &[key,pass]:parameterWrites_){(void)key;pass.advance(clock);}
+    for(auto &pass:nativeWrites_)if(!pass.nativeReleased)pass.advance(clock);
+}
+
+void ProjectDocument::closeAutomationWrites() {
+    if(!mixerWrites_.empty())endMixerDrag();
+    while(!parameterWrites_.empty()) {
+        const auto key=parameterWrites_.begin()->first;
+        if(!commitParameterAutomation(key.first,key.second))break;
+    }
+    finishNativeAutomation(true);
+}
+
+bool ProjectDocument::commitAutomation(std::vector<AutomationPass> passes,std::vector<OpRequest> requests) {
+    std::vector<std::int64_t> follow;
+    bool ok=false;
+    try {
+        edit::RowEdits rows(store_->db());clip_edit::CopyIds ids(store_->db());
+        const edit::TimeMap time(store_->db());
+        engine::Session::DriverClock clock;
+        const bool observed=session_.readDriverClock(clock);
+        for(auto &pass:passes) {
+            const auto previous=matchingLane(*store_,pass.target);
+            if(pass.suspendedLane)follow.push_back(*pass.suspendedLane);
+            else if(previous && pass.touched && session_.overriddenLanes().contains(previous))follow.push_back(previous);
+            if(!pass.touched || (pass.device && !session_.resolveDevice(*pass.device)))continue;
+            if(!pass.nativeReleased)pass.close(observed?clock:pass.last);
+            const auto laneId=previous?previous:ids.next("automation_lanes");
+            if(!previous) {
+                const auto &target=pass.target;
+                const Payload low=target.minValue?Payload(*target.minValue):Payload(nullptr);
+                const Payload high=target.maxValue?Payload(*target.maxValue):Payload(nullptr);
+                rows.set("automation_lanes",laneId,edit::defaultRow(store_->db(),"automation_lanes",
+                    {{"id",laneId},{"owner_kind",target.ownerKind},{"owner_id",target.ownerId},
+                     {"param_ref",target.paramRef},{"param_name",target.paramName},{"value_domain",target.valueDomain},
+                     {"unit",target.unit},{"default_value",target.defaultValue},{"min_value",low},{"max_value",high}}));
+            }
+            const auto lane=rows.current("automation_lanes",laneId);
+            const int base=lane->at("time_base");
+            auto native=[&](std::int64_t sample) {
+                const auto nanos=edit::nanosFromSeconds(static_cast<double>(sample)/engineRate_);
+                return base==0?time.ticks(nanos):nanos;
+            };
+            for(auto &span:pass.spans) {
+                if(span.empty())continue;
+                std::vector<automation::NativeSpliceKnot> replacement;
+                const auto first=native(span.front().time);
+                const auto last=native(std::max(span.back().time,edit::addTime(span.front().time,1)));
+                if(first>=last)continue;
+                for(auto point:span) {
+                    point.time=native(point.time);
+                    if(!replacement.empty() && replacement.back().point.time==point.time)replacement.back().point=point;
+                    else replacement.push_back({point,{}});
+                }
+                if(replacement.back().point.time<last) {
+                    auto end=replacement.back();end.point.time=last;replacement.push_back(end);
+                }
+                automation::stageEnvelopeSplice(*store_,rows,ids,time,laneId,first,last,replacement,engineRate_);
+            }
+        }
+        auto changes=rows.changes();
+        if(!changes.empty()) {
+            OpRequest request;request.opType="arranger.splice";
+            request.payload={{"id",0},{"changes",std::move(changes)}};
+            requests.push_back(std::move(request));
+        }
+        for(auto &request:requests)request.label="Record Automation";
+        ok=commitCaptured(requests);
+        if(ok)error_.clear();
+    } catch(const std::exception &error) {
+        error_=error.what();
+    }
+    for(const auto lane:follow) {
+        if(session_.writingAutomationLanes().contains(lane))session_.finishAutomationWrite(lane);
+        else if(ok && session_.overriddenLanes().contains(lane))session_.reenableAutomation(lane);
+    }
+    followOverrides();
+    feed_.publish(session_,realisedGeneration_);
+    return ok;
+}
+
+std::optional<ProjectDocument::AutomationPass> ProjectDocument::prepareParameterAutomation(std::int64_t id,
+        const device::ParamDescriptor &descriptor,double before,double after) {
+    const auto *instance=session_.instanceFor(id);
+    if(!instance || !descriptor.automatable || descriptor.missing ||
+       !std::isfinite(before) || !std::isfinite(after) || before==std::clamp(after,0.0,1.0))return std::nullopt;
+    const auto ref=engine::automationParamRef(instance->identity().format,descriptor.id);
+    std::uint32_t numeric=0;
+    if(!ref || !parseDeviceParamRef(*ref,numeric))return std::nullopt;
+    AutomationPass pass;
+    pass.target.ownerKind="device";pass.target.ownerId=id;pass.target.paramRef=std::to_string(numeric);
+    pass.target.paramName=descriptor.name;pass.target.defaultValue=before;
+    pass.target.minValue=0;pass.target.maxValue=1;
+    pass.device=session_.deviceRuntimeToken(id);
+    return pass;
+}
+
+void ProjectDocument::suspendParameterAutomation(AutomationPass &pass) {
+    if(pass.suspendedLane)return;
+    if(const auto lane=matchingLane(*store_,pass.target);lane>0) {
+        (void)session_.beginAutomationWrite(lane);
+        if(session_.writingAutomationLanes().contains(lane))pass.suspendedLane=lane;
+    }
+}
+
+bool ProjectDocument::observeNativeAutomation(std::int64_t id,const device::ParamDescriptor &descriptor,
+        engine::ParamEventKind kind,double before,double after,
+        const std::shared_ptr<const gesture::OwnerToken> &owner) {
+    if(!owner)return false;
+    auto existing=std::find_if(nativeWrites_.begin(),nativeWrites_.end(),[&](const auto &pass) {
+        return pass.owner->sameOwner(*owner);
+    });
+    engine::Session::DriverClock clock;
+    if(kind==engine::ParamEventKind::End) {
+        if(existing==nativeWrites_.end())return false;
+        if(session_.readDriverClock(clock))existing->close(clock);
+        existing->nativeReleased=true;
+        return true;
+    }
+    if(!recording_ || !session_.automationArmed() || !session_.readDriverClock(clock) || !clock.playing)return false;
+    if(existing==nativeWrites_.end()) {
+        auto pass=prepareParameterAutomation(id,descriptor,before,after);
+        if(!pass)return false;
+        pass->owner=owner;
+        existing=nativeWrites_.emplace(nativeWrites_.end(),std::move(*pass));
+    }
+    existing->value(clock,std::clamp(after,0.0,1.0));
+    existing->touched=true;
+    return true;
+}
+
+void ProjectDocument::finishNativeAutomation(bool stop) {
+    for(std::size_t i=0;i<nativeWrites_.size();) {
+        if(!stop && !nativeWrites_[i].nativeReleased) {
+            // The parameter drain relies on the attached runtime. Change its
+            // playback ownership only after the drain releases it.
+            suspendParameterAutomation(nativeWrites_[i]);
+            ++i;
+            continue;
+        }
+        const auto owner=nativeWrites_[i].owner;
+        if(!releaseParameterPreview(owner)){++i;continue;}
+        std::vector<AutomationPass> passes;
+        passes.push_back(std::move(nativeWrites_[i]));
+        nativeWrites_.erase(nativeWrites_.begin()+static_cast<std::ptrdiff_t>(i));
+        (void)commitAutomation(std::move(passes));
+    }
+}
+
+bool ProjectDocument::releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken> &owner) {
+    if(!owner)return true;
+    for(const auto &pending:parameterOps_.pendingGestures()) {
+        if(!pending.owner || !pending.owner->sameOwner(*owner))continue;
+        const auto cancelled=pending.state==gesture::State::Cancelling
+            ? parameterOps_.retryPendingCancel(*owner,captureNowMs())
+            : parameterOps_.cancelPending(*owner,captureNowMs());
+        if(!cancelled.status.ok()) {
+            error_=cancelled.status.message;
+            return false;
+        }
+        break;
+    }
+    return true;
+}
+
+bool ProjectDocument::commitParameterAutomation(std::int64_t id,const std::string &param) {
+    const auto found=parameterWrites_.find({id,param});
+    if(found==parameterWrites_.end() || !releaseParameterPreview(found->second.owner))return false;
+    std::vector<AutomationPass> passes;
+    passes.push_back(std::move(found->second));parameterWrites_.erase(found);
+    return commitAutomation(std::move(passes));
+}
+
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)
@@ -2458,6 +3059,7 @@ bool ProjectDocument::mixerDrag(double coordinate) {
     }
     if (realised && committed == view_.committedGeneration())
         realisedGeneration_ = view_.generation();
+    if(updated.preview)recordMixerValues(updated.preview->requests());
     error_.clear();
     return true;
 }
@@ -2465,6 +3067,23 @@ bool ProjectDocument::endMixerDrag() {
     if (!mixerDrag_)
         return false;
     auto drag = std::move(mixerDrag_);
+    if(!mixerWrites_.empty()) {
+        std::vector<OpRequest> other;
+        if(const auto preview=drag->preview())
+            for(const auto &request:preview->requests()) {
+                const auto lane=mixerLane(*store_,request);
+                if(!lane || std::none_of(mixerWrites_.begin(),mixerWrites_.end(),[&](const auto &pass) {
+                    return sameLane(pass.target,*lane);
+                }))other.push_back(request);
+            }
+        const auto cancelled=drag->cancel();
+        if(!cancelled.status.ok()) {
+            error_=cancelled.status.message;
+            mixerWrites_.clear();
+            return false;
+        }
+        return commitAutomation(std::exchange(mixerWrites_,{}),std::move(other));
+    }
     const bool realised = realisedGeneration_ == view_.generation();
     const auto sequence = session_.realisedAppliedSequence();
     const auto graph = session_.graph().stats().published;
@@ -2489,6 +3108,7 @@ bool ProjectDocument::endMixerDrag() {
     return true;
 }
 void ProjectDocument::cancelMixerDrag() {
+    mixerWrites_.clear();
     if (!mixerDrag_)
         return;
     auto drag = std::move(mixerDrag_);
@@ -2514,12 +3134,12 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
 RecordStates ProjectDocument::recordStates() const {
     RecordStates out;
     for (const auto &t : session_.model().tracks)
-        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+        out[t.id] = {session_.recordArmed(t), t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                                      std::int64_t deviceLatencySamples, const std::string &recordFolder,
-                                     audio::WavFormat format) {
+                                     audio::WavFormat format, bool overdub) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -2532,8 +3152,23 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     const auto states = recordStates();
     const auto armed = armedTracks(current->tracks, states);
     if (armed.audio.empty() && armed.midi.empty()) {
-        error_ = "Arm a track to record into it.";
-        return false;
+        if (!automationArmed()) {
+            error_ = "Arm a track to record into it.";
+            return false;
+        }
+        if (deviceStopped_.load(std::memory_order_acquire)) {
+            error_ = "Recording needs an active audio device.";
+            return false;
+        }
+        if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
+            error_ = "Transport command queue is full";
+            return false;
+        }
+        recording_ = true;
+        session_.setAutomationWriteState(true, true);
+        session_.setRecordingForDevices(true);
+        error_.clear();
+        return true;
     }
     const auto availableInputs = static_cast<std::uint32_t>(std::max(0, inputs));
     if (!armed.audio.empty() && availableInputs == 0 && !externalAudioInputs_) {
@@ -2561,23 +3196,18 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     if (!armed.midi.empty()) {
         midi = std::make_unique<MidiRecording>();
         midi->tempo = current->tempo;
+        midi->overdub = overdub;
         midi->sampleRate = engineRate_;
         midi->tracks.resize(armed.midi.size());
         midi->preview.resize(armed.midi.size());
-        const auto *graph = session_.graph().currentGraph();
+        const SnapshotReader source(current);
         for (std::size_t i = 0; i < armed.midi.size(); ++i) {
             const auto track = armed.midi[i];
             midi->preview[i].track = track;
             auto &timing = midi->tracks[i];
-            timing.monitored = recordState(states, track).monitor != Monitor::Off;
-            if (timing.monitored && graph) {
-                const auto chain = session_.chainFor(track);
-                const auto instrument = std::find_if(chain.begin(), chain.end(), [](const auto *node) {
-                    return node->eventFlow() == engine::EventFlow::Consume;
-                });
-                if (instrument != chain.end())
-                    timing.instrumentArrival = std::max(0, graph->arrivalOf(graph->find(**instrument)));
-            }
+            if (const auto *node = source.findTrack(track); node && node->recording.recordEnabled)
+                timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            timing.monitor = session_.midiRecordMonitor(track);
         }
     }
     spec.workFolder = media::projectFolder(*store_);
@@ -2593,7 +3223,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             return false;
         }
     }
-    spec.placementOffsetSamples = deviceLatencySamples;
+    spec.placementOffsetSamples = spec.loop ? 0 : deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     spec.format = format;
@@ -2610,7 +3240,10 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                      ". Choose an enabled input under Audio From.";
             return false;
         }
-        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end())});
+        const bool keep = !spec.loop && track->recording.keepMonitoringLatency &&
+                          recordState(states, id).monitor != Monitor::Off;
+        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end()),
+                                keep ? std::optional<std::int64_t>{0} : std::nullopt});
     }
     std::string why;
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
@@ -2618,7 +3251,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     recordingAudio_ = !spec.targets.empty();
-    if (midi && !session_.startMidiInputCapture(armed.midi, why)) {
+    if (midi && !session_.startMidiInputCapture(armed.midi, why, overdub)) {
         if (recordingAudio_) {
             session_.recording().stop(true);
             cancelTake_ = true;
@@ -2642,19 +3275,22 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     recording_ = true;
     session_.setRecordingForDevices(true); // SC-333
+    session_.setAutomationWriteState(automationArmed(), true);
     error_.clear();
     return true;
 }
 void ProjectDocument::stopRecording() {
     if (!recording_)
         return;
+    closeAutomationWrites();
     if (recordingAudio_)
         session_.recording().stop();
     if (midiRecording_)
         session_.midiInputCapture().stop();
     recording_ = false;
     session_.setRecordingForDevices(false);
-    landing_ = true;
+    landing_ = recordingAudio_ || midiRecording_ != nullptr;
+    session_.setAutomationWriteState(automationArmed(), false);
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
     const auto *midi = midiRecording_.get();
@@ -2669,6 +3305,11 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
         return;
     if (takePublication_) {
         pollTakePublication();
+        return;
+    }
+    if (!recordingAudio_ && !midiRecording_) {
+        if (deviceStopped)
+            stopRecording();
         return;
     }
     if (deviceStopped && midiRecording_)
@@ -2760,6 +3401,40 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory()) + ".";
 }
+void ProjectDocument::finishMidiTake(const MidiRecording &midi, const recording::RecordingEdit &edit,
+                                      const SubmitResult &committed, TakeLanded &outcome) {
+    std::vector<recording::MidiRecordQuantize> targets;
+    bool keptInTakeLane = false;
+    for (std::size_t i = 0; i < edit.midiLandings.size(); ++i) {
+        const auto &landing = edit.midiLandings[i];
+        const auto &span = midi.preview[i];
+        outcome.clips.push_back(landing.clip);
+        keptInTakeLane = keptInTakeLane || landing.inTakeLane;
+        const auto grid = midi.tracks[i].quantizeGrid;
+        if (grid != 0 && !landing.noteIds.empty())
+            targets.push_back({landing.clip, landing.sourceStart, span.start, span.end - span.start, grid, landing.noteIds});
+    }
+    if (keptInTakeLane)
+        outcome.message += " Kept overdub notes in a Take Lane where merging would change other material.";
+    if (targets.empty())
+        return;
+    auto quantized = recording::prepareRecordQuantize(*store_, targets);
+    std::string problem;
+    if (!quantized.ok) {
+        problem = std::move(quantized.error);
+    } else if (!quantized.requests.empty()) {
+        if (committed.seqs.empty() || !quantized.options.expectHead ||
+            *quantized.options.expectHead != committed.seqs.back()) {
+            problem = "the project changed after recording";
+        } else {
+            const auto snapped = ops_.commitPrepared(std::move(quantized), notes::commitDiff);
+            if (!snapped)
+                problem = snapped.error;
+        }
+    }
+    if (!problem.empty())
+        outcome.message += " Record Quantize could not be applied: " + problem + ".";
+}
 ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi, const std::string &audioProblem,
                                                             const std::string &audioLocation) {
     const auto fail = [&](const std::string &why) -> TakeLanded {
@@ -2773,15 +3448,14 @@ ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi,
         if (!edit.ok)
             return fail(edit.error);
         outcome.clips.reserve(placement.takes.size());
-        for (const auto &take : placement.takes)
-            outcome.clips.push_back(take.clip);
-        outcome.message = recordedTakeMessage(outcome.clips.size(), audioProblem,
+        outcome.message = recordedTakeMessage(edit.midiLandings.size(), audioProblem,
                                                midiRecordingFailure(midi.state), false, true, audioLocation);
         const auto committed = ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) {
             return recording::commit(store, edit, actor);
         });
         if (!committed)
             return fail(committed.error);
+        finishMidiTake(midi, edit, committed, outcome);
     } catch (const std::exception &error) {
         return fail(error.what());
     }
@@ -2789,6 +3463,83 @@ ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi,
     synchronise();
     return outcome;
 }
+bool ProjectDocument::canCaptureMidi() const noexcept {
+    return !store_->readOnly() && !recording_ && !landing_ && session_.midiHistoryAvailable();
+}
+
+ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t positionTick, bool playing) {
+    TakeLanded outcome;
+    if (recording_ || landing_) {
+        outcome.message = "Finish Arrangement Record before using Capture MIDI.";
+        return outcome;
+    }
+    std::vector<engine::MidiMemorySnapshot> histories;
+    if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
+    std::erase_if(histories, [this](const auto& history) {
+        if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+            })) return false;
+        session_.consumeMidiHistories(std::span(&history, 1));
+        return true;
+    });
+    if (histories.empty()) {
+        outcome.message = "No new MIDI notes or controllers to capture.";
+        return outcome;
+    }
+    try {
+        const auto first = std::min_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.events.front().sample < b.events.front().sample;
+        })->events.front().sample;
+        const auto latest = std::max_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.endSample < b.endSample;
+        })->endSample;
+        auto start = std::max<std::int64_t>(0, positionTick);
+        if (playing) {
+            const edit::TimeMap time(store_->db());
+            const auto now = time.nanos(start);
+            const double ago = static_cast<double>(latest - first) * 1e9 / histories.front().sampleRate;
+            start = ago >= static_cast<double>(now) ? 0 : time.ticks(now - std::llround(ago));
+        }
+        RowIds rows(store_->db());
+        const SnapshotReader current(view_.current());
+        std::vector<capture::MidiSpec> specs;
+        for (const auto& history : histories) {
+            std::set<std::uint64_t> held;
+            for (const auto& remembered : history.events) {
+                const auto& event = remembered.event;
+                if (event.type == engine::EventType::NoteOn) held.insert(event.noteId);
+                else if (event.type == engine::EventType::NoteOff) held.erase(event.noteId);
+            }
+            auto name = shownTrackName(current, history.trackId);
+            auto& spec = specs.emplace_back();
+            spec.clip = rows.next("clips");
+            spec.positionTicks = start;
+            spec.firstSample = first;
+            spec.endSample = held.empty() ? history.events.back().sample + 1 : history.endSample;
+            if (!name.empty()) spec.name = std::move(name);
+            spec.liveHistory = true;
+        }
+        auto prepared = capture::prepareMidiBatch(*store_, histories, specs, outcome.message);
+        if (!prepared) return outcome;
+        const auto committed = ops_.commitPrepared(prepared->requests, [&](Store& store, Actor) {
+            return capture::commitMidi(store, *prepared);
+        });
+        if (!committed) {
+            outcome.message = committed.error;
+            return outcome;
+        }
+        session_.consumeMidiHistories(histories);
+        synchronise();
+        for (const auto& spec : specs) outcome.clips.push_back(spec.clip);
+        outcome.ok = true;
+        outcome.message = outcome.clips.size() == 1 ? "Captured one MIDI clip." :
+            "Captured " + std::to_string(outcome.clips.size()) + " MIDI clips.";
+    } catch (const std::exception& exception) {
+        outcome.message = exception.what();
+    }
+    return outcome;
+}
+
 void ProjectDocument::landTake() {
     auto audio = std::move(audioTake_);
     audioTake_.reset();
@@ -2943,10 +3694,6 @@ void ProjectDocument::pollTakePublication() {
         auto midi = take.midi ? take.midi->placements(rows, current) : MidiRecording::Placement{};
         take.outcome.clips.clear();
         take.outcome.clips.reserve(take.ids.size() + midi.takes.size());
-        for (const auto &ids : take.ids)
-            take.outcome.clips.push_back(ids.clip);
-        for (const auto &placement : midi.takes)
-            take.outcome.clips.push_back(placement.clip);
         return midi;
     };
     try {
@@ -3004,8 +3751,16 @@ void ProjectDocument::pollTakePublication() {
                 refuse(edit.error);
             return;
         }
-        take.outcome.message = recordedTakeMessage(take.outcome.clips.size(), recordingFailure(take.recorded),
+        take.outcome.clips.insert(take.outcome.clips.begin(), edit.placedAudioClips.begin(), edit.placedAudioClips.end());
+        take.outcome.message = recordedTakeMessage(take.outcome.clips.size() + edit.midiLandings.size(), recordingFailure(take.recorded),
                                                    take.midiProblem, true, take.midi != nullptr);
+        const auto skippedAudioTracks = take.ids.size() - edit.placedAudioClips.size();
+        if (skippedAudioTracks > 0) {
+            take.outcome.message += skippedAudioTracks == 1
+                ? " Audio on one track fell outside its compensated punch range."
+                : " Audio on " + std::to_string(skippedAudioTracks) + " tracks fell outside their compensated punch ranges.";
+            take.outcome.message += retainedCaptureLocation(take.recorded);
+        }
         const auto committed =
             ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) { return recording::commit(store, edit, actor); });
         if (!committed) {
@@ -3013,6 +3768,8 @@ void ProjectDocument::pollTakePublication() {
             return;
         }
         take.outcome.ok = true;
+        if (take.midi)
+            finishMidiTake(*take.midi, edit, committed, take.outcome);
         synchronise();
         if (const auto snapshot = view_.current(); snapshot && take.recorded.preview) {
             try {

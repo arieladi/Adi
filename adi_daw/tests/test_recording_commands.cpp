@@ -166,6 +166,70 @@ void midiLinearTakes() {
           "Redo restores the exact captured expression bytes");
 }
 
+void midiOverdub() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','One period'),(24,'midi','Repeated')");
+    const std::array<notes::NoteValues, 1> oldNotes{{{.start=100, .duration=60, .id=17, .key=60, .velocity=80}}};
+    const std::array<recording::MidiLinearTake, 2> original{{
+        {23, 7, 960, 960, "One period", oldNotes, {}},
+        {24, 8, 960, 960, "Repeated", oldNotes, {}},
+    }};
+    auto seed = recording::prepareMidiLinearCommit(store, original, 48000);
+    if (!seed.ok || !recording::commit(store, seed).ok)
+        throw std::runtime_error("seed the overdub's original clips");
+    db.exec("UPDATE clips SET length_ticks=1920 WHERE id=8");
+    const auto before = digestProject(store).text;
+
+    const std::array<notes::NoteValues, 1> input{{{.start=120, .duration=90, .id=17, .key=67, .velocity=90}}};
+    const std::array<ExpressionPoint, 1> bend{{{0, 2.f, 0.f, 0, 0, {}}}};
+    const std::array<recording::MidiExpressionLane, 1> expression{{{17, ExpressionDim::Pitch, bend}}};
+    const std::array<recording::MidiLinearTake, 2> overdub{{
+        {23, 9, 1200, 240, "Merge", input, expression, true},
+        {24, 10, 2160, 240, "Repeat Safety", input, expression, true},
+    }};
+    auto edit = recording::prepareMidiLinearCommit(store, overdub, 48000);
+    check(edit.ok && edit.midiLandings.size() == 2 && digestProject(store).text == before,
+          "planning an overdub leaves both Arrangement clips unchanged");
+    if (!edit.ok || edit.midiLandings.size() != 2)
+        return;
+    const auto committed = recording::commit(store, edit);
+    check(committed.ok, "the in-place overdub and safe take lane land in one recording transaction");
+    if (!committed.ok)
+        return;
+    const auto& merge = edit.midiLandings[0];
+    const auto& fallback = edit.midiLandings[1];
+    const auto one = readClipDetails(store, 7, true, true);
+    const auto repeat = readClipDetails(store, 8, true, true);
+    const auto saved = readClipDetails(store, 10, true, true);
+    check(merge.clip == 7 && merge.sourceStart == 240 && !merge.inTakeLane && merge.noteIds == std::vector<std::uint64_t>{18} &&
+              one.clip && one.clip->notes.size() == 2 && one.clip->notes[0].id == 17 && one.clip->notes[0].startTicks == 100 &&
+              one.clip->notes[1].id == 18 && one.clip->notes[1].startTicks == 360 &&
+              one.clip->noteExpressions.curves.size() == 1 && one.clip->noteExpressions.curves[0].noteId == 18 &&
+              one.clip->noteExpressions.curves[0].points.size() == 1 && one.clip->noteExpressions.curves[0].points[0].value == 2.,
+          "overdub retains the original note and clip, and assigns the new note and curve a fresh identity");
+    check(fallback.clip == 10 && fallback.inTakeLane && saved.clip && saved.clip->laneId &&
+              saved.clip->notes.size() == 1 && saved.clip->noteExpressions.curves.size() == 1 &&
+              repeat.clip && repeat.clip->lengthTicks == 1920 && repeat.clip->notes.size() == 1,
+          "taking a later loop occurrence preserves the recorded notes and leaves the repeating clip intact");
+
+    const std::array<recording::MidiRecordQuantize, 1> targets{{{7, merge.sourceStart, 1200, 240, 240, merge.noteIds}}};
+    const auto quantize = recording::prepareRecordQuantize(store, targets);
+    check(quantize.ok && notes::commitDiff(store, quantize).ok, "quantize the newly overdubbed identity");
+    const auto snapped = readClipDetails(store, 7, true, true);
+    check(snapped.clip && snapped.clip->notes.size() == 2 && snapped.clip->notes[0].startTicks == 100 &&
+              snapped.clip->notes[1].startTicks == 240 && snapped.clip->notes[1].durationTicks == 90 &&
+              snapped.clip->noteExpressions.curves.size() == 1 && snapped.clip->noteExpressions.curves[0].noteId == 18,
+          "record quantization preserves the old note, overdub duration, and expression attachment");
+    History history(store);
+    check(history.undo().ok, "undo the overdub quantization");
+    const auto raw = readClipDetails(store, 7);
+    check(raw.clip && raw.clip->notes.size() == 2 && raw.clip->notes[1].startTicks == 360 &&
+              history.undo().ok && digestProject(store).text == before,
+          "Undo first restores the raw overdub, then removes the new note and the separate take lane");
+}
+
 void mixedLinearTake() {
     Fixture fixture;
     auto& store = *fixture.store;
@@ -437,45 +501,6 @@ void heardPlacementAndHistory() {
         check(f.store && digestProject(*f.store).text==after && f.play(precision)==heard,"reopened recording history and owned media restore the same project and heard PCM");
     }
 }
-void unwarpedRecordingTempoChanges() {
-    constexpr std::int64_t at120 = 256;
-    Fixture f;
-    f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
-    auto recorded = f.capture(false, Precision::Float32, false, 300, {}, at120);
-    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Unwarped take"}}};
-    auto prepared = recording::prepareCommit(*f.store, recorded, ids);
-    if (!recording::commit(*f.store, prepared).ok)
-        throw std::runtime_error("could not publish the tempo-change fixture");
-    // Recorded takes now follow the Set by default (SC-248). Turn Warp off
-    // through the same command as the Clip View to exercise SC-11.
-    clip_edit::WarpOptions warp;
-    warp.enabled = false;
-    const auto unwarped = clip_edit::prepareSetWarp(*f.store, 7, warp, 48000);
-    if (!unwarped.ok || !clip_edit::commitPrepared(*f.store, unwarped).ok)
-        throw std::runtime_error("could not turn Warp off on the recorded test clip");
-    for (int bpm : {240, 60}) {
-        std::array<OpRequest, 2> change;
-        change[0].opType = "project.removeTempoEvent";
-        change[0].payload = {{"pos", 0}};
-        change[1].opType = "project.insertTempoEvent";
-        change[1].payload = {{"pos", 0}, {"bpm", bpm}};
-        if (!OpJournal(*f.store).commit(change).ok)
-            throw std::runtime_error("could not change the recording's tempo");
-        const auto snapshot = SnapshotBuilder::fromStore(*f.store);
-        const auto& clip = *snapshot->findTrack(21)->clips.front();
-        const auto first = static_cast<std::size_t>(at120 * 120 / bpm);
-        const auto last = first + 300;
-        bool exact = std::llround(snapshot->tempo->ticksToSeconds(clip.posTicks + clip.lengthTicks) * 48000)
-            == static_cast<std::int64_t>(last);
-        const auto heard = f.play(Precision::Float32);
-        for (std::size_t frame = 0; frame < heard.size(); ++frame)
-            exact = exact && heard[frame] == (frame >= first && frame < last ? Fixture::sample(frame - first) : 0.0f);
-        check(exact, bpm == 240
-            ? "a faster tempo preserves the recorded take's complete PCM and endpoint"
-            : "a slower tempo preserves the recorded take's duration without a silent tail");
-    }
-}
-
 void numberedRecordingFiles() {
     namespace fs=std::filesystem;
     Fixture f;
@@ -592,6 +617,45 @@ void recordedTakeFollowsTempo() {
     const auto publishedHash = media::blake3File(file);
     check(sourceHash && publishedHash && sourceHash.hex == publishedHash.hex,
           "SC-248: changing tempo leaves the shared recording file byte-identical");
+}
+
+void unwarpedRecordingTempoChanges() {
+    constexpr std::int64_t at120 = 256;
+    Fixture f;
+    f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    auto recorded = f.capture(false, Precision::Float32, false, 300, {}, at120);
+    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Unwarped take"}}};
+    auto prepared = recording::prepareCommit(*f.store, recorded, ids);
+    if (!recording::commit(*f.store, prepared).ok)
+        throw std::runtime_error("could not publish the recording");
+    // Recorded takes follow the Set by default (SC-248). Turn Warp off
+    // through the Clip View command to exercise SC-11.
+    clip_edit::WarpOptions warp;
+    warp.enabled = false;
+    const auto unwarped = clip_edit::prepareSetWarp(*f.store, 7, warp, 48000);
+    if (!unwarped.ok || !clip_edit::commitPrepared(*f.store, unwarped).ok)
+        throw std::runtime_error("could not disable Warp on the recorded take: " + unwarped.error);
+    for (int bpm : {240, 60}) {
+        std::array<OpRequest, 2> change;
+        change[0].opType = "project.removeTempoEvent";
+        change[0].payload = {{"pos", 0}};
+        change[1].opType = "project.insertTempoEvent";
+        change[1].payload = {{"pos", 0}, {"bpm", bpm}};
+        if (!OpJournal(*f.store).commit(change).ok)
+            throw std::runtime_error("could not change the recording's tempo");
+        const auto snapshot = SnapshotBuilder::fromStore(*f.store);
+        const auto& clip = *snapshot->findTrack(21)->clips.front();
+        const auto first = static_cast<std::size_t>(at120 * 120 / bpm);
+        const auto last = first + 300;
+        bool exact = std::llround(snapshot->tempo->ticksToSeconds(clip.posTicks + clip.lengthTicks) * 48000)
+            == static_cast<std::int64_t>(last);
+        const auto heard = f.play(Precision::Float32);
+        for (std::size_t frame = 0; frame < heard.size(); ++frame)
+            exact = exact && heard[frame] == (frame >= first && frame < last ? Fixture::sample(frame - first) : 0.0f);
+        check(exact, bpm == 240
+            ? "a faster tempo preserves the recorded take's complete PCM and endpoint"
+            : "a slower tempo preserves the recorded take's duration without a silent tail");
+    }
 }
 
 // walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
@@ -1219,11 +1283,12 @@ int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
     recordedTakeFollowsTempo();
     latencyCompensationKeepsPunchProtection();
-    midiLinearTakes();mixedLinearTake();
+    midiLinearTakes();midiOverdub();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();unwarpedRecordingTempoChanges();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     stagedPublicationAndRefresh();stagedPublicationRefusesChangedContent();
+    unwarpedRecordingTempoChanges();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

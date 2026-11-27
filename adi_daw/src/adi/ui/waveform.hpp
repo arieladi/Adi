@@ -102,10 +102,12 @@ struct PunchedPreviewRange {
 
 inline std::optional<PunchedPreviewRange> punchedPreviewRange(
     const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,
-    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {
+    std::uint32_t sampleRate, const engine::TempoMap &tempo,
+    std::optional<std::int64_t> trackOffset = {}) noexcept {
     if (sampleRate == 0)
         return std::nullopt;
-    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);
+    const auto offset = trackOffset.value_or(punch.offsetSamples);
+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, offset, punch.window);
     if (!range)
         return std::nullopt;
     const auto rate = static_cast<double>(sampleRate);
@@ -168,6 +170,14 @@ class WaveformCache {
         if (!audio.mediaInfo || audio.mediaInfo->missing || audio.mediaInfo->contentHash.empty())
             return nullptr;
         return peaks(audio.mediaId, audio.mediaInfo->contentHash);
+    }
+    // A verified relink preserves valid peaks; a failed build may try the new path.
+    void retry(const std::string &hash) {
+        std::lock_guard lock(mutex_);
+        if (kept_.contains(hash))
+            return;
+        asked_.erase(hash);
+        std::erase_if(queue_, [&hash](const Request &request) { return request.hash == hash; });
     }
     std::shared_ptr<const media::MediaPeaks> peaks(const engine::SampleSlotNode &slot) {
         if (slot.empty || slot.missing || sampleKey(slot).empty())
