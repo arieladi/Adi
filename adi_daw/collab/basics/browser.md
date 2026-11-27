@@ -255,7 +255,7 @@ The display-free JUCE LookAndFeel probe measured ideal menu item dimensions. Pop
 
 The first integrated run caught a nested folder being passed as a relative path. The menu now resolves that path against its selected Place before capturing it, so Reveal works for the clicked directory.
 
-# SC-130 Clear Browser search
+### SC-130 Clear Browser search
 
 Logical pixel bounds from the Compact 1440 × 900 layout, with the Browser on the left and Info shown. The Browser is `(8,35,308,623)` in the root. The search field stays `(24,4,280,21)` in Browser coordinates, or `(32,39,280,21)` in the root.
 
@@ -269,6 +269,14 @@ Logical pixel bounds from the Compact 1440 × 900 layout, with the Browser on th
 The x stroke endpoints span 7 × 7 px from `(298,46)` in root coordinates. A 21 px right slot reserves space only when text is present. The mark uses the existing text colors. No key map or tracked image fixture changes are expected. The Browser parity fixtures clear their search text before rendering.
 
 Escape clears ordinary search with the search field focused. Existing Hot-Swap Escape exits and restores the ordinary query. The x clears the active field without switching modes or taking keyboard focus. The peerless shell fixture tests the button hit area, focus policy, immediate query results and independent modes.
+
+## Check of SC-121 and SC-120/122 against the rewritten queue
+
+A second session checked these items on Linux for Win and built nothing of the queue. The checks were:
+
+- **The search is a service outside `BrowserPanel`.** Met. `adi::ui::LibraryQuery`, `BrowserLibrarySnapshot` and `queryLibrary` in `src/adi/ui/library_query.*` use no JUCE and no panel. The panel's All label calls `queryLibrary`, and a floating search can call it the same way. `tests/test_library_query.cpp` checks the panel-free path: one query over samples, built-ins, plug-ins and presets, each word matched on its own, so "kick 808" finds "808 Kick.wav".
+- **A remembered label that is not shown falls back to All.** Met. `BrowserPanel::restoreLabel` and `setLibrarySnapshot` select All when the saved key is not in the list. A saved Place is held only while the first scan runs, and is dropped for All once the scan finishes without it.
+- **Merging `origin/basics/integrate-2` into this chain.** Tried twice, each time on the then-current heads. The second attempt was `basics/browser-chain` at `3bdc44247` with `integrate-2` at `5956fe2fa`. One conflict came up, in the Status Bar (`ui_shell.cpp`, `ui_shell.hpp`), between SC-431's Cue Out message and SC-151's playback-issues button; both were kept. Built in GCC Debug with JUCE and Pd, warnings as errors, the whole tree including `adi_app`. With `DISPLAY` unset, all 295 non-performance suites and all 3 acceptance suites passed. Before it could be pushed, the integrator made the same resolution in `0ac90cf61` (it differs only in declaration order). That merge was therefore not pushed: it would only give this chain a second, conflicting merge.
 
 ## For the director
 
