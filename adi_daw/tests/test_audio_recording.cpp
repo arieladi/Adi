@@ -3,9 +3,13 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_input_capture.hpp"
+#include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/audio/io_audit.hpp"
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <bit>
@@ -16,6 +20,7 @@
 #include <limits>
 #include <new>
 #include <thread>
+#include <utility>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -151,6 +156,95 @@ void actualQueueWraps() {
     {audio::WavReader reader(result.tracks[0].file);reader.read(heard.data(),static_cast<std::uint32_t>(heard.size()));}
     check(result.failure==RecordingFailure::None && result.frames==expected.size() && heard==expected,"many queue wraps retain exact source order and final partial-block samples in an actual WAV");result.discard();
 }
+void waveformPreviewUsesCapturedFrames() {
+    test::TempDirectory directory{"audio_recording","waveform_preview"};
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.sampleRate=48000;
+    request.targets={{21,{2,0}},{22,{0}}}; // shared input, different track channel order
+    std::string error;
+    if(!recorder.start(request,error))throw std::runtime_error(error);
+    const auto beforeInput=recorder.preview();
+    check(!beforeInput || beforeInput->peaks.frames==0,"no waveform exists before any input is written");
+
+    constexpr std::uint32_t firstFrames=79, secondFrames=37, lastFrames=13;
+    constexpr std::uint32_t totalFrames=firstFrames+secondFrames+lastFrames;
+    constexpr std::int64_t startSample=512;
+    std::array<float,totalFrames> channel0{},channel2{};
+    for(std::size_t i=0;i<totalFrames;++i) {
+        channel0[i]=-0.25f-static_cast<float>(i%11)/16.f;
+        channel2[i]=0.25f+static_cast<float>(i%13)/16.f;
+    }
+    channel0.back()=-1.25f;
+    channel2.back()=1.125f; // an extreme in the last partial block cannot be dropped
+
+    Transport transport;
+    transport.locate(startSample);
+    transport.play();
+    const auto capture=[&](std::uint32_t from,std::uint32_t frames) {
+        const float* inputs[]{channel0.data()+from,nullptr,channel2.data()+from};
+        AudioIo io;
+        io.in=inputs;
+        io.numIn=3;
+        io.frames=static_cast<std::int32_t>(frames);
+        io.streamTimeSamples=from;
+        input(recorder,transport,io);
+    };
+    const auto exact=[&](const AudioRecordingPreview& preview,std::uint64_t frames) {
+        const auto& peaks=preview.peaks;
+        if(preview.startSample!=startSample || peaks.frames!=frames || peaks.channels!=2 ||
+           peaks.sampleRate!=request.sampleRate || peaks.framesPerBin==0 || preview.tracks.size()!=2)
+            return false;
+        const auto track=[&](std::int64_t id) {
+            return std::find_if(preview.tracks.begin(),preview.tracks.end(),
+                                [id](const auto& entry){return entry.trackId==id;});
+        };
+        const auto first=track(21), second=track(22);
+        if(first==preview.tracks.end() || second==preview.tracks.end() ||
+           first->channels.size()!=2 || second->channels.size()!=1)
+            return false;
+        const auto index2=first->channels[0], index0=first->channels[1];
+        if(index2>=peaks.channels || index0>=peaks.channels || index2==index0 ||
+           second->channels.front()!=index0)
+            return false;
+        const auto count=1+(frames-1)/peaks.framesPerBin;
+        if(peaks.bins.size()!=count*peaks.channels)
+            return false;
+        const auto hasExtrema=[&](const auto& source,std::uint32_t channel,std::uint64_t bin) {
+            const auto from=bin*peaks.framesPerBin;
+            const auto to=from+std::min(peaks.framesPerBin,frames-from);
+            const auto [minimum,maximum]=std::minmax_element(source.data()+from,source.data()+to);
+            const auto& extrema=peaks.bins[static_cast<std::size_t>(bin*peaks.channels+channel)];
+            return extrema.minimum==*minimum && extrema.maximum==*maximum;
+        };
+        for(std::uint64_t bin=0;bin<count;++bin)
+            if(!hasExtrema(channel0,index0,bin) || !hasExtrema(channel2,index2,bin))
+                return false;
+        return true;
+    };
+    capture(0,firstFrames);
+    std::shared_ptr<const AudioRecordingPreview> first;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    do {
+        first=recorder.preview();
+        if(first && first->peaks.frames!=0)break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while(std::chrono::steady_clock::now()<deadline);
+    check(first && exact(*first,firstFrames),
+          "the first writer batch publishes exact per-input extrema, shared channel mapping and the real song start");
+
+    capture(firstFrames,secondFrames);
+    capture(firstFrames+secondFrames,lastFrames);
+    recorder.stop();
+    AudioIo idle;
+    input(recorder,transport,idle);
+    auto result=finish(recorder);
+    check(result.failure==RecordingFailure::None && result.frames==totalFrames && result.preview &&
+          exact(*result.preview,totalFrames),
+          "the final preview covers every accepted sample, including extrema in the final partial block");
+    check(first && exact(*first,firstFrames),"holding the first publication keeps its original frames and peaks");
+    result.discard();
+}
 class FailingSink final:public AudioRecordingSink {
 public:
     void write(std::span<const float>,std::uint32_t)override{throw std::runtime_error("injected disk write failure");}
@@ -242,6 +336,49 @@ public:
         writer_.close();
     }
 };
+void keepPrefixAfterPartialDiskFailure() {
+    test::TempDirectory directory{"audio_recording","disk_error_keep"};
+    DiskFailure disk;
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.targets={{21,{0}}};
+    std::string error;
+    if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+        return std::make_unique<PartialWaveSink>(file,rate,channels,format,disk,true);
+    }))throw std::runtime_error(error);
+    Transport transport;
+    transport.play();
+    const std::array<float,8> samples{.25f,-.5f,0.f,.5f,-.125f,0.f,0.f,.125f};
+    const std::array<float,8> unwritten{1.f,1.f,1.f,1.f,1.f,1.f,1.f,1.f};
+    const float* channels[]={samples.data()};
+    AudioIo io;
+    io.in=channels;
+    io.numIn=1;
+    io.frames=static_cast<int>(samples.size());
+    input(recorder,transport,io);
+    // Allow the first WAV write to finish before offering a block that will fail.
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!disk.firstWrites.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if(!disk.firstWrites.load(std::memory_order_acquire))
+        throw std::runtime_error("the first WAV block was not written");
+    channels[0]=unwritten.data();
+    io.streamTimeSamples=io.frames;
+    input(recorder,transport,io);
+    const auto result=finish(recorder,true);
+    check(result.failure==RecordingFailure::Io && result.error=="injected disk failure after the first write" &&
+          !recorder.pending(),"a non-cancelled disk failure finishes with its original writer error");
+    const auto file=result.directory()/"take-0.wav";
+    const bool retained=!result.directory().empty() && std::filesystem::is_regular_file(file);
+    check(retained,"a failed recording keeps its WAV even when closing the sink fails");
+    if(retained) {
+        audio::WavReader reader(file);
+        std::array<float,8> saved{};
+        check(reader.frames()==saved.size() &&
+              reader.read(saved.data(),static_cast<std::uint32_t>(saved.size()))==saved.size() && saved==samples,
+              "the first completed block survives and the failed block is absent");
+    }
+}
 void cancelAfterPartialDiskFailure() {
     for(const bool deviceStopped:{false,true}) {
         test::TempDirectory directory{"audio_recording","disk_error_cancel"};
@@ -371,6 +508,158 @@ void actualSessionBothWidths() {
         check(result.failure==RecordingFailure::None && result.startSample==777 && result.frames==stream && heard==expected,"actual Session captures selected input bits and exact placement in either processing precision");result.discard();
     }
 }
+void punchCapturesOnlyTheBrace() {
+    test::TempDirectory directory{"audio_recording","punch"};
+    StoreError storeError{};
+    auto store=Store::createEmpty(directory.path()/"song.adi",storeError);
+    if(!store)throw std::runtime_error(toString(storeError));
+    store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES"
+                     "(21,'audio','Audio',1),(22,'midi','MIDI',1),(9,'master','Main',0)");
+    Session session;
+    if(!session.load(*store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    constexpr std::int64_t start=13,end=45;
+    constexpr auto frames=static_cast<std::uint32_t>(end-start);
+    OpRequest brace;
+    brace.opType="transport.setLoop";
+    const auto [startTick,endTick]=[&] {
+        auto clock=session.beginRender();
+        return std::pair{clock.tickAtSample(start),clock.tickAtSample(end)};
+    }();
+    brace.payload={{"on",false},{"start",startTick},{"end",endTick}};
+    OpRequest punch;
+    punch.opType="transport.setPunch";
+    punch.payload={{"in",true},{"out",true}};
+    if(!OpJournal(*store).commit(brace).ok || !OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not set the linear punch range");
+
+    auto request=spec(directory.path());
+    request.sampleRate=48000;
+    request.targets={{21,{0}}};
+    const std::array<std::int64_t,1> midiTrack{22};
+    auto startBoth=[&] {
+        std::string reason;
+        if(!session.startRecording(request,reason) || !session.startMidiInputCapture(midiTrack,reason))
+            throw std::runtime_error(reason);
+        session.transport().locate(0);
+        session.transport().play();
+    };
+    startBoth();
+    for(const int frame:{4,18,61})
+        check(session.enqueueMidiInput(frame,{0,EventType::NoteOn,1,64,static_cast<std::uint64_t>(frame),0,1.0}),
+              "queue a note before, inside or after the punch");
+    std::array<float,128> signal{},left{},right{};
+    for(std::size_t i=0;i<signal.size();++i)signal[i]=static_cast<float>(i)/128.f;
+    const float* inputs[]{signal.data()};
+    float* outputs[]{left.data(),right.data()};
+    AudioIo io{outputs,inputs,2,1,128,0};
+    session.process(io);
+    check(session.transport().position()==128 && session.transport().playing() &&
+          session.recording().acceptedFrames()==frames && session.midiInputCapture().state()==MidiCaptureState::Complete,
+          "both punch edges split one callback without stopping the transport");
+    std::array<MidiCapturePacket,8> packets{};
+    const auto count=session.midiInputCapture().drain(packets);
+    check(count==2 && packets[0].kind==MidiCapturePacket::Kind::Span &&
+          packets[0].timelineSample==start && packets[0].frames==end-start &&
+          packets[1].kind==MidiCapturePacket::Kind::Event && packets[1].timelineSample==18,
+          "the MIDI tap keeps the exact punched interval and skips events outside it");
+    auto& recorder=session.recording();
+    (void)recorder.poll();
+    io.streamTimeSamples=128;
+    session.process(io);
+    auto result=finish(recorder);
+    check(result.failure==RecordingFailure::None && result.startSample==start && result.frames==frames,
+          "the audio writer finalizes the punched prefix without an explicit Stop");
+    if(result.hasAttachableAudio()) {
+        std::array<float,frames> recorded{};
+        audio::WavReader wav(result.tracks[0].file);
+        check(wav.read(recorded.data(),static_cast<std::uint32_t>(recorded.size()))==recorded.size() &&
+              std::equal(recorded.begin(),recorded.end(),signal.begin()+start),
+              "the WAV contains only samples between the two brace markers");
+    }
+    result.discard();
+
+    startBoth();
+    io.frames=4;
+    io.streamTimeSamples=256;
+    session.process(io);
+    recorder.stop();
+    session.midiInputCapture().stop();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto empty=finish(recorder);
+    check(empty.failure==RecordingFailure::NoFrames && session.midiInputCapture().state()==MidiCaptureState::Complete &&
+          session.midiInputCapture().drain(packets)==0,
+          "explicit Stop settles both recorders even before Punch-In with no captured input");
+    empty.discard();
+
+    std::string reason;
+    if(!session.startRecording(request,reason))
+        throw std::runtime_error(reason);
+    session.transport().locate(0);
+    session.transport().play();
+    io.frames=32;
+    io.streamTimeSamples+=4;
+    session.process(io); // The linear take has accepted [13,32).
+    brace.payload["start"] = brace.payload["start"].get<std::int64_t>() + 1;
+    if(!OpJournal(*store).commit(brace).ok || !session.refresh(*store))
+        throw std::runtime_error("could not move the punch brace during capture");
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    (void)recorder.poll();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto prefix=finish(recorder);
+    check(prefix.failure==RecordingFailure::Discontinuity && prefix.hasAttachableAudio() &&
+              prefix.frames==static_cast<std::uint64_t>(32-start) && prefix.punchWindow().in &&
+              prefix.punchWindow().in->tick==brace.payload["start"].get<std::int64_t>()-1,
+          "changing a punch brace retains the first bounds and the previously accepted WAV prefix");
+    prefix.discard();
+
+    startBoth();
+    io.streamTimeSamples+=io.frames;
+    session.process(io); // Both recorders now own [13,32).
+    punch.payload["out"] = false; // Changes the window without relocating the transport.
+    if(!OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not turn Punch-Out off during mixed capture");
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    RecordingPunchWindow frozen;
+    const auto mixedCount=session.midiInputCapture().drain(packets,&frozen);
+    check(session.midiInputCapture().state()==MidiCaptureState::Discontinuity && mixedCount==1 &&
+              packets[0].timelineSample==start && packets[0].frames==32-start &&
+              frozen.in && frozen.in->tick==brace.payload["start"].get<std::int64_t>() &&
+              frozen.out && frozen.out->tick==brace.payload["end"].get<std::int64_t>(),
+          "changing a punch switch preserves the authored bounds and ends MIDI with the accepted prefix");
+    (void)recorder.poll();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto mixedPrefix=finish(recorder);
+    check(mixedPrefix.failure==RecordingFailure::Discontinuity &&
+              mixedPrefix.frames==static_cast<std::uint64_t>(32-start) && mixedPrefix.punchWindow()==frozen,
+          "the mixed audio and MIDI prefixes stop at the same boundary");
+    mixedPrefix.discard();
+    punch.payload["out"] = true;
+    if(!OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not restore Punch-Out");
+
+    // Both authored ticks map to the same sample. The one-frame minimum for
+    // running a loop must not allow a linear take through the punch boundary.
+    brace.payload["start"] = 0;
+    brace.payload["end"] = 1;
+    if(!OpJournal(*store).commit(brace).ok || !session.refresh(*store))
+        throw std::runtime_error("could not set a sub-sample punch brace");
+    startBoth();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    recorder.stop();
+    session.midiInputCapture().stop();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto subSample=finish(recorder);
+    check(subSample.failure==RecordingFailure::NoFrames && session.midiInputCapture().drain(packets)==0,
+          "a sub-sample linear punch brace accepts neither audio nor MIDI");
+    subSample.discard();
+}
 void boundedOverflow() {
     for(const bool looping:{false,true}) {
     test::TempDirectory directory{"audio_recording","overflow"};AudioInputRecorder recorder;std::string error;auto request=spec(directory.path());request.maxFrames=8;request.ringFrames=8;request.targets={{21,{0}}};
@@ -394,6 +683,113 @@ void boundedOverflow() {
 }
 bool passEquals(const RecordedPass& actual,std::uint64_t source,std::uint64_t frames,std::int64_t first,std::int64_t end) {
     return actual.sourceStartFrame==source && actual.frames==frames && actual.timelineStartSample==first && actual.timelineEndSample==end;
+}
+void loopClockChangeKeepsTheCapturedPrefix() {
+    test::TempDirectory directory{"audio_recording","loop_clock_change"};
+    constexpr std::int64_t quarter=textproj::kPPQ, loopEnd=48000;
+    const auto authored=std::make_shared<const TempoMap>(TempoMap{{{0,120,0},{quarter,120,0}}});
+    const auto republished=*authored;
+    const TempoMap retimed{{{0,180,0},{quarter,90,0}}};
+    auto request=spec(directory.path());
+    request.sampleRate=48000;
+    request.targets={{21,{0}}};
+    request.loop=AudioRecordingLoop{0,loopEnd,8,authored};
+    AudioInputRecorder recorder;
+    std::string error;
+    if(!recorder.start(request,error))throw std::runtime_error(error);
+    Transport transport;
+    transport.loop(0,loopEnd);
+    transport.play();
+    std::array<float,8> source{};
+    const float* channels[]{source.data()};
+    AudioIo io;
+    io.in=channels;
+    io.numIn=1;
+    io.frames=static_cast<std::int32_t>(source.size());
+    const auto captureWithClock=[&](const TempoMap& clock,std::uint64_t generation) {
+        {
+            audio::CallbackScope callback;
+            recorder.capture(io,transport,RecordingPunch::Within,{},&clock,generation);
+        }
+        transport.advance(io.frames);
+        io.streamTimeSamples+=io.frames;
+    };
+    captureWithClock(*authored,1);
+    captureWithClock(republished,2);
+    captureWithClock(retimed,3); // Two beats still last one second.
+    auto recorded=finish(recorder,true);
+    check(recorded.failure==RecordingFailure::Discontinuity && recorded.frames==2*source.size() &&
+          recorded.passes().size()==1 && passEquals(recorded.passes()[0],0,16,0,16),
+          "an equivalent clock keeps capturing and an interior retime preserves the earlier loop audio");
+    recorded.discard();
+}
+void loopPunchKeepsEveryPass() {
+    for(const bool punchIn:{false,true}) {
+        test::TempDirectory directory{"audio_recording","loop_punch"};
+        StoreError error{};
+        auto store=Store::createEmpty(directory.path()/"song.adi",error);
+        if(!store)throw std::runtime_error(toString(error));
+        store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES"
+                         "(21,'audio','Audio',1),(9,'master','Main',0)");
+        Session session;
+        if(!session.load(*store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+        constexpr std::int64_t start=19,end=33;
+        OpRequest brace;
+        brace.opType="transport.setLoop";
+        const auto [startTick,endTick]=[&] {
+            auto clock=session.beginRender();
+            return std::pair{clock.tickAtSample(start),clock.tickAtSample(end)};
+        }();
+        brace.payload={{"on",true},{"start",startTick},{"end",endTick}};
+        OpRequest punch;
+        punch.opType="transport.setPunch";
+        punch.payload={{"in",punchIn},{"out",true}};
+        if(!OpJournal(*store).commit(brace).ok || !OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+            throw std::runtime_error("could not set the punched loop range");
+        auto request=spec(directory.path());
+        request.sampleRate=48000;
+        request.targets={{21,{0}}};
+        request.loop=AudioRecordingLoop{start,end,8};
+        std::string reason;
+        if(!session.startRecording(request,reason))throw std::runtime_error(reason);
+
+        // The physical block crosses seven count-in frames, the initial lead-in, and three wraps.
+        session.transport().locate(0);
+        session.transport().countIn(7);
+        std::array<float,71> signal{},left{},right{};
+        for(std::size_t i=0;i<signal.size();++i)signal[i]=static_cast<float>(i)/128.f;
+        const float* inputs[]{signal.data()};
+        float* outputs[]{left.data(),right.data()};
+        AudioIo io{outputs,inputs,2,1,71,0};
+        session.process(io);
+        auto& recorder=session.recording();
+        const std::uint64_t frames=punchIn?45u:64u;
+        check(recorder.pending() && recorder.acceptedFrames()==frames &&
+              session.transport().playing() && session.transport().position()==22,
+              "Punch-In excludes just the lead-in and Punch-Out leaves the loop running");
+        recorder.stop();
+        io.streamTimeSamples=io.frames;
+        session.process(io);
+        auto result=finish(recorder);
+        const auto passes=result.passes();
+        const auto first=punchIn?start:0;
+        const auto firstFrames=static_cast<std::uint64_t>(end-first);
+        check(result.failure==RecordingFailure::None && result.startSample==first &&
+              result.frames==frames && passes.size()==4 &&
+              passEquals(passes[0],0,firstFrames,first,end) &&
+              passEquals(passes[1],firstFrames,14,start,end) &&
+              passEquals(passes[2],firstFrames+14,14,start,end) &&
+              passEquals(passes[3],firstFrames+28,3,start,22),
+              "only the first pass changes with Punch-In, and every full wrap and the last partial pass survive");
+        if(result.hasAttachableAudio()) {
+            std::vector<float> captured(static_cast<std::size_t>(frames));
+            audio::WavReader wav(result.tracks[0].file);
+            check(wav.read(captured.data(),static_cast<std::uint32_t>(frames))==frames &&
+                  std::equal(captured.begin(),captured.end(),signal.end()-static_cast<std::ptrdiff_t>(frames)),
+                  "the recorded WAV is the exact contiguous suffix after count-in and optional Punch-In");
+        }
+        result.discard();
+    }
 }
 void sessionLoopPasses() {
     for(const auto width:{Precision::Float32,Precision::Float64})for(const bool partialFirst:{false,true}) {
@@ -437,7 +833,7 @@ void sessionLoopPasses() {
 }
 void loopBoundsAndCapacity() {
     test::TempDirectory directory{"audio_recording","loop_bounds"};AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.loop=AudioRecordingLoop{100,104,2};std::string error;
-    for(const auto invalidLoop:{AudioRecordingLoop{-1,4,2},AudioRecordingLoop{4,4,2},AudioRecordingLoop{4,3,2},AudioRecordingLoop{0,4,0},AudioRecordingLoop{0,4,65537}}) {
+    for(const auto& invalidLoop:{AudioRecordingLoop{-1,4,2},AudioRecordingLoop{4,4,2},AudioRecordingLoop{4,3,2},AudioRecordingLoop{0,4,0},AudioRecordingLoop{0,4,65537}}) {
         auto invalid=request;invalid.loop=invalidLoop;check(!recorder.start(invalid,error) && !recorder.pending(),"invalid loop bounds or excessive pass allocation refuses before publication");
     }
     std::array<float,128> values{};for(std::size_t index=0;index<values.size();++index)values[index]=static_cast<float>(index)/256;
@@ -500,12 +896,14 @@ void loopDiscontinuities() {
 int main() {
     try {
         actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
-        boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
-        cancelAfterPartialDiskFailure();
+        boundedOverflow();actualQueueWraps();waveformPreviewUsesCapturedFrames();
+        discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
+        keepPrefixAfterPartialDiskFailure();cancelAfterPartialDiskFailure();
 #if defined(_WIN32)
         cancelReportsCleanupDenial();
 #endif
-        stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();
+        stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();punchCapturesOnlyTheBrace();
+        sessionLoopPasses();loopPunchKeepsEveryPass();loopClockChangeKeepsTheCapturedPrefix();
         loopBoundsAndCapacity();loopDiscontinuities();
     } catch(const std::exception& error) {
         check(false,error.what());

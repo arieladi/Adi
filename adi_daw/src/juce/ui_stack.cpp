@@ -260,14 +260,8 @@ void StackRow::present(const stack::RowGeo &input) {
         if (!alive || !panel || state_->presentation != presentation) return;
         if (panel->wrench.isVisible())
             panel->wrench.setToggleState(stack_.root.pluginWindowOpen(data->id), juce::dontSendNotification);
-        if (panel->sample) {
-            const engine::SampleSlotNode *slot = nullptr;
-            if (const auto *snapshot = stack_.root.reader().get())
-                for (const auto &candidate : snapshot->sampleSlots)
-                    if (candidate && candidate->deviceId == data->id &&
-                        candidate->slot == panel->sample->slot) slot = candidate.get();
-            panel->sample->show(slot);
-        }
+        if (panel->sample)
+            panel->sample->refresh();
         if (!alive || !panel || state_->presentation != presentation) return;
         panel->setBounds(static_cast<int>(std::round(item.x - lane.x)),
                                 static_cast<int>(std::round(item.top - geo.top)) + 2,

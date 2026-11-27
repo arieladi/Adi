@@ -23,6 +23,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace adi;
@@ -173,7 +174,7 @@ struct Event {
 };
 // Exercises the actual GUI callback/coordinator seam without opening hardware.
 struct SimulatedDevice final : juce::AudioIODevice {
-    SimulatedDevice() : AudioIODevice("Owned callback fixture", "test") {}
+    explicit SimulatedDevice(const juce::String &name = "Owned callback fixture") : AudioIODevice(name, "test") {}
     double rate = 48000.;
     int frames = 256;
     juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
@@ -196,6 +197,79 @@ struct SimulatedDevice final : juce::AudioIODevice {
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+void audioDeviceStatus(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "device-notice.adi", true, {}, error);
+    check(bool(doc), "SC-28: an open project for device status");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "device-status");
+    int settingsOpened = 0;
+    root.openAudioSettings = [&] { ++settingsOpened; };
+    root.setSize(1440, 900);
+    SimulatedDevice primary("Primary interface"), alternate("Alternate interface");
+    device::DeviceBridge bridge(*doc);
+    const auto publish = [&] {
+        if (auto message = bridge.takeDeviceProblem(); message.isNotEmpty())
+            root.status.setAudioDeviceProblem(std::move(message));
+    };
+
+    bridge.audioDeviceAboutToStart(&primary);
+    bridge.audioDeviceStopped();
+    primary.frames = 512;
+    bridge.audioDeviceAboutToStart(&primary);
+    publish();
+    check(bridge.core().isOpen() && !root.status.audioSettings.isVisible(),
+          "SC-28: an in-place restart does not warn");
+
+    bridge.audioDeviceStopped();
+    bridge.audioDeviceAboutToStart(&alternate);
+    bridge.acknowledgeDeviceSetup();
+    publish();
+    check(!root.status.audioSettings.isVisible(), "SC-28: changing devices in Settings does not warn");
+
+    bridge.audioDeviceStopped();
+    bridge.audioDeviceAboutToStart(&primary);
+    publish();
+    check(root.status.audioDeviceProblem().contains("Alternate interface") && root.status.audioSettings.isVisible(),
+          "SC-28: an unexpected stop is reported even when a different interface opens immediately");
+    root.status.audioSettings.onClick();
+    check(settingsOpened == 1, "SC-28: the Status Bar can open Audio Settings");
+
+    std::thread driver([&] { bridge.audioDeviceError("Driver lost its connection"); });
+    driver.join();
+    publish();
+    root.say("Kept the audio recorded before the interruption.");
+    check(root.status.audioDeviceProblem().contains("Driver lost its connection") &&
+              root.error() == "Kept the audio recorded before the interruption.",
+          "SC-28: driver details and the take's outcome are both available in the Status Bar");
+    check(bridge.takeDeviceProblem().isEmpty(), "SC-28: each driver fault is consumed once");
+
+    root.status.setAudioDeviceProblem({});
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    const bool recording = doc->ops().submit(arm).ok && doc->synchronise() && doc->startRecording(0, 1, false);
+    check(recording, "SC-28: a take is recording when its device stops");
+    constexpr int frames = 512;
+    std::array<float, frames> input{}, left{}, right{};
+    input.fill(0.25f);
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    if (recording)
+        bridge.audioDeviceIOCallbackWithContext(inputs, 1, outputs, 2, frames, {});
+    bridge.audioDeviceError("Stream ended");
+    bridge.audioDeviceStopped();
+    publish();
+    check(!bridge.core().isOpen() && root.status.audioDeviceProblem().contains("Primary interface") &&
+              root.status.audioDeviceProblem().contains("Stream ended"),
+          "SC-28: a stopped driver releases the document and reports the stop and the error");
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    check(settled && landed && landed->ok && landed->clips.size() == 1,
+          "SC-28: the stopped driver still leaves its captured audio to land");
+}
 struct KeyProbe final : device::DeviceInstance {
     device::DeviceIdentity identity_;
     double keyPeak = 0, choice = 0;
@@ -2213,6 +2287,7 @@ int main() {
     test::TempDirectory temporary("ui_mix_functions", "component");
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
+    audioDeviceStatus(commands, temporary.path());
     callbackKeys(commands, temporary.path());
     callbackAnalyzerRateChange(temporary.path());
     functions(commands, temporary.path());

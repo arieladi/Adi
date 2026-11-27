@@ -22,16 +22,11 @@ class FloatButton final : public juce::Button {
     FloatButton() : juce::Button("Mix View in a Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// [REF] (ADR-0209 d9): down auditions the ★ Reference, up lets go; a tap under 200 ms latches it.
+// [REF] (ADR-0209 d9), reserved for the Reference monitor connection.
 class ReferenceButton final : public juce::Button {
   public:
-    explicit ReferenceButton(AdiRootComponent &r) : juce::Button("REF"), root_(r) {}
+    ReferenceButton() : juce::Button("REF") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
-    void mouseDown(const juce::MouseEvent &) override;
-    void mouseUp(const juce::MouseEvent &) override;
-
-  private:
-    AdiRootComponent &root_;
 };
 // [Reference Track] (ADR-0209 §4, d11): an eye and the words, lit while the track shows.
 class EyeButton final : public juce::Button {
@@ -127,7 +122,7 @@ class MixViewPanel final : public juce::Component {
   private:
     AdiRootComponent &root_;
     int shownStoredTab_ = -1;
-    bool layoutPending_ = false, appliedDock_ = false, ownerReady_ = false;
+    bool layoutPending_ = false, appliedDock_ = false, ownerReady_ = false, referenceAssigned_ = false;
     int appliedWidth_ = 300;
     std::optional<ThemeId> appliedTheme_;
     DensityId appliedDensity_ = DensityId::Compact;
