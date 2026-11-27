@@ -20562,7 +20562,7 @@ position and its list entry plays from there. Make Session runs to its end with 
 | `collab/README.md` | ADR 0260 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0261; DF-W61 |
 
-## ADR-0261 — The Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, and the whole of the plug-in server carried — `DECIDED` (2026-11-27) — **DIRECTOR'S WORDS OF 27 NOVEMBER, RECORDED AFTER A CHECK OF FIVE AUDITS; WIN'S READINGS ARE MARKED AND HIS TO STRIKE; AMENDS ADR-0257 d12, ADR-0203 d6, ADR-0104 d3, ADR-0115 d3 AND ADR-0053; WHAT IS NEW ON SCREEN IS BUILT AFTER ITS SHEET**
+## ADR-0261 — The Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, and the whole of the plug-in server carried — `DECIDED` (2026-11-27) — **DIRECTOR'S WORDS OF 27 NOVEMBER, RECORDED AFTER A CHECK OF FIVE AUDITS; WIN'S READINGS ARE MARKED, AND HE CONFIRMED THEM THE SAME DAY ("yes on the rest"); HIS FOUR ANSWERS ARE IN; AMENDS ADR-0257 d12, ADR-0203 d6, ADR-0104 d3, ADR-0115 d3 AND ADR-0053; WHAT IS NEW ON SCREEN IS BUILT AFTER ITS SHEET**
 
 **What this records.** On 27 November the director said where the agent is met in the window, what the
 floating search is for, that the Browser filters by what a sound measures, and that its preview row is
@@ -20572,7 +20572,8 @@ together in a problematic ways", and added: "and dont forget all the integration
 Win ran five audits: the Browser as a surface, the agent's place in the window, finding and previewing
 sounds, his words against the record, and the plug-in server. They returned 148 findings, about 80 once
 merged. This entry records his words, settles what was within win's authority (each such line is marked
-*win's reading* and is his to strike), and names the choices that are his.
+*win's reading*; he confirmed them the same day with "yes on the rest"), and records his answers to the four
+choices win put to him.
 
 **What the check found, in short.** Where the agent lives was written four ways and his own way was
 written nowhere. The Browser's basics had no builder. The floating search that is built is a command
@@ -20626,8 +20627,13 @@ tier on one click. The plug-in server was carried by one row, parked on question
      conversation per project, the same from both places; a line sent while a request runs waits its
      turn and says so. A change asked from the floating search waits for Apply like any other
      (ADR-0145 d9), unless the user has raised the agent to Apply.
-   - How a plain line is told from a request to the agent is his choice (Q1 below). It answers the
-     plan's open question Q-G.
+   - **It looks and works as the Mac's own search (his answer to Q1, with a picture of it):** one bar, and
+     round buttons beside it, one for each kind of thing. It opens on samples. The mouse or the arrow keys
+     move to devices, plug-ins and presets, to the agent, and to commands. His words: "the defult will be
+     samples, then we can move with mouse or with arrows for devices&plug-ins&presets, or AI agent &
+     commands". So a line goes to the agent only while the agent's button is chosen, and the prefixes of
+     ADR-0104 d3 (V/, S/, P/) are not needed. This answers the plan's open question Q-G. How many buttons
+     there are and what each holds is drawn on the sheet (d19).
 6. **What must exist before the label, in order.** The registry's schema and the control core (built);
    the changeset as a service (built); the project's identity written by the Store (AGT-02); the tier's
    scope and the always-confirm rules (AGT-09); the consent ledger and its question (AGT-03); the
@@ -20694,8 +20700,12 @@ tier on one click. The plug-in server was carried by one row, parked on question
 16. **"Lands as heard" (ADR-0254 d17): how far it reaches** (*win's reading*). With Sync on it covers
     whatever is picked from ADI's own lists, by a drag, by Enter or from the floating search, heard
     first or not. A file from outside ADI arrives clean. Enter loads at once with the answers given
-    last and shows no Import question (narrows ADR-0203 d11 for Enter); a drop asks as today. Whether
-    Sync starts on is his choice (Q2).
+    last and shows no Import question (narrows ADR-0203 d11 for Enter); a drop asks as today.
+    **Sync starts on, as Live's preview (his answer to Q2).** So from the day TM-MD-06 is built, a sample
+    previewed and picked lands in time and in key unless he switched Sync off, and "import with no warp"
+    (ADR-0203 d12) holds for files that come from outside ADI. Until that row is built the preview plays
+    the plain file and every pick arrives clean (his answer to Q3: in time and in key wait for the
+    real-time stretcher, TM-WT-04; no early version).
 
 **The column**
 
@@ -20751,19 +20761,17 @@ tier on one click. The plug-in server was carried by one row, parked on question
     chain. `window/command-palette` stays out of the stacks until Q1 is answered and is then reworked as
     the floating search. A log branch with no row after a day does not hold a queue.
 
-**What is not settled here.** Four choices are with him:
+**His answers, 27 November.** "Q1 = should look like in mac the default search - the defult will be samples,
+then we can move with mouse or with arrows for devices&plug-ins&presets, or AI agent & commands" (d5).
+"Q2 = B": the preview's Sync starts on, as Live's (d16). "q3 = A": hearing a loop in time waits for the
+real-time stretcher (d16). "Q4 = A": the agent's hidden half (d6) starts now, on a seat of its own, and
+lands after the basics. "yes on the rest": win's readings stand.
 
-- **Q1.** In the floating search a plain line (a) finds, and one key turns the box to Ask; (b) finds,
-  and the last row offers to send it to the agent; (c) goes to the agent, and a pick needs a prefix.
-- **Q2.** The preview's Sync starts (a) off, or (b) on as Live's, where every previewed pick then lands
-  in time.
-- **Q3.** Hearing a loop in time before it is dropped: (a) when the real-time stretcher exists
-  (TM-WT-04, after M7), or (b) an early version that stretches a short loop once in the background.
-- **Q4.** The agent's hidden half (d6) starts (a) now, on a seat of its own, or (b) after the basics.
-
-Left to their rows, each with a recommendation: how far one consent for a session reaches (ADR-0257 d9);
-where a session's output is listed; a remote plug-in's own window; one row or two for a plug-in that is
-on this computer and on a server; Stop Agent's key.
+**What is not settled here.** From the sheet (d19) he chooses the conversation's width, where a proposed
+change is reviewed, the agent's way in from the Mix View, and the floating search's buttons. Left to their
+rows, each with a recommendation: how far one consent for a session reaches (ADR-0257 d9); where a
+session's output is listed; a remote plug-in's own window; one row or two for a plug-in that is on this
+computer and on a server; Stop Agent's key.
 
 ### Amendments, in one place
 
@@ -20773,12 +20781,14 @@ on this computer and on a server; Stop Agent's key.
 | ADR-0257 d8 | AGT-05 and WIN-10 move up with AGT-06; CTL-08, AGT-09 and Stop Agent are their ground (d6) |
 | ADR-0203 d6 | the chat tab is gone; the Info box is part of the Browser's column (d1, d17) |
 | ADR-0203 d11 | Enter loads with the answers given last and asks nothing (d16) |
-| ADR-0104 d3 | the floating search finds and asks; no "Space auditions"; the S/ prefix waits for Q1 (d5, d14) |
+| ADR-0104 d3 | the floating search has a button for each kind of thing, as the Mac's search, and opens on samples; the prefixes go; no "Space auditions" (d5, d14) |
 | ADR-0115 d3 | a marker's prompt queues for review at every tier; the agent may not write one (d8) |
 | ADR-0053 | a server's grant lives in the ledger; a failed state capture never holds a save or a quit (d21, d23) |
 | ADR-0064 d5; WIN-10 | with no agent its ways in are not shown (d3) |
 | ADR-0258 d10 | starter sounds list under Drums and Samples (d18) |
-| ADR-0254 d12, d16, d17 | stand; one filter panel, one player, and the reach of "lands as heard" (d10, d14, d16) |
+| ADR-0254 d12, d16, d17 | stand; one filter panel, one player, the reach of "lands as heard", and Sync on from the start (d10, d14, d16) |
+| ADR-0203 d12 | "import with no warp" holds for files from outside ADI once TM-MD-06 is built (d16) |
+| PLAN Q-G | answered (d5) |
 | DEV-25; DF-E25 c | a VST3's identity is its class ID (d22) |
 | PLAN AGT-05, WIN-06, WIN-10, Q-G | the stale lines corrected now; the new rows are owed under DF-R3 |
 | `docs/SANITY-CHECK.md` | SC-428 to SC-432 registered; lines in SC-110, SC-123, SC-127, SC-128 and SC-424 |
