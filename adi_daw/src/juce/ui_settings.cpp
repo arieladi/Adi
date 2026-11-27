@@ -614,8 +614,8 @@ void SettingsPanel::chooseLibraryFolder(const settings::Setting &setting) {
     folderChooser_ = std::make_unique<juce::FileChooser>(
         setting.type == Type::PathList ? "Add a sample folder" : "Choose the User Library", start);
     juce::Component::SafePointer<SettingsPanel> safe(this);
-    const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
-    folderChooser_->launchAsync(flags, [safe, key = setting.key](const juce::FileChooser &chooser) {
+    const int chooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+    folderChooser_->launchAsync(chooserFlags, [safe, key = setting.key](const juce::FileChooser &chooser) {
         if (!safe)
             return;
         if (const auto *chosen = settings::find(key); chosen && chooser.getResult() != juce::File{}) {

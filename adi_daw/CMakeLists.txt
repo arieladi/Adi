@@ -1906,7 +1906,10 @@ add_executable(adi_library_tests tests/test_library.cpp)
 target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_library_tests COMMAND adi_library_tests)
 
-set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
+# RUN_SERIAL: the index worker lowers its own priority, which on Windows is
+# THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
+# took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.
