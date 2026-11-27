@@ -1,4 +1,4 @@
-Ready for win: basics/integrate-1 at a7d02bcfedaa2f70f42f7f13e19e98967c8d7292
+Landing verification reopened for SC-430 VST3 state capture.
 
 # Basics integration
 
@@ -15,6 +15,7 @@ Integration starts from `origin/land/basics-1127i` at `ed0f2aa18795792818fd35817
 | `basics/sc-402-export-sample-rates` `8a3fdca06277bd55e2e35db79f80484d798efaaf` | `9a475d8b62d22d55dcd8654f18d91aed7d3ab641` | Resolved six conflicts across playback, render queue, app and tests. Export can skip missing assets while keeping relink diagnostics and rejecting changed source content. Combined preroll and normalization progress with Warp preparation. New, Open and Quit preserve export confirmation and the independent archive finish path. Enabled the seven settings now consumed by Export. The original session’s branch supplied this work. | Linux GCC 14 Debug JUCE/Pd Werror build including the app. Passed render queue, normalization, NI Stems, clip playback, collect export and all 18 `adi_ui_` suites with DISPLAY unset. |
 | `land/basics-1127i` `956d36454316d2e48635b891a3c679f62f077fd0` | `e0447f13b2f03ce7d1495c171fb3b9087d9c67a7` | Clean merge. Includes `2c59ae005`, which publishes each Warp result once through a release/acquire readiness flag, plus current main and ADR-0261. | All five validators, four affected Warp, clip playback and render suites, and all 18 no-display window suites passed. The old error was reproduced with Clang 19 and libc++ 19 on Linux. The repaired Warp unit passed warnings-as-errors syntax under that toolchain. |
 | `basics/sc-177-track-header-selection` `e359aa9bdfad19538caef57f98334156a0194cce` | `379b5d8b210745bfbc93bc725b993d0fe46b697a` | Resolved two Arrangement conflicts. Kept SC-174 and SC-177 selection context without seeking, and the earlier automation range clipboard and breakpoint values. Updated three peerless tests for the incoming popup-menu seam and added coverage for both automation menus. | Linux Debug JUCE/Pd warnings-as-errors build including the app. All three affected edit/clip suites and all 18 no-display window suites passed. |
+| `basics/sc-175-clip-body-range` `e121a07581f370fc47eeb757778a9ccc3e6ba13d` | `01f5c52847624b4975b5f7e6745e96cf194159d9` | Combined the press-based clip-body anchor and title-only movement with the existing automation range tracking and context selection. Kept both of the Edit owner's exact reference images. | Built every configured target including app and player. All five validators, Win's landing check, 293 non-performance suites, 18 no-display window suites and three acceptance suites passed. Both changed C++ units passed strict Clang 14 syntax and neither timing threshold changed. |
 
 ## Landing verification
 
@@ -26,7 +27,9 @@ The full run caught an obsolete placeholder diagnostic after plug-in recovery an
 
 Targeted Clang 14 syntax checks covered the window, recording, export, and affected fixtures, including 64-bit long-double emulation. The checks also covered shadows, JUCE point types, structured binding capture, nested optional construction, range iteration, dB tolerances, and the existing text projection and key-map fixtures. The recording parity description now reflects the implemented preference and Shift override with the same status floor. Native Windows and macOS builds remain for Win's landing matrix.
 
-The original Export tip and the first two verified Edit items are included. The Edit owner has now published SC-175 at `e121a07581f370fc47eeb757778a9ccc3e6ba13d`. The report at `ad5851c9d523aaae9d921898add69e135205412c` confirms the gesture checks and reproduces two timing misses on unchanged main. Integration and verification continue on integrate-1.
+The original Export and the published Edit items through SC-175 are included. The Edit report at `8adf9ee78d8612c6a3d353515e52e0ec7c357352` records SC-421 and SC-415 timing misses on unchanged main in the owner’s environment. Both checks passed here with their existing thresholds. SC-176 is still undergoing the owner's verification.
+
+A follow-up SC-430 audit found that JUCE can return a nonempty VST3 wrapper with a previously stored stream missing after the plug-in refuses its state read. The VST3 capture path is being corrected before marking the new head ready.
 ## Follow-up fixes
 
 | Queue item | Integration head | Change and verification |
