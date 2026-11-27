@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 01:30 IST — libcxx/basics/integrate-2 `39afd389608148eb927b8c2158fd32cf318ebed1`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered CTest suites passed.
+
+All 22 registered ADI translation units mentioning `long double` passed strict syntax checks with `-mlong-double-64`, including `adi_daw/src/adi/clip_commands.cpp`. `adi_warp_actions_tests` exercised clip source replacement.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 01:22 IST — main `fbf541ee625ad4761102f1ed0bb500c7b3a6f420`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 279 registered CTest suites passed.
