@@ -394,6 +394,16 @@ void BrowserPanel::refill() {
                 addPresets(presets, 3);
             }
         }
+        for (const auto &failure : pluginScan_.listing.scanFailures) {
+            const auto path = juce::String::fromUTF8(failure.path.c_str());
+            const auto name = path.substring(path.lastIndexOfAnyOf("/\\") + 1);
+            if (!query.isEmpty() && !name.containsIgnoreCase(query))
+                continue;
+            const auto heading = (failure.state == scan::State::Quarantined ? "Blocked: " : "Scan failed: ") + name;
+            const auto reason = juce::String::fromUTF8(failure.error.c_str());
+            const auto tooltip = reason.isEmpty() ? path : path + "\n" + reason;
+            rows_.push_back({nullptr, nullptr, heading, nullptr, 0, nullptr, tooltip});
+        }
     }
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
@@ -403,6 +413,9 @@ void BrowserPanel::refill() {
     list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
+juce::String BrowserPanel::getTooltipForRow(int row) {
+    return row >= 0 && row < getNumRows() ? rows_[static_cast<std::size_t>(row)].tooltip : juce::String{};
+}
 void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return;
@@ -410,8 +423,8 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     if (selected && r.heading.isEmpty())
         g.fillAll(look::selection);
     if (r.heading.isNotEmpty()) {
-        // A folder of Live's, as its heading, set in by its depth.
-        g.setColour(look::textDim);
+        // Group headings and notices cannot be selected or loaded.
+        g.setColour(r.tooltip.isEmpty() ? look::textDim : look::error);
         g.setFont(look::font(look::fontField, true));
         const int in = 6 + 12 * r.depth;
         g.drawText(r.heading, in, 0, width - in - 4, height, juce::Justification::centredLeft, true);

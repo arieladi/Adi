@@ -33,6 +33,7 @@ struct PluginListing {
     std::size_t failed = 0; // files a complete scan could not read; the rest are listed
     bool complete = true;   // false: the scan stopped early (`stopped` says why); the list may be short
     std::string stopped;    // why the scan stopped early, a sentence's middle ("the plug-in scanner ...")
+    std::vector<scan::Failure> scanFailures{}; // failures attributed to individual files
 };
 // `Scanner::probe`'s words when its helper could not start or was cancelled (src/adi/plugin_scanner.cpp).
 inline constexpr std::string_view kHelperUnavailable = "scanner helper unavailable or scan cancelled";
@@ -67,6 +68,10 @@ inline void applyReport(PluginListing &listing, const scan::Report &report) {
     listing.complete = report.complete && !report.cancelled;
     listing.stopped = stoppedReason(report);
     listing.failed = listing.complete ? report.failures.size() : 0;
+    listing.scanFailures.clear();
+    for (const auto &failure : report.failures)
+        if (!failure.path.empty() && !scan::stopsDiscovery(failure.state))
+            listing.scanFailures.push_back(failure);
 }
 // A plug-in's kind from its CLAP descriptor: an instrument, a note effect (a MIDI effect) or an effect.
 inline PluginEntry::Kind clapKind(bool instrument, std::string_view features) {

@@ -44,24 +44,60 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     LiveMidiProcessor(ProjectDocument &document, MidiInputFeed &feed) : document_(document), feed_(feed) {}
     void prepare(double sampleRate, std::int32_t maxFrames) override {
         rate_ = sampleRate;
+        resetCpuLoad();
         feed_.restart();
         document_.session().resetMidiInput();
         document_.prepare(sampleRate, maxFrames);
     }
     void process(const engine::AudioIo &io) noexcept override {
+        const auto started = juce::Time::getMillisecondCounterHiRes();
         auto &session = document_.session();
-        feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
+        feed_.pump(io.streamTimeSamples, io.frames, rate_, started,
                    [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
                        return session.enqueueMidiInput(sample, event, inputSample);
                    });
         document_.process(io);
+        // JUCE's manager smooths its reading and clamps it to 100%. Measure the actual work
+        // against this callback's frame count so Current and Average can show overloads.
+        if (io.frames <= 0 || !(rate_ > 0.))
+            return;
+        const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - started;
+        const auto load = static_cast<float>(elapsedMs * rate_ / (1000. * io.frames));
+        const float previous = averageCpuLoad_.load(std::memory_order_relaxed);
+        constexpr float smoothing = .2f;
+        averageCpuLoad_.store(previous < 0.f ? load : previous + smoothing * (load - previous),
+                              std::memory_order_relaxed);
+        currentCpuLoad_.store(load, std::memory_order_release);
+        if (load > 1.f)
+            cpuEvents_.fetch_or(kMissedDeadline, std::memory_order_release);
     }
-    void release() override { document_.release(); }
+    void release() override {
+        resetCpuLoad();
+        document_.release();
+    }
+    std::optional<TransportBar::CpuLoad> cpuLoad() noexcept {
+        const auto events = cpuEvents_.exchange(0, std::memory_order_acquire);
+        const auto current = currentCpuLoad_.load(std::memory_order_acquire);
+        if (current < 0.f)
+            return {};
+        return TransportBar::CpuLoad{current, averageCpuLoad_.load(std::memory_order_relaxed),
+                                     (events & kMissedDeadline) != 0, (events & kDeviceReset) != 0};
+    }
 
   private:
+    void resetCpuLoad() noexcept {
+        currentCpuLoad_.store(-1.f, std::memory_order_release);
+        averageCpuLoad_.store(-1.f, std::memory_order_relaxed);
+        cpuEvents_.store(kDeviceReset, std::memory_order_release);
+    }
     ProjectDocument &document_;
     MidiInputFeed &feed_;
     double rate_ = 0;
+    static_assert(std::atomic<float>::is_always_lock_free && std::atomic<unsigned>::is_always_lock_free);
+    std::atomic<float> currentCpuLoad_{-1.f}, averageCpuLoad_{-1.f};
+    // Latch short overruns for the timer; a device restart discards the previous stream's events.
+    static constexpr unsigned kMissedDeadline = 1, kDeviceReset = 2;
+    std::atomic<unsigned> cpuEvents_{0};
 };
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
 // `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
@@ -1079,6 +1115,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 const auto *strip = document_->session().strips().stripFor(track);
                 return strip != nullptr ? &strip->meter() : nullptr;
             };
+            panel->midiActivity = [this](std::int64_t track) {
+                const auto *clips = document_->session().midiClips();
+                return clips != nullptr ? clips->noteActivity(track) : engine::MidiNoteActivity{};
+            };
             panel->autoGain = [this](bool lufs) {
                 const bool ok = document_->autoGainStage(lufs);
                 if (root_)
@@ -1816,6 +1856,7 @@ class AdiApplication final : public juce::JUCEApplication,
                              root_->arrangement.geometry.selection.track != hotSwap_->expected.track ||
                              !root_->devices.validExpected(hotSwap_->expected)))
                 leaveHotSwap();
+            root_->transport.setCpuLoad(live_ ? live_->cpuLoad() : std::nullopt);
             root_->setRecordStates(document_->recordStates());
             refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
