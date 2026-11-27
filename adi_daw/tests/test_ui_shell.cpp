@@ -5370,6 +5370,60 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
         check(samplerTile.slot == 2 && samplerTile.slotName == "Sample 2" && peer &&
                   peer->handleKeyPress(juce::KeyPress('q')) && swappingDevice == panels[0]->id && swappingSlot == 2,
               "Q in the Sampler's tile opens Hot-Swap for the chosen second slot");
+
+        auto &samplerPanel = *panels[0];
+        const auto samplerId = samplerPanel.id;
+        using Drop = juce::DragAndDropTarget;
+        const juce::Point<int> landing{20, 40};
+        // Use the same ancestor walk as JUCE's internal drag dispatcher, starting at the
+        // control under the pointer. The fake peer needs no desktop drag image or native popup.
+        const auto targetAt = [&](Drop::SourceDetails &details) -> Drop * {
+            for (auto *hit = samplerPanel.getComponentAt(landing); hit; hit = hit->getParentComponent())
+                if (auto *target = dynamic_cast<Drop *>(hit); target && target->isInterestedInDragSource(details)) {
+                    details.localPosition = hit->getLocalPoint(&samplerPanel, landing);
+                    return target;
+                }
+            return nullptr;
+        };
+        const LibraryFile browserFile{"oneshot-sample.wav", wav, {}};
+        Drop::SourceDetails sampleDrop(BrowserPanel::dragDescription({&browserFile}), &root.browser.list, landing);
+        auto *sampleTarget = targetAt(sampleDrop);
+        const bool hitsPanel = dynamic_cast<juce::Component *>(sampleTarget) == &samplerPanel;
+        check(samplerPanel.getLocalBounds().contains(landing) && !samplerTile.getBounds().contains(landing) && hitsPanel,
+              "SC-297: a Browser sample over the Sampler's controls is handled by the panel outside the tile");
+        Drop::SourceDetails deviceDrop(BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.reverb")),
+                                       &root.browser.list, landing);
+        check(targetAt(deviceDrop) == &root.devices,
+              "SC-297: a Browser device over the same point still reaches the chain's device drop target");
+        if (hitsPanel) {
+            const auto slotState = [&](std::int32_t slot) -> std::shared_ptr<const engine::SampleSlotNode> {
+                const auto snapshot = document->view().current();
+                for (const auto &state : snapshot->sampleSlots)
+                    if (state && state->deviceId == samplerId && state->slot == slot)
+                        return state;
+                return {};
+            };
+            const auto undoHead = [&] {
+                const auto step = document->ops().nextUndo();
+                return step ? step->txnId : 0;
+            };
+            const auto before = undoHead();
+            sampleTarget->itemDragEnter(sampleDrop);
+            sampleTarget->itemDropped(sampleDrop);
+            refresh();
+            const auto slot1 = slotState(1), slot2 = slotState(2);
+            check((!slot1 || slot1->empty) && slot2 && !slot2->empty && !slot2->missing &&
+                      slot2->fileName == browserFile.name && samplerTile.state() == SampleTile::State::Loaded &&
+                      undoHead() != before && root.undoTitle(false) == "Undo Assign device sample",
+                  "SC-297: a Browser drop off the tile loads the exact file into the Sampler's chosen second slot");
+            if (undoHead() != before) {
+                check(root.command(AppCommands::Undo), "SC-297: Undo the Browser sample assignment once");
+                refresh();
+                const auto restored = slotState(2);
+                check((!restored || restored->empty) && samplerTile.state() == SampleTile::State::Empty && undoHead() == before,
+                      "SC-297: one Undo empties the second slot and restores the previous Undo head");
+            }
+        }
     }
     document->release();
 #else
