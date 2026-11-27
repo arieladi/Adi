@@ -38,6 +38,16 @@ Linux builds kept warnings as errors. With `DISPLAY` unset, 42 Release tests pas
 
 All 19 targeted probe runs passed. Thirty-two resampled stereo tracks played 480 callbacks with zero gaps, and both reader generations played all 600 WAV clips exactly. The 30-minute, four-track take spent 34.019 ms in its longest owner tick and read 90,219 bytes on the owner. At 200,000 Browser entries, the median searches took 4.905 ms for `Q`, 0.038 ms for `QX`, and 0.025 ms for `QXY`. At 20,000 notes, peerless paint took 17.106 ms and the held drag took 1.728 ms. These probe runs overlapped with the verification builds or suites. All speed rows are complete.
 
+## Verification after basics-1127g
+
+The shared verification head for all 19 speed rows is `basics/speed-chain` at `ec76ee75`. It merges `origin/main` (`de2a5b99`), which already contains `land/basics-1127g` (`007397e7`). The seven conflicts touched clip playback, MIDI sources, snapshot projection, the project document, Browser, the app owner, and shell tests across the engine, recording, plug-in, look, and window code.
+
+Project Open still yields between plug-in loads and proceeds during an active scan. A scan retry waits for the open to settle and uses the installed project's crash marker. MIDI playback shares sources and drives the landed note meter. Snapshots retain clip color and cached MIDI previews. Sample-exact Beats takes use the original WAV reader, and actual stretches stay on the Warp worker. Linear Stop keeps staged publication. The landed loop path publishes synchronously and retains per-pass Undo.
+
+With `DISPLAY` unset, all 45 Release tests, 18 Debug window tests, nine Debug core, plug-in and CLI tests, 14 Debug mixer and analyser tests, and three Debug acceptance tests passed. The JUCE/Pd Debug app and CLI built with warnings as errors. A peerless app run used a seeded crash marker, confirmed the held-off notice and marker removal, and wrote a valid archive. The offline CLI also wrote a valid WAV.
+
+All 19 targeted probes passed. Thirty-two resampled stereo tracks played 480 callbacks without gaps. Both reader generations played all 600 WAV clips exactly. The 30-minute, four-track linear take spent 25.094 ms in its longest owner tick and read 90,219 bytes on the owner. The 20-device staged Open yielded across 22 turns, with a longest turn of 32.40 ms. Browser lookup for `QXY` at 200,000 entries took a median of 0.034 ms. These probes ran alongside builds or suites. All speed rows are complete.
+
 ## SC-194 ownership
 
 The speed session takes the Warp render cache and background rendering. The clips session owns the Warp controls and marker edits.
