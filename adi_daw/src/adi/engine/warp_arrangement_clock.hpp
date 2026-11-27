@@ -2,6 +2,7 @@
 #pragma once
 
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace adi { namespace rows { struct TempoEvent; } }
@@ -20,9 +21,11 @@ public:
     [[nodiscard]] double frameAtTick(double tick) const noexcept;
     [[nodiscard]] double tickAtFrame(double frame) const noexcept;
     [[nodiscard]] double framesPerTickAt(double tick) const noexcept;
+    /// Minimum and maximum over a half-open interval, including ramp limits.
+    /// Used during owner-side source preparation.
+    [[nodiscard]] std::pair<double, double> framesPerTickRange(double firstTick, double endTick) const noexcept;
     [[nodiscard]] double constantFramesPerTick() const noexcept;
     [[nodiscard]] double maxTicksPerFrame() const noexcept;
-    [[nodiscard]] double minTicksPerFrame() const noexcept;
 
 private:
     struct Segment;

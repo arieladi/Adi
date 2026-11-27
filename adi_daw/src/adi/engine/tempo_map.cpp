@@ -304,6 +304,26 @@ double WarpArrangementClock::framesPerTickAt(double tick) const noexcept {
     return sampleRate_ * 60 / (ticksPerQuarter * bpm);
 }
 
+std::pair<double, double> WarpArrangementClock::framesPerTickRange(double firstTick, double endTick) const noexcept {
+    double minimum = framesPerTickAt(firstTick), maximum = minimum;
+    const auto* end = segments_.data() + segments_.size();
+    for (const auto* segment = &segmentAtTick(firstTick); segment != end; ++segment) {
+        const auto first = std::max(firstTick, static_cast<double>(segment->left.posTicks));
+        if (first >= endTick) break;
+        const auto next = segment + 1;
+        const auto last = next == end ? endTick : std::min(endTick, static_cast<double>(next->left.posTicks));
+        // The shared linear and Bezier tempo curves are monotone on each
+        // segment, so the clipped endpoints bound every intermediate rate.
+        for (const auto tick : {first, last}) {
+            const auto bpm = segmentBpm(segment->left, segment->right, tick);
+            const auto framesPerTick = sampleRate_ * 60 / (ticksPerQuarter * bpm);
+            minimum = std::min(minimum, framesPerTick);
+            maximum = std::max(maximum, framesPerTick);
+        }
+    }
+    return {minimum, maximum};
+}
+
 double WarpArrangementClock::constantFramesPerTick() const noexcept {
     return minimumBpm_ == maximumBpm_ ? framesPerTickAt(0) : 0;
 }
@@ -312,7 +332,4 @@ double WarpArrangementClock::maxTicksPerFrame() const noexcept {
     return maximumBpm_ * ticksPerQuarter / (sampleRate_ * 60);
 }
 
-double WarpArrangementClock::minTicksPerFrame() const noexcept {
-    return minimumBpm_ * ticksPerQuarter / (sampleRate_ * 60);
-}
 }  // namespace adi::engine
