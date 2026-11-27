@@ -2856,6 +2856,16 @@ std::int64_t SampleEditor::sourceTick(std::int64_t arrangementTick) const noexce
                                     sourceTicksToSeconds(arrangementTick - window.pos));
     return window.toSource(arrangementTick);
 }
+std::int64_t SampleEditor::playheadTick(std::int64_t arrangementTick) const {
+    const auto *node = panel.node();
+    if (node && node->loopEnabled && node->audio && node->audio->mediaInfo) {
+        const auto rate = static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0));
+        const ClipSourceMap source(*node, panel.root.reader().tempo(), rate, std::span<const WarpMarker>(markers_));
+        if (const auto repeated = source.repeatedPositionAt(arrangementTick))
+            return repeated->warpTicks ? std::llround(*repeated->warpTicks) : sourceSecondsToTicks(repeated->seconds);
+    }
+    return sourceTick(arrangementTick);
+}
 bool SampleEditor::playFromInsert() {
     return insert_ && playFromSource(*insert_);
 }
@@ -2926,7 +2936,7 @@ void SampleEditor::frame() {
     const auto *node = panel.node();
     const bool inClip = node && tick >= node->posTicks && tick - node->posTicks < node->lengthTicks;
     const bool playing = panel.audio() && panel.root.playing() && inClip;
-    const auto source = sourceTick(tick);
+    const auto source = playing ? playheadTick(tick) : sourceTick(tick);
     auto x = time.x(source);
     if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused &&
         source >= 0 && source < sourceEnd_ && area.getWidth() > 0 && (x < 0 || x >= area.getWidth())) {
@@ -3194,7 +3204,7 @@ bool SampleEditor::command(int id) {
     switch (id) {
     case AppCommands::TimeZoomIn:
     case AppCommands::TimeZoomOut: {
-        const auto anchor = insert_.value_or(panel.root.playing() ? sourceTick(panel.root.timelineTick())
+        const auto anchor = insert_.value_or(panel.root.playing() ? playheadTick(panel.root.timelineTick())
                                                                   : time.tick(getWidth() / 2.));
         time.zoomAround(id == AppCommands::TimeZoomIn ? 1.25 : .8, anchor);
         break;
