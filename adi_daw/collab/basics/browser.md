@@ -14,6 +14,7 @@ Queue: `collab/prompts/2026-11-27-basics-browser.md`, revised 27 November. The c
 | SC-431 | `basics/browser-chain` at `f23561dc8` | Report missing physical Cue outputs and map sparse device grants consistently. Engine and window seats. | Headless status, sparse stereo, failed restart, metronome and preview tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-127 | `basics/browser-chain` at `6286d5a37` | Keep working labels and list saved presets under Sounds. Browser seat. | The roster, fallback and preset search and load passed headless. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-128 | `basics/browser-chain` at `3bdc44247` | Ship an original starter drum kit under Drums and Samples. Browser, library and packaging seats. | The headless roster and read-only listing, deterministic WAV generator and relocated Linux installer smoke passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
+| SC-432 | `basics/browser-chain` at `e073649db` | Register a stable Hot-Swap command for the active device or sample slot. Window seat. | Headless command ordering, focus, rebinding and menu-label checks passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -210,6 +211,12 @@ With the preview hidden, the result list is `(119,46,185,393)` in the 308 × 443
 The app resolves the kit by its real executable location and registers it under a factory library identity. The scanner uses the read-only listing path and ignores separately configured aliases of the factory root before marker acquisition. Drums scopes the shared query directly to this identity, then ordinary Samples and All include the same files with the other sample results. A headless linked scanner/query smoke also used an actual symlink alias and confirmed one indexed user file, 16 Drums hits and loops, 17 Samples when one user WAV is present, a one-result multi-word search, and zero marker writes to the kit. The UI regression intercepts the remove-menu callback before a native menu can be shown.
 
 An explicitly added Hits or Loops subfolder still opens as an ordinary Place. The scanner skips marker and index writes inside the kit, and identical absolute paths appear once in Samples and All regardless of scan order. The linked headless regression reproduced the prior marker write through a symbolic link, then proved that both scan orders preserve a read-only 12-hit Place and leave Drums and Samples counts unchanged.
+
+# SC-432 Hot-Swap command
+
+The command is `Hot-Swap`, stable WIN-04 ID `browser.hot-swap`, numeric slot 29068, Browser category. The Live, Cubase and Bitwig keymaps each assign Q. In the focused sample tile it targets the chosen slot. In a device title or its controls it targets that device. Retained ordinary Stack cards share their owning strip. The context menu reads the current shortcut and retains the target it was opened on.
+
+Component positions are calculated from the existing layout. For an ordinary unfolded device panel 220 × 140, the title Hot-Swap button is `(145,1,17,15)` before and after. In an 84-pixel-high sample tile, its Hot-Swap button is `(4,66,17,15)` before and after. The context menu action stays at its existing place. Its right-side shortcut label is Q by default and changes to the first assigned key after a rebind. No menu or window is shown by the test.
 
 ## For the director
 
