@@ -501,9 +501,11 @@ void callback() {
     Fixture f;
     unsigned allocations = callbackAllocations.load();
     PitchMidiProblem projectionProblem, preparationProblem;
+    // Built before the scope: an MSVC Debug std::vector allocates even when empty.
+    const audio::PitchEditState noEdits;
     {
         audio::CallbackScope scope;
-        projectionProblem = projectPitchMidi(*f.store, f.analysis, {}).problem;
+        projectionProblem = projectPitchMidi(*f.store, f.analysis, noEdits).problem;
         preparationProblem = preparePitchMidi(*f.store, f.analysis).problem;
     }
     check(projectionProblem == PitchMidiProblem::Realtime &&
