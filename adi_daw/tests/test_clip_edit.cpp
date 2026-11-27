@@ -972,38 +972,44 @@ void consolidateMidi() {
             "(73,22,'midi',23063040,5765760);");
     constexpr auto beat = 5765760;
     constexpr int pressure = static_cast<int>(ExpressionDim::Pressure);
-    const auto stream = [](std::int64_t at, std::uint64_t id, std::uint16_t flags) {
-        const std::array notes{NoteRecord{at,beat/4,id,60,100,64,1,flags,10000,12.f,0}};
-        return writeStream<NoteRecord>(FourCC::Notes, notes);
-    };
-    const auto first = stream(beat/4, 31, NoteFlags::HasExpression);
-    const auto second = stream(beat/2, 42, 0);
+    constexpr int timbre = static_cast<int>(ExpressionDim::Timbre);
+    constexpr auto sharedId = std::numeric_limits<std::uint64_t>::max();
+    const auto first = writeStream<NoteRecord>(FourCC::Notes, std::array{
+        NoteRecord{beat/4,beat/4,sharedId,60,100,64,1,NoteFlags::HasExpression,10000,12.f,0},
+    });
+    const auto second = writeStream<NoteRecord>(FourCC::Notes, std::array{
+        NoteRecord{beat/2,beat/4,sharedId,62,105,64,1,NoteFlags::HasExpression,10000,0.f,0},
+        NoteRecord{3*beat/4,beat/4,1,64,110,64,1,0,10000,0.f,0},
+    });
     ExpressionPoint point{};
     point.value = 0.375f;
-    const auto expression = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    const auto firstPressure = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    point.value = 0.625f;
+    const auto secondPressure = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    point.time_ticks = beat/8;
+    point.value = 0.25f;
+    const auto secondTimbre = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
     check(store.putEventStream(71, "notes", first) && store.putEventStream(72, "notes", second) &&
-              store.putNoteExpression(71, 31, pressure, expression), "SC-178 MIDI fixture and exact expression curve");
+              store.putNoteExpression(71, sharedId, pressure, firstPressure) &&
+              store.putNoteExpression(72, sharedId, pressure, secondPressure) &&
+              store.putNoteExpression(72, sharedId, timbre, secondTimbre),
+          "SC-178 sources share a clip-local note ID but carry distinct expression curves");
     const clip_edit::RangeSelection range{{22},{0,beat},{0,4*beat}};
     const edit_plan::Options options{48000,{}};
     const std::array<std::int64_t,2> picked{71,72};
     const auto originalHead = OpJournal(store).headSeq();
-    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=2882880 WHERE id=72");
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=2882880 WHERE id=71");
     const auto repeated = clip_edit::prepareMidiConsolidation(store, range, picked, options);
     check(!repeated.edit.ok && repeated.edit.error.find("repeated") != std::string::npos,
-          "SC-178 refuses a second occurrence of a note ID");
-    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=5765760 WHERE id=72");
-    check(store.putEventStream(72, "notes", stream(beat/2, 31, 0)), "SC-178 duplicate fixture");
-    const auto collision = clip_edit::prepareMidiConsolidation(store, range, picked, options);
-    check(!collision.edit.ok && collision.edit.error.find("duplicate") != std::string::npos &&
-              OpJournal(store).headSeq() == originalHead,
-          "SC-178 duplicate clip-local note IDs refuse without writing any operations");
-    check(store.putEventStream(72, "notes", second), "SC-178 restore distinct IDs");
+          "SC-178 refuses a clip whose loop would repeat a note");
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=5765760 WHERE id=71");
     const std::array<std::int64_t,2> skipMiddle{71,73};
     check(!clip_edit::prepareMidiConsolidation(store, {{22},{0,beat},{0,5*beat}}, skipMiddle, options).edit.ok,
           "SC-178 refuses replacing an unpicked clip in the gap");
     const auto prepared = clip_edit::prepareMidiConsolidation(store, range, picked, options);
-    check(prepared.edit.ok && prepared.edit.requests.size() == 1 && prepared.edit.requests.front().label == "Consolidate",
-          "SC-178 stages one operation for two single-pass MIDI clips");
+    check(prepared.edit.ok && prepared.edit.requests.size() == 1 &&
+              prepared.edit.requests.front().label == "Consolidate" && OpJournal(store).headSeq() == originalHead,
+          "SC-178 prepares one operation for two single-pass MIDI clips without changing the journal");
     if (!prepared.edit.ok)
         throw std::runtime_error(prepared.edit.error);
     const auto committed = clip_edit::commitPrepared(store, prepared.edit);
@@ -1014,19 +1020,29 @@ void consolidateMidi() {
     const auto merged = notes::captureNotes(store, prepared.clip);
     std::string error;
     const auto records = merged.records();
-    const auto earlier = records.size() == 2 ? notes::values(records.front(), error) : std::nullopt;
-    const auto later = records.size() == 2 ? notes::values(records.back(), error) : std::nullopt;
-    check(merged.ok && earlier && later && earlier->id == 31 && earlier->start == beat/4 &&
-              later->id == 42 && later->start == 2*beat+beat/2 && earlier->cents == 12.f &&
-              store.getNoteExpression(prepared.clip, 31, pressure) == expression,
-          "SC-178 preserves IDs, the arrangement gap, note values and byte-identical expression");
+    const auto earlier = records.size() == 3 ? notes::values(records[0], error) : std::nullopt;
+    const auto later = records.size() == 3 ? notes::values(records[1], error) : std::nullopt;
+    const auto unique = records.size() == 3 ? notes::values(records[2], error) : std::nullopt;
+    check(merged.ok && earlier && later && unique && earlier->id == sharedId && earlier->start == beat/4 &&
+              earlier->cents == 12.f && later->id == 2 && later->start == 2*beat+beat/2 && unique->id == 1,
+          "SC-178 keeps the first and unique IDs and remaps the collision without closing the gap");
+    check(store.getNoteExpression(prepared.clip, sharedId, pressure) == firstPressure &&
+              !store.getNoteExpression(prepared.clip, sharedId, timbre) &&
+              store.getNoteExpression(prepared.clip, 2, pressure) == secondPressure &&
+              store.getNoteExpression(prepared.clip, 2, timbre) == secondTimbre,
+          "SC-178 both notes retain their exact expression curves at their output IDs");
     const auto undone = History(store).undo();
     check(undone.ok && undone.txnId == committed.txnId && store.getEventStream(71, "notes") == first &&
               store.getEventStream(72, "notes") == second && !store.getEventStream(prepared.clip, "notes") &&
-              store.getNoteExpression(71, 31, pressure) == expression,
-          "SC-178 one Undo restores both original streams and expression");
-    check(History(store).redo().ok && notes::captureNotes(store, prepared.clip).records().size() == 2,
-          "SC-178 Redo restores the same consolidated clip identity");
+              store.getNoteExpression(71, sharedId, pressure) == firstPressure &&
+              store.getNoteExpression(72, sharedId, pressure) == secondPressure &&
+              store.getNoteExpression(72, sharedId, timbre) == secondTimbre &&
+              !store.getNoteExpression(prepared.clip, 2, pressure),
+          "SC-178 one Undo restores both original streams and their clip-local expression");
+    check(History(store).redo().ok && notes::captureNotes(store, prepared.clip).records().size() == 3 &&
+              store.getNoteExpression(prepared.clip, 2, pressure) == secondPressure &&
+              store.getNoteExpression(prepared.clip, 2, timbre) == secondTimbre,
+          "SC-178 Redo restores the consolidated clip and exact remapped expression");
 }
 } // namespace
 namespace {

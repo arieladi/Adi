@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <set>
 
@@ -863,10 +864,16 @@ MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& s
             throw std::runtime_error("Consolidate currently supports MIDI tracks only.");
         CopyIds ids(db);
         const auto output = ids.next("clips");
-        auto children = Payload::object();
-        notes::Diff noteDiff;
-        std::set<std::uint64_t> noteIds;
-        std::size_t sources = 0;
+        struct PositionedNote {
+            notes::Record record;
+            notes::NoteValues values;
+        };
+        struct CapturedClip {
+            std::vector<PositionedNote> notes;
+            Payload expression;
+        };
+        std::vector<CapturedClip> sources;
+        std::set<std::uint64_t> reservedNoteIds;
         std::string name;
         OpContext context{store,db};
         edit::TimeMap time(db);
@@ -900,16 +907,17 @@ MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& s
                     finish > edit::addTime(loopStart, detail::signedInteger(loopLength)))
                     throw std::runtime_error("Consolidate cannot yet assign note IDs to repeated MIDI notes.");
             }
-            const auto image = captureDeleted(context, id);
-            const auto& sourceChildren = image.at("children");
+            auto image = captureDeleted(context, id);
+            auto& sourceChildren = image.at("children");
             if (detail::signedInteger(row.at("muted")) != 0 || !row.at("alias_of").is_null() ||
                 !image.at("alias_links").empty() || !sourceChildren.at("automation_data").empty() ||
                 !sourceChildren.at("automation_segment_ranges").empty() || !sourceChildren.at("audio_clips").empty() ||
                 !sourceChildren.at("clip_properties").empty() || !sourceChildren.at("clip_playback_details").empty() ||
                 !sourceChildren.at("clip_warp_fade_domains").empty())
                 throw std::runtime_error("Consolidate cannot yet combine muted, linked or specially configured clips.");
-            if (sources++ == 0)
+            if (sources.empty())
                 name = row.at("name").get<std::string>();
+            auto& captured = sources.emplace_back();
             const auto& streams = sourceChildren.at("event_streams");
             if (streams.size() > 1 || (streams.size() == 1 && (streams[0].at("stream_kind") != "notes" ||
                 !streams[0].at("channel").is_null() || !streams[0].at("controller").is_null())))
@@ -918,40 +926,69 @@ MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& s
             if (!streams.empty()) {
                 const auto& raw = streams[0].at("data").get_binary();
                 std::string error;
-                const auto source = notes::detail::decodeNotes(std::as_bytes(std::span(raw.data(), raw.size())), error);
+                auto source = notes::detail::decodeNotes(std::as_bytes(std::span(raw.data(), raw.size())), error);
                 if (!source)
                     throw std::runtime_error(error);
                 if (notes::detail::streamVersion(*source) != 1 || !source->trailer.empty() ||
                     notes::detail::recordStride(*source) != notes::detail::notePrefixBytes)
                     throw std::runtime_error("Consolidate cannot merge extended MIDI note streams without losing data.");
-                for (const auto& record : source->records) {
+                captured.notes.reserve(source->records.size());
+                for (auto& record : source->records) {
                     auto note = notes::values(record, error);
                     if (!note)
                         throw std::runtime_error(error);
-                    if (!noteIds.insert(note->id).second)
-                        throw std::runtime_error("Consolidate cannot yet merge duplicate MIDI note IDs.");
                     if (note->start < offset || note->start >= finish || note->duration > finish - note->start)
                         throw std::runtime_error("Consolidate cannot yet trim notes at a source boundary.");
                     sourceIds.insert(note->id);
+                    reservedNoteIds.insert(note->id);
                     note->start = (first - begin) + (note->start - offset);
-                    auto placed = notes::withValues(record, *note, error);
-                    if (!placed)
-                        throw std::runtime_error(error);
-                    noteDiff.added.push_back(std::move(*placed));
+                    captured.notes.push_back({std::move(record), *note});
                 }
             }
-            for (auto expression : sourceChildren.at("note_expression")) {
+            for (const auto& expression : sourceChildren.at("note_expression"))
                 if (!sourceIds.contains(notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")))))
                     throw std::runtime_error("Consolidate found expression without its source note.");
+            captured.expression = std::move(sourceChildren.at("note_expression"));
+        }
+        if (sources.size() < 2 || (!picked.empty() && sources.size() != picked.size()))
+            throw std::runtime_error("Select at least two whole MIDI clips on the same track.");
+
+        auto children = Payload::object();
+        auto expressions = Payload::array();
+        notes::Diff noteDiff;
+        // Reserve every source ID before assigning any replacement. A note in
+        // a later clip keeps its ID even if it is an early allocation candidate.
+        std::set<std::uint64_t> seenNoteIds;
+        std::uint64_t nextNoteId = 1;
+        for (auto& source : sources) {
+            std::map<std::uint64_t, std::uint64_t> remapped;
+            for (auto& note : source.notes) {
+                if (!seenNoteIds.insert(note.values.id).second) {
+                    while (!reservedNoteIds.insert(nextNoteId).second) {
+                        if (nextNoteId == std::numeric_limits<std::uint64_t>::max())
+                            throw std::runtime_error("Consolidate ran out of MIDI note IDs.");
+                        ++nextNoteId;
+                    }
+                    remapped.emplace(note.values.id, nextNoteId);
+                    note.values.id = nextNoteId;
+                }
+                std::string error;
+                auto placed = notes::withValues(note.record, note.values, error);
+                if (!placed)
+                    throw std::runtime_error(error);
+                noteDiff.added.push_back(std::move(*placed));
+            }
+            for (auto& expression : source.expression) {
+                const auto original = notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")));
+                if (const auto found = remapped.find(original); found != remapped.end())
+                    expression["note_id"] = notes::detail::expressionSqlId(found->second);
                 expression["id"] = ids.next("note_expression");
                 expression["clip_id"] = output;
-                if (!children.contains("note_expression"))
-                    children["note_expression"] = Payload::array();
-                children["note_expression"].push_back(std::move(expression));
+                expressions.push_back(std::move(expression));
             }
         }
-        if (sources < 2 || (!picked.empty() && sources != picked.size()))
-            throw std::runtime_error("Select at least two whole MIDI clips on the same track.");
+        if (!expressions.empty())
+            children["note_expression"] = std::move(expressions);
         if (!noteDiff.added.empty()) {
             const auto combined = notes::detail::planRecords(notes::detail::emptyNotes(), noteDiff);
             if (!combined.ok || !combined.changed)
