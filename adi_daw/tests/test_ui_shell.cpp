@@ -18163,8 +18163,15 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
         const auto revision = driver.revision();
         const auto chosenRange = geometry.selection;
         int menuRequests = 0;
-        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *, const juce::PopupMenu &) {
-            if (!header) ++menuRequests;
+        int deleteAutomationItems = 0;
+        root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *, const juce::PopupMenu &menu) {
+            if (header)
+                return;
+            ++menuRequests;
+            deleteAutomationItems = 0;
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Delete Automation Range")
+                    ++deleteAutomationItems;
         };
         const auto popup = [&](juce::Point<float> position) {
             canvas.mouseDown(pressAt(canvas, position, juce::ModifierKeys::rightButtonModifier));
@@ -18173,6 +18180,7 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
         popup(at(7 * bar / 8));
         check(canvas.hasAutomationSelection() && geometry.selection == chosenRange,
               "SC-174: the automation menu keeps the selected time range under the pointer");
+        check(deleteAutomationItems == 1, "the automation range popup offers Delete Automation Range once");
         popup(at(7 * bar / 4));
         mailbox.drain(driver);
         check(menuRequests == 2 && canvas.hasAutomationSelection() && geometry.selection.start == 7 * bar / 4 &&

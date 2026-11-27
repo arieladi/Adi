@@ -1873,7 +1873,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             menu.addCommandItem(&commands.manager, AppCommands::Paste);
             menu.addSeparator();
         }
-        if (geometry.selection.clip == 0 && geometry.selection.start != geometry.selection.end)
+        if (!canvas.hasAutomationSelection() && geometry.selection.clip == 0 &&
+            geometry.selection.start != geometry.selection.end)
             menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
