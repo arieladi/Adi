@@ -73,4 +73,6 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 - TM-MD-04's appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue specify always caching derived analysis. The engine applies the existing size, free-space, folder and Cleanup settings. Recommend retaining the catalogue rule.
 - The Browser and floating search can use the tested headless adapter at the existing presentation boundary. Preview can apply the same typed classification. Window wiring is the later window lane.
 
-The expanded continuation build and headless test gate are running against the native engine commit above. All five validators passed.
+The continuation's GCC 14.2 Debug warnings-as-errors build passed with Pd and acceptance enabled. Headless CTest passed all 294 suites in 230.50 s. All five validators passed.
+
+The native Beats renderer consumed 16 captured AWTM onsets and rendered 512,000 frames at 0.75× and 256,000 at 1.5×. Both rates produced PCM-identical repeats. The Warp recipe already accepts source-relative onset frames, which lets the owner supply these observations directly.
