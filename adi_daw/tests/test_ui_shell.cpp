@@ -16636,6 +16636,154 @@ void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir
     document->release();
 }
 
+void automationKeyboardEdits(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-keyboard.adi", true, {}, error);
+    check(document != nullptr, "a project for keyboard automation");
+    if (!document)
+        return;
+
+    constexpr std::int64_t track = 2;
+    constexpr auto bar = textproj::kWhole;
+    const auto volume = volumeTarget(track);
+    const auto pan = panTarget(track);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-keyboard");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    root.setBounds(peer.getLocalBounds());
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(track, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.showAutomation(track, pan);
+    const bool madePan = root.addAutomationPoint(track, pan, 7 * bar / 4, .25, true);
+    root.showAutomation(track, volume);
+    const bool madeVolume = root.addAutomationPoint(track, volume, bar, -18., true) &&
+                            root.addAutomationPoint(track, volume, 2 * bar, -12., true);
+    root.frame();
+    check(madePan && madeVolume, "a Pan breakpoint between two exact Volume breakpoints");
+    if (!madePan || !madeVolume)
+        return;
+
+    auto &canvas = root.arrangement.canvas;
+    const auto bodies = canvas.laneBodies();
+    const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &item) {
+        return item.track->id == track && item.target == volume;
+    });
+    check(body != bodies.end(), "the track's Volume automation envelope is visible");
+    if (body == bodies.end())
+        return;
+    const auto points = [&](const AutomationTarget &target) -> std::vector<engine::AutomationPointNode> {
+        const auto current = root.current();
+        const auto envelope = current ? envelopeOf(*current, target) : TrackEnvelope{};
+        return envelope.data ? envelope.data->points : std::vector<engine::AutomationPointNode>{};
+    };
+    const auto original = points(volume);
+    const auto originalPan = points(pan);
+    if (original.size() != 2 || originalPan.size() != 1) {
+        check(false, "the exact keyboard fixture points are available");
+        return;
+    }
+
+    const auto undoStep = [&] {
+        const auto step = document->ops().nextUndo();
+        return step ? step->txnId : 0;
+    };
+    const auto baseline = undoStep();
+    const auto click = [&](std::int64_t tick, float y) {
+        const juce::Point<float> position{static_cast<float>(geometry.x(tick)), y};
+        canvas.mouseDown(pressAt(canvas, position));
+        canvas.mouseUp(pressAt(canvas, position));
+    };
+    const auto mark = [&](std::int64_t tick) { click(tick, body->bottom - 6.f); };
+    const auto pick = [&](const engine::AutomationPointNode &point) {
+        const auto travel = static_cast<float>((point.value - volume.minimum) / (volume.maximum - volume.minimum));
+        click(point.time, body->scaleBottom - travel * (body->scaleBottom - body->top));
+    };
+    const auto picked = [&](const engine::AutomationPointNode &point) {
+        const auto &selected = canvas.chosenAutomationPoint();
+        return selected && selected->track == track && selected->target == volume && selected->point == point.id;
+    };
+    const auto enter = juce::KeyPress(juce::KeyPress::returnKey);
+    const auto tab = juce::KeyPress(juce::KeyPress::tabKey);
+    const auto alt = juce::ModifierKeys::altModifier;
+
+    const auto insert = bar / 2;
+    mark(insert);
+    const bool atMarker = canvas.hasAutomationSelection() && geometry.selection.insert == insert;
+    check(atMarker, "the insert marker belongs to the Volume envelope");
+    if (!atMarker)
+        return;
+    const bool staged = canvas.keyPressed(enter);
+    check(staged && points(volume) == original && undoStep() == baseline,
+          "the first Enter stages the breakpoint without writing automation");
+    const bool confirmed = staged && canvas.keyPressed(enter);
+    const auto inserted = points(volume);
+    check(confirmed && inserted.size() == 3 && inserted.front().time == insert && undoStep() != baseline,
+          "the second Enter adds the breakpoint at the marker in one edit");
+    if (undoStep() != baseline)
+        check(root.command(AppCommands::Undo) && points(volume) == original && undoStep() == baseline,
+              "one Undo restores both original points after keyboard insertion");
+
+    const auto &first = original[0];
+    const auto &second = original[1];
+    mark(3 * bar / 2);
+    const bool previous = canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey, alt, 0));
+    check(previous && geometry.selection.insert == first.time && !canvas.chosenAutomationPoint(),
+          "Alt+Left moves focus to the previous Volume breakpoint without selecting it for editing");
+    if (!previous || geometry.selection.insert != first.time)
+        mark(first.time);
+    const bool next = canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, alt, 0));
+    check(next && geometry.selection.insert == second.time && !canvas.chosenAutomationPoint() &&
+              points(volume) == original && points(pan) == originalPan && undoStep() == baseline,
+          "Alt+Right skips the Pan breakpoint and changes only the Volume insert marker");
+
+    mark(first.time);
+    const bool pickedWithEnter = canvas.keyPressed(enter) && picked(first);
+    check(pickedWithEnter, "Enter selects the existing breakpoint at the insert marker for editing");
+    if (!pickedWithEnter)
+        pick(first);
+    const bool pickedWithTab = canvas.keyPressed(tab) && picked(second);
+    check(pickedWithTab, "Tab selects the next Volume breakpoint for editing");
+    if (!pickedWithTab)
+        pick(second);
+    if (!picked(second))
+        return;
+
+    auto &editor = canvas.automationValueEditor();
+    const bool opened = canvas.keyPressed(juce::KeyPress('-', {}, '-')) && editor.isVisible();
+    check(opened && points(volume) == original && undoStep() == baseline,
+          "typing the sign of a value opens the existing editor without writing the breakpoint");
+    if (!opened)
+        return;
+    editor.setText("-70", false);
+    const bool wroteValue = editor.keyPressed(enter);
+    root.frame();
+    auto expected = original;
+    expected[1].value = -70.;
+    check(wroteValue && !editor.isVisible() && points(volume) == expected && points(pan) == originalPan &&
+              undoStep() != baseline,
+          "Enter commits exactly -70 dB to the selected breakpoint and keeps its time and ID");
+    if (undoStep() != baseline)
+        check(root.command(AppCommands::Undo) && points(volume) == original && undoStep() == baseline,
+              "one Undo restores the exact original Volume value");
+    mark(first.time);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, alt, 0)) &&
+              root.automationTarget(track) == pan && geometry.selection.insert == first.time &&
+              !canvas.chosenAutomationPoint() && undoStep() == baseline,
+          "Alt+Down shows the next authored parameter without editing it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey, alt, 0)) &&
+              root.automationTarget(track) == volume && points(volume) == original && points(pan) == originalPan,
+          "Alt+Up returns to Volume while both envelopes remain unchanged");
+}
+
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
@@ -23341,6 +23489,7 @@ int main(int argc, char **argv) {
     trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
+    trace("automationKeyboardEdits", [&] { automationKeyboardEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });

@@ -410,6 +410,20 @@ class ArrangementCanvas final : public juce::Component,
     void paintAutomationValueReadout(juce::Graphics &) const;
     RenameEditor automationValueEditor_;
     std::optional<AutomationValueAddress> automationValueAddress_;
+    struct KeyboardAutomationDraft {
+        AutomationValueAddress address;
+        std::int64_t tick;
+        double value;
+    };
+    std::optional<AutomationLaneKey> keyboardAutomationLane_;
+    std::optional<AutomationPick> keyboardAutomationFocus_;
+    std::optional<KeyboardAutomationDraft> keyboardAutomationDraft_;
+    bool keyboardValueEditing_ = false;
+    std::optional<AutomationLaneKey> automationKeyboardLane() const;
+    void focusAutomationKeyboardLane(const AutomationLaneKey &, std::int64_t tick,
+                                     std::optional<AutomationPick> focused = {});
+    bool navigateAutomationWithAlt(const juce::KeyPress &, const AutomationLaneKey &);
+    bool automationKeyPressed(const juce::KeyPress &);
     juce::String automationValueReadout_;
     juce::GlyphArrangement automationValueGlyphs_;
     juce::Rectangle<float> automationValueReadoutBounds_;

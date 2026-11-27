@@ -17,6 +17,7 @@
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include "ui_value_entry.hpp"
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -3390,6 +3391,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         const auto range = automationRange(target);
         const auto env = envelopeOf(*current, target);
         const bool selectedLane = hasSpan && automationLaneSelected(body);
+        const auto *keyboard = keyboardAutomationDraft_ && keyboardAutomationDraft_->address.track == body.track->id &&
+                               keyboardAutomationDraft_->address.target == target ? &*keyboardAutomationDraft_ : nullptr;
         const AutomationDragLane *dragLane = nullptr;
         if (drag && env.lane && env.data) {
             const auto captured = std::find_if(drag->lanes.begin(), drag->lanes.end(), [&](const auto &lane) {
@@ -3421,7 +3424,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                     std::ranges::binary_search(dragLane->points, p.id, {}, &AutomationDragPoint::id);
                 const auto time = moved ? p.time + drag->timeDelta : dragged ? pointTick_ : p.time;
                 const auto value = moved ? automationDragValue(*env.lane, target, p.value, drag->valueDelta)
-                                         : dragged ? pointValue_ : p.value;
+                                         : dragged ? pointValue_
+                                         : keyboard && keyboard->address.point == p.id ? keyboard->value : p.value;
                 const bool selected = selectedLane && p.time >= from && p.time < to;
                 points.push_back({{static_cast<float>(geo.x(time)), automationY(value, range, body.top, body.scaleBottom)},
                                   range.flipped || p.curve == 0, p.id, selected || moved});
@@ -3443,7 +3447,9 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                 const auto box = juce::Rectangle<float>(7, 7).withCentre(p.at);
                 const bool chosen = p.selected || (chosenPoint_ && chosenPoint_->track == body.track->id &&
                                     chosenPoint_->target == target && chosenPoint_->point == p.id);
-                g.setColour(chosen ? look::handleChosen : look::panel);
+                const bool focused = keyboardAutomationFocus_ && keyboardAutomationFocus_->track == body.track->id &&
+                                     keyboardAutomationFocus_->target == target && keyboardAutomationFocus_->point == p.id;
+                g.setColour(chosen ? look::handleChosen : focused ? look::accent : look::panel);
                 g.fillRect(box);
                 g.setColour(look::record);
                 g.drawRect(box, 1.f);
@@ -3476,6 +3482,15 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         if (!stroke || stroke->cancelled || stroke->track != body.track->id || stroke->target != target ||
             stroke->generation != view.root.committedGeneration() || !view.root.drawMode() || stroke->values.empty()) {
             paintStored();
+            if (keyboard && !keyboard->address.point) {
+                const juce::Point<float> at{static_cast<float>(geo.x(keyboard->tick)),
+                    automationY(keyboard->value, range, body.top, body.scaleBottom)};
+                const auto box = juce::Rectangle<float>(7, 7).withCentre(at);
+                g.setColour(look::handleChosen);
+                g.fillRect(box);
+                g.setColour(look::record);
+                g.drawRect(box, 1.f);
+            }
             continue;
         }
         // The draft replaces just its time range in the lane until the stroke is committed.
@@ -3687,6 +3702,11 @@ void ArrangementCanvas::commitAutomationValue() {
 void ArrangementCanvas::endAutomationValueEdit(bool refocus) {
     if(!automationValueAddress_)return;
     automationValueAddress_.reset();
+    if (keyboardValueEditing_) {
+        keyboardValueEditing_ = false;
+        keyboardAutomationDraft_.reset();
+        chosenPoint_.reset();
+    }
     automationValueEditor_.setVisible(false);
     if(refocus)focusIfShowing(*this);
     repaint();
@@ -3694,6 +3714,9 @@ void ArrangementCanvas::endAutomationValueEdit(bool refocus) {
 
 void ArrangementCanvas::resetAutomationValueInput() {
     endAutomationValueEdit(false);
+    keyboardAutomationLane_.reset();
+    keyboardAutomationFocus_.reset();
+    keyboardAutomationDraft_.reset();
     clearAutomationValueReadout();
 }
 
@@ -3740,6 +3763,9 @@ void ArrangementCanvas::clearAutomationSelection() {
     automationSelection_.reset();
     automationSelectionAnchor_.reset();
     automationSelectionTargets_.clear();
+    keyboardAutomationLane_.reset();
+    keyboardAutomationFocus_.reset();
+    keyboardAutomationDraft_.reset();
 }
 bool ArrangementCanvas::automationLaneSelected(const LaneBody &body) const {
     return std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(), [&](const auto &lane) {
@@ -4584,6 +4610,9 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     automationDrag_.reset();
     pointDrag_.reset();
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
+    keyboardAutomationLane_.reset();
+    keyboardAutomationFocus_.reset();
+    keyboardAutomationDraft_.reset();
     pointAdded_ = false;
     if (!panning && e.mods.isPopupMenu() && view.root.automationMode() && automationPointAt(e.position)) {
         clearAutomationSelection();
@@ -5306,6 +5335,313 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
         view.geometry.zoom(factor, e.position.x);
     view.changed();
 }
+std::optional<ArrangementCanvas::AutomationLaneKey> ArrangementCanvas::automationKeyboardLane() const {
+    if (!view.root.automationMode() || view.root.drawMode() || view.loopSelected ||
+        view.selectedLocator != 0 || view.selectedMeter >= 0 || selectedFade_ || fadeDrag_ ||
+        resizing_ != 0 || moving_ != 0)
+        return std::nullopt;
+    if (chosenPoint_ && automationPickIsCurrent(*chosenPoint_))
+        return AutomationLaneKey{chosenPoint_->track, chosenPoint_->target};
+    if (view.geometry.selection.clip != 0 || !view.geometry.selection.pickedClips.empty())
+        return std::nullopt;
+    if (keyboardAutomationLane_ && view.root.automationTargetShown(keyboardAutomationLane_->first,
+                                                                  keyboardAutomationLane_->second))
+        return keyboardAutomationLane_;
+    if (hasAutomationSelection() && automationSelectionAnchor_ &&
+        view.root.automationTargetShown(automationSelectionAnchor_->first, automationSelectionAnchor_->second))
+        return automationSelectionAnchor_;
+    const auto track = view.geometry.selection.track;
+    if (track != 0 && view.root.automationOverlayShown(track)) {
+        auto target = view.root.automationTarget(track);
+        if (view.root.automationTargetShown(track, target))
+            return AutomationLaneKey{track, std::move(target)};
+    }
+    if (track != 0 && view.root.automationLanesExpanded(track))
+        for (const auto &lane : view.root.additionalAutomationLanes(track))
+            if (view.root.automationTargetShown(track, lane.target))
+                return AutomationLaneKey{track, lane.target};
+    return std::nullopt;
+}
+
+void ArrangementCanvas::focusAutomationKeyboardLane(const AutomationLaneKey &lane, std::int64_t tick,
+                                                      std::optional<AutomationPick> focused) {
+    clearAutomationSelection();
+    chosenPoint_.reset();
+    auto &geo = view.geometry;
+    auto &selection = geo.selection;
+    selection = {};
+    selection.track = lane.first;
+    selection.insert = selection.start = selection.end = tick;
+    selection.marked = true;
+    automationSelectionAnchor_ = lane;
+    automationSelectionTargets_.push_back(lane);
+    automationSelection_ = selection;
+    keyboardAutomationLane_ = lane;
+    keyboardAutomationFocus_ = std::move(focused);
+    geo.reveal(view.reader(), lane.first, false);
+    const auto x = geo.x(tick);
+    if (x < 0 || x >= getWidth())
+        geo.pan(x - getWidth() / 2.);
+    view.changed();
+    const auto current = view.root.current();
+    if (!current)
+        return;
+    const auto envelope = envelopeOf(*current, lane.second);
+    double value = view.root.automationCurrent(lane.second);
+    if (envelope.data)
+        value = envelopeValue(*envelope.data, tick, lane.second.stepped).value_or(value);
+    for (const auto &line : laneBodies())
+        if (line.track->id == lane.first && line.target == lane.second) {
+            showAutomationValue(lane.second, value,
+                {static_cast<float>(geo.x(tick)), automationY(value, automationRange(lane.second), line.top, line.scaleBottom)});
+            break;
+        }
+}
+
+bool ArrangementCanvas::navigateAutomationWithAlt(const juce::KeyPress &key, const AutomationLaneKey &lane) {
+    const auto mods = key.getModifiers();
+    if (!mods.isAltDown() || mods.isCommandDown() || mods.isCtrlDown())
+        return false;
+    const auto code = key.getKeyCode();
+    const bool horizontal = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
+    const bool vertical = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
+    if ((!horizontal && !vertical) || (horizontal && mods.isShiftDown()))
+        return false;
+
+    const auto current = view.root.current();
+    const auto &[track, target] = lane;
+    if (!current || !view.root.automationTargetShown(track, target))
+        return false;
+
+    const auto marker = view.geometry.selection.insert;
+    if (horizontal) {
+        const auto envelope = envelopeOf(*current, target);
+        if (!editableEnvelope(envelope) || !envelope.lane || !envelope.data)
+            return true;
+        const auto &points = envelope.data->points;
+        const auto firstAfter = [&](auto first, std::int64_t tick) {
+            return std::upper_bound(first, points.end(), tick, [](auto time, const auto &point) {
+                return time < point.time;
+            });
+        };
+        // Step by distinct times. At coincident points, focus the last stored
+        // point at that time, which is the value the envelope plays there.
+        auto point = points.begin();
+        if (code == juce::KeyPress::rightKey) {
+            point = firstAfter(points.begin(), marker);
+            if (point == points.end())
+                return true;
+            point = firstAfter(point, point->time);
+        } else {
+            point = std::lower_bound(points.begin(), points.end(), marker, [](const auto &entry, auto time) {
+                return entry.time < time;
+            });
+            if (point == points.begin())
+                return true;
+        }
+        --point;
+        focusAutomationKeyboardLane({track, target}, point->time,
+            AutomationPick{track, point->id, target, envelope.lane->id, envelope.data->id});
+        return true;
+    }
+
+    const auto choices = view.root.automationChoices(track);
+    if (choices.empty())
+        return true;
+    auto candidate = std::find(choices.begin(), choices.end(), target);
+    // Retain the chooser order, including the position of a current target
+    // that Alt alone would skip because it has no arrangement points.
+    for (std::size_t step = 0; step < choices.size(); ++step) {
+        if (code == juce::KeyPress::downKey) {
+            if (candidate == choices.end() || ++candidate == choices.end())
+                candidate = choices.begin();
+        } else {
+            if (candidate == choices.begin())
+                candidate = choices.end();
+            --candidate;
+        }
+        if (*candidate == target)
+            return true;
+        const auto envelope = envelopeOf(*current, *candidate);
+        if (!editableEnvelope(envelope) || (!mods.isShiftDown() && (!envelope.data || envelope.data->points.empty())))
+            continue;
+
+        if (!view.root.automationTargetShown(track, *candidate))
+            view.root.showAutomation(track, *candidate);
+        if (view.root.automationTargetShown(track, *candidate)) {
+            focusAutomationKeyboardLane({track, *candidate}, marker);
+            break;
+        }
+    }
+    return true;
+}
+
+bool ArrangementCanvas::automationKeyPressed(const juce::KeyPress &key) {
+    const auto lane = automationKeyboardLane();
+    if (!lane)
+        return false;
+    if (navigateAutomationWithAlt(key, *lane))
+        return true;
+    if (view.geometry.selection.start != view.geometry.selection.end && !chosenPoint_)
+        return false;
+    const auto mods = key.getModifiers();
+    if (mods.isAltDown() || mods.isCommandDown() || mods.isCtrlDown())
+        return false;
+
+    const auto current = view.root.current();
+    const auto &[track, target] = *lane;
+    if (!current)
+        return false;
+    const auto envelope = envelopeOf(*current, target);
+    if (!editableEnvelope(envelope))
+        return false;
+
+    const auto code = key.getKeyCode();
+    const auto marker = view.geometry.selection.insert;
+    const auto makeAddress = [&](std::int64_t tick, const engine::AutomationPointNode *point) {
+        AutomationValueAddress address;
+        address.target = target;
+        address.track = track;
+        address.lane = envelope.lane ? envelope.lane->id : 0;
+        address.data = envelope.data ? envelope.data->id : 0;
+        address.tick = tick;
+        if (point) {
+            address.point = point->id;
+            address.value = point->value;
+        } else {
+            address.value = view.root.automationCurrent(target);
+            if (envelope.data)
+                address.value = envelopeValue(*envelope.data, tick, target.stepped).value_or(address.value);
+        }
+        const auto x = static_cast<float>(view.geometry.x(tick));
+        auto y = static_cast<float>(getHeight()) / 2;
+        for (const auto &row : laneBodies())
+            if (row.track->id == track && row.target == target) {
+                y = automationY(address.value, automationRange(target), row.top, row.scaleBottom);
+                break;
+            }
+        address.anchor = juce::Point<float>{x, y}.roundToInt();
+        return address;
+    };
+    const auto selectPoint = [&](const engine::AutomationPointNode &point) {
+        focusAutomationKeyboardLane(*lane, point.time);
+        chosenPoint_ = AutomationPick{track, point.id, target, envelope.lane->id, envelope.data->id};
+        repaint();
+    };
+    const auto *points = envelope.data ? &envelope.data->points : nullptr;
+    const engine::AutomationPointNode *selected = nullptr;
+    if (points && chosenPoint_ && chosenPoint_->track == track && chosenPoint_->target == target) {
+        const auto point = std::find_if(points->begin(), points->end(), [&](const auto &entry) {
+            return entry.id == chosenPoint_->point;
+        });
+        if (point != points->end())
+            selected = &*point;
+    }
+
+    if (code == juce::KeyPress::escapeKey && (keyboardAutomationDraft_ || selected)) {
+        keyboardAutomationDraft_.reset();
+        keyboardAutomationFocus_.reset();
+        chosenPoint_.reset();
+        clearAutomationValueReadout();
+        repaint();
+        return true;
+    }
+    if (code == juce::KeyPress::tabKey && selected) {
+        const auto offset = selected - points->data();
+        if (mods.isShiftDown() && offset > 0)
+            selectPoint((*points)[static_cast<std::size_t>(offset - 1)]);
+        else if (!mods.isShiftDown() && static_cast<std::size_t>(offset + 1) < points->size())
+            selectPoint((*points)[static_cast<std::size_t>(offset + 1)]);
+        return true;
+    }
+    if (code == juce::KeyPress::returnKey && !mods.isShiftDown()) {
+        if (keyboardAutomationDraft_) {
+            const auto draft = *keyboardAutomationDraft_;
+            if (!resolveAutomationValue(draft.address, envelope)) {
+                keyboardAutomationDraft_.reset();
+                chosenPoint_.reset();
+                view.root.say("That automation point or lane changed. Select it again.");
+                repaint();
+                return true;
+            }
+            const bool written = draft.address.point
+                ? view.root.moveAutomationPoint(track, target, *draft.address.point, draft.tick, draft.value, true)
+                : view.root.addAutomationPoint(track, target, draft.tick, draft.value, true);
+            if (written)
+                focusAutomationKeyboardLane(*lane, draft.tick);
+            return true;
+        }
+        if (selected) {
+            chosenPoint_.reset();
+            repaint();
+            return true;
+        }
+        if (points) {
+            const auto after = std::upper_bound(points->begin(), points->end(), marker, [](auto tick, const auto &point) {
+                return tick < point.time;
+            });
+            if (after != points->begin() && (after - 1)->time == marker) {
+                selectPoint(*(after - 1));
+                return true;
+            }
+        }
+        const auto address = makeAddress(marker, nullptr);
+        focusAutomationKeyboardLane(*lane, marker);
+        keyboardAutomationDraft_ = KeyboardAutomationDraft{address, marker, address.value};
+        repaint();
+        return true;
+    }
+
+    if (const auto character = valueEntryStart(key); character != 0 && (keyboardAutomationDraft_ || selected)) {
+        auto address = keyboardAutomationDraft_ ? keyboardAutomationDraft_->address : makeAddress(selected->time, selected);
+        if (keyboardAutomationDraft_ && !address.point)
+            address.tick = keyboardAutomationDraft_->tick;
+        beginAutomationValueEdit(address);
+        if (automationValueEditor_.isVisible()) {
+            keyboardValueEditing_ = true;
+            automationValueEditor_.setText(juce::String::charToString(character), false);
+            automationValueEditor_.setCaretPosition(1);
+        }
+        return true;
+    }
+
+    if (code == juce::KeyPress::deleteKey && keyboardAutomationDraft_ && !keyboardAutomationDraft_->address.point) {
+        keyboardAutomationDraft_.reset();
+        repaint();
+        return true;
+    }
+    const bool vertical = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
+    const bool horizontal = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
+    if (!mods.isShiftDown() && vertical && (keyboardAutomationDraft_ || selected)) {
+        if (!keyboardAutomationDraft_)
+            keyboardAutomationDraft_ = KeyboardAutomationDraft{makeAddress(selected->time, selected), selected->time, selected->value};
+        auto &draft = *keyboardAutomationDraft_;
+        constexpr double kAutomationKeyboardValueStep = .01;
+        const auto range = automationRange(target);
+        const auto delta = (code == juce::KeyPress::upKey ? 1. : -1.) *
+                           (range.flipped ? 1. : kAutomationKeyboardValueStep);
+        if (envelope.lane)
+            draft.value = automationDragValue(*envelope.lane, target, draft.value, delta);
+        else
+            draft.value = writtenAutomationValue(target, draft.value + delta * (range.maximum - range.minimum));
+        showAutomationValue(target, draft.value, makeAddress(draft.tick, nullptr).anchor.toFloat());
+        return true;
+    }
+    if (!mods.isShiftDown() && horizontal && keyboardAutomationDraft_ && !keyboardAutomationDraft_->address.point) {
+        auto &draft = *keyboardAutomationDraft_;
+        draft.tick = view.geometry.nextGridLine(draft.tick, code == juce::KeyPress::rightKey);
+        selectAutomationSpan(draft.tick, draft.tick);
+        showAutomationValue(target, draft.value, makeAddress(draft.tick, nullptr).anchor.toFloat());
+        return true;
+    }
+    if (!mods.isShiftDown() && horizontal && !selected) {
+        const auto tick = view.geometry.nextGridLine(marker, code == juce::KeyPress::rightKey);
+        focusAutomationKeyboardLane(*lane, tick);
+        return true;
+    }
+    return false;
+}
+
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
@@ -5319,6 +5655,8 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         repaint();
         return true;
     }
+    if (automationKeyPressed(k))
+        return true;
     // Delete or Backspace takes the chosen breakpoint away (Automation Mode).
     if (chosenPoint_ && !view.geometry.foldedTracks.contains(chosenPoint_->track) && view.root.automationMode() &&
         !view.loopSelected && view.selectedLocator == 0 &&
