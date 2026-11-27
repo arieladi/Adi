@@ -185,7 +185,9 @@ restore also stops offline rendering, leaving the stored bytes available.
 State capture and recall run on the same worker with a 500 ms owner deadline.
 The stock transport bounds and decodes the server's text encoding, sends
 state sets in request order and reads back after a set. The stock command
-carries no positive set acknowledgement. The official server's ADI Test
+carries no positive set acknowledgement. One silent, event-free exchange
+without transport lets the plug-in settle accepted state before the first
+musical block. The exchange uses the original deadline. The official server's ADI Test
 Plain fixture returned a changed 193-byte state exactly and played after
 recall at peak 0.0712499991. The engine's save receipt names stale devices
 whose capture failed, preserves their last stored blobs and continues
@@ -205,6 +207,16 @@ all 1,732 samples of the same local CLAP render exactly (peak 0.37109375).
 Disconnecting after seven replies failed export by device name and discarded
 the staged audio.
 
+The native peer can advertise parameter read and set support during
+activation. The client reconstructs ordinary CLAP parameter IDs from the
+SDK IDs in a bounded manifest and publishes only acknowledged normalized
+values. The device keeps the same descriptor slots when a parameter is
+removed or returns after a reconnect. The real CLAP host regression
+applies a manual gain value and a normalized automation event to two held
+voices. With a seven-sample fixture DSP delay, automation at frame 40
+changes its PCM at frame 47. The remote device reports 71 samples and
+matches 256 compensated samples exactly.
+
 ### Surge XT acceptance
 
 The official Surge XT 1.3.4 Linux plug-in ran in two comparisons. Each
@@ -218,10 +230,14 @@ the remote output by the 64 samples reported by ADI.
 
 The stock run enabled oscillator retrigger on both hosts and verified
 the switched values before playing A4. The official Linux server used
-the scratch scheduler fallback described below. A separate state test
-showed that sending the same 69,314-byte stock state back through the
-stock server silenced Surge XT, despite exact state readback. This is
-an outstanding stock-compatibility case.
+the scratch scheduler fallback described below. During state recall Surge
+queues the patch, applies it in its first DSP block and stops voices.
+With musical input in that block it can clear a newly delivered note.
+With the stock worker's silent exchange, an authored 67,061-byte state
+loaded through Session and the remote plug-in matched all 64,000 aligned
+samples from local `adi_play`. A note at the first musical block reached
+peak 0.253958732. Removing only the silent exchange for the same project
+produced 64,000 zero samples.
 
 The stock comparison also ran across separate veth network namespaces
 with the server at `198.18.0.2:55056`. The first block was silent,
