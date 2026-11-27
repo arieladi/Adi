@@ -1,6 +1,6 @@
 # Basics clips
 
-SC-191 is first per the round 2 ordering. Each pushed item descends from the previous one. The session instruction calls for one branch per item.
+SC-191 is first per the round 2 ordering. Each item has its own verified branch. Win can merge the newest verified head from [basics/clips-chain](https://github.com/arieladi/Adi/tree/basics/clips-chain).
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -10,6 +10,7 @@ SC-191 is first per the round 2 ordering. Each pushed item descends from the pre
 | SC-30 | [basics/sc-30-left-trim](https://github.com/arieladi/Adi/tree/basics/sc-30-left-trim) `87e16778` | Drag the Arrangement clip's left title edge or use Enter and the arrows. The engine anchors the end and source material, and a left extension stops at source zero. Window code and shell test. | The Linux test-only run reproduced ten failures. The fixed code passed the edit-plan, peerless window and three acceptance suites in Debug with JUCE, Pd and warnings as errors, plus the Xvfb app smoke. Only the queue instructions changed after testing. | PR requested |
 | SC-31 | [basics/sc-31-clip-gain](https://github.com/arieladi/Adi/tree/basics/sc-31-clip-gain) `821c1e4a` | Type or drag clip Gain in dB in the audio Clip View. The Arrangement waveform scales using the same cached peaks. Window code and shell tests. | Test-only Linux reproduced the absent control and unchanged wave height. The pushed head passed Linux Debug playback, peerless window and all three acceptance suites with JUCE, Pd and warnings as errors. The app smoke rendered under Xvfb. | PR requested |
 | SC-32 | [basics/sc-32-clip-warp-switch](https://github.com/arieladi/Adi/tree/basics/sc-32-clip-warp-switch) `a6f21e46` | Added the Clip View Warp switch. Switching a placed, trimmed, split or Start-edited clip preserves its audible source range and records one Undo step. | Test-only `15ac9df9` reproduced the refusal on a split, trimmed clip. Exact Linux JUCE Debug passed six affected suites, all three peerless window suites, three acceptance tests and Xvfb native smoke. | PR requested |
+| SC-36 | [basics/sc-36-waveform-resolution](https://github.com/arieladi/Adi/tree/basics/sc-36-waveform-resolution) `84aeae3d` | The media worker builds bounded fine-resolution peaks. Arrangement and Sample Editor select a level per visible column while the coarse disk cache and live recording preview keep their formats. Media worker and window paths. | Test-only `1326481b` reproduced transient bleed at deep zoom. Linux JUCE Debug passed all 17 headless UI suites, seven affected suites, all three acceptance tests and Xvfb native smoke at `dea14373`. The pushed head also merges two upstream queue documentation files. | PR requested |
 
 ## For the director
 
