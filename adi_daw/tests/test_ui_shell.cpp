@@ -12775,6 +12775,45 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
                     root.frame();
                 }
             }
+
+            const auto beforeLoop = markers();
+            const auto position = panel.node()->posTicks, length = panel.node()->lengthTicks;
+            const auto waveformPoint = [&](std::int64_t at) {
+                return juce::Point<float>{static_cast<float>(sample.time.x(at)),
+                                           static_cast<float>(sample.waveArea().getCentreY())};
+            };
+            const auto begin = waveformPoint(beat), end = waveformPoint(3 * beat);
+            sample.mouseDown(pressAt(sample, begin, juce::ModifierKeys::leftButtonModifier));
+            sample.mouseDrag(dragAt(sample, begin, end, juce::ModifierKeys::leftButtonModifier));
+            sample.mouseUp(dragAt(sample, begin, end));
+            sample.onWarpContextMenu = [](juce::Point<int>) {};
+            sample.mouseDown(pressAt(sample, begin, juce::ModifierKeys::rightButtonModifier));
+            sample.onWarpContextMenu = {};
+            const auto loopMenu = sample.warpContextMenu();
+            int warpSelection = 0;
+            bool offersWholeSample = false;
+            for (juce::PopupMenu::MenuItemIterator it(loopMenu); it.next();) {
+                const auto &entry = it.getItem();
+                if (entry.text == "Warp Selection as 1 Bar Loop" && entry.isEnabled)
+                    warpSelection = entry.itemID;
+                offersWholeSample |= entry.text == "Warp Sample as 1 Bar Loop" && entry.isEnabled;
+            }
+            const bool looped = warpSelection != 0 && sample.chooseWarpContextItem(warpSelection);
+            root.frame();
+            check(offersWholeSample && looped && panel.details()->loopEnabled && panel.details()->loopStartTicks == beat &&
+                      panel.details()->loopLengthTicks == 4 * beat && panel.details()->startMarkerTicks == beat &&
+                      panel.node()->posTicks == position && panel.node()->lengthTicks == length,
+                  "warp the selected source into one bar without changing its Arrangement placement");
+            if (looped) {
+                const auto loopMap = markers();
+                check(loopMap.front() == beforeLoop.front() && loopMap.back().sourceFrame == beforeLoop.back().sourceFrame &&
+                          loopMap.back().tick == beforeLoop.back().tick + 2 * beat,
+                      "stretch the selected map interval and keep source material on both sides");
+                check(root.command(AppCommands::Undo), "one Undo restores the map and the loop");
+                root.frame();
+                check(markers() == beforeLoop && !panel.details()->loopEnabled,
+                      "Undo restores the exact Warp map and leaves the loop off");
+            }
         }
         click(button);
         check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
