@@ -16246,6 +16246,96 @@ void automationAdditionalLanes(AppCommands &commands, const std::filesystem::pat
               "Minus removes the Volume row without erasing its authored points or hiding Pan");
     }
 }
+void groupAutomation(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "group-automation.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project for Arrangement group automation");
+    if (!document)
+        return;
+
+    constexpr std::int64_t group = 30, child = 2, device = 31;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(31,'vst3','") +
+                                test::kKnobsUid + "','Group knobs')");
+    OpRequest create, move, chain, insert;
+    create.opType = "track.create";
+    create.payload = {{"id", group}, {"kind", "group"}, {"name", "Group automation"}, {"index", 0}};
+    move.opType = "track.setParent";
+    move.payload = {{"id", child}, {"parent", group}};
+    chain.opType = "chain.create";
+    chain.payload = {{"id", 31}, {"track", group}, {"ord", 0}, {"name", "Devices"}};
+    insert.opType = "device.insert";
+    insert.payload = {{"id", device}, {"chain", 31}, {"ord", 0}, {"ref", 31}, {"name", "Group knobs"}, {"latency", 0}};
+    const bool grouped = document->ops().submit({std::move(create), std::move(move), std::move(chain),
+                                                 std::move(insert)}).ok && document->synchronise();
+    check(grouped, "a real Group Track contains a child and hosts a device");
+    if (!grouped)
+        return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "group-automation");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.automationParameters = [&](std::int64_t track) { return document->automationParameters(track); };
+    document->tick(0);
+    root.setSize(1440, 900);
+    auto &geometry = root.arrangement.geometry;
+    geometry.resizeTrack(group, 112);
+    geometry.scale = 48;
+    geometry.left = 0;
+    geometry.grid.snap = false;
+    root.arrangement.changed();
+    root.frame();
+
+    auto &canvas = root.arrangement.canvas;
+    const auto clickEnvelope = [&](const AutomationTarget &target, std::int64_t tick) {
+        root.frame();
+        const auto bodies = canvas.laneBodies();
+        const auto body = std::find_if(bodies.begin(), bodies.end(), [&](const auto &lane) {
+            return lane.track->id == group && lane.target == target;
+        });
+        if (body == bodies.end())
+            return false;
+        const auto value = root.automationCurrent(target);
+        const auto fraction = static_cast<float>((value - target.minimum) / (target.maximum - target.minimum));
+        const juce::Point<float> click{static_cast<float>(geometry.x(tick)),
+            body->scaleBottom - (body->scaleBottom - body->top) * fraction};
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        canvas.mouseDown(pressAt(canvas, click, left));
+        canvas.mouseUp(pressAt(canvas, click, left));
+        root.frame();
+        const auto current = root.current();
+        if (!current)
+            return false;
+        const auto authored = envelopeOf(*current, target);
+        const auto picked = canvas.automationPointAt(click);
+        return authored.lane && authored.lane->ownerKind == target.ownerKind && authored.lane->ownerId == target.ownerId &&
+               authored.lane->paramRef == target.paramRef && authored.lane->valueDomain == target.valueDomain &&
+               authored.data && authored.data->points.size() == 1 && authored.data->points[0].time == tick &&
+               std::abs(authored.data->points[0].value - value) < 1.e-6 &&
+               picked && picked->track == group && picked->point == authored.data->points[0].id;
+    };
+
+    const auto volume = volumeTarget(group);
+    root.showAutomation(group, volume);
+    check(geometry.shown(child) && clickEnvelope(volume, textproj::kWhole),
+          "clicking the open group's Volume line creates a drawable group breakpoint");
+    root.arrangement.toggleFold(group);
+    root.frame();
+    check(geometry.shown(group) && !geometry.shown(child), "folding hides the child while keeping its group row");
+    const auto pan = panTarget(group);
+    root.showAutomation(group, pan);
+    check(clickEnvelope(pan, 2 * textproj::kWhole),
+          "the folded group's Pan line still draws and accepts breakpoints");
+
+    const bool shown = root.showDeviceAutomation(device, "7");
+    const auto cutoff = root.automationTarget(group);
+    check(shown && cutoff.ownerKind == "device" && cutoff.ownerId == device &&
+              cutoff.nativeParamId == "7" && cutoff.paramRef == "7" && cutoff.valueDomain == "normalized" &&
+              std::abs(root.automationCurrent(cutoff) - .5) < 1.e-6 &&
+              clickEnvelope(cutoff, 3 * textproj::kWhole),
+          "the folded group's device Cutoff line writes its normalized breakpoint at the knob's default");
+}
+
 void automationBreakpointDrags(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-breakpoint-drags.adi", true, {}, error);
@@ -23248,6 +23338,7 @@ int main(int argc, char **argv) {
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("automationAdditionalLanes", [&] { automationAdditionalLanes(commands, temp.path()); });
+    trace("groupAutomation", [&] { groupAutomation(commands, temp.path()); });
     trace("automationBreakpointDrags", [&] { automationBreakpointDrags(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });

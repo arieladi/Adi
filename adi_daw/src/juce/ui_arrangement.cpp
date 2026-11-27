@@ -3245,8 +3245,7 @@ std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
                 out.push_back({row.track, static_cast<float>(start), static_cast<float>(bottom),
                                static_cast<float>(end), target});
         };
-        if (h > 0 && row.track->kind != "group" && !geo.foldedTracks.contains(id) &&
-            view.root.automationOverlayShown(id))
+        if (h > 0 && !geo.foldedTracks.contains(id) && view.root.automationOverlayShown(id))
             addBody(top + 1 + kClipBarHeight, top + h - 3, view.root.automationTarget(id));
         if (geo.stackHeightFor(id) > h) {
             int below = top + h;
