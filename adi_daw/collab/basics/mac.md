@@ -108,6 +108,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/land/basics-1127k` | `5787d7ab856fdcc820b73c8cde3b49e423373957` | Yes | All 51 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. The Settings folder chooser revision changes a local variable to fix MSVC C4458. The Mac shell suite covers the chooser. |
 | `origin/basics/tracks-chain` | `3e7ad45b5c4fb12e8bfd49eaf3767b9fa296918b` | Yes | All 50 production targets built. Passed 39/39, including window and mixer 33/33, acceptance 3/3, and affected and session 3/3. Checks cover saving and recalling device default presets, panel layouts, replacement, and explicit preset precedence. |
 | `origin/basics/tracks-chain` | `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb` | Yes | All 50 production targets built. Passed 40/40, including window and mixer 33/33, acceptance 3/3, and affected and session 4/4. The shell suite covers Device Chain keyboard navigation, Cmd+V and menu Paste at the chain end, stale selection handling, and Undo. |
+| `origin/basics/clips-chain` | `20e01f6ed46cd8d1c11fafabdff672866e326a9c` | Yes | All 50 production targets built. Passed 46/46 across the run and retry, including audio-drop overlap replacement and Undo. Initially `adi_clip_playback_tests` emitted `decode.no_space` and `adi_warp_playback_tests` failed to reuse a prepared warp on reopen. Both passed unchanged at 2.7 GiB free after pruning generated test binaries, with the default cache reserve. |
 
 ## Nine-step window walk
 
