@@ -44,6 +44,8 @@ Fixed all 18 findings in the order of the pinned review. [Gemini review](https:/
 
 The final Linux Debug build used GCC 14, JUCE, Pd and warnings as errors. All configured targets built, including app and player. All five validators, Win’s landing-check tests, the non-performance suites, all 18 display-free window suites and all three acceptance suites passed on the reviewed head.
 
+Forwarded all 18 fixes into `basics/integrate-2` in merge `190896abbe998299453e738ff1a5dd0aee64687e`. The Cue callback and its fixture kept the Browser preview and Routing capture/render behavior and added the metronome for automation-only recording. The MIDI history regression uses the SC-276 port/channel API and checks both filtered and All inputs. The Linux app and player, six validators, Win’s landing-check tests, all 18 affected headless suites, all 18 display-free window suites, all three acceptance suites and a relocated installer smoke passed.
+
 ## Landing verification
 
 The refreshed Linux Debug build covers all configured JUCE and Pd targets, including `adi_app` and `adi_play`, with warnings as errors. The five validators and Win's landing-check tests passed. All 293 non-performance suites and all three acceptance suites passed with DISPLAY unset. The final portability commit removed an unused Quit callback capture and renamed shadowing variables in the window fixtures. The affected app and UI targets rebuilt, Clang 14 rechecked those three units without diagnostics, and all 18 no-display window suites passed again. The refreshed Warp translation unit also passed under Clang 19 with libc++ 19. Win's native Windows and macOS matrix remains pending.
