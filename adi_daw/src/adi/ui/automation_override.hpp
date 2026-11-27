@@ -32,8 +32,9 @@ inline bool sameParam(std::string_view ownerKind, std::string_view laneRef, std:
 inline const engine::AutomationLaneNode *laneOf(const engine::Snapshot &snapshot, std::string_view ownerKind,
                                                 std::int64_t ownerId, std::string_view paramRef) noexcept {
     const std::string_view domain = ownerKind == "device" ? "normalized" : "real";
+    const bool activator = ownerKind == "track" && paramRef == "mute";
     for (const auto &lane : snapshot.automationLanes)
-        if (lane && lane->enabled && lane->valueDomain == domain && lane->ownerKind == ownerKind &&
+        if (lane && lane->enabled && (activator || lane->valueDomain == domain) && lane->ownerKind == ownerKind &&
             lane->ownerId == ownerId && automation_override_detail::sameParam(ownerKind, lane->paramRef, paramRef))
             return lane.get();
     return nullptr;
