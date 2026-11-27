@@ -34,11 +34,23 @@ The original Export tip and the first two verified Edit items are included. The 
 | SC-121 Browser on `basics/integrate-2` | `37ab62ec1f0f852f9c5d3cbcac6b430532bc0a70` | The shared app initialization shows the Instruments list at launch, New and Open, including while library indexing is pending. Keeps explicit label choices. The red peerless suite reproduced both empty-list assertions. Linux Debug JUCE/Pd Werror built the app, and all 18 no-display window suites and all three acceptance suites passed. |
 | SC-120, SC-122 Browser on `basics/integrate-2` | `f88c10b4bf0a262eb11288b29aacf6f38e53b5c1` | All and Ctrl/Cmd+F find samples, devices, presets and plug-ins. Each search word must match, including words split across a plug-in name and maker. Explicit Places and Hot-Swap keep their scope. The red peerless fixture reproduced seven failures. Linux Debug JUCE/Pd Werror built the app, passed all 18 no-display window suites and all three acceptance suites. The separate 200,000-file search test passed 37 checks. |
 
-Browser ownership moved to the session on `basics/browser-chain`. The published SC-121 and SC-120/122 results are recorded above. The in-progress SC-124 draft was archived locally at reassignment. The integration will use the original Browser chain.
+Browser ownership moved to the session on `basics/browser-chain`. The published SC-121 and SC-120/122 results are recorded above. The in-progress SC-124 draft was archived locally at reassignment. The owner’s versions are now merged as recorded below.
 
 Agent Settings at `906a2dd8d5646111076724f6bc58c95b3accc8f6` keeps `agent.tier` and `agent.maxOpsPerRequest` editable. The Settings and MCP suites and all 18 no-display window suites passed. A subprocess probe confirmed Observe removes write proposals and a saved cap of one rejects a two-op request.
+
 SC-430 is pushed at `fec54f170a2ee4fc2b471c1180b55820f51726bf`. Save, Take Snapshot and Export keep stored bytes for an unreadable device, record that its state is stale, and name it. Healthy devices still capture, and a successful retry clears the marker. Quit offers Stay or Quit with Stored State once per request and keeps the existing export checks. Built the app with warnings as errors, passed 12 affected headless suites and all 18 no-display window suites, and passed the five validators and Win’s landing-check tests.
+
+## Browser on integrate-2
+
+| Published tip | Integration head | Change and verification |
+|---|---|---|
 | Browser chain `0cb6389f161984b93807752ae09498d3639fe713` on `basics/integrate-2` | `57b10a95a4b4cf72cf45625de8db846c64d4bc2d` | Advanced the base to verified `a7d02bcf` in `b62ad77f`. Resolved four Browser and shell conflicts in favor of the owner’s SC-121, SC-120 and SC-122 code and tests. The earlier integration implementations of those same items are superseded. Kept the three landing portability edits and the owner’s startup references, label persistence, indexed search and independent Hot-Swap search text. Debug JUCE/Pd built with warnings as errors. The five validators, library-query and Settings suites, all 18 no-display window suites and all three acceptance suites passed. |
+
+## Safety on integrate-2
+
+| Item | Integration head | Change and verification |
+|---|---|---|
+| SC-159 | `1e8d065a4716c5bd61953e690b2b0f5f8c143307` | Uses a rollback journal with FULL synchronization in recognized synced and network project folders. Local projects use WAL. The app warns on open and Save As. The focused Store and Project Files runs passed 87 and 77 checks, including copying an open project after a commit and Undo, folding a dirty WAL, and Save As in both directions. The live copy regression reproduced the old failure. The tests used simulated sync paths. The combined Safety run continues. |
 
 ## For the director
 
