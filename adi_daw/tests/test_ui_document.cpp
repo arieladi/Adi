@@ -70,6 +70,31 @@ class WorkerTone final : public engine::Node {
     }
     const char *name() const noexcept override { return "device graph worker tone"; }
 };
+// SC-384: a rate or buffer the engine cannot use is said in plain words, once, and cleared when a usable
+// format runs again.
+void unusableFormatSaid(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "unusable-format.adi", true, {}, error);
+    check(document != nullptr, "SC-384: a project for the device's formats");
+    if (!document) return;
+    document->prepare(48000.0, 512);
+    check(!document->takeFormatProblem().has_value(), "SC-384: a usable format says nothing");
+    document->prepare(32000.0, 512);
+    const auto low = document->takeFormatProblem();
+    check(low && low->find("32000 Hz") != std::string::npos && low->find("44.1 kHz") != std::string::npos &&
+              low->find("Settings > Audio") != std::string::npos,
+          "SC-384: 32 kHz is said: ADI needs 44.1 kHz or more, and where to choose");
+    check(!document->takeFormatProblem().has_value(), "SC-384: said once");
+    document->prepare(48000.0, 8192);
+    const auto big = document->takeFormatProblem();
+    check(big && big->find("8192") != std::string::npos && big->find("4096") != std::string::npos,
+          "SC-384: a buffer of 8192 is said: 4096 at most");
+    document->prepare(48000.0, 512);
+    const auto cleared = document->takeFormatProblem();
+    check(cleared && cleared->empty(), "SC-384: a usable format again clears the line");
+    document->release();
+}
+
 void deviceGraphWorkers(const std::filesystem::path &dir) {
     std::array<WorkerTone, 4> sources;
     std::vector<std::int64_t> tracks;
@@ -3975,6 +4000,7 @@ int main(int argc, char **argv) {
         }
     }
     deviceGraphWorkers(temp.path());
+    unusableFormatSaid(temp.path());
     refusedBeginOwnership(temp.path());
     heldOffAfterACrash(temp.path());
     rememberedRouteStartsANewInstance(temp.path());

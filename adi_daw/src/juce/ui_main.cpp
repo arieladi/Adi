@@ -1967,6 +1967,9 @@ class AdiApplication final : public juce::JUCEApplication,
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
                     root_->status.setAudioDeviceProblem(std::move(problem));
+            // SC-384: a rate or buffer the engine cannot use, said; cleared when a usable one runs again.
+            if (auto format = document_->takeFormatProblem())
+                root_->status.setAudioDeviceProblem(juce::String::fromUTF8(format->c_str()));
             if (hotSwap_ && (!root_->browser.isShowing() ||
                              root_->arrangement.geometry.selection.track != hotSwap_->expected.track ||
                              !root_->devices.validExpected(hotSwap_->expected)))

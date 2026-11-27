@@ -2032,9 +2032,30 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
         session_.prepareWithGraphWorkers(rate, frames, graphWorkerCount_(frames), graphWorkerMinimumFrames_);
     else
         session_.prepare(rate, frames);
+    // SC-384: the engine refuses a format outside 44.1 to 768 kHz or above 4096 frames (ADR-0157), and the
+    // reason stayed inside the session while the window showed nothing. It is said in plain words.
+    std::string problem;
+    const auto hz = static_cast<long long>(std::llround(rate));
+    if (!(rate >= 44100.0) || rate > 768000.0)
+        problem = "ADI cannot run at " + std::to_string(hz) + " Hz: it needs 44.1 kHz to 768 kHz. Choose another "
+                  "sample rate in Settings > Audio.";
+    else if (frames > 4096)
+        problem = "ADI cannot run with a buffer of " + std::to_string(frames) + " samples: 4096 at most. Choose a "
+                  "smaller Buffer Size in Settings > Audio.";
+    {
+        const std::lock_guard lock(formatMutex_);
+        if (problem != formatProblem_) {
+            formatProblem_ = problem;
+            formatPending_ = problem;
+        }
+    }
     mailbox_.setSampleRate(rate);
     refreshLimiterReductionSources();
     analysis_->refreshSources(true);
+}
+std::optional<std::string> ProjectDocument::takeFormatProblem() {
+    const std::lock_guard lock(formatMutex_);
+    return std::exchange(formatPending_, std::nullopt);
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds

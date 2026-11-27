@@ -28,6 +28,7 @@
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 #include <atomic>
+#include <mutex>
 #include <functional>
 #include <optional>
 #include <span>
@@ -99,6 +100,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
                                std::int32_t minimumFrames);
     void prepare(double rate, std::int32_t frames) override;
+    // SC-384: a rate or buffer the engine cannot use, in plain words, taken once by the window: the new
+    // sentence, an empty string when a usable format runs again after one, nothing when nothing changed.
+    // (The 44.1 kHz floor is ruled, ADR-0157.) Any thread; the device's start calls prepare.
+    std::optional<std::string> takeFormatProblem();
     void release() override;
     void process(const engine::AudioIo &) noexcept override;
     Store &store() noexcept { return *store_; }
@@ -373,6 +378,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;
+    std::mutex formatMutex_;                 // SC-384
+    std::string formatProblem_;              // the last one said
+    std::optional<std::string> formatPending_; // for the window
     std::string name_;
     engine::ProjectView view_;
     OpSubmitter ops_;
