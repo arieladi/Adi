@@ -1980,8 +1980,7 @@ void AdiRootComponent::applyInfoAnalyserMode() {
         infoSpectrum.setMode(Mode::Spectrogram);
         break;
     case InfoAnalyserMode::FilledSpectrum:
-        infoSpectrum.setSpectrumScale(Scale::Extended);
-        infoSpectrum.setMode(Mode::Spectrum);
+        infoSpectrum.setMode(Mode::FilledSpectrum);
         break;
     case InfoAnalyserMode::LineSpectrum:
         infoSpectrum.setSpectrumScale(Scale::Device);
