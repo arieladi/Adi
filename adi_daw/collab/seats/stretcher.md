@@ -5,7 +5,7 @@ Codex took the stretcher seat on 27 November 2026.
 - A continuing R3 Session run under an arbitrary tempo change, or a Legato target outside the primed worker window, still needs driver admission keyed to the exact launch and loop anchors.
 - A tempo scene that mixes a continuing native Warp run with a fixed media track still needs per-bank clock projection.
 
-The Windows checker has reported on Session, Pitch and main. Its 19:20 UTC report contains no stretcher entry or fix branch. The manual MSVC run of `f9c8e981c` completed the headless build and passed the JUCE job. The headless tests are running. [GitHub CI](https://github.com/arieladi/Adi/actions/runs/46055965930)
+The Windows checker has reported on Session, Pitch and main. Its 19:20 UTC report contains no stretcher entry or fix branch. The manual MSVC run of `f9c8e981c` passed both the headless build and tests and the JUCE job. [GitHub CI](https://github.com/arieladi/Adi/actions/runs/46055965930)
 
 The matching post-main companion tree is also in native Windows CI. [Companion CI](https://github.com/arieladi/Adi/actions/runs/46059712374)
 
@@ -46,7 +46,9 @@ The first slice touched `src/adi/engine/clip_playback.cpp` for source demand, pa
 
 ## For the director
 
-A. A longer or continuing R3 slot needs the chosen run's exact launch and loop anchors and its first output pages before a tempo boundary can be admitted. A launch replacement can change that anchor while the owner prepares the bank. If the first pages miss the chosen boundary, my recommendation is to keep the current scene and clock and return a readiness result. A later launch request can choose a new boundary.
+A. A longer or continuing R3 slot needs a jointly phased worker transition or the active worker's DSP history. In the 120→140 No Stop probe, the exact musical rebase moved the source read from frame 9,600 to 8,229 and put the next pulse within 16 samples. Switching the independently primed banks still caused a 0.258 FS sine step at that phase. The ordinary maximum was 0.019 FS. The tested unphased fade reduced a 128-frame window from 0.212 to 0.111 FS RMS. Both a queued replacement and a same-clip retrigger changed the live run and source phase after the owner forecast.
+
+The driver needs to validate the run, source phase and bank generation before a tempo boundary can take effect. If the worker misses the chosen boundary, I recommend keeping the current scene and clock and returning a readiness result. A later launch request can choose a new boundary.
 
 ## Readings owed
 
