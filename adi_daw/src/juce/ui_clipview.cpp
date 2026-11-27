@@ -5119,6 +5119,19 @@ bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
     if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
+    if (unwarpedTimeField(field)) {
+        const bool start = field == Field::Start;
+        const auto pin = start ? node_->contentOffsetNs : node_->sourceEndNs;
+        const auto current = pin ? sample.sourceSecondsToTicks(static_cast<double>(*pin) * 1e-9) : fieldTicks(field);
+        if (ticks == current)
+            return true;
+        // The marker op validates against the other marker's physical pin. The
+        // stored ticks can still reflect the tempo from when the pin was set.
+        TrackEdit edit;
+        edit.ops.push_back(track_edits_detail::op(start ? "clip.setStartMarker" : "clip.setEndMarker",
+                                                  {{"id", d.id}, {"ticks", ticks}}, start ? "Set Clip Start" : "Set Clip End"));
+        return commit(std::move(edit));
+    }
     switch (field) {
     case Field::Start:
         return commit(setClipStart(d, ticks));
