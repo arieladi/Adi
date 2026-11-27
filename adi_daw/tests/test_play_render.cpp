@@ -310,6 +310,8 @@ int main() {
         if(!session.setParallelRendering(workers,1,2))return 1;
         session.setSourcesFor([&](std::int64_t id){return id==1 ? std::vector<adi::engine::Node*>{&tone} : std::vector<adi::engine::Node*>{};});
         adi::engine::SessionSpec spec;spec.channels=channels;spec.sampleRate=48000;spec.maxFrames=64;
+        spec.offline = true;
+        spec.performanceState = false;
         if(!session.load(*store,{},spec))return 1;
         // Worker count is an upper bound: this single-track graph need not
         // contain a wide eligible level. Do not mistake that for failed setup.
