@@ -12833,6 +12833,13 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     root.frame();
     auto &panel = root.clipView;
     auto &edit = panel.sample;
+    check(root.commandSettings().get("files.sampleEditorOpens") == "inPlace",
+          "the external editor opens the project sample in place by default");
+    const auto header = panel.headerArea();
+    panel.mouseDown(pressAt(panel, juce::Point<int>(header.getRight() - 102, header.getCentreY()).toFloat(),
+                            juce::ModifierKeys::leftButtonModifier));
+    check(root.error().find("Sample Editor in Settings") != std::string::npos,
+          "the audio clip's Edit button identifies the missing editor setting");
     const auto readings = panel.readings();
     check(readings.title == "Eight Beats" && readings.sampleName == "sample-gestures.wav" &&
               readings.sampleProperties == "48000 Hz   16 bit   1 ch" &&
