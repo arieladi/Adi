@@ -25,7 +25,7 @@ bool isRamp(const TempoEvent& left, const TempoEvent& right) noexcept {
 }
 
 long double fraction(const TempoRampSpan& span, long double tick) noexcept {
-    return (tick - span.firstTick) /
+    return (tick - static_cast<long double>(span.firstTick)) /
            static_cast<long double>(span.lastTick - span.firstTick);
 }
 
@@ -69,7 +69,8 @@ long double rampSeconds(const TempoEvent& left, const TempoEvent& right, long do
     const auto quarters = static_cast<long double>(span.lastTick - span.firstTick) / ticksPerQuarter;
     const long double change = static_cast<long double>(span.lastBpm) - span.firstBpm;
     const auto tension = tensionOf(left);
-    const auto begin = integral(span.firstBpm, change, tension, fraction(span, left.posTicks));
+    const auto begin = integral(span.firstBpm, change, tension,
+                                fraction(span, static_cast<long double>(left.posTicks)));
     const auto end = integral(span.firstBpm, change, tension, fraction(span, tick));
     return 60 * quarters * (end - begin);
 }
@@ -78,7 +79,7 @@ double segmentSeconds(const TempoEvent& left, const TempoEvent& right, std::int6
     if (tick <= left.posTicks) return 0.0;
     if (!isRamp(left, right))
         return static_cast<double>(tick - left.posTicks) / ticksPerQuarter * 60.0 / left.bpm;
-    return static_cast<double>(rampSeconds(left, right, tick));
+    return static_cast<double>(rampSeconds(left, right, static_cast<long double>(tick)));
 }
 
 double segmentBpm(const TempoEvent& left, const TempoEvent& right, long double tick) noexcept {
@@ -120,8 +121,11 @@ TempoMap TempoMap::fromRows(std::span<const rows::TempoEvent> rows) {
 double TempoMap::bpmAt(std::int64_t ticks) const noexcept {
     if (events.empty()) return 120.0;
     auto left = TempoEvent{0, events.front().bpm, 0, 0};
-    for (const auto& right : events) {
-        if (right.posTicks > ticks) return segmentBpm(left, right, ticks);
+    // The driver reads these conversions. MSVC Debug vector iterators lock
+    // their ownership proxy, so traverse the immutable events by index.
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        const auto& right = events[i];
+        if (right.posTicks > ticks) return segmentBpm(left, right, static_cast<long double>(ticks));
         left = right;
     }
     return left.bpm;
@@ -131,7 +135,8 @@ double TempoMap::ticksToSeconds(std::int64_t ticks) const noexcept {
     if (ticks <= 0 || events.empty()) return 0.0;
     auto left = TempoEvent{0, events.front().bpm, 0, 0};
     double seconds = 0.0;
-    for (const auto& right : events) {
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        const auto& right = events[i];
         if (right.posTicks >= ticks) return seconds + segmentSeconds(left, right, ticks);
         seconds += segmentSeconds(left, right, right.posTicks);
         left = right;
@@ -143,7 +148,8 @@ std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
     if (!(seconds > 0.0) || !std::isfinite(seconds) || events.empty()) return 0;
     auto left = TempoEvent{0, events.front().bpm, 0, 0};
     double elapsed = 0.0;
-    for (const auto& right : events) {
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        const auto& right = events[i];
         const auto duration = segmentSeconds(left, right, right.posTicks);
         if (elapsed + duration >= seconds) {
             if (!isRamp(left, right)) return std::min(right.posTicks, stepTick(left, elapsed, seconds));
@@ -169,7 +175,8 @@ std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexce
     const auto floor = secondsToTicks(static_cast<double>(nanos) * 1e-9);
     if (floor == highestTick) return floor;
     const auto following = static_cast<long double>(ticksToSeconds(floor + 1)) * 1e9L;
-    return following >= nanos - 0.5L && following < nanos + 0.5L ? floor + 1 : floor;
+    const auto requested = static_cast<long double>(nanos);
+    return following >= requested - 0.5L && following < requested + 0.5L ? floor + 1 : floor;
 }
 
 long double TempoMap::secondsAtPosition(long double ticks) const noexcept {
@@ -199,7 +206,7 @@ struct WarpArrangementClock::Segment {
 
     [[nodiscard]] long double secondsAtTick(long double tick) const noexcept {
         if (isRamp(left, right)) return rampSeconds(left, right, tick);
-        return (tick - left.posTicks) * 60 / (ticksPerQuarter * left.bpm);
+        return (tick - static_cast<long double>(left.posTicks)) * 60 / (ticksPerQuarter * left.bpm);
     }
 };
 
@@ -214,8 +221,8 @@ WarpArrangementClock::WarpArrangementClock(const TempoMap& tempo, double sampleR
     for (const auto& right : tempo.events) {
         if (right.posTicks > left.posTicks) {
             const double duration = segmentSeconds(left, right, right.posTicks);
-            const double first = segmentBpm(left, right, left.posTicks);
-            const double last = segmentBpm(left, right, right.posTicks);
+            const double first = segmentBpm(left, right, static_cast<long double>(left.posTicks));
+            const double last = segmentBpm(left, right, static_cast<long double>(right.posTicks));
             minimumBpm_ = std::min({minimumBpm_, first, last});
             maximumBpm_ = std::max({maximumBpm_, first, last});
             segments_.push_back({left, right, seconds * sampleRate_, (seconds + duration) * sampleRate_});
@@ -265,7 +272,7 @@ double WarpArrangementClock::tickAtFrame(double frame) const noexcept {
 
     const auto span = spanFor(left, right);
     const double tension = tensionOf(left);
-    const double firstBpm = segmentBpm(left, right, left.posTicks);
+    const double firstBpm = segmentBpm(left, right, static_cast<long double>(left.posTicks));
     if (tension == 0) {
         const double slope = (span.lastBpm - span.firstBpm) / static_cast<double>(span.lastTick - span.firstTick);
         return startTick + firstBpm / slope * std::expm1(slope * elapsed * ticksPerQuarter / 60);

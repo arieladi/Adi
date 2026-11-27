@@ -2442,11 +2442,12 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     constexpr auto whole = textproj::kWhole;
     info.ticksInQuarter = ticks % ppq;
 
-    // Allocation-free counterpart of renderPosition(metersOf(signatures)).
-    // Default 4/4 from zero; a change truncating a bar still counts that bar.
+    // Default 4/4 from zero. A change truncating a bar still counts that bar.
+    // Driver traversal avoids MSVC Debug's locking vector iterators.
     std::int64_t start = 0, barsBefore = 0;
     std::int64_t barTicks = whole;
-    for (const auto& meter : signatures) {
+    for (std::size_t i = 0; i < signatures.size(); ++i) {
+        const auto& meter = signatures[i];
         if (meter.posTicks > ticks) break;
         const auto span = meter.posTicks - start;
         barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
@@ -2507,14 +2508,16 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
-    const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
+    const auto* changes = deviceClockChanges.data();
+    const auto* endOfChanges = changes + deviceClockChanges.size();
+    const auto* next = std::upper_bound(changes, endOfChanges, sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
-    if (next != deviceClockChanges.end()) result.nextChange = next->first;
+    if (next != endOfChanges) result.nextChange = next->first;
     constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
     const auto seconds = static_cast<double>(sample) / sampleRate;
     auto tick = seconds >= lastTickSeconds ? maximumTick : tempo.secondsToTicks(seconds);
-    if (next != deviceClockChanges.begin()) {
-        const auto changeTick = std::prev(next)->second;
+    if (next != changes) {
+        const auto changeTick = (next - 1)->second;
         tick = std::max(tick, changeTick);
         result.quarterNotes = std::max(result.quarterNotes, static_cast<double>(changeTick) / ppq);
     }
@@ -2533,7 +2536,8 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     std::int64_t start = 0;
     std::int64_t barsBefore = 0;
     std::int64_t barTicks = textproj::kWhole;
-    for (const auto& meter : signatures) {
+    for (std::size_t i = 0; i < signatures.size(); ++i) {
+        const auto& meter = signatures[i];
         if (meter.posTicks > tick) break;
         const auto span = meter.posTicks - start;
         barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
@@ -2745,7 +2749,8 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     if (sample == std::numeric_limits<std::int64_t>::max())
         return false;
     std::int64_t numerator = 4, denominator = 4;
-    for (const auto &meter : timing->signatures) {
+    for (std::size_t i = 0; i < timing->signatures.size(); ++i) {
+        const auto& meter = timing->signatures[i];
         if (meter.posTicks > tick)
             break;
         numerator = meter.numerator;
@@ -3031,6 +3036,8 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
     std::int64_t previous = -1, beatTick = 0;
     double boundary = 0, nextBoundary = 0;
     bool accented = false;
+    const auto* firstMeter = timing.signatures.data();
+    const auto* endOfMeters = firstMeter + timing.signatures.size();
     for(std::int32_t i=0;i<io.frames;++i) {
         const auto sample=transport_.delayedSample(i,latency);
         if(sample<0 && tail && heard+i<countInTailTotal_) {
@@ -3050,16 +3057,16 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
         }
         if (previous < 0 || sample - 1 != previous || static_cast<double>(sample) >= nextBoundary) {
             const auto tick = tempo.secondsToTicks(static_cast<double>(sample) / rate);
-            const auto nextMeter = std::upper_bound(timing.signatures.begin(), timing.signatures.end(), tick,
+            const auto* nextMeter = std::upper_bound(firstMeter, endOfMeters, tick,
                 [](auto at, const auto& meter) { return at < meter.posTicks; });
-            const auto meter = nextMeter == timing.signatures.begin() ? rows::TimeSignature{} : *std::prev(nextMeter);
+            const auto meter = nextMeter == firstMeter ? rows::TimeSignature{} : *(nextMeter - 1);
             const auto beatTicks = textproj::kWhole / meter.denominator;
             const auto beat = (tick - meter.posTicks) / beatTicks;
             beatTick = meter.posTicks + beat * beatTicks;
             accented = beat % meter.numerator == 0;
             boundary = tempo.ticksToSeconds(beatTick) * rate;
             auto nextTick = beatTick + std::min(beatTicks, std::numeric_limits<std::int64_t>::max() - beatTick);
-            if (nextMeter != timing.signatures.end()) nextTick = std::min(nextTick, nextMeter->posTicks);
+            if (nextMeter != endOfMeters) nextTick = std::min(nextTick, nextMeter->posTicks);
             nextBoundary = std::nextafter(tempo.ticksToSeconds(nextTick) * rate,
                                           -std::numeric_limits<double>::infinity());
         }
