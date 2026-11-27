@@ -24,9 +24,9 @@ struct SampleAnalysisCatalog::State {
     struct Measurement {
         std::shared_ptr<const SampleAnalysis> raw, effective;
 
-        void apply(const SampleAnalysisOverrides& overrides) {
-            effective = overrides.empty() ? raw :
-                std::make_shared<const SampleAnalysis>(applySampleOverrides(*raw, overrides));
+        void apply(const SampleAnalysisResolution& resolution) {
+            effective = resolution.empty() ? raw :
+                std::make_shared<const SampleAnalysis>(resolution.apply(*raw));
         }
     };
 
@@ -43,7 +43,7 @@ struct SampleAnalysisCatalog::State {
         const bool activeKey = job.hash.empty() && keysWanted.contains(job.key);
         if (activeHash || activeKey) {
             Measurement value{raw, raw};
-            if (index) value.apply(index->analysisOverrides(result.hash));
+            if (index) value.apply(index->analysisResolution(result.hash));
             byHash.insert_or_assign(result.hash, std::move(value));
         }
         if (activeKey) hashForKey.insert_or_assign(job.key, std::move(result.hash));
@@ -54,14 +54,14 @@ struct SampleAnalysisCatalog::State {
     // override after a query has advanced the annotation revision.
     void refreshAnnotations() {
         if (!index) return;
-        const auto changes = index->analysisOverridesSince(annotationRevision);
+        const auto changes = index->analysisResolutionSince(annotationRevision);
         if (changes.revision == annotationRevision) return;
         if (changes.fullSnapshot) {
             for (auto& row : byHash) row.second.effective = row.second.raw;
         }
-        for (const auto& [hash, overrides] : changes.entries) {
+        for (const auto& [hash, resolution] : changes.entries) {
             const auto found = byHash.find(hash);
-            if (found != byHash.end()) found->second.apply(overrides);
+            if (found != byHash.end()) found->second.apply(resolution);
         }
         annotationRevision = changes.revision;
     }

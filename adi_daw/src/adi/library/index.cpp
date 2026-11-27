@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <deque>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -166,6 +167,18 @@ SampleAnalysisMetadata readAnalysisMetadata(const std::string& hash, const Json&
     }
     return result;
 }
+
+void mergeExchangedMetadata(SampleAnalysisMetadata& current, const SampleAnalysisMetadata& incoming) {
+    if (incoming.tempoBpm && (!current.tempoBpm || incoming.tempoSource >= current.tempoSource)) {
+        current.tempoBpm = incoming.tempoBpm;
+        current.tempoSource = incoming.tempoSource;
+    }
+    if (incoming.key && (!current.key || incoming.keySource >= current.keySource)) {
+        current.key = incoming.key;
+        current.keySource = incoming.keySource;
+        current.keyStrength = incoming.keyStrength;
+    }
+}
 // The standard permits file_clock to expose either sys or UTC conversion.
 // MSVC supplies to_utc; libstdc++/libc++ supply to_sys. Keep both dependent
 // so an unused clock API need not exist on the other implementation.
@@ -215,6 +228,7 @@ std::string relativeText(const fs::path& p) {
 }
 }
 struct Index::Impl {
+    using Observations = std::map<std::string, SampleAnalysisMetadata, std::less<>>;
     std::unique_ptr<SQLite::Database> db;
     fs::path path;
     Hasher hash;
@@ -229,6 +243,14 @@ struct Index::Impl {
     std::atomic<std::uint64_t> annotationRevision{0};
     std::uint64_t bulkAnnotationRevision = 0;
     std::array<std::array<char, 64>, annotationJournalSize> annotationHashes{};
+    Observations observations;
+
+    // The caller holds the database mutex for both inputs.
+    SampleAnalysisResolution resolve(std::string_view contentHash, SampleAnalysisOverrides authored) const {
+        const auto found = observations.find(contentHash);
+        if (found == observations.end()) return {std::move(authored), {}};
+        return {std::move(authored), found->second};
+    }
 
     // The database mutex serializes these calls. Publish the revision only
     // after COMMIT, with no allocation that can fail after the durable write.
@@ -544,30 +566,47 @@ std::vector<Entry> Index::entries() const {
     return result;
 }
 SampleAnalysisOverrides Index::analysisOverrides(const std::string& hash) const {
+    if (audio::onAudioThread) return {};
+    return analysisResolution(hash).authored;
+}
+SampleAnalysisResolution Index::analysisResolution(const std::string& hash) const {
     if (audio::onAudioThread || !validHash(hash)) return {};
     try {
         std::lock_guard lock(impl_->mutex);
         SQLite::Statement query(*impl_->db, "SELECT payload FROM annotations WHERE hash=?");
         query.bind(1, hash);
-        return query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
+        auto authored = query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
+        return impl_->resolve(hash, std::move(authored));
     } catch (const std::exception&) {
         return {};
     }
 }
-SampleAnalysisOverrideChanges Index::analysisOverridesSince(std::uint64_t revision) const {
+SampleAnalysisResolutionChanges Index::analysisResolutionSince(std::uint64_t revision) const {
     if (audio::onAudioThread || revision == impl_->annotationRevision.load(std::memory_order_acquire))
         return {revision, false, {}};
     try {
         std::lock_guard lock(impl_->mutex);
-        SampleAnalysisOverrideChanges result;
+        SampleAnalysisResolutionChanges result;
         result.revision = impl_->annotationRevision.load(std::memory_order_relaxed);
         result.fullSnapshot = revision > result.revision || revision < impl_->bulkAnnotationRevision ||
                               result.revision - revision > annotationJournalSize;
         if (result.fullSnapshot) {
+            result.entries.reserve(impl_->observations.size());
+            for (const auto& [hash, metadata] : impl_->observations)
+                result.entries.emplace_back(hash, SampleAnalysisResolution{{}, metadata});
+            const auto observedCount = static_cast<std::ptrdiff_t>(result.entries.size());
             SQLite::Statement query(*impl_->db, "SELECT hash,payload FROM annotations");
             while (query.executeStep()) {
-                auto value = readAnalysisOverrides(query.getColumn(1));
-                if (!value.empty()) result.entries.emplace_back(query.getColumn(0).getString(), std::move(value));
+                auto authored = readAnalysisOverrides(query.getColumn(1));
+                if (authored.empty()) continue;
+                auto hash = query.getColumn(0).getString();
+                // The observed rows came from an ordered map. Merge authored
+                // fields with that prefix even after appending authored-only rows.
+                const auto end = result.entries.begin() + observedCount;
+                const auto found = std::lower_bound(result.entries.begin(), end, hash,
+                    [](const auto& entry, const std::string& key) { return entry.first < key; });
+                if (found != end && found->first == hash) found->second.authored = std::move(authored);
+                else result.entries.emplace_back(std::move(hash), SampleAnalysisResolution{std::move(authored), {}});
             }
         } else {
             std::set<std::string> changed;
@@ -578,8 +617,8 @@ SampleAnalysisOverrideChanges Index::analysisOverridesSince(std::uint64_t revisi
             SQLite::Statement query(*impl_->db, "SELECT payload FROM annotations WHERE hash=?");
             for (const auto& hash : changed) {
                 query.bind(1, hash);
-                auto value = query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
-                result.entries.emplace_back(hash, std::move(value));
+                auto authored = query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
+                result.entries.emplace_back(hash, impl_->resolve(hash, std::move(authored)));
                 query.reset();
             }
         }
@@ -687,27 +726,43 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
             throw std::runtime_error("invalid library JSON envelope");
         const auto exchangeVersion = document.at("version").get<int>();
         std::vector<SampleAnalysisMetadata> received;
+        Impl::Observations stagedObservations;
         std::array<std::string_view, annotationJournalSize> changed{};
         std::size_t changedCount = 0;
         bool bulk = false;
         std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
         for (const auto& [hash, incoming] : document.at("media").items()) {
             if (!validHash(hash) || !incoming.is_object()) throw std::runtime_error("metadata must be keyed by BLAKE3 hash");
-            Json merged={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
-            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
-            if(old.executeStep()) {
-                const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
-                merged=libraryJson(field.getString());
+            const bool updateAuthored = incoming.size() != 1 || !incoming.contains("analysis_metadata");
+            Json merged;
+            if (updateAuthored) {
+                merged = {{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
+                SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
+                if (old.executeStep()) {
+                    const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                    merged=libraryJson(field.getString());
+                }
             }
-            bool update = incoming.empty();
+            bool updateObservation = false;
             for(const auto& [key,value] : incoming.items()) {
                 if (key == "analysis_metadata") {
                     if (exchangeVersion != 3) throw std::runtime_error("analysis metadata requires library JSON version 3");
-                    auto observed = readAnalysisMetadata(hash, value);
-                    if (observations) received.push_back(std::move(observed));
+                    auto imported = readAnalysisMetadata(hash, value);
+                    if (observations) received.push_back(imported);
+                    const auto previous = impl_->observations.find(hash);
+                    if (previous == impl_->observations.end()) {
+                        stagedObservations.emplace(hash, std::move(imported));
+                        updateObservation = true;
+                    } else {
+                        auto nextObservation = previous->second;
+                        mergeExchangedMetadata(nextObservation, imported);
+                        if (nextObservation != previous->second) {
+                            stagedObservations.emplace(hash, std::move(nextObservation));
+                            updateObservation = true;
+                        }
+                    }
                     continue;
                 }
-                update = true;
                 if (key=="tags") {
                     if(!value.is_array()) throw std::runtime_error("tags must be an array");
                     std::set<std::string> tags=merged.at("tags").get<std::set<std::string>>();
@@ -733,13 +788,20 @@ bool Index::importJson(const std::string& text,std::string& error,std::vector<Sa
                     merged[key]=encodeSampleSettings(*decoded.data);
                 } else throw std::runtime_error("unknown metadata field");
             }
-            if (!update) continue;
-            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
-            put.bind(1,hash);put.bind(2,serialized);put.exec();
+            if (updateAuthored) {
+                SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                put.bind(1,hash);put.bind(2,serialized);put.exec();
+            }
+            if (!updateAuthored && !updateObservation) continue;
             if (changedCount < changed.size()) changed[changedCount++] = hash;
             else bulk = true;
         }
         tx.commit();
+        // Node transfer and replacing an existing value require no allocation.
+        // Readers see the durable and in-process portions at the same revision.
+        impl_->observations.merge(stagedObservations);
+        for (auto& [hash, metadata] : stagedObservations)
+            impl_->observations.find(hash)->second = std::move(metadata);
         if (changedCount > 0) impl_->annotationsChanged(std::span(changed).first(changedCount), bulk);
         if (observations) observations->swap(received);
         error.clear(); return true;

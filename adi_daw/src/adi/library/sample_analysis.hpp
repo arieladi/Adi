@@ -43,12 +43,6 @@ struct SampleAnalysisOverrides {
     }
 };
 
-struct SampleAnalysisOverrideChanges {
-    std::uint64_t revision = 0;
-    bool fullSnapshot = false;
-    std::vector<std::pair<std::string, SampleAnalysisOverrides>> entries;
-};
-
 // Rebuildable observations carried by library exchange. The content hash
 // identifies the source independently of path. Authored fields live in ADIL.
 struct SampleAnalysisMetadata {
@@ -65,6 +59,25 @@ struct SampleAnalysisMetadata {
 void applySampleMetadata(SampleAnalysis&, const SampleAnalysisMetadata&);
 
 [[nodiscard]] SampleAnalysis applySampleOverrides(SampleAnalysis, const SampleAnalysisOverrides&);
+
+struct SampleAnalysisResolution {
+    SampleAnalysisOverrides authored;
+    std::optional<SampleAnalysisMetadata> exchanged;
+
+    [[nodiscard]] bool empty() const noexcept { return authored.empty() && !exchanged; }
+
+    [[nodiscard]] SampleAnalysis apply(SampleAnalysis local) const {
+        if (exchanged) applySampleMetadata(local, *exchanged);
+        if (!authored.empty()) return applySampleOverrides(std::move(local), authored);
+        return local;
+    }
+};
+
+struct SampleAnalysisResolutionChanges {
+    std::uint64_t revision = 0;
+    bool fullSnapshot = false;
+    std::vector<std::pair<std::string, SampleAnalysisResolution>> entries;
+};
 
 enum class SampleAnalysisProblem { None, Realtime, Cancelled, Missing, SourceChanged, Read, CacheWrite };
 struct SampleAnalysisResult {

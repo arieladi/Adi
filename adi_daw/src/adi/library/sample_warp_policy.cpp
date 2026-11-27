@@ -45,7 +45,7 @@ audio::ShortSampleWarpInput readSampleWarpInput(const SampleWarpPolicy& policy,
         throw std::runtime_error("cannot measure the short sample");
     }
     auto measured = std::move(*result.analysis);
-    if (policy.library) measured = applySampleOverrides(std::move(measured), policy.library->analysisOverrides(hash));
+    if (policy.library) measured = policy.library->analysisResolution(result.hash).apply(std::move(measured));
     if (measured.tempoBpm) measured.classification.bpm = measured.tempoBpm;
     return {policy.mode, measured.classification, std::move(result.hash)};
 }

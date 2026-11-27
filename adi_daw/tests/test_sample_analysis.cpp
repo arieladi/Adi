@@ -299,6 +299,97 @@ void authoredMetadataRefresh(Fixture& fixture) {
           "author changes need no decode or rewrite of the derived cache");
 }
 
+void exchangedMetadataResolution(Fixture& fixture) {
+    const auto hash = media::blake3File(fixture.loop);
+    std::string error;
+    const auto indexPath = fixture.temp.path() / "exchanged-analysis.sqlite";
+    auto index = library::Index::open(indexPath, error, false);
+    if (!hash || !index) { check(false, "open the exchange resolution fixture"); return; }
+    library::SampleAnalysisCatalog catalog(fixture.cache, fixture.decode, index.get());
+    catalog.replaceFiles({{fixture.loop, hash.hex, "source"}});
+    catalog.worker().resume();
+    if (!catalog.worker().waitIdle()) { check(false, "measure the local source for exchange"); return; }
+    const auto decoded = fixture.decode.stats().passthrough;
+
+    using Json = nlohmann::json;
+    using Source = audio::SampleKindSource;
+    const std::array lookup{library::SampleAnalysisLookup{"source", hash.hex}};
+    std::vector<std::shared_ptr<const library::SampleAnalysis>> records;
+    const auto published = [&] {
+        catalog.read(lookup, records);
+        return records.front();
+    };
+    const auto original = published();
+    if (!original) { check(false, "publish initial local analysis"); return; }
+    const auto ingest = [&](const Json& fields) {
+        const Json document{{"version", 3}, {"media", {{hash.hex, fields}}}};
+        return index->importJson(document.dump(), error);
+    };
+    const auto observedTempo = [](double bpm, const char* source) {
+        return Json{{"tempo", {{"bpm", bpm}, {"source", source}}}};
+    };
+
+    check(ingest({{"analysis_metadata", observedTempo(99, "detected")}}), "ingest a competing detected tempo");
+    auto row = published();
+    check(row && row->tempoBpm == 120 && row->tempoSource == Source::Detection,
+          "the same-ranking local tempo wins in catalogue resolution");
+    check(ingest({{"analysis_metadata", observedTempo(60, "acid")}}), "ingest better ACID provenance for the same hash");
+    const Json keyOnly{{"key", {{"value", {{"tonic", 2}, {"minor", false}}}, {"source", "file"}, {"strength", 1}}}};
+    check(ingest({{"analysis_metadata", keyOnly}}), "ingest a separate key without a BPM field");
+    row = published();
+    check(row && row->tempoBpm == 60 && row->tempoSource == Source::Acid && row->key == library::SampleKey{2, false} &&
+          row->keySource == Source::FileTag, "observation-only imports merge by hash and refresh the same published row");
+    check(ingest({{"analysis_metadata", observedTempo(85, "detected")}}) && published() == row,
+          "a lower-priority exchange does not replace or republish a stronger prior observation");
+    const std::string unrelated(64, hash.hex.front() == 'f' ? 'a' : 'f');
+    const Json otherSource{{"version", 3}, {"media", {{unrelated, {{"analysis_metadata", observedTempo(90, "file")}}}}}};
+    check(index->importJson(otherSource.dump(), error) && published() == row,
+          "an exchanged observation for another hash does not change a published source");
+
+    const auto policy = library::sampleWarpPolicyFromSettings(Json::object(), &fixture.analysis, index.get());
+    const auto warp = library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::WarpPress, {}, policy,
+        fixture.loop, hash.hex, rate * 4, rate, {}, {});
+    check(warp.action == audio::ShortSampleWarpAction::WarpedLoop && warp.sourceBpm == 60 && warp.loopMarkers &&
+          warp.loopMarkers->back().tick == 4 * textproj::kPPQ,
+          "explicit Warp consumes the same exchanged tempo and produces one bar");
+    check(!ingest({{"analysis_metadata", observedTempo(90, "file")}, {"bpm", -10}}),
+          "a mixed import rolls back when an authored value is invalid");
+    check(published() == row, "a rejected import cannot publish its otherwise valid observation");
+    check(Json::parse(index->exportJson()).at("media").empty(), "observation-only imports write no authored row");
+
+    check(ingest({{"bpm", 120}, {"key", {{"tonic", 10}, {"minor", true}}}}), "persist authored tempo and key above observations");
+    row = published();
+    check(row && row->tempoBpm == 120 && row->tempoSource == Source::User && row->key == library::SampleKey{10, true} &&
+          row->keySource == Source::User, "authored values resolve above exchanged observations");
+    auto exchangedBank = Json::object();
+    constexpr std::string_view digits = "0123456789abcdef";
+    for (std::size_t i = 0; i < 129; ++i) {
+        std::string other(64, '0');
+        other[62] = digits[i / 16];
+        other[63] = digits[i % 16];
+        exchangedBank[other] = {{"analysis_metadata", observedTempo(101, "detected")}};
+    }
+    const Json bank{{"version", 3}, {"media", exchangedBank}};
+    check(index->importJson(bank.dump(), error), "ingest a bank of observations beyond the hash journal");
+    row = published();
+    check(row && row->tempoBpm == 120 && row->key == library::SampleKey{10, true},
+          "the full resolution snapshot joins authored fields with observations for the same hash");
+    check(ingest({{"bpm", nullptr}, {"key", nullptr}}), "clear the authored overrides");
+    row = published();
+    check(row && row->tempoBpm == 60 && row->key == library::SampleKey{2, false},
+          "clearing authored metadata reveals exchanged observations again");
+
+    auto reopened = library::Index::open(indexPath, error, false);
+    if (!reopened) { check(false, "reopen the receiver database"); return; }
+    const auto localPolicy = library::sampleWarpPolicyFromSettings(Json::object(), &fixture.analysis, reopened.get());
+    const auto localWarp = library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::WarpPress, {}, localPolicy,
+        fixture.loop, hash.hex, rate * 4, rate, {}, {});
+    const auto cached = fixture.analysis.read(hash.hex);
+    check(localWarp.sourceBpm == 120 && cached && cached.analysis->tempoBpm == 120 && !cached.analysis->key &&
+          original->tempoBpm == 120 && fixture.decode.stats().passthrough == decoded,
+          "exchanged observations leave ADIA and earlier snapshots intact and end with the receiving Index");
+}
+
 void gatedLoudness(Fixture& fixture) {
     constexpr auto frames = rate;
     std::vector<float> mono(frames), surround(frames * 6);
@@ -451,6 +542,7 @@ int main() {
         measureAndRead(fixture);
         catalogAndRevision(fixture);
         authoredMetadataRefresh(fixture);
+        exchangedMetadataResolution(fixture);
         gatedLoudness(fixture);
         oneDecodePass(fixture);
         warpUsesPublishedAnswer(fixture);

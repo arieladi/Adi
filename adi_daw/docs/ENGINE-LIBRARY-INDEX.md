@@ -51,21 +51,26 @@ and key use the `file`, `acid`, or `detected` source. An observed key also
 carries its strength. The existing top-level BPM remains the user's value.
 
 The owner passes local `SampleAnalysisMetadata` values to `Index::exportJson`
-along with the durable annotations. `Index::importJson` writes authored data
-in one transaction, then returns any observations to its caller. Use
-`portableSampleMetadata` to serialize measurements and `applySampleMetadata`
-to apply observations to the matching content hash. A user value precedes a
-file value, then ACID, then detection. A local value wins when the sources
-have equal priority. ADIL stores the authored values and `sample_settings`.
-The owner can release observations alongside the rest of its library analysis.
+along with the durable annotations. Use `portableSampleMetadata` to prepare
+local measurements for exchange. `Index::importJson` stages observations and
+publishes them after the authored transaction commits. The caller can receive
+the original observations for explicit re-export. Imported fields last for
+the receiving Index's lifetime. Later imports preserve higher-priority
+observations and fill or replace supplied fields at equal priority.
+
+The catalog and short Warp resolve the same verified content hash through
+the Index. A user value precedes a file value, then ACID, then detection.
+A local measurement wins an equal-priority tie with an exchanged value.
+ADIL stores authored values and `sample_settings`. Observation-only imports
+write no authored rows and leave ADIA intact.
 
 The catalog keeps an immutable measured record and overlays the current
-authored settings from its borrowed `Index`. The same listing reflects a
-completed save, clear, or authored JSON import on its next read. Previous query
+authored settings and exchanged observations from its borrowed `Index`. The
+same listing reflects a completed save, clear, or JSON import on its next read. Previous query
 results retain the immutable values they received. The Index revision poll does
 no SQLite work while annotations are unchanged. Recent updates read only the
 changed hashes from a bounded journal. An import or an interval too large for
-the journal refreshes the authored annotations in one scan. Neither path
+the journal refreshes the current resolution inputs. Neither path
 decodes audio or writes ADIA. The in-process Index owner publishes revisions
 after committing the authored transaction.
 
