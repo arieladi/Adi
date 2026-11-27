@@ -568,7 +568,7 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     root.setSize(1200, 800);
     UiPeerRoot peer;
     peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0);
-    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(), "test has only UiFakePeer and no OS window");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "test input uses UiFakePeer");
     peer.addAndMakeVisible(root);
     auto publication = std::make_shared<ParameterPublication>();
     publication->push_back(makePanel(21, true, "External limiter"));
@@ -2070,8 +2070,7 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     peer.setVisible(true);
     peer.addToDesktop(0);
     peer.addAndMakeVisible(root);
-    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(),
-          "Clean presentation uses only a software peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "Clean presentation uses the software peer");
     auto &strip = root.devices;
     strip.setVisible(true);
     strip.publication = [&] { return doc->parameterFeed().current(); };

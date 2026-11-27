@@ -83,7 +83,8 @@ void NormalizationCapture::append(std::span<const double> values,std::uint32_t f
     state.input.process(values,frames);state.frames+=frames;
 }
 NormalizationReport NormalizationCapture::finish(const std::filesystem::path& output,audio::WavFormat format,audio::WavDither dither,
-                                                 std::uint64_t seed,const std::function<void()>& callback) {
+                                                 std::uint64_t seed,const std::function<void()>& callback,
+                                                 const std::function<void(std::uint32_t)>& advanceFrames) {
     worker();auto& state=*impl_;
     if(state.finished || state.frames==0)throw std::runtime_error("Normalization capture is empty or already finalized");
     if((format!=audio::WavFormat::Float32 && format!=audio::WavFormat::Pcm16 && format!=audio::WavFormat::Pcm24) ||
@@ -105,7 +106,7 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     }
     std::vector<double> values(static_cast<std::size_t>(state.channels)*blockFrames);
     std::vector<float> encoded(values.size());
-    for(unsigned pass=0;pass<4;++pass) {
+    for(unsigned pass=0;pass<maxLoudnessEncodingPasses;++pass) {
         service(callback);
         {
             std::ifstream sourceFile(state.spool,std::ios::binary);if(!sourceFile)throw std::runtime_error("Cannot reopen normalization capture");
@@ -122,6 +123,7 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
                     values[sample]=value;
                 }
                 writer.write(values.data(),count);first+=count;
+                if(advanceFrames)advanceFrames(count);
             }
             writer.close();
         }
@@ -134,6 +136,7 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
                 const auto samples=static_cast<std::size_t>(count)*static_cast<std::size_t>(state.channels);
                 for(std::size_t sample=0;sample<samples;++sample)values[sample]=encoded[sample];
                 final.process(std::span<const double>(values.data(),samples),count);first+=count;
+                if(advanceFrames)advanceFrames(count);
             }
         }
         const auto measuredOutput=final.finish();report.outputLufs=measuredOutput.first;report.outputTruePeakDb=measuredOutput.second;

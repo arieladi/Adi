@@ -37,14 +37,17 @@ struct MidiPortHost::Input final : ump::Consumer {
     ump::Input connection;
     MidiEventRing<1024> ring;
 };
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, Writer write)
-    : read_(std::move(ports)), write_(std::move(write)), session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, Writer write, NewInputTrack newInputTrack)
+    : read_(std::move(ports)), write_(std::move(write)), newInputTrack_(std::move(newInputTrack)),
+      session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
     // The ports are listed and opened through one session, the application's.
     ump::Endpoints::getInstance()->addListener(*this);
     refresh();
 }
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write)
-    : read_(std::move(ports)), write_(std::move(write)), fixed_(true), fixedPorts_(std::move(fixed)) {
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write,
+                           NewInputTrack newInputTrack)
+    : read_(std::move(ports)), write_(std::move(write)), newInputTrack_(std::move(newInputTrack)),
+      fixed_(true), fixedPorts_(std::move(fixed)) {
     refresh();
 }
 MidiPortHost::~MidiPortHost() {
@@ -100,7 +103,10 @@ settings::Value MidiPortHost::reconciled(const std::vector<Port> &listed) {
     names.reserve(listed.size());
     for (const auto &p : listed)
         names.push_back({p.id, p.name});
-    if (auto healed = reconcileMidiPorts(record, names); healed && write_ && write_(*healed))
+    std::optional<bool> initialTrack;
+    if (write_ && newInputTrack_)
+        initialTrack = newInputTrack_();
+    if (auto healed = reconcileMidiPorts(record, names, initialTrack); healed && write_ && write_(*healed))
         record = std::move(*healed);
     return record;
 }

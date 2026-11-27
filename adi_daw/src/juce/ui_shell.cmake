@@ -136,7 +136,18 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_eq_pages.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
+    set(adi_program_icon "${CMAKE_CURRENT_SOURCE_DIR}/src/juce/assets/program.png")
+    set(adi_notice_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party_notices")
+    juce_add_binary_data(adi_app_resources NAMESPACE AdiAppResources HEADER_NAME adi_app_resources.hpp SOURCES
+        "${adi_program_icon}"
+        "${adi_notice_dir}/analysis_palettes/README.md"
+        "${adi_notice_dir}/analysis_palettes/CMasher-LICENSE.txt"
+        "${adi_notice_dir}/analysis_palettes/matplotlib-LICENSE.txt"
+        "${adi_notice_dir}/analysis_palettes/seaborn-LICENSE.txt"
+        "${adi_notice_dir}/smexoscope/NOTICE.md"
+        "${adi_notice_dir}/smexoscope/LICENSE.txt")
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw"
+        ICON_BIG "${adi_program_icon}"
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "ADI uses audio input to record audio tracks.")
     if(APPLE)
@@ -149,7 +160,7 @@ if(ADI_WITH_JUCE)
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)
     list(FILTER adi_ui_host_defs EXCLUDE REGEX "^(_CONSOLE|ADI_TEST_VST3)")
     target_compile_definitions(adi_app PRIVATE ${adi_ui_host_defs})
-    target_link_libraries(adi_app PRIVATE adi_ui_shell adi_mix_pipeline_host juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
+    target_link_libraries(adi_app PRIVATE adi_app_resources adi_ui_shell adi_mix_pipeline_host juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     add_test(NAME adi_ui_quit_export_tests
         COMMAND "${CMAKE_COMMAND}" "-DAPP=$<TARGET_FILE:adi_app>" "-DFIXTURE=$<TARGET_FILE:adi_ui_document_tests>"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_quit_export_probe.cmake")
@@ -157,4 +168,7 @@ if(ADI_WITH_JUCE)
         target_include_directories(adi_app SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
     set_source_files_properties(src/juce/ui_main.cpp src/juce/app_midi_ports.cpp PROPERTIES COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
+    if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        include(cmake/install_adi.cmake)
+    endif()
 endif()

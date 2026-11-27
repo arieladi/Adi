@@ -726,8 +726,15 @@ bool BrowserPanel::load(int row) {
         return loadDevicePreset(path);
     }
     auto track = root_.arrangement.geometry.selection.track;
-    if (entry.file)
-        return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, entry.file->path);
+    if (entry.file) {
+        const auto &selection = root_.arrangement.geometry.selection;
+        if (track == 0) {
+            root_.say("Select a track to load " + entry.file->name + " onto.");
+            return false;
+        }
+        return root_.dropAudio(media::pathUtf8(entry.file->path), track, selection.insert,
+                               media::pathUtf8(entry.file->path.stem()));
+    }
     const bool instrument = entry.plugin ? entry.plugin->kind == PluginEntry::Kind::Instrument
                                          : entry.device && entry.device->instrument;
     // R50 decides whether a double-click on a known instrument with an audio track chosen creates a MIDI track.
