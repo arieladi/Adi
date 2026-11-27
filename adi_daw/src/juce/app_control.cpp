@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/app_control.hpp"
 
+#include "adi/control/agent_stop.hpp"
 #include "adi/control/jobs.hpp"
 #include "adi/control/live_project.hpp"
 #include "adi/control/loopback_listener.hpp"
@@ -32,6 +33,7 @@ using Cancel = LoopbackListener::Cancel;
 struct McpWork {
     Incoming frame;
     Reply reply;
+    std::uint64_t receivedAgentEpoch = 0;
     std::atomic<CallState> state{CallState::Pending};
 };
 
@@ -59,6 +61,7 @@ public:
         context.maxOpsPerMinute = [this] { return options.maxOpsPerMinute; };
         context.consentLedger = &ledger;
         context.jobs = &jobs;
+        context.agentWrites = &agentWrites;
         context.askConsent = [this](ConsentRequest question) {
             std::lock_guard lock(questionMutex);
             if (questions.size() < 64) questions.push_back(std::move(question));
@@ -152,6 +155,7 @@ public:
     }
 
     Cancel dispatch(LoopbackRoute route, SessionId id, std::string_view frame, Reply reply) {
+        const auto receivedAgentEpoch = agentWrites.generation();
         std::shared_ptr<Client> client;
         {
             std::lock_guard lock(clientMutex);
@@ -166,6 +170,7 @@ public:
             auto work = std::make_shared<McpWork>();
             work->frame = std::move(message);
             work->reply = std::move(reply);
+            work->receivedAgentEpoch = receivedAgentEpoch;
             {
                 std::lock_guard lock(client->mutex);
                 client->queue.push_back(work);
@@ -192,6 +197,7 @@ public:
         }
         meta->deadlineMs = std::min(meta->deadlineMs.value_or(10000), std::int64_t{10000});
         meta->readDestination = client->mcp.readDestination;
+        meta->receivedAgentEpoch = receivedAgentEpoch;
         auto pending = service.call({client->mcp.credential, "external control client"},
                                     message.method, message.params, *meta,
                                     [id = std::move(message.id), reply = std::move(reply)](Outcome out) {
@@ -211,6 +217,7 @@ public:
             }
             auto pending = CallState::Pending;
             if (!work->state.compare_exchange_strong(pending, CallState::Taken)) continue;
+            client.mcp.receivedAgentEpoch = work->receivedAgentEpoch;
             work->reply(mcp.handle(work->frame, client.mcp, stop));
         }
     }
@@ -222,6 +229,7 @@ public:
     ProjectSet projects;
     ChangesetQueue queue;
     JobBook jobs;
+    AgentWriteGate agentWrites;
     ConsentLedger ledger;
     ControlContext context;
     McpEndpoint mcp;
@@ -271,7 +279,25 @@ std::vector<QueuedChangeset> AppControl::proposals() const {
 
 JobBook& AppControl::jobs() { return impl_->jobs; }
 
+AgentStopReport AppControl::stopAgent(std::string surface) {
+    impl_->agentWrites.stop();
+    AgentStopReport report;
+    report.atUtcMicros = nowMicros();
+    report.surface = std::move(surface);
+    report.rejectedProposals = impl_->queue.rejectPending();
+    report.cancelledJobs = impl_->jobs.stopAgentJobs();
+    return report;
+}
+
+void AppControl::rearmAgent() {
+    impl_->jobs.rearmAgentJobs();
+    impl_->agentWrites.rearm();
+}
+
+bool AppControl::agentStopped() const { return impl_->agentWrites.stopped(); }
+
 agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
+    if (approve && agentStopped()) return {false, agent::Refusal::Invalid, "agent writes are stopped"};
     auto entries = proposals();
     const auto entry = std::find_if(entries.begin(), entries.end(), [id](const QueuedChangeset& e) {
         return e.id == id;

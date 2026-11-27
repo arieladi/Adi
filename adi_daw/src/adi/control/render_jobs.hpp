@@ -24,7 +24,8 @@ public:
     TrackedRenderQueue& operator=(const TrackedRenderQueue&) = delete;
 
     [[nodiscard]] std::optional<JobInfo> enqueue(std::string owner, std::string project,
-                                                  render::Job job);
+                                                  render::Job job,
+                                                  JobOwnership ownership = JobOwnership::Ordinary);
     void run(engine::DeviceLoader = {}, render::Control = {});
     [[nodiscard]] std::vector<render::Entry> snapshot() const { return queue_.snapshot(); }
     [[nodiscard]] const render::RunReport& lastRun() const noexcept { return queue_.lastRun(); }

@@ -6,6 +6,7 @@
 #include <future>
 #include <limits>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -152,6 +153,60 @@ void completionSafePoint() {
           "concurrent polls hand each queued event to exactly one poll");
 }
 
+void stopAgentJobs() {
+    Fixture fixture;
+    auto& book = fixture.book;
+    const auto enqueue = [&](JobOwnership ownership, std::string owner) {
+        return book.enqueue(std::move(owner), {"render", "project", JobRevisionPolicy::CheckAtStartOnly, ownership});
+    };
+    const auto queued = enqueue(JobOwnership::Agent, "agent");
+    const auto agent = enqueue(JobOwnership::Agent, "agent");
+    const auto foundry = enqueue(JobOwnership::Foundry, "foundry");
+    const auto ordinary = book.enqueue("ordinary", {"render", "project"});
+    const auto publishing = enqueue(JobOwnership::Agent, "agent");
+    check(queued && agent && foundry && ordinary && publishing, "the assorted job owners are registered");
+    if (!queued || !agent || !foundry || !ordinary || !publishing) return;
+
+    const auto agentStop = book.start(agent->id);
+    const auto foundryStop = book.start(foundry->id);
+    const auto ordinaryStop = book.start(ordinary->id);
+    const auto publishingStop = book.start(publishing->id);
+    check(agentStop && foundryStop && ordinaryStop && publishingStop, "the workers have their own stop tokens");
+    if (!agentStop || !foundryStop || !ordinaryStop || !publishingStop) return;
+
+    bool callbackRan = false;
+    std::stop_callback callback(*agentStop, [&] {
+        const auto status = book.get("agent", agent->id);
+        callbackRan = status && status->cancelRequested;
+    });
+    const auto admitted = book.complete(publishing->id, {}, [&] {
+        check(book.stopAgentJobs() == 3, "Stop counts the one queued and two stoppable running jobs");
+        return !publishingStop->stop_requested();
+    });
+    check(admitted && admitted->state == JobState::Completed,
+          "Stop respects an already-admitted publication");
+    const auto queuedStatus = book.get("agent", queued->id);
+    check(queuedStatus && queuedStatus->state == JobState::Cancelled && !book.start(queued->id),
+          "the queued agent job is cancelled immediately and cannot start");
+    check(agentStop->stop_requested() && foundryStop->stop_requested() && callbackRan,
+          "running Agent and Foundry jobs get cooperative stop callbacks outside the book lock");
+    check(!ordinaryStop->stop_requested() && book.enqueue("ordinary", {"render", "project"}),
+          "ordinary jobs can run and enqueue while the agent is stopped");
+    check(!enqueue(JobOwnership::Agent, "agent") && !enqueue(JobOwnership::Foundry, "foundry") &&
+              book.stopAgentJobs() == 0,
+          "Stop blocks new agent and Foundry work and does not count cancelled work twice");
+
+    book.rearmAgentJobs();
+    const auto fresh = enqueue(JobOwnership::Foundry, "foundry");
+    check(fresh && book.start(fresh->id) && enqueue(JobOwnership::Agent, "agent"),
+          "re-arming admits new jobs from both stopped owners");
+    check(!book.start(queued->id) && agentStop->stop_requested() && foundryStop->stop_requested(),
+          "re-arming leaves the old queue and stop tokens cancelled");
+    const auto settled = book.complete(agent->id);
+    check(settled && settled->state == JobState::Cancelled,
+          "an old cooperative job settles cancelled once its worker reaches its safe point");
+}
+
 void retentionAndCapacity() {
     Fixture fixture;
     auto& book = fixture.book;
@@ -188,6 +243,7 @@ int main() {
     revisionPolicies();
     completionSafePoint();
     retentionAndCapacity();
+    stopAgentJobs();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures == 0 ? 0 : 1;
 }

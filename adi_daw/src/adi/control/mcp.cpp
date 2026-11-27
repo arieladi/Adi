@@ -331,6 +331,7 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
     }
     RequestMeta meta;
     meta.readDestination = session.readDestination;
+    meta.receivedAgentEpoch = session.receivedAgentEpoch;
     if (const Json* m = metaOf(params)) {
         // Present but not a key is refused, as parseMeta refuses it on the
         // RPC path: ignoring it would silently turn off the dedup a retry

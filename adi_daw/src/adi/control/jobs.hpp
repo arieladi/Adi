@@ -16,6 +16,7 @@ namespace adi::control {
 
 enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 enum class JobRevisionPolicy { CheckAtStartOnly, StableUntilCompletion };
+enum class JobOwnership { Ordinary, Agent, Foundry };
 
 [[nodiscard]] std::string_view toString(JobState);
 [[nodiscard]] std::string_view toString(JobRevisionPolicy);
@@ -24,6 +25,7 @@ struct JobSpec {
     std::string kind;
     std::string project;
     JobRevisionPolicy revision = JobRevisionPolicy::CheckAtStartOnly;
+    JobOwnership ownership = JobOwnership::Ordinary;
 };
 
 struct JobInfo {
@@ -81,6 +83,12 @@ public:
     [[nodiscard]] std::vector<JobInfo> poll(std::string_view owner, std::size_t maximum = kPollLimit);
     [[nodiscard]] std::optional<JobInfo> cancel(std::string_view owner, std::string_view id);
 
+    /// ADR-0259 d1. Stop accepts no new Agent or Foundry jobs and requests
+    /// cancellation of the old ones. Return the count newly cancelled or
+    /// signalled. Jobs already admitted to publish finish at their safe point.
+    [[nodiscard]] std::size_t stopAgentJobs();
+    void rearmAgentJobs();
+
 private:
     enum class Completion { Open, Checking, Publishing };
 
@@ -103,10 +111,12 @@ private:
     void forgetEvents(std::string_view id);
     void emit(const Entry&, bool progressOnly = false);
     [[nodiscard]] JobInfo settle(Entry&, JobState, std::string error = {}, bool conflict = false);
+    [[nodiscard]] bool requestCancellation(Entry&, std::stop_source&);
 
     std::function<std::int64_t()> nowMs_;
     std::function<std::string()> newId_;
     std::mutex mutex_;
+    bool agentJobsArmed_ = true;
     std::vector<Entry> entries_;
     // Each retained job contributes at most five events: Pending, Running,
     // latest progress, a cancel request, and its terminal state.

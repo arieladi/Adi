@@ -86,6 +86,18 @@ std::vector<QueuedChangeset> ChangesetQueue::forReview() const {
     return result;
 }
 
+std::size_t ChangesetQueue::rejectPending() {
+    std::lock_guard lock(mutex_);
+    std::size_t rejected = 0;
+    for (auto& entry : entries_) {
+        if (entry.state == Review::AwaitingReview) {
+            entry.state = Review::Rejected;
+            ++rejected;
+        }
+    }
+    return rejected;
+}
+
 bool ChangesetQueue::setState(std::string_view id, const std::string& credential, Review state) {
     std::lock_guard lock(mutex_);
     for (auto& e : entries_) {

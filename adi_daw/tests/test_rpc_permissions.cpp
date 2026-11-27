@@ -15,6 +15,7 @@
 //     response is never answered, whatever its id.
 
 #include "adi/control/consent_file.hpp"
+#include "adi/control/agent_stop.hpp"
 #include "adi/control/jsonrpc.hpp"
 #include "adi/control/service.hpp"
 #include "adi/control/session_discovery.hpp"
@@ -645,6 +646,43 @@ void testSessionDiscovery() {
 #endif
 }
 
+void testTransportStopEpoch() {
+    section("ADR-0259: a frame retains its admission epoch across transport queues");
+    AgentWriteGate gate;
+    GrantTable grants;
+    const Principal caller{"agent", "test agent"};
+    grants.grant(caller.credential, Tier::Apply);
+    Service service(inlineExecutor(), grants);
+    int writes = 0;
+    MethodSpec method;
+    method.name = "edit";
+    method.minTier = Tier::Propose;
+    method.readOnly = false;
+    method.agentWrites = &gate;
+    method.run = [&](CallContext&, const Json&) { return Outcome::ok(++writes); };
+    service.add(std::move(method));
+    RequestMeta before;
+    before.receivedAgentEpoch = gate.generation();
+    gate.stop();
+    RequestMeta during;
+    during.receivedAgentEpoch = gate.generation();
+    gate.rearm();
+    const auto submit = [&](const RequestMeta& meta) {
+        Outcome result;
+        service.call(caller, "edit", Json::object(), meta,
+                     [&](Outcome out) { result = std::move(out); });
+        return result;
+    };
+    const auto old = submit(before);
+    const auto stopped = submit(during);
+    check(old.error && old.error->code == errc::AgentStopped && stopped.error &&
+              stopped.error->code == errc::AgentStopped && writes == 0,
+          "frames received before or during Stop cannot write after re-arm");
+    RequestMeta fresh;
+    fresh.receivedAgentEpoch = gate.generation();
+    check(!submit(fresh).error && writes == 1, "the new epoch admits new work");
+}
+
 int runAll() {
     testGrantsComeFirst();
     testTiers();
@@ -656,6 +694,7 @@ int runAll() {
     testScreen();
     testSecureEquals();
     testSessionDiscovery();
+    testTransportStopEpoch();
     testRegistration();
     testMeta();
     testWire();

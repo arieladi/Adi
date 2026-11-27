@@ -53,6 +53,7 @@ struct ControlContext {
     /// The app can post this question to its owner thread for the local user.
     std::function<void(ConsentRequest)> askConsent = {};
     JobBook* jobs = nullptr;
+    const AgentWriteGate* agentWrites = nullptr;
 };
 
 /// Registers the control methods. `context` must outlive `service`.

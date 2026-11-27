@@ -77,6 +77,7 @@ public:
         std::string clientLabel;    ///< from clientInfo, for actor_detail only
         /// Set by the authenticated transport. No MCP input can change it.
         std::shared_ptr<const ConsentDestination> readDestination = {};
+        std::optional<std::uint64_t> receivedAgentEpoch = {};
     };
 
     McpEndpoint(Service& service, ProjectSet& projects, McpServerInfo info,

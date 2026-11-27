@@ -72,6 +72,8 @@ public:
                                                       const std::string& credential) const;
     /// Owner-side review seam. Never exposed by the control transport.
     [[nodiscard]] std::vector<QueuedChangeset> forReview() const;
+    /// Stop Agent: the local user rejects every proposal still awaiting a decision.
+    std::size_t rejectPending();
     void add(QueuedChangeset entry);
     /// Moves an owned entry to `state`; false when there is none to move.
     bool setState(std::string_view id, const std::string& credential, Review state);

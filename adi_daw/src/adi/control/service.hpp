@@ -49,6 +49,8 @@
 
 namespace adi::control {
 
+class AgentWriteGate;
+
 /// AI-AGENT §2. Ordered: a higher tier can do everything a lower one can.
 enum class Tier { Observe = 0, Propose = 1, Apply = 2 };
 [[nodiscard]] std::string_view toString(Tier);
@@ -98,6 +100,8 @@ struct RequestMeta {
     std::shared_ptr<RunPolicy> runPolicy = {};
     /// An egress destination supplied by the authenticated transport or host.
     std::shared_ptr<const ConsentDestination> readDestination = {};
+    /// Captured by a trusted transport before a frame waits in its own queue.
+    std::optional<std::uint64_t> receivedAgentEpoch = {};
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
@@ -128,6 +132,7 @@ struct CallContext {
     const Principal& who;
     Tier tier;                  ///< the granted tier
     const RequestMeta& meta;
+    std::optional<std::uint64_t> agentWriteEpoch = {};
 };
 
 struct MethodSpec {
@@ -152,6 +157,7 @@ struct MethodSpec {
     /// Project and application tier caps. Checked before replay and again on
     /// the owner. The API cannot give the caller a higher tier.
     std::function<Tier(Tier, const Json& params)> restrictTier = {};
+    const AgentWriteGate* agentWrites = nullptr;
 };
 
 enum class CallState : int { Pending = 0, Taken = 1, Abandoned = 2 };

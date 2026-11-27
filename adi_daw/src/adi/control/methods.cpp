@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/methods.hpp"
 
+#include "adi/control/agent_stop.hpp"
 #include "adi/control/consent_scope.hpp"
 #include "adi/control/jobs.hpp"
 #include "adi/control/projection.hpp"
@@ -679,6 +680,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.ownerThread = true;
         m.idempotent = true;
         m.readOnly = false;
+        m.agentWrites = ctx.agentWrites;
         const auto scopedTier = [&ctx](Tier grant, const Json& params) {
             const auto app = ctx.appTier ? ctx.appTier() : Tier::Propose;
             const auto ceiling = std::min(grant, app);
@@ -740,9 +742,14 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     if (prior->paramsDigest != digest || prior->project != project->handle())
                         return refusal(errc::InvalidParams, "idempotencyKey reused with different arguments",
                                        "invalid");
-                    if (auto denied = requirePreviewConsent(ctx, call, *project, prior->proposal))
+                    auto replay = prior->proposal;
+                    if (prior->state == Review::Rejected) {
+                        replay["status"] = std::string(toString(Review::Rejected));
+                        replay.erase("apply");
+                    }
+                    if (auto denied = requirePreviewConsent(ctx, call, *project, replay))
                         return std::move(*denied);
-                    return Outcome::ok(prior->proposal);
+                    return Outcome::ok(std::move(replay));
                 }
             }
 
@@ -780,6 +787,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             auto limits = ctx.limits;
             limits.measureClipImpact = call.tier == Tier::Apply && project->allowsAutomaticApply();
             const agent::Preview pv = project->preview(cs, limits);
+            if (ctx.agentWrites && !ctx.agentWrites->stillAdmitted(call.agentWriteEpoch))
+                return Outcome::fail(errc::AgentStopped, "agent writes are stopped");
             if (!pv.ok) {
                 if (external(call))
                     return refusal(pv.refusal == agent::Refusal::Stale ? errc::Stale : errc::InvalidParams,
@@ -863,6 +872,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             const Tier tier = latestGrant ? scopedTier(std::min(call.tier, *latestGrant), p) : Tier::Observe;
             if (tier < Tier::Propose)
                 return Outcome::fail(errc::NotGranted, "not granted");
+            if (ctx.agentWrites && !ctx.agentWrites->stillAdmitted(call.agentWriteEpoch))
+                return Outcome::fail(errc::AgentStopped, "agent writes are stopped");
             if (tier == Tier::Apply && project->allowsAutomaticApply() && !requiresReview) {
                 const auto cap = ctx.maxOpsPerMinute ? ctx.maxOpsPerMinute() : std::size_t{6000};
                 auto budget = ctx.applyRateLimit.reserve(call.who.credential, entry.changeset.ops.size(),

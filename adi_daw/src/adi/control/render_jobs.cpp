@@ -15,12 +15,13 @@ TrackedRenderQueue::~TrackedRenderQueue() {
     }
 }
 
-std::optional<JobInfo> TrackedRenderQueue::enqueue(std::string owner, std::string project, render::Job job) {
+std::optional<JobInfo> TrackedRenderQueue::enqueue(std::string owner, std::string project, render::Job job,
+                                                    JobOwnership ownership) {
     const auto id = queue_.add(std::move(job));
     try {
         auto member = members_.emplace(id, Member{{}, std::move(owner)}).first;
         auto info = book_.enqueue(member->second.owner,
-                                  {"render", std::move(project), JobRevisionPolicy::CheckAtStartOnly});
+                                  {"render", std::move(project), JobRevisionPolicy::CheckAtStartOnly, ownership});
         if (info) {
             member->second.id = info->id;
             return info;

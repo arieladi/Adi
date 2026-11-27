@@ -24,6 +24,10 @@ std::string newJobId() {
     return token.empty() ? std::string{} : "job-" + token.substr(0, 32);
 }
 
+bool agentJob(JobOwnership ownership) {
+    return ownership == JobOwnership::Agent || ownership == JobOwnership::Foundry;
+}
+
 bool terminal(JobState state) {
     return state == JobState::Completed || state == JobState::Failed || state == JobState::Cancelled;
 }
@@ -98,6 +102,7 @@ std::optional<JobInfo> JobBook::enqueue(std::string owner, JobSpec spec) {
     if (audio::onAudioThread || owner.empty() || spec.kind.empty() || toString(spec.revision).empty())
         return std::nullopt;
     std::lock_guard lock(mutex_);
+    if (!agentJobsArmed_ && agentJob(spec.ownership)) return std::nullopt;
     prune();
     const auto id = newId_();
     if (id.empty() || find(id)) return std::nullopt;
@@ -124,7 +129,8 @@ std::optional<std::stop_token> JobBook::start(std::string_view id, JobReadSet re
     if (audio::onAudioThread) return std::nullopt;
     std::lock_guard lock(mutex_);
     auto* entry = find(id);
-    if (!entry || entry->info.state != JobState::Pending) return std::nullopt;
+    if (!entry || entry->info.state != JobState::Pending ||
+        (!agentJobsArmed_ && agentJob(entry->info.spec.ownership))) return std::nullopt;
     if (entry->info.spec.revision == JobRevisionPolicy::StableUntilCompletion && readSet.empty())
         return std::nullopt;
     entry->readSet = std::move(readSet);
@@ -237,6 +243,19 @@ std::vector<JobInfo> JobBook::poll(std::string_view owner, std::size_t maximum) 
     return result;
 }
 
+bool JobBook::requestCancellation(Entry& entry, std::stop_source& toStop) {
+    if (terminal(entry.info.state) || entry.info.cancelRequested ||
+        entry.completion == Completion::Publishing) return false;
+    entry.info.cancelRequested = true;
+    if (entry.info.state == JobState::Pending) {
+        (void)settle(entry, JobState::Cancelled);
+    } else {
+        emit(entry);
+        toStop = entry.stop;
+    }
+    return true;
+}
+
 std::optional<JobInfo> JobBook::cancel(std::string_view owner, std::string_view id) {
     if (audio::onAudioThread) return std::nullopt;
     std::stop_source toStop(std::nostopstate);
@@ -246,16 +265,38 @@ std::optional<JobInfo> JobBook::cancel(std::string_view owner, std::string_view 
         prune();
         auto* entry = find(id);
         if (!entry || entry->owner != owner) return std::nullopt;
-        if (terminal(entry->info.state) || entry->info.cancelRequested ||
-            entry->completion == Completion::Publishing) return entry->info;
-        entry->info.cancelRequested = true;
-        if (entry->info.state == JobState::Pending) return settle(*entry, JobState::Cancelled);
-        emit(*entry);
-        toStop = entry->stop;
+        (void)requestCancellation(*entry, toStop);
         result = entry->info;
     }
     toStop.request_stop();  // stop callbacks may call the book
     return result;
+}
+
+std::size_t JobBook::stopAgentJobs() {
+    if (audio::onAudioThread) return 0;
+    std::vector<std::stop_source> signals;
+    signals.reserve(kCapacity);
+    std::size_t cancelled = 0;
+    {
+        std::lock_guard lock(mutex_);
+        agentJobsArmed_ = false;
+        prune();
+        for (auto& entry : entries_) {
+            if (!agentJob(entry.info.spec.ownership)) continue;
+            std::stop_source toStop(std::nostopstate);
+            if (!requestCancellation(entry, toStop)) continue;
+            ++cancelled;
+            if (toStop.stop_possible()) signals.push_back(std::move(toStop));
+        }
+    }
+    for (auto& signal : signals) signal.request_stop();
+    return cancelled;
+}
+
+void JobBook::rearmAgentJobs() {
+    if (audio::onAudioThread) return;
+    std::lock_guard lock(mutex_);
+    agentJobsArmed_ = true;
 }
 
 }  // namespace adi::control

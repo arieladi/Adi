@@ -96,9 +96,13 @@ Json exchange(Client& client, const Json& requestFrame) {
     return reply.at("result");
 }
 
+int toolError(const Json& reply) {
+    return reply.value("isError", false)
+        ? reply.at("structuredContent").at("error").at("code").get<int>() : 0;
+}
+
 bool needsConsent(const Json& reply) {
-    return reply.value("isError", false) &&
-           reply.at("structuredContent").at("error").at("code") == errc::ConsentRequired;
+    return toolError(reply) == errc::ConsentRequired;
 }
 
 void approveDisclosure(AppControl& app, const std::string& uuid, ConsentData wanted) {
@@ -173,8 +177,65 @@ void testAppControl() {
     const auto currentHead = OpJournal(document->store()).headSeq();
     require(currentHead.has_value(), "the approved change has a committed head");
     args["baseHead"] = *currentHead;
+    args["ops"][0]["payload"]["name"] = "Rejected by Stop Agent";
+    require(needsConsent(call(callTool(7, "changeset_propose", args, "old"))),
+            "ask before disclosing a proposal that will be stopped");
+    approveDisclosure(app, uuid, ConsentData::ChangesetPreview);
+    const auto oldProposal = call(callTool(8, "changeset_propose", args, "old")).at("structuredContent");
+    const auto oldId = oldProposal.at("id").get<std::string>();
+    require(oldProposal.at("status") == "awaiting_review" && app.proposals().size() == 1,
+            "Stop Agent has a proposal waiting for review");
+
+    args["ops"][0]["payload"]["name"] = "Pending before Stop";
+    const auto interruptedFrame = callTool(9, "changeset_propose", args, "interrupted");
+    auto interrupted = std::async(std::launch::async, [&] { return exchange(client, interruptedFrame); });
+    auto interruptedTurn = owner.takeFor(3s);
+    require(static_cast<bool>(interruptedTurn), "the second proposal is already waiting on the owner thread");
+    const auto stopped = app.stopAgent("test surface");
+    require(app.agentStopped() && stopped.rejectedProposals == 1 && app.proposals().empty(),
+            "Stop Agent rejects the proposal that was awaiting review");
+    app.rearmAgent();
+    require(!app.agentStopped() && !app.review(oldId, true).ok,
+            "re-arming cannot make the rejected proposal reviewable");
+    interruptedTurn();
+    require(toolError(interrupted.get()) == errc::AgentStopped && app.takeConsentQuestions().empty(),
+            "an owner turn queued before Stop is refused even after re-arming");
+    require(OpJournal(document->store()).headSeq() == currentHead,
+            "stopping the agent and refusing its in-flight edit write nothing");
+
+    (void)app.stopAgent("test surface");
+    const Json statusArgs = {{"id", oldId}};
+    require(needsConsent(call(callTool(10, "changeset_status", statusArgs, "stopped status"))),
+            "the stopped agent can ask to read its proposal status");
+    approveDisclosure(app, uuid, ConsentData::ChangesetPreview);
+    require(call(callTool(11, "changeset_status", statusArgs, "stopped status"))
+                .at("structuredContent").at("status") == "rejected",
+            "the stopped agent can read the recorded rejection");
+    require(needsConsent(call(callTool(12, "project_read", read, "stopped read"))),
+            "the stopped agent can ask to read the project");
+    approveDisclosure(app, uuid, ConsentData::TrackNames);
+    require(call(callTool(13, "project_read", read, "stopped read"))
+                .at("structuredContent").at("head") == *currentHead,
+            "project reads still work while stopped");
+    require(toolError(call(callTool(14, "changeset_propose", args, "while stopped"))) == errc::AgentStopped &&
+            app.takeConsentQuestions().empty() && app.proposals().empty(),
+            "new agent writes are also refused while stopped");
+
+    app.rearmAgent();
+    args["ops"][0]["payload"]["name"] = "Fresh after rearm";
+    require(needsConsent(call(callTool(15, "changeset_propose", args, "fresh"))),
+            "a fresh request proceeds to the consent gate after re-arming");
+    approveDisclosure(app, uuid, ConsentData::ChangesetPreview);
+    const auto fresh = call(callTool(16, "changeset_propose", args, "fresh")).at("structuredContent");
+    require(fresh.at("status") == "awaiting_review" && app.review(fresh.at("id").get<std::string>(), true).ok &&
+            document->view().committed()->findTrack(101)->name == "Fresh after rearm",
+            "a fresh proposal can be applied after re-arming");
+
+    const auto beforeShutdown = OpJournal(document->store()).headSeq();
+    require(beforeShutdown.has_value(), "the fresh change moved the committed head");
+    args["baseHead"] = *beforeShutdown;
     args["ops"][0]["payload"]["name"] = "Must not run";
-    const auto pendingFrame = callTool(7, "changeset_propose", args, "pending");
+    const auto pendingFrame = callTool(17, "changeset_propose", args, "pending");
     auto remote = std::async(std::launch::async, [&] {
         require(client.send(dumpJson(pendingFrame)), "send another proposal before stopping");
         std::string frame;
@@ -189,7 +250,7 @@ void testAppControl() {
     remote.get();
     pending();
     require(app.takeConsentQuestions().empty() && app.proposals().empty() &&
-            OpJournal(document->store()).headSeq() == currentHead, "the abandoned owner task did not run");
+            OpJournal(document->store()).headSeq() == beforeShutdown, "the abandoned owner task did not run");
 }
 
 }  // namespace
@@ -197,7 +258,7 @@ void testAppControl() {
 int main() {
     try {
         testAppControl();
-        std::puts("PASS -- loopback app control, consent, review, refresh and shutdown");
+        std::puts("PASS -- loopback app control, consent, review, Stop Agent and shutdown");
         return 0;
     } catch (const std::exception& exception) {
         std::printf("FAIL -- %s\n", exception.what());

@@ -23,6 +23,14 @@ struct AppControlOptions {
     std::size_t maxOpsPerMinute = 6000;
 };
 
+struct AgentStopReport {
+    std::size_t rejectedProposals = 0;
+    std::size_t cancelledJobs = 0;
+    std::int64_t atUtcMicros = 0;
+    Actor actor = Actor::User;
+    std::string surface;
+};
+
 /// ADI owns this on its message thread and supplies MessageManager::callAsync.
 /// The seams for token display, consent and proposal review are owner-only.
 class AppControl {
@@ -43,6 +51,9 @@ public:
     [[nodiscard]] std::vector<QueuedChangeset> proposals() const;
     [[nodiscard]] agent::ApplyResult review(std::string_view id, bool approve);
     [[nodiscard]] JobBook& jobs();
+    [[nodiscard]] AgentStopReport stopAgent(std::string surface);
+    void rearmAgent();
+    [[nodiscard]] bool agentStopped() const;
 
 private:
     class Impl;

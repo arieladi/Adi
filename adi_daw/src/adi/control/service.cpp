@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/service.hpp"
+#include "adi/control/agent_stop.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -37,6 +38,7 @@ std::string auditDetail(const RpcError& e) {
         case errc::OverLimit: name = "over a limit"; break;
         case errc::NotGranted: name = kNotGranted; break;
         case errc::ConsentRequired: name = "consent required"; break;
+        case errc::AgentStopped: name = "agent stopped"; break;
         default: name = "error " + std::to_string(e.code); break;
     }
     if (e.data.is_object()) {
@@ -328,6 +330,13 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         finish(Outcome::fail(errc::NotGranted, kNotGranted));
         return pending;
     }
+    const auto agentEpoch = spec->agentWrites ? spec->agentWrites->admit() : std::nullopt;
+    if (spec->agentWrites && (!agentEpoch ||
+            (meta.receivedAgentEpoch && meta.receivedAgentEpoch != agentEpoch))) {
+        pending->take();
+        finish(Outcome::fail(errc::AgentStopped, "agent writes are stopped"));
+        return pending;
+    }
     const auto restrictTier = [spec](Tier grant, const Json& args) {
         return spec->restrictTier ? std::min(grant, spec->restrictTier(grant, args)) : grant;
     };
@@ -367,6 +376,10 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         cacheKey += spec->name;
         cacheKey += '\n';
         cacheKey += *meta.idempotencyKey;
+        if (agentEpoch) {
+            cacheKey += '\n';
+            cacheKey += std::to_string(*agentEpoch);
+        }
         std::string digested = dumpJson(params);
         digested += '\n';
         digested += !meta.expectHead    ? std::string("-")
@@ -388,7 +401,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     //    normalised, payloads validated, before the owner sees anything.
     Json prepared = params;
     if (spec->screen) {
-        CallContext screenCtx{who, ingressTier, meta};
+        CallContext screenCtx{who, ingressTier, meta, agentEpoch};
         std::optional<Outcome> refusal;
         try {
             refusal = spec->screen(screenCtx, prepared);
@@ -410,7 +423,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     // 5. The deadline, and the hop to the owner.
     const std::int64_t deadlineAt = now() + meta.deadlineMs.value_or(options_.defaultDeadlineMs);
     Task run = [this, spec, who, meta, params = std::move(prepared), cacheKey, paramsDigest, deadlineAt,
-                pending, finish, restrictTier, ingressTier]() mutable {
+                pending, finish, restrictTier, ingressTier, agentEpoch]() mutable {
         if (!pending->take()) return;   // the transport abandoned it and answered
         if (now() > deadlineAt) {
             // It waited past its deadline and nobody abandoned it: refuse
@@ -428,6 +441,10 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
             finish(Outcome::fail(errc::NotGranted, kNotGranted));
             return;
         }
+        if (spec->agentWrites && !spec->agentWrites->stillAdmitted(agentEpoch)) {
+            finish(Outcome::fail(errc::AgentStopped, "agent writes are stopped"));
+            return;
+        }
         Outcome out;
         try {
             const auto ownerTier = restrictTier(std::min(ingressTier, *granted), params);
@@ -435,7 +452,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
                 finish(Outcome::fail(errc::NotGranted, kNotGranted));
                 return;
             }
-            CallContext ctx{who, ownerTier, meta};
+            CallContext ctx{who, ownerTier, meta, agentEpoch};
             out = spec->run(ctx, params);
         } catch (const std::exception& e) {
             out = internalError(spec->name, e.what());
@@ -445,6 +462,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         // The rate window and policy can change before the same call retries.
         if (!cacheKey.empty() && !(out.error && (out.error->code == errc::Internal ||
                                                 out.error->code == errc::OverLimit ||
+                                                out.error->code == errc::AgentStopped ||
                                                 out.error->code == errc::NotGranted)))
             remember(cacheKey, paramsDigest, out);
         finish(std::move(out));
