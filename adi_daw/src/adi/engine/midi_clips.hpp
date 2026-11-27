@@ -46,6 +46,8 @@ public:
     // lets a meter show a note that began and ended between two frames.
     [[nodiscard]] MidiNoteActivity noteActivity(std::int64_t track) const noexcept;
     const std::vector<std::string>& problems() const noexcept;
+    // Partial rendering diagnostics in problems() do not drop a clip.
+    [[nodiscard]] bool clipUnavailable(std::int64_t clipId) const noexcept;
     std::uint32_t droppedNotes() const noexcept;
     std::uint64_t droppedControllers() const noexcept;
 

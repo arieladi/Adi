@@ -598,7 +598,6 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         e.error = err;
         inst = makePlaceholder(store, row, ref);
         ++stats_.placeholders;
-        placeholderProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
     } else {
         inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
@@ -689,6 +688,7 @@ void Session::resolveNewRows(const Store& store) {
 std::size_t Session::retryPlaceholders(const Store& store) {
     if (!loaded_ || !loader_ || audio::onAudioThread) return 0;
     std::size_t woke = 0;
+    bool reasonChanged = false;
     for (const rows::Device& row : model_.devices) {
         if (parkedDevice(row)) continue;
         const auto mapped = byId_.find(row.id);
@@ -707,12 +707,12 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         std::string err;
         auto inst = loader_(rq, err);
         if (inst == nullptr) {
-            if (!err.empty()) entries_[previous].error = err;
+            if (!err.empty() && entries_[previous].error != err) {
+                entries_[previous].error = std::move(err);
+                reasonChanged = true;
+            }
             continue;
         }
-        // The open's "kept as a placeholder" line goes with the placeholder.
-        const std::string said = deviceRef(row) + ": kept as a placeholder (ADR-0011): ";
-        std::erase_if(placeholderProblems_, [&](const std::string& p) { return p.rfind(said, 0) == 0; });
         resolveOne(store, row, std::move(inst));
         Entry& old = entries_[previous];  // resolveOne may have grown entries_
         old.retired = true;
@@ -724,7 +724,7 @@ std::size_t Session::retryPlaceholders(const Store& store) {
     if (woke != 0) {
         syncFlags();
         (void)rebuild();
-    }
+    } else if (reasonChanged) refreshProblems();
     return woke;
 }
 
@@ -741,11 +741,6 @@ void Session::retireDepartedRows() {
         e.retired = true;
         e.trackId = 0;
         ++stats_.retired;
-        if (e.parked)
-            continue;
-        sessionProblems_.push_back("devices#" + std::to_string(e.deviceId) + " (" + e.name +
-                                   "): removed from the project; its instance is kept out "
-                                   "of every chain until the session closes (ADR-0122)");
     }
 }
 
@@ -1337,11 +1332,16 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
     };
     if (midi_) append(midi_->problems());
     if (auto* c = clips()) {
-        if (includeUnavailable) append(c->problems());
+        if (includeUnavailable) c->appendPlaybackProblems(problems);
         else c->appendExportBlockingProblems(problems);
     }
     append(sessionProblems_);
-    if (includeUnavailable) append(placeholderProblems_);
+    if (includeUnavailable)
+        for (const auto& row : model_.devices) {
+            const auto* entry = entryFor(row.id);
+            if (entry && entry->placeholder && !entry->retired)
+                problems.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + entry->error);
+        }
     append(strips_.problems());
     append(summing_.problems());
     // The program's own findings only when there is automation to find them in:
@@ -2418,6 +2418,8 @@ bool Session::tick(std::int64_t nowMs) {
     for(const auto& client:clients)client->pump(nowMs);
     std::erase_if(runtimeClients_,[](const auto& client){return client->releasable();});
     pumpGestureCoordinator(*this,nowMs);
+    if (auto* playback = clips(); playback && playback->pollDecodeProblems())
+        refreshProblems();
     return devices_.tick(nowMs);
 }
 

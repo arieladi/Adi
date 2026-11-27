@@ -374,6 +374,9 @@ class StatusBar final : public juce::Component {
     juce::TextButton audioSettings{"Audio Settings"};
     void setAudioDeviceProblem(juce::String problem);
     const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
+    juce::TextButton playbackIssues{""};
+    bool setPlaybackProblems(const std::vector<std::string> &problems);
+    std::function<void(const std::vector<std::string> &)> onPlaybackProblems;
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     DetailButton clipToggle{*this, true};
@@ -392,6 +395,8 @@ class StatusBar final : public juce::Component {
   private:
     AdiRootComponent &root_;
     juce::String audioDeviceProblem_;
+    std::vector<std::string> playbackProblems_;
+    juce::String playbackIssueLabel_;
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
     std::optional<int> exportPercent_;
@@ -611,6 +616,7 @@ class AdiRootComponent final : public juce::Component,
                               (unavailableClipMedia && unavailableClipMedia(clip.id)));
     }
     std::function<bool(std::int64_t)> unavailableClipMedia;
+    std::function<bool(std::int64_t)> clipPlaybackUnavailable;
     std::function<void(std::int64_t)> locateClipMedia;
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;

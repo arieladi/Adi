@@ -1291,16 +1291,36 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
         root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
     };
     addChildComponent(audioSettings);
+    audioSettings.setTitle("Audio Settings");
     audioSettings.onClick = [this] {
         if (root_.openAudioSettings)
             root_.openAudioSettings();
+    };
+    addChildComponent(playbackIssues);
+    playbackIssues.setColour(juce::TextButton::textColourOffId, look::error);
+    playbackIssues.setTooltip("Shows what cannot play in this project.");
+    playbackIssues.onClick = [this] {
+        if (onPlaybackProblems && !playbackProblems_.empty())
+            onPlaybackProblems(playbackProblems_);
     };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
     audioDeviceProblem_ = std::move(problem);
     audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
     audioSettings.setTooltip(audioDeviceProblem_);
+    resized();
     repaint();
+}
+bool StatusBar::setPlaybackProblems(const std::vector<std::string> &problems) {
+    if (playbackProblems_ == problems)
+        return false;
+    playbackProblems_ = problems;
+    playbackIssues.setVisible(!problems.empty());
+    playbackIssueLabel_ = juce::String(problems.size()) + (problems.size() == 1 ? " playback issue" : " playback issues");
+    playbackIssues.setTitle(playbackIssueLabel_);
+    resized();
+    repaint();
+    return true;
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -1312,8 +1332,18 @@ void StatusBar::resized() {
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
     const int messageWidth = std::max(0, w - 419);
-    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
-    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
+    auto actions = juce::Rectangle<int>(35, 11, messageWidth, 16).reduced(4, 0);
+    const bool showAudio = audioSettings.isVisible(), showIssues = playbackIssues.isVisible();
+    if (showAudio) {
+        const int availableWidth = showIssues ? actions.getWidth() / 2 : actions.getWidth();
+        audioSettings.setBounds(actions.removeFromRight(std::min(98, availableWidth)));
+        audioSettings.setButtonText(audioSettings.getWidth() >= 85 ? "Audio Settings" : "Audio");
+        actions.removeFromRight(4);
+    }
+    if (showIssues) {
+        playbackIssues.setBounds(actions.removeFromRight(125));
+        playbackIssues.setButtonText(playbackIssues.getWidth() >= 110 ? playbackIssueLabel_ : juce::String("Issues"));
+    }
 }
 void StatusBar::DetailButton::clicked(const juce::ModifierKeys &mods) {
     // Letting go after a drag in the Clip View selector only finishes the drag.
@@ -1431,7 +1461,8 @@ void StatusBar::paint(juce::Graphics &g) {
     auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
     if (audioProblem && error)
         text << "  " << juce::String(root_.error());
-    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
+                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0);
     auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
     if (exportProgressText_.isNotEmpty())
         g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);

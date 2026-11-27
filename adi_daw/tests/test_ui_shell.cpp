@@ -3883,8 +3883,20 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         {
             // SC-89: the real document feed carries the engine's placeholder reason into the device strip.
             const auto ref = pluginReference(*echo, false);
+            const auto previousProblems = document->session().problems();
             check(document->loadPlugin(ref, 4, {}), "the missing plug-in remains in its track's chain");
             refresh();
+            bool listedPlugIn = false;
+            root.status.onPlaybackProblems = [&](const std::vector<std::string> &problems) {
+                listedPlugIn = std::any_of(problems.begin(), problems.end(), [](const auto &problem) {
+                    return problem.find("(Echo): kept as a placeholder") != std::string::npos &&
+                           problem.find("no device loader") != std::string::npos;
+                });
+            };
+            root.status.setPlaybackProblems(document->session().problems());
+            root.status.playbackIssues.onClick();
+            check(root.status.playbackIssues.isVisible() && listedPlugIn,
+                  "SC-151: the Status Bar's issue list shows why a plug-in could not load");
             check(root.devices.panels.size() == 1, "the Device View contains the missing plug-in");
             if (root.devices.panels.size() == 1) {
                 auto &panel = *root.devices.panels.front();
@@ -3901,6 +3913,11 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             }
             check(root.command(AppCommands::Undo), "a missing plug-in can still be undone");
             refresh();
+            root.status.onPlaybackProblems = {};
+            root.status.setPlaybackProblems(document->session().problems());
+            check(document->session().problems() == previousProblems &&
+                      root.status.playbackIssues.isVisible() == !previousProblems.empty(),
+                  "SC-151: removing Echo clears its warning and preserves the existing status");
         }
         // DF-W34 (c): one folder per vendor ignoring case, spelled as the first in sort order; no vendor
         // and "other" share one folder.
@@ -13884,6 +13901,7 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     std::string error;
     auto document = ProjectDocument::open(project, true, {}, error);
     if (!document) { check(false, "create a project to relink missing audio"); return; }
+    const auto previousProblemCount = document->session().problems().size();
     AudioImport import;
     if (!document->prepareImport(media::pathUtf8(original), 1, import)) {
         check(false, "capture the initial audio file");
@@ -13891,6 +13909,21 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     }
     auto edit = dropAudio(*document->view().current(), 4, 0, "Moved audio", import);
     check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok, "drop audio linked to its original file");
+    if (!document->synchronise() || !document->prepareImport(media::pathUtf8(wrong), 2, import)) {
+        check(false, "capture another file for an unsupported reversed clip");
+        return;
+    }
+    auto reversed = dropAudio(*document->view().current(), 4, 4 * textproj::kPPQ, "Reversed audio", import);
+    const auto reversedId = reversed.clip;
+    if (!reversed.refusal.empty() || !document->ops().submit(std::move(reversed.ops)).ok) {
+        check(false, "drop the second audio clip");
+        return;
+    }
+    {
+        SQLite::Statement reverse(document->store().db(), "UPDATE audio_clips SET reverse=1 WHERE clip_id=?");
+        reverse.bind(1, reversedId);
+        reverse.exec();
+    }
     document.reset();
     std::filesystem::rename(original, relocated);
 
@@ -13903,6 +13936,9 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         const auto *playback = document->session().clips();
         return playback && playback->mediaUnavailable(id);
     };
+    root.clipPlaybackUnavailable = [&](std::int64_t id) { return document->session().clipPlaybackUnavailable(id); };
+    std::vector<std::string> shownProblems;
+    root.status.onPlaybackProblems = [&](const std::vector<std::string> &problems) { shownProblems = problems; };
     auto selectedFile = wrong;
     bool relinked = false;
     root.locateClipMedia = [&](std::int64_t id) {
@@ -13911,6 +13947,22 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     };
     root.setSize(1440, 1200);
     root.frame();
+    root.status.setPlaybackProblems(document->session().problems());
+    root.status.playbackIssues.onClick();
+    const auto lists = [&](std::string_view text) {
+        return std::any_of(shownProblems.begin(), shownProblems.end(), [text](const auto &problem) {
+            return problem.find(text) != std::string::npos;
+        });
+    };
+    check(root.status.playbackIssues.isVisible() && shownProblems.size() == previousProblemCount + 2 &&
+              root.status.playbackIssues.getButtonText() == juce::String(shownProblems.size()) + " playback issues" &&
+              lists("missing") && lists("reverse unsupported"),
+          "SC-151: on open the Status Bar lists both the missing sample and unsupported playback");
+    root.status.setAudioDeviceProblem("The audio driver stopped.");
+    check(root.status.audioSettings.isVisible() &&
+              !root.status.audioSettings.getBounds().intersects(root.status.playbackIssues.getBounds()),
+          "SC-151: playback issues and audio device settings have separate Status Bar actions");
+    root.status.setAudioDeviceProblem({});
     auto &geometry = root.arrangement.geometry;
     geometry.scale = 40;
     geometry.left = 0;
@@ -13934,17 +13986,24 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
     juce::Graphics g(image);
     canvas.paintEntireComponent(g, true);
-    const int clipLeft = static_cast<int>(std::ceil(geometry.x(clip->posTicks)));
-    const int clipRight = static_cast<int>(std::floor(geometry.x(clip->posTicks + clip->lengthTicks)));
     const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight;
-    const auto clipBody = image.getBounds().getIntersection({clipLeft, top, std::max(0, clipRight - clipLeft),
-        std::max(0, geometry.heightFor(4) - 4 - ArrangementCanvas::kClipBarHeight)});
-    int markedPixels = 0;
-    for (int y = clipBody.getY(); y < clipBody.getBottom(); ++y)
-        for (int x = clipBody.getX(); x < clipBody.getRight(); ++x)
-            if (image.getPixelAt(x, y) == look::error)
-                ++markedPixels;
-    check(markedPixels > 0, "the offline sample is marked on its clip");
+    const auto marked = [&](const engine::ClipNode &item) {
+        const int clipLeft = static_cast<int>(std::ceil(geometry.x(item.posTicks)));
+        const int clipRight = static_cast<int>(std::floor(geometry.x(item.posTicks + item.lengthTicks)));
+        const auto body = image.getBounds().getIntersection({clipLeft, top, std::max(0, clipRight - clipLeft),
+            std::max(0, geometry.heightFor(4) - 4 - ArrangementCanvas::kClipBarHeight)});
+        for (int y = body.getY(); y < body.getBottom(); ++y)
+            for (int x = body.getX(); x < body.getRight(); ++x)
+                if (image.getPixelAt(x, y) == look::error)
+                    return true;
+        return false;
+    };
+    const auto *track = root.reader().findTrack(4);
+    const auto *reversedClip = track && track->clips.size() == 2 && track->clips.back()->id == reversedId
+        ? track->clips.back().get() : nullptr;
+    check(marked(*clip), "the offline sample is marked on its clip");
+    check(reversedClip && !root.clipMediaOffline(*reversedClip) && marked(*reversedClip),
+          "SC-151: a reversed clip with a readable file is marked as unable to play");
 
     root.selectClip(clip->id);
     const auto locateAction = [&] {
@@ -13967,6 +14026,11 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         const auto recovered = shownClip();
         check(relinked && recovered && !root.clipMediaOffline(*recovered) && !locateAction(),
               "the same file at its new path relinks and clears the offline mark and menu action");
+        root.status.setPlaybackProblems(document->session().problems());
+        root.status.playbackIssues.onClick();
+        check(shownProblems.size() == previousProblemCount + 1 &&
+                  !lists("missing") && lists("reverse unsupported"),
+              "SC-151: relinking clears only the repaired clip's problem");
         if (recovered && recovered->audio) waveforms.peaks(*recovered->audio);
         for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -13987,6 +14051,8 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         check(undone && restored && root.clipMediaOffline(*restored),
               "one Undo restores the original missing link");
     }
+    root.status.setPlaybackProblems({});
+    check(!root.status.playbackIssues.isVisible(), "SC-151: an empty problem list hides the Status Bar action");
     commands.detach(root);
     document->release();
 }

@@ -1637,13 +1637,18 @@ void decodedPins() {
     check(pins()==0,"closing the session gives every pin back");
 }
 void unsupported() {
-    for(int kind=0;kind<3;++kind) {
+    for(int kind=0;kind<4;++kind) {
         Fixture f;f.add(1,0,500,0,1000);
+        f.add(2,0,500,0,1000);
+        f.store->db().exec("UPDATE clips SET muted=1 WHERE id=2");
         if(kind==0)f.store->db().exec("UPDATE audio_clips SET warp_enabled=1");
-        if(kind==1)f.store->db().exec("UPDATE audio_clips SET reverse=1");
+        if(kind==1)f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=1");
         if(kind==2){std::ofstream file(f.dir.path()/"audio.wav",std::ios::binary|std::ios::trunc);file<<"not WAV";}
+        if(kind==3)f.store->db().exec("UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=1");
         f.load(512);const auto o=f.render(512);
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
+        check(f.session.clipPlaybackUnavailable(1) && !f.session.clipPlaybackUnavailable(2),
+              "a dropped audio clip is tagged by ID, and an intentionally muted clip is not");
     }
 }
 void missingMediaOnUnplayedClips() {

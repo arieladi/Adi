@@ -1939,6 +1939,13 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto *playback = document_->session().clips();
             return playback && playback->mediaUnavailable(clip);
         };
+        root->clipPlaybackUnavailable = [this](std::int64_t clip) {
+            return document_->session().clipPlaybackUnavailable(clip);
+        };
+        root->status.onPlaybackProblems = [this](const std::vector<std::string> &problems) {
+            showPlaybackProblems(problems);
+        };
+        root->status.setPlaybackProblems(document_->session().problems());
         root->locateClipMedia = [this](std::int64_t clip) { locateMissingSample(clip); };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
         root->openProjectBackup = [this] {
@@ -2696,6 +2703,26 @@ class AdiApplication final : public juce::JUCEApplication,
         options.resizable = true;
         options.launchAsync();
     }
+    void showPlaybackProblems(const std::vector<std::string> &problems) {
+        juce::String details;
+        for (const auto &problem : problems)
+            details << juce::String::fromUTF8(problem.c_str()) << "\n\n";
+        auto text = std::make_unique<juce::TextEditor>();
+        text->setMultiLine(true, true);
+        text->setReadOnly(true);
+        text->setText(details.trimEnd(), false);
+        text->setCaretPosition(0);
+        text->setSize(640, 320);
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Playback issues";
+        options.componentToCentreAround = window_.get();
+        options.associatedComponent = window_.get();
+        options.content.setOwned(text.release());
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        options.launchAsync();
+    }
     void locateMissingSample(std::int64_t clip) {
         if (chooser_ || !document_ || !root_)
             return;
@@ -2973,6 +3000,8 @@ class AdiApplication final : public juce::JUCEApplication,
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
+            if (root_->status.setPlaybackProblems(document_->session().problems()))
+                root_->arrangement.canvas.repaint();
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
                     root_->status.setAudioDeviceProblem(std::move(problem));

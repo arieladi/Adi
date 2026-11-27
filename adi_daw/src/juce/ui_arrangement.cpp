@@ -2762,6 +2762,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
             const bool offline = view.root.clipMediaOffline(*c);
+            const bool unavailable = offline ||
+                (view.root.clipPlaybackUnavailable && view.root.clipPlaybackUnavailable(c->id));
             if (!offline)
                 paintWaveform(g, *c, contentPos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
                               static_cast<float>(y + h - 3));
@@ -2797,14 +2799,15 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
-            if (offline) {
+            if (unavailable) {
                 const auto banner = juce::Rectangle<float>(left + 1.f, static_cast<float>(y + 1 + kClipBarHeight),
                     std::max(0.f, right - left - 2.f), static_cast<float>(std::min(13, std::max(0, h - kClipBarHeight - 4))));
                 g.setColour(look::error);
                 g.fillRect(banner);
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontSmall));
-                g.drawText("Sample Offline", banner.reduced(3.f, 0.f), juce::Justification::centredLeft, true);
+                g.drawText(offline ? "Sample Offline" : "Playback unavailable", banner.reduced(3.f, 0.f),
+                           juce::Justification::centredLeft, true);
             }
         };
         // A clip dragged across tracks is drawn on the destination lane, using that track's

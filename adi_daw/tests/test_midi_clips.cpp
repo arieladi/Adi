@@ -124,6 +124,22 @@ struct Fixture {
     }
     void refresh(){if(!session.refresh(*store))throw std::runtime_error(session.error());}
 };
+void unavailableClip() {
+    Fixture f;
+    f.clip(1);
+    f.clip(2);
+    f.store->db().exec("UPDATE clips SET alias_of=1 WHERE id=2");
+    f.load();
+    check(f.session.clipPlaybackUnavailable(2) && !f.session.clipPlaybackUnavailable(1),
+          "only the MIDI clip dropped during preparation is tagged unavailable");
+    check(std::any_of(f.session.problems().begin(), f.session.problems().end(), [](const auto& problem) {
+        return problem == "clips#2: MIDI alias unsupported; silent";
+    }), "the dropped MIDI clip's reason is in the session's playback problems");
+    f.store->db().exec("UPDATE clips SET alias_of=NULL WHERE id=2");
+    f.refresh();
+    check(!f.session.clipPlaybackUnavailable(2) && f.session.problems().empty(),
+          "a fresh playback generation clears the recovered MIDI clip's diagnostic");
+}
 void liveInput() {
     for (const auto width : {Precision::Float32, Precision::Float64}) {
         Fixture f(48000, 64, width);
@@ -1614,6 +1630,8 @@ void expressionKnotFollowsNoteClock() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
+    try { if (only == "all" || only == "unavailable") unavailableClip(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "signed") signedOrigins(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }

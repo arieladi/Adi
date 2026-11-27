@@ -15,6 +15,7 @@
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
 namespace adi::engine {
 namespace {
 constexpr std::size_t maxActive = 128;
@@ -674,6 +675,7 @@ std::shared_ptr<MidiClipState> makeMidiClipState(){return std::make_shared<MidiC
 struct MidiClips::Impl {
     std::map<std::int64_t,std::shared_ptr<Source>> tracks;
     std::vector<std::string> problems;
+    std::unordered_set<std::int64_t> unavailableClips;
     std::weak_ptr<MidiClipState> state;
     const Transport* transport = nullptr;
     double rate = 0;
@@ -917,6 +919,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             if(!expressionProblem.empty())impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+expressionProblem);
         } catch(const std::exception& e) {
             source.notes.resize(before);source.expressionSamples.resize(expressionBefore);
+            impl_->unavailableClips.insert(clip.id);
             impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+e.what());
         }
     }
@@ -969,4 +972,5 @@ MidiNoteActivity MidiClips::noteActivity(std::int64_t track) const noexcept {
     return {static_cast<std::uint32_t>(reading >> 1), (reading & 1u) != 0};
 }
 const std::vector<std::string>& MidiClips::problems() const noexcept{return impl_->problems;}
+bool MidiClips::clipUnavailable(std::int64_t clipId) const noexcept{return impl_->unavailableClips.contains(clipId);}
 }

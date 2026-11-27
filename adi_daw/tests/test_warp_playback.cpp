@@ -213,6 +213,11 @@ void workerFailure() {
     const auto problems=f.session.clips()->decodeProblems();
     check(problems.size()==1 && problems.front().find("clips#7: Re-Pitch derives pitch")!=std::string::npos,
           "the Warp worker keeps the failed clip's diagnostic");
+    f.session.tick(0);
+    check(f.session.clipPlaybackUnavailable(7) && !f.session.clips()->mediaUnavailable(7) &&
+              std::any_of(f.session.problems().begin(), f.session.problems().end(), [](const auto& problem) {
+                  return problem.find("clips#7: Re-Pitch derives pitch") != std::string::npos;
+              }), "SC-151: the owner reports a terminal Warp failure on the clip and in the problem list");
 }
 void replacementSourceInvalidatesWarp() {
     Fixture f;

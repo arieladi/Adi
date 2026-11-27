@@ -524,6 +524,11 @@ public:
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
+    [[nodiscard]] bool clipPlaybackUnavailable(std::int64_t clipId) noexcept {
+        const auto* playback = clips();
+        const auto* midi = midiClips();
+        return (playback && playback->clipUnavailable(clipId)) || (midi && midi->clipUnavailable(clipId));
+    }
 
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
@@ -751,7 +756,6 @@ private:
     std::unordered_map<std::int64_t, std::size_t> byId_;   ///< device id -> entries_
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
-    std::vector<std::string> placeholderProblems_;
     std::string error_;
     std::unique_ptr<PendingLoad> pendingLoad_;
     std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
