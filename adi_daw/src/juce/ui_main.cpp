@@ -1299,7 +1299,7 @@ class AdiApplication final : public juce::JUCEApplication,
             window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
-        if (!noAudio_)
+        if (!noAudio_ && !audioEngineOff_) // SC-385: an engine switched off stays off for the next project
             attachAudio();
         if (crashed)
             askHeldOff(*crashed);
@@ -1682,6 +1682,23 @@ class AdiApplication final : public juce::JUCEApplication,
         root_->say("Collecting and exporting to " + name + "...");
     }
     bool applicationCommand(int id) {
+        if (id == AppCommands::AudioEngine) {
+            // SC-385: Live's audio engine switch. Off closes the device, freeing the interface for another
+            // program (or stopping a howl); on opens it again as the settings name it.
+            if (noAudio_ || !document_)
+                return false;
+            audioEngineOff_ = !audioEngineOff_;
+            if (audioEngineOff_) {
+                detachAudio();
+                if (root_)
+                    root_->say("The audio engine is off: the audio interface is free. Ctrl+Alt+Shift+E turns it on.");
+            } else {
+                attachAudio();
+                if (root_ && manager_.getCurrentAudioDevice() != nullptr)
+                    root_->say("The audio engine is on.");
+            }
+            return true;
+        }
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
             return true;
@@ -2074,6 +2091,7 @@ class AdiApplication final : public juce::JUCEApplication,
     ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
     bool userChoseDevice_ = false, holdingDevice_ = false; // SC-378
     bool inputOpenedForArm_ = false, inputForArm_ = false; // SC-381
+    bool audioEngineOff_ = false;                           // SC-385
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).

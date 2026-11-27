@@ -176,7 +176,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArmSelected,
         ToggleTrackMixer,
         SwitchDetailView,
-        LastId = SwitchDetailView
+        AudioEngine, // SC-385: Live's audio engine off and on, Ctrl+Alt+Shift+E: frees the interface
+        LastId = AudioEngine
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

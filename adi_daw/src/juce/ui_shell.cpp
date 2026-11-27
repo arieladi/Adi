@@ -312,6 +312,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
         {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
         {"view.switch-detail-view", "View"}, // SwitchDetailView
+        {"options.audio-engine", "Options"}, // AudioEngine
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -537,7 +538,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
+                                  "Audio Engine On/Off"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -596,6 +598,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case AudioEngine:
+        // SC-385: Live's Ctrl+Alt+Shift+E (Cmd+Alt+Shift+E): the audio engine off, freeing the interface for
+        // another program or stopping a howl, and on again.
+        info.addDefaultKeypress('e', cmd | alt | shift);
         break;
     case SwitchDetailView:
         info.addDefaultKeypress(juce::KeyPress::tabKey, shift);
@@ -4749,6 +4756,7 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
+        id == AppCommands::AudioEngine ||
         (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||

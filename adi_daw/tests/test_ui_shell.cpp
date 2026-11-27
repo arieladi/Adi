@@ -17870,6 +17870,10 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
               AppCommands::stableId(AppCommands::Redo) == std::string("edit.redo"),
           "the stable ids read as the plan's: view.browser, edit.redo");
     check(AppCommands::commandFor("view.nothing") == 0, "an unknown stable id names no command");
+    check(AppCommands::stableId(AppCommands::AudioEngine) == std::string("options.audio-engine") &&
+              AppCommands::commandFor("options.audio-engine") == AppCommands::AudioEngine &&
+              std::string(AppCommands::category(AppCommands::AudioEngine)) == "Options",
+          "SC-385: Live's audio engine switch is a command of its own, in Options");
     std::string why;
     bool roundTrip = true;
     for (const char *preset : {"live", "cubase", "bitwig"}) {
