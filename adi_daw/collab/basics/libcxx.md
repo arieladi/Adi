@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 27 November 2026, 23:13 IST — seats/session-chain `beb7ebc87a5e273b9faa0455732555d74d0ee66b`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 301 registered CTest suites passed.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 27 November 2026, 22:54 IST — seats/stretcher-chain `ecc23ed923b08c21990b4b0c62d4386669ef2374`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 284 registered CTest suites passed.
