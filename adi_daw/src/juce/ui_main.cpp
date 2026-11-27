@@ -186,6 +186,22 @@ struct QuitExportProbe {
     std::chrono::steady_clock::time_point closeRequested;
     std::string status;
 };
+
+class ScopedLoadingMarker {
+public:
+    ScopedLoadingMarker(LoadingGuard *guard, const std::filesystem::path &project) : guard_(guard) {
+        if (guard_)
+            guard_->arm(project);
+    }
+    ~ScopedLoadingMarker() {
+        if (guard_)
+            guard_->disarm();
+    }
+    ScopedLoadingMarker(const ScopedLoadingMarker &) = delete;
+    ScopedLoadingMarker &operator=(const ScopedLoadingMarker &) = delete;
+private:
+    LoadingGuard *guard_;
+};
 } // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
@@ -710,7 +726,6 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             std::string catalogueError;
             (void)loader_.hydrateCatalogue(catalogueError);
-            open.catalogue = loader_.catalogue();
             if (auto marker = LoadingGuard::read(open.plugins.guard->file()); marker && LoadingGuard::names(*marker, open.path)) {
                 open.crashed = std::move(marker);
                 open.plugins.holdOff->scope = PluginHoldOff::Scope::All;
@@ -723,8 +738,6 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool openWasCancelled() const noexcept { return openProgress_ && openProgress_->cancelled(); }
     void clearProjectOpen() {
-        if (projectOpen_ && projectOpen_->plugins.guard->armed())
-            projectOpen_->plugins.guard->disarm();
         openProgress_.reset();
         projectOpen_.reset();
     }
@@ -759,8 +772,8 @@ class AdiApplication final : public juce::JUCEApplication,
         using Phase = ProjectDocument::OpenJob::Phase;
         try {
             auto &open = *projectOpen_;
-            if (job->phase() == Phase::loadingDevices && !open.crashed && !open.plugins.guard->armed())
-                open.plugins.guard->arm(open.path);
+            auto *guard = job->phase() == Phase::loadingDevices && !open.crashed ? open.plugins.guard.get() : nullptr;
+            const ScopedLoadingMarker marker(guard, open.path);
             job->advance();
         } catch (const std::exception& error) {
             if (!quitAfterExport_) openFailed(error.what());
@@ -802,7 +815,6 @@ class AdiApplication final : public juce::JUCEApplication,
             const bool first = !document_;
             auto plugins = projectOpen_->plugins;
             auto crashed = std::move(projectOpen_->crashed);
-            const bool catalogueChanged = projectOpen_->catalogue != loader_.catalogue();
             if (crashed)
                 plugins.guard->disarm();
             clearProjectOpen();
@@ -811,8 +823,6 @@ class AdiApplication final : public juce::JUCEApplication,
                 askHeldOff(*crashed);
             if (first)
                 startAfterFirstOpen();
-            if (catalogueChanged)
-                discoverAfter();
             break;
         }
         }
@@ -828,16 +838,23 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     // Once the discovery asked for has been adopted: the placeholders whose plug-ins it found wake (SC-318).
     void discoverAfter() {
-        if (!catalogue_)
+        if (catalogue_)
+            catalogue_->settleThen([this] { discoverWakePending_ = true; });
+    }
+    void wakeDiscoveredPlugins() {
+        // A scan can finish between device loads. Wait for the project that will own the result.
+        if (!discoverWakePending_ || !document_ || projectOpen_ || installingDocument_ || quitAfterExport_)
             return;
-        catalogue_->settleThen([this] {
-            if (!document_ || installingDocument_ || quitAfterExport_)
-                return;
-            const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
-            if (const auto woke = document_->wakeMissingPlugins(); woke != 0 && root_)
-                root_->say(woke == 1 ? std::string("A missing plug-in is installed now and loaded in its place.")
-                                     : std::to_string(woke) + " missing plug-ins are installed now and loaded in their places.");
-        });
+        discoverWakePending_ = false;
+        const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
+        const auto &path = document_->store().path();
+        auto *guard = projectPlugins_.guard.get();
+        // A cancelled recovery open can leave a different project's marker for its next open.
+        const auto interrupted = LoadingGuard::read(guard->file());
+        const ScopedLoadingMarker marker(!interrupted || LoadingGuard::names(*interrupted, path) ? guard : nullptr, path);
+        if (const auto woke = document_->wakeMissingPlugins(); woke != 0 && root_)
+            root_->say(woke == 1 ? std::string("A missing plug-in is installed now and loaded in its place.")
+                                 : std::to_string(woke) + " missing plug-ins are installed now and loaded in their places.");
     }
     void stopPluginCatalogue() {
         if (catalogue_)
@@ -951,11 +968,13 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto projectPath = pathFromUtf8(file.getFullPathName().toStdString());
         ProjectPluginLoad plugins;
         const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
-        plugins.guard->arm(projectPath);
-        auto next = ProjectDocument::open(projectPath, true,
-                                          holdingOff(loader_.fn(), plugins.holdOff, plugins.guard), error,
-                                          &commands_->recordingDefaults());
-        plugins.guard->disarm();
+        std::unique_ptr<ProjectDocument> next;
+        {
+            const ScopedLoadingMarker marker(plugins.guard.get(), projectPath);
+            next = ProjectDocument::open(projectPath, true,
+                                         holdingOff(loader_.fn(), plugins.holdOff, plugins.guard), error,
+                                         &commands_->recordingDefaults());
+        }
         if (!next) {
             report(error);
             return false;
@@ -1205,6 +1224,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 discover(DiscoveryMode::Incremental);
             };
             root->browser.setPluginScan(catalogue_->state());
+            scanLine_ = {};
+            if (auto line = scanLine_.next(catalogue_->state(), root->error()))
+                root->say(std::move(*line));
         }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
@@ -1523,9 +1545,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 plugins.holdOff->format = crashed.format;
                 plugins.holdOff->uid = crashed.uid;
                 // Loading them again is guarded as the open was: another crash asks again.
-                plugins.guard->arm(document_->store().path());
+                const ScopedLoadingMarker marker(plugins.guard.get(), document_->store().path());
                 const auto woke = document_->wakeMissingPlugins();
-                plugins.guard->disarm();
                 if (root_)
                     root_->say(woke == 0 ? std::string("No held-off plug-in could be loaded.")
                                          : std::to_string(woke) + (woke == 1 ? " plug-in" : " plug-ins") + " loaded.");
@@ -2228,6 +2249,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
             catalogue_->poll();
+        wakeDiscoveredPlugins();
         if (!quitAfterExport_)
             advanceProjectOpen();
         if (!document_) {
@@ -2315,6 +2337,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // first, and the Settings' plug-in folders the last discovery searched.
     std::unique_ptr<PluginCatalogueService> catalogue_;
     std::string pluginSourcesKey_;
+    bool discoverWakePending_ = false;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
     // The ports' one consumer (N60), declared before the port host that publishes to it and the
     // processor and the bridge that pump it, so it outlives all three.
@@ -2327,7 +2350,6 @@ class AdiApplication final : public juce::JUCEApplication,
         std::filesystem::path path;
         ProjectPluginLoad plugins;
         std::optional<LoadingMarker> crashed;
-        std::shared_ptr<const device::DiscoveryCatalogue> catalogue;
         std::unique_ptr<ProjectDocument::OpenJob> job;
     };
     std::optional<PendingProjectOpen> projectOpen_;
