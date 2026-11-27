@@ -51,7 +51,7 @@ public:
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
     // Wait for preparation independently of the page-read timeout. Offline
-    // renders use this before reading their first block of a cold Warp clip.
+    // renders use this before reading their first block of a cold Warp or pitch-edited clip.
     bool waitForWarp(std::stop_token stop = {}) const;
     // Owner only, BEFORE publishing a candidate source generation: request and
     // wait for the pages selected by an immutable, owner-owned transport value.

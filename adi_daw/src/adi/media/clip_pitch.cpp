@@ -17,8 +17,6 @@ namespace adi::media {
 namespace {
 
 constexpr auto pitchTag = "PNOT";
-constexpr std::uint32_t pitchVersion = 1;
-constexpr std::uint32_t pitchConfiguration = 0; // equal-weight channel mean
 constexpr std::size_t countBytes = 8, noteBytes = 48, pointBytes = 16;
 constexpr std::size_t maxPayloadBytes = 16u * 1024 * 1024;
 constexpr std::uint64_t maxSourceFrames = 64u * 1024 * 1024; // 256 MiB of mono PCM
@@ -97,7 +95,7 @@ std::optional<AnalysisSection> encodeNotes(const audio::PitchAnalysis& pitch) {
         if (note.curve.size() > (maxPayloadBytes - size) / pointBytes) return {};
         size += pointBytes * note.curve.size();
     }
-    AnalysisSection section{pitchVersion, pitchConfiguration, {}};
+    AnalysisSection section{kPitchAnalysisVersion, kPitchAnalysisConfiguration, {}};
     section.bytes.reserve(size);
     appendWord(section.bytes, pitch.notes.size());
     for (const auto& note : pitch.notes) {
@@ -117,7 +115,7 @@ std::optional<AnalysisSection> encodeNotes(const audio::PitchAnalysis& pitch) {
 
 std::optional<audio::PitchAnalysis> decodeNotes(const AnalysisIdentity& source,
                                                 const AnalysisSection& section) {
-    if (section.version != pitchVersion || section.configuration != pitchConfiguration ||
+    if (section.version != kPitchAnalysisVersion || section.configuration != kPitchAnalysisConfiguration ||
         section.bytes.size() < countBytes || section.bytes.size() > maxPayloadBytes) return {};
     std::span<const std::byte> bytes(section.bytes);
     const auto noteCount = readWord(bytes);
@@ -155,7 +153,24 @@ std::optional<audio::PitchAnalysis> readNotes(AnalysisCache& cache, const Analys
 ClipPitchResult success(std::int64_t id, Source source, audio::PitchAnalysis pitch) {
     return {ClipPitchProblem::None,
             ClipPitchAnalysis{id, std::move(source.identity), source.start, source.end,
-                              source.reversed, pitchVersion, pitchConfiguration, std::move(pitch)}, {}};
+                              source.reversed, kPitchAnalysisVersion, kPitchAnalysisConfiguration,
+                              std::move(pitch)}, {}};
+}
+
+audio::PitchAnalysisResult analyzeAndCache(const AnalysisIdentity& identity, std::span<const float> mono,
+                                          AnalysisCache* cache, std::stop_token stop) {
+    auto result = audio::analyzePitch(mono, identity.sampleRate, stop);
+    if (result && cache && !stop.stop_requested()) {
+        try {
+            std::string detail;
+            if (auto section = encodeNotes(*result.analysis))
+                (void)cache->update(identity, pitchTag, *section, detail, stop);
+        } catch (const std::exception&) {
+            // Rebuildable cache failures leave the worker result usable.
+        }
+    }
+    if (stop.stop_requested()) return {audio::PitchAnalysisError::Cancelled, {}};
+    return result;
 }
 
 bool loadMono(audio::WavReader& reader, std::span<float> mono, std::stop_token stop) {
@@ -179,6 +194,24 @@ bool loadMono(audio::WavReader& reader, std::span<float> mono, std::stop_token s
 }
 
 } // namespace
+
+audio::PitchAnalysisResult buildSourcePitchAnalysisFromMono(const AnalysisIdentity& identity,
+    std::span<const float> mono, AnalysisCache* cache, std::stop_token stop) {
+    using Error = audio::PitchAnalysisError;
+    if (audio::onAudioThread) return {Error::Realtime, {}};
+    if (stop.stop_requested()) return {Error::Cancelled, {}};
+    if (identity.frames != mono.size() || mono.empty()) return {Error::InvalidSource, {}};
+    try {
+        if (cache) {
+            auto pitch = readNotes(*cache, identity, stop);
+            if (stop.stop_requested()) return {Error::Cancelled, {}};
+            if (pitch) return {Error::None, std::move(pitch)};
+        }
+        return analyzeAndCache(identity, mono, cache, stop);
+    } catch (const std::bad_alloc&) {
+        return {Error::Resource, {}};
+    }
+}
 
 ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std::stop_token stop) {
     if (audio::onAudioThread) return fail(ClipPitchProblem::Realtime);
@@ -239,20 +272,11 @@ ClipPitchResult buildClipPitchAnalysis(const Store& store, std::int64_t id, std:
         if (!verified || verified.hex != identity.hash)
             return fail(ClipPitchProblem::InvalidSource, "source changed during pitch analysis read");
 
-        auto result = audio::analyzePitch(mono, identity.sampleRate, stop);
+        auto result = analyzeAndCache(identity, mono, cache, stop);
         if (stop.stop_requested() || result.error == audio::PitchAnalysisError::Cancelled)
             return fail(ClipPitchProblem::Cancelled);
         if (!result) return fail(result.error == audio::PitchAnalysisError::Resource ?
                                  ClipPitchProblem::Resource : ClipPitchProblem::InvalidSource);
-        if (cache) {
-            try {
-                if (auto section = encodeNotes(*result.analysis))
-                    (void)cache->update(identity, pitchTag, *section, detail, stop);
-            } catch (const std::exception&) {
-                // Rebuildable cache failures leave the worker result usable.
-            }
-        }
-        if (stop.stop_requested()) return fail(ClipPitchProblem::Cancelled);
         return success(id, std::move(source), std::move(*result.analysis));
     } catch (const std::bad_alloc&) {
         return fail(ClipPitchProblem::Resource);

@@ -6,6 +6,9 @@
 
 namespace adi::media {
 
+inline constexpr std::uint32_t kPitchAnalysisVersion = 1;
+inline constexpr std::uint32_t kPitchAnalysisConfiguration = 0; // equal-weight channel mean
+
 enum class ClipPitchProblem { None, Realtime, Cancelled, NotAudio, InvalidSource, Read, Resource };
 
 struct ClipPitchAnalysis {
@@ -33,5 +36,10 @@ struct ClipPitchResult {
 [[nodiscard]] ClipPitchResult buildClipPitchAnalysis(const Store&, std::int64_t clipId,
                                                       std::stop_token, audio::DecodeCache*,
                                                       AnalysisCache*);
+
+// Worker seam for a caller that already verified the source and downmixed it.
+// mono covers the entire identified source at its original sample rate.
+[[nodiscard]] audio::PitchAnalysisResult buildSourcePitchAnalysisFromMono(
+    const AnalysisIdentity&, std::span<const float> mono, AnalysisCache*, std::stop_token = {});
 
 } // namespace adi::media

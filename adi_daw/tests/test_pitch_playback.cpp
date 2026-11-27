@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "replace_operator_new.hpp"
+#include "temp_directory.hpp"
+#include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_map.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/engine/session.hpp"
+#include "adi/history.hpp"
+#include "adi/media/clip_pitch.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/pitch_edit_store.hpp"
+#include "adi/store.hpp"
+#include "adi/textproj.hpp"
+
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <numbers>
+
+namespace {
+std::atomic<unsigned> callbackAllocations{0};
+}
+void adi::test::countReplacedNew() noexcept {
+    if (adi::audio::onAudioThread) ++callbackAllocations;
+}
+
+namespace {
+using namespace adi;
+constexpr std::uint32_t rate = 48000, sourceFrames = 24000;
+constexpr std::int32_t blockFrames = 1024;
+int checks = 0, failures = 0;
+void check(bool passed, const char* label) {
+    ++checks;
+    if (!passed) {
+        ++failures;
+        std::printf("FAIL: %s\n", label);
+    }
+}
+
+void writeTone(const std::filesystem::path& file, double hz) {
+    std::vector<float> pcm(sourceFrames * 2);
+    for (std::size_t i = 0; i < sourceFrames; ++i) {
+        pcm[i * 2] = static_cast<float>(0.25 * std::sin(2 * std::numbers::pi * hz * static_cast<double>(i) / rate));
+        pcm[i * 2 + 1] = pcm[i * 2] * 0.5f;
+    }
+    audio::WavWriter output(file, rate, 2, audio::WavFormat::Float32);
+    output.write(pcm.data(), sourceFrames);
+    output.close();
+}
+
+void load(engine::Session& session, const Store& store) {
+    session.graph().setFadeFrames(0);
+    engine::SessionSpec spec{2, rate, blockFrames};
+    if (!session.load(store, {}, spec)) throw std::runtime_error(session.error());
+}
+
+std::vector<float> render(engine::Session& session, std::int64_t start) {
+    session.transport().locate(start);
+    session.transport().play();
+    std::vector<float> result;
+    for (int block = 0; block < 8; ++block) {
+        if (!session.clips()->prime(std::chrono::seconds(10))) throw std::runtime_error("prime clip");
+        std::array<float, blockFrames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.frames = blockFrames;
+        io.out = out;
+        io.numOut = 2;
+        {
+            audio::CallbackScope callback;
+            session.process(io);
+        }
+        result.insert(result.end(), left.begin(), left.end());
+    }
+    return result;
+}
+
+double frequency(std::span<const float> pcm) {
+    double first = 0, last = 0;
+    unsigned count = 0;
+    for (std::size_t i = 1; i < pcm.size(); ++i) {
+        if (pcm[i - 1] <= 0 && pcm[i] > 0) {
+            const auto frame = static_cast<double>(i - 1) -
+                static_cast<double>(pcm[i - 1]) / (static_cast<double>(pcm[i]) - pcm[i - 1]);
+            if (count == 0) first = frame;
+            last = frame;
+            ++count;
+        }
+    }
+    return count > 1 ? rate * static_cast<double>(count - 1) / (last - first) : 0;
+}
+
+void run() {
+    test::TempDirectory temp{"pitch_playback", "project"};
+    const auto file = temp.path() / "tone.wav";
+    writeTone(file, 220);
+    StoreError error{};
+    auto store = Store::create(temp.path() / "song.adi", error);
+    if (!store) throw std::runtime_error(toString(error));
+    std::ifstream schema(ADI_PITCH_STAGED_SCHEMA);
+    if (!schema) throw std::runtime_error("read reserved pitch DDL");
+    store->db().exec(std::string(std::istreambuf_iterator<char>(schema), std::istreambuf_iterator<char>()));
+    auto& database = store->db();
+    database.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Tone'),(9,'master','Main');"
+        "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(7,1,'audio',1,0,500000000);");
+    const auto imported = media::importMedia(*store, file, 1, 0);
+    if (!imported.ok) throw std::runtime_error(imported.error);
+    database.exec("INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(7,1,24000)");
+    const auto analysis = media::buildClipPitchAnalysis(*store, 7);
+    if (!analysis || analysis.data->analysis.notes.size() != 1) throw std::runtime_error("analyze single note");
+
+    engine::Session session;
+    load(session, *store);
+    callbackAllocations = 0;
+    const auto original = render(session, 6000);
+    const auto originalHz = frequency(original);
+    check(std::abs(originalHz - 220) < 0.01, "the original physical clip plays through Session");
+
+    audio::PitchEditState state;
+    const std::array commands{audio::PitchEditCommand{0, audio::PitchSetShift{100}}};
+    check(audio::applyPitchEdits(analysis.data->analysis, state, commands) == audio::PitchEditError::None,
+          "prepare a +100-cent segment edit from the real analysis");
+    const auto edit = clip_edit::prepareClipPitchEdits(*analysis.data, state);
+    if (!edit.request) throw std::runtime_error(edit.error);
+    const auto update = OpJournal(*store).commit(*edit.request);
+    if (!update.ok || !session.refresh(*store)) throw std::runtime_error("commit and refresh pitch edits");
+    const auto shifted = render(session, 6000);
+    const auto shiftedHz = frequency(shifted);
+    const auto shift = 1200 * std::log2(shiftedHz / originalHz);
+    check(std::abs(shift - 100) < 1.0, "refresh renders the committed note edit through the ordinary paged source");
+    const auto sources = session.clips()->externalSources();
+    check(sources.size() == 1 && std::filesystem::equivalent(sources.front().path, file) &&
+          sources.front().storedBlake3 == analysis.data->source.hash,
+          "Session still verifies and reports the original pooled file");
+    History history(*store);
+    check(history.undo().ok && session.refresh(*store) && render(session, 6000) == original,
+          "undo restores bit-identical ordinary clip playback");
+    check(history.redo().ok && session.refresh(*store) && render(session, 6000) == shifted,
+          "redo restores bit-identical edited playback");
+
+    const auto markers = audio::writeWarpMap(
+        std::vector<WarpMarker>{{0, 0}, {sourceFrames, 2 * textproj::kPPQ}}, sourceFrames);
+    if (!markers) throw std::runtime_error("build Warp fixture");
+    database.exec("UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=11531520,pos_ns=NULL,length_ns=NULL WHERE id=7");
+    SQLite::Statement warp(database, "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch',"
+                                     "warp_markers=? WHERE clip_id=7");
+    warp.bind(1, markers.bytes.data(), static_cast<int>(markers.bytes.size()));
+    warp.exec();
+    engine::Session warped;
+    load(warped, *store);
+    const auto warpedHz = frequency(render(warped, 12000));
+    check(std::abs(warpedHz * 2 - shiftedHz) < 0.5, "Re-Pitch sees the edited source and stretches it to two beats");
+    check(callbackAllocations.load() == 0 && audio::callbackFileIo.load() == 0,
+          "Session's edited source uses no callback allocations or file I/O");
+    std::printf("Session pitch edit %.3f Hz to %.3f Hz (%+.3f cents), then Re-Pitch %.3f Hz\n",
+                originalHz, shiftedHz, shift, warpedHz);
+
+    writeTone(file, 300);
+    engine::Session changed;
+    load(changed, *store);
+    check(!changed.clips()->waitForWarp(), "offline preparation refuses source bytes that changed under authored edits");
+    const auto problems = changed.clips()->decodeProblems();
+    check(!problems.empty() && problems.front().find("clips#7") != std::string::npos,
+          "the preparation failure names the edited clip");
+}
+} // namespace
+
+int main() {
+    try { run(); }
+    catch (const std::exception& error) { check(false, error.what()); }
+    std::printf("%d checks, %d failures\n", checks, failures);
+    return failures == 0 ? 0 : 1;
+}

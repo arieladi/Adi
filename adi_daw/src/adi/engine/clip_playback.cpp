@@ -11,6 +11,8 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/media/clip_pitch_render.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <samplerate.h>
@@ -26,6 +28,7 @@
 #include <type_traits>
 #include <stdexcept>
 #include <unordered_map>
+#include <variant>
 
 namespace adi::engine {
 namespace fs = std::filesystem;
@@ -35,6 +38,7 @@ struct ClipProject {
     fs::path folder;
     std::unordered_map<std::int64_t, fs::path> hints;
     NoteExpressionsRead noteExpressions;
+    clip_edit::ProjectPitchEditsRead pitchEdits;
 };
 std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows) {
     auto p = std::make_shared<ClipProject>(); p->rows = rows;
@@ -46,6 +50,7 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
     p->noteExpressions=readNoteExpressions(store);
+    p->pitchEdits=clip_edit::readProjectPitchEdits(store);
     return p;
 }
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
@@ -113,23 +118,45 @@ struct SourceReaders {
     std::optional<audio::PcmStreamInfo> compressedInfo;
     bool refusedNative = false;
 };
-struct WarpSource {
+std::string_view preparationDetail(const audio::WarpResult& result) { return result.detail; }
+std::string_view preparationDetail(const media::ClipPitchRenderResult& result) {
+    return result.detail ? std::string_view(*result.detail) : std::string_view{};
+}
+struct PreparedSource {
+    using Task = std::variant<std::shared_ptr<const audio::WarpTask>,
+                              std::shared_ptr<const media::ClipPitchRenderTask>>;
+    struct State {
+        bool ready = false;
+        const fs::path* file = nullptr;
+        std::string_view detail;
+    };
     // The task retains the prepared file. Close the shared WAV reader before
     // dropping this lease so the file can be removed on Windows.
-    const std::shared_ptr<const audio::WarpTask> task;
+    const Task task;
     std::atomic<bool> pending;
     std::mutex mutex;
     std::shared_ptr<WavSource> reader;
 
-    explicit WarpSource(std::shared_ptr<const audio::WarpTask> value)
-        : task(std::move(value)), pending(!task->result()) {}
+    explicit PreparedSource(Task value) : task(std::move(value)), pending(!state().ready) {}
+    State state() const {
+        return std::visit([](const auto& job) -> State {
+            const auto result = job->result();
+            if (!result) return {};
+            if (*result) return {true, &result->prepared->file, {}};
+            return {true, nullptr, preparationDetail(*result)};
+        }, task);
+    }
+    const char* failure() const noexcept {
+        return std::holds_alternative<std::shared_ptr<const audio::WarpTask>>(task)
+            ? "cannot prepare Warp source" : "cannot prepare pitch edits";
+    }
     std::shared_ptr<WavSource> open() {
-        const auto result = task->result();
-        if (!result) return {};
+        const auto result = state();
+        if (!result.ready) return {};
         pending.store(false, std::memory_order_release);
-        if (!*result) throw std::runtime_error("cannot prepare Warp source");
+        if (!result.file) throw std::runtime_error(failure());
         const std::lock_guard lock(mutex);
-        if (!reader) reader = std::make_shared<WavSource>(result->prepared->file);
+        if (!reader) reader = std::make_shared<WavSource>(*result.file);
         return reader;
     }
 };
@@ -149,12 +176,12 @@ struct Clip {
     float gain = 1;
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
-    std::shared_ptr<WarpSource> warp;
+    std::shared_ptr<PreparedSource> prepared;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
     // Open streams and cache pins die with the generation off the callback.
-    // Keep this after warp so the rendered stream closes before its file.
+    // Keep this after prepared so the rendered stream closes before its file.
     std::shared_ptr<WavSource> reader;
     Clip(const Clip&) = delete;
     Clip& operator=(const Clip&) = delete;
@@ -169,8 +196,8 @@ struct Clip {
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
-    bool warpPending() const noexcept {
-        return warp && warp->pending.load(std::memory_order_acquire);
+    bool preparationPending() const noexcept {
+        return prepared && prepared->pending.load(std::memory_order_acquire);
     }
     std::int64_t sourceAt(std::int64_t time) const noexcept {
         if (time < start || time >= end) return -1;
@@ -418,13 +445,13 @@ struct Clip {
 
     bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe,bool interleave) {
         if(failed)return false;
-        if(warp && !reader) {
+        if(prepared && !reader) {
             try {
-                reader = warp->open();
+                reader = prepared->open();
                 if(!reader)return false;
                 const auto& wav = reader->wav;
                 if(wav.channels()!=channels || wav.sampleRate()!=sourceRate || wav.frames()!=sourceLength)
-                    throw std::runtime_error("prepared Warp source dimensions changed");
+                    throw std::runtime_error("prepared clip source dimensions changed");
             } catch(...) {
                 failed=true;
                 errors.fetch_add(1,std::memory_order_relaxed);
@@ -581,7 +608,7 @@ public:
                 clip->request(clip->wanted(transport,maxFrames));
                 for(const auto number:required)if(number>=0)(void)clip->reserve(number);
             }
-            if(clip->warpPending() ||
+            if(clip->preparationPending() ||
                (!intersects(*clip, firstSample, firstFrames) && !intersects(*clip, wrappedSample, wrappedFrames)))
                 continue;
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
@@ -645,7 +672,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     std::unordered_map<fs::path, SourceReaders> readers;
-    std::unordered_map<const audio::WarpTask*, std::weak_ptr<WarpSource>> warpedReaders;
+    if (!project->pitchEdits.error.empty()) throw std::runtime_error(project->pitchEdits.error);
+    std::unordered_map<const audio::WarpTask*, std::weak_ptr<PreparedSource>> warpedReaders;
     for(const auto& row:timelineClips(project->rows)) {
         // Muted clips do not need a reader or a playable media source.
         if(row.kind!="audio" || row.muted) continue;
@@ -653,13 +681,21 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
             if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
             const auto media=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
             if(media==project->rows.media.end() || media->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
+            const clip_edit::ClipPitchEdits* pitch = nullptr;
+            if (const auto& pitches = project->pitchEdits.clips; pitches) {
+                if (const auto found = pitches->find(row.id); found != pitches->end()) {
+                    if (!found->second.error.empty()) throw std::runtime_error(found->second.error);
+                    const auto& authored = found->second.edits;
+                    if (authored && authored->sourceHash == media->hashBlake3) pitch = &*authored;
+                }
+            }
+            if(a->reverse && (!pitch || a->warpEnabled)) throw std::runtime_error("reverse unsupported; silent");
             auto clip=std::make_unique<Clip>();
             clip->clipId=row.id; clip->mediaId=media->id; clip->storedBlake3=media->hashBlake3;
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
@@ -680,7 +716,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(!clip->reader) {
                 if(!opened.compressedInfo) opened.compressedInfo=audio::inspectPcm(clip->path);
                 const auto& info=*opened.compressedInfo;
-                if(a->warpEnabled) {
+                if(a->warpEnabled || pitch) {
                     if(info.channels<1 || info.channels>64)
                         throw std::runtime_error("source channel count outside supported bounds");
                     clip->channels=static_cast<std::uint16_t>(info.channels);
@@ -694,7 +730,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     sourceFrames=*clip->progressive->info().frames;
                 }
             }
-            if(!clip->reader && !clip->progressive && !a->warpEnabled) {
+            if(!clip->reader && !clip->progressive && !a->warpEnabled && !pitch) {
                 clip->reader = opened.decoded.lock();
                 if (!clip->reader) {
                     clip->reader = std::make_shared<WavSource>(clip->path, true);
@@ -728,6 +764,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 throw std::runtime_error("negative clip content offset needs an unwarped source clock");
             const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
             auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
+            std::optional<audio::WarpRenderPlan> pitchWarp;
             if(a->warpEnabled) {
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
                 const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
@@ -750,15 +787,19 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if (!nativeIdentity) {
                     clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
                     clip->length=static_cast<std::int64_t>(clip->sourceLength);
-                    auto task = audio::requestWarp(std::move(spec));
-                    if(!task)throw std::runtime_error("cannot request Warp preparation here");
-                    auto& shared = warpedReaders[task.get()];
-                    clip->warp = shared.lock();
-                    if(!clip->warp) {
-                        clip->warp = std::make_shared<WarpSource>(std::move(task));
-                        shared = clip->warp;
+                    if (pitch) {
+                        pitchWarp = std::move(spec);
+                    } else {
+                        auto task = audio::requestWarp(std::move(spec));
+                        if(!task)throw std::runtime_error("cannot request Warp preparation here");
+                        auto& shared = warpedReaders[task.get()];
+                        clip->prepared = shared.lock();
+                        if(!clip->prepared) {
+                            clip->prepared = std::make_shared<PreparedSource>(std::move(task));
+                            shared = clip->prepared;
+                        }
+                        clip->reader.reset();
                     }
-                    clip->reader.reset();
                 }
             }
             std::int64_t endTicks=origin;
@@ -840,6 +881,17 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
+            if (pitch) {
+                media::ClipPitchRenderPlan plan{clip->path, fs::temp_directory_path()/"adi-pitch",
+                    std::make_shared<const clip_edit::ClipPitchEdits>(*pitch),
+                    static_cast<std::uint64_t>(a->srcStartFrames), static_cast<std::uint64_t>(a->srcLenFrames),
+                    a->reverse, std::move(pitchWarp)};
+                auto task = media::requestClipPitchRender(std::move(plan));
+                if (!task) throw std::runtime_error("cannot request pitch preparation");
+                clip->prepared = std::make_shared<PreparedSource>(std::move(task));
+                clip->sourceStart = 0;
+                clip->reader.reset();
+            }
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
@@ -924,13 +976,13 @@ std::vector<std::string> ClipPlayback::decodeProblems() const {
             if(status==audio::ProgressiveStatus::Failed || status==audio::ProgressiveStatus::Cancelled)
                 result.push_back(clip->progressive->error());
         }
-        if(clip->warp) {
-            const auto state=clip->warp->task->result();
-            if(state && !*state)
+        if(clip->prepared) {
+            const auto state=clip->prepared->state();
+            if(state.ready && !state.file)
                 result.push_back("clips#"+std::to_string(clip->clipId)+": "+
-                                 (state->detail.empty()?"cannot prepare Warp source":state->detail));
+                                 (state.detail.empty()?clip->prepared->failure():std::string(state.detail)));
             else if(clip->errors.load(std::memory_order_relaxed))
-                result.push_back("clips#"+std::to_string(clip->clipId)+": cannot read prepared Warp source");
+                result.push_back("clips#"+std::to_string(clip->clipId)+": cannot read prepared clip source");
         }
     }
     return result;
@@ -943,11 +995,11 @@ bool ClipPlayback::waitForWarp(std::stop_token stop) const {
     if(audio::onAudioThread)return false;
     while(!stop.stop_requested()) {
         bool ready=true;
-        for(const auto& clip:impl_->clips)if(clip->warp) {
+        for(const auto& clip:impl_->clips)if(clip->prepared) {
             if(clip->errors.load(std::memory_order_relaxed))return false;
-            const auto state=clip->warp->task->result();
-            if(state && !*state)return false;
-            if(!state)ready=false;
+            const auto state=clip->prepared->state();
+            if(state.ready && !state.file)return false;
+            if(!state.ready)ready=false;
         }
         if(ready)return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -976,7 +1028,7 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
                 releaseAll();
                 return false;
             }
-            if(allowFailedSources && clip->warpPending())continue;
+            if(allowFailedSources && clip->preparationPending())continue;
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
                 if(!clip->reserve(number)){releaseAll();return false;}
@@ -1031,11 +1083,11 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
         for(auto& clip:impl_->clips) {
             if(clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)) {
-                if(!waitForPendingWarp && clip->warp)continue;
+                if(!waitForPendingWarp && clip->prepared)continue;
                 releaseAll();
                 return false;
             }
-            if(!waitForPendingWarp && clip->warpPending())continue;
+            if(!waitForPendingWarp && clip->preparationPending())continue;
             (void)wanted(*clip,pages);
             bool serviced=false;
             for(const auto number:pages) {
