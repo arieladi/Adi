@@ -627,12 +627,20 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
                 if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
                 spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
-                auto prepared=audio::prepareWarp(spec);
-                if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
-                clip->warped=std::move(prepared.prepared);
-                clip->reader=std::make_shared<WavSource>(clip->warped->file);
-                clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
-                clip->length=static_cast<std::int64_t>(clip->warped->frames);
+                // A take with unchanged timing can play its original window directly.
+                const bool identity = spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
+                    spec.transposeSemis == 0 && spec.formantScale == 1 &&
+                    std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
+                        return anchor.sourceFrame == anchor.outputFrame;
+                    });
+                if (!identity) {
+                    auto prepared=audio::prepareWarp(spec);
+                    if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
+                    clip->warped=std::move(prepared.prepared);
+                    clip->reader=std::make_shared<WavSource>(clip->warped->file);
+                    clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
+                    clip->length=static_cast<std::int64_t>(clip->warped->frames);
+                }
             }
             std::int64_t endTicks=origin;
             if(row.timeBase==0) {

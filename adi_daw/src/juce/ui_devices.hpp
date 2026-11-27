@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <optional>
+#include "adi/engine/mpe_output.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/mix_functions.hpp"
@@ -360,6 +361,9 @@ class DeviceChainStrip final : public juce::Component,
     std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
     std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
+    // A plug-in's expression route chosen from its menu, after the project took it (SC-325): the app
+    // remembers it for that plug-in, the default of its next instance.
+    std::function<void(const DevicePanelData&, engine::RouteChoice)> rememberRoute;
     std::function<mix::Availability(mix::Function)> functionAvailability;
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,
