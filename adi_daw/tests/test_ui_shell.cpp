@@ -12922,6 +12922,52 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
         root.frame();
         check(edit.time.historySize == history - 1 && edit.time.left != selectedLeft,
               "the same Arrangement range does not zoom the Sample Editor on every frame");
+
+        const auto id = clip->id, start = clip->posTicks;
+        const auto changeAt = start + 8 * beat;
+        const bool extended = root.submitEdit("clip.resize", {{"id", id}, {"pos", start}, {"length", 12 * beat}},
+                                              "Extend the looped clip");
+        const bool retimed = extended &&
+                             root.submitEdit("project.insertTempoEvent", {{"pos", changeAt}, {"bpm", 60.}, {"curve", 0}},
+                                             "Slow down inside the looped clip");
+        check(retimed, "extend the loop and change tempo after it has already repeated");
+        if (retimed) {
+            root.frame();
+            lane.scale = 128.;
+            lane.left = static_cast<double>(changeAt - beat) / beat;
+            const auto fitRange = [&](std::int64_t from, std::int64_t to, std::int64_t sourceFrom, std::int64_t sourceTo,
+                                      const char *message) {
+                arrangement.showInsertMarkerAt(from);
+                const juce::Point<float> until{static_cast<float>(lane.x(to)), bodyY};
+                const auto historyBefore = edit.time.historySize;
+                const auto leftBefore = edit.time.left;
+                canvas.mouseDown(pressAt(canvas, until, juce::ModifierKeys::shiftModifier |
+                                                        juce::ModifierKeys::leftButtonModifier));
+                canvas.mouseUp(pressAt(canvas, until));
+                root.frame();
+                const auto width = edit.waveArea().getWidth();
+                const auto span = static_cast<double>(sourceTo - sourceFrom) / beat;
+                check(lane.selection.start == from && lane.selection.end == to &&
+                          std::abs(edit.time.x(sourceFrom)) < 1. &&
+                          std::abs(edit.time.x(sourceTo) - std::min(static_cast<double>(width), 4096. * span)) < 1.,
+                      message);
+                root.frame();
+                check(edit.time.historySize == historyBefore + 1 && edit.keyPressed(juce::KeyPress('x')) &&
+                          edit.time.left == leftBefore,
+                      "one Zoom Back restores the view before fitting the selected repeat");
+            };
+            // At 60 BPM, a quarter of an Arrangement beat is half a beat in the 120 BPM source loop.
+            fitRange(changeAt + beat / 8, changeAt + beat / 4, 4 * beat + beat / 4, 4 * beat + beat / 2,
+                     "selecting time in a later repeat fits its audible waveform interval");
+            fitRange(changeAt + 3 * beat / 8, changeAt + 5 * beat / 8, 4 * beat, 5 * beat,
+                     "a selection across a later wrap fits both sides of the loop");
+            fitRange(changeAt + beat / 4, changeAt + beat / 2, 4 * beat + beat / 2, 5 * beat,
+                     "a selection ending at the wrap fits through the loop end");
+            check(root.command(AppCommands::Undo), "restore the tempo before fitting looped ranges");
+        }
+        if (extended)
+            check(root.command(AppCommands::Undo), "restore the clip length before fitting looped ranges");
+        root.frame();
     }
     commands.detach(root);
 }
