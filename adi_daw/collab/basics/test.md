@@ -13,6 +13,7 @@ The chain started from `origin/basics/integrate-2`. Linux window suites use Debu
 | SC-425 | `basics/test-chain` at `d438ea3fd` | Publish usable plug-ins from readable folders and name the unreadable ones. Plug-in and Browser seats. | The same permission-denied VST3 fixture failed before and passed after for incremental and refresh scans on Linux. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
 | SC-442 | `basics/test-chain` at `d438ea3fd` | Cmd/Ctrl+1 and +2 are already integrated in the Arrangement and key maps. Edit and window seats. | The headless command and grid fixture verified both directions, displayed spacing and persistence. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 | SC-444, SC-203 | `basics/test-chain` at `afceb2556` | Make the normal fade curve drag follow the pointer and keep Alt as the reversal. Clips and Arrangement seats. | An extracted source probe and the peerless fixture covered direction, the stored fade shape and one Undo. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Pushed |
+| SC-201 | `basics/test-chain` at `afceb2556` | Pitch, cents and the supported Warp controls are already integrated. Clip and engine seats. | The peerless Clip View, Warp actions and real audio playback suites checked the existing controls and renderer. Debug Werror, 18 no-display UI suites and 3 acceptance suites passed. | Already in integration |
 
 ## Measurements and findings
 
@@ -67,6 +68,16 @@ Candidate f932abcc0 on f02bd171c fixes the vertical drag sign. The curve handle 
 The headless formula probe took the gesture bodies directly from the baseline and candidate Arrangement sources and ran them through the engine Bézier fade evaluator. At the neutral diamond midpoint, a 30 px up drag used to place the handle 23.6068% of the clip body height below its starting point. It now places it 23.6068% above. Downward is symmetric. Option or Alt keeps the reversed response. The diamond remains 8 × 8 px and its x is the midpoint between fade start and peak. The independent 7 × 7 px start and peak handles and dashed limit from a9c3a597f are already present on the starting branch.
 
 At a normal 30 px upward drag starting at canvas `(20,224.5)`, the measured diamond y moves from 241.733 before to 207.267 after. The Option/Alt result is y241.733.
+
+### SC-201
+
+The starting branch already contains the semitone and cent controls and the unwarped source-rate playback path from f63e56b39. The Warp switch came in af2603ca4, the six placed-clip modes in 00a7cbd7a, editable source BPM and half/double controls in 242438058, and marker and transient editing in 09c5db0f2. The waveform timing actions were integrated with 885d1feb3 and their later fixes. No SC-201 source change is needed for those controls.
+
+Unwarped pitch changes the source clock through resampling. Re-Pitch derives pitch from the Warp playback rate, disables the independent pitch controls, and keeps the stored value for other modes. The Warp toggle still refuses already pitched, formant-shifted or reversed clips in the conversion path. Source BPM can be entered when the analyzer cannot infer a steady beat. Warp preparation runs off the UI and the real-time audio callback.
+
+Complex Pro’s renderer can consume an existing absolute semitone formant shift and runs the Rubber Band formant-preserving option. The stored value is not equivalent to Live’s Formants compensation percentage. The editor exposes neither that stored control nor Live’s Envelope. Beats transient loop/envelope controls and the Tones/Texture grain and fluctuation settings have renderer support with defaults but have no per-clip persisted controls on this branch. The existing six algorithm choices are the supported Warp mode controls.
+
+The 1100 × 278 Clip View fixture measures Pitch `(6,164,69,16)`, Detune `(81,164,69,16)`, Warp `(229,2,52,13)`, BPM `(285,2,75,13)`, division `(363,2,23,13)`, multiplication `(388,2,23,13)`, and mode `(415,2,84,13)` in local pixels. The headless engine fixtures passed 171 playback and 96 Warp edit checks, and the peerless editor exercised pitch, Undo, timing controls, modes and marker editing.
 
 ## For the director
 
