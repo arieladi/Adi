@@ -409,6 +409,41 @@ std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_cod
     if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
     return identityAt(path,error);
 }
+std::optional<FileRevision> readFileRevision(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+#if defined(_WIN32)
+    NativeOwner file;
+    file.value=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    if(file.value==invalidFile){error=nativeError();return {};}
+    const auto identity=windowsIdentityOf(file.value,error,true);
+    if(!identity)return {};
+    FILE_BASIC_INFO times{};
+    FILE_STANDARD_INFO dimensions{};
+    if(!GetFileInformationByHandleEx(file.value,FileBasicInfo,&times,sizeof(times)) ||
+       !GetFileInformationByHandleEx(file.value,FileStandardInfo,&dimensions,sizeof(dimensions))){error=nativeError();return {};}
+    if(dimensions.EndOfFile.QuadPart<0){error=std::make_error_code(std::errc::invalid_argument);return {};}
+    error.clear();
+    return FileRevision{*identity,static_cast<std::uint64_t>(dimensions.EndOfFile.QuadPart),
+                        {times.LastWriteTime.QuadPart,0},{times.ChangeTime.QuadPart,0}};
+#else
+    struct stat info{};
+    if(::lstat(path.c_str(),&info)!=0){error=nativeError();return {};}
+    if(!S_ISREG(info.st_mode) || info.st_size<0){error=std::make_error_code(std::errc::invalid_argument);return {};}
+#if defined(__APPLE__)
+    const auto modified=info.st_mtimespec;
+    const auto changed=info.st_ctimespec;
+#else
+    const auto modified=info.st_mtim;
+    const auto changed=info.st_ctim;
+#endif
+    error.clear();
+    return FileRevision{{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)},
+                        static_cast<std::uint64_t>(info.st_size),
+                        {static_cast<std::int64_t>(modified.tv_sec),static_cast<std::int64_t>(modified.tv_nsec)},
+                        {static_cast<std::int64_t>(changed.tv_sec),static_cast<std::int64_t>(changed.tv_nsec)}};
+#endif
+}
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
     fs::path path;

@@ -113,6 +113,122 @@ void edits(){
         for(const auto& request:std::array<OpRequest,4>{automation::deletePoints(data,2,address,Payload::array({20})),automation::movePoints(data,2,address,Payload::array({point(UINT64_MAX-2,350,.1)})),automation::writePoints(data,2,address,Payload::array({point(99,50,.15)})),automation::setCurve(data,2,address,Payload::array({20}),5,-.5)}){Fixture fixture;roundtrip(fixture,request);}
     }
 }
+
+void compactPointMoveWithRanges() {
+    constexpr int pointCount = 601;
+    constexpr int from = 50, before = 400;
+    constexpr std::int64_t interval = 100, targetTime = before * interval - interval / 2;
+    Fixture fixture;
+    auto& db = fixture.store->db();
+    std::vector<AutomationPoint> points(static_cast<std::size_t>(pointCount));
+    for (int index = 0; index < pointCount; ++index) {
+        auto& value = points[static_cast<std::size_t>(index)];
+        value.point_id = UINT64_MAX - static_cast<std::uint64_t>(pointCount - index);
+        value.time = index * interval;
+        value.value = static_cast<double>(index % 5) / 8.0;
+        value.curve = 2;
+        value.tension = .25f;
+    }
+    const auto originalBytes = writeStream<AutomationPoint>(FourCC::Automation, points);
+    {
+        SQLite::Transaction seed(db);
+        SQLite::Statement stream(db, "UPDATE automation_data SET data=? WHERE id=10");
+        stream.bind(1, originalBytes.data(), static_cast<int>(originalBytes.size()));
+        stream.exec();
+        db.exec("DELETE FROM automation_segment_ranges WHERE data_id=10");
+        SQLite::Statement range(db,
+            "INSERT INTO automation_segment_ranges(id,data_id,clip_id,record_index,progress_begin,progress_end,"
+            "source_first,source_last,future_blob,future_text,future_integer)"
+            " VALUES(?,10,NULL,?,0.2,0.8,-0.123456789012345,0.987654321098765,?,?,?)");
+        for (int index = 0; index < pointCount - 1; ++index) {
+            const std::array<unsigned char, 4> opaque{0, static_cast<unsigned char>(index % 256), 255, 0};
+            range.bind(1, 1000 + index);
+            range.bind(2, index);
+            range.bind(3, opaque.data(), index % 13 == 0 ? 0 : static_cast<int>(opaque.size()));
+            if (index % 7 == 0) range.bind(4);
+            else range.bind(4, std::string("range\0text", 10));
+            range.bind(5, INT64_MAX - index);
+            range.exec();
+            range.reset();
+        }
+        seed.commit();
+    }
+    const auto original = fixture.image();
+    const auto originalRanges = fixture.ranges();
+    check(originalRanges.size() == pointCount - 1 && fixture.valid(), "the long lane starts with 600 typed retained ranges");
+
+    auto selected = points[static_cast<std::size_t>(from)];
+    selected.time = targetTime;
+    const auto result = OpJournal(*fixture.store).commit(automation::movePoints(10, 2, nullptr,
+        Payload::array({point(selected.point_id, selected.time, selected.value)})));
+    if (!result.ok || result.seqs.size() != 1)
+        throw std::runtime_error("move a point across retained ranges: " + result.error);
+    {
+        SQLite::Statement log(db, "SELECT length(payload),length(inverse) FROM ops WHERE seq=?");
+        log.bind(1, result.seqs.front());
+        if (!log.executeStep()) throw std::runtime_error("the range-bearing move is missing from the journal");
+        const auto forwardSize = log.getColumn(0).getInt64(), inverseSize = log.getColumn(1).getInt64();
+        std::printf("SC-422 across 600 retained ranges: %lld payload bytes + %lld inverse bytes = %lld journal bytes\n",
+                    static_cast<long long>(forwardSize), static_cast<long long>(inverseSize),
+                    static_cast<long long>(forwardSize + inverseSize));
+        check(forwardSize > 0 && inverseSize > 0 && forwardSize + inverseSize < 1024,
+              "moving one point across hundreds of retained ranges adds less than 1 KiB to the journal");
+    }
+
+    points.erase(points.begin() + from);
+    points.insert(points.begin() + before - 1, selected);
+    const auto movedBytes = writeStream<AutomationPoint>(FourCC::Automation, points);
+    auto movedRanges = Payload::array();
+    for (auto range : originalRanges) {
+        const auto index = range.at("record_index").get<int>();
+        // Only ranges whose segment endpoints change are lost. Other rows
+        // keep their ID and typed cells at their new record index.
+        if (index == from - 1 || index == from || index == before - 1) continue;
+        if (index > from && index < before) range["record_index"] = index - 1;
+        movedRanges.push_back(std::move(range));
+    }
+    const auto matches = [&](const std::vector<std::byte>& bytes, const Payload& ranges) {
+        SQLite::Statement row(db, "SELECT data FROM automation_data WHERE id=10");
+        if (!row.executeStep()) return false;
+        const auto data = row.getColumn(0);
+        return data.getBytes() == static_cast<int>(bytes.size()) &&
+               std::memcmp(data.getBlob(), bytes.data(), bytes.size()) == 0 &&
+               Payload::to_cbor(fixture.ranges()) == Payload::to_cbor(ranges);
+    };
+    check(matches(movedBytes, movedRanges) && fixture.valid(), "the move preserves exact AAUT bytes and all 597 surviving typed rows");
+    const auto moved = fixture.image();
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.image() == original && matches(originalBytes, originalRanges),
+          "Undo restores exact AAUT bytes and the original typed range cells and ordinals");
+    check(history.redo().ok && fixture.image() == moved && matches(movedBytes, movedRanges),
+          "Redo restores exact moved AAUT bytes and the retained typed range cells and ordinals");
+}
+
+void historicalPointMoveInverse() {
+    Fixture fixture;
+    auto& db = fixture.store->db();
+    const auto original = fixture.image();
+    const auto row = detail::captureRow(db, "automation_data", "id", 10);
+    if (!row) throw std::runtime_error("capture the historical automation stream");
+    // This is the original inverse format on the move's own journal row.
+    const auto legacy = encodePayload({{"id",10},{"lane",2},{"clip",nullptr},
+        {"state",{{"present",true},{"bytes",row->at("data")},{"ranges",fixture.ranges()}}}});
+    const auto result = OpJournal(*fixture.store).commit(automation::movePoints(10, 2, nullptr,
+        Payload::array({point(UINT64_MAX - 2, 350, .1)})));
+    if (!result.ok || result.seqs.size() != 1)
+        throw std::runtime_error("create a point move for legacy replay: " + result.error);
+    const auto moved = fixture.image();
+    {
+        SQLite::Statement historical(db, "UPDATE ops SET inverse=? WHERE seq=?");
+        historical.bind(1, legacy.data(), static_cast<int>(legacy.size()));
+        historical.bind(2, result.seqs.front());
+        historical.exec();
+    }
+    History history(*fixture.store);
+    check(history.undo().ok && fixture.image() == original, "Undo still dispatches a historical full AAUT and range inverse");
+    check(history.redo().ok && fixture.image() == moved, "Redo still replays the forward move paired with a historical inverse");
+}
+
 void atomic(){
     Fixture fixture;const auto before=fixture.image();const auto request=automation::clearLane(2);CommitOptions options;options.beforeCommit=[](SQLite::Database&,std::int64_t,std::string& error){error="range rollback";return false;};check(!OpJournal(*fixture.store).commit(std::span<const OpRequest>(&request,1),options).ok && fixture.image()==before,"late journal refusal rolls back source bytes and every curve-range row");
     const auto edit=automation::movePoints(10,2,nullptr,Payload::array({point(UINT64_MAX-2,350,.1)}));check(!OpJournal(*fixture.store).commit(std::span<const OpRequest>(&edit,1),options).ok && fixture.image()==before,"late point-edit refusal rolls back ordinal rewrites and unknown range cells");
@@ -160,4 +276,4 @@ void audibleCurves(){
 }
 
 }
-int main(){try{lanes();forwardCompatibleUndo();edits();atomic();adversarial();audibleCurves();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{lanes();forwardCompatibleUndo();edits();compactPointMoveWithRanges();historicalPointMoveInverse();atomic();adversarial();audibleCurves();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
