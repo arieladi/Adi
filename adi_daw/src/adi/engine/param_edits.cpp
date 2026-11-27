@@ -101,12 +101,15 @@ void ParamEditCapture::cancelEcho(std::int64_t deviceId, std::int32_t paramIndex
     if (found == parameters_.end()) return;
     found->second.guarded = false; found->second.echoes.clear();
 }
-void ParamEditCapture::cancel(std::int64_t deviceId, std::int32_t paramIndex) {
+void ParamEditCapture::discardGesture(std::int64_t deviceId, std::int32_t paramIndex) {
     const auto found = parameters_.find({deviceId,paramIndex});
     if (found == parameters_.end()) return;
     auto& p = found->second;
     p.open = false; p.hasValue = false; p.implicit = false;
-    p.guarded = false; p.echoes.clear();
+}
+void ParamEditCapture::cancel(std::int64_t deviceId, std::int32_t paramIndex) {
+    discardGesture(deviceId, paramIndex);
+    cancelEcho(deviceId, paramIndex);
 }
 void ParamEditCapture::setQuietMs(std::int64_t ms) {
     if (ms < 0) throw std::invalid_argument("negative quiet interval");

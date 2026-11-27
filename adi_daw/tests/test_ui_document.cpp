@@ -160,8 +160,9 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs : public device::DeviceInstance {
   public:
-    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
-        : reportedLatency(initialLatency), flow_(flow) {}
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through,
+                          std::string cutoffId = "cutoff")
+        : reportedLatency(initialLatency), controls(std::move(cutoffId)), flow_(flow) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     std::string_view processingIssue() const noexcept override { return issue; }
@@ -182,7 +183,8 @@ class SurfaceKnobs : public device::DeviceInstance {
 
 class SilentStateKnobs final : public SurfaceKnobs {
   public:
-    SilentStateKnobs() : SurfaceKnobs(0) {}
+    explicit SilentStateKnobs(std::string cutoffId = "cutoff")
+        : SurfaceKnobs(0, engine::EventFlow::Through, std::move(cutoffId)) {}
     std::uint64_t stateEpoch() const noexcept override { return epoch_; }
     std::vector<std::string> stateRoles() const override { return {"chunk"}; }
     std::vector<std::uint8_t> saveState(const std::string &role) const override {
@@ -196,10 +198,10 @@ class SilentStateKnobs final : public SurfaceKnobs {
         patch = bytes.front();
         return true;
     }
-    void nativeDragWithoutEnd(double value) {
-        broadcastParam(1, engine::ParamEventKind::Begin, 0);
-        controls.setParam("gain", device::ParamValue::fromNormalized(value));
-        broadcastParam(1, engine::ParamEventKind::Value, value);
+    void nativeDragWithoutEnd(double value, std::int32_t index = 1) {
+        broadcastParam(index, engine::ParamEventKind::Begin, 0);
+        controls.setParam(paramAt(index)->id, device::ParamValue::fromNormalized(value));
+        broadcastParam(index, engine::ParamEventKind::Value, value);
     }
     void signalChangedState() {
         const auto announced = beginStateSignal();
@@ -2152,6 +2154,80 @@ void recordingBitDepth(const std::filesystem::path &dir) {
                   row.getColumn(2).getInt() == example.depth,
               "SC-25: the WAV header, exact samples and media pool use the selected depth");
         tick += textproj::kPPQ;
+    }
+}
+
+void captureDuringAutomation(const std::filesystem::path &dir) {
+    struct Pass { const char *file; bool native, targeted; };
+    constexpr std::array<Pass, 4> passes{{
+        {"strip-all.adi", false, false}, {"strip-target.adi", false, true},
+        {"native-all.adi", true, false}, {"native-target.adi", true, true}}};
+    for (const auto &pass : passes) {
+        const auto loader = [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            return request.ref && request.ref->uid == "test.automation-capture"
+                ? std::make_unique<SilentStateKnobs>("7") : nullptr;
+        };
+        std::string error;
+        auto doc = ui::ProjectDocument::open(dir / pass.file, true, loader, error);
+        check(doc != nullptr, "capture automation: open a project");
+        if (!doc)
+            continue;
+        doc->prepare(48000, 64);
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = "test.automation-capture";
+        plugin.name = "Automation capture";
+        plugin.subtype = "effect";
+        check(doc->insertPlugin(plugin, 4), "capture automation: insert a hosted device");
+        const auto &devices = doc->session().model().devices;
+        const auto target = std::find_if(devices.begin(), devices.end(), [&](const auto &entry) {
+            return entry.name == plugin.name;
+        });
+        if (target == devices.end())
+            continue;
+        const auto id = target->id;
+        auto *knobs = dynamic_cast<SilentStateKnobs *>(doc->session().instanceFor(id));
+        doc->setAutomationArmed(true);
+        const bool started = knobs && doc->capturePluginState() && doc->startRecording(0, 0, false);
+        check(started, ("capture automation: start Arrangement Record with a stored device baseline: " +
+                        doc->error()).c_str());
+        if (!started) {
+            doc->release();
+            continue;
+        }
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io{outputs, nullptr, 2, 0, 64};
+        doc->process(io);
+        const auto head = OpJournal(doc->store()).headSeq();
+        const auto params = [&] {
+            return doc->store().db().execAndGet("SELECT count(*) FROM plugin_params").getInt();
+        };
+        const auto beforeParams = params();
+        using Event = engine::ParamEventKind;
+        if (pass.native) {
+            knobs->nativeDragWithoutEnd(.7, 0);
+            if (pass.targeted)
+                doc->pollParameterEdits();
+        } else {
+            check(doc->parameterGesture(id, "7", Event::Begin, .5) &&
+                      doc->parameterGesture(id, "7", Event::Value, .7),
+                  "capture automation: strip touch is still held");
+        }
+        io.streamTimeSamples += io.frames;
+        doc->process(io);
+        const auto snapshot = pass.targeted ? History::SnapshotResult{} : doc->takeSnapshot("During a touch", 1, 0);
+        const bool captured = pass.targeted ? doc->capturePluginState(id) : snapshot.ok;
+        check(captured, (std::string("capture automation: finish an active pass in ") + pass.file +
+                         " " + doc->error()).c_str());
+        const auto step = doc->ops().nextUndo();
+        check(captured && step && step->label == "Record Automation" && params() == beforeParams &&
+                  doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE owner_kind='device'").getInt() == 1,
+              "capture automation: one envelope edit and no stray static parameter edit");
+        check(captured && doc->ops().undo().ok && OpJournal(doc->store()).headSeq() == head,
+              "capture automation: one Undo returns to the state before the touch");
+        doc->stopRecording();
+        doc->release();
     }
 }
 
@@ -4885,6 +4961,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory automationDir("ui_document", "automation-record");
         arrangementAutomation(automationDir.path());
+        test::TempDirectory captureAutomationDir("ui_document", "capture-automation");
+        captureDuringAutomation(captureAutomationDir.path());
         test::TempDirectory recordDir("ui_document", "record");
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());

@@ -75,6 +75,8 @@ public:
     void expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
                               double value, std::int64_t nowMs);
     void cancelEcho(std::int64_t deviceId, std::int32_t paramIndex);
+    /// Consumer: discard an already-drained gesture while retaining expected echoes.
+    void discardGesture(std::int64_t deviceId, std::int32_t paramIndex);
     /// Consumer: cancel already-drained gesture state. Queued producer events
     /// remain queued. ParamOps uses this for its synchronous UI capture only.
     void cancel(std::int64_t deviceId, std::int32_t paramIndex);
