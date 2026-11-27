@@ -127,7 +127,7 @@ public:
                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
                LaunchCaptureBuffer* capture = nullptr) noexcept;
     void finish() noexcept { active_ = false; }
-    void overlay(std::int64_t track, const NodeIo&) const noexcept;
+    void overlay(std::int64_t track, const NodeIo&, std::span<std::uint8_t> replaces = {}) const noexcept;
     [[nodiscard]] std::uint64_t incarnation() const noexcept { return project_->incarnation(); }
     [[nodiscard]] const LaunchSceneClock* sceneClock(std::int64_t id) const noexcept { return project_->sceneClock(id); }
     [[nodiscard]] bool hasScene(std::int64_t scene) const noexcept;

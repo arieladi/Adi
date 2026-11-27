@@ -1903,6 +1903,9 @@ add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_test
 add_executable(adi_session_warp_integration_tests tests/test_session_warp_integration.cpp)
 target_link_libraries(adi_session_warp_integration_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_warp_integration_tests COMMAND adi_session_warp_integration_tests)
+add_executable(adi_session_warp_overlay_delay_tests tests/test_session_warp_overlay_delay.cpp)
+target_link_libraries(adi_session_warp_overlay_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_warp_overlay_delay_tests COMMAND adi_session_warp_overlay_delay_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
     target_link_options(adi_launch_audio_tests PRIVATE

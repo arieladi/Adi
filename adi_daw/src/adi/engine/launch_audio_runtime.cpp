@@ -411,7 +411,7 @@ std::span<const LaunchRenderSlice> LaunchAudioRuntime::sectionsFor(std::int64_t 
                                : std::span<const LaunchRenderSlice>{ranges.midi.data(), ranges.size};
 }
 
-void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node) const noexcept {
+void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node, std::span<std::uint8_t> replaces) const noexcept {
     if (!active_ || tracks_.empty())
         return;
     const auto* ids = tracks_.data();
@@ -428,12 +428,14 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node) const n
     io.numOut = node.channels;
     io.out = node.out;
     io.out64 = node.out64;
+    auto* replace = replaces.size() >= static_cast<std::size_t>(io.frames) ? replaces.data() : nullptr;
     const auto* stop = ranges.items.data() + ranges.size;
     const auto* range = std::upper_bound(ranges.items.data(), stop, node.blockOffset,
         [](std::int32_t offset, const Range& item) { return offset < item.offset + item.frames; });
     for (; range != stop && range->offset < io.frames; ++range) {
         const auto start = std::max(range->offset, node.blockOffset);
         const auto finish = std::min(range->offset + range->frames, io.frames);
+        if (replace) std::fill_n(replace + start, finish - start, std::uint8_t{1});
         const auto advance = start - range->offset;
         const auto available = range->sourceFrame <= std::numeric_limits<std::int64_t>::max() - advance;
         const auto fadeElapsed = range->fadeElapsed < 0 ? -1 : range->fadeElapsed +

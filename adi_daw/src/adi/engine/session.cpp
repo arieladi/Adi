@@ -973,7 +973,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             std::ranges::any_of(project->view().slots, [&](const LaunchSlot& slot) {
                 return slot.track == id && (project->clip(slot.clip) || (beforeClock && beforeClock->clip(slot.clip)));
             });
-        clips.attachLaunchAudio(id, timing.launchAudio, createAudioSource);
+        clips.attachLaunchAudio(id, timing.launchAudio, createAudioSource, clips_.get());
     }
 }
 

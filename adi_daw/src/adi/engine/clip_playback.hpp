@@ -49,8 +49,10 @@ public:
     /// Owner only, before priming or publishing this source generation.
     void useMonitoredInput(std::int64_t track) noexcept;
     /// Owner only, before publishing. A launched track still needs a source
-    /// when it has no Arrangement clips.
-    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>, bool createIfMissing = true);
+    /// when it has no Arrangement clips. Share matching delay history with
+    /// the previous generation without inspecting the driver's PCM.
+    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>,
+                           bool createIfMissing = true, const ClipPlayback* previous = nullptr);
     /// Owner only, before publishing. The span object outlives rendering of this
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;

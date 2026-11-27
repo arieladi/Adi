@@ -7,6 +7,7 @@
 #include "adi/engine/clip_sinc_441_to_480.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
+#include "adi/engine/launch_overlay_delay.hpp"
 #include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/launch_store.hpp"
 #include "adi/engine/warp_clip_player.hpp"
@@ -624,10 +625,38 @@ public:
          wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}
     bool processesDouble() const noexcept override { return true; }
     std::int32_t latencySamples() const noexcept override { return playbackDelay; }
+    std::shared_ptr<LaunchOverlayDelay> launchDelay;
+    std::vector<float> launchNarrow;
+    std::vector<double> launchWide;
+    std::vector<std::uint8_t> launchReplaces;
     void process(const NodeIo& io) noexcept override {
         if(io.wide()) play<double>(io,io.out64);
         else play<float>(io,io.out);
-        if(launchAudio)launchAudio->overlay(track,io);
+        if (!launchAudio) return;
+        if (!launchDelay) {
+            launchAudio->overlay(track, io);
+        } else if (io.channels == channels && io.blockOffset >= 0 && io.frames >= 0 &&
+                   io.blockOffset <= maxFrames - io.frames) {
+            if (io.wide()) delayOverlay(io, io.out64, launchWide.data());
+            else delayOverlay(io, io.out, launchNarrow.data());
+        }
+    }
+    template<class T>
+    void delayOverlay(const NodeIo& io, T* const* output, T* scratch) noexcept {
+        std::array<T*, 64> channelsOut{};
+        for (std::int32_t channel = 0; channel < channels; ++channel) {
+            auto* plane = scratch + static_cast<std::size_t>(channel) * static_cast<std::size_t>(maxFrames);
+            std::fill_n(plane + io.blockOffset, io.frames, T{0});
+            channelsOut[static_cast<std::size_t>(channel)] = plane;
+        }
+        std::fill_n(launchReplaces.data() + io.blockOffset, io.frames, std::uint8_t{0});
+        auto slot = io;
+        slot.out = nullptr;
+        slot.out64 = nullptr;
+        if constexpr (std::is_same_v<T,double>) slot.out64 = channelsOut.data();
+        else slot.out = channelsOut.data();
+        launchAudio->overlay(track, slot, {launchReplaces.data(), launchReplaces.size()});
+        launchDelay->mix(transport, io.blockOffset, io.frames, channelsOut.data(), launchReplaces.data(), output);
     }
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
@@ -636,6 +665,24 @@ public:
             std::binary_search(recordingTracks->data(), recordingTracks->data() + recordingTracks->size(), track);
         if(!transport.playing() || recording || (!clips.empty() && clips.front()->monitorInputOnly)){
             if(io.blockOffset==0) {
+    void attachLaunch(std::shared_ptr<const LaunchAudioRuntime> runtime, const TrackSource* before) {
+        launchAudio = std::move(runtime);
+        if (!launchAudio) return;
+        if (playbackDelay == 0) return;
+
+        if (before && before->launchDelay && before->playbackDelay == playbackDelay && before->channels == channels &&
+            before->launchAudio->incarnation() == launchAudio->incarnation()) {
+            // Only the graph selected by the driver writes the shared history.
+            // The owner does not inspect or copy its live PCM.
+            launchDelay = before->launchDelay;
+        } else {
+            launchDelay = std::make_shared<LaunchOverlayDelay>(playbackDelay, channels);
+        }
+        const auto samples = static_cast<std::size_t>(maxFrames) * static_cast<std::size_t>(channels);
+        launchNarrow.resize(samples);
+        launchWide.resize(samples);
+        launchReplaces.resize(static_cast<std::size_t>(maxFrames));
+    }
                 // Keep looking ahead while output is suppressed so playback can resume.
                 // Candidate preparation keeps the captured transport intact.
                 auto nextPlay=transport;
@@ -756,6 +803,7 @@ struct ClipPlayback::Impl {
     Impl(Transport& t,std::int32_t f,std::int32_t ch,bool synchronous)
         :transport(t),maxFrames(f),channels(ch),synchronousReads(synchronous){}
     ~Impl() { for(auto& worker:workers) worker.request_stop(); }
+    std::uint32_t sampleRate = 0;
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
                            double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder,
@@ -776,6 +824,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
+    impl_->sampleRate = static_cast<std::uint32_t>(rate);
             const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
             const bool nativeWarp = warpPlayback == WarpPlayback::Streaming && warpMode && (a->formantShift == 0) &&
@@ -1359,17 +1408,24 @@ void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
     for (auto& clip : impl_->clips)
         if (clip->track == id) clip->monitorInputOnly = true;
 }
-void ClipPlayback::attachLaunchAudio(std::int64_t id, std::shared_ptr<const LaunchAudioRuntime> runtime, bool createIfMissing) {
+void ClipPlayback::attachLaunchAudio(std::int64_t id, std::shared_ptr<const LaunchAudioRuntime> runtime,
+                                     bool createIfMissing, const ClipPlayback* previous) {
+    const TrackSource* before = nullptr;
+    if (previous && &previous->impl_->transport == &impl_->transport && previous->impl_->sampleRate == impl_->sampleRate) {
+        for (const auto& track : previous->impl_->tracks) {
+            if (track->track == id) { before = track.get(); break; }
+        }
+    }
     for (auto& track : impl_->tracks) {
         if (track->track == id) {
-            track->launchAudio = std::move(runtime);
+            track->attachLaunch(std::move(runtime), before);
             return;
         }
     }
     if (!createIfMissing) return;
     auto track = std::make_unique<TrackSource>(impl_->transport, impl_->maxFrames, impl_->channels, id);
     track->owner = impl_;
-    track->launchAudio = std::move(runtime);
+    track->attachLaunch(std::move(runtime), before);
     impl_->tracks.push_back(std::move(track));
 }
 void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std::int64_t>& recordingTracks) noexcept {
