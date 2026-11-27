@@ -26,10 +26,13 @@ inline constexpr std::size_t kHelloPrefixBytes = 24;
 inline constexpr std::size_t kMaxIdBytes = 256;
 inline constexpr std::size_t kMaxStateBytes = 40 * 1024 * 1024;
 inline constexpr std::size_t kMaxFailureBytes = 1024;
+inline constexpr std::size_t kMaxParameterBytes = 2 * 1024 * 1024;
+inline constexpr std::size_t kParameterValueBytes = 12;
 
 enum class Message : std::uint16_t {
     Hello = 1, Ready = 2, Process = 3, Result = 4,
     FetchState = 5, State = 6, RestoreState = 7, Ack = 8, Failure = 9,
+    ReadParameters = 10, Parameters = 11, SetParameter = 12, ParameterValue = 13,
 };
 
 struct Header {
@@ -49,6 +52,7 @@ struct Hello {
 struct Ready {
     std::int32_t pluginLatency = 0;
     bool state = false;
+    bool parameters = false;
 };
 
 // Fixed layout integer fields. Callers check the frame length before reading.
@@ -76,10 +80,14 @@ template<std::unsigned_integral Unsigned>
         case Message::Process: return length >= kBlockHeaderBytes && length <= kMaxBlockPacketBytes;
         case Message::Result: return length >= 4 + kBlockHeaderBytes && length <= 4 + kMaxBlockPacketBytes;
         case Message::FetchState:
+        case Message::ReadParameters:
         case Message::Ack: return length == 0;
         case Message::State:
         case Message::RestoreState: return length <= kMaxStateBytes;
         case Message::Failure: return length <= kMaxFailureBytes;
+        case Message::Parameters: return length >= 4 && length <= kMaxParameterBytes;
+        case Message::SetParameter:
+        case Message::ParameterValue: return length == kParameterValueBytes;
     }
     return false;
 }
@@ -142,7 +150,7 @@ template<std::unsigned_integral Unsigned>
 [[nodiscard]] inline std::array<std::byte, 8> encodeReady(Ready ready) noexcept {
     std::array<std::byte, 8> bytes{};
     put(bytes, 0, static_cast<std::uint32_t>(ready.pluginLatency));
-    put(bytes, 4, ready.state ? 1u : 0u);
+    put(bytes, 4, (ready.state ? 1u : 0u) | (ready.parameters ? 2u : 0u));
     return bytes;
 }
 
@@ -151,8 +159,30 @@ template<std::unsigned_integral Unsigned>
     const auto latency = get<std::uint32_t>(bytes, 0);
     const auto caps = get<std::uint32_t>(bytes, 4);
     if (latency > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
-        (caps & ~1u) != 0) return false;
-    ready = {static_cast<std::int32_t>(latency), (caps & 1u) != 0};
+        (caps & ~3u) != 0) return false;
+    ready = {static_cast<std::int32_t>(latency), (caps & 1u) != 0, (caps & 2u) != 0};
+    return true;
+}
+
+[[nodiscard]] inline bool normalized(double value) noexcept {
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+[[nodiscard]] inline std::array<std::byte, kParameterValueBytes> encodeParameterValue(
+    std::uint32_t selector, double value) noexcept {
+    std::array<std::byte, kParameterValueBytes> bytes{};
+    put(bytes, 0, selector);
+    put(bytes, 4, std::bit_cast<std::uint64_t>(value));
+    return bytes;
+}
+
+[[nodiscard]] inline bool decodeParameterValue(std::span<const std::byte> bytes,
+                                                std::uint32_t& selector, double& value) noexcept {
+    if (bytes.size() != kParameterValueBytes) return false;
+    const auto decoded = std::bit_cast<double>(get<std::uint64_t>(bytes, 4));
+    if (!normalized(decoded)) return false;
+    selector = get<std::uint32_t>(bytes, 0);
+    value = decoded;
     return true;
 }
 

@@ -13,6 +13,7 @@ from audiogridder_fixture import listener, read
 ENVELOPE = struct.Struct("<4sHHII")
 BLOCK = struct.Struct("<4sHHQIIII")
 EVENT = struct.Struct("<HHIIiihhIId4I")
+PARAMETER = struct.Struct("<IIIIddddHH")
 
 
 def receive(sock):
@@ -63,6 +64,24 @@ def session(server, mode, finished):
             return
         if mode == "refused":
             send(peer, 9, b"unavailable")
+            return
+        if mode.startswith("parameter"):
+            send(peer, 2, struct.pack("<II", 7, 3))
+            entry = PARAMETER.pack(1500, 5, 0, 0, .125, .25, -2, 6, 5, 2) + b"DrivedB"
+            assert receive(peer) == (10, b"")
+            if mode == "parameters-corrupt":
+                send(peer, 11, struct.pack("<I", 2) + entry * 2)
+                return
+            manifest = struct.pack("<I", 1) + entry
+            send(peer, 11, manifest)
+            assert receive(peer) == (12, struct.pack("<Id", 1500, .625))
+            if mode == "parameters-refused":
+                send(peer, 9, b"read-only during this render")
+                assert receive(peer) == (10, b"")
+                send(peer, 11, manifest)
+            else:
+                returned = 1499 if mode == "parameters-bad-set" else 1500
+                send(peer, 13, struct.pack("<Id", returned, .5))
             return
         send(peer, 2, struct.pack("<II", 7, 1))
         if mode in ("pcm", "state-failure"):
@@ -121,7 +140,8 @@ def main():
     binary = sys.argv[1]
     subprocess.run([binary, "1", "loopback"], check=True, timeout=2)
     subprocess.run([binary, "1", "embedded-null"], check=True, timeout=2)
-    for mode in ("pcm", "version", "refused", "state-failure", "sequence", "latency", "deadline"):
+    for mode in ("pcm", "version", "refused", "state-failure", "sequence", "latency", "deadline",
+                 "parameters", "parameters-corrupt", "parameters-refused", "parameters-bad-set"):
         check_case(binary, mode)
 
 

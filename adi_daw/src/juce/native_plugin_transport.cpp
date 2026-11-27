@@ -3,6 +3,7 @@
 
 #include "juce/native_plugin_transport.hpp"
 #include "juce/native_plugin_wire.hpp"
+#include "juce/net_native_plugin_parameters.hpp"
 
 #include "adi/engine/mpe_output.hpp"
 #include "juce/clap_host.hpp"
@@ -123,7 +124,8 @@ struct NativePluginProcessor::Connection {
         if (!socket.read(reply, deadline, error)) return fail(error);
         if (replyHeader.message == Message::Failure) {
             error = "server refused the operation";
-            return fail(error, command != Message::FetchState && command != Message::RestoreState);
+            return fail(error, command != Message::FetchState && command != Message::RestoreState &&
+                               command != Message::ReadParameters && command != Message::SetParameter);
         }
         return true;
     }
@@ -251,6 +253,47 @@ bool NativePluginProcessor::restoreState(std::span<const std::uint8_t> state, St
         return connection.fail(error, false);
     }
     return connection.request(Message::RestoreState, std::as_bytes(state), Message::Ack, deadline, error);
+}
+
+bool NativePluginProcessor::readParameters(std::vector<RemoteParameter>& parameters,
+                                           StateDeadline deadline, std::string& error) {
+    error.clear();
+    auto& connection = *connection_;
+    if (!connection.active) {
+        error = "the native plug-in connection is closed";
+        return connection.fail(error, false);
+    }
+    if (!connection.ready.parameters) {
+        parameters.clear();
+        return true;
+    }
+    if (!connection.request(Message::ReadParameters, {}, Message::Parameters, deadline, error)) return false;
+    if (!wire::decodeParameters(connection.reply, parameters)) {
+        error = "invalid native plug-in parameter manifest";
+        return connection.fail(error);
+    }
+    return true;
+}
+
+bool NativePluginProcessor::setParameter(std::uint32_t selector, double normalized, double& applied,
+                                         StateDeadline deadline, std::string& error) {
+    error.clear();
+    auto& connection = *connection_;
+    if (!connection.active || !connection.ready.parameters || selector == CLAP_INVALID_ID ||
+        !wire::normalized(normalized)) {
+        error = "the native server cannot apply this plug-in parameter";
+        return connection.fail(error, false);
+    }
+    if (!connection.request(Message::SetParameter, wire::encodeParameterValue(selector, normalized),
+                            Message::ParameterValue, deadline, error)) return false;
+    std::uint32_t returned = 0;
+    double value = 0;
+    if (!wire::decodeParameterValue(connection.reply, returned, value) || returned != selector) {
+        error = "invalid native plug-in parameter reply";
+        return connection.fail(error);
+    }
+    applied = value;
+    return true;
 }
 
 void NativePluginProcessor::release() noexcept {

@@ -48,6 +48,41 @@ int main(int argc, char** argv) {
                      error.c_str()) ? 0 : 1;
     if (!check(prepared && latency == 7, error.c_str())) return 1;
 
+    using adi::device::RemoteParameter;
+    if (mode.starts_with("parameter")) {
+        std::vector<RemoteParameter> parameters(1);
+        parameters.front().selector = 3;
+        const bool read = transport.readParameters(parameters, Clock::now() + 1s, error);
+        if (mode == "parameters-corrupt") {
+            return check(!read && parameters.size() == 1 && parameters.front().selector == 3,
+                         "a duplicate selector leaves the caller's manifest intact") ? 0 : 1;
+        }
+        if (!check(read && parameters.size() == 1 && parameters.front().selector == 1500 &&
+                   parameters.front().descriptor.id == "000005dc" &&
+                   parameters.front().descriptor.name == "Drive" &&
+                   parameters.front().descriptor.unit == "dB" &&
+                   parameters.front().descriptor.automatable &&
+                   parameters.front().current.hasReal && parameters.front().current.real == 0.0 &&
+                   parameters.front().current.normalized == .25,
+                   "native parameter bounds and stable CLAP ID")) return 1;
+        double applied = -1;
+        const bool set = transport.setParameter(1500, .625, applied, Clock::now() + 1s, error);
+        if (mode == "parameters-refused") {
+            if (!check(!set && applied == -1 && error.find("refused") != std::string::npos,
+                       "refused parameter writes leave the current value intact")) return 1;
+            return check(transport.readParameters(parameters, Clock::now() + 1s, error),
+                         "an ordinary control refusal leaves the connection usable") ? 0 : 1;
+        }
+        if (mode == "parameters-bad-set") {
+            return check(!set && applied == -1 && error.find("parameter reply") != std::string::npos,
+                         "a mismatched parameter reply cannot acknowledge another ID") ? 0 : 1;
+        }
+        return check(set && applied == .5, "the owner receives the hosted plug-in's applied value") ? 0 : 1;
+    }
+    std::vector<RemoteParameter> legacy(1);
+    if (!check(transport.readParameters(legacy, Clock::now() + 1s, error) && legacy.empty(),
+               "a peer without parameter support needs no extra command")) return 1;
+
     const std::vector<std::uint8_t> saved{0, 255, 42, 0};
     if (mode == "pcm" || mode == "state-failure") {
         if (!check(transport.supportsState() && transport.restoreState(saved, Clock::now() + 1s, error),

@@ -2,6 +2,8 @@
 #include <clap/clap.h>
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -9,6 +11,10 @@
 namespace {
 
 constexpr std::uint32_t delay = 7;
+constexpr clap_id gainParameter = 0x123456;
+constexpr double gainMin = 0.5;
+constexpr double gainMax = 1.5;
+constexpr double gainDefault = 1.25;
 const char* const features[]{CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 const clap_plugin_descriptor_t descriptor{
     CLAP_VERSION, "org.adi.test.native-host", "Native host test", "ADI",
@@ -27,6 +33,7 @@ struct Instrument {
     std::array<std::array<float, delay>, 2> audioDelay{};
     std::uint32_t cursor = 0;
     std::uint8_t gain = 2;
+    double parameterGain = gainDefault;
     bool offline = false;
 };
 
@@ -47,7 +54,7 @@ void CLAP_ABI reset(const clap_plugin_t* plugin) {
     instrument.cursor = 0;
 }
 
-void note(Instrument& instrument, const clap_event_header_t* event) {
+void update(Instrument& instrument, const clap_event_header_t* event) {
     if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;
     if (event->type == CLAP_EVENT_NOTE_ON || event->type == CLAP_EVENT_NOTE_OFF) {
         clap_event_note_t value{};
@@ -71,6 +78,13 @@ void note(Instrument& instrument, const clap_event_header_t* event) {
         for (auto& voice : instrument.voices) {
             if (voice.id == value.note_id) voice.tuning = value.value;
         }
+    } else if (event->type == CLAP_EVENT_PARAM_VALUE) {
+        clap_event_param_value_t value{};
+        if (event->size < sizeof(value)) return;
+        std::memcpy(&value, event, sizeof(value));
+        if (value.param_id == gainParameter && value.note_id == -1 &&
+            value.value >= gainMin && value.value <= gainMax)
+            instrument.parameterGain = value.value;
     }
 }
 
@@ -86,7 +100,7 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* plugin, const clap_pro
         while (nextEvent < eventCount) {
             const auto* event = input.get(&input, nextEvent);
             if (event->time > frame) break;
-            note(instrument, event);
+            update(instrument, event);
             ++nextEvent;
         }
         for (std::size_t channel = 0; channel < instrument.voices.size(); ++channel) {
@@ -95,7 +109,7 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* plugin, const clap_pro
             auto& delayed = instrument.audioDelay[channel][instrument.cursor];
             output[channel][frame] = delayed;
             delayed = voice.id == -1 ? 0.0f : static_cast<float>(
-                level * instrument.gain * (voice.velocity + voice.tuning));
+                level * instrument.gain * instrument.parameterGain * (voice.velocity + voice.tuning));
         }
         instrument.cursor = (instrument.cursor + 1) % delay;
     }
@@ -143,11 +157,51 @@ bool CLAP_ABI renderMode(const clap_plugin_t* plugin, clap_plugin_render_mode mo
 }
 std::uint32_t CLAP_ABI latency(const clap_plugin_t*) { return delay; }
 
+std::uint32_t CLAP_ABI parameterCount(const clap_plugin_t*) { return 1; }
+bool CLAP_ABI parameterInfo(const clap_plugin_t*, std::uint32_t index, clap_param_info_t* info) {
+    if (index != 0) return false;
+    *info = {};
+    info->id = gainParameter;
+    info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+    std::memcpy(info->name, "Gain", sizeof("Gain"));
+    info->min_value = gainMin;
+    info->max_value = gainMax;
+    info->default_value = gainDefault;
+    return true;
+}
+bool CLAP_ABI parameterValue(const clap_plugin_t* plugin, clap_id id, double* value) {
+    if (id != gainParameter) return false;
+    *value = data(plugin).parameterGain;
+    return true;
+}
+bool CLAP_ABI parameterText(const clap_plugin_t*, clap_id id, double value, char* text, std::uint32_t size) {
+    if (id != gainParameter || size == 0) return false;
+    const auto written = std::snprintf(text, size, "%.3f", value);
+    return written >= 0 && static_cast<std::uint32_t>(written) < size;
+}
+bool CLAP_ABI parseParameter(const clap_plugin_t*, clap_id id, const char* text, double* value) {
+    if (id != gainParameter) return false;
+    char* end = nullptr;
+    const auto parsed = std::strtod(text, &end);
+    if (end == text || *end != '\0' || !(parsed >= gainMin && parsed <= gainMax)) return false;
+    *value = parsed;
+    return true;
+}
+void CLAP_ABI flushParameters(const clap_plugin_t* plugin, const clap_input_events_t* input,
+                              const clap_output_events_t*) {
+    auto& instrument = data(plugin);
+    for (std::uint32_t i = 0; i < input->size(input); ++i)
+        update(instrument, input->get(input, i));
+}
+
 const clap_plugin_audio_ports_t audioPorts{audioCount, audioInfo};
 const clap_plugin_note_ports_t notePorts{noteCount, noteInfo};
 const clap_plugin_state_t state{save, load};
 const clap_plugin_render_t render{needsRealtime, renderMode};
 const clap_plugin_latency_t latencyExtension{latency};
+const clap_plugin_params_t parameters{
+    parameterCount, parameterInfo, parameterValue, parameterText, parseParameter, flushParameters,
+};
 
 const void* CLAP_ABI extension(const clap_plugin_t*, const char* id) {
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &audioPorts;
@@ -155,6 +209,7 @@ const void* CLAP_ABI extension(const clap_plugin_t*, const char* id) {
     if (std::strcmp(id, CLAP_EXT_STATE) == 0) return &state;
     if (std::strcmp(id, CLAP_EXT_RENDER) == 0) return &render;
     if (std::strcmp(id, CLAP_EXT_LATENCY) == 0) return &latencyExtension;
+    if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &parameters;
     return nullptr;
 }
 

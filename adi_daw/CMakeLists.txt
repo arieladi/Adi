@@ -312,6 +312,7 @@ add_library(adi_core STATIC
     src/juce/remote_device.cpp
     src/juce/audiogridder_transport.cpp
     src/juce/native_plugin_transport.cpp
+    src/juce/net_native_plugin_parameters.cpp
     src/juce/net_plugin_admission.cpp
     src/juce/net_plugin_routing.cpp
     src/juce/net_plugin_server.cpp

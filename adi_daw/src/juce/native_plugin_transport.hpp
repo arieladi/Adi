@@ -32,6 +32,9 @@ public:
     [[nodiscard]] bool supportsState() const noexcept override { return true; }
     bool fetchState(std::vector<std::uint8_t>&, StateDeadline, std::string& error) override;
     bool restoreState(std::span<const std::uint8_t>, StateDeadline, std::string& error) override;
+    bool readParameters(std::vector<RemoteParameter>&, StateDeadline, std::string& error) override;
+    bool setParameter(std::uint32_t selector, double normalized, double& applied,
+                      StateDeadline, std::string& error) override;
     void release() noexcept override;
 
     /// Worker/caller seam for typed replies. The device graph currently has an
