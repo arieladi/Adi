@@ -2,7 +2,7 @@ Codex took the library seat on 27 November 2026.
 
 # Library engine seat
 
-Engine chain `seats/library-chain` at `5bb8fdd5e`, based on `origin/main` at `17a688803`. GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled, built successfully. Headless CTest passed all 288 suites in 261.50 s, including the real-time stress suite and both acceptance suites. Schema, ops, parity, Pd and CI validation all passed.
+Engine chain `seats/library-chain` is at `786c3b5d2`. The first proof, at `5bb8fdd5e` on `origin/main` `17a688803`, passed all 288 headless suites in 261.50 s, including the real-time stress suite and both acceptance suites. It used GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled. All five validators passed. The continuation below builds on the 27 November reservations from `6f96847b0`.
 
 | Row | What changed | Proof | State |
 |---|---|---|---|
@@ -88,13 +88,23 @@ The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% temp
 
 ## Remaining acceptance
 
-- TM-MD-04's M2-A-WARP 8 and L-MEDIA-6, TM-WT-01's M2-A-WARP 1 and 6, and TM-WT-05's short/long boundary and Auto action require measurements in Live 12.4. This Linux executor has the local ADI fixtures and public manual readings. The numbered A-M4 source sheet was absent from the checkout. The plan's listed key, tag read-back, precedence, eviction and JSON round-trip checks have native fixtures.
+| Card | Native acceptance | Remaining evidence |
+|---|---|---|
+| TM-MD-04 | A-M4 categories have native fixtures for key, tag read-back, precedence, eviction and JSON round trip. The cadence fixture scored 24/24 against the required 22/24. Authored settings recall precedes Auto-Warp. | M2-A-WARP 8 and L-MEDIA-6 on Live 12.4. The numbered A-M4 source sheet was absent from the checkout. |
+| TM-MD-07 and TM-MD-08 | The decoded kick/hat fixture, one-undo swapping, all six filters, both query entry points and ranking in a measured mix passed. The query fixtures cover the first two seconds of audio and the inclusive 60 s Similar limit documented by Live. | Production window wiring follows the Browser and floating-search sheet. |
+| TM-WT-01 | The labelled beat/onset benchmark, first downbeat after a pickup, matching inputs at 48/96 kHz, AWRP capture, warm reuse and the six-mode native matrix passed. | M2-A-WARP 1 and 6 require measurements in Live 12.4. |
+| TM-WT-05 | The synthetic loop grid passed, the crash stayed clean, and both explicit producers obeyed the policy. Ordinary drop stayed clean. | The short/long boundary and Auto on drop versus Warp press require Live 12.4 readings. |
+
+This Linux execution environment has no Live 12.4 host for the remaining workstation cases.
+
+### Unbuilt or gated integration
+
 - TM-WT-01's evaluation switch exposes the candidate in both native producers. The labelled corpus favors it over the incumbent beat detector. Downbeat accuracy still varies by instrument, and the 6/8 proof uses supplied source meter and quarter tempo. The real key comparison favored the incumbent at 7/16 exact versus 5/16 for the CQT probe. Recommend promoting the timing candidate only after the remaining meter and Live reference readings. The independent model runs in the benchmark process.
 - TM-MD-04's appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue specify always caching derived analysis. The engine applies the existing size, free-space, folder and Cleanup settings. Recommend retaining the catalogue rule.
 - The Browser and floating search can use the tested headless adapter at the existing presentation boundary. The current Browser-chain preview player plays one shot. Its later loop player can use the same typed classification exercised by the filter and Warp fixtures. The seat prompt assigns tempo-following preview playback to the stretcher seat and presentation wiring to the window lane.
 - The virtual merge with `basics/browser-chain` at `862cea353` has one conflict, in `warp_commands.cpp`. The scratch join keeps the Browser's edited source intervals, End marker mapping and byte-exact stored AWRP reuse. A new map uses the shared timing analyzer, and short-sample policy applies only to an unedited full file with no stored map. Warp off clears the opted-in full-source loop with the clip edit. The composition is proved separately from both branches. In the cloud workspace the Browser-based patch is `/workspace/scratch/adi-browser-warp-compose.euQhL5/warp-against-browser.patch`.
 
-The continuation's GCC 14.2 Debug warnings-as-errors build passed with Pd and acceptance enabled. Headless CTest passed all 294 suites in 218.56 s after the shared PCM pass. The document import slice also passed its focused binary. All five validators passed.
+The final chain at `786c3b5d2` passed the GCC 14.2 Debug warnings-as-errors build with Pd and acceptance enabled. Headless CTest passed all 294 suites in 212.58 s, including both acceptance suites. The preceding gates passed all 294 in 218.56 s after the shared PCM pass and 219.40 s after the document import slice. Schema, ops, parity, Pd and CI validators passed on the final chain.
 
 The native Beats renderer consumed 16 captured AWTM onsets and rendered 512,000 frames at 0.75× and 256,000 at 1.5×. Both rates produced sample-exact repeats. The async worker now supports both explicit source-relative onset frames and matching shared timing analysis.
 
