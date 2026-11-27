@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 00:59 IST — basics/integrate-2 `f02bd171caca744ea91898f6c4a8d733488f2e3a`, Apple-width check
+
+With `-mlong-double-64`, Clang 20 and libc++ rejected two implicit conversions in `adi_daw/src/adi/clip_commands.cpp`. The new sample rate at `509:73` and the old sample rate at `509:84` are both `int64_t`. The other 21 registered translation units mentioning `long double` passed. The full Linux x86-64 build is in progress.
+
+Cast both rates to `long double` explicitly. The multiply, divide and `std::llround` keep their existing order. The patched file passed strict syntax checks with native Clang 20/libc++, Clang 20/libc++ at 53-bit `long double` precision, and GCC 14/libstdc++. Both expressions produced identical code in Clang's optimized intermediate representation at each precision. One fix commit `39afd389` is on [libcxx/basics/integrate-2](https://github.com/arieladi/Adi/tree/libcxx/basics/integrate-2).
+
 ### 28 November 2026, 00:53 IST — libcxx/control/agent-chain `a0e5dfc3daffe115ec9630bdaeae2ba6f7b265ac`
 
 The raw `control/agent-chain` head `d68937dc5f4413e3f55d44070da33135710938c2` failed the full headless build in `adi_daw/src/juce/app_control.cpp:292:58`. This was the only failed compile target. The raw head could not run the suites.
