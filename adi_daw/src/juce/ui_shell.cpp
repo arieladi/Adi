@@ -63,6 +63,7 @@ void AppCommands::reload() {
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
     exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);
+    startPlaybackWithRecord_ = flag(settings_, "record.startPlaybackWithRecord", true);
     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
@@ -310,6 +311,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"view.automation-mode", "View"}, // AutomationMode
         {"edit.delete-automation", "Edit"}, // DeleteAutomation
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
+        {"transport.arrangement-record-alternate", "Transport"}, // ArrangementRecordAlternate
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -535,7 +537,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks"};
+                                  "Arm Selected Tracks", "Arrangement Record (Alternate Start)"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -1009,9 +1011,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
         break;
-    case ArrangementRecord: // manual 21.1 and §41.6: F9
-        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
-        info.setTicked(active_ != nullptr && active_->isRecording());
+    case ArrangementRecord:
+    case ArrangementRecordAlternate:
+        info.addDefaultKeypress(juce::KeyPress::F9Key, id == ArrangementRecordAlternate ? shift : 0);
+        info.setTicked(active_ != nullptr && active_->arrangementRecordEnabled());
         break;
     case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)
         info.setTicked(delayCompensation_);
@@ -1665,11 +1668,20 @@ bool AdiRootComponent::playFrom(std::int64_t tick) {
         if (const auto result = submitter_.submit(std::move(request)); !result)
             return fail(result.error);
     }
-    if (!locate(tick))
+    // Scrub playback keeps its explicitly requested position.
+    const bool requestedRecording = start && recordPending_;
+    const bool recordingFromHere = requestedRecording && beginArrangementRecording(tick, true);
+    if (requestedRecording && !recordingFromHere)
+        setRecordPending(false);
+    if (!locate(tick)) {
+        if (recordingFromHere)
+            stopRecording();
         return fail("The project has no tempo map to locate in.");
+    }
     if (start)
         mailbox_.post(TransportMailbox::Command::Play);
-    error_.clear();
+    if (!requestedRecording || recordingFromHere)
+        error_.clear();
     dirty_.mark(DirtySet::Transport | DirtySet::Status);
     return true;
 }
@@ -3633,24 +3645,41 @@ bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view r
         return true;
     return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
 }
-bool AdiRootComponent::toggleRecord() {
+void AdiRootComponent::setRecordPending(bool pending) {
+    if (recordPending_ == pending)
+        return;
+    recordPending_ = pending;
+    mark(DirtySet::Transport);
+}
+bool AdiRootComponent::toggleRecord(bool alternate) {
+    if (recordPending_) {
+        setRecordPending(false);
+        return true;
+    }
     if (!startRecording || !stopRecording || !recording)
         return fail("Recording runs in the application, with an audio device.");
-    if (recording()) {
-        // Live's Record button again: recording stops, playback goes on.
+    if (isRecording()) {
         stopRecording();
         mark(DirtySet::Transport);
         return true;
     }
     const bool rolling = mailbox_.desiredPlaying();
-    if (!rolling && !mailbox_.hasRoom(1))
+    if (!rolling && commands_.startPlaybackWithRecord() == alternate) {
+        setRecordPending(true);
+        return true;
+    }
+    return beginArrangementRecording(rolling ? timelineTick() : arrangement.geometry.selection.insert, rolling);
+}
+bool AdiRootComponent::beginArrangementRecording(std::int64_t takeStart, bool rolling) {
+    if (!startRecording || !stopRecording || !recording)
+        return fail("Recording runs in the application, with an audio device.");
+    if (!rolling && !mailbox_.hasRoom())
         return fail("Transport command queue is full");
-    // Where the take begins: the playhead when playing (punch-in), else the insert marker.
-    const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;
-    if (!startRecording(arrangement.geometry.selection.insert, rolling))
-        return false; // the application said why
-    // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as
-    // it grows (walk-B B4).
+    const auto insertTick = rolling ? arrangement.geometry.selection.insert : takeStart;
+    if (!startRecording(insertTick, rolling))
+        return false;
+    setRecordPending(false);
+    // The armed audio tracks' lanes show the take as it grows.
     if (const auto *current = reader().get())
         arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);
     // A recording start plays the transport: the same op Play writes, so the history's transport state
@@ -4617,6 +4646,7 @@ bool AdiRootComponent::command(int id) {
     }
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
+    bool recordStartRefused = false;
     switch (id) {
     case AppCommands::PlayStop:
     case AppCommands::Stop:
@@ -4624,9 +4654,19 @@ bool AdiRootComponent::command(int id) {
         // Space plays from the insert marker, Shift+Space from where it stopped.
         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
         const bool fromMarker = play && id == AppCommands::PlayStop;
-        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
-        if (!play && recording && recording() && stopRecording)
-            stopRecording();
+        // Stop clears a waiting request even if the driver cannot accept another command.
+        if (!play) {
+            setRecordPending(false);
+            if (isRecording() && stopRecording)
+                stopRecording();
+        }
+        if (fromMarker && recordPending_) {
+            // The Record command starts at the normal recording point with the saved Count-In.
+            if (beginArrangementRecording(arrangement.geometry.selection.insert, false))
+                break;
+            recordStartRefused = true;
+            setRecordPending(false);
+        }
         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))
             return fail("Transport command queue is full");
         OpRequest request;
@@ -4635,6 +4675,11 @@ bool AdiRootComponent::command(int id) {
         const auto result = submitter_.submit(std::move(request));
         if (!result)
             return fail(result.error);
+        // Continue keeps the exact stopped sample owned by the driver's mailbox.
+        if (play && recordPending_ && !beginArrangementRecording(timelineTick(), true)) {
+            recordStartRefused = true;
+            setRecordPending(false);
+        }
         if (fromMarker)
             locate(arrangement.geometry.selection.insert);
         using Command = TransportMailbox::Command;
@@ -4642,7 +4687,8 @@ bool AdiRootComponent::command(int id) {
         break;
     }
     case AppCommands::ArrangementRecord:
-        if (!toggleRecord())
+    case AppCommands::ArrangementRecordAlternate:
+        if (!toggleRecord(id == AppCommands::ArrangementRecordAlternate))
             return false;
         break;
     case AppCommands::AutomationMode:
@@ -5036,7 +5082,8 @@ bool AdiRootComponent::command(int id) {
     }
     if (afterEdit)
         afterEdit();
-    error_.clear();
+    if (!recordStartRefused)
+        error_.clear();
     resized();
     return true;
 }

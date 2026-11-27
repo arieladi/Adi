@@ -175,7 +175,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         DeleteAutomation,
         ArmSelected,
-        LastId = ArmSelected
+        ArrangementRecordAlternate, // Shift+F9: the other Start Playback with Record behavior
+        LastId = ArrangementRecordAlternate
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -237,6 +238,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
     // Ctrl/Cmd is held.
     bool exclusiveArm() const noexcept { return exclusiveArm_; }
+    bool startPlaybackWithRecord() const noexcept { return startPlaybackWithRecord_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -298,6 +300,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
     bool exclusiveArm_ = true;
+    bool startPlaybackWithRecord_ = true;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -521,6 +524,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // not known).
     TrackRecordState recordState(std::int64_t track) const;
     bool isRecording() const { return recording && recording(); }
+    bool arrangementRecordEnabled() const { return recordPending_ || isRecording(); }
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
@@ -741,7 +745,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
-    bool toggleRecord();
+    bool toggleRecord(bool alternate = false);
     // Selects clip `clip` as a click on it would (a recorded take, once it lands).
     void selectClip(std::int64_t clip);
     // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the
@@ -916,6 +920,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool canRenderTrack(TrackRenderAction, const engine::TrackNode &) const;
     bool renderTrack(TrackRenderAction, std::int64_t);
     ProjectDocument *trackRenderDocument_ = nullptr;
+    bool beginArrangementRecording(std::int64_t takeStart, bool rolling);
+    void setRecordPending(bool pending);
     bool insertTrack(bool midi);
     bool deleteTrack();
     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the
@@ -951,6 +957,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     } windowFollower_{*this};
     unsigned lastDrain_ = 0;
     bool playing_ = false;
+    bool recordPending_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }

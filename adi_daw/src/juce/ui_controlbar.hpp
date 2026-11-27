@@ -36,6 +36,8 @@ class BarItem : public juce::Button {
     void paintButton(juce::Graphics &, bool over, bool down) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    void clicked(const juce::ModifierKeys &) override;
+    std::function<void(const juce::ModifierKeys &)> onModifiedClick;
     void focusGained(FocusChangeType) override;
     void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);

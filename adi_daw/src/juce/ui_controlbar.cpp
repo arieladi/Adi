@@ -182,6 +182,10 @@ void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {
         repaint();
     }
 }
+void BarItem::clicked(const juce::ModifierKeys &modifiers) {
+    if (onModifiedClick)
+        onModifiedClick(modifiers);
+}
 void BarItem::mouseDown(const juce::MouseEvent &event) {
     dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);
     if (dropdownPress_)
@@ -511,7 +515,10 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         root_.mark(DirtySet::Transport);
     };
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
-    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {
+        root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate
+                                              : AppCommands::ArrangementRecord);
+    };
     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };
     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
     // does to the notes already there, once MIDI records (SRF-05).
@@ -685,7 +692,7 @@ void TransportBar::refresh() {
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
-    record.setToggleState(root_.isRecording(), juce::dontSendNotification);
+    record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);
     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
