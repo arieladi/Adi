@@ -43,8 +43,8 @@ ends when it is clean.
      four looks like against its source, so that seat starts from your list.
 3. **SC-110: no AI tab at the Browser's foot** (ADR-0257 d12). Remove `aiTab` and the chat area it
    opens (`ui_shell.cpp`, about 1309 and 1745; `aiChatOpen` in `src/adi/ui/window_state.hpp` stays
-   readable in an old project and is ignored). The search bar's row that sends text to the agent is
-   not yours: it waits for the agent's own connection (AGT-06).
+   readable in an old project and is ignored). Done (#808). ADR-0261 replaced the idea of
+   a row that sends: an AI label in the Categories list, built later with the agent's side (AGT-05).
 4. **SC-72: the view scrolls to the insert marker** on Home, a locator jump and a typed position.
 5. **SC-73: the Control Bar's fields** (tempo, position, loop start and length, signature) answer a
    drag, the arrow keys and the wheel, as Live's.
@@ -74,4 +74,4 @@ stopped), SC-89, SC-91, SC-63, SC-04.
 - **SC-12 is fifteen buttons, not thirteen,** listed one by one in round 2's note on the row. Draw Mode
   is only not wired to the command that already works in the Note Editor.
 
-Your second queue, when this one is empty: `2026-11-27-basics-browser.md`.
+Your second queue, when this one is empty, is the browser queue only if the director gives it to you: it has one owner (`2026-11-27-basics-browser.md`).
