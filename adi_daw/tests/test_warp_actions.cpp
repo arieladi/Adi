@@ -301,6 +301,33 @@ void warpFromHere() {
     const std::vector<WarpMarker> expected{before[0],before[1],{13230,q},{44100,17*q/10}};
     check(map()==expected,"the explicit BPM variant makes a straight suffix through the source endpoint");
 }
+void warpWholeSampleAsLoop() {
+    Fixture f(false);
+    auto warp=f.options();
+    warp.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,warp,48000),"seed a whole-sample loop source"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto before=clip_edit::captureImage(context,7);
+    f.store->db().exec("UPDATE media_files SET rel_path='unavailable.wav',abs_path_hint=NULL,missing=1 WHERE id=8");
+    constexpr auto length=6*q;
+    check(!clip_edit::prepareWarpAsLoop(*f.store,7,clip_edit::WarpLoopSelection{q,q},length,48000).ok &&
+          clip_edit::captureImage(context,7)==before,"an empty selection refuses without changing the clip");
+    const auto loop=clip_edit::prepareWarpAsLoop(*f.store,7,std::nullopt,length,48000);
+    check(loop.ok && loop.requests.size()==1,"the captured map alone prepares a two-bar loop in three-quarter time");
+    if(!apply(f,loop,"commit Warp Sample as Loop"))return;
+    const auto after=clip_edit::captureImage(context,7);
+    const auto& row=after.at("row");
+    const auto& bytes=after.at("children").at("audio_clips").front().at("warp_markers").get_binary();
+    const auto map=audio::readWarpMap(std::span(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),44100);
+    check(map && map.markers==std::vector<WarpMarker>{{0,0},{44100,length}} && row.at("loop_enabled")==1 &&
+          row.at("loop_start_ticks")==0 && row.at("loop_len_ticks")==length && row.at("content_offset_ticks")==0 &&
+          row.at("pos_ticks")==before.at("row").at("pos_ticks") && row.at("length_ticks")==before.at("row").at("length_ticks"),
+          "the full sample fits the requested loop while its Arrangement position and length are retained");
+    History history(*f.store);
+    check(history.undo().ok && clip_edit::captureImage(context,7)==before &&
+          history.redo().ok && clip_edit::captureImage(context,7)==after,
+          "Undo and Redo restore both captured map and loop state");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -330,4 +357,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();warpFromHere();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();turnTransientsIntoMarkers();warpFromHere();warpWholeSampleAsLoop();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

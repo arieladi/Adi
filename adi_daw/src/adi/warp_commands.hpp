@@ -3,6 +3,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/warp.hpp"
+#include <optional>
 #include <span>
 namespace adi::clip_edit {
 struct WarpOptions {
@@ -31,4 +32,10 @@ enum class WarpMarkerChange { Add, Move, Remove };
 /// refer to the original file. The anchor is never trimmed by Auto-Warp.
 [[nodiscard]] PreparedEdit prepareWarpFromHere(Store&,std::int64_t clipId,std::int64_t startTick,
     std::span<const std::uint64_t> fileFrames,audio::AutoWarpOptions,double referenceRate);
+
+struct WarpLoopSelection {std::int64_t from,to;};
+/// Fit the whole warped source or a source-ruler range to a musical loop
+/// length. Captures the map and loop together without resizing the placement.
+[[nodiscard]] PreparedEdit prepareWarpAsLoop(Store&,std::int64_t clipId,std::optional<WarpLoopSelection>,
+    std::int64_t lengthTicks,double referenceRate);
 }
