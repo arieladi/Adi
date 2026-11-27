@@ -352,11 +352,11 @@ struct Clip {
                 page = clip.acquire(nextPage);
                 number = nextPage;
             }
-            const auto offset = frame % clip.pageFrames;
-            const auto frames = static_cast<std::uint32_t>(std::min(clip.pageFrames-offset,
+            const auto pageFrame = frame % clip.pageFrames;
+            const auto frames = static_cast<std::uint32_t>(std::min(clip.pageFrames-pageFrame,
                 static_cast<std::int64_t>(clip.sourceLength)-frame));
             if (!page) { missing = true; return {nullptr,frames}; }
-            return {page->data.get()+static_cast<std::size_t>(offset)*clip.channels,frames};
+            return {page->data.get()+static_cast<std::size_t>(pageFrame)*clip.channels,frames};
         }
         audio::WarpStreamInput input() noexcept {
             return {this, [](void* context, std::int64_t frame, std::uint16_t channel) noexcept {
