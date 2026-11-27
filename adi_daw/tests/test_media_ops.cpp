@@ -348,7 +348,7 @@ void movedProjectKeepsExternalSample() {
     fs::rename(displaced, sample);
 
     const auto copied = relocated.parent_path().parent_path() / "copy.adi";
-    if (!reopened->saveCopy(copied).ok) throw std::runtime_error("copy relocated project");
+    if (!reopened->saveCopy(copied, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok) throw std::runtime_error("copy relocated project");
     auto copy = Store::open(copied, storeError);
     if (!copy) throw std::runtime_error("open copied project");
     History copyHistory(*copy);

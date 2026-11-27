@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "ui_value_entry.hpp"
@@ -12,8 +13,10 @@
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
+#include <span>
 #include <utility>
 namespace adi::ui {
 namespace {
@@ -36,6 +39,8 @@ float fallen(float shown, float now, double seconds) noexcept {
 }
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
+const juce::Identifier kButtonLit{"adi.lit"};
+const juce::var kAccentButtonLit{juce::String("accent")}, kValueButtonLit{juce::String("value")};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
 // silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
 // on: -70 dB is quiet, not silent.
@@ -70,12 +75,25 @@ constexpr std::array<std::pair<double, double>, 7> kScale{
     {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
 // One of Live's In/Out choosers: the shared chooser (language.png part D), its label and its arrow.
 // A dimmed one keeps its label dim; an empty one has no arrow: the button's box alone.
-void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
-    if (*label == 0) {
+void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &label, bool enabled) {
+    if (label.isEmpty()) {
         controls::button(g, r, controls::ButtonState::Rest);
         return;
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
+}
+constexpr int kCuePairCount = engine::OutputChannelMap::maximumChannels / 2;
+const juce::String &cuePairLabel(int first) {
+    // The compact button uses channel numbers. Build the labels before its first frame.
+    static const auto labels = [] {
+        std::array<juce::String, kCuePairCount> pairs;
+        for (int pair = 0; pair < kCuePairCount; ++pair) {
+            const auto channel = pair * 2 + 1;
+            pairs[static_cast<std::size_t>(pair)] = juce::String(channel) + "/" + juce::String(channel + 1);
+        }
+        return pairs;
+    }();
+    return labels[static_cast<std::size_t>(std::clamp(first / 2, 0, kCuePairCount - 1))];
 }
 class InputMenuReading {
   public:
@@ -148,26 +166,18 @@ const juce::StringArray &monitorLabels() {
     static const juce::StringArray labels{"In", "Auto", "Off"};
     return labels;
 }
-juce::Rectangle<float> monitorBox(float x, float y, float gap) noexcept {
-    return {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f};
+juce::Rectangle<int> monitorBox(int x, int y, int gap) noexcept {
+    return {x, y, 16 + 23 + 19 + 2 * gap, 13};
 }
 int monitorIndex(Monitor m) noexcept { return m == Monitor::In ? 0 : m == Monitor::Auto ? 1 : 2; }
-void drawMonitor(juce::Graphics &g, float x, float y, float gap, Monitor lit) {
-    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), monitorIndex(lit));
-}
 // The choice whose cell holds `at`, if any.
-std::optional<Monitor> monitorCellAt(float x, float y, float gap, juce::Point<int> at) {
-    const auto box = monitorBox(x, y, gap);
+std::optional<Monitor> monitorCellAt(juce::Rectangle<float> box, juce::Point<int> at) {
+    if (!box.contains(at.toFloat()))
+        return std::nullopt;
     for (int i = 0; i < 3; ++i)
         if (controls::oneOfCell(box, monitorLabels(), i).contains(at.toFloat()))
             return i == 0 ? Monitor::In : i == 1 ? Monitor::Auto : Monitor::Off;
     return std::nullopt;
-}
-// Where In and Auto are drawn, together: the cells the one-of gives them.
-bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
-    const auto box = monitorBox(x, y, gap);
-    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
-    return in.getUnion(automatic).contains(at.toFloat());
 }
 } // namespace
 PrimaryButtonSlider::PrimaryButtonSlider() = default;
@@ -265,10 +275,11 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      controls::stateOf(held >= 1, over, down, isEnabled(), controls::Lit::Record),
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
-MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
+MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(panel) {
     // Focus is explicit for the channel's title menu and for Esc during a live drag (MX-23).
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
+    addChildComponent(monitor_);
     if (panel.vertical()) {
         // Live's Mixer View: the fader is the ◁ beside the meter, on the meter's scale.
         volume.setSliderStyle(juce::Slider::LinearVertical);
@@ -447,8 +458,14 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.root.setCueVolume(cueVolume.getValue());
     };
     addChildComponent(cueVolume);
+    cueOut.setTitle("Cue Out");
+    cueOut.setTooltip("Chooses the stereo output pair for cued tracks and the metronome.");
+    cueOut.getProperties().set("live.small", true);
+    cueOut.onClick = [this] { cueOutMenu(); };
+    addChildComponent(cueOut);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
+    active.getProperties().set(kButtonLit, kAccentButtonLit);
     solo.setTitle("Solo");
     solo.setTooltip("Solos the track.");
     arm.setTitle("Arm Recording");
@@ -467,11 +484,16 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.getProperties().set(kHalfLit, false);
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
     arm.getProperties().set("adi.lit", "record");
-    pan.addMouseListener(this, false);
-    volume.addMouseListener(this, false); // its right-click: the fader's menu (AU-04)
+    pan.addMouseListener(this, true);
+    volume.addMouseListener(this, true); // the inline bar's value field is a child Label
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
-    active.onClick = [this] { panel_.root.activateTrack(track_); };
+    active.onClick = [this] {
+        auto &root = panel_.root;
+        if (root.automationMode() && kind_ != "master")
+            root.showAutomation(track_, activatorTarget(track_));
+        root.activateTrack(track_);
+    };
     active.onMenu = [this] {
         auto m = activatorMenuItems();
         if (m.getNumItems() > 0)
@@ -511,9 +533,11 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     g.fillEllipse(getLocalBounds().toFloat().withSizeKeepingCentre(8, 8));
 }
 void MixerStrip::bind(std::int64_t id) {
+    if (track_ != id && monitor_.hasKeyboardFocus(false))
+        monitor_.giveAwayKeyboardFocus();
     track_ = id;
     position_ = number_ = 0;
-    peak_ = rms_ = 0;
+    levels_ = {};
     lastFrame_ = -1;
     midiOnsets_ = 0;
     midiPulseUntil_ = 0;
@@ -578,9 +602,13 @@ void MixerStrip::frame(bool changed) noexcept {
     }
     // The track's arm and monitoring as the session's rows hold them (MX-09): lit when they change.
     if (const auto record = panel_.root.recordState(track_); record != record_) {
+        if ((record.monitor == Monitor::In) != (record_.monitor == Monitor::In)) {
+            active.getProperties().set(kButtonLit, record.monitor == Monitor::In ? kValueButtonLit : kAccentButtonLit);
+            active.repaint();
+        }
         record_ = record;
         arm.setToggleState(record.armed, juce::dontSendNotification);
-        repaint();
+        monitor_.repaint();
     }
     // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
     const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
@@ -588,6 +616,15 @@ void MixerStrip::frame(bool changed) noexcept {
         selected_ = selected;
         repaint();
     }
+    if (changed && kind_ == "master")
+        if (const auto *snapshot = panel_.root.reader().get()) {
+            if (!cueDragging_)
+                cueVolume.setValue(std::max(kCueFloorDb, snapshot->cue.volumeDb), juce::dontSendNotification);
+            if (!panel_.vertical() && cueFirstChannel_ != snapshot->cue.firstOutputChannel) {
+                cueFirstChannel_ = snapshot->cue.firstOutputChannel;
+                cueOut.setButtonText(cuePairLabel(cueFirstChannel_));
+            }
+        }
     if (changed && t && !dragging_) {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
@@ -596,9 +633,6 @@ void MixerStrip::frame(bool changed) noexcept {
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
-        if (kind_ == "master" && !cueDragging_)
-            if (const auto *snap = panel_.root.reader().get())
-                cueVolume.setValue(std::max(kCueFloorDb, snap->cue.volumeDb), juce::dontSendNotification);
         // Solo, or with Cue Switches the track's Cue (manual 18.6; MX-08): "C" until the window lane
         // draws Live's headphones.
         const bool cueMode = panel_.root.reader().get() && panel_.root.reader().get()->cue.cueMode;
@@ -659,9 +693,8 @@ void MixerStrip::frame(bool changed) noexcept {
     // overrides the lane, so the control dragged shows the hand's value.
     if (t && !dragging_)
         followAutomation(t->volumeDb, t->pan);
-    // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
-    // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
-    // bound before the session had a strip for its track finds the meter on a refresh.
+    // Read each channel with relaxed loads. A strip bound before the session
+    // had a strip for its track finds the meter on a refresh.
     if (changed)
         resolveMeter();
     const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
@@ -680,27 +713,34 @@ void MixerStrip::frame(bool changed) noexcept {
         }
         return;
     }
-    const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
-    const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
+    const float stripPeak = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
     // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
-    if (panel_.vertical() && peakNow > peakHold.held) {
-        peakHold.held = peakNow;
-        panel_.peakLevels[track_] = peakNow; // a track's entry is made at its first rise only
+    if (panel_.vertical() && stripPeak > peakHold.held) {
+        peakHold.held = stripPeak;
+        panel_.peakLevels[track_] = stripPeak; // a track's entry is made at its first rise only
         peakHold.repaint();
     }
     // The window's ballistics: the level falls from where it was drawn; the peak line holds
     // kPeakHoldSeconds from its last rise, then falls for the part of this frame past the hold.
-    const float r = fallen(rms_, rmsNow, seconds);
-    float p = peak_;
-    if (peakNow >= peak_) {
-        p = peakNow;
-        peakSince_ = now;
-    } else if (const double falling = std::min(seconds, now - peakSince_ - kPeakHoldSeconds); falling > 0)
-        p = fallen(peak_, peakNow, falling);
-    if (p != peak_ || r != rms_) {
-        peak_ = p;
-        rms_ = r;
+    bool meterChanged = false;
+    for (std::size_t channel = 0; channel < levels_.size(); ++channel) {
+        auto &level = levels_[channel];
+        const auto *readout = meter_ != nullptr ? &meter_->stereo[channel] : nullptr;
+        const float peakNow = readout != nullptr ? readout->peak.load(std::memory_order_relaxed) : 0.f;
+        const float rmsNow = readout != nullptr ? readout->rms.load(std::memory_order_relaxed) : 0.f;
+        const float rms = fallen(level.rms, rmsNow, seconds);
+        float peak = level.peak;
+        if (peakNow >= level.peak) {
+            peak = peakNow;
+            level.peakSince = now;
+        } else if (const double falling = std::min(seconds, now - level.peakSince - kPeakHoldSeconds); falling > 0)
+            peak = fallen(level.peak, peakNow, falling);
+        meterChanged = meterChanged || peak != level.peak || rms != level.rms;
+        level.peak = peak;
+        level.rms = rms;
+    }
+    if (meterChanged) {
         repaint(panel_.vertical() ? meterArea().expanded(1)
                                   : juce::Rectangle<int>((showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 0,
                                                          10, getHeight()));
@@ -777,36 +817,18 @@ void MixerStrip::resized() {
         // Live 11's strip, measured: the name, then
         // the mixer: the peak level at its head; pan, the activator, Solo and Arm down
         // to its foot; the meter with the fader beside them.
-        // A row of the Sends section for each return, on every strip, Main's too, so the mixers
-        // line up as Live's; as many as leave the mixer its room. Live scrolls the rest, ADI leaves
-        // them out.
-        // Live 12's In/Out section under the name, when the Mixer Controls show it and the strip
-        // has room for it and the mixer; then as many rows of sends as leave the mixer its room.
-        io_ = panel_.root.state().mixerInOut && getHeight() - kMixerTop - kInOutHeight >= kMixerRoom ? kInOutHeight : 0;
-        // Live's Track Delay section under the mixer (manual 18.7), when the Mixer Controls' Track
-        // Options shows it and the strip keeps the mixer its room; then the sends.
-        delay_ = panel_.root.state().mixerTrackOptions && getHeight() - kMixerTop - io_ - kDelayHeight >= kMixerRoom
-                     ? kDelayHeight
-                     : 0;
-        shown_ = showsSends() ? returnCount_ : 0;
-        while (shown_ > 0 && mixerBottom() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
-            --shown_;
+        const auto sections = panel_.columnSections(getHeight());
+        io_ = sections.inOut;
+        delay_ = sections.trackDelay;
+        shown_ = sections.sends;
+        layoutMonitor();
         // Live's figure: the box across the strip, the "ms" box at its right edge.
         delay.setVisible(delay_ > 0);
         delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
         // Under it, on a track that records (Live's figure: none on a return or Main).
         keepLatency.setVisible(delay_ > 0 && kind_ != "master" && kind_ != "return" && kind_ != "group");
         keepLatency.setBounds(4, mixerBottom() + 36, getWidth() - 8, 14);
-        for (std::size_t i = 0; i < sends_.size(); ++i) {
-            sends_[i]->setVisible(i < shown_);
-            sends_[i]->setBounds(sendBounds(i));
-        }
-        // Main's Sends section holds each return's Pre/Post switch where a track has its knobs.
-        for (std::size_t i = 0; i < returnSwitches_.size(); ++i) {
-            const auto b = sendBounds(i);
-            returnSwitches_[i]->setVisible(i < shown_);
-            returnSwitches_[i]->setBounds(b.getX(), b.getY() + 9, 34, 14);
-        }
+        layoutSends();
         // Live's Mixer: a return has its letter and Solo but no Arm; Main none of the three.
         active.setVisible(kind_ != "master");
         solo.setVisible(kind_ != "master");
@@ -837,6 +859,7 @@ void MixerStrip::resized() {
     }
     // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row
     // shows only when the track is tall enough for it.
+    layoutMonitor();
     const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
     const int rows = std::max(1, (getHeight() - 1) / 17);
     const bool levels = audio_ && panel_.root.state().trackMixer;
@@ -850,7 +873,13 @@ void MixerStrip::resized() {
             c->setVisible(false);
         place(volume, 0, {x + 4, 3, 45, 13}, levels);
         place(pan, 1, {x + 54, 20, 45, 13}, levels);
+        // The 24-pixel Main row has room beside its volume and before the meter.
+        const bool room = getWidth() >= x + MixerPanel::kControlsWidth;
+        place(cueOut, 0, {x + 53, 3, 32, 13}, room);
+        place(cueVolume, 0, {x + 85, 1, 19, 19}, room && levels);
     } else {
+        cueOut.setVisible(false);
+        cueVolume.setVisible(false);
         place(active, 0, {x + 4, 3, 45, 13});
         place(solo, 0, {x + 54, 3, 20, 13});
         // A return's Pre/Post where a track has Arm, as Live's ("A", "S", "Post").
@@ -884,7 +913,29 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
     // the one before; the knobs a little larger than pan's.
     const int i = static_cast<int>(index);
-    return {(i % 2 == 0) ? 10 : 51, sendsTop() + 6 + 22 * i, 32, 32};
+    return {(i % 2 == 0) ? 10 : 51, sendsTop() + 6 + kSendPitch * i, 32, 32};
+}
+void MixerStrip::layoutSends() {
+    const auto count = std::min(shown_, panel_.sendReturns_.size());
+    const auto returns = std::span<const std::int64_t>(panel_.sendReturns_).subspan(panel_.firstSend(count), count);
+    // Look up each control by return ID. A track outside the return's group leaves an empty slot,
+    // and Main's Pre/Post switch lines up with that return on the strips that do have its knob.
+    const auto place = [&](juce::Component &control, std::size_t index, bool prePostSwitch) {
+        const auto at = std::find(returns.begin(), returns.end(), returns_[index]);
+        if (at != returns.end()) {
+            const auto b = sendBounds(static_cast<std::size_t>(at - returns.begin()));
+            control.setBounds(prePostSwitch ? juce::Rectangle<int>(b.getX(), b.getY() + 9, 34, 14) : b);
+        }
+        control.setVisible(at != returns.end());
+    };
+    for (std::size_t i = 0; i < sends_.size(); ++i)
+        place(*sends_[i], i, false);
+    for (std::size_t i = 0; i < returnSwitches_.size(); ++i)
+        place(*returnSwitches_[i], i, true);
+}
+juce::Rectangle<int> MixerStrip::sendArrowBounds(bool down) const noexcept {
+    // Keep the arrows in the gutter past the right-hand knob and Main's slightly wider switch.
+    return {getWidth() - 10, down ? mixerTop() - 16 : sendsTop() + 5, 8, 12};
 }
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     if (!panel_.vertical())
@@ -924,10 +975,27 @@ void MixerStrip::paint(juce::Graphics &g) {
             g.fillRect(0, mixerTop() - 2, w, 2);
             g.setColour(look::text);
             g.setFont(look::font(look::fontBody));
-            if (!sends_.empty() || !returnSwitches_.empty())
-                g.drawText("Sends", 46, sendsTop() + 6, w - 50, 15, juce::Justification::centredRight);
-            for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
-                const auto b = sendBounds(i);
+            if (!sends_.empty() || !returnSwitches_.empty()) {
+                const auto first = panel_.firstSend(shown_);
+                const bool canScrollUp = first > 0, canScrollDown = first + shown_ < panel_.sendReturns_.size();
+                const int gutter = canScrollUp || canScrollDown ? 8 : 0;
+                g.drawText("Sends", 46, sendsTop() + 6, w - 50 - gutter, 15, juce::Justification::centredRight);
+                const auto drawArrow = [&](bool down) {
+                    const auto b = sendArrowBounds(down).reduced(1, 4).toFloat();
+                    const float wing = down ? b.getY() : b.getBottom();
+                    const float point = down ? b.getBottom() : b.getY();
+                    g.drawLine(b.getX(), wing, b.getCentreX(), point, 1.f);
+                    g.drawLine(b.getCentreX(), point, b.getRight(), wing, 1.f);
+                };
+                if (canScrollUp)
+                    drawArrow(false);
+                if (canScrollDown)
+                    drawArrow(true);
+            }
+            for (std::size_t i = 0; i < sends_.size(); ++i) {
+                if (!sends_[i]->isVisible())
+                    continue;
+                const auto b = sends_[i]->getBounds();
                 g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
                 g.drawText(i < letters_.size() ? letters_[i] : juce::String(), b.getX(), b.getBottom() - 9,
                            b.getWidth(), 12, juce::Justification::centred);
@@ -1032,7 +1100,7 @@ void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) co
 void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // The track's input and monitoring go above its output.
     const int rows = std::max(1, (getHeight() - 1) / 17);
-    auto chooser = [&](int row, const char *label, bool enabled) {
+    auto chooser = [&](int row, const juce::String &label, bool enabled) {
         if (row < rows)
             drawChooser(g, {static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13}, label, enabled);
     };
@@ -1042,12 +1110,10 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         chooser(0, outputLabel(), true);
         return;
     }
-    // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
-    chooser(0, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(1, midi_ ? "All Channels" : audioInputLabel(),
-            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
-    if (rows > 2)
-        drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
+    const bool resampling = audioInputIsResampling();
+    chooser(0, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String(resampling ? "Resampling" : "Ext. In"), true);
+    chooser(1, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(resampling ? "Stereo" : audioInputLabel()),
+            midi_ || (!resampling && static_cast<bool>(panel_.root.externalAudioInputs)));
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
 }
@@ -1060,16 +1126,21 @@ const char *MixerStrip::audioInputLabel() const {
             return input->label.c_str();
     return track && track->inputRef ? "Unavailable" : "No Input";
 }
+bool MixerStrip::audioInputIsResampling() const {
+    const auto *track = panel_.root.reader().findTrack(track_);
+    return track && track->inputRef == kResamplingInput;
+}
 bool MixerStrip::onAudioInput(juce::Point<int> at) const noexcept {
     if (kind_ != "audio" || !panel_.root.externalAudioInputs)
         return false;
     if (panel_.vertical()) {
         const auto width = getWidth() - 10;
         return io_ > 0 && (juce::Rectangle<int>(4, kMixerTop + 15, width, 13).contains(at) ||
-                           juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at));
+                           (!audioInputIsResampling() && juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at)));
     }
     return showsInOut() && (juce::Rectangle<int>(5, 3, 70, 13).contains(at) ||
-                            ((getHeight() - 1) / 17 > 1 && juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
+                            (!audioInputIsResampling() && (getHeight() - 1) / 17 > 1 &&
+                             juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
 }
 juce::PopupMenu MixerStrip::audioInputMenu() {
     juce::PopupMenu menu;
@@ -1084,7 +1155,7 @@ juce::PopupMenu MixerStrip::audioInputMenu() {
         juce::PopupMenu::Item item(juce::String::fromUTF8(input.label.c_str()));
         item.setID(-1).setTicked(inputSelected).setAction([safe, id = track_, ref = input.ref] {
             if (safe)
-                safe->panel_.root.setExternalAudioInput(id, ref);
+                safe->panel_.root.setAudioInput(id, ref);
         });
         if (panel_.root.externalInputMeter)
             item.setCustomComponent(new InputMenuRow(input, panel_.root.externalInputMeter, inputSelected));
@@ -1092,6 +1163,10 @@ juce::PopupMenu MixerStrip::audioInputMenu() {
     }
     if (choices.empty())
         menu.addItem("No enabled inputs", false, false, [] {});
+    menu.addItem("Resampling", true, track->inputRef == kResamplingInput, [safe, id = track_] {
+        if (safe)
+            safe->panel_.root.setAudioInput(id, kResamplingInput);
+    });
     menu.addSeparator();
     menu.addItem("Configure...", static_cast<bool>(panel_.root.configureExternalInputs), false, [safe] {
         if (safe && safe->panel_.root.configureExternalInputs)
@@ -1111,44 +1186,284 @@ void MixerStrip::showAudioInputMenu() {
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition(),
                        [reading = std::move(reading)](int) mutable { reading.reset(); });
 }
-std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
-    // The same places as `onMonitorInOrAuto` below, every one of the three cells.
-    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
-        return std::nullopt;
+juce::Rectangle<int> MixerStrip::monitorBounds() const noexcept {
+    if (kind_ != "audio" && kind_ != "midi" && kind_ != "instrument")
+        return {};
     if (panel_.vertical())
-        return io_ > 0 ? monitorCellAt(4.f, static_cast<float>(kMixerTop + 59), 3, at) : std::nullopt;
+        return io_ > 0 ? monitorBox(4, kMixerTop + 59, 3) : juce::Rectangle<int>{};
     if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
-        return std::nullopt;
-    return monitorCellAt(5.f, 37.f, 6, at);
+        return {};
+    return monitorBox(5, 37, 6);
 }
-bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
-    return kind_ == "master" && panel_.vertical() && io_ > 0 &&
-           juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
+void MixerStrip::layoutMonitor() {
+    const auto bounds = monitorBounds();
+    monitor_.setBounds(bounds);
+    monitor_.setVisible(!bounds.isEmpty());
+}
+std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
+    return monitorCellAt(monitorBounds().toFloat(), at);
+}
+MixerStrip::MonitorSwitch::MonitorSwitch(MixerStrip &strip) : strip_(strip) {
+    setTitle("Monitor");
+    setTooltip("Choose In, Auto or Off. Delete restores the track's default.");
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+bool MixerStrip::MonitorSwitch::hitTest(int x, int y) {
+    // A short Arrangement row can draw the lowest pixels of the switch on the track's resize band.
+    return (strip_.panel_.vertical() || getY() + y < strip_.getHeight() - TrackHeaderList::kSplitLine) &&
+           juce::Component::hitTest(x, y);
+}
+void MixerStrip::MonitorSwitch::paint(juce::Graphics &g) {
+    const auto bounds = getLocalBounds().toFloat();
+    controls::oneOf(g, bounds, monitorLabels(), monitorIndex(strip_.record_.monitor));
+    if (hasKeyboardFocus(false)) {
+        g.setColour(look::accent);
+        g.drawRoundedRectangle(bounds.reduced(look::hairline / 2), look::radiusControl, look::hairline);
+    }
+}
+void MixerStrip::MonitorSwitch::mouseDown(const juce::MouseEvent &event) {
+    // Use the strip's coordinates and event component for its existing hit and popup handling.
+    strip_.mouseDown(event.getEventRelativeTo(&strip_));
+}
+bool MixerStrip::MonitorSwitch::keyPressed(const juce::KeyPress &key) {
+    if (!isVisible() || (key != juce::KeyPress::deleteKey && key != juce::KeyPress::backspaceKey))
+        return false;
+    strip_.panel_.root.setMonitor(strip_.track_, std::nullopt);
+    return true;
+}
+std::optional<MixerStrip::RoutingChooser> MixerStrip::routingChooserAt(juce::Point<int> at) const noexcept {
+    const bool vertical = panel_.vertical();
+    if (vertical ? io_ == 0 : !showsInOut())
+        return std::nullopt;
+    const auto on = [&](int mixerY, int row) {
+        if (vertical)
+            return juce::Rectangle<int>(4, kMixerTop + mixerY, getWidth() - 10, 13).contains(at);
+        const int rows = std::max(1, (getHeight() - 1) / 17);
+        return row < rows && juce::Rectangle<int>(5, 3 + 17 * row, 70, 13).contains(at);
+    };
+    if (kind_ == "master") {
+        if (vertical && on(73, 0))
+            return RoutingChooser::CueOut;
+        if (on(103, 0))
+            return RoutingChooser::MainOut;
+        return std::nullopt;
+    }
+    if (kind_ == "group" || kind_ == "return")
+        return on(87, 0) ? std::optional{RoutingChooser::AudioTo} : std::nullopt;
+    if (midi_) {
+        if (on(15, 0))
+            return RoutingChooser::MidiFrom;
+        if (on(31, 1))
+            return RoutingChooser::MidiChannel;
+    }
+    if (on(87, 3))
+        return audio_ ? RoutingChooser::AudioTo : RoutingChooser::MidiTo;
+    return std::nullopt;
+}
+
+std::span<const std::pair<int, std::string>> MixerStrip::stereoOutputs() const {
+    if (panel_.root.externalAudioOutputs)
+        return panel_.root.externalAudioOutputs();
+    static const std::array<std::pair<int, std::string>, 1> defaultOutputs{{{0, "1/2"}}};
+    return defaultOutputs;
+}
+
+int MixerStrip::selectedStereoOutput(RoutingChooser chooser) const {
+    const auto *project = panel_.root.reader().get();
+    if (!project)
+        return 0;
+    return chooser == RoutingChooser::MainOut ? project->cue.firstMainOutputChannel : project->cue.firstOutputChannel;
+}
+
+juce::String MixerStrip::stereoOutputLabel(RoutingChooser chooser) const {
+    const int first = selectedStereoOutput(chooser);
+    if (first == 0 && !panel_.root.externalAudioOutputs)
+        return "1/2";
+    const auto pairs = stereoOutputs();
+    const auto selected = std::ranges::find(pairs, first, &std::pair<int, std::string>::first);
+    if (selected != pairs.end())
+        return juce::String::fromUTF8(selected->second.c_str());
+    const auto pairName = juce::String(first + 1) + "/" + juce::String(first + 2);
+    return chooser == RoutingChooser::CueOut ? pairName : pairName + " (Unavailable)";
+}
+
+juce::String MixerStrip::midiInputLabel(RoutingChooser chooser) const {
+    const auto *track = panel_.root.reader().findTrack(track_);
+    const auto choice = engine::midiInputChoice(track && track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    if (chooser == RoutingChooser::MidiChannel)
+        return choice.channel == 0 ? juce::String("All Channels") : juce::String(choice.channel);
+    if (choice.port.empty())
+        return "All Ins";
+    const auto &ports = panel_.root.midiInputPorts;
+    const auto selected = std::ranges::find(ports, choice.port, &MidiPortListing::id);
+    return selected == ports.end() ? juce::String("Unavailable") : juce::String::fromUTF8(selected->name.c_str());
+}
+juce::PopupMenu MixerStrip::midiInputMenu(RoutingChooser chooser) {
+    juce::PopupMenu menu;
+    const auto *track = panel_.root.reader().findTrack(track_);
+    const auto choice = engine::midiInputChoice(track && track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto add = [&](const juce::String &name, std::string_view endpoint, int channel) {
+        menu.addItem(name, true, choice.port == endpoint && choice.channel == channel,
+                     [safe, id = track_, port = std::string(endpoint), channel] {
+                         if (safe)
+                             safe->panel_.root.setMidiInput(id, port, channel);
+                     });
+    };
+    if (chooser == RoutingChooser::MidiFrom) {
+        add("All Ins", {}, choice.channel);
+        for (const auto &port : panel_.root.midiInputPorts)
+            add(juce::String::fromUTF8(port.name.c_str()), port.id, choice.channel);
+    } else {
+        add("All Channels", choice.port, 0);
+        for (int channel = 1; channel <= 16; ++channel)
+            add(juce::String(channel), choice.port, channel);
+    }
+    return menu;
+}
+
+juce::String MixerStrip::midiOutputLabel() const {
+    const auto* trackNode = panel_.root.reader().findTrack(track_);
+    if (!trackNode || !trackNode->midiOutput) return "No Output";
+    const auto ports = panel_.root.midiTrackOutputs ? panel_.root.midiTrackOutputs() : std::vector<MidiPortListing>{};
+    const auto port = std::ranges::find(ports, trackNode->midiOutput->port, &MidiPortListing::id);
+    const auto name = port == ports.end() ? juce::String("Unavailable") : juce::String::fromUTF8(port->name.c_str());
+    return name + " / " + juce::String(trackNode->midiOutput->channel);
+}
+
+juce::PopupMenu MixerStrip::midiOutputMenu() {
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto* trackNode = panel_.root.reader().findTrack(track_);
+    const auto current = trackNode ? trackNode->midiOutput : std::optional<rows::MidiOutput>{};
+    const auto ports = panel_.root.midiTrackOutputs ? panel_.root.midiTrackOutputs() : std::vector<MidiPortListing>{};
+    juce::PopupMenu menu;
+    menu.addItem("No Output", current.has_value(), !current, [safe] {
+        if (safe)
+            safe->panel_.root.setTrackMidiOutput(safe->track_, {});
+    });
+    for (const auto& port : ports) {
+        juce::PopupMenu channels;
+        const bool selectedPort = current && current->port == port.id;
+        for (int channel = 1; channel <= 16; ++channel) {
+            channels.addItem("Channel " + juce::String(channel), true, selectedPort && current->channel == channel,
+                [safe, route = rows::MidiOutput{port.id, channel}] {
+                    if (safe)
+                        safe->panel_.root.setTrackMidiOutput(safe->track_, route);
+                });
+        }
+        menu.addSubMenu(juce::String::fromUTF8(port.name.c_str()), channels, true, nullptr, selectedPort);
+    }
+    return menu;
+}
+
+void MixerStrip::showRoutingMenu(RoutingChooser chooser) {
+    const auto safe = SafePointer<MixerStrip>(this);
+    const auto configure = [&](juce::PopupMenu &menu, bool midi) {
+        const auto &handler = midi ? panel_.root.configureMidiRouting : panel_.root.configureExternalInputs;
+        menu.addSeparator();
+        menu.addItem("Configure...", static_cast<bool>(handler), false, [safe, midi] {
+            if (safe) {
+                const auto &action = midi ? safe->panel_.root.configureMidiRouting : safe->panel_.root.configureExternalInputs;
+                if (action)
+                    action();
+            }
+        });
+    };
+    juce::PopupMenu menu;
+    switch (chooser) {
+    case RoutingChooser::MidiFrom:
+    case RoutingChooser::MidiChannel:
+        menu = midiInputMenu(chooser);
+        configure(menu, true);
+        break;
+    case RoutingChooser::MidiTo:
+        menu = midiOutputMenu();
+        configure(menu, true);
+        break;
+    case RoutingChooser::MainOut:
+    case RoutingChooser::CueOut: {
+        const auto outputs = stereoOutputs();
+        const auto &physicalChannels = panel_.root.physicalOutputChannels;
+        const auto grant = physicalChannels ? physicalChannels() : std::nullopt;
+        const int first = selectedStereoOutput(chooser);
+        const auto addPair = [&](int pair, const juce::String &name) {
+            menu.addItem(name, true, pair == first, [safe, pair, chooser, track = track_] {
+                if (safe && safe->track_ == track && safe->kind_ == "master") {
+                    if (chooser == RoutingChooser::MainOut)
+                        safe->panel_.root.setMainOutput(pair);
+                    else
+                        safe->panel_.root.setCueOutput(pair);
+                }
+            });
+        };
+        if (chooser == RoutingChooser::CueOut && physicalChannels) {
+            for (int pair = 0; pair < engine::OutputChannelMap::maximumChannels; pair += 2) {
+                if (grant ? grant->packedPair(pair) < 0 : pair != 0)
+                    continue;
+                const auto named = std::ranges::find(outputs, pair, &std::pair<int, std::string>::first);
+                addPair(pair, named == outputs.end() ? juce::String(pair + 1) + "/" + juce::String(pair + 2)
+                                                     : juce::String::fromUTF8(named->second.c_str()));
+            }
+            if (menu.getNumItems() == 0 && !onRoutingMenu && !panel_.contextMenuPresenter) {
+                panel_.root.say("Enable a stereo output pair in Settings > Audio.");
+                return;
+            }
+        } else {
+            for (const auto &output : outputs)
+                if (!grant || grant->packedPair(output.first) >= 0)
+                    addPair(output.first, juce::String::fromUTF8(output.second.c_str()));
+        }
+        if (menu.getNumItems() == 0)
+            menu.addItem("No enabled stereo outputs", false, false, [] {});
+        configure(menu, false);
+        break;
+    }
+    case RoutingChooser::AudioTo: {
+        const auto *track = panel_.root.reader().findTrack(track_);
+        bool hasChoice = false;
+        for (const auto id : panel_.root.audioOutputChoices(track_))
+            if (const auto *destination = panel_.root.reader().findTrack(id)) {
+                const auto label = audioDestinationLabel(*destination);
+                const auto current = track && track->audioOutput ? *track->audioOutput : track ? track->parent : 0;
+                const bool selected = current == id || (current == 0 && destination->kind == "master");
+                menu.addItem(label, true, selected, [safe, source = track_, id] {
+                    if (safe)
+                        safe->panel_.root.setTrackAudioOutput(source, id);
+                });
+                hasChoice = true;
+            }
+        if (!hasChoice)
+            menu.addItem("No available destinations", false, false, [] {});
+        break;
+    }
+    }
+    if (onRoutingMenu) {
+        onRoutingMenu(chooser, std::move(menu));
+        return;
+    }
+    if (chooser == RoutingChooser::CueOut) {
+        if (panel_.contextMenuPresenter) {
+            panel_.contextMenuPresenter(std::move(menu));
+            return;
+        }
+        if (!panel_.vertical()) {
+            menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cueOut));
+            return;
+        }
+    }
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
 }
 void MixerStrip::cueOutMenu() {
-    // The device's outputs in stereo pairs, 1/2 first (Main's); the one in use ticked (MX-08).
-    const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
-    const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
-    juce::PopupMenu m;
-    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
-        m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
-                  [safe = SafePointer<MixerStrip>(this), pair] {
-                      if (safe)
-                          safe->panel_.root.setCueOutput(pair);
-                  });
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+    if (kind_ == "master")
+        showRoutingMenu(RoutingChooser::CueOut);
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
-    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
-    // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
-    // y 37, 6 apart), each in the cells the one-of gives In and Auto.
-    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+    const auto box = monitorBounds().toFloat();
+    if (box.isEmpty())
         return false;
-    if (panel_.vertical())
-        return io_ > 0 && onInOrAuto(4.f, static_cast<float>(kMixerTop + 59), 3, at);
-    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
-        return false;
-    return onInOrAuto(5.f, 37.f, 6, at);
+    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
+    return in.getUnion(automatic).contains(at.toFloat());
 }
 juce::PopupMenu MixerStrip::monitorMenu() {
     juce::PopupMenu menu;
@@ -1160,38 +1475,42 @@ juce::PopupMenu MixerStrip::monitorMenu() {
                  [this, id = track_, on] { panel_.root.setKeepMonitoringLatency(id, !on); });
     return menu;
 }
-const char *MixerStrip::outputLabel() const noexcept {
-    // Main plays to the outputs; a MIDI track with no instrument to nothing (No Output); a track in a
-    // group to its group, as Live assigns a grouped track's Audio To (manual 18.3), shown as Live's
-    // "Group"; every other track to Main. ADI's fixed routing: the snapshot carries none yet
-    // (look-live11 row 5).
+juce::String MixerStrip::audioDestinationLabel(const engine::TrackNode &destination) const {
+    if (destination.kind == "master")
+        return "Main";
+    if (const auto *track = panel_.root.reader().findTrack(track_); track && track->parent == destination.id)
+        return "Group";
+    return juce::String::fromUTF8(destination.name.c_str());
+}
+juce::String MixerStrip::outputLabel() const {
     if (kind_ == "master")
-        return "1/2";
+        return stereoOutputLabel(RoutingChooser::MainOut);
     if (!audio_)
-        return "No Output";
+        return midiOutputLabel();
+    if (const auto *track = panel_.root.reader().findTrack(track_); track && track->audioOutput)
+        if (const auto *target = panel_.root.reader().findTrack(*track->audioOutput))
+            return audioDestinationLabel(*target);
     return inGroup_ ? "Group" : "Main";
 }
 void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
     // records from, its monitoring, where it plays to, each under its label; a return's output only,
-    // level with the tracks'; Main's Cue Out and Main Out. ADI's fixed routing, as the track
-    // controls' column shows it (the routing is not in the snapshot yet, look-live11 row 5).
+    // level with the tracks'; Main's Cue Out and Main Out.
     const int top = kMixerTop, w = getWidth() - 2;
     auto label = [&](int y, const char *text) {
         g.setColour(look::text);
         g.setFont(look::font(look::fontBody, true));
         g.drawText(text, 5, top + y, w - 10, 13, juce::Justification::centredLeft);
     };
-    auto chooser = [&](int y, const char *text, bool enabled) {
+    auto chooser = [&](int y, const juce::String &text, bool enabled) {
         drawChooser(g, {4.f, static_cast<float>(top + y), static_cast<float>(w - 8), 13.f}, text, enabled);
     };
     if (kind_ == "master") {
         // Live's Cue Out (manual 18.6; MX-08): the stereo pair the cued tracks play to, chosen here.
         label(60, "Cue Out");
-        const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
-        chooser(73, (std::to_string(first + 1) + "/" + std::to_string(first + 2)).c_str(), true);
+        chooser(73, stereoOutputLabel(RoutingChooser::CueOut), true);
         label(90, "Main Out");
-        chooser(103, "1/2", true);
+        chooser(103, stereoOutputLabel(RoutingChooser::MainOut), true);
         return;
     }
     if (kind_ == "return" || kind_ == "group") {
@@ -1201,11 +1520,11 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         return;
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
-    chooser(15, midi_ ? "All Ins" : "Ext. In", true);
-    chooser(31, midi_ ? "All Channels" : audioInputLabel(),
-            midi_ || static_cast<bool>(panel_.root.externalAudioInputs));
+    const bool resampling = audioInputIsResampling();
+    chooser(15, midi_ ? midiInputLabel(RoutingChooser::MidiFrom) : juce::String(resampling ? "Resampling" : "Ext. In"), true);
+    chooser(31, midi_ ? midiInputLabel(RoutingChooser::MidiChannel) : juce::String(resampling ? "Stereo" : audioInputLabel()),
+            midi_ || (!resampling && static_cast<bool>(panel_.root.externalAudioInputs)));
     label(46, "Monitor");
-    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");
     chooser(87, outputLabel(), true);
     chooser(103, "", false);
@@ -1218,17 +1537,19 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
         return static_cast<int>(static_cast<double>(height) *
                                 meterDepth(20 * std::log10(std::max(v, 1.e-6f))));
     };
-    const auto left = area.withWidth(area.getWidth() / 2 - 1);
-    const auto right = area.withTrimmedLeft(area.getWidth() / 2 + 1);
-    const int rmsTop = depth(rms_), peakTop = depth(peak_);
-    for (const auto &channel : {left, right}) {
+    const std::array columns{area.withWidth(area.getWidth() / 2 - 1),
+                             area.withTrimmedLeft(area.getWidth() / 2 + 1)};
+    for (std::size_t channel = 0; channel < columns.size(); ++channel) {
+        const auto &column = columns[channel];
+        const auto &level = levels_[channel];
         g.setColour(look::display);
-        g.fillRect(channel);
+        g.fillRect(column);
         g.setColour(look::meterLevel);
-        g.fillRect(channel.withTrimmedTop(rmsTop));
-        g.setColour(peak_ >= 1 ? look::record : look::meterPeak);
-        if (peak_ > 1.e-6f)
-            g.fillRect(channel.getX(), channel.getY() + peakTop, channel.getWidth(), 1);
+        g.fillRect(column.withTrimmedTop(depth(level.rms)));
+        if (level.peak > 1.e-6f) {
+            g.setColour(level.peak >= 1 ? look::record : look::meterPeak);
+            g.fillRect(column.getX(), column.getY() + depth(level.peak), column.getWidth(), 1);
+        }
     }
     if (!panel_.vertical())
         return;
@@ -1396,26 +1717,50 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         dragging_ = true;
         return;
     }
+    if (panel_.vertical() && shown_ > 0 && (!sends_.empty() || !returnSwitches_.empty()) &&
+        e.eventComponent == this && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu()) {
+        const auto first = panel_.firstSend(shown_);
+        if (first > 0 && sendArrowBounds(false).contains(e.getPosition())) {
+            panel_.scrollSendsBy(-1, shown_);
+            return;
+        }
+        if (first + shown_ < panel_.sendReturns_.size() && sendArrowBounds(true).contains(e.getPosition())) {
+            panel_.scrollSendsBy(1, shown_);
+            return;
+        }
+    }
+    auto &root = panel_.root;
+    const bool chooseEnvelope = root.automationMode() && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+    const auto onControl = [&](const juce::Component &control) {
+        return e.eventComponent == &control ||
+               (dynamic_cast<const juce::Label *>(e.eventComponent) != nullptr &&
+                e.eventComponent->getParentComponent() == &control);
+    };
     // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         auto &knob = *sends_[i];
-        const bool own = e.eventComponent == &knob;
+        const bool own = onControl(knob);
         if (!own && !(e.eventComponent == this && knob.isVisible() && knob.getBounds().contains(e.getPosition())))
             continue;
         if (e.mods.isPopupMenu())
             sendMenu(i);
         else if (!own)
-            panel_.root.say("This send is off. Right-click it for Enable Send.");
+            root.say("This send is off. Right-click it for Enable Send.");
+        else if (chooseEnvelope && i < returns_.size())
+            if (const auto snapshot = root.current())
+                if (const auto *send = findSend(snapshot->sends, track_, returns_[i]))
+                    root.showAutomation(track_, sendTarget(send->id, {}));
         return;
     }
-    // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
-    if (e.eventComponent == this && onCueOut(e.getPosition())) {
-        cueOutMenu();
-        return;
-    }
-    if (e.eventComponent == this && onAudioInput(e.getPosition())) {
-        showAudioInputMenu();
-        return;
+    if (e.eventComponent == this) {
+        if (onAudioInput(e.getPosition())) {
+            showAudioInputMenu();
+            return;
+        }
+        if (const auto chooser = routingChooserAt(e.getPosition())) {
+            showRoutingMenu(*chooser);
+            return;
+        }
     }
     // A click on a Mixer View strip's title bar selects its track, as a click on its header does
     // (Live 12 manual 18.1): Ctrl/Cmd+click picks it apart or lets it go, Shift+click reaches across
@@ -1459,21 +1804,29 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         panel_.root.arrangement.changed();
         return;
     }
+    if (chooseEnvelope) {
+        if (onControl(pan))
+            root.showAutomation(track_, panTarget(track_));
+        else if (onControl(volume))
+            root.showAutomation(track_, volumeTarget(track_));
+    }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
         // together when it is among them.
         if (e.eventComponent == this)
-            if (const auto mode = monitorAt(e.getPosition()))
+            if (const auto mode = monitorAt(e.getPosition())) {
+                focusIfShowing(monitor_);
                 panel_.root.setMonitor(track_, *mode);
+            }
         return;
     }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {
         monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
     }
-    if (e.eventComponent == &pan)
+    if (onControl(pan))
         panMenu();
-    else if (e.eventComponent == &volume)
+    else if (onControl(volume))
         volumeMenu();
     else
         panel_.contextMenu(e.getScreenPosition());
@@ -1496,12 +1849,6 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     // strip, each return's Pre/Post switch instead (Live's Mixer).
     const auto knobs = t != nullptr && hasSends(*t) && audio ? order_.size() : 0;
     const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
-    // Every strip keeps a row per return in the project, so the mixers line up; a strip whose track
-    // has no knob for a group's return leaves its row empty (DF-W33).
-    std::size_t returnCount = 0;
-    for (const auto &r : reader.tracks())
-        if (r && r->kind == "return")
-            ++returnCount;
     // A letter follows its group's name and the group it sits in, which the ids alone don't show.
     bool sameLetters = letterCodes_.size() == order_.size();
     for (std::size_t i = 0; sameLetters && i < order_.size(); ++i) {
@@ -1509,7 +1856,7 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
         const auto n = returnLetter(reader.tracks(), order_[i], letter);
         sameLetters = letterCodes_[i] == std::array<char, 2>{letter[0], n > 1 ? letter[1] : '\0'};
     }
-    if (sameLetters && returnCount == returnCount_ && order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
+    if (sameLetters && order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
         midi == midi_ && audio == audio_ && grouped == inGroup_)
         return;
     kind_ = kind;
@@ -1517,7 +1864,6 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     audio_ = audio;
     inGroup_ = grouped;
     returns_ = order_;
-    returnCount_ = returnCount;
     sends_.resize(std::min(sends_.size(), knobs));
     while (sends_.size() < knobs)
         sends_.push_back(makeSend(sends_.size()));
@@ -1620,7 +1966,7 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
         else if (!dragging_)
             commitSend(index);
     };
-    knob->addMouseListener(this, false);
+    knob->addMouseListener(this, true);
     addAndMakeVisible(*knob);
     return knob;
 }
@@ -1878,7 +2224,7 @@ void MixerPanel::reveal(std::size_t index) {
         return;
     int top = 0;
     for (std::size_t i = 0; i < index; ++i)
-        top += geometry.heightFor(tracks[i].track->id);
+        top += geometry.rowHeight(*tracks[i].track);
     const int bottom = top + geometry.heightFor(tracks[index].track->id);
     const int view = std::max(0, geometry.footTop(root.reader()));
     if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
@@ -1935,6 +2281,29 @@ bool MixerPanel::focusNeighbour(bool next) {
             focusIfShowing(*other->switches()[slot]);
     return true;
 }
+MixerPanel::ColumnSections MixerPanel::columnSections(int height) const noexcept {
+    const auto &state = root.state();
+    ColumnSections sections;
+    // The strips share one geometry. Give In/Out and Track Delay their room first, then fit as
+    // many send slots as possible while leaving the fader and meter their space.
+    int room = height - MixerStrip::kMixerTop - MixerStrip::kMixerRoom;
+    if (state.mixerInOut && room >= MixerStrip::kInOutHeight) {
+        sections.inOut = MixerStrip::kInOutHeight;
+        room -= sections.inOut;
+    }
+    if (state.mixerTrackOptions && room >= MixerStrip::kDelayHeight) {
+        sections.trackDelay = MixerStrip::kDelayHeight;
+        room -= sections.trackDelay;
+    }
+    if (state.mixerSends && room > MixerStrip::kSendPadding) {
+        const auto capacity = static_cast<std::size_t>((room - MixerStrip::kSendPadding) / MixerStrip::kSendPitch);
+        sections.sends = std::min(sendReturns_.size(), capacity);
+    }
+    return sections;
+}
+std::size_t MixerPanel::firstSend(std::size_t shown) const noexcept {
+    return shown > 0 && shown < sendReturns_.size() ? std::min(sendOffset_, sendReturns_.size() - shown) : 0;
+}
 void MixerPanel::placeColumns() {
     // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10), in
     // the lanes' order. Only the tracks the project view shows; a folded group's stay, as
@@ -1965,6 +2334,8 @@ void MixerPanel::placeColumns() {
         if (s.track() != id && !s.dragging())
             s.bind(id);
         s.setBounds(static_cast<int>(column - 1) * kStripWidth - scrollX_, 0, kStripWidth, getHeight());
+        if (!s.isVisible())
+            s.resized();
         s.setVisible(true);
     }
     for (; n < strips_.size(); ++n)
@@ -2049,7 +2420,21 @@ void MixerPanel::previewTrackDrop(std::optional<TitleDrop> drop) {
 }
 void MixerPanel::place() {
     if (vertical_) {
+        returnsInOrder(root.reader().tracks(), nextSendReturns_);
+        const bool returnsChanged = nextSendReturns_ != sendReturns_;
+        if (returnsChanged)
+            sendReturns_.swap(nextSendReturns_);
+        const auto previousOffset = sendOffset_;
+        sendOffset_ = firstSend(columnSections(getHeight()).sends);
+        if (returnsChanged || sendOffset_ != previousOffset)
+            sendWheelFraction_ = 0.f;
         placeColumns();
+        if (returnsChanged || sendOffset_ != previousOffset)
+            for (auto &strip : strips_)
+                if (strip->isVisible()) {
+                    strip->resized();
+                    strip->repaint();
+                }
         return;
     }
     // Realise what is visible and a margin, never a strip per track (UI-ARCHITECTURE
@@ -2073,7 +2458,7 @@ void MixerPanel::place() {
         const int h = geometry.heightFor(tracks[i].track->id);
         if (inSight(i, y, h))
             ++wanted;
-        y += h;
+        y += geometry.rowHeight(*tracks[i].track);
     }
     while (strips_.size() < wanted) {
         auto strip = std::make_unique<MixerStrip>(*this);
@@ -2097,7 +2482,7 @@ void MixerPanel::place() {
             if (i >= foot)
                 s.toFront(false);
         }
-        y += h;
+        y += geometry.rowHeight(*tracks[i].track);
     }
     for (std::size_t i = used; i < strips_.size(); ++i)
         if (!strips_[i]->dragging())
@@ -2230,9 +2615,55 @@ void MixerPanel::showContextMenu(juce::PopupMenu menu, juce::Point<int> where) {
     }
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
 }
+void MixerPanel::scrollSendsBy(int rows, std::size_t shown) {
+    const auto first = firstSend(shown);
+    const auto last = sendReturns_.size() - shown;
+    if (rows < 0)
+        sendOffset_ = first - std::min(first, static_cast<std::size_t>(-rows));
+    else
+        sendOffset_ = first + std::min(last - first, static_cast<std::size_t>(rows));
+    if (sendOffset_ == first)
+        return;
+    for (auto &strip : strips_)
+        if (strip->isVisible()) {
+            strip->layoutSends();
+            strip->repaint();
+        }
+}
+bool MixerPanel::scrollSends(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
+    const auto sections = columnSections(getHeight());
+    if (sections.sends == 0 || sections.sends == sendReturns_.size() || w.deltaY == 0.f ||
+        std::abs(w.deltaX) > std::abs(w.deltaY) || e.mods.isShiftDown())
+        return false;
+    const auto at = e.getEventRelativeTo(this).getPosition();
+    const int top = MixerStrip::kMixerTop + sections.inOut;
+    if (at.y < top || at.y >= top + MixerStrip::sendsHeight(sections.sends) || !getLocalBounds().contains(at) ||
+        std::none_of(strips_.begin(), strips_.end(), [&](const auto &strip) {
+            return strip->isVisible() && strip->getBounds().contains(at);
+        }))
+        return false;
+
+    int rows = w.deltaY < 0.f ? 1 : -1;
+    if (w.isSmooth) {
+        // A trackpad sends fractions of a wheel tick. Accumulate travel until a slot has passed.
+        sendWheelFraction_ -= w.deltaY * (300.f / MixerStrip::kSendPitch);
+        rows = static_cast<int>(sendWheelFraction_);
+        sendWheelFraction_ -= static_cast<float>(rows);
+    } else
+        sendWheelFraction_ = 0.f;
+    if (rows != 0)
+        scrollSendsBy(rows, sections.sends);
+    const auto first = firstSend(sections.sends);
+    if ((w.deltaY > 0.f && first == 0) || (w.deltaY < 0.f && first + sections.sends == sendReturns_.size()))
+        sendWheelFraction_ = 0.f;
+    return true;
+}
 void MixerPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (vertical_) {
-        // The Mixer View scrolls sideways, whichever way the wheel turns.
+        if (scrollSends(e, w))
+            return;
+        sendWheelFraction_ = 0.f;
+        // Elsewhere the Mixer View scrolls sideways, whichever way the wheel turns.
         const float delta = std::abs(w.deltaX) > std::abs(w.deltaY) ? w.deltaX : w.deltaY;
         scrollX_ -= static_cast<int>(delta * 300);
         previewTrackDrop(std::nullopt);

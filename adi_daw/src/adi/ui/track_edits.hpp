@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -496,6 +497,42 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
         auto stay = children(tracks, parent);
         stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
         renumber(edit.ops, stay, label);
+    }
+    return edit;
+}
+// Move selected tracks one sibling slot without changing their parents. A selected group carries
+// its descendants, and each run of selected siblings passes one unselected sibling of its rank.
+inline TrackEdit nudgeTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, bool down) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const std::set<std::int64_t> picked(ids.begin(), ids.end());
+    std::set<std::int64_t> moving, parents;
+    for (const auto &track : tracks) {
+        if (!track || rank(*track) == 2 || !picked.contains(track->id))
+            continue;
+        auto *parent = find(tracks, track->parent);
+        for (std::size_t depth = 0; parent && depth < tracks.size() && !picked.contains(parent->id); ++depth)
+            parent = find(tracks, parent->parent);
+        if (!parent) {
+            moving.insert(track->id);
+            parents.insert(track->parent);
+        }
+    }
+    const char *label = moving.size() > 1 ? "Move Tracks" : "Move Track";
+    for (const auto parent : parents) {
+        auto order = children(tracks, parent);
+        bool changed = false;
+        for (std::size_t step = 1; step < order.size(); ++step) {
+            const auto from = down ? order.size() - step - 1 : step;
+            const auto to = down ? from + 1 : from - 1;
+            if (moving.contains(order[from]->id) && !moving.contains(order[to]->id) &&
+                rank(*order[from]) == rank(*order[to])) {
+                std::swap(order[from], order[to]);
+                changed = true;
+            }
+        }
+        if (changed)
+            renumber(edit.ops, order, label);
     }
     return edit;
 }

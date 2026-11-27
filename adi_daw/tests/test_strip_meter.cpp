@@ -20,12 +20,21 @@ template<class T> void run() {
     else {io.in64=in;io.out64=out;}
     strip.process(io);
     check(strip.meter().peak.load()==1 && near(strip.meter().rms.load(),std::sqrt(0.5)),"meter reads post-fader samples and averages both channels");
+    const auto& stereo = strip.meter().stereo;
+    check(stereo[0].peak.load() == 1 && stereo[0].rms.load() == 1 &&
+          stereo[1].peak.load() == 0 && stereo[1].rms.load() == 0,
+          "a left-only signal publishes separate peak and RMS levels");
     io.blockOffset=2;io.frames=6;strip.process(io);
     check(strip.meter().peak.load()==1 && near(strip.meter().rms.load(),std::sqrt(0.125)),"split callback retains earlier peak and weights all frames in RMS");
+    check(stereo[0].peak.load() == 1 && stereo[0].rms.load() == .5f && stereo[1].rms.load() == 0,
+          "the left RMS weights both callback segments without including the right samples");
     left.fill(T{0.5});right.fill(T{0.5});io.blockOffset=0;io.frames=8;strip.process(io);
     check(strip.meter().peak.load()==0.5f && strip.meter().rms.load()==0.5f,"next callback resets the accumulation without a tap");
     strip.setStatic(-6.020599913,1,PanLaw::Balance,true);strip.restart();strip.process(io);
     check(near(strip.meter().peak.load(),0.25) && near(strip.meter().rms.load(),0.25/std::sqrt(2.0)),"meter follows fader gain and pan");
+    check(stereo[0].peak.load() == 0 && stereo[0].rms.load() == 0 &&
+          near(stereo[1].peak.load(), .25) && near(stereo[1].rms.load(), .25),
+          "right pan moves the post-fader level fully to the right meter");
     strip.setStatic(0,0,PanLaw::Live,false);strip.restart();strip.process(io);
     check(strip.meter().peak.load()==0 && strip.meter().rms.load()==0,"muted strip reads zero");
     strip.setStatic(0,0,PanLaw::Live,true);strip.restart();strip.process(io);
@@ -35,11 +44,17 @@ template<class T> void run() {
     check(strip.meter().peak.load()==0 && strip.meter().rms.load()==0,"suspended strip clears stale levels");
     strip.process(io);strip.release();
     check(strip.meter().peak.load()==0 && strip.meter().rms.load()==0,"device stop clears the readout");
+    check(stereo[0].peak.load() == 0 && stereo[0].rms.load() == 0 &&
+          stereo[1].peak.load() == 0 && stereo[1].rms.load() == 0,
+          "device stop clears both channel readouts");
     // A graph re-prepares persistent strips while the old graph can play.
     strip.process(io);strip.prepare(96000,8);
     check(strip.meter().peak.load()==0.5f,"rebuild preparation preserves a live meter");
     io.channels=1;strip.process(io);
     check(strip.meter().peak.load()==0.5f && strip.meter().rms.load()==0.5f,"mono is averaged once");
+    check(stereo[0].peak.load() == .5f && stereo[0].rms.load() == .5f &&
+          stereo[1].peak.load() == 0 && stereo[1].rms.load() == 0,
+          "a mono callback has no stale right channel from the previous stereo callback");
     io.channels=2;left.fill(std::numeric_limits<T>::infinity());right.fill(std::numeric_limits<T>::quiet_NaN());strip.process(io);
     check(std::isfinite(strip.meter().peak.load()) && std::isfinite(strip.meter().rms.load()),"bad device output cannot poison UI meter values");
     left.fill(T{0.125});right.fill(T{0.125});strip.process(io);

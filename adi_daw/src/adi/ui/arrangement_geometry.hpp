@@ -10,6 +10,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <span>
 #include <vector>
 #include <string>
 namespace adi::ui {
@@ -102,6 +103,8 @@ struct ArrangementGeometry {
     // geometry used without its view: the foot then follows the tracks.
     int lanesHeight = 0;
     std::map<std::int64_t, int> heights;
+    // Total height of this track's separate automation lanes, after its clip row.
+    std::map<std::int64_t, int> automationLaneHeights;
     // Folded ordinary tracks keep their row and their expanded height.
     std::set<std::int64_t> foldedTracks;
     // Bitwig's Use Large Track Height (Master Reference 10, Figure 33): off, every track shows
@@ -189,6 +192,13 @@ struct ArrangementGeometry {
         const auto i = heights.find(id);
         const int h = i == heights.end() ? height : i->second;
         return largeTracks ? h : std::max(kMinTrackHeight, h / 2);
+    }
+    int stackHeightFor(std::int64_t id) const noexcept {
+        const int base = heightFor(id);
+        if (base == 0 || automationLaneHeights.empty() || foldedTracks.contains(id))
+            return base;
+        const auto it = automationLaneHeights.find(id);
+        return it == automationLaneHeights.end() ? base : base + std::max(0, it->second);
     }
     // `next` is a height as shown; while the tracks are small it is kept at twice that, so
     // the track comes back at the size it was given.
@@ -453,7 +463,7 @@ struct ArrangementGeometry {
         left = std::max(0., at - pixel / scale);
     }
     void zoomAround(double factor, std::int64_t at) noexcept { zoom(factor, x(at)); }
-    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true) noexcept {
+    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true, double minimumQuarters = 1.) noexcept {
         if (remember) {
             if (historySize == history.size()) {
                 std::move(history.begin() + 1, history.end(), history.begin());
@@ -463,7 +473,7 @@ struct ArrangementGeometry {
         }
         left = static_cast<double>(start) / textproj::kPPQ;
         scale = std::clamp(static_cast<double>(std::max(width, 1)) /
-                               std::max(1., static_cast<double>(end - start) / textproj::kPPQ),
+                               std::max(minimumQuarters, static_cast<double>(end - start) / textproj::kPPQ),
                            1., 4096.);
     }
     void back() noexcept {
@@ -481,12 +491,39 @@ struct ArrangementGeometry {
             --i;
         return i;
     }
+    static constexpr int takeLaneHeight = 40;
+    std::set<std::int64_t> shownTakeLanes;
+    std::span<const engine::TakeLaneNode> takeLanes(const engine::TrackNode &track) const noexcept {
+        if (shown(track.id) && shownTakeLanes.contains(track.id) && !foldedTracks.contains(track.id))
+            return track.takeLanes;
+        return {};
+    }
+    int rowHeight(const engine::TrackNode &track) const noexcept {
+        return stackHeightFor(track.id) + takeLaneHeight * static_cast<int>(takeLanes(track).size());
+    }
+    struct TakeLaneHit {
+        const engine::TrackNode *track;
+        const engine::TakeLaneNode *lane;
+    };
+    std::optional<TakeLaneHit> takeLaneAt(const SnapshotReader &r, int y) const noexcept {
+        int top = 0;
+        const auto position = rowAt(r, y, &top);
+        const auto all = rows(r);
+        if (position >= all.size())
+            return {};
+        const auto *track = all[position].track;
+        const auto offset = y - top - stackHeightFor(track->id);
+        const auto visible = takeLanes(*track);
+        if (offset < 0 || static_cast<std::size_t>(offset / takeLaneHeight) >= visible.size())
+            return {};
+        return TakeLaneHit{track, &visible[static_cast<std::size_t>(offset / takeLaneHeight)]};
+    }
     // The foot's height, and the tracks' above it, as shown.
     int footHeight(const SnapshotReader &r) const noexcept {
         const auto all = rows(r);
         int total = 0;
         for (auto i = footStart(all); i < all.size(); ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     int tracksHeight(const SnapshotReader &r) const noexcept {
@@ -494,7 +531,7 @@ struct ArrangementGeometry {
         const auto foot = footStart(all);
         int total = 0;
         for (std::size_t i = 0; i < foot; ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     // Where the foot begins in the lanes: at their bottom, whatever the scroll; right after the
@@ -516,7 +553,7 @@ struct ArrangementGeometry {
                 y = footTop(r);
             if (all[i].track->id == id)
                 return heightFor(id) > 0 ? y : -1;
-            y += heightFor(all[i].track->id);
+            y += rowHeight(*all[i].track);
         }
         return -1;
     }
@@ -528,12 +565,12 @@ struct ArrangementGeometry {
     bool reveal(const SnapshotReader &r, std::int64_t id, bool fully = true) noexcept {
         const auto all = rows(r);
         const auto i = all.find(id);
-        const int h = heightFor(id);
+        const int h = stackHeightFor(id);
         if (lanesHeight <= 0 || i >= footStart(all) || h <= 0)
             return false;
         int top = 0;
         for (std::size_t k = 0; k < i; ++k)
-            top += heightFor(all[k].track->id);
+            top += rowHeight(*all[k].track);
         const int before = scrollY;
         const int footY = footTop(r);
         if (!fully && top + h > scrollY && top < scrollY + footY)
@@ -545,12 +582,18 @@ struct ArrangementGeometry {
         scrollY = std::clamp(scrollY, 0, maxScroll(r));
         return scrollY != before;
     }
+    // Clip rows alone are hit targets for existing clip and mixer interactions.
     const engine::TrackNode *trackAt(const SnapshotReader &r, int y) const noexcept {
         const auto all = rows(r);
-        const auto i = rowAt(r, y);
-        return i < all.size() ? all[i].track : nullptr;
+        int top = 0;
+        const auto i = rowAt(r, y, &top);
+        if (i >= all.size())
+            return nullptr;
+        const auto *track = all[i].track;
+        return y - top < heightFor(track->id) ? track : nullptr;
     }
-    // The row at `y`, or the rows' size when there is none; `top` gets where it begins.
+    // The track stack at `y`, including separate automation lanes, or the rows'
+    // size when there is none; `top` gets the start of its clip row.
     // The foot stands over the tracks scrolled under it, so a point there is the foot's.
     std::size_t rowAt(const SnapshotReader &r, int y, int *top = nullptr) const noexcept {
         const auto all = rows(r);
@@ -561,7 +604,7 @@ struct ArrangementGeometry {
         const bool inFoot = foot < all.size() && y >= footY;
         int at = inFoot ? footY : -scrollY;
         for (std::size_t i = inFoot ? foot : 0; i < (inFoot ? all.size() : foot); ++i) {
-            const int h = heightFor(all[i].track->id);
+            const int h = rowHeight(*all[i].track);
             if (y >= at && y < at + h) {
                 if (top != nullptr)
                     *top = at;

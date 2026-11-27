@@ -101,26 +101,33 @@ undo/redo, history branching and reverting to a snapshot taken before any edit.
 
 ### 3.2 Required pragmas while a project is open
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;          -- FULL on removable/network volumes
-PRAGMA busy_timeout = 5000;
-```
+Local projects use `journal_mode = WAL` and `synchronous = NORMAL`. The
+write-ahead log lets render and export read a consistent snapshot while the
+user keeps editing. The connection uses `busy_timeout = 5000`.
 
-`WAL` is what makes autosave-during-playback cheap and lets the render/export
-path read a consistent snapshot while the user keeps editing.
+An open project in a recognized synced folder or on a network volume uses
+`journal_mode = DELETE` and `synchronous = EXTRA` (ADR-0258 d7). SQLite also
+syncs the containing directory when removing its rollback journal. Each successful
+commit is present in the `.adi` file, and SQLite removes its rollback journal
+at the end of the transaction. The app recognizes configured OneDrive roots,
+macOS iCloud Drive and CloudStorage, and supported network filesystems. For
+another sync service, `ADI_SYNC_PROJECTS` can name an absolute synchronized
+folder. Folder matches use whole components of the canonical project path.
+
+The Status Bar tells the user when the project is in such a location. A file
+copied between transactions carries all committed changes. Use Save a Copy or
+Collect and Export to take a consistent copy of an open project.
 
 ### 3.3 Close policy — the WAL sidecar rule
 
 **A cleanly closed `.adi` MUST be exactly one file on disk.**
 
-While open, SQLite maintains `foo.adi-wal` and `foo.adi-shm` alongside it. A user
-who copies or emails only `foo.adi` from that state gets a project that opens
-*cleanly* but is silently missing everything since the last checkpoint — a worse
-failure than an error.
+While a local project is open in WAL mode, SQLite maintains `foo.adi-wal` and
+`foo.adi-shm` alongside it. A copy of `foo.adi` taken in that state can open
+cleanly while missing every change since the last checkpoint.
 
-On clean close, and on every explicit **Save As** / **Export**, the writer
-**MUST**:
+When closing a WAL project or publishing a **Save As** / **Export** copy,
+the writer **MUST** fold the write-ahead log:
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -169,15 +176,19 @@ there is no visible copy fallback. Missing media does not prevent a save. No sav
 op is appended. An existing SQLite WAL, SHM or rollback journal at the destination
 refuses the operation without deleting recovery material.
 
-For a supported major, relative media locations are rebased for the destination
-folder, including captured media.import/media.relink paths on **every history
-branch and their inverses**. This is a location representation change in the new
-file, preserving media identity/hash and op/transaction/branch identities; it
-prevents Undo/Redo from interpreting an old relative path against a new folder.
-Other captured fields, future fields and unrelated op bytes are preserved.
-The old implicit audio/ fallback is retained when it is the existing source.
+Shared copies keep the current song as the starting point for new Undo history.
+**Keep Undo history** also includes the existing operations, branches and named
+history snapshots. Both choices remove agent requests and any agent-supplied
+Undo labels from the published database. The new project UUID requires separate
+authorization for a requested plug-in server, and legacy server enable flags
+are cleared.
 
-`Store::saveAs(path)` makes that copy and switches the **same Store object** to
+Relative media locations are rebased for the destination folder. Files with
+existing history retained also rebase captured media.import/media.relink paths on
+**every history branch and their inverses**. The old implicit audio/ fallback is
+retained when it is the existing source.
+
+`Store::saveAs(path)` copies the complete file and switches the **same Store object** to
 its new writable database. Existing History/OpJournal objects still address it.
 The caller refreshes ProjectView/Session and its displayed filename after
 success. Project name, UUID, writer identity, history, snapshots and UI/session
@@ -199,9 +210,9 @@ A directory-sync failure after publication also returns success with a durabilit
 warning: the old file has already been replaced. Save As verifies the published
 file identity before switching; a different replacement in that interval keeps
 the original project active and reports that the copy could not be selected.
-An unknown newer major supports **Save a Copy** verbatim, without interpreting
-or relocating its media paths; it remains read-only. Save As into an editable
-Store refuses that major.
+A shared copy requires a format version whose private fields are known.
+Internal backups may copy an unknown newer major verbatim. The result
+remains read-only, and Save As into an editable Store refuses that major.
 
 ### 3.8 Collect All and Save / Collect and Export
 
@@ -228,9 +239,11 @@ a blocked passive checkpoint is reported as a warning, with success retained.
 on a private SQLite backup, collects that copy by the same rules, checks it,
 folds its WAL and publishes the archive without replacing an existing output.
 The live source and its paths/history stay unchanged. Read-only sources are
-supported. A missing or changed current **or history-only** asset fails export
-without a partial ZIP. `media::collectExport(input, zip)` remains the path-based
-entry point used by `adi_tool collect-export`.
+supported. The default archive uses the shared copy privacy policy above.
+Choose **Keep Undo history** to collect both the song and its history-only
+media. A missing or changed asset selected for collection fails export without
+a partial ZIP. `media::collectExport(input, zip)` is the path-based entry point
+used by `adi_tool collect-export`, which accepts `--keep-undo-history`.
 
 ## 4. The time model
 
@@ -601,8 +614,12 @@ zero (`"0"` allowed), at most `4294967295`. Writers MUST write the canonical
 form; a reader plays a numeric non-canonical ref (such as `"001"`) as its
 numeric value and reports it. The reference runtime plays `normalized` device
 lanes today. A `real` device lane is kept and reported until the plug-in's
-mapping is available to the engine. A track lane's `param_ref` is a strip
-parameter (§6.9).
+mapping is available to the engine. The reserved device reference `enabled`
+names the host Device Activator in the `enum` domain (0 Off, 1 On). This
+reference belongs to the device row and has no native parameter ID. Playback
+holds the latest state, defaults to `devices.enabled` without authored data,
+and uses host bypass without changing the stored device row. A track lane's
+`param_ref` is a strip parameter (§6.9).
 
 ### 6.4 Audio clips and warping
 
@@ -652,6 +669,14 @@ Modelling racks natively — rather than as "a plugin that happens to contain
 plugins" — is what lets the AI agent reason about and build them.
 
 ### 6.7 Routing
+
+A hardware MIDI output uses a track-to-`hw_out` main row with destination
+`0`. Its `channel_map` is a CBOR map with `midiPort` set to the
+direction-qualified Settings identifier and `midiChannel` set to 1–16.
+The row receives the track's MIDI after its MIDI effects. The app sends it
+while that port's Track switch is enabled. The audio output route remains
+independent.
+
 
 One `routing` table for every signal connection: main outputs, sends, sidechains,
 external inputs, and VCA control links. A row is

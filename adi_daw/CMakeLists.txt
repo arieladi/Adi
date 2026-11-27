@@ -436,9 +436,12 @@ add_library(adi_core STATIC
     src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp
     src/adi/engine/audio_recording.cpp
+    src/adi/engine/recording_recovery_plan.cpp
+    src/adi/engine/recording_recovery_wave.cpp
     src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/cue_monitor.cpp
+    src/adi/engine/sample_preview.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/audio_memory.cpp
     src/adi/engine/summing.cpp
@@ -1143,6 +1146,13 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 add_executable(adi_cue_monitor_tests tests/test_cue_monitor.cpp)
 target_link_libraries(adi_cue_monitor_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_cue_monitor_tests COMMAND adi_cue_monitor_tests)
+
+add_executable(adi_sample_preview_tests tests/test_sample_preview.cpp)
+target_link_libraries(adi_sample_preview_tests PRIVATE adi_core adi_warnings Threads::Threads)
+target_compile_definitions(adi_sample_preview_tests PRIVATE
+    ADI_PREVIEW_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
+    ADI_PREVIEW_AAC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
+add_test(NAME adi_sample_preview_tests COMMAND adi_sample_preview_tests)
 
 add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
 target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
@@ -1879,6 +1889,10 @@ add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/library_query.cpp src/adi/ui/project_library.cpp)
+add_executable(adi_library_query_tests tests/test_library_query.cpp)
+target_link_libraries(adi_library_query_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_library_query_tests COMMAND adi_library_query_tests)
 add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
 target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)

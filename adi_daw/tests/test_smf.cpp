@@ -143,8 +143,9 @@ void clipInterchange() {
     file.format = 1;
     file.division = Ppq{480};
     file.chunks.emplace_back(Track{{{0, 0xff, 0x51, {0x06, 0x1a, 0x80}}, {0, 0xff, 0x2f, {}}}});
-    file.chunks.emplace_back(Track{{{120, 0x92, 0, {60, 111}}, {240, 0xb2, 0, {1, 32}},
-        {360, 0x82, 0, {60, 7}}, {480, 0xff, 0x2f, {}}}});
+    file.chunks.emplace_back(Track{{{120, 0x92, 0, {60, 111}}, {120, 0xe2, 0, {0, 0}},
+        {240, 0xb2, 0, {1, 32}}, {240, 0xe2, 0, {37, 73}}, {360, 0x82, 0, {60, 7}},
+        {360, 0xe2, 0, {0, 64}}, {420, 0xe2, 0, {127, 127}}, {480, 0xff, 0x2f, {}}}});
     file.chunks.emplace_back(Track{{{0, 0x94, 0, {67, 92}}, {480, 0x94, 0, {67, 0}}, {480, 0xff, 0x2f, {}}}});
     const auto wire = write(file);
     const auto* bytes = std::get_if<Bytes>(&wire);
@@ -187,9 +188,15 @@ void clipInterchange() {
     check(note.startTicks == beat / 4 && note.durationTicks == beat / 2 && note.channel == 2 &&
               note.velocity == 111 && note.releaseVelocity == 7, "import preserves note timing, channel and velocities");
     const auto lanes = adi::controllers::readLanes(*store, first);
-    check(lanes.ok && lanes.lanes.size() == 1 && lanes.lanes[0].points.size() == 1 &&
-              lanes.lanes[0].controller == 1 && lanes.lanes[0].points[0].timeTicks == beat / 2,
+    check(lanes.ok && lanes.lanes.size() == 2 && lanes.lanes[0].points.size() == 1 &&
+              lanes.lanes[0].controller == 1 && lanes.lanes[0].points[0].timeTicks == beat / 2 &&
+              lanes.lanes[0].points[0].value == 32. / 127.,
           "the mod wheel lands in an editable clip controller lane");
+    check(lanes.ok && lanes.lanes.size() == 2 && lanes.lanes[1].points.size() == 4 &&
+              lanes.lanes[1].channel == 2 && lanes.lanes[1].controller == adi::controllers::kPitchBend &&
+              lanes.lanes[1].points[0].value == 0. && lanes.lanes[1].points[1].timeTicks == beat / 2 &&
+              lanes.lanes[1].points[2].value == .5 && lanes.lanes[1].points[3].value == 1.,
+          "SMF channel pitch wheel imports into a normalized editable lane");
 
     std::string exportError;
     const auto exported = adi::interchange::encodeMidiClipFile(*store, first, exportError);
@@ -199,10 +206,14 @@ void clipInterchange() {
               output->chunks.size() == 1, "export writes one Type 0 track at the Live export resolution");
     if (output) {
         const auto &events = std::get<Track>(output->chunks[0]).events;
-        check(events.size() == 4 && events[0].tick == 24 && events[0].status == 0x92 &&
-                  events[1].tick == 48 && events[1].status == 0xb2 && events[1].data == Bytes{1, 32} &&
-                  events[2].tick == 72 && events[2].data == Bytes{60, 7} && events[3].tick == 96,
-              "export contains shifted note and controller events and the clip end");
+        const auto message = [&](std::size_t index, std::uint64_t tick, std::uint8_t status, const Bytes &data) {
+            return events[index].tick == tick && events[index].status == status && events[index].data == data;
+        };
+        check(events.size() == 8 && message(0, 24, 0xe2, {0, 0}) && message(1, 24, 0x92, {60, 111}) &&
+                  message(2, 48, 0xb2, {1, 32}) && message(3, 48, 0xe2, {37, 73}) &&
+                  message(4, 72, 0xe2, {0, 64}) && message(5, 72, 0x82, {60, 7}) &&
+                  message(6, 84, 0xe2, {127, 127}) && events[7].tick == 96 && events[7].metaType == 0x2f,
+              "export preserves all 14 pitch bits, controller bytes, and controller-first ordering");
     }
     check(adi::History(*store).undo().ok && !adi::engine::readClipDetails(*store, first).clip &&
               !adi::engine::readClipDetails(*store, second).clip, "one Undo removes the entire imported file");
