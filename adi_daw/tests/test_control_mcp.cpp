@@ -1482,11 +1482,64 @@ void testMarkerRunWaitsForReview() {
           "the advertised schemas reserve prompt authoring for the user");
 }
 
+void testProjectReadConsent() {
+    section("AGT-03: an external project read asks locally and uses a one-time grant");
+    ProjectFile file("consent_gate");
+    Bridge bridge(openHeadless(file.path));
+    ConsentLedger ledger(file.temp.path() / "consent" / "ledger.json");
+    bridge.ctx.consentLedger = &ledger;
+    std::vector<ConsentRequest> questions;
+    bridge.ctx.askConsent = [&](ConsentRequest request) { questions.push_back(std::move(request)); };
+    const Principal who{bridge.session.credential, "ADI agent"};
+    RequestMeta meta;
+    meta.readDestination = std::make_shared<ConsentDestination>(
+        ConsentDestination{"trusted external pairing", "http://127.0.0.1:9999", true});
+    const auto read = [&] {
+        Outcome out;
+        bridge.service.call(who, "project.read", {{"level", 1}}, meta,
+                            [&](Outcome result) { out = std::move(result); });
+        return out;
+    };
+
+    const auto refused = read();
+    check(refused.error && refused.error->code == errc::ConsentRequired &&
+              refused.result.is_null() && refused.error->data.is_null(),
+          "an external MCP host gets no project data until it is granted, even over loopback");
+    check(questions.size() == 1 && !questions.front().projectUuid.empty(),
+          "the engine posts a question for the real project UUID");
+    if (questions.empty()) return;
+    const auto& data = questions.front().data;
+    const auto hasKind = [&](ConsentData kind) {
+        return std::any_of(data.begin(), data.end(), [&](const ConsentItem& item) {
+            return item.kind == kind && item.bytes > 0;
+        });
+    };
+    check(hasKind(ConsentData::TrackNames) && hasKind(ConsentData::Parameters) &&
+              !hasKind(ConsentData::Audio),
+          "the question measures scoped track and parameter data without offering audio");
+    check(ledger.grant(questions.front(), ConsentTerm::ThisTime, kT0 / 1'000'000),
+          "the local user can approve the question once");
+    const auto allowed = read();
+    check(!allowed.error && allowed.result.at("tracks").size() == 3,
+          "the retry receives the three tracks after the local approval");
+    const auto consumed = read();
+    check(consumed.error && consumed.error->code == errc::ConsentRequired && questions.size() == 2,
+          "the next read asks again after the one-time grant is consumed");
+
+    meta.readDestination = std::make_shared<ConsentDestination>(
+        ConsentDestination{"local provider", "http://127.0.0.1:9999", false});
+    check(!read().error && questions.size() == 2, "a loopback provider needs no disclosure");
+    RpcError wireError;
+    check(!parseMeta({{"readDestination", "localhost"}}, wireError),
+          "the client's wire data cannot declare its own consent destination");
+}
+
 int runAll() {
     testHandshakes();
     testToolsAndReads();
     testProposeLeavesTheFile();
     testMarkerRunWaitsForReview();
+    testProjectReadConsent();
     testApplyBoundary();
     testRefusals();
     testEchoesAreClipped();

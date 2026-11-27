@@ -214,7 +214,8 @@ std::shared_ptr<HeadlessProject> HeadlessProject::open(const fs::path& file, std
 
     // ADR-0232 d2's explicit project: the file's project_uuid when it has one
     // (AGT-02 writes it), else a stable opaque handle. A path never leaves.
-    p->handle_ = reader->projectUuid();
+    p->projectUuid_ = reader->projectUuid();
+    p->handle_ = p->projectUuid_;
     if (p->handle_.empty()) {
         const std::string id = utf8(fs::weakly_canonical(absolute, ec));
         const auto hash = media::blake3Bytes(std::as_bytes(std::span(id.data(), id.size())));

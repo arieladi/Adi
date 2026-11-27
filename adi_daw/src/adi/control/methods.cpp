@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/methods.hpp"
 
+#include "adi/control/consent_scope.hpp"
 #include "adi/control/projection.hpp"
 #include "adi/control/telemetry.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/ops_schema.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -234,6 +239,65 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
     return std::nullopt;
 }
 
+bool leavesMachine(const ConsentDestination& destination) {
+    return destination.externalMcp || !isLoopbackDestination(destination.endpoint);
+}
+
+std::vector<ConsentItem> projectReadDisclosure(const Json& result) {
+    std::array<std::size_t, static_cast<std::size_t>(ConsentData::PluginState) + 1> sizes{};
+    const auto add = [&sizes](const Json& section, const char* key, ConsentData kind) {
+        const auto value = section.find(key);
+        if (value != section.end() && !value->empty())
+            sizes[static_cast<std::size_t>(kind)] += dumpJson(*value).size();
+    };
+    for (const char* key : {"project", "head", "song", "keyEvents", "tempoChanges", "meterChanges", "nextIds"})
+        add(result, key, ConsentData::ProjectMetadata);
+    if (const auto tracks = result.find("tracks"); tracks != result.end()) {
+        for (const auto& track : *tracks) {
+            for (const char* key : {"id", "kind", "name", "parent", "index", "clips"})
+                add(track, key, ConsentData::TrackNames);
+            add(track, "devices", ConsentData::Devices);
+            for (const char* key : {"muted", "soloed", "armed", "volumeDb", "pan"})
+                add(track, key, ConsentData::Parameters);
+        }
+    }
+    add(result, "routing", ConsentData::Routing);
+    add(result, "pluginRefs", ConsentData::Devices);
+    add(result, "markers", ConsentData::Markers);
+    add(result, "clips", ConsentData::Clips);
+    add(result, "automationLanes", ConsentData::Automation);
+    add(result, "params", ConsentData::Parameters);
+    add(result, "notes", ConsentData::Notes);
+    add(result, "remarks", ConsentData::Remarks);
+    add(result, "tunings", ConsentData::Tunings);
+    add(result, "problems", ConsentData::Diagnostics);
+    std::vector<ConsentItem> disclosure;
+    for (std::size_t kind = 0; kind < sizes.size(); ++kind)
+        if (sizes[kind] != 0) disclosure.push_back({static_cast<ConsentData>(kind), sizes[kind]});
+    return disclosure;
+}
+
+std::optional<Outcome> requireReadConsent(ControlContext& ctx, const CallContext& call,
+                                           const ProjectAccess& project, const Json& result) {
+    const auto& destination = call.meta.readDestination;
+    if (!destination || !leavesMachine(*destination)) return std::nullopt;
+    auto decision = ConsentDecision::Unavailable;
+    if (ctx.consentLedger) {
+        const auto bytes = dumpJson(result);
+        const auto fingerprint = media::blake3Bytes(std::as_bytes(std::span(bytes)));
+        if (!fingerprint) return Outcome::fail(errc::ConsentRequired, "cannot identify the disclosure");
+        ConsentRequest request{project.projectUuid(), *destination, ConsentCapability::ProjectRead,
+                               projectReadDisclosure(result), {}, fingerprint.hex};
+        const auto now = ctx.nowUtcMicros ? ctx.nowUtcMicros() / 1'000'000 :
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+        decision = ctx.consentLedger->authorize(request, now);
+        if (decision == ConsentDecision::ConsentRequired && ctx.askConsent) ctx.askConsent(std::move(request));
+    }
+    if (decision == ConsentDecision::Allowed) return std::nullopt;
+    return Outcome::fail(errc::ConsentRequired, "project disclosure requires the local user's consent");
+}
+
 void recordRemarkRead(ControlContext& ctx, const CallContext& call) {
     if (call.meta.runPolicy) {
         call.meta.runPolicy->readRemarks.store(true);
@@ -367,9 +431,12 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             scope.toBar = toBar;
             std::string err;
             const auto snapshot = project->read(err);
-            if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
+            if (!err.empty())
+                return Outcome::fail(errc::Internal, call.meta.readDestination ? "cannot read the project"
+                                                                               : "cannot read the project: " + err);
             auto result = projectLevel(snapshot.model, static_cast<int>(level.value_or(0)), scope,
                                        snapshot.head, project->handle());
+            if (auto denied = requireReadConsent(ctx, call, *project, result)) return std::move(*denied);
             if (result.contains("remarks") && !result.at("remarks").empty())
                 recordRemarkRead(ctx, call);
             return Outcome::ok(std::move(result));
@@ -687,7 +754,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.createdMs = ctx.steadyMs();
             const auto run = call.meta.runPolicy;
             bool requiresReview = markerRun || pv.bulkClipEdit.value_or(limits.measureClipImpact) ||
-                                  (run && (run->egress || run->readRemarks.load()));
+                                  (run && (run->egress || run->readRemarks.load())) ||
+                                  (call.meta.readDestination && leavesMachine(*call.meta.readDestination));
             if (!run) {
                 std::lock_guard lock(ctx.remarkMutex);
                 requiresReview = requiresReview || ctx.clientsThatReadRemarks.contains(call.who.credential);

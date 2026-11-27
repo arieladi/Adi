@@ -77,6 +77,7 @@ private:
 };
 
 enum class RunOrigin { Direct, MarkerPrompt };
+struct ConsentDestination;
 
 /// One host-owned model run. All tools dispatched for the run share this state.
 struct RunPolicy {
@@ -95,6 +96,8 @@ struct RequestMeta {
     /// never set from JSON: a model cannot change the origin of its run.
     RunOrigin runOrigin = RunOrigin::Direct;
     std::shared_ptr<RunPolicy> runPolicy = {};
+    /// An egress destination supplied by the authenticated transport or host.
+    std::shared_ptr<const ConsentDestination> readDestination = {};
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to

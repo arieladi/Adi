@@ -51,6 +51,8 @@ public:
     /// The project's name on the wire: `project_uuid` when the file has one,
     /// otherwise a stable opaque handle. Never a path.
     [[nodiscard]] virtual const std::string& handle() const = 0;
+    /// The persisted identity used for consent, empty on a legacy reader.
+    [[nodiscard]] virtual std::string projectUuid() const { return {}; }
     /// What a person calls it: the project row's name, else the file's stem.
     [[nodiscard]] virtual std::string label() const = 0;
 

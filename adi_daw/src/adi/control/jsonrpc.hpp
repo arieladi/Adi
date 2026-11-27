@@ -36,6 +36,7 @@ inline constexpr int Stale = -32002;           ///< ADR-0232 d5; data.headFound
 inline constexpr int DeadlinePassed = -32003;  ///< ADR-0233: not applied
 inline constexpr int OverLimit = -32005;       ///< ADR-0232 d5
 inline constexpr int NotGranted = -32006;      ///< ADR-0232 d5; one text, whatever was wrong
+inline constexpr int ConsentRequired = -32007; ///< AGT-03; the local owner must approve disclosure
 inline constexpr int UnsupportedProtocolVersion = -32022;  ///< MCP 2026-07-28
 }  // namespace errc
 

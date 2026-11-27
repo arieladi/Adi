@@ -16,6 +16,7 @@
 #include "adi/changeset.hpp"
 #include "adi/control/apply_rate_limit.hpp"
 #include "adi/control/changeset_queue.hpp"
+#include "adi/control/consent.hpp"
 #include "adi/control/project_access.hpp"
 #include "adi/control/service.hpp"
 
@@ -47,6 +48,9 @@ struct ControlContext {
     /// A client with no host-owned run stays tainted after receiving remarks.
     std::mutex remarkMutex{};
     std::unordered_set<std::string> clientsThatReadRemarks{};
+    ConsentLedger* consentLedger = nullptr;
+    /// The app can post this question to its owner thread for the local user.
+    std::function<void(ConsentRequest)> askConsent = {};
 };
 
 /// Registers the nine methods. `context` must outlive `service`.

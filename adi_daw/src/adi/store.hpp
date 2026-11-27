@@ -35,6 +35,7 @@ class Database;
 namespace adi {
 namespace media { class ProjectFileLease; }
 class Store;
+namespace control { [[nodiscard]] std::string projectFileConsentBinding(const Store&); }
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
 namespace gesture::detail {struct Domain; struct DomainAccess; class NavigationPermit;}
@@ -247,6 +248,7 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend std::string control::projectFileConsentBinding(const Store&);
     friend struct gesture::detail::DomainAccess;
     std::shared_ptr<gesture::detail::Domain> gestureDomain_;
     friend struct detail::AppliedSourceAccess;

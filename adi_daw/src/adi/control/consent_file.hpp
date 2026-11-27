@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+
+#include <cstddef>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace adi::control::detail {
+
+inline constexpr std::size_t kConsentFileMaxBytes = 256 * 1024;
+
+/// An app-owned, machine-local file. An unavailable home yields an empty path.
+[[nodiscard]] std::filesystem::path consentFilePath();
+
+/// A missing file is empty. Invalid, unreadable, or oversized storage yields nullopt.
+[[nodiscard]] std::optional<std::string> readConsentFile(const std::filesystem::path&,
+                                                         std::size_t maximum);
+
+/// Publish a complete ledger atomically in its owner-only directory.
+[[nodiscard]] bool writeConsentFile(const std::filesystem::path&, std::string_view);
+
+/// Run a read-modify-write under the stable sibling lock across processes.
+/// Acquiring a busy or unsafe lock fails closed and does not call the action.
+[[nodiscard]] bool withConsentFileLock(const std::filesystem::path&, const std::function<void()>&);
+
+}  // namespace adi::control::detail

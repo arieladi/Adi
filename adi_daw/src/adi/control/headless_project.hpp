@@ -49,6 +49,7 @@ public:
     HeadlessProject& operator=(const HeadlessProject&) = delete;
 
     [[nodiscard]] const std::string& handle() const override { return handle_; }
+    [[nodiscard]] std::string projectUuid() const override { return projectUuid_; }
     [[nodiscard]] std::string label() const override;
     [[nodiscard]] ReadSnapshot read(std::string& error) override;
     [[nodiscard]] std::optional<std::int64_t> head(std::string& error) override;
@@ -80,6 +81,7 @@ private:
     std::filesystem::path scratch_;
     std::unique_ptr<Store> snapshot_;
     std::string handle_;
+    std::string projectUuid_;
     std::string label_;
     mutable std::mutex mutex_;
 };

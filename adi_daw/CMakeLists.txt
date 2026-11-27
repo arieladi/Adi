@@ -862,6 +862,9 @@ add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
 # gives these suites their ADI_HOME and test_all.sh finds them.
 # ---------------------------------------------------------------------------
 add_library(adi_control STATIC
+    src/adi/control/consent.cpp
+    src/adi/control/consent_file.cpp
+    src/adi/control/consent_scope.cpp
     src/adi/control/jsonrpc.cpp
     src/adi/control/service.cpp
     src/adi/control/telemetry.cpp
@@ -881,6 +884,10 @@ set_target_properties(adi_mcp PROPERTIES OUTPUT_NAME adi-mcp)
 add_executable(adi_rpc_permissions_tests tests/test_rpc_permissions.cpp)
 target_link_libraries(adi_rpc_permissions_tests PRIVATE adi_control adi_core adi_warnings)
 add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
+
+add_executable(adi_consent_tests tests/test_consent.cpp)
+target_link_libraries(adi_consent_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
 
 add_executable(adi_control_mcp_tests tests/test_control_mcp.cpp)
 target_link_libraries(adi_control_mcp_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)

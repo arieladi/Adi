@@ -36,6 +36,7 @@ std::string auditDetail(const RpcError& e) {
         case errc::DeadlinePassed: name = "deadline passed"; break;
         case errc::OverLimit: name = "over a limit"; break;
         case errc::NotGranted: name = kNotGranted; break;
+        case errc::ConsentRequired: name = "consent required"; break;
         default: name = "error " + std::to_string(e.code); break;
     }
     if (e.data.is_object()) {
