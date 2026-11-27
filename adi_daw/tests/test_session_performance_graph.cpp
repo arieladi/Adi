@@ -12,7 +12,9 @@
 #include "adi/media/blake3.hpp"
 #include "adi/session_performance_capture.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <stdexcept>
@@ -70,9 +72,13 @@ struct Project {
     }
 
     void media(const char* name, std::int64_t id, float level) {
-        const auto path = folder.path() / name;
         std::array<float, 2048> signal;
         signal.fill(level);
+        media(name, id, signal);
+    }
+
+    void media(const char* name, std::int64_t id, const std::array<float, 2048>& signal) {
+        const auto path = folder.path() / name;
         audio::WavWriter writer(path, sampleRate, 1, audio::WavFormat::Float32);
         writer.write(signal.data(), static_cast<std::uint32_t>(signal.size()));
         writer.close();
@@ -115,17 +121,17 @@ struct SceneReceipts {
 };
 
 Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int64_t* endTick = nullptr,
-               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr) {
+               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr, std::int32_t width = blockFrames) {
     Session session;
     session.graph().setFadeFrames(0);
-    SessionSpec spec{1, sampleRate, blockFrames};
+    SessionSpec spec{1, sampleRate, width};
     spec.performanceState = capture != nullptr;
     spec.offline = !spec.performanceState;
     spec.synchronousClipReads = true;
     if (!session.load(project, {}, spec)) throw std::runtime_error(session.error());
     session.transport().play();
     Samples result{};
-    for (std::int64_t sample = 0; sample < frames; sample += blockFrames) {
+    for (std::int64_t sample = 0; sample < frames; sample += width) {
         if (capture && (!firstSceneOnly || sample == 100))
             performCommand(project, session, sample);
         require(session.clips()->prime(), "prime the render's Arrangement readers");
@@ -133,7 +139,7 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
         AudioIo io;
         io.out = &destination;
         io.numOut = 1;
-        io.frames = blockFrames;
+        io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(width, frames - sample));
         io.streamTimeSamples = sample;
         bool rendered = false;
         {
@@ -244,6 +250,91 @@ void proof(bool captureClock) {
     std::puts(captureClock ? "PASS -- captured actual tempo and meter with 1000 bit-identical graph frames" :
         "PASS -- captured 1000 real graph frames bit-identically through commit, redo and reopen");
 }
+
+void fractionalRawLoop() {
+    Project project;
+    std::array<float, 2048> signal{};
+    for (std::size_t index = 0; index < signal.size(); ++index)
+        signal[index] = static_cast<float>(index) / 2048.0f;
+    project.media("fractional-loop.wav", 4, signal);
+    project.store->db().exec(
+        "UPDATE audio_clips SET media_id=4,src_start_frames=37,src_len_frames=1024 WHERE clip_id=11;"
+        "UPDATE clips SET length_ticks=240240,content_offset_ticks=720,loop_enabled=1,"
+        "loop_start_ticks=1200,loop_len_ticks=5826 WHERE id=11;"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+    const auto arrangementBefore = render(*project.store);
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    std::array<LaunchTransition, 4> events{};
+    std::array<LaunchCapturedPcmRange, 64> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer buffer(events, pcm, tracks);
+    std::int64_t endTick = 0;
+    const auto heard = render(*project.store, &buffer, &endTick, true);
+    constexpr std::int64_t start = 100;
+    constexpr std::int64_t firstWrapTick = 24024 + 7026 - 720;
+    const auto atSample = [](std::int64_t tick) {
+        return (tick * 24000 + textproj::kPPQ / 2) / textproj::kPPQ;
+    };
+    auto rangeStart = start;
+    auto wrap = atSample(firstWrapTick);
+    std::int64_t iterations = 0;
+    for (std::int64_t frame = start; frame < frames; ++frame) {
+        if (frame == wrap) {
+            rangeStart = wrap;
+            wrap = atSample(firstWrapTick + (++iterations * 5826));
+        }
+        const auto sourceFrame = 37 + (iterations == 0 ? 3 : 5) + (frame - rangeStart);
+        require(heard[static_cast<std::size_t>(frame)] == signal[static_cast<std::size_t>(sourceFrame)],
+                "live Session plays each independently rounded fractional wrap from the raw window");
+    }
+    const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1 &&
+            plan.pcmRanges.size() == static_cast<std::size_t>(iterations + 1),
+            "one uninterrupted run supplies a tape interval per audible wrap");
+    require(plan.pcmRanges[0].beginSample == 100 && plan.pcmRanges[0].endSample == 126 &&
+            plan.pcmRanges[0].firstSourceFrame == 3 && plan.pcmRanges[1].endSample == 150 &&
+            plan.pcmRanges[2].endSample == 175 && plan.pcmRanges[1].firstSourceFrame == 5,
+            "PCM receipts pin alternating wrap lengths without using callback boundaries");
+    constexpr SessionPerformanceAudio proof{Precision::Float32, true};
+    auto bad = plan;
+    bad.pcmTraceEnabled = false;
+    bad.pcmRanges.clear();
+    const auto absent = prepareSessionPerformance(*project.store, *source, bad, sampleRate, std::nullopt, proof);
+    require(!absent.ok && absent.error.find("fractional") != std::string::npos,
+            "fractional loops still refuse without performed PCM proof");
+    bad = plan;
+    ++bad.pcmRanges[1].beginSample;
+    require(!prepareSessionPerformance(*project.store, *source, bad, sampleRate, std::nullopt, proof).ok,
+            "an incomplete trace cannot silently omit a sample");
+    bad = plan;
+    bad.pcmRanges[1].firstSourceFrame = 1024;
+    require(!prepareSessionPerformance(*project.store, *source, bad, sampleRate, std::nullopt, proof).ok,
+            "a trace cannot read outside the frozen source window");
+
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, proof);
+    require(prepared.ok, prepared.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(project.store->db().execAndGet("SELECT count(*) FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+        "JOIN clip_playback_details p ON p.clip_id=c.id WHERE a.media_id=4 AND c.id<>11 AND c.time_base=1 "
+        "AND c.loop_enabled=0 AND a.src_start_frames=37 AND a.src_len_frames=1024 "
+        "AND p.content_offset_ns IS NOT NULL AND p.source_end_ns IS NOT NULL").getInt() ==
+        static_cast<int>(plan.pcmRanges.size()), "each wrap uses the original source window and literal linear pins");
+    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+            "raw-loop Arrangement matches the performed frames at a different callback width");
+    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render(*project.store) == heard,
+            "one Undo and Redo restore the complete fractional-loop take");
+    require(project.store->close(), "close the raw-loop capture");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render(*project.store) == heard, "reopened raw-loop capture retains exact PCM");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the optional PCM tape is callback-safe");
+    std::puts("PASS -- raw Session loop wraps at frames 126, 150 and 175 replay bit-for-bit");
+}
 } // namespace
 
 int main() {
@@ -251,6 +342,7 @@ int main() {
         proof(false);
         proof(true);
         followThroughGraph();
+        fractionalRawLoop();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

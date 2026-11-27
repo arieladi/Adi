@@ -308,6 +308,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 driver.loopEnd_ == transport.loopEnd()));
         if (block.frames <= 0)
             break;
+        if (capture && capture->capturesPcm()) {
+            if (block.sample <= std::numeric_limits<std::int64_t>::max() - block.frames)
+                capture->notePcmTimeline(block.sample, block.sample + block.frames);
+            else capture->markPcmDiscontinuity();
+        }
         context.media = mediaAt(block.sample).get();
         context.view = context.media->view();
         context.view.tracks = tracks_;
@@ -387,6 +392,13 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
+    if (capture && capture->capturesPcm() && pcm && !pcm->pageReader() && fade < 0 && section.velocity == 1.0f &&
+        gain.before == 1.0f && gain.after == 1.0f && source >= 0 &&
+        static_cast<std::uint64_t>(source) <= pcm->frames() &&
+        static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source)) {
+        const auto first = block.sample + section.offset;
+        (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + section.frames, source});
+    }
     if (gain.beforeFrames > 0)
         ranges.items.data()[ranges.size++] = {base + section.offset, gain.beforeFrames, pcm, source,
             section.velocity * gain.before, fade};

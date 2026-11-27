@@ -2277,6 +2277,9 @@ outside the capture interval. The journal restores the recorded rows without
 running the launcher again.
 The `RenderBlock::observeLaunchCapture` tape detects performed gain or
 region overrides that require extra placement data before they can replay.
+For raw resident audio played at its source rate, the optional PCM range tape
+records each fractional loop wrap. Capture can place those ranges as linear
+Arrangement clips against the original verified source file.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every

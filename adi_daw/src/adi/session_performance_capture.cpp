@@ -4,6 +4,7 @@
 #include "adi/applied_batches.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/edit_plan.hpp"
@@ -28,6 +29,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -54,6 +56,7 @@ struct SessionPerformanceSource::Data {
     MeterMap meters;
     ControllerOwners controllerOwners;
     std::map<std::int64_t, Payload> clips;
+    std::set<std::int64_t> residentClips;
     std::map<std::int64_t, SourceFile> mediaFiles;
 };
 
@@ -494,7 +497,7 @@ void checkAudioPhase(const engine::LaunchCapturedSpan& span, const SourceExtent&
 Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
                    const engine::TempoMap& authored, const engine::TempoMap& fixed,
                    std::uint32_t rate, const std::optional<SessionPerformanceAudio>& audioCapture,
-                   clip_edit::CopyIds& ids, bool authoredClock) {
+                   clip_edit::CopyIds& ids, bool authoredClock, bool performedPcm = false) {
     const auto& source = image.at("row");
     if (!source.at("alias_of").is_null())
         throw std::runtime_error("Session capture needs an independent source clip image");
@@ -528,7 +531,7 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
             throw std::runtime_error("Session MIDI runs past its exactly representable source range");
         if (!muted && !sourceChildren.at("note_expression").empty())
             checkNoteExpression(store, image, span, extent, authored, rate, authoredClock);
-    } else if (!muted) {
+    } else if (!muted && !performedPcm) {
         checkAudioPhase(span, extent, authored, fixed, rate, warped ? audio : nullptr);
     }
 
@@ -570,6 +573,101 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
         }
     }
     return placed;
+}
+
+constexpr std::int64_t nanosPerSecond = 1'000'000'000;
+
+std::int64_t sampleNanos(std::int64_t frame, std::int64_t rate) {
+    if (frame < 0 || frame > clockLimit ||
+        frame / rate > std::numeric_limits<std::int64_t>::max() / nanosPerSecond)
+        throw std::runtime_error("performed Session audio is outside the stored linear clock");
+    return edit::addTime(frame / rate * nanosPerSecond,
+        ((frame % rate) * nanosPerSecond + rate / 2) / rate);
+}
+
+std::int64_t nanosSample(std::int64_t nanos, std::int64_t rate) {
+    return (nanos / nanosPerSecond) * rate +
+        ((nanos % nanosPerSecond) * rate + nanosPerSecond / 2) / nanosPerSecond;
+}
+
+void arrangeRawLoop(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
+                    std::span<const engine::LaunchCapturedPcmRange> ranges, const std::filesystem::path& path,
+                    const edit::TimeMap& placementClock, const engine::TempoMap& authored,
+                    const engine::TempoMap& fixed, std::uint32_t rate,
+                    const std::optional<SessionPerformanceAudio>& audioCapture, clip_edit::CopyIds& ids,
+                    std::vector<Payload>& incoming) {
+    const auto* audioRow = firstChild(image, "audio_clips");
+    if (!audioRow || audioRow->at("warp_enabled") != 0 || audioRow->at("reverse") != 0 ||
+        audioRow->at("transpose_semis") != 0 || audioRow->at("formant_shift") != 0 ||
+        !audioCapture || !audioCapture->gainStayedAuthored || audioCapture->precision != engine::Precision::Float32)
+        throw std::runtime_error("exact Session PCM capture requires raw forward Float32 audio with authored gain");
+    const audio::WavReader wav(path);
+    const auto fileStart = detail::signedInteger(audioRow->at("src_start_frames"));
+    const auto fileLength = detail::signedInteger(audioRow->at("src_len_frames"));
+    if (wav.sampleRate() != rate || fileStart < 0 || fileLength <= 0 ||
+        static_cast<std::uint64_t>(fileStart) > wav.frames() ||
+        static_cast<std::uint64_t>(fileLength) > wav.frames() - static_cast<std::uint64_t>(fileStart))
+        throw std::runtime_error("exact Session PCM capture requires a native-rate verified WAV source window");
+
+    // Match the resident bank's unrolled raw reader. It can contain silence
+    // after the file window or an authored End. Refuse those reads here.
+    const auto extent = sourceExtent(image, fixed, true);
+    auto sourceLimit = std::min(fileLength, sampleAt(fixed, std::max(extent.end, extent.loopEnd), rate));
+    const auto* pins = firstChild(image, "clip_playback_details");
+    const auto* props = firstChild(image, "clip_properties");
+    const auto pinnedEnd = pins ? optionalInt(*pins, "source_end_ns") : std::nullopt;
+    if (pinnedEnd) {
+        sourceLimit = std::min(sourceLimit, nanosSample(*pinnedEnd, rate));
+    } else if (const auto marker = props ? optionalInt(*props, "end_marker_ticks") : std::nullopt) {
+        sourceLimit = std::min(sourceLimit, sampleAt(fixed, *marker, rate));
+    }
+    const auto beginNanos = placementClock.nanos(span.begin.tick);
+    const auto endNanos = placementClock.nanos(span.end.tick);
+    if (nanosSample(beginNanos, rate) != span.begin.sample || nanosSample(endNanos, rate) != span.end.sample)
+        throw std::runtime_error("raw Session loop edge cannot meet the existing Arrangement at its recorded sample");
+
+    // The driver's receipts are coalesced across callback boundaries.
+    // Every remaining discontinuity needs a new linear Arrangement clip.
+    auto covered = span.begin.sample;
+    for (const auto& range : ranges) {
+        if (range.beginSample != covered || range.endSample <= covered || range.endSample > span.end.sample ||
+            range.firstSourceFrame < 0 || range.firstSourceFrame > sourceLimit ||
+            range.endSample - range.beginSample > sourceLimit - range.firstSourceFrame)
+            throw std::runtime_error("performed Session PCM ranges have a gap or read outside the source window");
+        covered = range.endSample;
+    }
+    if (covered != span.end.sample)
+        throw std::runtime_error("performed Session PCM ranges do not cover the entire raw loop");
+
+    auto placed = arrangeRun(store, image, span, authored, fixed, rate, audioCapture, ids, true, true);
+    const auto first = incoming.size();
+    for (const auto& range : ranges) {
+        auto piece = incoming.size() == first ? std::move(placed)
+            : clip_edit::cloneImage(incoming[first], ids.next("clips"), ids);
+        const auto start = range.beginSample == span.begin.sample ? beginNanos : sampleNanos(range.beginSample, rate);
+        const auto finish = range.endSample == span.end.sample ? endNanos : sampleNanos(range.endSample, rate);
+        const auto sourceBegin = sampleNanos(range.firstSourceFrame, rate);
+        const auto sourceEnd = sampleNanos(range.firstSourceFrame + range.endSample - range.beginSample, rate);
+        auto& row = piece.at("row");
+        row["time_base"] = 1;
+        row["pos_ticks"] = nullptr;
+        row["length_ticks"] = nullptr;
+        row["pos_ns"] = start;
+        row["length_ns"] = finish - start;
+        row["content_offset_ticks"] = fixed.storedNanosecondsToTicks(sourceBegin);
+        row["loop_enabled"] = 0;
+        row["loop_start_ticks"] = 0;
+        row["loop_len_ticks"] = nullptr;
+        auto& children = piece.at("children");
+        auto& detail = children.at("clip_playback_details").front();
+        detail["content_offset_ns"] = sourceBegin;
+        detail["source_end_ns"] = sourceEnd;
+        detail["loop_begin_ns"] = nullptr;
+        detail["loop_end_ns"] = nullptr;
+        if (auto& properties = children.at("clip_properties"); !properties.empty())
+            properties.front()["end_marker_ticks"] = fixed.storedNanosecondsToTicks(sourceEnd);
+        incoming.push_back(std::move(piece));
+    }
 }
 
 void validateCaptureRows(OpContext& context, const Payload& changes) {
@@ -649,9 +747,11 @@ std::optional<SessionPerformanceSource> captureSessionPerformanceSource(Store& s
         source->controllerOwners = readControllerOwners(store.db());
         const auto folder = media::projectFolder(store);
         OpContext context{store, store.db()};
-        SQLite::Statement slots(store.db(), "SELECT clip_id FROM main.clip_slots WHERE clip_id IS NOT NULL ORDER BY clip_id");
+        SQLite::Statement slots(store.db(), "SELECT s.clip_id, coalesce(c.ram_mode,0) FROM main.clip_slots s "
+            "LEFT JOIN main.clip_launch c ON c.clip_id=s.clip_id WHERE s.clip_id IS NOT NULL ORDER BY s.clip_id");
         while (slots.executeStep()) {
             const auto clip = slots.getColumn(0).getInt64();
+            if (slots.getColumn(1).getInt() == 1) source->residentClips.insert(clip);
             auto image = clip_edit::captureImage(context, clip);
             if (const auto* audio = firstChild(image, "audio_clips"); audio && image.at("row").at("muted") == 0) {
                 const auto id = detail::signedInteger(audio->at("media_id"));
@@ -695,6 +795,10 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             throw std::runtime_error("Session performance belongs to another open project or driver");
         if (capture.error == engine::LaunchCaptureError::SourceEdited)
             throw std::runtime_error("live Session gain or region changed during the performance and needs an exact edit trace");
+        if (capture.error == engine::LaunchCaptureError::PcmRangeOverflow)
+            throw std::runtime_error("performed Session PCM exceeded its bounded trace");
+        if (capture.error == engine::LaunchCaptureError::InvalidPcmRange)
+            throw std::runtime_error("performed Session PCM trace is discontinuous");
         if (capture.error != engine::LaunchCaptureError::None || rate < 44100 || rate > 768000)
             throw std::runtime_error("Session performance trace is invalid at this rate");
         Read read(store.db());
@@ -712,6 +816,13 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         std::map<std::filesystem::path, media::FileRevision> mediaProofs;
         std::optional<ControllerOwners> currentOwners;
         std::map<std::int64_t, ControllerProof> controllerProofs;
+        std::map<std::pair<std::int64_t, std::uint64_t>, std::vector<engine::LaunchCapturedPcmRange>> pcmByRun;
+        for (const auto& range : capture.pcmRanges) {
+            if (!capture.pcmTraceEnabled || range.track <= 0 || range.clip <= 0 || range.run == 0)
+                throw std::runtime_error("invalid performed Session PCM identity");
+            pcmByRun[{range.track, range.run}].push_back(range);
+        }
+        const edit::TimeMap prospective(clock.clock);
         auto first = clockLimit, last = std::int64_t{0};
         for (const auto& span : capture.spans) {
             if (span.track <= 0 || span.clip < 0 || span.begin.tick >= span.end.tick ||
@@ -736,8 +847,37 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             if (image == frozen.clips.end() || image->second.at("row").at("track_id") != span.track)
                 throw std::runtime_error("performed clip is absent from the frozen Session source");
             const engine::TempoMap fixed{{{0, clock.clock.bpmAt(span.begin.tick), 0}}};
-            auto placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids, authoredClock);
             const auto& row = image->second.at("row");
+            const auto pcm = pcmByRun.find({span.track, span.run});
+            if (pcm != pcmByRun.end() && std::any_of(pcm->second.begin(), pcm->second.end(),
+                [&](const auto& range) { return range.clip != span.clip; }))
+                throw std::runtime_error("performed Session PCM refers to a different clip in the same run");
+            const bool needsPcm = pcm != pcmByRun.end() && row.at("loop_enabled") == 1;
+            Payload placed;
+            if (!needsPcm)
+                placed = arrangeRun(store, image->second, span, clock.clock, fixed, rate, audio, ids, authoredClock);
+            const auto* audioRow = firstChild(image->second, "audio_clips");
+            const SessionPerformanceSource::Data::SourceFile* verified = nullptr;
+            if (audioRow && row.at("muted") == 0) {
+                const auto file = frozen.mediaFiles.find(detail::signedInteger(audioRow->at("media_id")));
+                if (file == frozen.mediaFiles.end() || !file->second.revision)
+                    throw std::runtime_error("performed audio has no verified source file");
+                verified = &file->second;
+                if (mediaProofs.try_emplace(verified->path, *verified->revision).second) {
+                    std::error_code status;
+                    if (media::readFileRevision(verified->path, status) != verified->revision)
+                        throw std::runtime_error("Session source media changed during the capture");
+                }
+            }
+            if (needsPcm) {
+                if (!verified || row.at("kind") != "audio" || !frozen.residentClips.contains(span.clip))
+                    throw std::runtime_error("performed Session PCM has no frozen resident audio clip");
+                arrangeRawLoop(store, image->second, span, pcm->second, verified->path, prospective, clock.clock,
+                    fixed, rate, audio, ids, placement.incoming);
+                pcmByRun.erase(pcm);
+                continue;
+            }
+            if (pcm != pcmByRun.end()) pcmByRun.erase(pcm);
             if (const auto* stream = firstController(image->second); stream && row.at("kind") == "midi" && row.at("muted") == 0) {
                 if (controllerProofs.contains(span.track))
                     throw std::runtime_error("held Session controller capture needs one performed run on its track");
@@ -746,17 +886,9 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                     clock.clock, rate, frozen.controllerOwners, *currentOwners));
             }
             placement.incoming.push_back(std::move(placed));
-            if (const auto* audioRow = firstChild(image->second, "audio_clips"); audioRow && image->second.at("row").at("muted") == 0) {
-                const auto file = frozen.mediaFiles.find(detail::signedInteger(audioRow->at("media_id")));
-                if (file == frozen.mediaFiles.end() || !file->second.revision)
-                    throw std::runtime_error("performed audio has no verified source file");
-                if (mediaProofs.try_emplace(file->second.path, *file->second.revision).second) {
-                    std::error_code status;
-                    if (media::readFileRevision(file->second.path, status) != file->second.revision)
-                        throw std::runtime_error("Session source media changed during the capture");
-                }
-            }
         }
+        if (!pcmByRun.empty())
+            throw std::runtime_error("performed Session PCM has no matching captured run");
         std::vector<std::int64_t> tracks;
         tracks.reserve(trackEnds.size());
         for (const auto& [track, end] : trackEnds) { (void)end; tracks.push_back(track); }
@@ -767,7 +899,6 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
             scope.domains = edit_plan::Domains::Clips;
             edit_plan::Options options{static_cast<double>(rate), {}};
             options.policy.automationFollowsClips = false;
-            const edit::TimeMap prospective(clock.clock);
             result = edit_plan::detail::prepareCaptured(store, scope, std::move(placement), options, ids,
                 label, &prospective);
             if (!result.ok) return result;
