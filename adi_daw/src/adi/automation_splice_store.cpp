@@ -76,7 +76,8 @@ Payload encode(const Envelope &envelope, const std::vector<SplicedKnot> &knots) 
 PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
                                              std::int64_t end,
                                              std::span<const NativeSpliceKnot> replacement,
-                                             double rate, std::size_t budget) {
+                                             double rate, std::size_t budget, std::string_view label,
+                                             std::optional<Payload> selection) {
     PreparedEnvelopeSplice result;
     try {
         require(!audio::onAudioThread, "automation splice belongs off the audio callback");
@@ -240,7 +241,8 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         OpRequest request;
         request.opType = "arranger.splice";
         request.payload = {{"id", 0}, {"changes", changes}};
-        request.label = "Replace Automation";
+        request.label = label;
+        request.selBefore = std::move(selection);
         request.targetKind = "automation";
         request.targetId = laneId;
         result.requests.push_back(std::move(request));
