@@ -13,6 +13,10 @@ namespace adi::ui {
 class ProjectLibrary {
   public:
     [[nodiscard]] std::shared_ptr<const BrowserLibrarySnapshot> update(const Store &);
+    // The media catalog changed without a commit: Collect All and Save moves every file's place in one
+    // write of its own, which does not advance the sequence `update` watches. The next `update` reads
+    // the catalog and the folder again.
+    void invalidate() noexcept { snapshot_.reset(); }
 
   private:
     AppliedSource source_;
