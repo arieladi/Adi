@@ -1551,8 +1551,6 @@ void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
-    if (automationMode_)
-        demandAutomationDevices(true); // a device added since is demanded too (DF-W37)
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
@@ -1980,7 +1978,7 @@ void AdiRootComponent::mouseDown(const juce::MouseEvent &e) {
         std::pair{InfoAnalyserMode::ClassicScope, "Classic Scope"}};
     const SafePointer<AdiRootComponent> safe(this);
     for (const auto &[mode, name] : choices)
-        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode] {
+        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode = mode] { // a named copy: Clang 14 captures no structured binding
             if (!safe || safe->state_.infoAnalyserMode == mode) return;
             const auto previous = std::exchange(safe->state_.infoAnalyserMode, mode);
             if (!safe->persist()) {
@@ -3825,22 +3823,8 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         c.sampleRate = static_cast<int>(current->sampleRate);
     return c;
 }
-void AdiRootComponent::demandAutomationDevices(bool on) {
-    if (!devices.parameterDemand)
-        return;
-    std::vector<std::int64_t> ids;
-    if (on)
-        if (const auto published = devices.publication ? devices.publication() : nullptr)
-            for (const auto &d : *published)
-                ids.push_back(d.id);
-    if (ids == automationDemand_)
-        return;
-    automationDemand_ = ids;
-    devices.parameterDemand(&automationTargets_, ids);
-}
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
-    demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
              "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
@@ -3851,17 +3835,50 @@ std::vector<AutomationTarget> AdiRootComponent::automationChoices(std::int64_t t
     const auto current = view_.current();
     if (!current)
         return {};
-    const auto published = devices.publication ? devices.publication() : nullptr;
+    const auto published = automationParameters ? automationParameters(track)
+                                                : devices.publication ? devices.publication() : nullptr;
     return ::adi::ui::automationChoices(*current, track, published.get());
 }
 AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
-    const auto chosen = automationTargets_.find(track);
-    if (chosen == automationTargets_.end())
+    const auto selection = automationTargets_.find(track);
+    if (selection == automationTargets_.end())
         return volumeTarget(track);
-    // The choice holds while the track still offers it (its device or send can go).
-    for (const auto &t : automationChoices(track))
-        if (t == chosen->second)
-            return t;
+    const auto current = view_.current();
+    const auto *node = current ? current->findTrack(track) : nullptr;
+    if (!node)
+        return volumeTarget(track);
+    const auto &chosen = selection->second;
+    if (chosen.ownerKind == "track" && chosen.ownerId == track) {
+        if (chosen.paramRef == "pan")
+            return panTarget(track);
+        if (chosen.paramRef == "mute" && node->kind != "master")
+            return activatorTarget(track);
+    }
+    if (chosen.ownerKind == "routing") {
+        for (const auto &target : ::adi::ui::automationChoices(*current, track, nullptr))
+            if (target == chosen)
+                return target;
+    }
+    if (chosen.ownerKind == "device")
+        if (const auto published = devices.publication ? devices.publication() : nullptr)
+            for (const auto &device : *published) {
+                if (device.id != chosen.ownerId || device.track != track)
+                    continue;
+                // A visible panel may already know about descriptor changes.
+                // Hidden devices keep their selected metadata without a scan.
+                if (device.metadata || !device.declarations().empty()) {
+                    const auto& declared = device.declarations();
+                    const auto parameter = std::find_if(declared.begin(), declared.end(),
+                        [&](const auto& entry) { return entry.id == chosen.nativeParamId; });
+                    if (parameter != declared.end())
+                        if (auto target = deviceTarget(device, *parameter); target && *target == chosen)
+                            return std::move(*target);
+                    break;
+                }
+                auto target = chosen;
+                target.device = device.name;
+                return target;
+            }
     return volumeTarget(track);
 }
 void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
@@ -3874,15 +3891,29 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
 std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(
     std::int64_t device, const std::string &parameter) const {
     const auto published = devices.publication ? devices.publication() : nullptr;
-    if (!published)
+    const auto current = view_.current();
+    if (!published || !current)
         return std::nullopt;
-    for (const auto &d : *published)
-        if (d.id == device) {
-            const auto ref = engine::automationParamRef(d.format, parameter);
-            for (const auto &t : automationChoices(d.track))
-                if (t.ownerKind == "device" && t.ownerId == device && ref && t.paramRef == *ref)
-                    return std::pair{d.track, t};
-        }
+    const auto find = [&](const DevicePanelData &data) -> std::optional<std::pair<std::int64_t, AutomationTarget>> {
+        for (const auto &entry : data.declarations())
+            if (entry.id == parameter) {
+                if (auto target = deviceTarget(data, entry))
+                    return std::pair{data.track, std::move(*target)};
+                break;
+            }
+        return std::nullopt;
+    };
+    for (const auto &entry : *published) {
+        if (entry.id != device || !current->findTrack(entry.track))
+            continue;
+        if (entry.metadata || !entry.declarations().empty() || !automationParameters)
+            return find(entry);
+        if (const auto declarations = automationParameters(entry.track))
+            for (const auto &meta : *declarations)
+                if (meta.id == device)
+                    return find(meta);
+        break;
+    }
     return std::nullopt;
 }
 bool AdiRootComponent::showDeviceAutomation(std::int64_t device, const std::string &parameter) {
@@ -3910,19 +3941,17 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
                 return s->gainDb;
         return target.minimum;
     }
-    // A device parameter: where its control plays now, as the feed reads it; one the panel does not
-    // show has no record there, and reads as the plug-in's declared default.
+    // A visible control can supply its current value. Other choices keep
+    // their declared default from the metadata that built the chooser.
     if (const auto published = devices.publication ? devices.publication() : nullptr)
         for (const auto &d : *published)
             if (d.id == target.ownerId) {
                 for (const auto &r : d.parameters())
-                    if (const auto ref = engine::automationParamRef(d.format, r.id); ref && *ref == target.paramRef)
+                    if (r.id == target.nativeParamId)
                         return r.playing;
-                for (const auto &[id, value] : d.defaultValues())
-                    if (const auto ref = engine::automationParamRef(d.format, id); ref && *ref == target.paramRef)
-                        return value;
+                break;
             }
-    return target.minimum;
+    return target.defaultValue;
 }
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
     const auto current = view_.current();
