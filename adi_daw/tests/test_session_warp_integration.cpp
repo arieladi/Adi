@@ -44,7 +44,7 @@ void require(bool pass, const char* message) {
     if (!pass) throw std::runtime_error(message);
 }
 
-std::int64_t frameAtBeat(int beat) {
+std::int64_t frameAtBeat(double beat) {
     constexpr double slope = 20.0 / lastBeat;
     return std::llround(rate * 60.0 / slope * std::log1p(slope * beat / 120.0));
 }
@@ -65,14 +65,14 @@ std::unique_ptr<Store> sceneProject(const std::filesystem::path& folder) {
 }
 
 void addClip(Store& store, const std::filesystem::path& folder, int clip, int scene,
-             int beats, bool legato) {
+             int beats, bool legato, int pulseOffsetFrames = 0) {
     constexpr int sourceFramesPerBeat = rate / 2, halfWidth = 48;
     const auto frames = static_cast<std::uint32_t>(beats * sourceFramesPerBeat);
     const auto name = std::to_string(clip) + ".wav";
     const auto file = folder / name;
     std::vector<float> pcm(frames);
     for (int beat = 0; beat < beats; ++beat) for (int offset = -halfWidth; offset <= halfWidth; ++offset) {
-        const auto frame = beat * sourceFramesPerBeat + offset;
+        const auto frame = beat * sourceFramesPerBeat + pulseOffsetFrames + offset;
         if (frame < 0) continue;
         const auto level = legato ? -0.5 - 0.1 * beat : 0.55;
         pcm[static_cast<std::size_t>(frame)] = static_cast<float>(level * (0.5 + 0.5 * std::cos(offset * std::numbers::pi / halfWidth)));
@@ -322,6 +322,53 @@ void continuingTempoScene(bool legato) {
     require(error <= 2 && pcm[static_cast<std::size_t>(tempoSceneFrame)] < -0.58f,
         "the inherited phase follows 140 BPM in the boundary callback and after the next loop wrap");
 }
+
+void residentModeRamp(const char* mode, std::int64_t tolerance) {
+    test::TempDirectory folder{"session_native_warp", mode};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    SQLite::Statement tempo(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
+    tempo.bind(1, lastBeat * quarter); tempo.exec();
+    // An interior pulse leaves room for Texture's grain jitter at launch and
+    // across each loop wrap without changing the musical timing oracle.
+    addClip(*store, folder.path(), 101, 10, 3, false, rate / 8);
+    SQLite::Statement setting(db, "UPDATE audio_clips SET warp_mode=? WHERE clip_id=101");
+    setting.bind(1, mode); setting.exec();
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    for (const auto& problem : session.problems()) std::printf("%s preparation: %s\n", mode, problem.c_str());
+    session.transport().play();
+    const auto end = frameAtBeat(10);
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session, pcm};
+    playback.through(blockFrames);
+    scene(*store, session, 10);
+    playback.through(end);
+    require(playback.count == 1 && playback.edges[0].sample == frameAtBeat(4) && playback.edges[0].newClip == 101,
+        "resident Warp launches at the exact analytically integrated bar");
+    require(std::all_of(pcm.begin(), pcm.begin() + frameAtBeat(4), [](float value) { return value == 0; }),
+        "the resident slot is silent before its launch");
+
+    constexpr auto searchRadius = 1200;
+    std::int64_t worst = 0;
+    unsigned audible = 0;
+    for (int beat = 4; beat < 10; ++beat) {
+        const auto expected = frameAtBeat(beat + 0.25);
+        const auto peak = std::max_element(pcm.begin() + expected - searchRadius,
+            pcm.begin() + expected + searchRadius + 1);
+        if (*peak < 0.08f) continue;
+        worst = std::max(worst, std::abs((peak - pcm.begin()) - expected));
+        ++audible;
+    }
+    std::printf("Resident %s: %u/6 audible, maximum grid error %lld samples, C++ allocations %u, file I/O %u\n",
+        mode, audible, static_cast<long long>(worst), callbackAllocations, audio::callbackFileIo.load());
+    require(audible == 6 && worst <= tolerance && session.problems().empty(),
+        "resident Warp follows the authored ramp across the slot loop");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+        "resident Warp performs no callback allocation or file I/O");
+}
 }
 
 int main() {
@@ -331,6 +378,10 @@ int main() {
         preparedTempoScene(true);
         continuingTempoScene(false);
         continuingTempoScene(true);
+        residentModeRamp("beats", 12);
+        // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
+        // and for the overlap of grains while the tempo changes.
+        residentModeRamp("texture", 1100);
     }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL -- %s\n", error.what()); return 1; }
 }
