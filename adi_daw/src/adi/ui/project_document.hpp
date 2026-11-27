@@ -11,6 +11,7 @@
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/mix/limiter/ReductionMailbox.h"
+#include "adi/media/collect_export.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
@@ -28,6 +29,7 @@
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <span>
@@ -50,6 +52,37 @@ class ProjectDocument final : public engine::BlockProcessor {
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
                                                  engine::DeviceLoader, std::string &error,
                                                  const RecordingDefaults *defaults = nullptr);
+    // A candidate remains private until its graph and view agree. Advance and
+    // destroy this job on the document owner, between message loop turns.
+    class OpenJob {
+      public:
+        enum class Phase { preparing, loadingDevices, buildingGraph, ready, failed };
+        ~OpenJob();
+        Phase phase() const noexcept { return phase_; }
+        void advance();
+        std::size_t completedDevices() const noexcept { return completedDevices_; }
+        std::size_t totalDevices() const noexcept { return totalDevices_; }
+        const std::string &error() const noexcept { return error_; }
+        std::unique_ptr<ProjectDocument> takeDocument();
+
+      private:
+        friend class ProjectDocument;
+        OpenJob(std::filesystem::path, bool, engine::DeviceLoader, const RecordingDefaults *);
+        void prepare();
+        void fail(std::string reason);
+
+        std::filesystem::path path_;
+        bool create_;
+        engine::DeviceLoader loader_;
+        std::optional<RecordingDefaults> defaults_;
+        std::unique_ptr<ProjectDocument> document_;
+        Phase phase_ = Phase::preparing;
+        std::size_t completedDevices_ = 0;
+        std::size_t totalDevices_ = 0;
+        std::string error_;
+    };
+    static std::unique_ptr<OpenJob> startOpen(const std::filesystem::path &, bool create, engine::DeviceLoader,
+                                              const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
@@ -69,6 +102,20 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
     // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
     bool saveCopy(const std::filesystem::path &);
+    enum class SaveKind { as, copy };
+    struct SaveProgress {
+        enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
+        Phase phase;
+        int pagesDone = 0;
+        int pagesTotal = 0;
+        bool switched = false;
+    };
+    // File-menu saves progress between owner turns. Only Save As switches the live document.
+    bool startSave(const std::filesystem::path &, SaveKind);
+    std::optional<SaveProgress> saveProgress() const;
+    void advanceSave();
+    void cancelSave();
+    void clearSave(); // after a terminal result has been shown
     // Live's Collect All and Save (manual 5.7): every outside media file the project and its
     // history use is copied into `audio/` beside it and the project points at the copies
     // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
@@ -84,7 +131,7 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::filesystem::path project, zip;
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
-    static StoreFileResult runCollectAndExport(const ExportJob &);
+    static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     bool synchronise();
     // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
     // Returns how many woke (the view then re-reads the session).
@@ -113,6 +160,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
+    std::shared_ptr<const ParameterPublication> automationParameters(std::int64_t track);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // Visible surfaces hold one owner-thread lease per presented runtime.
     // Reads are nonconsuming and expose the same current frame to every reader.
@@ -353,6 +401,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    void refreshSessionSources();
     [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
         std::int64_t id, const engine::DeviceRuntimeToken& expected);
     void refreshLimiterReductionSources();
@@ -366,6 +415,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
+    void followSaveAs(const StoreFileResult &, bool keptTake);
+    struct SaveJob;
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
@@ -388,13 +439,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
-    // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
+    // Arrangement Record (MX-09): capture, staged audio files, then one owner commit.
+    struct TakePublication;
+    struct MidiRecording;
     void pollRecording(bool deviceStopped);
     void landTake();
+    TakeLanded commitMidiTake(MidiRecording &, const std::string &audioProblem, const std::string &audioLocation);
+    void pollTakePublication();
+    bool waitForTake(bool forceDetached);
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
-    struct MidiRecording;
     std::unique_ptr<MidiRecording> midiRecording_;
     std::optional<engine::AudioRecordingResult> audioTake_;
     bool recordingAudio_ = false;
@@ -403,6 +458,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::atomic<bool> captureReady_{false};
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
+    std::unique_ptr<TakePublication> takePublication_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;
@@ -428,5 +484,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     std::map<std::int64_t, ReductionSource> limiterReductionSources_;
     std::int64_t limiterReductionPublication_ = 0;
+    std::unique_ptr<SaveJob> saveJob_;
 };
 } // namespace adi::ui

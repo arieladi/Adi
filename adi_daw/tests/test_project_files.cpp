@@ -6,12 +6,15 @@
 #include "adi/digest.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/applied_batches.hpp"
 #include "adi/engine/session.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <future>
 
 namespace {
 using namespace adi;
@@ -213,6 +216,102 @@ void unknownMajorAndReaders() {
     const auto refused=f.target("future-save-as");
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
+
+void stagedFileSaves() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    store.db().exec("CREATE TABLE save_pages(bytes BLOB); INSERT INTO save_pages VALUES(zeroblob(2097152));");
+
+    const auto copyPath = fixture.target("staged-copy");
+    StoreFileSave copyTask;
+    const auto pinned = store.prepareFileSave(copyPath, StoreSaveKind::copy, copyTask);
+    check(pinned.ok, "prepare a copy of the current WAL snapshot");
+    if (!pinned.ok) return;
+    store.db().exec("UPDATE project SET name='Edited after pin' WHERE id=1");
+    std::vector<StoreSaveProgress> progress;
+    const auto written = std::async(std::launch::async, [&] {
+        return copyTask.write({}, [&](StoreSaveProgress step) { progress.push_back(step); });
+    }).get();
+    check(written.ok && !copyTask.cancelled(), "file worker writes the pinned project");
+    if (!written.ok) return;
+    const auto complete = std::find_if(progress.begin(), progress.end(), [](const auto& step) {
+        return step.phase == StoreSavePhase::copying && step.pagesCopied == step.totalPages;
+    });
+    check(!progress.empty() && progress.front().phase == StoreSavePhase::copying &&
+          progress.front().pagesCopied > 0 && progress.front().pagesCopied < progress.front().totalPages &&
+          complete != progress.end() && std::distance(complete, progress.end()) == 3 &&
+          std::next(complete)->phase == StoreSavePhase::relocating && progress.back().phase == StoreSavePhase::publishing &&
+          progress.back().pagesCopied == complete->totalPages && progress.back().totalPages == complete->totalPages,
+          "worker reports chunked page progress before relocation and publication");
+    StoreError error{};
+    auto copy = Store::open(copyPath, error, true);
+    check(copy && copy->db().execAndGet("SELECT name FROM project").getString() == "Original" &&
+          copy->db().execAndGet("SELECT count(*) FROM audio_clips").getInt() == 1 && resolves(*copy) &&
+          store.db().execAndGet("SELECT name FROM project").getString() == "Edited after pin",
+          "copy contains committed WAL edits at invocation and rebases media while the owner stays current");
+
+    const auto cancelPath = fixture.target("cancelled");
+    StoreFileSave cancelTask;
+    check(store.prepareFileSave(cancelPath, StoreSaveKind::copy, cancelTask).ok, "pin a cancelable copy");
+    std::stop_source stop;
+    const auto cancelled = std::async(std::launch::async, [&] {
+        return cancelTask.write(stop.get_token(), [&](StoreSaveProgress step) {
+            if (step.phase == StoreSavePhase::copying) stop.request_stop();
+        });
+    }).get();
+    check(!cancelled.ok && cancelTask.cancelled() && fs::is_empty(cancelPath.parent_path()),
+          "cancelling between backup chunks discards the stage without publishing");
+
+    const auto stalePath = fixture.target("stale-save-as");
+    StoreFileSave staleTask;
+    const auto source = appliedSource(store);
+    check(store.prepareFileSave(stalePath, StoreSaveKind::saveAs, staleTask).ok, "pin a prospective Save As");
+    const auto staleCopy = std::async(std::launch::async, [&] { return staleTask.write(); }).get();
+    check(staleCopy.ok, "a worker publishes a complete prospective Save As");
+    {
+        SQLite::Database other(media::pathUtf8(fixture.source), SQLite::OPEN_READWRITE);
+        other.exec("UPDATE project SET name='External edit' WHERE id=1");
+    }
+    const auto stale = store.adoptFileSave(staleTask);
+    auto frozen = Store::open(stalePath, error, true);
+    check(!stale.ok && stale.error.find("original project changed") != std::string::npos && source.alive() &&
+          store.path() == fixture.source && store.db().execAndGet("SELECT name FROM project").getString() == "External edit" &&
+          frozen && frozen->db().execAndGet("SELECT name FROM project").getString() == "Edited after pin",
+          "Save As refuses to abandon a newer external commit and keeps the completed copy");
+
+    auto readonly = Store::open(fixture.source, error, true);
+    check(readonly != nullptr, "readonly source opens for asynchronous Save As");
+    if (!readonly) return;
+    const auto savedPath = fixture.target("readonly-staged");
+    StoreFileSave saveTask;
+    const auto readonlySource = appliedSource(*readonly);
+    check(readonly->prepareFileSave(savedPath, StoreSaveKind::saveAs, saveTask).ok, "pin readonly Save As");
+    const auto ready = std::async(std::launch::async, [&] { return saveTask.write(); }).get();
+    check(ready.ok && readonly->adoptFileSave(saveTask).ok && !readonly->readOnly() && readonly->path() == savedPath &&
+          appliedSource(*readonly).isReplacementOf(readonlySource) && !readonlySource.alive() && resolves(*readonly),
+          "owner adopts the exact readonly snapshot as a writable successor");
+    const auto folded = std::async(std::launch::async, [&] { return saveTask.closeReplacedProject(); }).get();
+    check(folded.empty(), "worker closes the detached readonly source");
+
+    const auto busyPath = fixture.target("busy-staged");
+    StoreFileSave busyTask;
+    check(store.prepareFileSave(busyPath, StoreSaveKind::saveAs, busyTask).ok, "pin a copy before a competing writer");
+    const auto busyCopy = std::async(std::launch::async, [&] { return busyTask.write(); }).get();
+    check(busyCopy.ok, "completed copy survives a competing writer at adoption");
+    {
+        SQLite::Database writer(media::pathUtf8(fixture.source), SQLite::OPEN_READWRITE);
+        SQLite::Transaction gate(writer, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto start = std::chrono::steady_clock::now();
+        const auto refused = store.adoptFileSave(busyTask);
+        check(!refused.ok && std::chrono::steady_clock::now() - start < std::chrono::seconds(1) &&
+              store.path() == fixture.source && store.db().execAndGet("PRAGMA busy_timeout").getInt() == 5000,
+              "a busy external writer refuses promptly without replacing the active Store's busy timeout");
+    }
+    check(store.adoptFileSave(busyTask).ok && store.path() == busyPath,
+          "the completed copy can be adopted once the competing writer releases without editing");
+    const auto closed = std::async(std::launch::async, [&] { return busyTask.closeReplacedProject(); }).get();
+    check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+}
+int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

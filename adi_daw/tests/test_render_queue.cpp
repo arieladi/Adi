@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -214,6 +215,109 @@ void sampleRateConversion() {
     for (std::size_t i=0;i<samples.size()/2;++i)
         correct=correct && std::abs(samples[2*i]-0.25f)<1e-5f && std::abs(samples[2*i+1]+0.5f)<1e-5f;
     check(correct,"48 kHz media renders at 44.1 kHz with ranges measured in output samples");
+}
+void largeSongExportSpeed() {
+    using Clock = std::chrono::steady_clock;
+    constexpr std::int64_t rate = 48000, seconds = 60, frames = rate * seconds;
+    constexpr std::int64_t trackCount = 8, slices = 50;
+    constexpr std::uint32_t chunkFrames = 8192;
+    Fixture f;
+    const auto sourcePath = f.dir.path() / "audio.wav";
+    const auto sample = [](std::int64_t frame, int channel) { return source(frame, channel) / 16.0f; };
+    {
+        audio::WavWriter wave(sourcePath, rate, 2, audio::WavFormat::Float32);
+        std::array<float, chunkFrames * 2> pcm{};
+        for (std::int64_t position = 0; position < frames; position += chunkFrames) {
+            const auto count = static_cast<std::uint32_t>(std::min<std::int64_t>(chunkFrames, frames - position));
+            for (std::uint32_t frame = 0; frame < count; ++frame) {
+                pcm[2 * frame] = sample(position + frame, 0);
+                pcm[2 * frame + 1] = sample(position + frame, 1);
+            }
+            wave.write(pcm.data(), count);
+        }
+        wave.close();
+    }
+    const auto hashed = media::blake3File(sourcePath);
+    if (!hashed) throw std::runtime_error("hash export speed source");
+    auto& db = f.store->db();
+    {
+        SQLite::Statement media(db, "UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1, hashed.hex);
+        media.exec();
+        SQLite::Statement track(db, "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(?,'audio','Audio',?)");
+        for (std::int64_t id = 2; id <= trackCount; ++id) {
+            track.bind(1, id);
+            track.bind(2, id);
+            track.exec();
+            track.reset();
+        }
+    }
+    const auto place = [&](std::int64_t segments) {
+        SQLite::Transaction seed(db);
+        db.exec("DELETE FROM clips");
+        SQLite::Statement clip(db, "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(?,?,'audio',1,?,?)");
+        SQLite::Statement audio(db, "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(?,1,?,?)");
+        const auto boundary = [segments](std::int64_t step) {
+            // Move the interior seams off the render block grid while keeping the same source and timeline.
+            return step * frames / segments + (step != 0 && step != segments ? step % 7 + 1 : 0);
+        };
+        const auto nanos = [](std::int64_t frame) { return frame * 1000000000 / rate; };
+        for (std::int64_t track = 1; track <= trackCount; ++track) {
+            for (std::int64_t piece = 0; piece < segments; ++piece) {
+                const auto start = boundary(piece), end = boundary(piece + 1);
+                const auto id = (track - 1) * segments + piece + 1;
+                clip.bind(1, id);
+                clip.bind(2, track);
+                clip.bind(3, nanos(start));
+                clip.bind(4, nanos(end) - nanos(start));
+                clip.exec();
+                clip.reset();
+                audio.bind(1, id);
+                audio.bind(2, start);
+                audio.bind(3, end - start);
+                audio.exec();
+                audio.reset();
+            }
+        }
+        seed.commit();
+    };
+    const auto renderSong = [&](std::int64_t segments, const char* tag) {
+        place(segments);
+        auto job = f.job(tag);
+        job.beginSample = 0;
+        job.endSample = frames;
+        job.session.maxFrames = 512;
+        const auto start = Clock::now();
+        auto result = renderWav(job, {});
+        const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+        check(result.state == JobState::Completed && result.framesWritten == frames,
+              result.error.empty() ? "60-second WAV export completes with every frame" : result.error.c_str());
+        return std::pair{std::move(result), elapsed};
+    };
+    const auto [whole, wholeSeconds] = renderSong(1, "speed-whole");
+    const auto [split, splitSeconds] = renderSong(slices, "speed-split");
+    std::printf("SC-414 60 s stereo export: 8 clips %.3f s (%.2fx real time), 400 clips %.3f s (%.2fx), %.2fx split/whole\n",
+                wholeSeconds, static_cast<double>(seconds) / wholeSeconds,
+                splitSeconds, static_cast<double>(seconds) / splitSeconds, splitSeconds / wholeSeconds);
+    if (whole.state != JobState::Completed || split.state != JobState::Completed) return;
+    audio::WavReader reference(whole.output), cut(split.output);
+    check(reference.frames() == frames && cut.frames() == frames && reference.sampleRate() == rate && cut.sampleRate() == rate &&
+              reference.channels() == 2 && cut.channels() == 2 && reference.format() == audio::WavFormat::Float32 &&
+              cut.format() == audio::WavFormat::Float32,
+          "both export shapes publish the specified stereo PCM");
+    std::array<float, chunkFrames * 2> expected{}, actual{};
+    bool exact = true;
+    for (std::int64_t position = 0; position < frames && exact; position += chunkFrames) {
+        const auto count = static_cast<std::uint32_t>(std::min<std::int64_t>(chunkFrames, frames - position));
+        exact = reference.read(expected.data(), count) == count && cut.read(actual.data(), count) == count;
+        for (std::uint32_t frame = 0; frame < count && exact; ++frame) {
+            exact = expected[2 * frame] == sample(position + frame, 0) * trackCount &&
+                    expected[2 * frame + 1] == sample(position + frame, 1) * trackCount &&
+                    expected[2 * frame] == actual[2 * frame] && expected[2 * frame + 1] == actual[2 * frame + 1];
+        }
+    }
+    check(exact, "400 contiguous clips export the same complete PCM as 8 whole clips, across off-block seams");
+    check(splitSeconds <= wholeSeconds * 3, "400 contiguous clips export within 3x the time of the same 8 whole clips");
 }
 void cancellationAndFailures() {
     Fixture f;
@@ -1548,8 +1652,11 @@ void mediaIdentities() {
     }
 }
 } // namespace
-int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+int main(int argc, char** argv) {
+    try {
+        if (argc == 2 && std::string_view(argv[1]) == "--export-speed-only") largeSongExportSpeed();
+        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    }
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
