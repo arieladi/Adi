@@ -35,6 +35,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-292 | `basics/look-chain` at `6fd1d48a` | Name the valid drops for MIDI tracks and Main in Device View. Window seat. | The peerless paint test distinguished the new instructions from the earlier text. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-355 | `basics/look-chain` at `5c3b9050` | Switch the detail panes with Shift+Tab or F12 and show both on Alt-click. Window seat. | Headless keyboard, focus navigation, mouse modifier, layout and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-356 | `basics/look-chain` at `fbd63040` | Remove the inactive Arrangement and Session faces from the side rail. Window seat. | Software raster and component checks verified the two faces are gone and the track height control still works. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-357 | `basics/look-chain` at `8ebf288f` | Explain unavailable Mixer controls in the View and Mixer-arrow menus. Window seat. | Headless menu model checks verified all reasons and the working Arrangement Volume toggle. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -297,6 +298,22 @@ Commit `18e7e955`. The modified shell and shell test translation units passed th
 At 1440 × 900 Compact the right rail is `(1405, 35, 27, 623)`. The painted Arrangement and Session faces occupied `(1409, 87, 19, 19)` and `(1409, 109, 19, 19)`. These regions now use the rail's background. The Use Large Track Height button remains `(1409, 131, 19, 14)` and still changes lane and strip heights. After Swap Sides the rail moves to x=8 and the height button to x=12. The approved sheet puts the view switch in the Control Bar.
 
 The software raster counts 305 face pixels per circle before and zero after. The track height glyph retains 72 painted pixels in its 13 × 7 px ink bounds. The same counts hold in the 960 × 540 default and swapped fixtures, where the face x coordinates are 929 and 12 respectively. The peerless test checks the complete area of both former faces and the absence of child hit targets.
+
+### SC-357 — Mixer menu availability
+
+Measured the Linux Compact menu rows headlessly through the same JUCE Look and Feel sizing method used by the shell's software menu fixture. Positions are local to each menu body, with the first row at (0, 0). Widths are the item's ideal width in logical pixels, including JUCE's row padding. The menu body uses its widest row. Each changed row is 16 px high, and the separators are 10 px high.
+
+| Menu | Before | After | Row origin and height | Ideal width before → after |
+|---|---|---|---|---|
+| Mixer arrow | Volume | Volume (always shown) | (0, 32), 16 | 68 → 145 |
+| Mixer arrow | Crossfader | Crossfader (requires Session View) | (0, 64), 16 | 85 → 201 |
+| Mixer arrow | Performance Impact | Performance Impact (requires per-track CPU timings) | (0, 80), 16 | 129 → 286 |
+| View › Mixer Controls | Volume | Volume (always shown) | (0, 32), 16 | 68 → 145 |
+| View › Mixer Controls | Crossfader | Crossfader (requires Session View) | (0, 74), 16 | 85 → 201 |
+| View › Mixer Controls | Performance Impact | Performance Impact (requires per-track CPU timings) | (0, 90), 16 | 129 → 286 |
+| View › Arrangement Track Controls | Volume | Volume | (0, 58), 16 | 68 → 68 |
+
+The mixer Volume item stays ticked while unavailable. The Arrangement Volume item is already a working toggle through SC-270 and its tick reports the Arrangement setting. The arrow stays at (1391, 873), 8 × 16 px in a 1440 × 900 Compact root. Menu body heights remain 122 px for the arrow, 132 px for View › Mixer Controls, and 90 px for View › Arrangement Track Controls. Native screen placement depends on the screen and platform.
 
 ## For the director
 
