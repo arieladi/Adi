@@ -2,7 +2,16 @@ Codex took the library seat on 27 November 2026.
 
 # Library engine seat
 
-Engine chain `seats/library-chain` is at `786c3b5d2`. The first proof, at `5bb8fdd5e` on `origin/main` `17a688803`, passed all 288 headless suites in 261.50 s, including the real-time stress suite and both acceptance suites. It used GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled. All five validators passed. The continuation below builds on the 27 November reservations from `6f96847b0`.
+## Still unbuilt in the library rows
+
+- TM-MD-04 and TM-WT-01. Coordinate a cold Warp request and background indexing of the same content and timing configuration so they share the timing work.
+- TM-MD-04 and TM-WT-05. Refresh published library measurements when authored metadata changes, so filtering, preview and Warp see the same answer for the same source hash.
+- TM-MD-07. Join shared and Current Project sample candidates before ranking, then convert ranked results to the unique content hashes that drive swapping.
+- TM-MD-04, TM-WT-01 and TM-WT-05. Prepare reproducible workstation fixtures for the remaining Live 12.4 measurements. The measurement run requires a Live 12.4 host.
+- TM-WT-01. Enable the candidate in production playback after the timing rollout decision. The candidate currently has an opt-in engine path and measured comparison.
+- TM-MD-04. Resolve the appendix's Create Analysis Files switch against the existing always-cache decision.
+
+The first proof, at `5bb8fdd5e` on `origin/main` `17a688803`, passed all 288 headless suites in 261.50 s, including the real-time stress suite and both acceptance suites. It used GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled. All five validators passed. The continuation below builds on the 27 November reservations from `6f96847b0`.
 
 | Row | What changed | Proof | State |
 |---|---|---|---|
@@ -73,6 +82,7 @@ Current ADI onset F at ±10 ms was 0.2733 against per-string note starts coalesc
 | TM-MD-04 and TM-WT-01, shared PCM pass | Chain `c2d4236d6`. An indexing job can feed descriptors and Warp timing from each decoded block. Cold measured exactly one decoder passthrough and produced ALIB plus AWTM. Warm performed zero new decodes. Changing sensitivity performed one timing pass and retained the descriptors. All six focused suites passed. | Shared worker slice pushed. |
 | TM-WT-05, document import and Warp off | Chain `b4b10f466`. Both producers use one short-Warp policy resolver. A real `ProjectDocument` worker import honored its captured `Unwarped One Shot` choice. Warp off disabled a generated full-source loop, and Undo/Redo restored the captured states. The provisional boundary switches policy one frame after 60 s. The scratch Browser composition passed its 38 Warp checks, 41 sample-analysis checks and the short-sample fixture through Warp off. | Engine slice pushed. Join details below. |
 | TM-WT-01, reuse cached onsets in native Beats | Chain `786c3b5d2`. The worker verifies source identity and uses matching AWTM onsets for opted-in Beats renders. The onset positions key the prepared PCM; a newly published map or a replaced map with an empty window changes the render. A cropped 44.1-to-48 kHz fixture produced 24,000 frames sample-exact with the explicit-onset render and differed from the held fallback by 0.556247 peak. The full focused WarpPlayback binary passed 163 checks. | Worker slice pushed. Existing ClipPlayback callers retain the incumbent pending the timing rollout. |
+| Windows checker, library test scheduling | Chain `f9f761fd4`. Fetched and merged `origin/main`, already at `6f96847b0`, and merged the checker fix from `wincheck/main` `9734b0c44`. Generated CTest metadata confirms `RUN_SERIAL` with the original 120 s timeout. Three library suites passed locally in 3.33 s. | Pushed. The checker measured the Windows starvation on main. Its log has yet to list a native build of the library chain. |
 
 The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% tempo tolerance. A dash means the comparator supplied no matching labelled output.
 
