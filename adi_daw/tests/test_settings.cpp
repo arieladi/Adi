@@ -1400,8 +1400,12 @@ void testAnalysisCacheSettings() {
     if (setenv("ADI_HOME", home.path().c_str(), 1) != 0) throw std::runtime_error("set portable app home");
 #endif
     const auto paths = appdata::pathsFor(appdata::App::Daw);
-    writeText(paths.config / "settings.json",
-              R"({"schema":1,"app":"ADI","values":{"cache.maxSizeMb":1,"cache.minFreeSpaceMb":0}})");
+    const auto chosen = home.path() / "chosen cache";
+    const auto chosenText = chosen.u8string();
+    const auto doc = Value{{"schema", 1}, {"app", "ADI"},
+        {"values", {{"cache.maxSizeMb", 1}, {"cache.minFreeSpaceMb", 0},
+                    {"cache.folder", std::string(chosenText.begin(), chosenText.end())}}}};
+    writeText(paths.config / "settings.json", doc.dump());
     auto settings = AppSettings::forApp(appdata::App::Daw);
     auto& cache = adi::media::defaultAnalysisCache();
     const adi::media::AnalysisIdentity identity{std::string(64, 'c'), 48000, 1, 32};
@@ -1411,8 +1415,10 @@ void testAnalysisCacheSettings() {
     const auto publish = [&] {
         return cache.update(identity, "APKS", section, why) == adi::media::AnalysisCacheProblem::None;
     };
-    check(cache.folder() == paths.cache / "analysed" && !fs::exists(cache.folder()),
+    check(cache.folder() == chosen / "analysed" && !fs::exists(chosen),
           "opening AppSettings configures the central cache without filesystem maintenance");
+    check(adi::audio::defaultDecodeCache().folder() == chosen / "decoded" && !fs::exists(paths.cache),
+          "analysis and decoded playback pick the same absolute configured root");
     const adi::media::AnalysisIdentity older{std::string(64, 'b'), 48000, 1, 32};
     const adi::media::AnalysisSection large{1, 0, std::vector<std::byte>(2u << 20)};
     const auto oldTarget = cache.folder() / (older.hash + ".adia");
@@ -1433,6 +1439,9 @@ void testAnalysisCacheSettings() {
           "a committed preference waits for the next cache read before evicting its stored analysis");
     check(settings.set(adi::audio::kCacheMaxSizeKey, 1, kUser, why) && settings.save(why) && publish() && fs::exists(target),
           "a successful preference increase permits the next normal publication to cache the result");
+    check(settings.set("cache.folder", "", kUser, why) && settings.save(why) &&
+              cache.folder() == chosen / "analysed" && adi::audio::defaultDecodeCache().folder() == chosen / "decoded",
+          "a saved folder preference takes effect at next startup while current cache paths remain valid");
 }
 
 int runAll() {

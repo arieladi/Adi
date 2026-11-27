@@ -3,6 +3,7 @@
 #include "adi/settings/store.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/media/analysis_cache.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 
 #include <algorithm>
@@ -31,12 +32,15 @@ constexpr const char* kLogChangesKey = "settings.logChanges";
 constexpr const char* kWindowZoomKey = "window.zoom";
 constexpr const char* kNewerSchemaReadOnly = "settings from a newer build are read-only";
 
-void applyDawAnalysisLimits(const AppSettings& settings) noexcept {
+void applyDawCachePreferences(const AppSettings& settings) noexcept {
     try {
         const auto limits = audio::limitsFromSettings({
             {audio::kCacheMaxSizeKey, settings.get(audio::kCacheMaxSizeKey)},
             {audio::kCacheMinFreeKey, settings.get(audio::kCacheMinFreeKey)}});
         media::setDefaultAnalysisCacheLimits({limits.maxBytes, limits.minFreeBytes});
+        const auto folder = settings.get(audio::kCacheFolderKey).get<std::string>();
+        appdata::setCacheFolderPreference(folder.find('\0') == std::string::npos ? media::pathFromUtf8(folder)
+                                                                                 : std::filesystem::path{});
     } catch (...) {
         // Notification cannot turn a durable settings save into a failure.
     }
@@ -165,8 +169,8 @@ const char* toString(LoadStatus s) {
 AppSettings AppSettings::forApp(appdata::App app) {
     const auto dir = appdata::pathsFor(app).config;
     AppSettings settings(app, dir.empty() ? std::filesystem::path{} : dir / "settings.json");
-    settings.appliesDawAnalysisLimits_ = app == appdata::App::Daw;
-    if (settings.appliesDawAnalysisLimits_) applyDawAnalysisLimits(settings);
+    settings.appliesDawCachePreferences_ = app == appdata::App::Daw;
+    if (settings.appliesDawCachePreferences_) applyDawCachePreferences(settings);
     return settings;
 }
 
@@ -321,7 +325,7 @@ bool AppSettings::save(std::string& why, SaveRename rename) {
             if (!why.empty()) why += '\n';
             why += "settings backup: " + backupWarning;
         }
-        if (appliesDawAnalysisLimits_) applyDawAnalysisLimits(*this);
+        if (appliesDawCachePreferences_) applyDawCachePreferences(*this);
         return true;
     } catch (const std::exception& error) {
         why = error.what();

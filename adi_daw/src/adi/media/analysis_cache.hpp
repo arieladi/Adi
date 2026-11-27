@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <string_view>
 namespace adi::media {
 // Optional, rebuildable sample analysis only. User Warp/clip settings belong
 // in the persistent library and must never enter this cache or its cleanup.
@@ -35,13 +36,14 @@ struct AnalysisCacheResult {
 };
 struct AnalysisTrimResult {
     AnalysisCacheProblem problem=AnalysisCacheProblem::None;
-    // Logical bytes of validated, directly owned ADIA files only. Unrecognised
-    // entries are neither charged nor removed. Counts remain valid on partial
+    // Logical bytes of validated, directly owned cache files. Shared Cleanup
+    // includes PCM. Unrecognised entries are neither charged nor removed. Counts remain valid on partial
     // cancellation/failure; bytesBefore is complete only with inventoryComplete.
     // Skipped entries have an I/O refusal, distinct from ignored foreign/invalid
     // entries. Unreadable entries are uncharged and prevent proving budgetMet.
     std::uint64_t bytesBefore=0,bytesAfter=0,filesRemoved=0,ignoredEntries=0;
     std::uint64_t skippedEntries=0;
+    std::uint64_t retainedEntries=0; // Cleanup protection (current hashes or active PCM leases).
     bool inventoryComplete=false,budgetMet=false;
     explicit operator bool()const noexcept{return problem==AnalysisCacheProblem::None && budgetMet;}
 };
@@ -84,15 +86,27 @@ public:
     void setAutomaticLimits(AnalysisCacheLimits);
     [[nodiscard]] const std::filesystem::path& folder()const noexcept{return folder_;}
 private:
+    friend class audio::DecodeCache;
     friend AnalysisCache& defaultAnalysisCache();
+    friend AnalysisTrimResult cleanupMediaCache(AnalysisCache&, audio::DecodeCache&, std::span<const std::string>,
+                                                std::string&, std::stop_token);
     AnalysisCache(std::filesystem::path folder, FreeSpace available, std::optional<AnalysisCacheLimits> appStartLimits)
         : folder_(std::move(folder)), available_(std::move(available)), followsAppLimits_(appStartLimits.has_value()),
           appliedLimits_(appStartLimits) {}
     [[nodiscard]] AnalysisCacheResult readChecked(const std::string&,const AnalysisIdentity*,std::stop_token) const;
     [[nodiscard]] AnalysisTrimResult trimLocked(AnalysisCacheLimits, bool automatic,
-                                                std::string&, std::stop_token) const;
+                                                std::string&, std::stop_token,
+                                                audio::DecodeCache* = nullptr, std::string_view incomingHash = {},
+                                                bool checkReachable = false,
+                                                std::optional<std::span<const std::string>> current = {}) const;
     [[nodiscard]] std::optional<std::uint64_t> freeSpace() const;
-    void maintainLocked(std::size_t publishedBytes, std::stop_token) const noexcept;
+    // True defers an application trim until the caller releases ADIA's lock.
+    bool maintainLocked(std::size_t publishedBytes, std::stop_token) const noexcept;
+    void maintainApplication(std::stop_token) const noexcept;
+    void maintainForDecoder(audio::DecodeCache&, std::uint64_t incoming, std::string_view hash,
+                            bool checkReachable, std::stop_token = {}) const;
+    [[nodiscard]] AnalysisTrimResult cleanupWithDecoder(audio::DecodeCache&, std::span<const std::string>,
+                                                         std::string&, std::stop_token) const;
     std::filesystem::path folder_;
     FreeSpace available_;
     bool followsAppLimits_ = false;
@@ -104,4 +118,9 @@ private:
 // Called with validated application preferences. A later owner-worker access
 // performs maintenance without delaying the settings save.
 void setDefaultAnalysisCacheLimits(AnalysisCacheLimits);
+[[nodiscard]] AnalysisCacheLimits defaultAnalysisCacheLimits();
+// Owner-worker Cleanup of the two subfolders under one selected cache root.
+// Current project hashes and active PCM leases protect their matching records.
+[[nodiscard]] AnalysisTrimResult cleanupMediaCache(AnalysisCache&, audio::DecodeCache&,
+    std::span<const std::string> currentHashes, std::string&, std::stop_token = {});
 } // namespace adi::media

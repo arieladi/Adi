@@ -115,7 +115,7 @@ private:
     Value values_ = Value::object();
     std::set<std::string> pendingKeys_;
     bool logUsers_ = true;
-    bool appliesDawAnalysisLimits_ = false;
+    bool appliesDawCachePreferences_ = false;
 };
 
 // --- the agent's pipeline (ADR-0125 d1-d3) -----------------------------------------------

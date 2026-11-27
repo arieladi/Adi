@@ -39,6 +39,8 @@
 #include <stop_token>
 #include <vector>
 
+namespace adi::media { class AnalysisCache; }
+
 namespace adi::audio {
 
 /// Why a file cannot be made playable. toString gives the name a problem list
@@ -82,6 +84,7 @@ inline constexpr std::uint32_t kMaxDecodeChannels = 64;
 /// The registry keys (Settings > File & Folder > Decoding Cache), in MB.
 inline constexpr const char* kCacheMaxSizeKey = "cache.maxSizeMb";
 inline constexpr const char* kCacheMinFreeKey = "cache.minFreeSpaceMb";
+inline constexpr const char* kCacheFolderKey = "cache.folder";
 inline constexpr std::uint64_t kCacheMaxSizeMbDefault = 20480;   // 20 GB (ADR-0203)
 inline constexpr std::uint64_t kCacheMinFreeMbDefault = 2048;    // 2 GB
 
@@ -153,6 +156,8 @@ public:
     [[nodiscard]] std::vector<std::string> problems() const;
 
 private:
+    friend class media::AnalysisCache;
+    friend DecodeCache& defaultDecodeCache();
     friend class ProgressiveDecoder;
     friend class WarpRenderCache;
     struct Item {
@@ -178,6 +183,7 @@ private:
     std::int64_t lastStamp_ = 0;
     Stats stats_;
     std::vector<std::string> problems_;
+    bool usesApplicationBudget_ = false;
 };
 
 /// The process's cache: appdata::pathsFor(App::Daw).cache / "decoded" -- the
