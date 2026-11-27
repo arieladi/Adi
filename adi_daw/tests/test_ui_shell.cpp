@@ -23078,6 +23078,23 @@ int main(int argc, char **argv) {
     check(commands.infoView() && !a.infoArea().isEmpty() && a.browserArea() == browserWithInfo &&
               a.browser.contentArea().getHeight() == contentWithInfo && a.deviceArea() == deviceWithInfo,
           "the Status Bar restores the Info dock and the Browser content shrinks back above it");
+    {
+        const auto reopen = [&](auto action) {
+            const bool hidden = a.command(AppCommands::ToggleBrowser) && a.browserArea().isEmpty() && a.infoArea().isEmpty();
+            const bool invoked = action();
+            return hidden && invoked && commands.infoView() && a.browserArea() == browserWithInfo &&
+                   !a.infoArea().isEmpty() && a.deviceArea() == deviceWithInfo;
+        };
+        check(reopen([&] { return a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)); }),
+              "SC-424: the Info shortcut reopens the Browser without hiding its Info dock");
+        check(a.command(AppCommands::ToggleInfoView) && !commands.infoView(), "turn off Info before closing the Browser");
+        check(reopen([&] {
+                  commands.activate(a);
+                  return commands.manager.invokeDirectly(AppCommands::ToggleInfoView, false);
+              }), "SC-424: the View menu command reopens the Browser and enables the Info dock");
+        check(reopen([&] { a.status.infoToggle.onClick(); return true; }),
+              "SC-424: the Status Bar's Info control reopens the Browser and its Info dock");
+    }
     if (restoreBrowserRight)
         check(a.command(AppCommands::SwapPanels), "restore the Browser side used by the surrounding fixtures");
     a.setSize(400, 540);

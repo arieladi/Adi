@@ -5553,9 +5553,17 @@ bool AdiRootComponent::command(int id) {
         break;
     }
     case AppCommands::ToggleInfoView: {
+        const bool reopening = state_.panels.find(Panel::Browser)->collapsed;
+        if (reopening && !toggle(Panel::Browser))
+            return false;
+        const bool shown = commands_.infoView();
+        const bool showInfo = reopening || !shown;
         std::string why;
-        if (!commands_.setInfoView(!commands_.infoView(), why))
+        if (showInfo != shown && !commands_.setInfoView(showInfo, why)) {
+            if (reopening)
+                resized();
             return fail(why);
+        }
         infoShown_ = commands_.infoView();
         break;
     }
