@@ -17,6 +17,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-90 | `basics/look-chain` at `81254e5e` | Dim the clips on inactive tracks and the full panels of bypassed devices. Window seat. | Peerless canvas and panel pixels, plus undo or reactivation, passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-92 | `basics/look-chain` at `164c387b` | Label the main Audio To route Main. Window seat. | Headless tests covered Main, Group, instrumentless MIDI No Output and the Main pair. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-71 | `basics/look-chain` at `d8e80eed` | Follow zoom below a quarter note in the Arrangement and Note Editor. Window seat. | The independent Debug shell also passed all 3,536 checks. The test covers grid positions, ticks and Note Editor gestures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-12 | `basics/look-chain` at `9a1e6c59` | Dimming and specific Info reasons for eleven unavailable controls. Enabled controls retain their actual actions. Window seat. | Peerless checks covered disabled hit regions, help, active punch and metronome controls, and the Unicode quantization placeholder. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -138,6 +139,24 @@ Audio To changes from `Master` to `Main` in the existing strip-local rectangles.
 The spacing follows zoom down through 1/32. At 4.625 px per quarter the first 4/4 bar line stays x=18.5. At 48, 64 and 128 px per quarter the first sub-bar grid line moves from x=48, 64 and 128 to x=24, 16 and 16 respectively. The subdivisions are 1/8, 1/16 and 1/32. At 256 px per quarter a 1 × 3 px short ruler tick is at local `(32, 26)`. At x=64 the label tick is 1 × 5 px and the text box for `1.1.2` is `(68, 1, 60, 16)`. At this zoom the previous first line was x=256 and had no subdivision mark.
 
 In the Note Editor at 64 px per quarter, drawing at local x=34 changes the new note from x=0 with a 64 px width to x=32 with a 16 px width. Right moves x=32 to x=48. At 128 px per quarter quantize moves x=173 to x=176. The regression covers drawing, the arrow, quantize and Chop at the zoom-derived grid.
+
+### SC-12
+
+At 1440 × 900 Compact these field hit rectangles retain their bounds. Eleven unavailable faces go from full opacity to 45% and assistance text identifies the missing dependency.
+
+| Control | Root-relative bounds |
+|---|---|
+| Link | `(8, 9, 43, 17)` |
+| Nudge down / up | `(125, 9, 17, 17)` / `(144, 9, 16, 17)` |
+| Launch quantization | `(246, 9, 45, 17)` |
+| Overdub / Automation Arm | `(622, 9, 17, 17)` / `(640, 9, 17, 17)` |
+| Capture / Session Record | `(676, 9, 17, 17)` / `(694, 9, 17, 17)` |
+| Punch In / Out | `(809, 9, 20, 17)` / `(852, 9, 20, 17)` |
+| Computer Keyboard | `(1244, 9, 17, 17)` |
+| Key Map / MIDI Map | `(1263, 9, 26, 17)` / `(1301, 9, 28, 17)` |
+| Active Metronome arrow | `(234, 9, 10, 17)` within the whole control at `(204, 9, 40, 17)` |
+
+Draw Mode, CPU measurement, Punch In and Out, and both parts of the Metronome stay operable at full opacity. The landing stack already supplies their behavior.
 
 ## For the director
 
