@@ -1657,8 +1657,7 @@ void MixerStrip::mouseDrag(const juce::MouseEvent &e) {
         return;
     auto &view = panel_.root.arrangement;
     const int dy = e.getDistanceFromDragStartY();
-    view.geometry.resizeTrack(track_, resizeFrom_ + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
-    view.frame(true);
+    view.dragTrackHeight(track_, resizeFrom_ + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
 }
 void MixerStrip::mouseUp(const juce::MouseEvent &e) {
     if (const auto drag = std::exchange(titleDrag_, std::nullopt)) {
@@ -2467,11 +2466,15 @@ void MixerPanel::place() {
             ++wanted;
         y += geometry.rowHeight(*tracks[i].track);
     }
-    while (strips_.size() < wanted) {
+    const auto addStrip = [&] {
         auto strip = std::make_unique<MixerStrip>(*this);
         addChildComponent(*strip);
         strips_.push_back(std::move(strip));
-    }
+    };
+    while (strips_.size() < wanted)
+        addStrip();
+    const auto isDragging = [](const auto &strip) { return strip->dragging(); };
+    const bool anyDragging = std::ranges::any_of(strips_, isDragging);
     y = bodyTop - geometry.scrollY;
     std::size_t used = 0;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
@@ -2480,6 +2483,25 @@ void MixerPanel::place() {
         const auto id = tracks[i].track->id;
         const int h = geometry.heightFor(id);
         if (inSight(i, y, h) && used < wanted) {
+            // A resize can move a pinned Return to an earlier pool slot. Keep the component
+            // receiving the pointer with its track, even when different rows come into view.
+            if (anyDragging) {
+                const auto first = std::next(strips_.begin(), static_cast<std::ptrdiff_t>(used));
+                const auto active = std::find_if(first, strips_.end(), [id](const auto &strip) {
+                    return strip->dragging() && strip->track() == id;
+                });
+                if (active != strips_.end()) {
+                    std::iter_swap(first, active);
+                } else if ((*first)->dragging()) {
+                    const auto available = std::find_if_not(first, strips_.end(), isDragging);
+                    if (available == strips_.end()) {
+                        addStrip();
+                        std::swap(strips_[used], strips_.back());
+                    } else {
+                        std::iter_swap(first, available);
+                    }
+                }
+            }
             auto &s = *strips_[used++];
             if (s.track() != id && !s.dragging())
                 s.bind(id);

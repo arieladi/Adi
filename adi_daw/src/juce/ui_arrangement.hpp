@@ -701,6 +701,7 @@ class ArrangementView final : public juce::Component {
     void setRecordingPreview(std::shared_ptr<const engine::AudioRecordingPreview>, std::uint64_t capturedFrames,
                              bool landing) noexcept;
     const std::optional<LiveTake> &liveTake() const noexcept { return liveTake_; }
+    void dragTrackHeight(std::int64_t track, int height, bool all);
     void changed();
     bool command(int);
     void fit(bool selection);

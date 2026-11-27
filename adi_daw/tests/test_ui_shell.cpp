@@ -1515,8 +1515,23 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "Hats & Percs dropped on itself: nothing moves, no step");
         // The split line still resizes.
         const auto from = at(12, 38);
+        const int nextY = topOf(13);
         headers.mouseDown(pressAt(headers, from));
         headers.mouseDrag(dragAt(headers, from, from.translated(0, 20)));
+        const auto resized = std::ranges::find_if(root.mixer.strips(), [](const auto &s) {
+            return s->isVisible() && s->track() == 12;
+        });
+        const auto next = std::ranges::find_if(root.mixer.strips(), [](const auto &s) {
+            return s->isVisible() && s->track() == 13;
+        });
+        const auto &strips = root.mixer.strips();
+        auto &canvas = root.arrangement.canvas;
+        const int line = nextY + 18;
+        check(topOf(13) == nextY + 20 && resized != strips.end() && (*resized)->getHeight() == 60 &&
+                  next != strips.end() && (*next)->getY() == root.arrangement.topHeight() + nextY + 20 &&
+                  renderedPixel(headers, {headers.getWidth() - 2, line}) == look::separator &&
+                  renderedPixel(canvas, {canvas.getWidth() - 8, line}) == look::separator,
+              "SC-436: the following header, mixer row and lane move together before mouse-up");
         headers.mouseUp(dragAt(headers, from, from.translated(0, 20)));
         check(lanes.heightFor(12) == 60 && order() == tree, "a drag from the split line makes the track taller, and moves none");
         lanes.resizeTrack(12, 40);
@@ -14586,6 +14601,26 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
           "a point in the foot finds a return or Main, never the track under it");
     check(lanes.trackAt(root.reader(), footY - 5) != nullptr && lanes.trackAt(root.reader(), footY - 5)->id != 2,
           "just above it, a track");
+    {
+        const int dy = std::min(72, footY - ArrangementGeometry::kMinTrackHeight);
+        const auto &strips = root.mixer.strips();
+        const auto found = std::ranges::find_if(strips, [](const auto &s) { return s->isVisible() && s->track() == 2; });
+        check(found != strips.end() && dy > 48, "SC-436: the Return can cover another visible row during a drag");
+        if (found != strips.end() && dy > 48) {
+            auto &active = **found;
+            const juce::Point<float> start{20.f, 2.f};
+            const auto up = start.translated(0, static_cast<float>(-dy));
+            active.mouseDown(pressAt(active, start));
+            active.mouseDrag(dragAt(active, start, up));
+            check(active.isVisible() && active.track() == 2 && active.getHeight() == 48 + dy &&
+                      active.getY() == root.arrangement.topHeight() + footY - dy && laneTop(root, 1) == footY + 96,
+                  "SC-436: resizing a pinned Return keeps its mixer control attached through visible row changes");
+            active.mouseUp(dragAt(active, start, up));
+            lanes.resizeTrack(2, 48);
+            root.arrangement.changed();
+            root.frame();
+        }
+    }
     // Scrolled: the tracks move, the foot does not.
     lanes.scrollY = 200;
     root.arrangement.changed();

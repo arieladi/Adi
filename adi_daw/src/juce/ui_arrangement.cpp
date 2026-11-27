@@ -1515,6 +1515,14 @@ bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
     geometry.left = left;
     return true;
 }
+void ArrangementView::dragTrackHeight(std::int64_t track, int height, bool all) {
+    geometry.resizeTrack(track, height, all);
+    frame(true);
+    if (root.mixer.isVisible()) {
+        root.mixer.frame(true);
+        root.mixer.repaint();
+    }
+}
 void ArrangementView::changed() {
     auto &state = root.state();
     state.timelineLeft = geometry.left;
@@ -3186,8 +3194,7 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
 void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
     if (resizeId) {
         const int dy = e.getDistanceFromDragStartY();
-        view.geometry.resizeTrack(resizeId, initialHeight + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
-        view.frame(true);
+        view.dragTrackHeight(resizeId, initialHeight + (resizeFromTop_ ? -dy : dy), e.mods.isAltDown());
     } else if (moveId_ != 0 && (moving_ || std::abs(e.getDistanceFromDragStartY()) > 4)) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other
         // tracks"; the line shows where they would land.
