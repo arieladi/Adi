@@ -8,6 +8,8 @@
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
 enum class WavDither { None, Triangular, Rectangular };
+// The sample read back after encoding at this depth without dither.
+[[nodiscard]] float wavSampleAtDepth(float value, WavFormat) noexcept;
 struct WavMetadata {
     std::string description;
     std::string originator;

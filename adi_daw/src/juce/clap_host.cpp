@@ -61,6 +61,7 @@ clap_event_transport_t clapTransport(const engine::DeviceTransport& clock, doubl
     transport.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
                       CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
     if (clock.playing) transport.flags |= CLAP_TRANSPORT_IS_PLAYING;
+    if (clock.recording) transport.flags |= CLAP_TRANSPORT_IS_RECORDING; // SC-333
     transport.tempo = clock.bpm;
     transport.song_pos_beats = transportFixedPoint(clock.quarterNotes, CLAP_BEATTIME_FACTOR);
     transport.song_pos_seconds = transportFixedPoint(static_cast<double>(clock.sample) / rate, CLAP_SECTIME_FACTOR);
@@ -79,6 +80,10 @@ clap_event_transport_t clapTransport(const engine::DeviceTransport& clock, doubl
     return transport;
 }
 }  // namespace
+
+clap_event_transport_t clapTransportEvent(const engine::DeviceTransport& clock, double rate) noexcept {
+    return clapTransport(clock, rate);
+}
 
 // ---------------------------------------------------------------------------
 // ClapEventList
@@ -1374,6 +1379,26 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
             if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
             else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
         }
+        // SC-315: a plug-in with one main input hears both sides of a stereo channel, folded.
+        if (main && bus.channels == 1 && io.channels >= 2) {
+            if (wide64) {
+                if (io.wide() && io.in64 != nullptr && io.in64[1] != nullptr)
+                    foldIntoMono(bus.wptrs[0], io.in64[1] + off, n);
+                else if (!io.wide() && io.in != nullptr && io.in[1] != nullptr)
+                    for (std::int32_t i = 0; i < n; ++i) {
+                        const double r = io.in[1][off + i];
+                        foldIntoMono(bus.wptrs[0] + i, &r, 1);
+                    }
+            } else if (wideIo) {
+                if (io.in64 != nullptr && io.in64[1] != nullptr)
+                    for (std::int32_t i = 0; i < n; ++i) {
+                        const float r = static_cast<float>(io.in64[1][off + i]);
+                        foldIntoMono(bus.ptrs[0] + i, &r, 1);
+                    }
+            } else if (io.in != nullptr && io.in[1] != nullptr) {
+                foldIntoMono(bus.ptrs[0], io.in[1] + off, n);
+            }
+        }
     }
 
     // THE GRAPH'S EVENTS, which is the path that makes MPE+ real. `io.events`
@@ -1521,8 +1546,10 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
             double* out = io.out64[c];
             if (out == nullptr) continue;
             out += off;
-            if (!outBuses_.empty() && c < outBuses_[0].channels) {
-                const auto k = static_cast<std::size_t>(c);
+            // SC-315: a plug-in with one main output is heard on both sides.
+            const std::int32_t s = outBuses_.empty() ? -1 : sourceChannelFor(c, outBuses_[0].channels);
+            if (s >= 0) {
+                const auto k = static_cast<std::size_t>(s);
                 if (wide64) {
                     const double* src = outBuses_[0].wptrs[k];
                     for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
@@ -1544,8 +1571,9 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         float* out = io.out[c];
         if (out == nullptr) continue;
         out += off;
-        if (!outBuses_.empty() && c < outBuses_[0].channels) {
-            const float* src = outBuses_[0].ptrs[static_cast<std::size_t>(c)];
+        const std::int32_t s = outBuses_.empty() ? -1 : sourceChannelFor(c, outBuses_[0].channels);
+        if (s >= 0) {
+            const float* src = outBuses_[0].ptrs[static_cast<std::size_t>(s)];
             for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
         } else {
             for (std::int32_t i = 0; i < n; ++i) out[i] = 0.0f;

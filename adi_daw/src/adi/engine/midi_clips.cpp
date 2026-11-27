@@ -103,6 +103,8 @@ struct TrackState {
     std::uint64_t prefix=0;
     std::uint32_t serial=0;
     std::atomic<std::uint32_t> dropped{0};
+    std::uint32_t noteOnsets = 0;
+    std::atomic<std::uint64_t> noteActivity{0}; // onset count and held flag, published together
 };
 struct Scheduled { std::int64_t time; std::size_t note; bool on; };
 class Source final : public Node {
@@ -118,6 +120,9 @@ public:
     std::vector<std::size_t> byIdentity;
     std::vector<Scheduled> events;
     std::vector<ExpressionSample> expressionSamples;
+    std::vector<MidiMonitorRange> monitorRanges;
+    bool monitorInputOnly = false;
+    bool meterNotes = false;
     std::shared_ptr<const MidiControllerProgram> controls;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
@@ -379,6 +384,7 @@ public:
         for(auto& a:state->active)if(!a.used) {
             auto e=n.start;e.frame=frame;e.noteId=state->prefix | ++state->serial;
             if(!out.push(e))return;
+            if (meterNotes) ++state->noteOnsets;
             a.note=n;a.used=true;a.pending=false;a.releasing=false;a.sounding=false;a.retryOn=false;a.occurrence=n.start.noteId;
             a.retainedOn=0;a.retainedOff=0;
             a.generation=generation;
@@ -434,7 +440,21 @@ public:
         }
         return true;
     }
-    void sourceEvents(EventList& out,std::int32_t frames) noexcept override {
+    void publishNoteActivity(bool held) noexcept {
+        const auto reading = (std::uint64_t{state->noteOnsets} << 1) | static_cast<std::uint64_t>(held);
+        if (state->noteActivity.load(std::memory_order_relaxed) != reading)
+            state->noteActivity.store(reading, std::memory_order_relaxed);
+    }
+    void release() override {
+        if (meterNotes) publishNoteActivity(false);
+    }
+    void sourceEvents(EventList& out, std::int32_t frames) noexcept override {
+        scheduleEvents(out, frames);
+        if (meterNotes && frames > 0)
+            publishNoteActivity(!notes.empty() && transport.playing() && std::any_of(state->active.begin(), state->active.end(),
+                [](const Active& note) { return note.used && !note.releasing; }));
+    }
+    void scheduleEvents(EventList& out,std::int32_t frames) noexcept {
         if (frames <= 0)
             return;
         // A rejected zero must remain owned even after its lane disappears.
@@ -659,7 +679,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                      const DeviceChainFn& eventPathFor)
     :MidiClips(model,transport,rate,std::move(state),eventPathFor,NoteExpressionsRead{}) {}
 MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
-                     const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions)
+                     const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions,bool honorMonitoring)
     :impl_(std::make_shared<Impl>()) {
     if(!std::isfinite(rate)||rate<44100||rate>768000)throw std::runtime_error("MIDI session rate outside 44.1-768 kHz");
     const auto generation=++state->generation;
@@ -667,27 +687,31 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     // the notes owned by the preceding published source generation.
     for(const auto& track:model.tracks) {
         auto& s=state->tracks[track.id].audio;if(!s) {s=std::make_shared<TrackState>();s->prefix=(++state->trackIdentity)<<32;}
-        impl_->tracks.emplace(track.id,std::make_unique<Source>(transport,s,generation));
+        auto source = std::make_unique<Source>(transport, s, generation);
+        source->meterNotes = track.kind == "midi" || track.kind == "instrument";
+        source->monitorInputOnly = honorMonitoring && track.monitorMode == 1 && source->meterNotes;
+        impl_->tracks.emplace(track.id, std::move(source));
     }
     MidiControllerPrograms controls(model, rate);
     impl_->problems.insert(impl_->problems.end(), controls.problems().begin(), controls.problems().end());
-    for (auto &[id, source] : impl_->tracks)
-        source->controls = controls.forTrack(id);
     // Exact owner-side comparison, never a hash collision or callback walk of
     // the authored streams. A clock-only rebuild retains each controller's
     // delivery/retry state, including sustain already held by the instrument.
     for(auto& [id,source]:impl_->tracks) {
         ControllerIdentity identity;identity.rate=rate;
-        for(const auto& clip:timelineClips(model)) {
-            if(clip.trackId!=id)continue;
-            bool used=false;
-            for(const auto& lane:model.controllers)if(lane.clipId==clip.id) {
-                identity.lanes.push_back(lane);used=true;
+        if (!source->monitorInputOnly) {
+            source->controls = controls.forTrack(id);
+            for(const auto& clip:timelineClips(model)) {
+                if(clip.trackId!=id)continue;
+                bool used=false;
+                for(const auto& lane:model.controllers)if(lane.clipId==clip.id) {
+                    identity.lanes.push_back(lane);used=true;
+                }
+                if(used)identity.clips.push_back(clipClock(clip));
             }
-            if(used)identity.clips.push_back(clipClock(clip));
+            std::sort(identity.clips.begin(),identity.clips.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+            std::sort(identity.lanes.begin(),identity.lanes.end(),[](const auto& a,const auto& b){return a.id<b.id;});
         }
-        std::sort(identity.clips.begin(),identity.clips.end(),[](const auto& a,const auto& b){return a.id<b.id;});
-        std::sort(identity.lanes.begin(),identity.lanes.end(),[](const auto& a,const auto& b){return a.id<b.id;});
         auto& versions=state->tracks[id].controllers;
         // The last graph may have been acquired without being rendered, then
         // collected. Keep the controller identity the audio state actually
@@ -768,6 +792,13 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             };
             const auto at = [&](std::int64_t local) { return checkedSample(secondsAt(origin + local),rate); };
             const auto clipEnd=clip.timeBase==0?at(length):checkedSample(endSeconds,rate);
+            const auto clipStart = at(0);
+            if (clipEnd > clipStart)
+                source.monitorRanges.push_back({clipStart, clipEnd});
+            // Keep the source with its previous driver state. An empty note
+            // and controller program sends releases on the first new block.
+            if (source.monitorInputOnly)
+                continue;
             bool unsupported=false;
             std::string expressionProblem;
             const double tempoOrigin=startSeconds-tempoAtOrigin;
@@ -835,6 +866,16 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     }
     for(auto& [id,source]:impl_->tracks) {
         (void)id;source->owner=impl_;
+        auto& ranges = source->monitorRanges;
+        std::sort(ranges.begin(), ranges.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
+        auto merged = ranges.begin();
+        for (const auto range : ranges) {
+            if (merged == ranges.begin() || (merged - 1)->end < range.start)
+                *merged++ = range;
+            else
+                (merged - 1)->end = std::max((merged - 1)->end, range.end);
+        }
+        ranges.erase(merged, ranges.end());
         std::stable_sort(source->notes.begin(),source->notes.end(),[](const auto& a,const auto& b){return a.on<b.on;});
         for(std::size_t i=0;i<source->notes.size();++i) {
             source->events.push_back({source->notes[i].on,i,true});source->events.push_back({source->notes[i].off,i,false});
@@ -857,5 +898,17 @@ std::uint64_t MidiClips::droppedControllers() const noexcept {
     return count;
 }
 std::vector<Node*> MidiClips::sourcesFor(std::int64_t id){const auto i=impl_->tracks.find(id);return i==impl_->tracks.end()?std::vector<Node*>{}:std::vector<Node*>{i->second.get()};}
+std::span<const MidiMonitorRange> MidiClips::monitorRanges(std::int64_t track) const noexcept {
+    if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
+        return source->second->monitorRanges;
+    return {};
+}
+MidiNoteActivity MidiClips::noteActivity(std::int64_t track) const noexcept {
+    const auto source = impl_->tracks.find(track);
+    if (source == impl_->tracks.end() || !source->second->meterNotes)
+        return {};
+    const auto reading = source->second->state->noteActivity.load(std::memory_order_relaxed);
+    return {static_cast<std::uint32_t>(reading >> 1), (reading & 1u) != 0};
+}
 const std::vector<std::string>& MidiClips::problems() const noexcept{return impl_->problems;}
 }

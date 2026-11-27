@@ -346,6 +346,7 @@ add_library(adi_core STATIC
     src/adi/ops_catalog.cpp
     src/adi/note_flags_ops.cpp
     src/adi/device_copy.cpp
+    src/adi/device_presets.cpp
     src/adi/builtin_catalog.cpp
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
@@ -1092,6 +1093,10 @@ add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)
 add_executable(adi_device_copy_tests tests/test_device_copy.cpp)
 target_link_libraries(adi_device_copy_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_copy_tests COMMAND adi_device_copy_tests)
+
+add_executable(adi_device_presets_tests tests/test_device_presets.cpp)
+target_link_libraries(adi_device_presets_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_presets_tests COMMAND adi_device_presets_tests)
 
 add_executable(adi_sample_slots_tests tests/test_sample_slots.cpp)
 target_link_libraries(adi_sample_slots_tests PRIVATE adi_core adi_warnings)

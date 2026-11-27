@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/media/peaks.hpp"
 #include "adi/ops.hpp"
 #include "juce/pd_samples.hpp"
 #include <span>
 namespace adi::device {
+inline constexpr char kPresetSampleStateHint[] = "adi.device-preset/embedded-sample";
 inline constexpr std::size_t builtinSampleMaxFrames=8u*1024u*1024u;
 /// Whether a source of this many frames and channels fits a built-in's sample
 /// state: its float backup holds at most builtinSampleMaxFrames values, which
@@ -23,5 +25,7 @@ struct BuiltinSampleInfo {
 [[nodiscard]] Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,
     const std::filesystem::path& source,const std::filesystem::path& playable,double rate);
 [[nodiscard]] BuiltinSampleInfo inspectBuiltinSample(const Payload&);
+// Preview the original-rate backup in a portable, fileless sample preset off the owner thread.
+[[nodiscard]] media::PeakResult buildBuiltinSamplePeaks(const Payload&, std::stop_token);
 [[nodiscard]] std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload&,double rate);
 }
