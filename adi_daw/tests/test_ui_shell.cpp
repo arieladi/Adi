@@ -2723,7 +2723,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     {
         auto &geometry = root.arrangement.geometry;
         const auto originalHeights = geometry.heights;
+        const int originalHeight = root.getHeight();
         const bool restoreInOut = root.state().inOut;
+        // Keep the Arrangement foot visible while the separate Mixer View is 440 pixels high.
+        root.setSize(root.getWidth(), 1200);
         if (restoreInOut)
             check(root.command(AppCommands::ToggleInOut), "SC-273: hide Arrangement In/Out");
         geometry.resizeTrack(7, 24);
@@ -2803,6 +2806,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         }
         check(undoHead() == beforeCue, "SC-273: changing Cue Out and Cue Volume leaves Undo history intact");
         geometry.heights = originalHeights;
+        root.setSize(root.getWidth(), originalHeight);
         if (restoreInOut)
             check(root.command(AppCommands::ToggleInOut), "SC-273: restore Arrangement In/Out");
         root.mark(DirtySet::All);
