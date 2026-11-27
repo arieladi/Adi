@@ -214,6 +214,37 @@ void testBetweenBinsIsScallopingLoss() {
     }
 }
 
+void testReferenceWindows() {
+    section("Max reference -- coherent calibration and scalloping across windows");
+    struct WindowCase { Window window; double gain, scalloping; };
+    constexpr std::array cases{
+        WindowCase{Window::Hann, .50, -1.42},
+        WindowCase{Window::Hamming, .54, -1.75},
+        WindowCase{Window::Blackman, .42, -1.10},
+    };
+    for (const auto &test : cases) {
+        for (const int size : {1024, 2048, 4096, 8192, 16384}) {
+            const auto bin = static_cast<int>(std::lround(1000. * size / 44100.));
+            Spectrum analyser(size, test.window);
+            check(analyser.valid(), "reference FFT size is supported");
+            if (!analyser.valid()) continue;
+            std::vector<float> magnitudes(static_cast<std::size_t>(analyser.bins()));
+            near(coherentGain(test.window, size), test.gain, 1.e-6, "periodic window gain");
+            for (const double level : {0., -18.}) {
+                analyser.analyse(sine(size, bin, std::pow(10., level / 20.)), magnitudes);
+                const auto peak = std::max_element(magnitudes.begin() + 1, magnitudes.end() - 1);
+                check(peak - magnitudes.begin() == bin, "bin-centred sine keeps its frequency");
+                near(toDbfs(*peak), level, .01, "bin-centred sine keeps its dBFS level");
+            }
+            if (size == 4096) {
+                analyser.analyse(sine(size, bin + .5, 1.), magnitudes);
+                near(toDbfs(*std::max_element(magnitudes.begin(), magnitudes.end())),
+                     test.scalloping, .025, "half-bin sine has the reference scalloping loss");
+            }
+        }
+    }
+}
+
 void testDcAndNyquist() {
     section("ADR-0195 d5 -- DC and Nyquist, where the packing bug would hide");
 
@@ -483,6 +514,7 @@ int main() {
     testAgainstTheDefinition();
     testFullScaleSineIsZeroDbfs();
     testBetweenBinsIsScallopingLoss();
+    testReferenceWindows();
     testDcAndNyquist();
     testTheWindow();
     testRefusals();
