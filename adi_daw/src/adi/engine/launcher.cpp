@@ -580,7 +580,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (sink.section) sink.section(sink.context, {track.id,track.run.clip,track.run.sourceTick,
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
-                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame});
+                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,track.run.region.has_value()});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;

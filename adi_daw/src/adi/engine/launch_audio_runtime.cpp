@@ -2,6 +2,7 @@
 #include "adi/engine/launch_audio_runtime.hpp"
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
 #include "adi/engine/transport.hpp"
 
@@ -191,7 +192,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                                void* observerContext,
                                void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
                                void* sceneObserverContext,
-                               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept) noexcept {
+                               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept,
+                               LaunchCaptureBuffer* capture) noexcept {
     for (std::size_t index = 0; index < ranges_.size(); ++index) {
         auto& ranges = ranges_.data()[index];
         ranges.size = 0;
@@ -234,6 +236,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept;
         void* sceneObserverContext;
         void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept;
+        LaunchCaptureBuffer* capture;
         std::int32_t offset = 0;
     };
     if (streamSample < 0 || streamSample > std::numeric_limits<std::int64_t>::max() - frames) {
@@ -242,19 +245,20 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }
     Context context{*this, driver, project_.get(), {}, block, follow, block.incarnation,
         followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer,
-        sceneObserverContext, sceneObserver};
+        sceneObserverContext, sceneObserver, capture};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
-        call.runtime.add(call.driver.gains_, *call.media, section, call.block, call.offset);
+        call.runtime.add(call.driver.gains_, *call.media, section, call.block, call.offset, call.capture);
     }, [](void* state, const LaunchTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         const auto& before = call.runtime.beforeClock_;
         const auto* outgoing = before && edge.sample == call.runtime.clockSample_ ? before.get() : call.media;
         call.runtime.fadeOut(call.driver, *outgoing, edge, call.offset + edge.offset, call.frames);
-        if (call.observer) {
+        if (call.capture || call.observer) {
             auto logicalEdge = edge;
             logicalEdge.offset += call.offset;
-            call.observer(call.observerContext, logicalEdge, call.streamSample + logicalEdge.offset);
+            if (call.capture) (void)call.capture->append(logicalEdge);
+            if (call.observer) call.observer(call.observerContext, logicalEdge, call.streamSample + logicalEdge.offset);
         }
     }, [](void* state, const LaunchTransition& edge) noexcept -> std::optional<LaunchFollowRequest> {
         const auto& call = *static_cast<const Context*>(state);
@@ -353,8 +357,11 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
 }
 
 void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProject& media, const LaunchSection& section,
-                             const LaunchBlock& block, std::int32_t base) noexcept {
+                             const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
     const auto gain = gains.range(block, section);
+    if (capture && section.clip != 0 && (section.regionIsLiveEdit ||
+        (gain.beforeFrames > 0 && gain.before != 1.0f) ||
+        (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
     if (section.arrangement || section.frames <= 0 || tracks_.empty())
         return;
     const auto* ids = tracks_.data();

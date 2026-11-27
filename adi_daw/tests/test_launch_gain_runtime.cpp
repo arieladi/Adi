@@ -4,6 +4,7 @@
 
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
+#include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_gain_edits.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
@@ -45,6 +46,8 @@ struct Fixture {
     std::int64_t sample = 0;
     std::uint64_t run = 0;
     std::size_t transitions = 0;
+    std::array<LaunchTransition, 4> captureStorage{};
+    LaunchCaptureBuffer capture{captureStorage};
 
     explicit Fixture(bool varying = false) {
         StoreError error{};
@@ -86,6 +89,7 @@ struct Fixture {
         io.frames = size;
         io.streamTimeSamples = sample;
         auto block = session.beginRender();
+        block.observeLaunchCapture(capture);
         block.observeLaunchTransitions(this, [](void* context, const LaunchTransition& transition,
                                                 std::int64_t) noexcept {
             auto& fixture = *static_cast<Fixture*>(context);
@@ -126,6 +130,8 @@ void verify(ClipUpdateRate rate, std::int64_t boundary) {
     require(fixture.session.postLaunchClipGainEdit(edit), "pass the stale run stamp through the bounded mailbox");
     fixture.block(maximumFrames, boundary);
     require(fixture.transitions == 1, "gain delivery preserves run identity with no synthetic retrigger");
+    require(planLaunchCapture(fixture.capture, {0, 0}, {fixture.sample, textproj::kPPQ}, {}).error ==
+        LaunchCaptureError::SourceEdited, "capture rejects a live gain revision instead of writing different audio");
 }
 
 void verifyRegion(ClipUpdateRate rate, std::int64_t boundary) {
@@ -150,6 +156,8 @@ void verifyRegion(ClipUpdateRate rate, std::int64_t boundary) {
     require(fixture.session.setDelayCompensation(false), "keep a revised region through graph replacement");
     fixture.render(maximumFrames, expected);
     require(fixture.transitions == 1, "region revision emits no launch edge or new run");
+    require(planLaunchCapture(fixture.capture, {0, 0}, {fixture.sample, textproj::kPPQ}, {}).error ==
+        LaunchCaptureError::SourceEdited, "capture detects a live loop revision without adding a launch edge");
     std::array<LaunchTrackStatus, 2> rows{};
     LaunchStatusHeader status;
     require(fixture.session.readLaunchStatus(rows, status) && rows.front().run == fixture.run &&

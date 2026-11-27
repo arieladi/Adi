@@ -30,6 +30,8 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
                                     std::span<const LaunchCapturedStart> initial) {
     if (trace.overflowed())
         return {LaunchCaptureError::Overflow, {}};
+    if (trace.sourceEdited())
+        return {LaunchCaptureError::SourceEdited, {}};
     if (begin.sample < 0 || begin.tick < 0 || end.sample <= begin.sample || end.tick < begin.tick)
         return {LaunchCaptureError::InvalidRange, {}};
 

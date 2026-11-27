@@ -12,6 +12,7 @@ namespace adi::engine {
 struct NodeIo;
 class Transport;
 class LaunchFollowPlayer;
+class LaunchCaptureBuffer;
 
 struct LaunchSceneClock {
     std::int64_t scene = 0;
@@ -122,7 +123,8 @@ public:
                void* observerContext,
                void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
                void* sceneObserverContext = nullptr,
-               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr) noexcept;
+               void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
+               LaunchCaptureBuffer* capture = nullptr) noexcept;
     void finish() noexcept { active_ = false; }
     void overlay(std::int64_t track, const NodeIo&) const noexcept;
     [[nodiscard]] std::uint64_t incarnation() const noexcept { return project_->incarnation(); }
@@ -158,7 +160,7 @@ private:
     void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
                  std::int32_t blockFrames) noexcept;
     void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
-             std::int32_t blockOffset) noexcept;
+             std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
     [[nodiscard]] std::uint64_t gainRevision() const noexcept;
 
     std::shared_ptr<const LaunchAudioProject> project_;

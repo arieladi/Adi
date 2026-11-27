@@ -69,6 +69,7 @@ struct LaunchSection {
     // Constant-tempo prepared audio advances from the local anchor in frames.
     // The anchor restarts at launches and wraps, independent of block size.
     std::int64_t sourceAnchorTick = 0, framesSinceSourceAnchor = 0;
+    bool regionIsLiveEdit = false;
 };
 
 struct LaunchTransition {

@@ -7,6 +7,7 @@
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/snapshot.hpp"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <utility>
@@ -234,7 +236,7 @@ const Payload* firstChild(const Payload& image, const char* table) {
 }
 
 struct SourceExtent {
-    std::int64_t end = 0, loopBegin = 0, loopEnd = 0;
+    std::int64_t start = 0, end = 0, loopBegin = 0, loopEnd = 0;
 };
 
 SourceExtent sourceExtent(const Payload& image, const engine::TempoMap& fixed, bool unwarped) {
@@ -252,6 +254,7 @@ SourceExtent sourceExtent(const Payload& image, const engine::TempoMap& fixed, b
     auto end = sourceTick("source_end_ns");
     if (!end && props) end = optionalInt(*props, "end_marker_ticks");
     SourceExtent result;
+    result.start = start;
     result.end = end ? *end : addTicks(start, extent);
     if (start < 0 || result.end <= start)
         throw std::runtime_error("invalid Session start or end marker");
@@ -263,6 +266,63 @@ SourceExtent sourceExtent(const Payload& image, const engine::TempoMap& fixed, b
             throw std::runtime_error("invalid Session loop source markers");
     }
     return result;
+}
+
+void checkHeldExpression(Store& store, const engine::LaunchCapturedSpan& span, const SourceExtent& extent,
+                         const engine::TempoMap& clock, std::uint32_t rate) {
+    const auto refuse = [] { throw std::runtime_error("Session expression capture needs an exact, non-looping held-value run at its authored start"); };
+    if (extent.loopEnd != 0 || span.sourceTick != extent.start) refuse();
+    const auto details = engine::readClipDetails(store, span.clip, true, true);
+    if (!details.clip || !details.clip->notesProblem.empty() || !details.clip->noteExpressions.problems.empty()) refuse();
+
+    // Live Session and Arrangement use different floating point evaluation at
+    // interior samples. Hold values are invariant, but note and knot edges
+    // still have to land on the same side of sample rounding.
+    const auto originSeconds = clock.ticksToSeconds(span.begin.tick);
+    const auto frame = [&](std::int64_t tick) {
+        const auto seconds = clock.ticksToSeconds(tick);
+        const auto launched = std::llround(static_cast<long double>(seconds) * rate);
+        const auto placed = std::llround(std::nextafter((originSeconds + seconds - originSeconds) * rate,
+                                                      std::numeric_limits<double>::infinity()));
+        if (launched != placed) refuse();
+        return launched;
+    };
+
+    const auto sourceEnd = addTicks(extent.start, span.end.tick - span.begin.tick);
+    std::map<std::uint64_t, std::pair<std::int64_t, std::int64_t>> audibleNotes;
+    std::vector<std::pair<std::int64_t, std::int64_t>> audibleSamples;
+    for (const auto& note : details.clip->notes) {
+        if (!note.active || note.startTicks >= sourceEnd) continue;
+        if (note.startTicks < -clockLimit || note.startTicks > clockLimit ||
+            note.durationTicks <= 0 || note.durationTicks > clockLimit) refuse();
+        const auto sourceOff = std::min(sourceEnd, note.startTicks + note.durationTicks);
+        if (sourceOff <= extent.start) continue;
+        if (note.startTicks < extent.start) refuse(); // chased voices need a performed onset receipt
+        const auto on = addTicks(span.begin.tick, note.startTicks - extent.start);
+        const auto off = addTicks(span.begin.tick, sourceOff - extent.start);
+        const auto first = frame(on), last = frame(off);
+        if (last <= first || !audibleNotes.emplace(note.id, std::pair{on, off}).second) refuse();
+        audibleSamples.emplace_back(first, last);
+    }
+    std::sort(audibleSamples.begin(), audibleSamples.end());
+    if (std::adjacent_find(audibleSamples.begin(), audibleSamples.end(), [](const auto& a, const auto& b) {
+            return a.second > b.first;
+        }) != audibleSamples.end()) refuse();
+
+    for (const auto& curve : details.clip->noteExpressions.curves) {
+        const auto note = audibleNotes.find(curve.noteId);
+        if (note == audibleNotes.end()) continue;
+        if (curve.dimension < 0 || static_cast<std::size_t>(curve.dimension) >= kStandardExpressionDimensionCount) refuse();
+        const auto [on, off] = note->second;
+        std::int64_t previousSample = -1;
+        for (const auto& point : curve.points) {
+            if (point.time_ticks < 0 || point.curve != static_cast<std::uint8_t>(Curve::Hold)) refuse();
+            if (point.time_ticks >= off - on) continue;
+            const auto sample = frame(on + point.time_ticks);
+            if (sample <= previousSample) refuse();
+            previousSample = sample;
+        }
+    }
 }
 
 void checkAudioPhase(const engine::LaunchCapturedSpan& span, const SourceExtent& source,
@@ -334,10 +394,10 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
     if (!muted && (!sourceChildren.at("automation_data").empty() ||
                    !sourceChildren.at("automation_segment_ranges").empty()))
         throw std::runtime_error("Session clip envelopes are not present in this performance trace");
-    if (midi && !muted && (!sourceChildren.at("note_expression").empty() ||
+    if (midi && !muted &&
         std::any_of(sourceChildren.at("event_streams").begin(), sourceChildren.at("event_streams").end(),
-            [](const auto& stream) { return stream.at("stream_kind") == "cc"; })))
-        throw std::runtime_error("Session MIDI controller or expression playback is not present in this trace");
+            [](const auto& stream) { return stream.at("stream_kind") == "cc"; }))
+        throw std::runtime_error("Session MIDI controller capture needs exact performed exit values");
     const bool warped = audio && audio->at("warp_enabled") == 1;
     const auto extent = sourceExtent(image, fixed, !midi && !warped);
     if (span.sourceTick < 0 || span.sourceTick >= (extent.loopEnd > 0 ? extent.loopEnd : extent.end))
@@ -345,6 +405,8 @@ Payload arrangeRun(Store& store, const Payload& image, const engine::LaunchCaptu
     if (midi) {
         if (extent.loopEnd <= 0 && span.end.tick - span.begin.tick > extent.end - span.sourceTick)
             throw std::runtime_error("Session MIDI runs past its exactly representable source range");
+        if (!muted && !sourceChildren.at("note_expression").empty())
+            checkHeldExpression(store, span, extent, authored, rate);
     } else if (!muted) {
         checkAudioPhase(span, extent, authored, fixed, rate, warped ? audio : nullptr);
     }
@@ -509,6 +571,8 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         if (audio::onAudioThread || store.readOnly() || !source.data_ ||
             !source.data_->source.sameConnection(appliedSource(store)))
             throw std::runtime_error("Session performance belongs to another open project or driver");
+        if (capture.error == engine::LaunchCaptureError::SourceEdited)
+            throw std::runtime_error("live Session gain or region changed during the performance and needs an exact edit trace");
         if (capture.error != engine::LaunchCaptureError::None || rate < 44100 || rate > 768000)
             throw std::runtime_error("Session performance trace is invalid at this rate");
         Read read(store.db());

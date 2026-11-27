@@ -2275,6 +2275,8 @@ Arrangement ranges displaced by launches and stops. Applied scene tempo and
 meter can be recorded in the same changeset. Authored clock values resume
 outside the capture interval. The journal restores the recorded rows without
 running the launcher again.
+The `RenderBlock::observeLaunchCapture` tape detects performed gain or
+region overrides that require extra placement data before they can replay.
 
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every
