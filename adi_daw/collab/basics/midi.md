@@ -17,6 +17,7 @@
 | SC-54 | `basics/sc-54-note-editor-play` `58eca9c2` | Focused Space uses the Note Editor insert marker or the start of its selected time range. A second press stops playback, including before the first driver block drains. The click-to-Arrangement marker policy is a named constant for R20. Touched Note Editor and shell transport. | Debug /WX app build, shell 3,440/3,440. The editor uses the same three acceptance binaries that passed on the merged SC-60 base. | PR requested |
 | SC-222 | `basics/sc-222-loop-playhead` `8087e671` | The Note Editor draws each loop pass at the source position and uses that position for Follow. A clip prefix plays through once, and the Arrangement playhead keeps song time. Touched Note Editor geometry and shell. | Debug /WX app build, note edits 238/238 and the cumulative SC-223 shell 3,464/3,464. The UI changes use the acceptance binaries that passed 3/3 on SC-60. | PR requested |
 | SC-223 | `basics/sc-223-note-edge-cursors` `27065029` | Notes, stretch handles, loop ends and the Start and End flags show horizontal resize cursors. The loop body shows a hand and the lane divider shows vertical resize. Cursor choices use the editing hit tests. Touched Note Editor input and shell. | Debug /WX app build, private-desktop shell 3,464/3,464, including the cursor and loop playhead traces. Uses the passing SC-60 acceptance build. | PR requested |
+| SC-224 | `basics/sc-224-note-scrub` `8562df7d` | A strip beneath the Note Editor ruler starts playback or seeks while playing. It honors Permanent Scrub Areas and its Shift alternative. Touched Clip View geometry, input and the masked MIDI reference. | Debug /WX app build. The first shell run found the intended reference change. The reviewed reference passed with all 3,474 shell checks. Uses the passing SC-60 acceptance build. | PR requested |
 
 The first six published MIDI branches now form a chain under the revised howto. The SC-53 stack built with Debug warnings as errors. The graph, recording command, MIDI clip, document, and private-desktop shell suites passed, including 3,373 shell checks and 602 MIDI clip checks. Acceptance for those six items ran on the original heads.
 
@@ -25,6 +26,8 @@ SC-60 corrects the SC-50 and SC-10 timing overlap for statically routed takes. A
 The automation queue already has its own report at `origin/basics/automation-log` (`f6bbbd05`). This session proceeds with MIDI wave 2 as directed by the current howto.
 
 Main's newer howto names a single queue branch. The session assignment calls for one pushed branch per item, so this report records each head. Each successive item branch contains the previous item.
+
+The remaining item branches are verified on the Arrangement landing base `9322d7b4`. Win's newer landing report names `de2a5b99`, which includes our SC-220, SC-50 and SC-10 work and the plug-in seat's SC-312 fix. A separate MIDI landing tip is being reconciled against that base.
 
 ## SC-55 virtual MIDI
 
