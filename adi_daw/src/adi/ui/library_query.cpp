@@ -100,16 +100,49 @@ BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing
         auto &scope = places_[place.volumeId];
         scope.ordered.clear();
         scope.contains.assign(listing_.samples.size(), false);
+        scope.folders.clear();
         if (place.root.empty())
             continue;
+        scope.folders.emplace_back();
+        std::unordered_map<std::filesystem::path, std::size_t> folders{{{}, 0}};
+        std::vector<std::string> folderSortKeys(1);
+        const auto folderIndex = [&](auto &&self, const std::filesystem::path &path) -> std::size_t {
+            if (const auto found = folders.find(path); found != folders.end())
+                return found->second;
+            const auto parent = self(self, path.parent_path());
+            const auto index = scope.folders.size();
+            auto name = media::pathUtf8(path.filename());
+            folders.emplace(path, index);
+            folderSortKeys.push_back(folded(name));
+            scope.folders.push_back({path, std::move(name), {}, {}});
+            scope.folders[parent].children.push_back(index);
+            return index;
+        };
+        for (const auto &directory : place.directories)
+            if (!directory.empty() && !directory.has_root_path() && directory != "." && *directory.begin() != "..")
+                folderIndex(folderIndex, directory);
         for (std::size_t i = 0; i < listing_.samples.size(); ++i) {
             const auto relative = listing_.samples[i].path.lexically_relative(place.root);
-            if (!relative.empty() && *relative.begin() != "..") {
+            if (!relative.empty() && relative != "." && *relative.begin() != "..") {
                 scope.ordered.push_back(i);
                 scope.contains[i] = true;
+                const auto parent = folderIndex(folderIndex, relative.parent_path());
+                scope.folders[parent].samples.push_back(i);
             }
         }
+        for (auto &folder : scope.folders)
+            std::sort(folder.children.begin(), folder.children.end(), [&](std::size_t a, std::size_t b) {
+                if (folderSortKeys[a] != folderSortKeys[b])
+                    return folderSortKeys[a] < folderSortKeys[b];
+                return scope.folders[a].name < scope.folders[b].name;
+            });
     }
+}
+
+std::span<const BrowserLibrarySnapshot::Folder> BrowserLibrarySnapshot::folders(const std::string &volume) const noexcept {
+    if (const auto place = places_.find(volume); place != places_.end())
+        return place->second.folders;
+    return {};
 }
 
 void BrowserLibrarySnapshot::appendSamples(const LibraryQuery &query, const std::string *volume,

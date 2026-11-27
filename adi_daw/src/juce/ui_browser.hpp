@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_presets.hpp"
+#include "adi/media/peaks.hpp"
 #include "adi/ui/library_query.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -10,6 +11,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,11 +24,20 @@ class AdiRootComponent;
 // the sidebar (41.22).
 class BrowserList final : public juce::ListBox {
   public:
+    std::function<bool(int, bool)> onFolderArrow;
     std::function<void()> onLeft;
     std::function<bool()> onEscape;
+    std::function<bool(const juce::KeyPress &)> onPreviewKey;
     bool keyPressed(const juce::KeyPress &k) override {
         if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
             return true;
+        if ((k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) && onFolderArrow &&
+            onFolderArrow(getSelectedRow(), k == juce::KeyPress::rightKey))
+            return true;
+        if (onPreviewKey && onPreviewKey(k))
+            return true;
+        if (k.isKeyCode(juce::KeyPress::returnKey) && k.getModifiers().isAnyModifierKeyDown())
+            return false; // Modified Return belongs to commands, not the list's load action.
         if (k == juce::KeyPress::leftKey && onLeft) {
             onLeft();
             return true;
@@ -45,7 +57,8 @@ class BrowserList final : public juce::ListBox {
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
 // (DF-W34); double-click, Enter and drag load through the engine's insert (N57). The other categories say what they wait for.
-class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
+class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient,
+                           public juce::FileDragAndDropTarget, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
     ~BrowserPanel() override {
@@ -55,6 +68,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // With the focus, the up and down arrows move between the sidebar's labels (§41.4.1.6).
     bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override;
@@ -74,12 +90,28 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     const std::vector<Entry> &sidebar() const noexcept { return sidebar_; }
     int selected() const noexcept { return selected_; }
     juce::Rectangle<int> sidebarArea() const noexcept { return sidebarArea_; }
+    // The logical row before clipping to the scrolling sidebar pane.
+    juce::Rectangle<int> sidebarRowBounds(int row) const noexcept;
     juce::Rectangle<int> contentArea() const noexcept { return contentArea_; }
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the
     // search and preview rows, the dark edge.
     static constexpr int kStripWidth = 20, kSidebarWidth = 113, kRowHeight = 19, kBarHeight = 27;
     juce::TextEditor search;
     BrowserList list;
+    class PreviewToggle final : public juce::Button {
+      public:
+        PreviewToggle();
+        void paintButton(juce::Graphics &, bool over, bool down) override;
+    } previewToggle;
+    juce::Rectangle<int> previewArea() const noexcept;
+    juce::Rectangle<int> previewWaveformArea() const noexcept;
+    const LibraryFile *selectedSample() const noexcept;
+    void syncPreviewToggle();
+    bool previewKey(const juce::KeyPress &);
+    bool previewSelected(double fraction = 0.);
+    using PreviewPeaks = std::vector<media::PeakBin>;
+    void setPreviewDisplay(std::shared_ptr<const PreviewPeaks>, std::optional<double> position,
+                           bool canRepeat = false);
     // What the library index holds, from the app's indexing worker: the Places join the sidebar
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
     // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
@@ -89,10 +121,14 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void restoreLabel(settings::AppSettings &);
     // Selects a label, as a click on it does.
     void choose(int);
+    std::function<void()> requestAddFolder;
+    std::function<void(std::span<const std::filesystem::path>)> addFolders;
+    std::function<void(const std::filesystem::path &)> removeFolder;
+    std::function<void(juce::Point<int>, std::function<void()>)> onRemoveFolderMenu;
     void searchAll();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a folder heading, a device or a saved preset.
+    // A row of the list: a sample, a library folder, a heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
@@ -101,6 +137,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         int depth = 0;
         const preset::Entry *savedPreset = nullptr;
         juce::String tooltip{};
+        const BrowserLibrarySnapshot::Folder *folder = nullptr;
+        bool folderOpen = false;
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
@@ -147,6 +185,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
+    void setSidebarScroll(double);
+    void revealSidebarSelection();
+    int sidebarCursor() const noexcept;
+    void sidebarClick(int row, const juce::MouseEvent &);
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     bool cancelHotSwap();
@@ -154,14 +196,28 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::string labelKey(int) const;
     int findLabel(std::string_view) const;
     // The list's rows for the label chosen and the search typed.
-    void refill();
+    void refill(int selectRow = -1);
+    void appendPlaceRows(std::span<const BrowserLibrarySnapshot::Folder>, std::size_t folder, int depth,
+                         const std::set<std::filesystem::path> &open);
+    bool folderArrow(int row, bool right);
+    bool toggleFolder(int row);
+    bool hitFolderDisclosure(int row, int x) const;
     int getNumRows() override;
+    juce::String getNameForRow(int row) override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     juce::String getTooltipForRow(int row) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
-    void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
-    // A folder's heading is never selected: the selection steps past it, the way it was moving.
+    void listBoxItemClicked(int row, const juce::MouseEvent &) override;
+    void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override;
+    // A static heading is never selected: the selection steps past it, the way it was moving.
     void selectedRowsChanged(int lastRowSelected) override;
+    void updatePreviewSelection();
+    void setPreviewRowShown(bool);
+    std::filesystem::path previewSelection_;
+    std::shared_ptr<const PreviewPeaks> previewPeaks_;
+    std::optional<double> previewPosition_;
+    bool previewRowShown_ = false;
+    bool canRepeatPreview_ = false;
     int firstItem() const;
     int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }
@@ -170,6 +226,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::String idleSearch_, swapSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     std::shared_ptr<const BrowserLibrarySnapshot> library_;
+    std::map<std::string, std::set<std::filesystem::path>> openFolders_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;
@@ -188,6 +245,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int selected_ = -1;
     settings::AppSettings *labelSettings_ = nullptr;
     std::string pendingLabel_;
+    double sidebarScroll_ = 0.;
+    bool addFolderFocused_ = false;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };

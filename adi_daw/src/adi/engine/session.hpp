@@ -471,6 +471,9 @@ public:
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
     /// Ephemeral monitoring choice for the live stereo device pair.
     void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
+    // The application owns the single player. Attach before starting the
+    // driver, and keep it alive until the driver has stopped.
+    void setSamplePreview(SamplePreview *player) noexcept { cueMonitor_.setSamplePreview(player); }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }

@@ -3,6 +3,7 @@
 #include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/sample_preview.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -12,6 +13,8 @@
 #include <array>
 #include <algorithm>
 #include <cstdio>
+#include <chrono>
+#include <thread>
 #include <atomic>
 #include <cstdlib>
 #include <new>
@@ -160,6 +163,75 @@ void compensatedAndClick() {
     Fixture click;click.main.value=click.reference.value=0;click.op("cue.setOutput",{{"first",2}});click.op("transport.setMetronome",{{"on",true}});
     check(click.load(),"Cue metronome fixture loads");click.session.transport().play();click.process(b);
     check(std::all_of(b.wide[0].begin(),b.wide[0].end(),[](double v){return v==0;}) && std::any_of(b.wide[2].begin(),b.wide[2].end(),[](double v){return std::abs(v)>0.01;}),"metronome follows Cue Out and leaves Main untouched");
+}
+void samplePreview() {
+    SamplePreview preview;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    f.session.setSamplePreview(&preview);
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("cue.setVolume", {{"db", -6.020599913279624}}) && f.load(),
+          "sample preview uses the song's Cue Out and Cue Volume");
+    const auto source = f.temp.path() / "audition.wav";
+    std::array<float, 8192> pcm;
+    for (std::size_t i = 0; i < pcm.size(); i += 2) {
+        pcm[i] = .5f;
+        pcm[i + 1] = -.25f;
+    }
+    audio::WavWriter writer(source, 48000, 2, audio::WavFormat::Float32);
+    writer.write(pcm.data(), static_cast<std::uint32_t>(pcm.size() / 2));
+    writer.close();
+
+    Block block;
+    std::array<float, 512> input;
+    input.fill(.125f);
+    const float* inputs[]{input.data()};
+    block.io.in = inputs;
+    block.io.numIn = 1;
+    auto process = [&] {
+        f.process(block);
+        block.io.streamTimeSamples += block.io.frames;
+    };
+    process();
+    std::string why;
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    check(f.session.startRecording(take, why), "start a concurrent audio take");
+    f.session.transport().play();
+    preview.play(source);
+    using namespace std::chrono_literals;
+    const auto waitUntil = [](auto ready) {
+        const auto end = std::chrono::steady_clock::now() + 5s;
+        do {
+            if (ready())
+                return true;
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < end);
+        return false;
+    };
+    const auto heard = waitUntil([&] {
+        process();
+        return near(block.wide[2].back(), .25) && near(block.wide[3].back(), -.125);
+    });
+    check(heard && block.wide[0].back() == 0 && block.wide[1].back() == 0,
+          "sample preview plays at half gain on Cue 3/4 and is silent on Main 1/2");
+    f.session.recording().stop();
+    process();
+    std::optional<AudioRecordingResult> result;
+    check(waitUntil([&] {
+        result = f.session.recording().poll();
+        return result.has_value();
+    }) && result->hasAttachableAudio() && result->tracks.size() == 1,
+          "finish and inspect the concurrent take");
+    if (result && result->hasAttachableAudio() && result->tracks.size() == 1) {
+        audio::WavReader reader(result->tracks.front().file);
+        std::vector<float> recorded(static_cast<std::size_t>(reader.frames()));
+        check(reader.frames() > 0 && reader.read(recorded.data(), static_cast<std::uint32_t>(recorded.size())) == recorded.size() &&
+                  std::all_of(recorded.begin(), recorded.end(), [](float sample) { return sample == .125f; }),
+              "the take contains the input samples only while audition is audible");
+    }
 }
 void metronomeOptions() {
     Fixture f;
@@ -582,5 +654,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();metronomeOptions();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

@@ -27,6 +27,7 @@
 #include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/export_preferences.hpp"
 #include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/library_folder_settings.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -3523,6 +3524,63 @@ void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
 
+void browserSidebarScroll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-sidebar.adi", true, {}, error);
+    check(document != nullptr, "SC-124: a project for the Browser sidebar");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "browser-sidebar");
+    auto &browser = root->browser;
+    browser.setSize(308, 443); // The Browser column in a 1200×720 Compact window with Info shown.
+    const auto viewport = browser.sidebarArea();
+    const auto scroll = [&](float delta) {
+        juce::MouseWheelDetails wheel{};
+        wheel.deltaY = delta;
+        browser.mouseWheelMove(pressAt(browser, viewport.getCentre().toFloat()), wheel);
+    };
+    const auto last = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
+    check(browser.sidebar().back().name == "Add Folder..." && !viewport.contains(browser.sidebarRowBounds(last())),
+          "SC-124: the default viewport initially crops Add Folder");
+    scroll(-10.f);
+    check(viewport.contains(browser.sidebarRowBounds(last())) &&
+              browser.sidebarRowBounds(last()).getBottom() == viewport.getBottom(),
+          "SC-124: the wheel scrolls the entire Add Folder row into view");
+
+    LibraryListing listing;
+    for (int i = 0; i < 32; ++i) {
+        const auto name = "Folder " + std::to_string(i + 1);
+        listing.places.push_back({name, dir / name, "test-volume-" + std::to_string(i + 1)});
+    }
+    browser.setListing(listing);
+    scroll(-10.f);
+    const int finalPlace = last() - 1;
+    const auto row = browser.sidebarRowBounds(finalPlace);
+    check(viewport.contains(row) && viewport.contains(browser.sidebarRowBounds(last())),
+          "SC-124: added folders are reachable all the way to the bottom of the sidebar");
+    browser.mouseDown(pressAt(browser, row.getCentre().toFloat()));
+    check(browser.selected() == finalPlace &&
+              browser.sidebar()[static_cast<std::size_t>(browser.selected())].place == "test-volume-32" &&
+              renderedPixel(browser, {row.getRight() - 2, row.getY() + 1}) == look::selection,
+          "SC-124: a click selects and paints the visible folder after scrolling");
+    scroll(10.f);
+    check(browser.selected() == finalPlace && !viewport.intersects(browser.sidebarRowBounds(finalPlace)),
+          "SC-124: the wheel scrolls without changing the active label");
+    check(browser.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && browser.selected() == finalPlace - 1 &&
+              viewport.contains(browser.sidebarRowBounds(finalPlace - 1)),
+          "SC-124: keyboard navigation reveals the newly selected label");
+    const auto selectedBounds = browser.sidebarRowBounds(finalPlace - 1);
+    browser.setListing(std::move(listing));
+    check(browser.selected() == finalPlace - 1 && browser.sidebarRowBounds(finalPlace - 1) == selectedBounds,
+          "SC-124: a library refresh preserves the same visible selection");
+    browser.setListing({});
+    const int scrollPosition = viewport.getY() + 1 - browser.sidebarRowBounds(0).getY();
+    const int remainingScroll = 1 + (last() + 1) * BrowserPanel::kRowHeight - viewport.getHeight();
+    check(scrollPosition >= 0 && scrollPosition <= std::max(0, remainingScroll) &&
+              viewport.contains(browser.sidebarRowBounds(browser.selected())),
+          "SC-124: removing folders clamps the sidebar to its shorter extent");
+}
 void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
     std::string why;
     const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
@@ -3571,6 +3629,139 @@ void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) 
               root.command(AppCommands::ToggleBrowser) && edge.isVisible() && savedWidth() == width() &&
               !History(document->store()).head(),
           "the edge follows Browser visibility and width changes do not enter Undo History");
+}
+void browserPreview(const std::filesystem::path &dir) {
+    const auto settingsFile = dir / "browser-preview-settings.json";
+    settings::AppSettings settings(appdata::App::Daw, settingsFile);
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-preview.adi", true, {}, error);
+    check(document != nullptr, "SC-123: a project for Browser preview");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "browser-preview");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    browser.setSize(256, 320);
+    using Audition = std::pair<std::filesystem::path, double>;
+    std::vector<Audition> auditions;
+    std::filesystem::path inspected;
+    int stopped = 0;
+    root.selectSamplePreview = [&](std::filesystem::path path) { inspected = std::move(path); };
+    const auto playSample = [&](std::filesystem::path path, double fraction) {
+        auditions.emplace_back(std::move(path), fraction);
+    };
+    root.stopSamplePreview = [&] { ++stopped; };
+    const auto kick = dir / "Kick.wav";
+    const auto snare = dir / "Snare.flac";
+    LibraryListing listing;
+    listing.samples = {{"Kick.wav", kick, {}}, {"Snare.flac", snare, {}}};
+    browser.setListing(std::move(listing));
+    for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
+        if (browser.sidebar()[i].samples) {
+            browser.choose(static_cast<int>(i));
+            break;
+        }
+    check(browser.rows().size() == 2 && AppCommands::commandFor("browser.toggle-preview") == AppCommands::ToggleBrowserPreview &&
+              AppCommands::commandFor("browser.preview-selected") == AppCommands::PreviewSelected,
+          "SC-123: both preview commands have stable identifiers");
+    if (browser.rows().size() != 2)
+        return;
+    const int expanded = browser.list.getHeight();
+    check(browser.previewArea().isEmpty() && !browser.previewToggle.isVisible(),
+          "SC-429: even the Samples label starts with the whole list visible");
+    browser.list.selectRow(0);
+    check(browser.previewArea().isEmpty() && browser.list.getHeight() == expanded,
+          "SC-429: a sample selection cannot show a preview row before a player exists");
+    browser.list.deselectAllRows();
+    root.playSamplePreview = playSample;
+    check(root.command(AppCommands::ToggleBrowserPreview) && commands.browserPreviewEnabled() &&
+              browser.previewArea().isEmpty() && root.command(AppCommands::ToggleBrowserPreview),
+          "SC-429: the Preview command works before the row is shown");
+    stopped = 0;
+    browser.list.selectRow(0);
+    check(inspected == kick && auditions.empty() && !browser.previewToggle.getToggleState(),
+          "SC-123: selection requests peaks without auditioning while Preview is off");
+    const auto reserved = browser.previewArea();
+    check(!reserved.isEmpty() && browser.previewToggle.isVisible() &&
+              browser.list.getHeight() == expanded - BrowserPanel::kBarHeight,
+          "SC-429: the first eligible selection reserves the preview row");
+    browser.list.selectRow(1);
+    browser.list.deselectAllRows();
+    check(browser.previewArea() == reserved && browser.list.getHeight() == expanded - BrowserPanel::kBarHeight,
+          "SC-429: moving or clearing the selection keeps the current list's height");
+    browser.list.selectRow(0);
+    const auto right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto shiftedEnter = juce::KeyPress(juce::KeyPress::returnKey, juce::ModifierKeys::shiftModifier, 0);
+    check(!commands.key(right, root) && !browser.list.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)) &&
+              browser.list.keyPressed(right) && browser.list.keyPressed(shiftedEnter) &&
+              auditions == std::vector<Audition>{{kick, 0.}, {kick, 0.}},
+          "SC-123: Right and Shift+Enter audition from the list, and Space and the Arrangement's Right do not");
+    auto *keys = commands.manager.getKeyMappings();
+    const auto reassigned = juce::KeyPress(juce::KeyPress::F7Key);
+    keys->clearAllKeyPresses(AppCommands::PreviewSelected);
+    keys->addKeyPress(AppCommands::PreviewSelected, reassigned);
+    check(!browser.list.keyPressed(right) && browser.list.keyPressed(reassigned) && auditions.size() == 3,
+          "SC-123: the audition keys follow the user's command binding");
+
+    const auto wave = browser.previewWaveformArea();
+    const int seekX = wave.getCentreX();
+    browser.mouseDown(pressAt(browser, {static_cast<float>(seekX), static_cast<float>(wave.getCentreY())}));
+    check(auditions.size() == 3, "SC-123: an empty waveform area cannot seek");
+    browser.setPreviewDisplay(std::make_shared<const BrowserPanel::PreviewPeaks>(
+                                  BrowserPanel::PreviewPeaks{{-.8f, .8f}, {-.5f, .5f}}), .5);
+    juce::Image image(juce::Image::ARGB, browser.getWidth(), browser.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        browser.paintEntireComponent(g, true);
+    }
+    const int cursorX = wave.getX() + juce::roundToInt(.5 * (wave.getWidth() - 1));
+    check(browser.previewArea() == juce::Rectangle<int>(24, 295, 228, 21) &&
+              browser.previewToggle.getBounds() == juce::Rectangle<int>(24, 295, 26, 21) &&
+              wave == juce::Rectangle<int>(54, 298, 194, 15) &&
+              image.getPixelAt(cursorX, wave.getY()) == look::accent,
+          "SC-123: the waveform and cursor draw in the existing Compact preview row");
+    browser.mouseDown(pressAt(browser, {static_cast<float>(seekX), static_cast<float>(wave.getCentreY())}));
+    check(auditions.size() == 4 && auditions.back() == Audition{kick, static_cast<double>(seekX - wave.getX()) /
+                                                                       (wave.getWidth() - 1)},
+          "SC-123: a waveform click auditions from the corresponding fraction");
+
+    browser.previewToggle.onClick();
+    settings::AppSettings reopened(appdata::App::Daw, settingsFile);
+    check(browser.previewToggle.getToggleState() && reopened.get(settings::kBrowserPreviewEnabledKey) == true &&
+              auditions.size() == 4,
+          "SC-123: the switch is application-wide and enabling it waits for the next selection");
+    check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+              browser.list.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+              auditions == std::vector<Audition>{{kick, 0.}, {kick, 0.}, {kick, 0.},
+                  {kick, static_cast<double>(seekX - wave.getX()) / (wave.getWidth() - 1)}, {snare, 0.}, {kick, 0.}},
+          "SC-123: both arrows audition the newly selected sample while Preview is on");
+    check(root.command(AppCommands::ToggleBrowserPreview) && !browser.previewToggle.getToggleState() && stopped == 1 &&
+              !History(document->store()).head(),
+          "SC-123: the switch command stops audition outside the project's history");
+
+    keys->addKeyPress(AppCommands::PreviewSelected, right);
+    const auto place = dir / "Preview Place";
+    const auto nested = place / "Drums" / "Kick.wav";
+    LibraryListing folders;
+    folders.places = {{"Preview Place", place, "preview-test"}};
+    folders.samples = {{"Kick.wav", nested, "preview-test"}};
+    browser.setListing(std::move(folders));
+    const auto label = std::ranges::find(browser.sidebar(), "preview-test", &BrowserPanel::Entry::place);
+    check(label != browser.sidebar().end(), "SC-123: a Place for the folder and audition key regression");
+    if (label == browser.sidebar().end())
+        return;
+    browser.choose(static_cast<int>(label - browser.sidebar().begin()));
+    browser.list.selectRow(0);
+    check(browser.previewArea().isEmpty() && browser.list.getHeight() == expanded,
+          "SC-429: a new list starts expanded and selecting a folder keeps the preview hidden");
+    check(browser.list.keyPressed(right) && browser.rows().size() == 2 && browser.rows()[0].folderOpen &&
+              browser.list.getSelectedRow() == 0 && auditions.size() == 6 && !browser.list.keyPressed(shiftedEnter),
+          "SC-123: Right opens a folder first and modified Return does not load it");
+    check(browser.list.keyPressed(right) && browser.list.getSelectedRow() == 1 && auditions.size() == 6 &&
+              browser.list.keyPressed(right) && auditions.back() == Audition{nested, 0.} && auditions.size() == 7,
+          "SC-123: Right enters an open folder, then auditions the selected child sample");
 }
 // D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
 // Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
@@ -6493,7 +6684,18 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(clipsOn(1) == clipsBeforeLoad, "Undo restores the audio track before the drop fixtures");
         browser.choose(user);
-        check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
+        const auto drumsFolder = std::ranges::find_if(browser.rows(), [](const auto &browserRow) {
+            return browserRow.folder != nullptr && browserRow.folder->name == "Drums";
+        });
+        check(drumsFolder != browser.rows().end() && browser.shown().size() == 1 &&
+                  std::ranges::any_of(browser.rows(), [](const auto &browserRow) {
+                      return browserRow.folder != nullptr && browserRow.folder->name == "Clips";
+                  }),
+              "the User Library lists root files, empty folders and collapsed sample folders from disk");
+        if (drumsFolder == browser.rows().end())
+            return;
+        check(browser.load(static_cast<int>(drumsFolder - browser.rows().begin())) && browser.shown().size() == 2,
+              "opening Drums shows Clap.wav beside the User Library's top-level file");
         browser.choose(addedSamples);
         check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
               "an addedFolder folder named Samples is a Place of its own, listing its one file");
@@ -6527,7 +6729,11 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         browser.search.setText({}, false);
         browser.search.onTextChange();
         // Dragged onto Drums at bar 5: the audio drop, one clip, one step.
-        const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
+        const auto clap = std::ranges::find_if(browser.shown(), [](const auto *file) { return file->name == "Clap.wav"; });
+        check(clap != browser.shown().end(), "clearing the search restores the open Drums folder and its sample");
+        if (clap == browser.shown().end())
+            return;
+        const auto drag = BrowserPanel::dragDescription({*clap});
         const auto bar5 = 4 * textproj::kWhole;
         const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
         const auto samplePaths = BrowserPanel::droppedFiles(drag);
@@ -6713,6 +6919,219 @@ void browserSearchAll(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.search.getText() == "reverb" && browser.shown().size() == 1,
           "SC-120: the two modes keep separate text and results");
 }
+void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto base = dir / "places-test";
+    const auto user = base / "User Library", chosen = base / "picker" / "Drums", dropped = base / "drag" / "Drums";
+    for (const auto &folder : {user, chosen, dropped}) fs::create_directories(folder);
+    fs::create_directory(dropped / "Empty");
+    // Listing is based on media type and metadata. Nothing auditions these files.
+    std::ofstream(user / "Kick.wav") << "user";
+    std::ofstream(chosen / "Clap.wav") << "chooser";
+    std::ofstream(dropped / "Rim.wav") << "drag";
+    std::string error;
+    auto index = library::Index::open(base / "index.sqlite", error, false);
+    auto doc = ProjectDocument::open(base / "places.adi", true, {}, error);
+    check(index && doc, "SC-125: create a project and a library index for Places");
+    if (!index || !doc) return;
+    auto root = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                                                  doc->sessionState(), "places");
+    root->setSize(1200, 1000);
+    auto &browser = root->browser;
+    struct Volumes final : library::VolumeIdentityProvider {
+        fs::path readOnly;
+        library::MarkerVolumeProvider markers;
+        bool identify(const fs::path &path, library::Volume &volume, std::string &why) override {
+            if (path == readOnly) {
+                why = "The volume probe cannot be written.";
+                return false;
+            }
+            return markers.identify(path, volume, why);
+        }
+    } volumes;
+    volumes.readOnly = dropped;
+    settings::AppSettings prefs(appdata::App::Daw, base / "places-settings.json");
+    browser.restoreLabel(prefs);
+    const auto publish = [&] {
+        std::vector<LibraryFolder> folders{{"User Library", user, true}};
+        const auto configured = prefs.get(kContentFolders);
+        for (const auto &stored : configured) {
+            const auto path = media::pathFromUtf8(stored.get<std::string>());
+            folders.push_back({media::pathUtf8(path.filename()), path});
+        }
+        browser.setListing(scanLibrary(*index, folders, volumes));
+    };
+    const auto apply = [&](std::span<const fs::path> paths, ContentFolderEdit edit) {
+        const auto old = prefs.get(kContentFolders);
+        const auto changed = editContentFolders(old, paths, edit);
+        if (old == changed) return;
+        check(prefs.set(kContentFolders, changed, {settings::Actor::User, {}, 1}, error) && prefs.save(error),
+              "SC-125: a Places edit persists in Content folders");
+        publish();
+    };
+    int pickerRequests = 0;
+    browser.requestAddFolder = [&] {
+        ++pickerRequests;
+        apply(std::span{&chosen, 1}, ContentFolderEdit::Add);
+    };
+    browser.addFolders = [&](std::span<const fs::path> paths) { apply(paths, ContentFolderEdit::Add); };
+    browser.removeFolder = [&](const fs::path &path) { apply(std::span{&path, 1}, ContentFolderEdit::Remove); };
+    publish();
+    const auto pointFor = [&](int row) {
+        return browser.sidebarRowBounds(row).getCentre().toFloat();
+    };
+    const auto addon = [&] { return static_cast<int>(browser.sidebar().size()) - 1; };
+    const auto oldSelection = browser.selected();
+    const auto oldLabel = prefs.get("browser.lastLabel");
+    browser.mouseDown(pressAt(browser, pointFor(addon())));
+    check(pickerRequests == 1 && browser.listing().places.size() == 2 && browser.selected() == oldSelection &&
+              prefs.get("browser.lastLabel") == oldLabel,
+          "SC-125: the last Places row opens Add Folder and keeps the current category");
+    browser.choose(addon() - 1);
+    const auto chosenLabel = prefs.get("browser.lastLabel");
+    check(browser.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && pickerRequests == 1 &&
+              browser.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && pickerRequests == 2 &&
+              prefs.get(kContentFolders).size() == 1 && prefs.get("browser.lastLabel") == chosenLabel,
+          "SC-125: arrow keys focus Add Folder, Enter opens it, and choosing the same folder is a no-op");
+    const auto asText = [](const fs::path &path) { return juce::String::fromUTF8(media::pathUtf8(path).c_str()); };
+    const juce::StringArray mixed{asText(chosen / "Clap.wav"), asText(dropped), asText(chosen)};
+    check(!browser.isInterestedInFileDrag({asText(chosen / "Clap.wav")}) && browser.isInterestedInFileDrag(mixed),
+          "SC-125: browser drag accepts directories and leaves ordinary audio files alone");
+    browser.filesDropped(mixed, 12, 45);
+    check(prefs.get(kContentFolders).size() == 2 && browser.listing().places.size() == 3 &&
+              fs::exists(user / ".adi-volume-id") && fs::exists(chosen / ".adi-volume-id") &&
+              !fs::exists(dropped / ".adi-volume-id") && browser.listing().error.empty(),
+          "SC-132: a folder without marker-write permission joins Places without manufacturing a volume marker");
+    const auto &places = browser.listing().places;
+    const auto placeRow = [&](const std::string &key) {
+        const auto it = std::ranges::find(browser.sidebar(), key, &BrowserPanel::Entry::place);
+        return static_cast<int>(it - browser.sidebar().begin());
+    };
+    if (places.size() != 3) return;
+    const int userRow = placeRow(places[0].volumeId), dropRow = placeRow(places[2].volumeId);
+    check(browser.sidebarArea().contains(browser.sidebarRowBounds(addon())) &&
+              browser.sidebarRowBounds(dropRow).getWidth() == BrowserPanel::kSidebarWidth &&
+              browser.sidebarRowBounds(dropRow).getHeight() == BrowserPanel::kRowHeight,
+          "SC-125: Add Folder and the new Place use the existing sidebar row dimensions");
+    browser.choose(dropRow);
+    check(browser.shown().size() == 1 && browser.shown().front()->name == "Rim.wav" && browser.rows().size() == 2 &&
+              browser.rows().front().folder != nullptr && browser.rows().front().folder->name == "Empty",
+          "SC-132: a read-only Place lists its sample and its empty folder");
+    browser.search.setText("rim", false);
+    browser.search.onTextChange();
+    check(browser.shown().size() == 1, "SC-132: the read-only sample is searchable");
+    int menuRequests = 0;
+    std::function<void()> remove;
+    browser.onRemoveFolderMenu = [&](juce::Point<int>, std::function<void()> action) {
+        ++menuRequests;
+        remove = std::move(action);
+    };
+    const auto popup = juce::ModifierKeys::rightButtonModifier;
+    browser.mouseDown(pressAt(browser, pointFor(userRow), popup));
+    browser.mouseDown(pressAt(browser, pointFor(dropRow), popup));
+    check(menuRequests == 1 && remove, "SC-125: only configured extra Places offer Remove from Places");
+    if (remove) remove();
+    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({media::pathUtf8(chosen)}) &&
+              fs::is_regular_file(dropped / "Rim.wav"),
+          "SC-125: Remove uses the row’s identity even for equal names and leaves its media on disk");
+
+    const auto synced = base / "synced-copy";
+    fs::create_directory(synced);
+    fs::copy_file(user / ".adi-volume-id", synced / ".adi-volume-id");
+    std::ofstream(synced / "Synced.wav") << "synced";
+    const auto syncedListing = scanLibrary(*index, {{"User Library", user, true}, {"Synced", synced}}, volumes);
+    library::Volume original, copy;
+    check(volumes.identify(user, original, error) && volumes.identify(synced, copy, error) && original.id == copy.id &&
+              syncedListing.places.size() == 2 && syncedListing.places[0].volumeId == original.id &&
+              syncedListing.places[1].volumeId != copy.id && syncedListing.samples.size() == 2,
+          "SC-132: a synced marker keeps its portable identity and both local folders remain browsable");
+}
+void browserSampleFolders(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ProjectDocument::open(dir / "browser-folders.adi", true, {}, error);
+    check(doc != nullptr, "Browser folders: create project");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(), "folders");
+    root.setSize(1440, 900);
+    root.frame();
+    auto &browser = root.browser;
+    auto &list = browser.list;
+    auto &model = *list.getListBoxModel();
+    const auto place = dir / "Sample Pack";
+    const auto drums = place / "Drums" / "Acoustic" / "Clap.wav";
+    const auto loops = place / "Loops" / "Clap.wav";
+    const auto top = place / "Top.wav";
+    LibraryListing listing;
+    listing.places = {{"Sample Pack", place, "pack", false, {}, {"00 Empty"}},
+                      {"Single Drums", place / "Drums", "drums"}};
+    listing.samples = {{"Clap.wav", drums, "pack"}, {"Clap.wav", loops, "pack"}, {"Top.wav", top, "pack"}};
+    browser.setListing(std::move(listing));
+    const auto choose = [&](const char *volume) {
+        const auto entry = std::ranges::find_if(browser.sidebar(), [volume](const auto &e) { return e.place == volume; });
+        if (entry == browser.sidebar().end())
+            return false;
+        browser.choose(static_cast<int>(entry - browser.sidebar().begin()));
+        return true;
+    };
+    const auto folder = [&](std::size_t row, const char *name, int depth, bool expanded = false) {
+        if (row >= browser.rows().size())
+            return false;
+        const auto &item = browser.rows()[row];
+        return item.folder != nullptr && item.folder->name == name && item.depth == depth && item.folderOpen == expanded;
+    };
+    const auto file = [&](std::size_t row, const std::filesystem::path &path, int depth) {
+        if (row >= browser.rows().size())
+            return false;
+        const auto &item = browser.rows()[row];
+        return item.file != nullptr && item.file->path == path && item.depth == depth;
+    };
+    check(choose("pack") && browser.rows().size() == 4 && folder(0, "00 Empty", 0) &&
+              folder(1, "Drums", 0) && folder(2, "Loops", 0) && file(3, top, 0),
+          "SC-126: the empty folder, collapsed folders and top-level sample appear in order");
+    const auto left = juce::KeyPress(juce::KeyPress::leftKey), right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto enter = juce::KeyPress(juce::KeyPress::returnKey);
+    check(browser.keyPressed(right) && list.getSelectedRow() == 0 && model.getNameForRow(0) == "00 Empty, collapsed",
+          "Right enters the list on a selectable folder with an accessible name");
+    model.listBoxItemClicked(0, pressAt(list, {10.f, 9.f}));
+    check(folder(0, "00 Empty", 0, true) && browser.rows().size() == 4,
+          "a single disclosure click opens an empty folder");
+    check(list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && list.getSelectedRow() == 1 &&
+              list.keyPressed(right) && folder(1, "Drums", 0, true) && folder(2, "Acoustic", 1),
+          "Down selects the next folder and Right opens it one level");
+    check(list.keyPressed(right) && list.getSelectedRow() == 2 && list.keyPressed(enter) &&
+              folder(2, "Acoustic", 1, true) && file(3, drums, 2),
+          "Right enters the open folder and Enter opens the selected child");
+    list.selectRow(3);
+    check(list.keyPressed(left) && list.getSelectedRow() == 2 && list.keyPressed(left) &&
+              folder(2, "Acoustic", 1) && !file(3, drums, 2),
+          "Left goes to the parent and closes it on the next press");
+    check(list.keyPressed(enter) && file(3, drums, 2), "Enter reopens the same folder");
+    model.listBoxItemDoubleClicked(4, pressAt(list, {38.f, 9.f}));
+    check(folder(4, "Loops", 0, true) && file(5, loops, 1) && file(6, top, 0),
+          "double-clicking a folder name reveals its own sample with the same filename");
+    juce::SparseSet<int> dragged;
+    dragged.addRange({1, 3});
+    check(model.getDragSourceDescription(dragged).isVoid(), "folders have no sample drag payload");
+    dragged.addRange({3, 4});
+    dragged.addRange({5, 6});
+    check(BrowserPanel::droppedFiles(model.getDragSourceDescription(dragged)) ==
+              BrowserPanel::droppedFiles(BrowserPanel::dragDescription({&browser.listing().samples[0],
+                                                                         &browser.listing().samples[1]})),
+          "a mixed selection drags both sample paths in row order without the folders");
+    browser.search.setText("clap", false);
+    browser.search.onTextChange();
+    check(browser.rows().size() == 2 && file(0, drums, 0) && file(1, loops, 0) &&
+              model.getTooltipForRow(0) != model.getTooltipForRow(1),
+          "search still returns plain rows for each match and their tooltips identify the original paths");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
+    check(folder(2, "Acoustic", 1, true) && file(3, drums, 2) && file(5, loops, 1),
+          "clearing search brings back the open folders");
+    check(choose("drums") && browser.rows().size() == 1 && folder(0, "Acoustic", 0) &&
+              browser.load(0) && file(1, drums, 1),
+          "an overlapping Place has its own folder tree and browses the shared sample");
+}
 void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
@@ -6795,8 +7214,9 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         return row < browser.shown().size() && browser.shown()[row]->name == name;
     };
     browser.choose(user);
-    check(browser.shown().size() == sampleCount - 1 && matches(0, "Take 1000000.wav"),
-          "Browser search: blank User Library includes descendants and excludes the neighboring Place");
+    check(browser.shown().empty() && browser.rows().size() == 2 && browser.rows()[0].folder != nullptr &&
+              browser.rows()[1].folder != nullptr,
+          "Browser search: blank User Library browses collapsed folders before a query finds their files");
     constexpr std::array queries{"Q", "QX", "QXY", "QXY 100000"};
     constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3, 1};
     constexpr std::size_t trials = 7;
@@ -23162,8 +23582,10 @@ int main(int argc, char **argv) {
                       C::ArrangementRecordAlternate == C::SwitchDetailView + 1 &&
                       C::ComputerMidiKeyboard == C::ArrangementRecordAlternate + 1 &&
                       C::ImportMidiFile == C::ComputerMidiKeyboard + 1 && C::ExportMidiClip == C::ImportMidiFile + 1 &&
-                      C::About == C::ExportMidiClip + 1 && C::ManageProjectFiles == C::ImportAudioFile + 1 &&
-                      C::LastId == C::ManageProjectFiles,
+                      C::About == C::ExportMidiClip + 1 && C::ImportAudioFile == C::About + 1 &&
+                      C::ToggleBrowserPreview == C::ImportAudioFile + 1 &&
+                      C::PreviewSelected == C::ToggleBrowserPreview + 1 &&
+                      C::ManageProjectFiles == C::PreviewSelected + 1 && C::LastId == C::ManageProjectFiles,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -25754,9 +26176,13 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
+    trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
+    trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
+    trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
+    trace("browserSidebarScroll", [&] { browserSidebarScroll(commands, temp.path()); });
     trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });

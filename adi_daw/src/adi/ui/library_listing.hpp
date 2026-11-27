@@ -22,8 +22,10 @@ namespace adi::ui {
 struct LibraryPlace {
     std::string name;
     std::filesystem::path root;
-    std::string volumeId;      // what tells two places apart: their names may match
+    std::string volumeId;      // the indexed volume ID, or a listing-only identity for an unindexed Place
     bool userLibrary = false;  // the User Library's, which Live's own Places label shows
+    std::string problem{};
+    std::vector<std::filesystem::path> directories{}; // relative paths, including empty folders
 };
 struct LibraryFile {
     std::string name;            // the file's name, as Live's list shows it
@@ -82,15 +84,32 @@ inline bool isAudioFile(const std::filesystem::path &path) {
             return true;
     return false;
 }
-// Registers and scans each folder, then lists the index's present files under them, each file once
-// (a folder inside another lists through the outer one). A folder that cannot be registered or
-// scanned is left out and named in `error`; the others list. A stopped scan ends early, leaving
-// the index's last complete scan of that folder intact.
+// A place without a usable portable marker can still be read on the library worker. Its key only
+// scopes this listing. It is never registered as a volume or used to reuse the index's cached hashes.
+inline std::vector<LibraryFile> readUnindexedPlace(LibraryPlace &place, std::stop_token stop) {
+    namespace fs = std::filesystem;
+    std::vector<LibraryFile> files;
+    std::vector<fs::path> directories;
+    for (fs::recursive_directory_iterator it(place.root), end; it != end && !stop.stop_requested(); ++it) {
+        const auto status = it->symlink_status();
+        if (fs::is_directory(status))
+            directories.push_back(it->path().lexically_relative(place.root));
+        else if (fs::is_regular_file(status) && isAudioFile(it->path()))
+            files.push_back({media::pathUtf8(it->path().filename()), it->path(), place.volumeId});
+    }
+    place.directories = std::move(directories);
+    return files;
+}
+
+// Lists each audio path once, including read-only Places. A missing folder still has a Places row
+// so it can be removed from Settings there. A stopped scan leaves the index's last complete scan intact.
 inline LibraryListing scanLibrary(library::Index &index, const std::vector<LibraryFolder> &folders,
                                   library::VolumeIdentityProvider &volumes, std::stop_token stop = {}) {
+    namespace fs = std::filesystem;
     LibraryListing out;
     try {
         std::map<std::string, std::size_t> byVolume;
+        std::set<fs::path> seen, roots;
         for (const auto &folder : folders) {
             if (stop.stop_requested())
                 break;
@@ -98,24 +117,43 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
                 continue;
             library::Volume volume;
             std::string why;
-            if (!volumes.identify(folder.root, volume, why)) {
-                if (out.error.empty())
-                    out.error = folder.name + " could not be read: " + why;
-                continue;
+            const bool identified = volumes.identify(folder.root, volume, why);
+            auto root = volume.root;
+            if (!identified) {
+                std::error_code status;
+                const auto absolute = fs::absolute(folder.root, status);
+                if (!status) root = fs::weakly_canonical(absolute, status);
+                if (status) root = folder.root.lexically_normal();
             }
-            if (byVolume.contains(volume.id))
-                continue; // the same folder named twice
-            if (const auto scanned = index.scan(volume, {}, stop); !scanned.ok) {
-                if (scanned.cancelled)
-                    break;
-                if (out.error.empty())
-                    out.error = folder.name + " could not be scanned: " + scanned.error;
-                continue;
+            if (!roots.insert(root).second) continue;
+
+            LibraryPlace place{folder.name, root, "folder:" + media::pathUtf8(root), folder.userLibrary};
+            if (identified && !byVolume.contains(volume.id)) {
+                auto scanned = index.scan(volume, {}, stop);
+                if (scanned.cancelled) break;
+                if (scanned.ok) {
+                    place.volumeId = volume.id;
+                    place.directories = std::move(scanned.directories);
+                    byVolume.emplace(volume.id, out.places.size());
+                } else {
+                    place.problem = folder.name + " could not be scanned: " + scanned.error;
+                }
+            } else {
+                // Another root can carry a copy of the same marker after syncing. Keep the marker
+                // intact and list the second root without claiming its portable identity in the index.
+                try {
+                    auto files = readUnindexedPlace(place, stop);
+                    if (stop.stop_requested()) break;
+                    for (auto &file : files)
+                        if (seen.insert(file.path).second)
+                            out.samples.push_back(std::move(file));
+                } catch (const fs::filesystem_error &error) {
+                    place.problem = folder.name + " could not be read: " + error.code().message();
+                }
             }
-            byVolume[volume.id] = out.places.size();
-            out.places.push_back({folder.name, volume.root, volume.id, folder.userLibrary});
+            if (out.error.empty() && !place.problem.empty()) out.error = place.problem;
+            out.places.push_back(std::move(place));
         }
-        std::set<std::filesystem::path> seen;
         for (const auto &entry : index.entries()) {
             const auto place = byVolume.find(entry.volumeId);
             if (!entry.present || place == byVolume.end())

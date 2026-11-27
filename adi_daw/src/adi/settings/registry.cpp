@@ -468,6 +468,11 @@ void catalogueSettings(std::vector<Setting>& r) {
                        0, 0, 1000000));
     r.push_back(make("browser.lastLabel", Type::Text, "", "Last Browser label",
                      "The Browser label to restore when a project opens.", ""));
+    r.push_back(make(kBrowserPreviewEnabledKey, Type::Bool, "", "Browser Preview",
+                     "Play an audio file when it is selected in the Browser.", kBrowserPreviewStartsEnabled));
+    r.push_back(ranged(kStandalonePreviewLevelKey, Type::Real, "", "Preview level without a song",
+                       "The level of sample previews on outputs 1 and 2 when no song is open.",
+                       kStandalonePreviewLevelDb, -70.0, 0.0));
 
     // --- Plug-Ins (catalogue II §8) --------------------------------------------------------------
     r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-Ins", "Use VST3 Plug-In System Folders",
