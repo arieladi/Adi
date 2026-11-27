@@ -10,10 +10,10 @@ SC-23 and SC-92 landed on main in #807 and #809. The local SC-261 branch keeps t
 
 ## Build storage
 
-The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (2,464,677,888 bytes) and is self-contained. The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (1,706,164,224 bytes). The D: build copy was verified before removal of this session's dedicated C: build original.
+The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (3,155,492,864 bytes). The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (1,706,164,224 bytes). Both are standalone. The D: build copy was verified before removal of this session's dedicated C: build original.
 
-The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes) is retained because exclusive use could not be established. The checkout, new build trees, caches, and downloads use D:.
+The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes) is retained because exclusive use could not be established. The D: copy was verified. The checkout and guest build and cache are on D:. New host downloads and temporary staging use `D:\adi-routing-vm\runtime\downloads` and `D:\adi-routing-vm\runtime\tmp`.
 
-C: had **15,936,638,976 bytes free (14.84 GiB)** at the post-move measurement.
+C: had **15,574,282,240 bytes free (14.50 GiB)** at the final post-move measurement.
 
 ## For the director
