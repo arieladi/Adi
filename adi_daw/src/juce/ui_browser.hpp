@@ -6,6 +6,7 @@
 #include "adi/ui/library_query.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -116,6 +117,22 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::Rectangle<int> sidebarDividerArea() const noexcept;
     // Sets the left list's width, kept inside its limits; `keep` saves it with the program.
     void setSidebarWidth(int, bool keep = false);
+    // SC-138: Live's list columns. Name is always shown; Date Modified, Size and Kind are chosen from
+    // the header's right-click menu, as is whether file names show their extension, and both are kept
+    // with the program. A click on a column's header sorts by it; a second click turns the order round.
+    // The extra columns sit right of Name in that order; one that would leave Name narrower than its
+    // least width is not drawn. Live's own widths are not read: these are named guesses.
+    enum class Column { Name, DateModified, Size, Kind };
+    static constexpr int kColumnCount = 4;
+    static constexpr int kDateColumnWidth = 96, kSizeColumnWidth = 52, kKindColumnWidth = 48, kNameColumnMinWidth = 60;
+    static constexpr bool kShowExtensionsByDefault = true;
+    bool columnShown(Column) const noexcept;
+    void showColumn(Column, bool shown);
+    bool showExtensions() const noexcept { return showExtensions_; }
+    void setShowExtensions(bool);
+    Column sortColumn() const noexcept { return sortColumn_; }
+    // The header's part for a column, in this panel's coordinates; empty when it is not drawn.
+    juce::Rectangle<int> columnHeaderArea(Column) const;
     juce::TextEditor search;
     BrowserList list;
     class PreviewToggle final : public juce::Button {
@@ -181,6 +198,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     };
     std::function<void(juce::PopupMenu &, const Row &)> appendFavoritesToMenu;
     const std::vector<Row> &rows() const noexcept { return rows_; }
+    // SC-138: what a row shows in a column (Name without its extension when they are hidden).
+    juce::String columnText(const Row &, Column) const;
     bool canMarkSelection() const noexcept;
     bool toggleSelectionMark(unsigned slot);
 
@@ -301,7 +320,15 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::optional<double> previewPosition_;
     bool previewRowShown_ = false;
     bool canRepeatPreview_ = false;
-    std::optional<bool> nameSortAscending_;
+    // Empty: the order the rows were made in, which is by name (SC-136, SC-138).
+    std::optional<bool> sortAscending_;
+    Column sortColumn_ = Column::Name;
+    std::array<bool, kColumnCount> columnsShown_{true, false, false, false};
+    bool showExtensions_ = kShowExtensionsByDefault;
+    // Each column's span across a row of this width; an empty range is a column not drawn.
+    std::array<juce::Range<int>, kColumnCount> columnSpans(int width) const;
+    void keepColumns();
+    void headerClick(const juce::MouseEvent &);
     int firstItem() const;
     int lastSelected_ = -1;
     bool restoringListSelection_ = false;

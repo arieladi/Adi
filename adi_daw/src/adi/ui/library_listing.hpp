@@ -5,6 +5,8 @@
 #include "adi/media/media_ops.hpp"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -36,8 +38,39 @@ struct LibraryFile {
     std::filesystem::path path;  // absolute
     std::string volumeId;        // the place it is under
     Kind kind = Kind::Audio;
+    // SC-138: what the list's Size and Date Modified columns show. Unknown is 0 and shows nothing.
+    std::uintmax_t size = 0;
+    std::int64_t modifiedNs = 0; // since the Unix epoch, as the library index keeps it
     bool isSample() const noexcept { return kind == Kind::Audio; }
 };
+// The standard lets file_clock convert through either the system clock or UTC: MSVC has to_utc,
+// libstdc++ and libc++ to_sys. Both stay dependent so the one a library lacks is never named.
+template <class Clock, class Duration>
+auto librarySystemTime(std::chrono::time_point<Clock, Duration> value) {
+    if constexpr (requires { Clock::to_sys(value); })
+        return Clock::to_sys(value);
+    else {
+        auto utc = Clock::to_utc(value);
+        using UtcClock = typename decltype(utc)::clock;
+        return UtcClock::to_sys(utc);
+    }
+}
+// Reads a listed file's size and time, as the index does. A file that cannot be read keeps 0.
+inline void readLibraryFileFacts(LibraryFile &file, const std::filesystem::directory_entry &entry) {
+    std::error_code status;
+    if (const auto size = entry.file_size(status); !status)
+        file.size = size;
+    status.clear();
+    if (const auto written = entry.last_write_time(status); !status)
+        file.modifiedNs = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(librarySystemTime(written).time_since_epoch()).count());
+}
+inline void readLibraryFileFacts(LibraryFile &file) {
+    std::error_code status;
+    const std::filesystem::directory_entry entry(file.path, status);
+    if (!status)
+        readLibraryFileFacts(file, entry);
+}
 // A configured folder or built-in content root. The shipped kit is listed without index writes.
 struct LibraryFolder {
     std::string name;
@@ -112,8 +145,10 @@ inline std::vector<LibraryFile> readUnindexedPlace(LibraryPlace &place, std::sto
         if (fs::is_directory(status))
             directories.push_back(it->path().lexically_relative(place.root));
         else if (fs::is_regular_file(status)) {
-            if (const auto kind = libraryFileKind(it->path()))
+            if (const auto kind = libraryFileKind(it->path())) {
                 files.push_back({media::pathUtf8(it->path().filename()), it->path(), place.volumeId, *kind});
+                readLibraryFileFacts(files.back(), *it);
+            }
         }
     }
     place.directories = std::move(directories);
@@ -210,7 +245,8 @@ inline LibraryListing scanLibrary(library::Index &index, const std::vector<Libra
             const auto kind = libraryFileKind(path);
             if (!kind || !seen.insert(path).second)
                 continue;
-            out.files.push_back({media::pathUtf8(path.filename()), std::move(path), where.volumeId, *kind});
+            out.files.push_back({media::pathUtf8(path.filename()), std::move(path), where.volumeId, *kind, entry.size,
+                                 entry.modifiedNs});
         }
     } catch (const std::exception &e) {
         out.error = std::string("The library index could not be read: ") + e.what();

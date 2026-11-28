@@ -77,6 +77,10 @@ inline constexpr bool kBrowserPreviewStartsEnabled = false;
 /// SC-145: the width of the Browser's left list, kept with the program as Live keeps its Browser.
 inline constexpr char kBrowserSidebarWidthKey[] = "browser.sidebarWidth";
 inline constexpr int kBrowserSidebarWidthDefault = 113, kBrowserSidebarWidthMin = 60, kBrowserSidebarWidthMax = 2000;
+/// SC-138: the Browser list's columns beside Name ("date", "size", "kind", comma-separated) and
+/// whether its file names show their extension, both chosen from the list header's menu.
+inline constexpr char kBrowserColumnsKey[] = "browser.columns";
+inline constexpr char kBrowserShowExtensionsKey[] = "browser.showExtensions";
 inline constexpr char kStandalonePreviewLevelKey[] = "audio.standalonePreviewLevelDb";
 inline constexpr double kStandalonePreviewLevelDb = -12.;
 

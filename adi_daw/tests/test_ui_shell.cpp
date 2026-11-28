@@ -9419,6 +9419,196 @@ void browserNameAndHide(AppCommands &commands, const std::filesystem::path &dir)
     check(root.browserArea().isEmpty() && root.infoArea().isEmpty(),
           "SC-136: clicking the Browser's round button uses the Browser collapse command");
 }
+void browserColumns(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    using Column = BrowserPanel::Column;
+    const auto settingsFile = dir / "browser-columns.json";
+    settings::AppSettings settings(appdata::App::Daw, settingsFile);
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-columns.adi", true, {}, error);
+    check(document != nullptr, "SC-138: a project for the Browser's columns");
+    if (!document)
+        return;
+    const auto makeRoot = [&] {
+        return std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "browser-columns");
+    };
+    auto root = makeRoot();
+    auto &browser = root->browser;
+    browser.setSize(308, 443); // The Browser column in a 1200×720 Compact window with Info shown.
+    browser.restoreLabel(settings);
+
+    // Real files: a Place read without the index knows each one's size and time, as the index does.
+    const auto place = dir / "Column Sounds";
+    fs::create_directories(place / "Folder");
+    const auto big = place / "Big.wav", small = place / "small.aif", tune = place / "Tune.mid";
+    std::ofstream(big, std::ios::binary) << std::string(4096, 'b');
+    std::ofstream(small, std::ios::binary) << std::string(10, 's');
+    std::ofstream(tune, std::ios::binary) << std::string(100, 'm');
+    const auto now = fs::last_write_time(big);
+    fs::last_write_time(small, now - std::chrono::hours(48));
+    fs::last_write_time(tune, now - std::chrono::hours(24));
+    LibraryPlace walked{"Column Sounds", place, "columns"};
+    auto files = readUnindexedPlace(walked, {});
+    sortLibraryFiles(files);
+    const auto walkedFile = [&](const fs::path &path) -> const LibraryFile * {
+        const auto found = std::ranges::find(files, path, &LibraryFile::path);
+        return found == files.end() ? nullptr : &*found;
+    };
+    const auto *bigFile = walkedFile(big), *smallFile = walkedFile(small), *tuneFile = walkedFile(tune);
+    check(files.size() == 3 && bigFile && smallFile && tuneFile && bigFile->size == 4096 && smallFile->size == 10 &&
+              tuneFile->size == 100 && smallFile->modifiedNs > 0 && smallFile->modifiedNs < tuneFile->modifiedNs &&
+              tuneFile->modifiedNs < bigFile->modifiedNs,
+          "SC-138: the read-only walk reads each file's size and modified time");
+    LibraryListing listing;
+    listing.places = {{"Column Sounds", place, "columns", false, {}, {"Folder"}}};
+    listing.files = files;
+    browser.setListing(std::move(listing));
+    const auto label = std::ranges::find(browser.sidebar(), std::string("columns"), &BrowserPanel::Entry::place);
+    check(label != browser.sidebar().end(), "SC-138: the column fixture is in Places");
+    if (label == browser.sidebar().end())
+        return;
+    browser.choose(static_cast<int>(label - browser.sidebar().begin()));
+    const auto &rows = browser.rows();
+    const auto rowOf = [&](const fs::path &path) -> const BrowserPanel::Row * {
+        for (const auto &row : rows)
+            if (row.file && row.file->path == path)
+                return &row;
+        return nullptr;
+    };
+    const auto folderRow = [&]() -> const BrowserPanel::Row * {
+        for (const auto &row : rows)
+            if (row.folder)
+                return &row;
+        return nullptr;
+    };
+    // The order of the list's entries by name, a folder as its name.
+    const auto order = [&] {
+        std::vector<std::string> names;
+        for (const auto &row : rows)
+            names.push_back(row.folder ? row.folder->name : row.file ? row.file->name : std::string());
+        return names;
+    };
+    const auto header = browser.nameHeaderArea();
+    check(browser.columnHeaderArea(Column::Name) == header && browser.columnHeaderArea(Column::DateModified).isEmpty() &&
+              browser.columnHeaderArea(Column::Size).isEmpty() && browser.columnHeaderArea(Column::Kind).isEmpty() &&
+              browser.sortColumn() == Column::Name && browser.showExtensions() && rowOf(big) &&
+              browser.columnText(*rowOf(big), Column::Name) == "Big.wav",
+          "SC-138: at first the list shows Name alone over the whole header, with the extensions");
+
+    // The header's menu: Live's columns and the extensions; no native menu is shown.
+    juce::PopupMenu captured;
+    int menus = 0;
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) {
+        captured = std::move(menu);
+        ++menus;
+    };
+    const auto openMenu = [&] {
+        browser.mouseDown(pressAt(browser, header.getCentre().toFloat(),
+                                  juce::ModifierKeys(juce::ModifierKeys::rightButtonModifier)));
+    };
+    const auto items = [&] {
+        std::vector<juce::PopupMenu::Item> found;
+        for (juce::PopupMenu::MenuItemIterator it(captured); it.next();)
+            if (!it.getItem().isSeparator)
+                found.push_back(it.getItem());
+        return found;
+    };
+    const auto invoke = [&](const char *text) {
+        openMenu();
+        for (const auto &item : items())
+            if (item.text == text && item.isEnabled && item.action) {
+                item.action();
+                return true;
+            }
+        return false;
+    };
+    openMenu();
+    const auto menu = items();
+    check(menus == 1 && menu.size() == 5 && menu[0].text == "Name" && !menu[0].isEnabled && menu[0].isTicked &&
+              menu[1].text == "Date Modified" && !menu[1].isTicked && menu[2].text == "Size" && menu[3].text == "Kind" &&
+              menu[4].text == "Show File Extensions" && menu[4].isTicked && browser.sortColumn() == Column::Name,
+          "SC-138: a right-click on the header offers the columns and the extensions, and sorts nothing");
+    const auto kept = [&](const char *key) { return settings.get(key); };
+    check(invoke("Size") && browser.columnShown(Column::Size) &&
+              browser.columnHeaderArea(Column::Size) == juce::Rectangle<int>(252, 27, 52, 19) &&
+              browser.columnHeaderArea(Column::Name) == juce::Rectangle<int>(119, 27, 133, 19) &&
+              kept(settings::kBrowserColumnsKey).get<std::string>() == "size",
+          "SC-138: Size takes the header's right and is kept with the program");
+    check(invoke("Date Modified") && browser.columnShown(Column::DateModified) &&
+              browser.columnHeaderArea(Column::DateModified) == juce::Rectangle<int>(208, 27, 96, 19) &&
+              browser.columnHeaderArea(Column::Size).isEmpty() &&
+              kept(settings::kBrowserColumnsKey).get<std::string>() == "date,size",
+          "SC-138: a column that would leave Name too narrow is not drawn, and stays chosen");
+    browser.setSize(500, 443);
+    check(browser.columnHeaderArea(Column::Name) == juce::Rectangle<int>(119, 27, 229, 19) &&
+              browser.columnHeaderArea(Column::DateModified) == juce::Rectangle<int>(348, 27, 96, 19) &&
+              browser.columnHeaderArea(Column::Size) == juce::Rectangle<int>(444, 27, 52, 19),
+          "SC-138: a wider Browser draws both chosen columns right of Name");
+    {
+        juce::Image picture(juce::Image::ARGB, browser.getWidth(), browser.getHeight(), true, juce::SoftwareImageType());
+        {
+            juce::Graphics g(picture);
+            browser.paintEntireComponent(g, false);
+        }
+        std::set<juce::uint32> colours;
+        const auto area = browser.columnHeaderArea(Column::Size).reduced(2);
+        for (int y = area.getY(); y < area.getBottom(); ++y)
+            for (int x = area.getX(); x < area.getRight(); ++x)
+                colours.insert(picture.getPixelAt(x, y).getARGB());
+        check(colours.size() > 1, "SC-138: the Size column's title is drawn in its header");
+    }
+    const auto *folder = folderRow();
+    check(rowOf(small) && rowOf(tune) && folder &&
+              browser.columnText(*rowOf(small), Column::Size) == juce::File::descriptionOfSizeInBytes(10) &&
+              browser.columnText(*rowOf(big), Column::Kind) == "WAV" &&
+              browser.columnText(*rowOf(small), Column::Kind) == "AIF" &&
+              browser.columnText(*rowOf(tune), Column::Kind) == "MIDI" &&
+              browser.columnText(*folder, Column::Kind) == "Folder" &&
+              browser.columnText(*folder, Column::Size).isEmpty() &&
+              browser.columnText(*folder, Column::DateModified).isEmpty() &&
+              browser.columnText(*rowOf(big), Column::DateModified).isNotEmpty(),
+          "SC-138: each row says its size, kind and date; a folder only its kind");
+
+    const auto click = [&](Column column) {
+        browser.mouseDown(pressAt(browser, browser.columnHeaderArea(column).getCentre().toFloat(),
+                                  juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier)));
+    };
+    click(Column::Size);
+    check(browser.sortColumn() == Column::Size &&
+              order() == std::vector<std::string>{"Folder", "small.aif", "Tune.mid", "Big.wav"},
+          "SC-138: a click on Size sorts from the smallest, a folder first");
+    click(Column::Size);
+    check(order() == std::vector<std::string>{"Folder", "Big.wav", "Tune.mid", "small.aif"},
+          "SC-138: a second click on Size turns the order round");
+    click(Column::DateModified);
+    check(browser.sortColumn() == Column::DateModified &&
+              order() == std::vector<std::string>{"Folder", "small.aif", "Tune.mid", "Big.wav"},
+          "SC-138: a click on Date Modified sorts from the oldest");
+    check(invoke("Date Modified") && !browser.columnShown(Column::DateModified) &&
+              browser.sortColumn() == Column::Name && kept(settings::kBrowserColumnsKey).get<std::string>() == "size",
+          "SC-138: hiding the sorted column returns the list to its order by name");
+    check(invoke("Show File Extensions") && !browser.showExtensions() &&
+              browser.columnText(*rowOf(big), Column::Name) == "Big" &&
+              !kept(settings::kBrowserShowExtensionsKey).get<bool>(),
+          "SC-138: the extensions are hidden from the names, and that is kept");
+    root.reset();
+    auto again = makeRoot();
+    again->browser.setSize(308, 443);
+    again->browser.restoreLabel(settings);
+    check(again->browser.columnShown(Column::Size) && !again->browser.columnShown(Column::DateModified) &&
+              !again->browser.columnShown(Column::Kind) && !again->browser.showExtensions(),
+          "SC-138: a new window shows the kept columns and hides the extensions");
+    std::string why;
+    check(settings.set(settings::kBrowserColumnsKey, std::string("kind,unknown"), {}, why),
+          "SC-138: keep a column word this build does not know");
+    again.reset();
+    auto third = makeRoot();
+    third->browser.restoreLabel(settings);
+    check(third->browser.columnShown(Column::Kind) && !third->browser.columnShown(Column::Size),
+          "SC-138: an unknown column word is passed over");
+}
 void browserProjectAndMidiFiles(AppCommands &commands, const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
     using Kind = LibraryFile::Kind;
@@ -33440,6 +33630,7 @@ int main(int argc, char **argv) {
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
     trace("browserNameAndHide", [&] { browserNameAndHide(commands, temp.path()); });
+    trace("browserColumns", [&] { browserColumns(temp.path()); });
     trace("browserProjectAndMidiFiles", [&] { browserProjectAndMidiFiles(commands, temp.path()); });
     trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });

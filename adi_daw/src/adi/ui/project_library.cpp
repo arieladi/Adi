@@ -38,6 +38,7 @@ std::shared_ptr<const BrowserLibrarySnapshot> ProjectLibrary::update(const Store
                     !seen.insert(path).second)
                     continue;
                 listing.files.push_back({original.empty() ? media::pathUtf8(path.filename()) : original, path, {}});
+                readLibraryFileFacts(listing.files.back());
             }
             sortLibraryFiles(listing.files);
             snapshot_ = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));

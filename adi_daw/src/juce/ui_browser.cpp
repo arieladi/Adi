@@ -35,6 +35,23 @@ juce::Colour collectionColour(std::size_t i) {
     const auto palette = kCollectionColours[i].palette;
     return palette >= 0 ? look::paletteColour(palette) : look::textDim;
 }
+// SC-138: the list's columns, in BrowserPanel::Column's order: the word kept in the settings, the
+// header's title and the width.
+struct BrowserColumnName {
+    std::string_view key;
+    const char *title;
+    int width;
+};
+constexpr std::array<BrowserColumnName, BrowserPanel::kColumnCount> kColumnNames{{
+    BrowserColumnName{"name", "Name", 0},
+    {"date", "Date Modified", BrowserPanel::kDateColumnWidth},
+    {"size", "Size", BrowserPanel::kSizeColumnWidth},
+    {"kind", "Kind", BrowserPanel::kKindColumnWidth},
+}};
+// What the Kind column says. A guess until Live's words are read.
+constexpr auto kKindFolder = "Folder", kKindMidi = "MIDI", kKindProject = "Project";
+constexpr auto kDateFormat = "%Y-%m-%d %H:%M";
+constexpr int kColumnTextInset = 4;
 int favoriteMarkWidth(unsigned marks) { return std::popcount(marks) * kFavoriteMarkPitch; }
 void paintFavoriteMarks(juce::Graphics &g, unsigned marks, int width, int height) {
     if (marks == 0)
@@ -430,6 +447,22 @@ void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
         sidebarWidth_ = std::clamp(width.get<int>(), settings::kBrowserSidebarWidthMin, settings::kBrowserSidebarWidthMax);
         resized();
     }
+    // SC-138: the kept columns and extensions. A word this build does not know is passed over.
+    if (const auto columns = labelSettings_->get(settings::kBrowserColumnsKey); columns.is_string()) {
+        const auto &text = columns.get_ref<const std::string &>();
+        for (std::size_t c = 1; c < kColumnNames.size(); ++c)
+            columnsShown_[c] = false;
+        for (std::size_t from = 0; from <= text.size();) {
+            const auto comma = std::min(text.find(',', from), text.size());
+            const auto word = std::string_view(text).substr(from, comma - from);
+            for (std::size_t c = 1; c < kColumnNames.size(); ++c)
+                if (word == kColumnNames[c].key)
+                    columnsShown_[c] = true;
+            from = comma + 1;
+        }
+    }
+    if (const auto extensions = labelSettings_->get(settings::kBrowserShowExtensionsKey); extensions.is_boolean())
+        showExtensions_ = extensions.get<bool>();
     const auto saved = settings.get(kLastLabel).get<std::string>();
     selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
     pendingLabel_.clear();
@@ -1045,14 +1078,59 @@ void BrowserPanel::noteEmptySearch() {
                                                           : kNoMatchesIn + chosen.name});
 }
 void BrowserPanel::sortRows() {
-    if (!nameSortAscending_ || hotSwap_ || rows_.size() < 2)
+    if (!sortAscending_ || hotSwap_ || rows_.size() < 2)
         return;
     const auto count = rows_.size();
     std::vector<std::size_t> ends(count);
-    std::vector<juce::String> names;
+    std::vector<juce::String> names, kinds;
     names.reserve(rows_.size());
     for (const auto &row : rows_)
         names.push_back(rowName(row));
+    std::vector<std::optional<std::int64_t>> dates;
+    std::vector<std::optional<std::uintmax_t>> sizes;
+    for (const auto &row : rows_) {
+        if (sortColumn_ == Column::Kind)
+            kinds.push_back(columnText(row, Column::Kind));
+        else if (sortColumn_ == Column::DateModified)
+            dates.push_back(row.file && row.file->modifiedNs != 0 ? std::optional<std::int64_t>(row.file->modifiedNs)
+                                                                  : std::nullopt);
+        else if (sortColumn_ == Column::Size)
+            sizes.push_back(row.file && row.file->size != 0 ? std::optional<std::uintmax_t>(row.file->size)
+                                                            : std::nullopt);
+    }
+    // SC-138: by the chosen column, then by name. A row with nothing in that column (a folder's size,
+    // a device's date) comes first in name order, whichever way the column runs.
+    const auto before = [&](std::size_t a, std::size_t b) {
+        const bool up = *sortAscending_;
+        const auto byName = [&] {
+            const auto order = names[a].compareIgnoreCase(names[b]);
+            return sortColumn_ == Column::Name && !up ? order > 0 : order < 0;
+        };
+        const auto byValue = [&](const auto &values) {
+            const auto &x = values[a];
+            const auto &y = values[b];
+            if (x.has_value() != y.has_value())
+                return !x.has_value();
+            if (!x || *x == *y)
+                return byName();
+            return up ? *x < *y : *x > *y;
+        };
+        switch (sortColumn_) {
+        case Column::DateModified:
+            return byValue(dates);
+        case Column::Size:
+            return byValue(sizes);
+        case Column::Kind:
+            if (kinds[a].isEmpty() != kinds[b].isEmpty())
+                return kinds[a].isEmpty();
+            if (const auto order = kinds[a].compareIgnoreCase(kinds[b]); order != 0)
+                return up ? order < 0 : order > 0;
+            return byName();
+        case Column::Name:
+            break;
+        }
+        return byName();
+    };
     // Each contiguous branch includes its more deeply indented descendants.
     for (auto index = count; index > 0;) {
         --index;
@@ -1074,10 +1152,7 @@ void BrowserPanel::sortRows() {
         std::vector<std::size_t> siblings;
         for (auto index = first; index < end; index = ends[index])
             siblings.push_back(index);
-        std::stable_sort(siblings.begin(), siblings.end(), [&](std::size_t a, std::size_t b) {
-            const auto order = names[a].compareIgnoreCase(names[b]);
-            return *nameSortAscending_ ? order < 0 : order > 0;
-        });
+        std::stable_sort(siblings.begin(), siblings.end(), before);
         for (const auto index : siblings) {
             append(index);
             if (index + 1 < ends[index])
@@ -1089,6 +1164,151 @@ void BrowserPanel::sortRows() {
     if (scanNotice)
         append(0);
     appendSorted(appendSorted, scanNotice ? 1u : 0u, count);
+}
+bool BrowserPanel::columnShown(Column column) const noexcept {
+    return columnsShown_[static_cast<std::size_t>(column)];
+}
+void BrowserPanel::showColumn(Column column, bool shown) {
+    if (column == Column::Name || columnShown(column) == shown)
+        return;
+    columnsShown_[static_cast<std::size_t>(column)] = shown;
+    // A hidden column sorts nothing: the list returns to its order by name.
+    if (!shown && sortColumn_ == column) {
+        sortColumn_ = Column::Name;
+        sortAscending_.reset();
+        refill(-1, true);
+    }
+    keepColumns();
+    list.repaint();
+    repaint(nameHeaderArea());
+}
+void BrowserPanel::setShowExtensions(bool shown) {
+    if (std::exchange(showExtensions_, shown) == shown)
+        return;
+    keepColumns();
+    list.repaint();
+}
+void BrowserPanel::keepColumns() {
+    if (!labelSettings_)
+        return;
+    std::string columns;
+    for (std::size_t c = 1; c < kColumnNames.size(); ++c)
+        if (columnsShown_[c])
+            columns += (columns.empty() ? "" : ",") + std::string(kColumnNames[c].key);
+    std::string why;
+    const auto keptColumns = labelSettings_->get(settings::kBrowserColumnsKey);
+    const auto keptExtensions = labelSettings_->get(settings::kBrowserShowExtensionsKey);
+    const bool same = keptColumns.is_string() && keptColumns.get_ref<const std::string &>() == columns &&
+                      keptExtensions.is_boolean() && keptExtensions.get<bool>() == showExtensions_;
+    if (!same && (!labelSettings_->set(settings::kBrowserColumnsKey, columns, {}, why) ||
+                  !labelSettings_->set(settings::kBrowserShowExtensionsKey, showExtensions_, {}, why) ||
+                  !labelSettings_->save(why)))
+        root_.say(std::move(why));
+}
+std::array<juce::Range<int>, BrowserPanel::kColumnCount> BrowserPanel::columnSpans(int width) const {
+    std::array<juce::Range<int>, kColumnCount> spans{};
+    auto drawn = columnsShown_;
+    int extra = 0;
+    for (std::size_t c = 1; c < kColumnNames.size(); ++c)
+        if (drawn[c])
+            extra += kColumnNames[c].width;
+    // The last columns give way first, so Name keeps its least width.
+    for (std::size_t c = kColumnNames.size() - 1; c >= 1 && width - extra < kNameColumnMinWidth; --c)
+        if (drawn[c]) {
+            drawn[c] = false;
+            extra -= kColumnNames[c].width;
+        }
+    int x = std::max(0, width - extra);
+    spans[0] = {0, x};
+    for (std::size_t c = 1; c < kColumnNames.size(); ++c)
+        if (drawn[c]) {
+            spans[c] = {x, x + kColumnNames[c].width};
+            x += kColumnNames[c].width;
+        }
+    return spans;
+}
+juce::Rectangle<int> BrowserPanel::columnHeaderArea(Column column) const {
+    const auto header = nameHeaderArea();
+    // The rows' width, so the header's columns stand over the rows' when the list has a scroll bar.
+    const int rowWidth = list.getWidth() > 0 ? std::min(header.getWidth(), list.getVisibleRowWidth()) : header.getWidth();
+    auto spans = columnSpans(rowWidth);
+    // The last column drawn takes the header to its end.
+    for (auto c = spans.size(); c-- > 0;)
+        if (!spans[c].isEmpty()) {
+            spans[c].setEnd(header.getWidth());
+            break;
+        }
+    const auto span = spans[static_cast<std::size_t>(column)];
+    if (span.isEmpty())
+        return {};
+    return {header.getX() + span.getStart(), header.getY(), span.getLength(), header.getHeight()};
+}
+juce::String BrowserPanel::columnText(const Row &row, Column column) const {
+    const auto *file = row.file;
+    switch (column) {
+    case Column::Name: {
+        if (!file)
+            return rowName(row);
+        auto name = juce::String::fromUTF8(file->name.c_str());
+        // A name that is all extension (".wav") keeps it.
+        if (const int dot = name.lastIndexOfChar('.'); !showExtensions_ && dot > 0)
+            name = name.substring(0, dot);
+        return name;
+    }
+    case Column::DateModified:
+        if (!file || file->modifiedNs == 0)
+            return {};
+        return juce::Time(static_cast<juce::int64>(file->modifiedNs / 1000000)).formatted(kDateFormat);
+    case Column::Size:
+        if (!file || file->size == 0)
+            return {};
+        return juce::File::descriptionOfSizeInBytes(static_cast<juce::int64>(file->size));
+    case Column::Kind:
+        if (row.folder)
+            return kKindFolder;
+        if (!file)
+            return {};
+        if (file->kind == LibraryFile::Kind::Midi)
+            return kKindMidi;
+        if (file->kind == LibraryFile::Kind::Project)
+            return kKindProject;
+        return juce::String::fromUTF8(media::pathUtf8(file->path.extension()).c_str()).substring(1).toUpperCase();
+    }
+    return {};
+}
+void BrowserPanel::headerClick(const juce::MouseEvent &e) {
+    if (e.mods.isPopupMenu()) {
+        // Live's header menu: the columns to show beside Name, and the file extensions.
+        juce::PopupMenu menu;
+        const SafePointer<BrowserPanel> safe(this);
+        menu.addItem(kColumnNames[0].title, false, true, [] {});
+        for (std::size_t c = 1; c < kColumnNames.size(); ++c) {
+            const auto column = static_cast<Column>(c);
+            menu.addItem(kColumnNames[c].title, true, columnShown(column), [safe, column] {
+                if (safe)
+                    safe->showColumn(column, !safe->columnShown(column));
+            });
+        }
+        menu.addSeparator();
+        menu.addItem("Show File Extensions", true, showExtensions_, [safe] {
+            if (safe)
+                safe->setShowExtensions(!safe->showExtensions());
+        });
+        presentContextMenu(std::move(menu), e);
+        return;
+    }
+    for (std::size_t c = 0; c < kColumnNames.size(); ++c) {
+        const auto column = static_cast<Column>(c);
+        if (!columnHeaderArea(column).contains(e.getPosition()))
+            continue;
+        // The same column turns round; another starts from its lowest (Name's first click turns the
+        // order by name round, as before).
+        sortAscending_ = column == sortColumn_ ? !sortAscending_.value_or(true) : true;
+        sortColumn_ = column;
+        refill(-1, true);
+        repaint(nameHeaderArea());
+        return;
+    }
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 juce::String BrowserPanel::getNameForRow(int row) {
@@ -1109,12 +1329,34 @@ juce::String BrowserPanel::getTooltipForRow(int row) {
         return juce::String::fromUTF8(media::pathUtf8(item.file->path).c_str());
     return item.tooltip;
 }
-void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
+void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int rowWidth, int height, bool selected) {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return;
     const auto &r = rows_[static_cast<std::size_t>(row)];
     if (selected && r.selectable())
         g.fillAll(look::selection);
+    // A heading or a notice keeps the whole row; an entry keeps its name inside the Name column and
+    // shows the other columns beside it (SC-138).
+    if (r.heading.isNotEmpty() && !r.folds()) {
+        g.setColour(r.tooltip.isEmpty() ? look::textDim : look::error);
+        g.setFont(look::font(look::fontField, true));
+        const int in = 6 + 12 * r.depth;
+        g.drawText(r.heading, in, 0, rowWidth - in - 4, height, juce::Justification::centredLeft, true);
+        return;
+    }
+    const auto spans = columnSpans(rowWidth);
+    const int width = spans[0].getEnd();
+    g.setFont(look::font(look::fontField));
+    for (std::size_t c = 1; c < spans.size(); ++c) {
+        if (spans[c].isEmpty())
+            continue;
+        g.setColour(look::textDim);
+        g.drawText(columnText(r, static_cast<Column>(c)), spans[c].getStart() + kColumnTextInset, 0,
+                   spans[c].getLength() - 2 * kColumnTextInset, height,
+                   c == static_cast<std::size_t>(Column::Size) ? juce::Justification::centredRight
+                                                               : juce::Justification::centredLeft,
+                   true);
+    }
     if (r.folds()) {
         const int in = kFolderIndent * r.depth;
         const float x = 8.f + static_cast<float>(in), y = static_cast<float>(height) / 2.f;
@@ -1127,14 +1369,6 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         g.fillPath(chevron);
         g.setFont(look::font(look::fontHeading));
         g.drawText(rowName(r), 24 + in, 0, width - 28 - in, height, juce::Justification::centredLeft, true);
-        return;
-    }
-    if (r.heading.isNotEmpty()) {
-        // Group headings and notices cannot be selected or loaded.
-        g.setColour(r.tooltip.isEmpty() ? look::textDim : look::error);
-        g.setFont(look::font(look::fontField, true));
-        const int in = 6 + 12 * r.depth;
-        g.drawText(r.heading, in, 0, width - in - 4, height, juce::Justification::centredLeft, true);
         return;
     }
     if (r.savedPreset != nullptr) {
@@ -1179,7 +1413,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
     g.setFont(look::font(look::fontHeading));
-    const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
+    const auto name = device ? juce::String(std::string(r.device->name)) : columnText(r, Column::Name);
     const auto marks = favoriteMarks(r);
     g.drawText(name, 24 + indent, 0, std::max(0, width - 28 - indent - favoriteMarkWidth(marks)), height,
                juce::Justification::centredLeft, true);
@@ -1596,12 +1830,28 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.drawFittedText(target.isEmpty() ? juce::String("Hot-Swap") : "Hot-Swap  " + target,
                          header.reduced(4, 0), juce::Justification::centredLeft, 1);
     } else {
-        g.setColour(look::text);
-        g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
-        const auto angle = nameSortAscending_.value_or(true) ? juce::MathConstants<float>::halfPi
-                                                           : -juce::MathConstants<float>::halfPi;
-        look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
-                       angle, look::textDim);
+        // SC-138: a title over each column drawn, a line between them, the order's triangle on the
+        // column the list is sorted by.
+        for (std::size_t c = 0; c < kColumnNames.size(); ++c) {
+            const auto column = static_cast<Column>(c);
+            const auto area = columnHeaderArea(column);
+            if (area.isEmpty())
+                continue;
+            const bool sorted = column == sortColumn_;
+            if (c > 0) {
+                g.setColour(look::browserEdge);
+                g.fillRect(area.withWidth(1));
+            }
+            g.setColour(look::text);
+            g.drawText(kColumnNames[c].title, area.withTrimmedLeft(4).withTrimmedRight(sorted ? 14 : 0),
+                       juce::Justification::centredLeft);
+            if (!sorted)
+                continue;
+            const auto angle = sortAscending_.value_or(true) ? juce::MathConstants<float>::halfPi
+                                                             : -juce::MathConstants<float>::halfPi;
+            look::triangle(g, {static_cast<float>(area.getRight()) - 13, static_cast<float>(area.getY()) + 6, 8, 7},
+                           angle, look::textDim);
+        }
     }
     // The preview row: Live's headphones switch at its left.
     const auto preview = previewArea();
@@ -1705,12 +1955,10 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
             root_.command(AppCommands::ToggleBrowser);
             return;
         }
-        if (!hotSwap_ && nameHeaderArea().contains(e.getPosition())) {
-            nameSortAscending_ = !nameSortAscending_.value_or(true);
-            refill(-1, true);
-            repaint(nameHeaderArea());
-            return;
-        }
+    }
+    if (!hotSwap_ && nameHeaderArea().contains(e.getPosition()) && (e.mods.isLeftButtonDown() || e.mods.isPopupMenu())) {
+        headerClick(e);
+        return;
     }
     const auto wave = previewWaveformArea();
     if (!e.mods.isPopupMenu() && previewPeaks_ && wave.contains(e.getPosition()) && selectedSample()) {
