@@ -819,6 +819,108 @@ std::unique_ptr<Store> physicalLoopProject(const std::filesystem::path& folder, 
     return store;
 }
 
+void physicalLoopRetainedByTempoScene() {
+    constexpr auto firstLap = 14400;
+    constexpr auto period = 12000;
+    constexpr auto followStop = firstLap + 8 * period;
+    for (const bool ram : {true, false}) {
+        test::TempDirectory folder{"unwarped_loop_scene", ram ? "ram" : "paged"};
+        auto store = physicalLoopProject(folder.path(), ram);
+        store->db().exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20;"
+                         "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0);"
+                         "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=9,follow_a=1 "
+                         "WHERE clip_id=101");
+        store.reset();
+        StoreError openError{};
+        store = Store::open(folder.path() / "song.adi", openError);
+        require(static_cast<bool>(store), "reopen the saved pinned-loop scene");
+
+        const auto render = [&](bool launchTempoScene, bool changeGain = false) {
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+            std::vector<float> pcm(followStop + blockFrames);
+            Playback playback{session, pcm};
+            playback.paged = !ram;
+            scene(*store, session, 10);
+            playback.through(blockFrames);
+            const auto initial = trackState(session);
+            require(initial.clip == 101 && initial.run != 0 &&
+                    session.postLaunchClipGainEdit({1, 101, session.launchIncarnation(), initial.run,
+                                                    0.5f, ClipUpdateRate::None}),
+                    "set live gain on the running pinned loop");
+            playback.through(tempoSceneFrame - 2 * blockFrames);
+            if (changeGain) sceneWithGain(*store, session, 20, 101, -6.0);
+            else if (launchTempoScene) {
+                scene(*store, session, 20);
+                if (!session.error().empty()) throw std::runtime_error("No Stop pinned loop: " + session.error());
+            }
+            playback.through(tempoSceneFrame + 1);
+            const auto retained = trackState(session);
+            require(retained.clip == 101 && retained.run == initial.run && retained.completedLoops == 7 &&
+                    playback.count == 1, "the scene retains the active clip, run and physical lap count");
+            if (changeGain) {
+                require(session.error().find("unchanged unwarped") != std::string::npos &&
+                        playback.sceneCount == 1 && session.beginRender().bpmAtTick(4 * quarter) == 120,
+                        "a changed saved source gain blocks the tempo scene without interrupting playback");
+            } else if (launchTempoScene) {
+                checkTempoScene(*store, session, playback);
+            }
+
+            playback.through(followStop - 1);
+            const auto finalLap = trackState(session);
+            require(finalLap.clip == 101 && finalLap.run == initial.run && finalLap.completedLoops == 8,
+                    "the original run finishes the eighth wrap before linked Follow Stop");
+            playback.through(followStop + blockFrames);
+            require(playback.count == 2 && playback.edges[0].sample == 0 && playback.edges[1].newClip == 0 &&
+                    playback.edges[1].sample == followStop && trackState(session).clip == 0,
+                    "linked Follow Stop ends the same run after its ninth physical lap");
+            require(pcm[18600] == .275f && pcm[108600] == .275f &&
+                    std::all_of(pcm.begin() + followStop, pcm.end(), [](float frame) { return frame == 0; }),
+                    "the original gain is audible on both sides of the scene and the stop is silent");
+            require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                    "the retained loop has ready PCM with no callback allocation or file I/O");
+            return pcm;
+        };
+
+        const auto steady = render(false);
+        require(render(true) == steady, "the tempo scene preserves every sample of the pinned loop");
+        if (!ram) require(render(true, true) == steady, "a refused source edit keeps the original paged run");
+        std::printf("No Stop physical %s loop: scene %lld, Follow Stop %d, identical PCM\n",
+                    ram ? "RAM" : "paged", static_cast<long long>(tempoSceneFrame), followStop);
+    }
+}
+
+void physicalLoopRegionRetainedByTempoScene() {
+    test::TempDirectory folder{"unwarped_loop_scene", "live-region"};
+    auto store = physicalLoopProject(folder.path(), true);
+    store->db().exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20;"
+                     "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0)");
+    const auto render = [&](bool change) {
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+        std::vector<float> pcm(110000);
+        Playback playback{session, pcm};
+        scene(*store, session, 10);
+        playback.through(blockFrames);
+        const auto initial = trackState(session);
+        const LaunchClipRegionEdit edit{1, 101, session.launchIncarnation(), initial.run,
+            {quarter / 8, quarter * 8 / 10, LaunchClipLoopRegion{quarter / 4, quarter * 6 / 10}}, ClipUpdateRate::None};
+        require(session.postLaunchClipRegionEdit(edit), "queue live loop bounds on the pinned RAM clip");
+        playback.through(70000);
+        require(trackState(session).loopStartTick == quarter / 4, "the live loop bounds apply before the tempo scene");
+        if (change) scene(*store, session, 20);
+        playback.through(static_cast<std::int64_t>(pcm.size()));
+        if (change) checkTempoScene(*store, session, playback);
+        require(trackState(session).run == initial.run && playback.count == 1,
+                "No Stop keeps the original run after the live loop edit");
+        return pcm;
+    };
+    const auto steady = render(false);
+    require(render(true) == steady, "No Stop preserves every PCM sample with the live loop bounds");
+}
+
 void persistedPhysicalLoopTempo() {
     bool matched = true;
     for (const bool ram : {true,false}) {
@@ -1197,6 +1299,8 @@ int main() {
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
         persistedPhysicalLoopTempo();
+        physicalLoopRetainedByTempoScene();
+        physicalLoopRegionRetainedByTempoScene();
         physicalLoopFollowUsesTargetGrid();
         physicalFollowKeepsCoincidentGridSample();
         laterFollowKeepsEarlierLegatoForecast();

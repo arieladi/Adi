@@ -2701,8 +2701,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     if (!cell->clip) {
                         if (cell->hasStop) return false;
                         const auto old = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
-                        if (old != view.slots.end() && old->physicalFrames > 0 &&
-                            !old->physicalLoopEndFrame && before->clip(clip.id)) {
+                        if (old != view.slots.end() && old->physicalFrames > 0 && before->clip(clip.id)) {
                             retainedPinned.push_back(clip.id);
                             return false;
                         }
@@ -2780,7 +2779,9 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 const auto* newSource = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
                 if (oldSlot == before.end() || newSlot == after.end() || !oldSource || !newSource ||
                     oldSlot->track != newSlot->track || oldSlot->physicalStartFrame != newSlot->physicalStartFrame ||
-                    oldSlot->physicalFrames != newSlot->physicalFrames || newSlot->physicalLoopEndFrame ||
+                    oldSlot->physicalFrames != newSlot->physicalFrames ||
+                    oldSlot->physicalLoopBeginFrame != newSlot->physicalLoopBeginFrame ||
+                    oldSlot->physicalLoopEndFrame != newSlot->physicalLoopEndFrame ||
                     oldSource->pageReader() != newSource->pageReader()) {
                     missingPin = id;
                     return false;
