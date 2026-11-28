@@ -86,12 +86,16 @@ void revisionPolicies() {
     const auto render = book.enqueue("owner", {"render", "project"});
     check(stale && current && render, "the three revision-policy fixtures are queued");
     if (!stale || !current || !render) return;
-    check(!book.start(stale->id) && book.start(stale->id, {{"source-clip", input}}),
+    // Named read sets: GCC's hardened build takes a braced list written inside the call for a
+    // temporary that may dangle (-Wdangling-pointer).
+    const JobReadSet staleReads{{"source-clip", input}};
+    check(!book.start(stale->id) && book.start(stale->id, staleReads),
           "a committing job declares its read set at start");
     check(!book.workerFinished(stale->id, JobState::Completed),
           "an already-published success cannot bypass the committing job's input guard");
     input = "revision-b";
-    check(book.start(current->id, {{"source-clip", input}}).has_value(),
+    const JobReadSet currentReads{{"source-clip", input}};
+    check(book.start(current->id, currentReads).has_value(),
           "a different job captures the newer source at its actual start");
     check(book.start(render->id).has_value(), "a render can use the owner's start-time snapshot");
     ++unrelated;
