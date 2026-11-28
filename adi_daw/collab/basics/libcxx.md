@@ -6,6 +6,10 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 02:58 IST — main `bdcccb3e077af8bcf3b32e7210537721a9294cb2`, test and tool Apple-width check
+
+All 296 C++ translation units under `adi_daw/tests` and `adi_daw/tools` covered by `-Werror` in this JUCE and Pd build passed the strict Clang 20/libc++ syntax check with `-mlong-double-64`. Together with the production check below, this covers 629 translation units on this revision. The registered suites ran in the native Linux ABI as recorded below.
+
 ### 28 November 2026, 02:51 IST — main `bdcccb3e077af8bcf3b32e7210537721a9294cb2`, production Apple-width check
 
 All 333 production C++ translation units under `adi_daw/src` covered by `-Werror` in this JUCE and Pd build passed strict syntax checks with Clang 20, libc++ and `-mlong-double-64`. This expands the 53-bit `long double` precision check to sources that use types declared in headers. The native Linux build and suite results for this revision are recorded below.
