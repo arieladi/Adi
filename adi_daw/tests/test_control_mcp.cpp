@@ -1198,6 +1198,115 @@ void testAgentCorpus() {
     store->close();
 }
 
+void testAgentClipEnvelope() {
+    section("AGT-08: a clip envelope through the tools, beside the lane's arrangement stream, moved and undone");
+    constexpr std::int64_t W = textproj::kWhole;
+    ProjectFile f("envelope");
+    auto headless = openHeadless(f.path);
+    auto bridge = std::make_unique<Bridge>(headless);
+    Bridge& b = *bridge;
+    b.initialize();
+
+    const Json moveOp =
+        b.tool("ops_describe", {{"names", Json::array({"automation.movePoints"})}}).at("structuredContent").at("ops");
+    check(moveOp.size() == 1 && moveOp.at(0).value("agentMayEmit", false), "movePoints is one an agent may emit");
+
+    const Json level0 = b.tool("project_read", Json::object()).at("structuredContent");
+    const Json& next = level0.at("nextIds");
+    const std::int64_t track = next.value("track", 0), clip = next.value("clip", 0);
+    const std::int64_t lane = next.value("automationLane", 0), data = next.value("automationData", 0);
+    // Live's two places for one parameter's automation: the arrangement's
+    // lane, and the clip's own envelope, which plays with the clip and is
+    // timed from the clip's start.
+    const Json ops = Json::array(
+        {{{"op", "track.create"}, {"payload", {{"id", track}, {"kind", "midi"}, {"name", "Pad"}, {"index", 3}}}},
+         {{"op", "clip.create"},
+          {"payload", {{"id", clip}, {"track", track}, {"kind", "midi"}, {"name", "Swell"}, {"pos", W}, {"length", 2 * W}}}},
+         {{"op", "automation.createLane"},
+          {"payload", {{"id", lane},
+                       {"row", {{"id", lane}, {"owner_kind", "track"}, {"owner_id", track}, {"param_ref", "volume"},
+                                {"param_name", "Volume"}, {"time_base", 0}, {"value_domain", "real"}, {"unit", "dB"},
+                                {"default_value", 0.0}, {"min_value", -150.0}, {"max_value", 6.0}, {"enabled", 1},
+                                {"visible", 1}, {"height", 0}}}}}},
+         {{"op", "automation.writePoints"},
+          {"payload", {{"id", data},
+                       {"lane", lane},
+                       {"points", Json::array({{{"id", 1}, {"time", 0}, {"value", -6.0}, {"curve", 0},
+                                                {"tension", 0.0}}})}}}},
+         {{"op", "automation.writePoints"},
+          {"payload", {{"id", data + 1},
+                       {"lane", lane},
+                       {"clip", clip},
+                       {"points", {{{"id", 1}, {"time", 0}, {"value", -24.0}, {"curve", 1}, {"tension", 0.0}},
+                                   {{"id", 2}, {"time", 2 * W}, {"value", 0.0}, {"curve", 0}, {"tension", 0.0}}}}}}}});
+    const Json r = b.tool("changeset_propose",
+                          {{"request", "A pad that swells over its clip"}, {"baseHead", level0.at("head")}, {"ops", ops}});
+    check(!isToolError(r), "a clip, a lane, its arrangement stream and the clip's envelope preview: " +
+                               r.dump().substr(0, 400));
+    if (isToolError(r)) return;
+
+    StoreError e = StoreError::Ok;
+    auto store = Store::open(f.path, e);
+    check(store != nullptr, "the user opens the project");
+    if (!store) return;
+    const auto applyProposal = [&store](const Json& proposal) {
+        std::string err;
+        const auto changeset = agent::changesetFromJson(*store, proposal.at("structuredContent").at("changeset"), err);
+        return changeset && agent::apply(*store, *changeset).ok;
+    };
+    check(applyProposal(r), "the user applies it");
+
+    const auto streamsOf = [&b, track, lane]() -> Json {
+        const Json read = b.tool("project_read", {{"level", 1}, {"tracks", {track}}}).at("structuredContent");
+        const Json* l = rowWith(read.at("automationLanes"), "id", lane);
+        return l ? l->at("data") : Json::array();
+    };
+    const Json streams = streamsOf();
+    const Json* arrangement = rowWith(streams, "id", data);
+    const Json* envelope = rowWith(streams, "id", data + 1);
+    check(streams.size() == 2 && arrangement && envelope && arrangement->at("clip").is_null() &&
+              envelope->value("clip", 0) == clip,
+          "level 1: the lane holds two streams, the arrangement's and the clip's, each by its id");
+    if (envelope) {
+        const Json& points = envelope->at("points");
+        const Json* end = rowWith(points, "id", 2);
+        check(points.size() == 2 && end && end->value("time", 0) == 2 * W && end->value("value", 1.0) == 0.0 &&
+                  !end->contains("at") && envelope->value("nextPoint", 0) == 3,
+              "the envelope's points are timed from the clip's start, with no arrangement position");
+    }
+
+    // A second request moves the envelope's end point; the arrangement stream stays.
+    const std::string before = textproj::projectStore(*store).text;
+    const Json lateEnd = b.tool(
+        "changeset_propose",
+        {{"request", "Reach full level a bar earlier, a little quieter"},
+         {"baseHead", b.head()},
+         {"ops", Json::array({{{"op", "automation.movePoints"},
+                               {"payload", {{"id", data + 1},
+                                            {"lane", lane},
+                                            {"clip", clip},
+                                            {"points", Json::array({{{"id", 2}, {"time", W}, {"value", -3.0}}})}}}}})}});
+    check(!isToolError(lateEnd) && applyProposal(lateEnd),
+          "a move of the envelope's end point is proposed and applied: " + lateEnd.dump().substr(0, 300));
+    const Json moved = streamsOf();
+    const Json* env2 = rowWith(moved, "id", data + 1);
+    const Json* arr2 = rowWith(moved, "id", data);
+    const Json* end2 = env2 ? rowWith(env2->at("points"), "id", 2) : nullptr;
+    check(end2 && end2->value("time", 0) == W && end2->value("value", 0.0) == -3.0 && arr2 &&
+              arr2->at("points").size() == 1 && arr2->at("points").at(0).value("value", 0.0) == -6.0,
+          "the end point is at the clip's second bar at -3 dB; the arrangement's point is untouched");
+
+    History history(*store);
+    check(history.undo().ok && textproj::projectStore(*store).text == before, "one Undo puts the point back exactly");
+    const Json* env3 = rowWith(streamsOf(), "id", data + 1);
+    const Json* end3 = env3 ? rowWith(env3->at("points"), "id", 2) : nullptr;
+    check(end3 && end3->value("time", 0) == 2 * W && end3->value("value", 1.0) == 0.0, "and the read agrees");
+
+    bridge.reset();
+    headless.reset();
+    store->close();
+}
+
 void testAgentDeviceWork() {
     section("AGT-08: an agent's work on devices: a parameter, bypass, rename, reorder, remove and its Undo");
     ProjectFile f("devices");
@@ -1315,6 +1424,28 @@ void testAgentDeviceWork() {
           "one Undo brings the echo back exactly");
     check(rowWith(devicesOf(), "id", 21) && paramOf(21, "mix") == 0.8,
           "with the sound the agent gave it: mix 0.8, not the plug-in's default");
+
+    // Live's way: a removed device takes its automation with it, and its Undo
+    // brings both back. The space owns the lane written above.
+    const auto lanesOfBass = [&b] {
+        return b.tool("project_read", {{"level", 1}, {"tracks", {3}}}).at("structuredContent").at("automationLanes");
+    };
+    const std::string withLane = textproj::projectStore(*store).text;
+    const Json dropSpace = b.tool("changeset_propose",
+                                  {{"request", "Remove the space"},
+                                   {"baseHead", b.head()},
+                                   {"ops", Json::array({{{"op", "device.remove"}, {"payload", {{"id", 22}}}}})}});
+    check(!isToolError(dropSpace) && applyProposal(dropSpace),
+          "a third proposal removes the space, which owns a lane, and is applied: " + dropSpace.dump().substr(0, 300));
+    check(!rowWith(devicesOf(), "id", 22) && !rowWith(lanesOfBass(), "id", lane),
+          "the space and its lane are gone together");
+    History again(*store);
+    check(again.undo().ok && textproj::projectStore(*store).text == withLane, "one Undo brings the space back exactly");
+    const Json* restored = rowWith(lanesOfBass(), "id", lane);
+    check(rowWith(devicesOf(), "id", 22) && restored && restored->at("owner") == Json({{"kind", "device"}, {"id", 22}}) &&
+              restored->at("data").size() == 1 && restored->at("data").at(0).value("id", 0) == data &&
+              restored->at("data").at(0).at("points").size() == 2,
+          "with its lane, the lane's stream by its id and both points");
 
     bridge.reset();
     headless.reset();
@@ -1912,6 +2043,7 @@ int runAll() {
     testJobTools();
     testApplyBoundary();
     testAgentCorpus();
+    testAgentClipEnvelope();
     testAgentDeviceWork();
     testRefusals();
     testEchoesAreClipped();
