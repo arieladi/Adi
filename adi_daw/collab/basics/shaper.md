@@ -9,7 +9,19 @@ decisions 7 and 8 (branch `win/adr-0267`).
 
 ## Where the work stands (read this first if you continue it)
 
-Base: `origin/land/basics-1128c` (not yet an ancestor of main on 28 November). Build place: slot 7.
+Base: `origin/main` since round 2 (`land/basics-1128c` merged into main on 28 November). Build place: slot 7.
+
+**Done in round 2 (28 November 2026, a second session):**
+
+1. The first slot check of the chain (at `88b23c576`, core, all suites) failed two shaper suites; both are
+   fixed (`697369409`): the hold follower's oracle modelled the old three-way split, and a Pd probe named an
+   id the Sweep port had filled. Three other suites failed in that run and are not shaper code (see "Other
+   suites" below).
+2. The four Crush branches are ported, one commit each: bias (`599d639ea`, made by round 1 and left
+   unpushed in its worktree; pushed now), treble (`4a5190b7d`), jitter (`0e90b9dfd`), prefilter
+   (`292fbc558`). Each keeps today's samples when its control is at its default.
+3. The Pd test's descriptor walks were extended for everything gathered (`a5a105670`, `e96e6fdaf`).
+4. Score: rows 57, 59, 60 and 61 move to "has". On the chain **43 has / 48 part / 84 missing / 3 out**.
 
 **Done in round 1 (28 November 2026):**
 
@@ -22,11 +34,16 @@ Base: `origin/land/basics-1128c` (not yet an ancestor of main on 28 November). B
 
 **Half done, and where:**
 
-- The chain at `2bc49936e` has had no slot check yet: slot 7 answered BUSY for the first two hours (it was finishing a cold build of another branch). Run `core`, then `all`, before anything else, and expect to fix things: two ports were joined by hand and have never been compiled.
+- The chain at `e96e6fdaf` waits for slot 7 (core, filter `shaper_pd`). At `a5a105670` every shaper suite passed (`adi_shaper_tests`, `adi_shaper_crush_tests` with all four ports' fixtures, Time, Sweep, Filter, Drive, Room, follower filter, session) except `adi_shaper_pd_tests`, which stops at its first failed check and stopped at a hard-coded count fixed in `e96e6fdaf`. After it passes: a full `all` check, then the panel join (item 2 below).
+
+**Other suites.** The full core run at `88b23c576` also failed `adi_project_files_tests` ("a busy external
+writer refuses promptly..."), `adi_agent_log_tests` (three child writers) and `adi_link_playback_tests` (two
+tempo checks). None touches shaper code and the chain changes no file they build from; they are timing
+checks that ran while eight suites shared the build PC. Re-run them alone before calling them flaky.
 
 **Not started. Do these next, in this order:**
 
-1. Port the four Crush branches the DSP stack left out: `shaper-crush-bias` (`5f1d6c4a2`, controls 865-867),
+1. (Done in round 2, kept for the record.) Port the four Crush branches the DSP stack left out: `shaper-crush-bias` (`5f1d6c4a2`, controls 865-867),
    `shaper-crush-treble` (`edc8ee1f2`, 868-870), `shaper-crush-jitter` (`0b6ca57ef`, 871-873),
    `shaper-crush-prefilter` (`f05454619`, 874-876). Each is one commit. **They are not append-only ports.**
    All four were written on the Crush kernel of 22 November, before the four Crush repairs that have since
@@ -54,6 +71,21 @@ Base: `origin/land/basics-1128c` (not yet an ancestor of main on 28 November). B
    Trim (3073-3075) and Width Gain (3076-3078) onto it. The clones log of 25 November says the free points
    were only ever joined to the ten-stage device in a private comparison, so this join is new work. Change no
    look. Then a full check (`all`).
+   What round 2 read of it (merge base with the chain `73e26e4aa`, seven commits `a801fcf93`..`b3d393b36`,
+   29 files, about 9,700 lines added): besides the wave bank and the trims, the stack's `AdiShaper` has its
+   own eight-stage Time (`TimeOn = CrushOn + ...`, the chain has it at 415 with ten stages), a
+   `syncAtSample(quarterNotes, playing, sample, revision)` and a history tolerance on `sync`, an
+   `AdiShaperScope` passed to `process`, `gain(kind, amount, const CurveBand&)` (the band now carries `trim`,
+   `wetGain`, `midGain`), and `adi_shaper_corner.hpp`. New files that should come over unchanged:
+   `adi_shaper_wave.hpp`, `adi_shaper_corner.hpp`, `adi_shaper_scope.hpp`, the panel sources in `src/juce/`,
+   `cmake/devices/adi_shaper_panel.cmake`, and the four panel test files. The work is in `adi_shaper.hpp/.cpp`:
+   take the chain's side for everything the DSP stack has, then add the wave bank, the scope tap and the
+   trims, and check whether `syncAtSample` is the stack's newer transport or something the chain already
+   does another way (the chain has `adi_shaper_transport.hpp` changes of its own). The Pd file: take the
+   chain's and append the panel's 2049-3078 declarations as the four Crush ports did: each `adi.param` line
+   and its `msg ... p <id - 1>` after the last object line (object n is file line n + 2), and the two
+   connects (`n 0 n+1 0`, `n+1 0 1 0`) after the last connect. The undeclared-ID probe in
+   `test_adi_shaper_pd.cpp` names 2049: change it once the bank is declared.
 3. Score the list again (the note column names the branch that holds each row).
 4. Step 4 of the mission. **The free curve is not to be built from nothing:** the panel stack already has it
    (`AdiShaperWaveBank`: points with x, y, a bend and a corner shape Hold / Line / Bend / SourceCorner; the
@@ -76,8 +108,18 @@ Base: `origin/land/basics-1128c` (not yet an ancestor of main on 28 November). B
 | SC-481 | `basics/shaper-chain` `8f0502e06` | Ported the one commit of `clones/shaper-sweep-stereo` (`099aaa4fd`): a signed stereo centre offset per Sweep band, controls 853-855, appended after the Filter controls. The Sweep kernel and its suite are the branch's, unchanged. One test line adapted: it wrote 100 to every id between the base controls and its own to show holes are ignored; that range now holds Time, Noise and Room, so it writes only the holes. | No slot check yet: slot 7 was still finishing another branch's first build. Built to the branch, measured by the clones seat on 22 November against the model on its own base; not measured again on the gathered device. | gathered, not yet built: slot 7 was busy |
 | SC-481 | `basics/shaper-chain` `2bc49936e` | Merged `clones/shaper-hold-input` at `cf693f3ab` (four commits): a follower on each band's Crush hold rate, its detector source (split band or full stage input) and the detector's high-pass and low-pass, controls 877-912, descriptors 724-759. Joined by hand in the Crush call, the parameter switch and two tests (the commit message lists each). With the follower off the Crush call is the one the chain already made. | No slot check yet: slot 7 was still finishing another branch's first build. **One choice is this merge's reading, not measured:** while a follower moves the hold rate, Crush does not take the flat capture at a full-rate plateau (the landed endpoint repair takes it only for a constant contour). | gathered, not yet built: slot 7 was busy |
 
+| SC-481 | `basics/shaper-chain` `88b23c576` | Round 1's last commit: a local in the Pd test no longer hides `main`'s (MSVC C4456). | First slot check (core, all suites) at this head: build OK; two shaper suites failed, fixed in the next row. | fixed |
+| SC-481 | `basics/shaper-chain` `697369409` | The hold follower oracle (`holdFollowerOracle` in `test_adi_shaper.cpp`) splits as the gathered rack does: each outer band across its own edge first, the middle as the complement (the stack's `firstOrderBands`); the branch had modelled the 22 November serial split. The Pd test's undeclared-ID probe named 855, now the high Sweep offset; it names 860, a hole. No device code changed. | Slot 7 core, filter `shaper`, at `3d942454e`: `adi_shaper_tests` passes (it failed four times before). | gathered, Pd re-check pending |
+| SC-481 | `basics/shaper-chain` `3d942454e` | Merged `origin/main` (BASE). Clean. | Five validators pass. | merged |
+| SC-481 | `basics/shaper-chain` `599d639ea` | Crush quantiser bias per band, from `clones/shaper-crush-bias` at `5f1d6c4a2`, joined as round 1 planned (the landed quantiser body stays; the bias joins the perturbation; with dither on, the perturbation's own staircase is subtracted). Controls 865-867, descriptors 760-762. Round 1 made the commit and stopped before pushing it; round 2 pushed it unchanged. | `adi_shaper_crush_tests` passes, the branch's bias fixture included, and the older fixtures prove bias 0 keeps its samples. | gathered, Pd re-check pending |
+| SC-481 | `basics/shaper-chain` `4a5190b7d` | Crush treble shelf per band, from `clones/shaper-crush-treble` at `edc8ee1f2`: a 350 Hz one-pole split after the hold, the high part scaled by treble + (1 - treble) x bits x hold. At full treble the gain is exactly one and the sample is untouched. Controls 868-870 (default 100), descriptors 763-765. | The branch's four Crush fixtures (steps, impulse tails at 44.1 and 96 kHz, moving contours, transfer, history) pass on the landed kernel unchanged; its native and editable Pd taps: see the state. Built to the branch, measured by the clones seat on 22 November; not measured again on the gathered device. | gathered, Pd re-check pending |
+| SC-481 | `basics/shaper-chain` `0e90b9dfd` | Crush sample-clock jitter per band, from `clones/shaper-crush-jitter` at `0b6ca57ef`. Jitter 0 runs the landed hold sample for sample; jitter on runs the branch's clock in a separate `jitteredHold()` (increment = uncapped step x a speed drawn from the shared generator at its own seed; capture fraction = remainder / increment; a flat full-height contour pauses phase and draws). The phase stays the landed float. Controls 871-873, descriptors 766-768. | The branch's four fixtures (interval statistics, saturated capture markers at four rates, bypass pause, jitter with dither) pass. The markers pin ADI's own seed; the statistics were measured by the clones seat; not measured again on the gathered device. | gathered, Pd re-check pending |
+| SC-481 | `basics/shaper-chain` `292fbc558` | Crush eight-pole prefilter before the hold, switch per band, from `clones/shaper-crush-prefilter` at `f05454619`; gain from a cubic table of the (landed, float) hold step, capped below Nyquist; skipped for a flat full-rate contour. Controls 874-876 (switches, off), descriptors 769-771. The static check that 875 was a hole now checks that the prefilter ends where the hold follower starts. | The branch's three fixtures (measured readings at four rates, endpoints and repair, moving contour) pass. Built to the branch, measured by the clones seat on 22 November; not measured again on the gathered device. | gathered, Pd re-check pending |
+| SC-481 | `basics/shaper-chain` `a5a105670`, `e96e6fdaf` | The Pd test's walks over the descriptors count what was gathered: the combined-declaration walk ends with 853-855, 877-912, 865-876; the Filter project's retained count is the device's count less nine, not 712; the sparse ten-stage recall also requires 853-855 and 865-912 to regain their defaults. Test code only. | See the state. | gathered, Pd re-check pending |
+
 No file of another seat was edited by hand: every file touched is the clones seat's own shaper code, taken as
-that seat wrote it.
+that seat wrote it, and the shaper tests. Round 2 joined the four Crush commits to the landed kernel by hand;
+each commit message says how.
 
 ## For the director
 
@@ -112,7 +154,7 @@ branch has that the base lacks. They fall into seven groups:
 - **7 left out of the stack**: `shaper-crush-bias`, `shaper-crush-treble`, `shaper-crush-jitter`,
   `shaper-crush-prefilter`, `shaper-sweep-stereo`, `shaper-hold-input`, and `shaper-crush-hold-follower`
   (superseded by `shaper-hold-input`). Each is marked "Lands after 3 December" in the clones log of
-  22 November. **Two are in the chain now (Sweep stereo, the hold follower); the four Crush ones are to port.**
+  22 November. **All six are in the chain** (Sweep stereo and the hold follower in round 1, the four Crush ones in round 2).
 - **5 make the newest panel stack**: `shaper-curve-edit` (`b3d393b36`) on `shaper-panel-trim-1125`
   (`a0aa1b64f`), `-grid-1125`, `-rack-1125`, `-reconcile-1125`. Clones log, 25 November: "The panel remains
   held for the director's agreed proposal sheet and the after-3-December landing window." **To merge.**
@@ -135,15 +177,15 @@ branch has that the base lacks. They fall into seven groups:
 | `shaper-audio-retrigger` | `e08b932f1` | 11-22 | 3 | superseded: its Volume retrigger is in the chain through the later port `shaper-trigger-current-1125` (`58cb2115b`); controls 754-764 are the same |
 | `shaper-clock-grid` | `80e2ad089` | 11-22 | 21 | superseded: an older generation of the panel stack (22 November base); `shaper-curve-edit` is its port to the 25 November base, same panel file size |
 | `shaper-corners` | `afcad928c` | 11-19 | 10 | superseded: an older generation of the panel stack (22 November base); `shaper-curve-edit` is its port to the 25 November base, same panel file size |
-| `shaper-crush-bias` | `5f1d6c4a2` | 11-22 | 1 | NOT in the chain. One commit: Crush quantiser bias per band, controls 865-867. Collides with the stack in 8 files |
+| `shaper-crush-bias` | `5f1d6c4a2` | 11-22 | 1 | **in the chain** (round 2): ported as `599d639ea`. Crush quantiser bias per band, controls 865-867 |
 | `shaper-crush-clock-precision` | `51901a1ab` | 11-22 | 0 | already on the base (landed) |
 | `shaper-crush-endpoint` | `761744fba` | 11-22 | 0 | already on the base (landed) |
 | `shaper-crush-hold-follower` | `6e9134be7` | 11-22 | 1 | superseded by `shaper-hold-input` (in the chain), which carries the same controls 877-903 and more; the clones log asks to retire it |
 | `shaper-crush-hold-grid` | `9925a7054` | 11-22 | 0 | already on the base (landed) |
-| `shaper-crush-jitter` | `0b6ca57ef` | 11-22 | 1 | NOT in the chain. One commit: Crush clock jitter per band, controls 871-873. Collides in 8 files |
-| `shaper-crush-prefilter` | `f05454619` | 11-22 | 1 | NOT in the chain. One commit: the low-pass before the Crush hold, controls 874-876. Collides in 8 files |
+| `shaper-crush-jitter` | `0b6ca57ef` | 11-22 | 1 | **in the chain** (round 2): ported as `0e90b9dfd`. Crush clock jitter per band, controls 871-873 |
+| `shaper-crush-prefilter` | `f05454619` | 11-22 | 1 | **in the chain** (round 2): ported as `292fbc558`. The low-pass before the Crush hold, controls 874-876 |
 | `shaper-crush-resolution` | `2afb86d57` | 11-22 | 0 | already on the base (landed) |
-| `shaper-crush-treble` | `edc8ee1f2` | 11-22 | 1 | NOT in the chain. One commit: Crush treble per band, controls 868-870. Collides in 8 files |
+| `shaper-crush-treble` | `edc8ee1f2` | 11-22 | 1 | **in the chain** (round 2): ported as `4a5190b7d`. Crush treble per band, controls 868-870 |
 | `shaper-curve-cpu` | `f1c0ce15e` | 11-19 | 13 | superseded: an older generation of the panel stack (22 November base); `shaper-curve-edit` is its port to the 25 November base, same panel file size |
 | `shaper-curve-edit` | `b3d393b36` | 11-25 | 7 | NOT in the chain yet. The top of the newest panel stack: the free curve (points with a bend and a corner shape), three pens, the grid, the rack opener, Volume Trim and Width Gain. Collides with the DSP stack in 9 shaper files and with the base in 3 window files |
 | `shaper-drive-deadline` | `44de27f06` | 11-22 | 0 | already on the base (landed) |
@@ -204,7 +246,10 @@ branch has that the base lacks. They fall into seven groups:
 
 ## Step 3: the list scored again
 
-On main: 21 has, 24 part, 130 missing, 3 out. On the chain at `2bc49936e`: **39 has, 48 part, 88 missing,
+On main: 21 has, 24 part, 130 missing, 3 out. On the chain at `e96e6fdaf` (round 2): **43 has, 48 part,
+84 missing, 3 out**; at `2bc49936e` (round 1) it was 39 has, 48 part, 88 missing, 3 out. The four Crush rows
+are "built to the branch, not yet measured against the model" on the gathered device. Round 1's words:
+On the chain at `2bc49936e`: **39 has, 48 part, 88 missing,
 3 out**. A bold state changed. The score is read from the controls and code in the chain; nothing was measured
 against the model in this round. "held on" names a clones branch that is not in the chain yet and carries the
 row, in whole or in part: it is not counted.
@@ -268,11 +313,11 @@ row, in whole or in part: it is not counted.
 | 54 | It can shift the left and right center frequencies in opposite directions. | missing | **has** | Sweep Stereo Offset (853-855) |
 | 55 | It modulates bit depth down toward one bit and can pass through at maximum. | has | has |  |
 | 56 | It can dither before quantization. | has | has |  |
-| 57 | It can add a DC bias before reducing bit depth. | missing | missing | held on `shaper-crush-bias` |
+| 57 | It can add a DC bias before reducing bit depth. | missing | **has** | Crush Bias (865-867), round 2 |
 | 58 | It independently modulates resampling rate and can pass the input at the host rate. | has | has |  |
-| 59 | It can add controlled irregularity to resampling time. | missing | missing | held on `shaper-crush-jitter` |
-| 60 | It can low-pass the input before resampling. | missing | missing | held on `shaper-crush-prefilter` |
-| 61 | It can attenuate treble with an output shelf. | missing | missing | held on `shaper-crush-treble` |
+| 59 | It can add controlled irregularity to resampling time. | missing | **has** | Crush Jitter (871-873), round 2 |
+| 60 | It can low-pass the input before resampling. | missing | **has** | Crush Prefilter switch (874-876), round 2 |
+| 61 | It can attenuate treble with an output shelf. | missing | **has** | Crush Treble (868-870), round 2 |
 | 62 | It shapes gain between silence and unity. | has | has |  |
 | 63 | It trims the gain at the output of the Volume stage. | missing | missing | held on `shaper-curve-edit` (Volume Trim) |
 | 64 | It can overlay an external sidechain waveform behind the Volume contour. | missing | missing |  |
