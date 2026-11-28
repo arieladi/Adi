@@ -1,0 +1,175 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet, proposal 1</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, the built-in devices' panels, proposal 1 (28 November 2026). SC-455, after the director's second
+// test: "it should look like Ableton utility, please". Seven devices, each laid out the way Live lays
+// its own out, with the controls ADI's devices already declare (pd/devices/*.pd). ADI's own drawing.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=T(20,30,'ADI  ·  the built-in devices, laid out as Live lays its own',{z:17,w:700});
+s+=T(20,48,'Each panel keeps the controls the device has today. What changes is where they stand, their names, and a graph where Live has one. Drawn at 1.6 times the Device View. Numbers refer to the notes below.',{z:11.5,f:C.dim});
+s+=R(1716,12,190,22,C.acc,{r:5});s+=T(1811,27,'DEVICES SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+const para=(x,y,lines,o={})=>lines.map((t,k)=>T(x,y+k*(o.lh||15),t,{z:o.z||11.5,f:o.f||C.text,w:o.w||400})).join('');
+const sec=(x,y,w,h,t)=>grp(x,y,w,h)+T(x+8,y+15,t,{z:10,f:C.dim,w:600,ls:0.4});
+const kn=(cx,cy,r,v,label,val,o={})=>knob(cx,cy,r,v,o.c||C.val,label,val,o);
+const sw=(x,y,w,h,t,on,o={})=>btn(x,y,w,h,t,Object.assign({on:on,z:10.5,r:4},o));
+const xy=(x,y,w,h,u,v)=>R(x,y,w,h,C.well,{r:5})+L(x+w*u,y,x+w*u,y+h,'#ffffff',1,{op:0.08})+L(x,y+h*v,x+w,y+h*v,'#ffffff',1,{op:0.08})+CI(x+w*u,y+h*v,4.5,C.val,{s:C.well,sw:1.5});
+const Y1=78,Y2=408,PH=300;
+
+// ---------------- Utility ----------------
+{const x=20,y=Y1,w=250;s+=panel(x,y,w,PH,'Utility','');
+ s+=sec(x+8,y+30,118,260,'INPUT');
+ s+=sw(x+16,y+54,48,20,'ØL',false)+sw(x+70,y+54,48,20,'ØR',false);
+ s+=chooser(x+16,y+82,102,20,'Stereo');
+ s+=kn(x+67,y+136,20,0.25,'Width','100 %');
+ s+=sw(x+16,y+198,102,20,'Mono',false);
+ s+=sw(x+16,y+224,102,20,'Bass Mono',true);
+ s+=box(x+16,y+250,66,20,'120 Hz')+sw(x+86,y+250,32,20,'Aud.',false,{z:9.5});
+ s+=sec(x+132,y+30,110,260,'OUTPUT');
+ s+=kn(x+187,y+100,26,0.77,'Gain','0.0 dB');
+ s+=kn(x+187,y+190,17,0.5,'Balance','C',{bi:1});
+ s+=sw(x+140,y+250,46,20,'Mute',false)+sw(x+190,y+250,44,20,'DC',false);
+ s+=note(x+w-14,y+34,1);}
+
+// ---------------- Auto Filter ----------------
+{const x=285,y=Y1,w=780;s+=panel(x,y,w,PH,'Auto Filter','');
+ s+=sec(x+8,y+30,330,260,'FILTER');
+ s+=chooser(x+70,y+36,104,20,'Lowpass')+chooser(x+180,y+36,70,20,'MS2')+chooser(x+256,y+36,74,20,'24 dB');
+ s+=filterd(x+16,y+64,314,116);
+ s+=kn(x+62,y+212,18,0.62,'Frequency','1.20 kHz')+kn(x+142,y+212,18,0.4,'Resonance','35 %')+kn(x+222,y+212,18,0.0,'Drive','0 %')+kn(x+296,y+212,18,0.5,'Morph','',{dis:1});
+ s+=sec(x+346,y+30,190,260,'LFO');
+ s+=chooser(x+354,y+54,84,20,'Sine')+sw(x+444,y+54,38,20,'Hz',true)+sw(x+486,y+54,42,20,'Sync',false);
+ s+=kn(x+396,y+112,18,0.25,'Amount','25 %')+kn(x+486,y+112,18,0.45,'Rate','0.80 Hz');
+ s+=kn(x+396,y+196,15,0.0,'Shape','0 %')+kn(x+486,y+196,15,0.5,'Phase','180°');
+ s+=sw(x+354,y+262,60,20,'Phase',true)+sw(x+418,y+262,50,20,'Spin',false)+chooser(x+472,y+262,56,20,'Steps');
+ s+=sec(x+544,y+30,120,260,'ENVELOPE');
+ s+=kn(x+604,y+106,18,0.5,'Amount','0 %',{bi:1});
+ s+=kn(x+576,y+196,14,0.2,'Attack','6 ms')+kn(x+632,y+196,14,0.45,'Release','200 ms');
+ s+=sw(x+552,y+262,104,20,'Hold',false);
+ s+=sec(x+672,y+30,100,260,'OUTPUT');
+ s+=kn(x+722,y+106,18,0.5,'Output','0.0 dB',{bi:1})+kn(x+722,y+196,18,1.0,'Dry/Wet','100 %');
+ s+=sw(x+680,y+262,84,20,'Sidechain',false);
+ s+=note(x+334,y+70,2);}
+
+// ---------------- EQ Eight ----------------
+{const x=1080,y=Y1,w=820;s+=panel(x,y,w,PH,'EQ Eight','');
+ s+=sec(x+8,y+30,84,260,'BAND 3');
+ s+=kn(x+50,y+78,15,0.6,'Freq','1.00 kHz',{c:'#62d36b'})+kn(x+50,y+158,15,0.62,'Gain','3.0 dB',{bi:1,c:'#62d36b'})+kn(x+50,y+238,15,0.3,'Q','0.71',{c:'#62d36b'});
+ const dw=w-100-128;
+ const EB=[{t:'hp',f:0.1,c:'#ffad3b'},{f:0.24,g:-0.35,q:0.05,c:'#c479ff'},{f:0.5,g:0.45,q:0.07,c:'#62d36b'},{f:0.68,g:-0.25,q:0.04,c:'#f2c53d'},{t:'hs',f:0.86,g:0.4,c:'#4fc3ea'}];
+ s+=eqd(x+100,y+30,dw,198,EB,7);
+ const shapes=['M0 10L5 10Q9 10 10 2L24 2','M0 10Q8 10 12 6Q16 2 24 2','M0 6L7 6Q12 -6 17 6L24 6','M0 6L7 6Q12 -6 17 6L24 6','M0 6L7 6Q12 -6 17 6L24 6','M0 6L7 6Q12 -6 17 6L24 6','M0 2Q8 2 12 6Q16 10 24 10','M0 2L14 2Q15 10 19 10L24 10'];
+ const on=[1,1,1,1,0,0,1,0],cols=['#ffad3b','#c479ff','#62d36b','#f2c53d','#8f8f8f','#8f8f8f','#4fc3ea','#8f8f8f'];
+ for(let k=0;k<8;k++){const cx=x+100+k*(dw/8),cw=dw/8-4;
+  s+=R(cx,y+236,cw,26,k===2?'#3a3a40':C.ctl,{r:4,s:k===2?C.text:C.edge});
+  s+=R(cx+3,y+239,20,20,on[k]?cols[k]:C.well,{r:4});s+=T(cx+13,y+253.5,String(k+1),{z:11,w:700,a:'middle',f:on[k]?C.ink:C.dim});
+  s+=`<g transform="translate(${cx+30} ${y+243})">`+P(shapes[k],{s:on[k]?C.text:C.faint,sw:1.6})+`</g>`;}
+ s+=T(x+100,y+282,'One cell for each filter: its number switches it on, the curve beside it chooses its kind.',{z:10.5,f:C.dim});
+ s+=sec(x+w-120,y+30,112,260,'GLOBAL');
+ s+=chooser(x+w-112,y+54,96,20,'Stereo');
+ s+=T(x+w-112,y+92,'Edit',{z:10.5,f:C.dim})+sw(x+w-76,y+78,28,20,'A',true)+sw(x+w-44,y+78,28,20,'B',false);
+ s+=sw(x+w-112,y+106,96,20,'Adaptive Q',true);
+ s+=T(x+w-112,y+146,'Scale',{z:10.5,f:C.dim})+box(x+w-70,y+132,54,20,'100 %');
+ s+=kn(x+w-64,y+200,17,0.5,'Gain','0.0 dB',{bi:1});
+ s+=note(x+104,y+34,3);}
+
+// ---------------- Delay ----------------
+{const x=20,y=Y2,w=560;s+=panel(x,y,w,PH,'Delay','');
+ s+=sec(x+8,y+30,200,260,'TIME');
+ s+=sw(x+16,y+54,88,20,'Sync L',true)+sw(x+112,y+54,88,20,'Sync R',true);
+ const nums=[1,2,3,4,5,6,8,16];
+ for(let c=0;c<2;c++)for(let k=0;k<8;k++){const bx=x+16+c*96+(k%4)*22,by=y+82+Math.floor(k/4)*22,sel=(c===0&&k===2)||(c===1&&k===3);
+  s+=R(bx,by,20,20,sel?C.acc:C.ctl,{r:3,s:sel?null:C.edge})+T(bx+10,by+14,String(nums[k]),{z:10.5,a:'middle',f:sel?C.ink:C.text,w:sel?700:400});}
+ s+=T(x+16,y+146,'Offset',{z:10,f:C.dim})+box(x+16,y+152,88,20,'0.0 %')+box(x+112,y+152,88,20,'0.0 %');
+ s+=sw(x+16,y+182,184,20,'Stereo Link',false);
+ s+=T(x+16,y+256,'When the time changes',{z:10,f:C.dim});
+ s+=sw(x+16,y+262,60,20,'Repitch',true)+sw(x+78,y+262,60,20,'Fade',false)+sw(x+140,y+262,60,20,'Jump',false);
+ s+=sec(x+216,y+30,84,260,'FEEDBACK');
+ s+=kn(x+258,y+112,22,0.52,'Feedback','50 %');
+ s+=sw(x+226,y+198,64,22,'Freeze',false);
+ s+=sec(x+308,y+30,100,260,'FILTER');
+ s+=sw(x+366,y+34,34,16,'On',true,{z:9.5});
+ s+=R(x+316,y+56,84,84,C.well,{r:5})+P(`M${x+316} ${y+132}Q${x+340} ${y+130} ${x+350} ${y+84}Q${x+358} ${y+70} ${x+366} ${y+84}Q${x+376} ${y+130} ${x+400} ${y+132}`,{s:C.val,sw:2})+CI(x+358,y+76,4.5,C.val,{s:C.well,sw:1.5});
+ s+=kn(x+336,y+176,12,0.5,'Freq','1.00 kHz')+kn(x+382,y+176,12,1.0,'Width','9.0');
+ s+=sec(x+416,y+30,64,260,'MOD');
+ s+=kn(x+448,y+72,12,0.3,'Rate','0.50 Hz')+kn(x+448,y+150,12,0.0,'Filter','0 %')+kn(x+448,y+228,12,0.0,'Time','0 %');
+ s+=sec(x+488,y+30,64,260,'OUTPUT');
+ s+=kn(x+520,y+112,18,0.5,'Dry/Wet','50 %');
+ s+=sw(x+494,y+198,52,22,'Ping Pong',false,{z:9});
+ s+=note(x+194,y+40,4);}
+
+// ---------------- Reverb ----------------
+{const x=595,y=Y2,w=520;s+=panel(x,y,w,PH,'Reverb','');
+ s+=sec(x+8,y+30,92,260,'INPUT FILTER');
+ s+=sw(x+16,y+54,36,18,'Lo',true)+sw(x+56,y+54,36,18,'Hi',true);
+ s+=xy(x+16,y+78,76,64,0.35,0.5);
+ s+=kn(x+54,y+190,16,0.1,'Predelay','2.5 ms');
+ s+=sec(x+106,y+30,92,260,'EARLY REFL.');
+ s+=sw(x+114,y+54,76,18,'Spin',true);
+ s+=xy(x+114,y+78,76,64,0.6,0.4);
+ s+=kn(x+152,y+190,16,0.5,'Shape','0.50');
+ s+=sec(x+204,y+30,80,260,'GLOBAL');
+ s+=kn(x+244,y+84,16,0.45,'Size','100 %')+kn(x+244,y+168,16,0.83,'Stereo','100°');
+ s+=T(x+212,y+238,'Smooth',{z:10,f:C.dim})+chooser(x+212,y+244,64,20,'Fast');
+ s+=sec(x+290,y+30,150,260,'DIFFUSION NETWORK');
+ s+=sw(x+298,y+54,42,18,'High',true)+sw(x+344,y+54,42,18,'Low',false)+sw(x+390,y+54,42,18,'Chorus',true,{z:9.5});
+ s+=decayd(x+298,y+78,134,64);
+ s+=kn(x+330,y+186,20,0.4,'Decay','1.20 s');
+ s+=kn(x+402,y+178,11,0.6,'Diffusion','60 %')+kn(x+402,y+236,11,0.4,'Scale','40 %');
+ s+=sw(x+298,y+262,34,20,'Freeze',false,{z:9})+sw(x+334,y+262,26,20,'Flat',true,{z:9})+sw(x+362,y+262,26,20,'Cut',false,{z:9});
+ s+=sec(x+446,y+30,66,260,'OUTPUT');
+ s+=kn(x+479,y+72,12,0.7,'Reflect','0.0 dB')+kn(x+479,y+150,12,0.7,'Diffuse','0.0 dB')+kn(x+479,y+228,12,0.55,'Dry/Wet','55 %');}
+
+// ---------------- Saturator ----------------
+{const x=1130,y=Y2,w=310;s+=panel(x,y,w,PH,'Saturator','');
+ s+=curved(x+8,y+30,150,150);
+ s+=chooser(x+8,y+188,150,20,'Analog Clip');
+ s+=sw(x+8,y+214,72,20,'Soft Clip',false)+sw(x+86,y+214,72,20,'Color',true);
+ s+=kn(x+26,y+252,9,0.5,'Base','',{bi:1})+kn(x+64,y+252,9,0.5,'Freq','')+kn(x+102,y+252,9,0.3,'Width','')+kn(x+140,y+252,9,0.5,'Depth','',{bi:1});
+ s+=sec(x+166,y+30,136,260,'DRIVE');
+ s+=kn(x+234,y+104,28,0.66,'Drive','12.0 dB',{bi:1});
+ s+=kn(x+204,y+214,15,1.0,'Output','0.0 dB')+kn(x+266,y+214,15,1.0,'Dry/Wet','100 %');
+ s+=note(x+146,y+42,5);}
+
+// ---------------- Multiband Dynamics ----------------
+{const x=1455,y=Y2,w=445;s+=panel(x,y,w,PH,'Multiband Dynamics','');
+ const bx=x+8,bw=w-16;
+ s+=R(bx,y+30,bw,44,C.well,{r:5});
+ const c1=bx+bw*0.26,c2=bx+bw*0.66;
+ s+=R(bx+1,y+31,c1-bx-1,42,'#ffad3b',{r:4,op:0.16})+R(c1,y+31,c2-c1,42,'#62d36b',{op:0.16})+R(c2,y+31,bx+bw-c2-1,42,'#4fc3ea',{r:4,op:0.16});
+ s+=L(c1,y+30,c1,y+74,C.text,2)+L(c2,y+30,c2,y+74,C.text,2);
+ s+=R(c1-26,y+62,52,14,C.ctl,{r:3,s:C.edge})+T(c1,y+72.5,'120 Hz',{z:9.5,a:'middle'})+R(c2-26,y+62,52,14,C.ctl,{r:3,s:C.edge})+T(c2,y+72.5,'2.50 kHz',{z:9.5,a:'middle'});
+ s+=sw(bx+10,y+36,40,18,'Low',true,{c:'#ffad3b',z:10})+sw(c1+10,y+36,40,18,'Mid',true,{c:'#62d36b',z:10})+sw(c2+10,y+36,40,18,'High',true,{c:'#4fc3ea',z:10});
+ s+=sw(bx+54,y+36,18,18,'S',false,{z:9.5})+sw(c1+54,y+36,18,18,'S',false,{z:9.5})+sw(c2+54,y+36,18,18,'S',false,{z:9.5});
+ const rows=[['High','#4fc3ea',0.55],['Mid','#62d36b',0.7],['Low','#ffad3b',0.62]];
+ rows.forEach((r,k)=>{const ry=y+82+k*56,lx=bx+52,lw=bw-52-52-98;
+  s+=T(bx+2,ry+14,r[0],{z:10.5,w:600,f:r[1]});s+=box(bx,ry+22,46,20,'0.0 dB',{z:9.5});
+  s+=R(lx,ry,lw,46,C.well,{r:4});
+  s+=R(lx+2,ry+4,lw*0.22,38,'none',{r:3,s:C.acc,sw:1.3})+R(lx+lw*0.72,ry+4,lw*0.28-2,38,'none',{r:3,s:C.acc,sw:1.3});
+  s+=R(lx+2,ry+18,lw*r[2],10,r[1],{r:2,op:0.8});
+  s+=box(lx+lw+6,ry+22,46,20,'0.0 dB',{z:9.5});s+=T(lx+lw+8,ry+14,'Out',{z:10,f:C.dim});
+  s+=box(x+w-100,ry,92,21,'Att  10.0 ms',{z:9.5})+box(x+w-100,ry+25,92,21,'Rel  150 ms',{z:9.5});});
+ s+=sw(bx,y+262,64,20,'Soft Knee',true,{z:9.5})+sw(bx+68,y+262,34,20,'RMS',true,{z:9.5})+sw(bx+104,y+262,36,20,'Peak',false,{z:9.5});
+ s+=box(bx+146,y+262,78,20,'Time 100 %',{z:9.5})+box(bx+228,y+262,88,20,'Amount 100 %',{z:9.5})+box(bx+320,y+262,109,20,'Output 0.0 dB',{z:9.5});
+ s+=note(c2+86,y+40,6);}
+
+// ---------------- notes ----------------
+{const y=730;s+=L(20,y,1900,y,'#3a3a3a');
+ s+=T(20,y+26,'What the sheet proposes',{z:14,w:700});
+ const N=[
+  ['1','One row high, in named sections.',['Every device is as tall as the Device View and reads left to right in sections,','as Live\'s do: input before output. No grid of unnamed knobs, nothing to scroll.']],
+  ['2','A graph where Live has one, and it is the control.',['The filter curve, the EQ curve, the delay\'s filter, the reverb\'s pads: the dot is','dragged in the picture, and the dials beside it show the same values.']],
+  ['3','EQ Eight is Live\'s EQ Eight.',['Eight numbered filters on one curve, the chosen one\'s Freq, Gain and Q at the','left, the eight cells under the curve, Mode, Edit A/B, Adaptive Q, Scale and Gain','at the right. Your own EQ is not this device (ADR-0266).']],
+  ['4','A dial where Live has a dial, a switch where it has a switch.',['Delay\'s synced time is the row of numbered boxes, in sixteenths, as Live\'s.','A choice of a few words is a chooser; on and off is a lit switch.']],
+  ['5','Each device keeps the controls it has.',['Nothing is removed or added to what a device can do. Controls that only matter','in one mode (Morph, the Color dials) are dimmed outside it, not hidden.']],
+  ['6','One addition: the bands on a strip.',['Multiband Dynamics gets a strip across the top where the two band edges are','dragged, as you asked. Live sets them in two number boxes only. Under it the','three bands are Live\'s: level, the two threshold blocks, in and out.']],
+ ];
+ N.forEach((n,k)=>{const cx=20+(k%3)*630,cy=y+52+Math.floor(k/3)*100;
+  s+=note(cx+11,cy+2,n[0]);s+=T(cx+30,cy+7,n[1],{z:12.5,w:700});s+=para(cx+30,cy+26,n[2],{f:'#bdbdbd'});});
+ s+=L(20,y+262,1900,y+262,'#3a3a3a');
+ s+=T(20,y+286,'Not on this sheet',{z:12.5,w:700});
+ s+=T(170,y+286,'Echo (three pages as Live\'s), Hybrid Reverb, Overdrive, Redux and the other eleven follow the same six rules on a second sheet once this one is agreed. The places of single controls are checked against Live itself before a panel is built.',{z:11.5,f:'#bdbdbd'});
+ s+=T(20,y+310,'Colours, dials and switches are the design language agreed on 18 November. Values shown are examples.',{z:11,f:C.dim});}
+finish(W,H,s);
+</script></body></html>
