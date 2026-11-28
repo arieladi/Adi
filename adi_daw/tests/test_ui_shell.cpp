@@ -8935,6 +8935,69 @@ void browserEmptySearch(AppCommands &commands, const std::filesystem::path &dir)
           "SC-146: Hot-Swap keeps its own notice");
     browser.setHotSwap(std::nullopt);
 }
+void browserHistory(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string why;
+    auto doc = ProjectDocument::open(dir / "browser-history.adi", true, {}, why);
+    check(doc != nullptr, "SC-139: a project for the Browser's history");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "browser-history");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    LibraryListing listing;
+    listing.places = {{"Gone Soon", dir / "Gone Soon", "gone-soon"}};
+    listing.files = {{"Kick.wav", dir / "Gone Soon" / "Kick.wav", "gone-soon"}};
+    browser.setListing(listing);
+    const auto index = [&](const char *name) {
+        const auto found = std::ranges::find(browser.sidebar(), juce::String(name), &BrowserPanel::Entry::name);
+        return found == browser.sidebar().end() ? -1 : static_cast<int>(found - browser.sidebar().begin());
+    };
+    const auto at = [&](const char *name, const juce::String &text) {
+        return browser.selected() == index(name) && browser.search.getText() == text;
+    };
+    const auto type = [&](const juce::String &text) {
+        browser.search.setText(text, false);
+        browser.search.onTextChange();
+    };
+    auto *keys = commands.manager.getKeyMappings();
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    check(AppCommands::commandFor("browser.back") == AppCommands::BrowserBack &&
+              AppCommands::commandFor("browser.forward") == AppCommands::BrowserForward &&
+              keys->findCommandForKeyPress(juce::KeyPress('[', cmd, 0)) == AppCommands::BrowserBack &&
+              keys->findCommandForKeyPress(juce::KeyPress(']', cmd, 0)) == AppCommands::BrowserForward,
+          "SC-139: Back and Forward are commands with stable ids, on Ctrl+[ and Ctrl+]");
+    check(at("Instruments", {}) && !browser.canGoBack() && !browser.canGoForward() && !root.command(AppCommands::BrowserBack),
+          "SC-139: a new Browser has no history");
+    browser.choose(index("Samples"));
+    type("kick");
+    check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search),
+          "SC-139: a search taken into the list");
+    browser.choose(index("Gone Soon"));
+    browser.choose(index("All"));
+    check(at("All", "kick") && browser.canGoBack() && !browser.canGoForward(), "SC-139: four visits");
+    check(root.command(AppCommands::BrowserBack) && at("Gone Soon", "kick"), "SC-139: Back returns to the Place");
+    check(root.command(AppCommands::BrowserBack) && at("Samples", "kick") && browser.shown().size() == 1,
+          "SC-139: Back returns to the label with its search and its results");
+    check(browser.goBack() && at("Samples", {}) && browser.goBack() && at("Instruments", {}) && !browser.canGoBack(),
+          "SC-139: Back walks to the first visit and stops there");
+    check(root.command(AppCommands::BrowserForward) && at("Samples", {}) && browser.goForward() && at("Samples", "kick"),
+          "SC-139: Forward walks the same visits again");
+    browser.setListing({});
+    check(browser.goForward() && at("All", "kick"), "SC-139: Forward to a Place that has gone opens All");
+    check(browser.goBack() && at("Samples", "kick"),
+          "SC-139: the gone label's visit is now All, and Back goes on past it");
+    type("snare");
+    check(browser.canGoBack() && browser.goBack() && browser.search.getText() == "kick" && browser.goForward() &&
+              browser.search.getText() == "snare",
+          "SC-139: a search typed and not yet entered is kept as a visit when going back");
+    browser.choose(index("Instruments"));
+    check(!browser.canGoForward(), "SC-139: a new visit after going back drops the visits ahead");
+    browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+    check(!browser.canGoBack() && !browser.goBack(), "SC-139: Hot-Swap keeps no history");
+    browser.setHotSwap(std::nullopt);
+    check(browser.canGoBack(), "SC-139: the history returns after Hot-Swap");
+}
 void browserCurrentProject(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "current-project.adi", true, {}, error);
@@ -30693,7 +30756,8 @@ int main(int argc, char **argv) {
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
                       C::ReverseAudio == C::ToggleCollectionGray + 1 &&
                       C::LockEnvelopes == C::ReverseAudio + 1 && C::OpenBackup == C::LockEnvelopes + 1 &&
-                      C::ConsolidateMidi == C::OpenBackup + 1 && C::LastId == C::ConsolidateMidi,
+                      C::ConsolidateMidi == C::OpenBackup + 1 && C::BrowserBack == C::ConsolidateMidi + 1 &&
+                      C::BrowserForward == C::BrowserBack + 1 && C::LastId == C::BrowserForward,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -30702,7 +30766,7 @@ int main(int argc, char **argv) {
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
                   "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
                   "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), Lock Envelopes, "
-                  "Open Backup and Consolidate");
+                  "Open Backup, Consolidate, and Browser Back and Forward");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -33370,6 +33434,7 @@ int main(int argc, char **argv) {
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
     trace("browserEmptySearch", [&] { browserEmptySearch(commands, temp.path()); });
+    trace("browserHistory", [&] { browserHistory(commands, temp.path()); });
     trace("browserCurrentProject", [&] { browserCurrentProject(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });

@@ -214,7 +214,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         LockEnvelopes,
         OpenBackup,
         ConsolidateMidi,
-        LastId = ConsolidateMidi
+        BrowserBack,    // SC-139: Live's Browser history, Ctrl+[ and Ctrl+]
+        BrowserForward,
+        LastId = BrowserForward
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

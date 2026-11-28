@@ -152,3 +152,5 @@
 29079 Lock Envelopes: 
 29080 Open Backup...: 
 29081 Consolidate: Cmd+J
+29082 Browser Back: Cmd+[
+29083 Browser Forward: Cmd+]

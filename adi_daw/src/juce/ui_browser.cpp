@@ -337,6 +337,7 @@ void BrowserPanel::setPreviewDisplay(std::shared_ptr<const PreviewPeaks> peaks, 
     }
 }
 void BrowserPanel::enterList() {
+    recordVisit(); // SC-139: a search taken into the list is a visit
     if (firstItem() >= 0) {
         if (list.getSelectedRows().isEmpty())
             list.selectRow(firstItem());
@@ -1825,9 +1826,65 @@ void BrowserPanel::searchAll() {
     else
         startSearchPluginScan();
 }
+BrowserPanel::Visit BrowserPanel::currentVisit() const {
+    return {labelKey(selected_), search.getText()};
+}
+void BrowserPanel::recordVisit() {
+    if (walkingHistory_ || hotSwap_)
+        return;
+    auto here = currentVisit();
+    if (here.label.empty() || (!history_.empty() && history_[historyAt_] == here))
+        return;
+    // A new visit after going back drops the visits ahead of it, as a web browser's history does.
+    if (!history_.empty())
+        history_.resize(historyAt_ + 1);
+    history_.push_back(std::move(here));
+    if (history_.size() > kHistoryLimit)
+        history_.erase(history_.begin());
+    historyAt_ = history_.size() - 1;
+    root_.commands().manager.commandStatusChanged();
+}
+bool BrowserPanel::canGoBack() const {
+    if (hotSwap_ || history_.empty())
+        return false;
+    return historyAt_ > 0 || !(currentVisit() == history_[historyAt_]);
+}
+bool BrowserPanel::canGoForward() const {
+    return !hotSwap_ && historyAt_ + 1 < history_.size() && currentVisit() == history_[historyAt_];
+}
+bool BrowserPanel::goBack() {
+    if (!canGoBack())
+        return false;
+    // A search typed and not yet taken into the list is a visit too, so Forward comes back to it.
+    recordVisit();
+    return historyAt_ > 0 && revisit(historyAt_ - 1);
+}
+bool BrowserPanel::goForward() {
+    return canGoForward() && revisit(historyAt_ + 1);
+}
+bool BrowserPanel::revisit(std::size_t at) {
+    if (at >= history_.size())
+        return false;
+    historyAt_ = at;
+    const auto visit = history_[at];
+    const juce::ScopedValueSetter walking(walkingHistory_, true);
+    clearRevealedSample();
+    search.setText(visit.search, false);
+    syncSearchClearButton();
+    int label = findLabel(visit.label);
+    if (label < 0)
+        label = findLabel(kAllLabel);
+    choose(label);
+    // The visit is now what it showed: All, where its label has gone.
+    history_[at] = currentVisit();
+    root_.commands().manager.commandStatusChanged();
+    return true;
+}
 void BrowserPanel::choose(int i) {
     if (hotSwap_)
         return;
+    // SC-139: the visit being left, with any search typed in it, before the new one.
+    recordVisit();
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         if (sidebar_[static_cast<std::size_t>(i)].glyph == AddFolder) {
             if (requestAddFolder) requestAddFolder();
@@ -1846,6 +1903,7 @@ void BrowserPanel::choose(int i) {
         const bool differentList = selected_ != i;
         selected_ = i;
         pendingLabel_.clear();
+        recordVisit();
         revealSidebarSelection();
         // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
         // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.

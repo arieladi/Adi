@@ -152,6 +152,14 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::function<void(const std::filesystem::path &)> revealInFileManager;
     std::function<void(juce::PopupMenu, juce::Point<int>)> onContextMenu;
     void searchAll();
+    // SC-139: Live's Browser history. A label chosen, or a search taken into the list, is a visit;
+    // Back and Forward (Ctrl+[ and Ctrl+]) return to the label and the search of the one before or
+    // after. A label that has gone since returns to All. Hot-Swap keeps no history.
+    static constexpr std::size_t kHistoryLimit = 100;
+    bool canGoBack() const;
+    bool canGoForward() const;
+    bool goBack();
+    bool goForward();
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
     // A row of the list: a library file or folder, a heading, a device or a saved preset.
@@ -220,6 +228,17 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
+    struct Visit {
+        std::string label;
+        juce::String search;
+        bool operator==(const Visit &) const = default;
+    };
+    Visit currentVisit() const;
+    void recordVisit();
+    bool revisit(std::size_t);
+    std::vector<Visit> history_;
+    std::size_t historyAt_ = 0;
+    bool walkingHistory_ = false;
     void setSidebarScroll(double);
     void revealSidebarSelection();
     bool setCurrentProjectLabelVisible(bool);

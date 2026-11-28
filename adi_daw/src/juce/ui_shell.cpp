@@ -416,6 +416,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
         {"edit.consolidate", "Edit"}, // ConsolidateMidi
+        {"browser.back", "Browser"}, // BrowserBack
+        {"browser.forward", "Browser"}, // BrowserForward
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -665,7 +667,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate",
+                                  "Browser Back", "Browser Forward"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -702,6 +705,14 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ConsolidateMidi:
         info.addDefaultKeypress('j', cmd);
         info.setActive(active_ != nullptr && active_->canConsolidateMidi());
+        break;
+    case BrowserBack:
+        info.addDefaultKeypress('[', cmd);
+        info.setActive(active_ != nullptr && active_->browser.canGoBack());
+        break;
+    case BrowserForward:
+        info.addDefaultKeypress(']', cmd);
+        info.setActive(active_ != nullptr && active_->browser.canGoForward());
         break;
     case Undo:
         info.addDefaultKeypress('z', cmd);
@@ -6668,6 +6679,10 @@ bool AdiRootComponent::command(int id) {
         return browser.previewSelected();
     case AppCommands::HotSwap:
         return devices.hotSwapFocused();
+    case AppCommands::BrowserBack:
+        return browser.goBack();
+    case AppCommands::BrowserForward:
+        return browser.goForward();
     case AppCommands::ToggleFavorite:
     case AppCommands::ToggleCollectionRed:
     case AppCommands::ToggleCollectionOrange:
