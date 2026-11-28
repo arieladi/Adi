@@ -142,6 +142,7 @@ public:
     /// Session-bound capture retains ownership after offering legacy packets.
     /// Failed submit/cancel stays discoverable; retry never resubmits Durable.
     [[nodiscard]] std::vector<PendingParameterGesture> pendingGestures() const;
+    [[nodiscard]] bool hasPendingGestures() const noexcept;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&, std::int64_t nowMs);
     gesture::CommitOutcome retryPendingCommit(const gesture::OwnerToken&, std::int64_t nowMs);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&, std::int64_t nowMs);

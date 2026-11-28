@@ -541,15 +541,11 @@ class AdiRootComponent final : public juce::Component,
     // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so
     // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.
     bool recordingHoldsHistory() const;
-    bool canUndo(bool redo) const {
-        if (recordingHoldsHistory())
-            return false;
-        const bool held = editsHeld && editsHeld();
-        return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;
-    }
     // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
     // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
-    std::string undoTitle(bool redo) const;
+    std::pair<std::string, bool> historyCommandInfo(bool redo) const;
+    std::string undoTitle(bool redo) const { return historyCommandInfo(redo).first; }
+    bool canUndo(bool redo) const { return historyCommandInfo(redo).second; }
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
@@ -772,6 +768,8 @@ class AdiRootComponent final : public juce::Component,
     // message of their own, right after it; `frame()` called directly follows them at once.
     void vblankFrame() noexcept;
     void settlePluginWindows() { windowFollower_.handleUpdateNowIfNeeded(); }
+    // The document owner's timer follows commits and gesture/recording holds outside drawing.
+    void refreshHistoryControls();
     // WIN-03, Live's Auto-Open Plug-In Windows: a plug-in just added opens its window once the device
     // feed shows it (within a second of frames), when the setting is on. The app calls it after an
     // insert lands.
@@ -1198,6 +1196,13 @@ class AdiRootComponent final : public juce::Component,
     std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
+    void refreshHoveredInfo();
+    struct HistoryControlState {
+        std::uint64_t committedGeneration;
+        bool recording, held;
+        bool operator==(const HistoryControlState &) const = default;
+    };
+    std::optional<HistoryControlState> historyControlState_;
     juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;

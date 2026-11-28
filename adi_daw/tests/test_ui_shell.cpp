@@ -28880,6 +28880,115 @@ void redoShortcut(const std::filesystem::path &dir) {
           "SC-449: the shifted-Z command reapplies the edit with this platform's modifiers");
     window.menu()->removeListener(&observer);
 }
+void undoRedoControlBar(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "undo-redo-control-bar.adi", true, {}, error);
+    check(document != nullptr, "SC-450: create a project for the history buttons");
+    if (!document)
+        return;
+    settings::AppSettings prefs(appdata::App::Daw, dir / "undo-redo-control-bar.json");
+    AppCommands commands(prefs);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "undo-redo-control-bar");
+    root.setSize(960, 540);
+    root.frame();
+    auto &bar = root.transport;
+    auto &undo = bar.undo;
+    auto &redo = bar.redo;
+    const auto click = [](BarItem &button) {
+        const auto at = button.getLocalBounds().getCentre().toFloat();
+        button.mouseDown(pressAt(button, at, juce::ModifierKeys::leftButtonModifier));
+        button.mouseUp(pressAt(button, at));
+    };
+    const auto info = [&root](BarItem &button) {
+        root.hover(&button, button.getLocalBounds().getCentre());
+        return root.infoText();
+    };
+    const auto trackName = [&] { return document->view().current()->findTrack(4)->name; };
+    const auto original = trackName();
+    const auto firstHead = OpJournal(document->store()).headSeq();
+    click(undo);
+    click(redo);
+    check(!undo.isEnabled() && !redo.isEnabled() && info(undo).contains("Nothing to Undo") &&
+              info(redo).contains("Nothing to Redo") && OpJournal(document->store()).headSeq() == firstHead,
+          "SC-450: empty history greys both arrows and ignores clicks");
+
+    check(root.submitEdit("track.rename", {{"id", 4}, {"name", "Arrows fixture"}}, "Rename Track"),
+          "SC-450: name an edit through the same authority as the menus");
+    root.frame();
+    check(undo.isEnabled() && !redo.isEnabled() && info(undo).contains("Undo Rename Track"),
+          "SC-450: Undo enables and Info names the next step");
+    click(undo);
+    root.frame();
+    check(trackName() == original && !undo.isEnabled() && redo.isEnabled() && info(redo).contains("Redo Rename Track"),
+          "SC-450: the Undo arrow undoes the step and the Redo Info names it");
+
+    bool held = true;
+    root.editsHeld = [&] { return held; };
+    root.refreshHistoryControls();
+    check(undo.isEnabled() && !redo.isEnabled() && info(undo).contains("pending device edit"),
+          "SC-450: a held device edit is undoable and temporarily blocks Redo");
+    held = false;
+    root.refreshHistoryControls();
+    check(!undo.isEnabled() && redo.isEnabled(), "SC-450: releasing the history hold updates both arrows");
+    click(redo);
+    root.frame();
+    check(trackName() == "Arrows fixture" && undo.isEnabled() && !redo.isEnabled(),
+          "SC-450: the Redo arrow reapplies the step");
+
+    bool landing = true;
+    root.landingRecording = [&] { return landing; };
+    root.refreshHistoryControls();
+    check(!undo.isEnabled() && !redo.isEnabled() && info(undo).contains("after the current take finishes"),
+          "SC-450: the arrows reflect the recording history hold");
+    landing = false;
+    root.refreshHistoryControls();
+    check(undo.isEnabled() && !redo.isEnabled(), "SC-450: Undo returns when the take has landed");
+    root.frame();
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "SC-450: a steady frame makes no history allocation");
+
+    AdiRootComponent second(document->view(), document->ops(), document->mailbox(), commands,
+                            document->views(), document->sessionState(), "undo-redo-control-bar-second");
+    second.setSize(960, 540);
+    second.frame();
+    OpRequest external;
+    external.opType = "track.rename";
+    external.payload = {{"id", 4}, {"name", "External rename"}};
+    external.label = "External Edit";
+    check(document->ops().submit(std::move(external)).ok, "SC-450: an edit can land outside either window");
+    allocations = 0;
+    audit = true;
+    root.frame();
+    second.frame();
+    audit = false;
+    check(allocations == 0, "SC-450: changed project generations allocate nothing in either frame");
+    root.hover(&undo, undo.getLocalBounds().getCentre());
+    root.refreshHistoryControls();
+    second.refreshHistoryControls();
+    check(undo.isEnabled() && second.transport.undo.isEnabled() && root.infoText().contains("Undo External Edit") &&
+              second.transport.undo.getTooltip() == "Undo External Edit",
+          "SC-450: owner refresh updates both windows and Info under a stationary pointer");
+
+    for (const int width : {520, 960, 1440}) {
+        root.setSize(width, 540);
+        const auto undoBounds = undo.getBounds(), redoBounds = redo.getBounds();
+        bool separate = undo.isVisible() && redo.isVisible() && undoBounds.getWidth() == 18 &&
+                        redoBounds.getWidth() == 18 && undoBounds.getRight() <= redoBounds.getX() &&
+                        bar.getLocalBounds().contains(undoBounds) && bar.getLocalBounds().contains(redoBounds);
+        for (auto *control : bar.getChildren())
+            if (control != &undo && control != &redo && control->isVisible() && !control->getBounds().isEmpty())
+                separate = separate && !undoBounds.intersects(control->getBounds()) &&
+                           !redoBounds.intersects(control->getBounds());
+        check(separate, "SC-450: both arrows fit without overlapping another control");
+        check(bar.tempo.isVisible() && bar.signature.isVisible() && bar.metronome.isVisible() &&
+                  bar.position.isVisible() && (width == 520 || bar.cpu.isVisible()),
+              "SC-450: compact history buttons preserve the transport fields");
+    }
+}
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -29430,6 +29539,7 @@ int main(int argc, char **argv) {
         trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
+        trace("undoRedoControlBar", [&] { undoRedoControlBar(temp.path()); });
         trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
         trace("anchoredTrackResize", [&] { anchoredTrackResize(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
@@ -33460,6 +33570,7 @@ int main(int argc, char **argv) {
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("redoShortcut", [&] { redoShortcut(temp.path()); });
+    trace("undoRedoControlBar", [&] { undoRedoControlBar(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });

@@ -386,6 +386,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<engine::PendingParameterGesture> pendingParameterGestures() const {
         return parameterOps_.pendingGestures();
     }
+    bool hasPendingParameterGestures() const noexcept { return parameterOps_.hasPendingGestures(); }
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with

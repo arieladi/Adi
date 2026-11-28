@@ -676,11 +676,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
         info.setInfo("Save Project...", "Name this project", category(id), 0);
     if (id == Undo || id == Redo) {
-        const bool redo = id == Redo;
-        info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
-                             : juce::String(names[id - PlayStop]),
-                     names[id - PlayStop], category(id), 0);
-        info.setActive(active_ != nullptr && active_->canUndo(redo));
+        if (active_) {
+            const auto [title, enabled] = active_->historyCommandInfo(id == Redo);
+            info.setInfo(juce::String(title), names[id - PlayStop], category(id), 0);
+            info.setActive(enabled);
+        } else {
+            info.setActive(false);
+        }
     }
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
@@ -1772,6 +1774,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     clipView.applyState(state_);
     reader_.emplace(view_.current());
     setSize(1200, 720);
+    refreshHistoryControls();
     frame();
     juce::Desktop::getInstance().addFocusChangeListener(this);
 }
@@ -2099,11 +2102,35 @@ void AdiRootComponent::hover(juce::Component *c, juce::Point<int> position) {
     if (target == hovered_)
         return;
     hovered_ = target;
-    auto *client = dynamic_cast<juce::TooltipClient *>(target);
+    refreshHoveredInfo();
+}
+void AdiRootComponent::refreshHoveredInfo() {
+    auto *client = dynamic_cast<juce::TooltipClient *>(hovered_);
     const auto description = client ? client->getTooltip() : juce::String{};
-    infoText_ = description.isNotEmpty() ? target->getTitle() + "\n" + description : juce::String{};
+    infoText_ = description.isNotEmpty() ? hovered_->getTitle() + "\n" + description : juce::String{};
     infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     dirty_.mark(DirtySet::Content);
+}
+void AdiRootComponent::refreshHistoryControls() {
+    const bool recording = recordingHoldsHistory();
+    const HistoryControlState state{view_.committedGeneration(), recording, !recording && editsHeld && editsHeld()};
+    if (historyControlState_ == state)
+        return;
+    historyControlState_ = state;
+    const auto present = [&](BarItem &button, bool redo) {
+        const auto [title, enabled] = historyCommandInfo(redo);
+        button.setEnabled(enabled);
+        const auto tip = recording ? juce::String(kRecordingHistoryMessage)
+                         : !redo && state.held ? juce::String("Undo the pending device edit.")
+                         : juce::String(title);
+        if (tip != button.getTooltip()) {
+            button.setTooltip(tip);
+            if (hovered_ == &button)
+                refreshHoveredInfo();
+        }
+    };
+    present(transport.undo, false);
+    present(transport.redo, true);
 }
 std::int64_t AdiRootComponent::timelineTick() const noexcept {
     const auto *tempo = reader_->tempo();
@@ -3770,6 +3797,7 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
     arrangement.followPaused = true; // an edit pauses Follow (§6.2)
     if (afterEdit)
         afterEdit();
+    refreshHistoryControls();
     commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
@@ -3919,17 +3947,17 @@ juce::String AdiRootComponent::selectionText() const {
 bool AdiRootComponent::recordingHoldsHistory() const {
     return kHoldHistoryUntilArrangementTakeLands && (isRecording() || (landingRecording && landingRecording()));
 }
-std::string AdiRootComponent::undoTitle(bool redo) const {
+std::pair<std::string, bool> AdiRootComponent::historyCommandInfo(bool redo) const {
     const std::string verb = redo ? "Redo" : "Undo";
     if (recordingHoldsHistory())
-        return verb;
-    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
-    if (!canUndo(redo))
-        return "Nothing to " + verb;
+        return {verb, false};
     // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.
-    if (!redo && editsHeld && editsHeld())
-        return verb;
-    return verb + (step && !step->label.empty() ? " " + step->label : "");
+    if (editsHeld && editsHeld())
+        return redo ? std::pair{"Nothing to " + verb, false} : std::pair{verb, true};
+    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
+    if (!step)
+        return {"Nothing to " + verb, false};
+    return {step->label.empty() ? verb : verb + " " + step->label, true};
 }
 bool AdiRootComponent::fail(std::string message) {
     say(std::move(message));
@@ -5727,6 +5755,7 @@ bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &re
     arrangement.followPaused = true; // as an undo pauses it
     if (afterEdit)
         afterEdit();
+    refreshHistoryControls();
     commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
@@ -6933,6 +6962,8 @@ bool AdiRootComponent::command(int id) {
     }
     if (afterEdit)
         afterEdit();
+    if (id == AppCommands::Undo || id == AppCommands::Redo)
+        refreshHistoryControls();
     if (!recordStartRefused)
         error_.clear();
     resized();

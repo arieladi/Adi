@@ -166,6 +166,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     gesture::Status readSnapshotImage(Attached&, ParameterImage&);
     void markSnapshotStale(std::int64_t);
     std::vector<PendingParameterGesture> pendingGestures() const;
+    bool hasPendingGestures() const noexcept;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&,std::int64_t,bool);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&,std::int64_t,bool);
     void setNativeAutomation(NativeAutomation callback) {nativeAutomation_=std::move(callback);}
@@ -2584,6 +2585,9 @@ std::vector<PendingParameterGesture> ParamOps::Runtime::pendingGestures() const 
     }
     return result;
 }
+bool ParamOps::Runtime::hasPendingGestures() const noexcept {
+    return std::ranges::any_of(gestures_, [](const auto& task) { return !task->terminal(); });
+}
 gesture::CommitOutcome ParamOps::Runtime::commitPending(const gesture::OwnerToken& owner,std::int64_t nowMs,bool retry) {
     (void)pumpGestures(nowMs);const auto task=findGesture(owner);
     if(!task || !task->session || !task->complete)return {{gesture::Error::Busy,"captured gesture is not ready"},{},false,{}};
@@ -2660,6 +2664,7 @@ ParamOps::ParamOps(std::int32_t capacity) : runtime_(std::make_shared<Runtime>(c
 ParamOps::~ParamOps() { runtime_->frontendEnded(); }
 void ParamOps::setNativeAutomation(NativeAutomation callback) {runtime_->setNativeAutomation(std::move(callback));}
 std::vector<PendingParameterGesture> ParamOps::pendingGestures() const {return runtime_->pendingGestures();}
+bool ParamOps::hasPendingGestures() const noexcept {return runtime_->hasPendingGestures();}
 gesture::CommitOutcome ParamOps::commitPending(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,false);}
 gesture::CommitOutcome ParamOps::retryPendingCommit(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,true);}
 gesture::CancelOutcome ParamOps::cancelPending(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->cancelPending(owner,now,false);}

@@ -2359,7 +2359,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return false;
         };
         // Undo and Redo commit the knob edits still held first (DF-W29).
-        root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
+        root->editsHeld = [this] { return document_->hasPendingParameterGestures(); };
         root->beforeDeleteTrack = [this](std::string &reason) {
             if (document_->requirePluginState())
                 return true;
@@ -3635,6 +3635,7 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             if (auto rendered = document_->takeTrackRenderStatus())
                 root_->say(std::move(*rendered));
+            root_->refreshHistoryControls();
         }
         updateProjectSave();
         if (midiPorts_ && root_) {

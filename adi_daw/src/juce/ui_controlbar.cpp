@@ -77,6 +77,18 @@ void paintGlyph(juce::Graphics &g, G kind, juce::Rectangle<float> r, juce::Colou
         for (int i = 0; i < 2; ++i)
             g.fillRect(cx + 3.f + static_cast<float>(i) * 3.f, cy - 0.75f, 2.f, 1.5f);
         break;
+    case G::Undo:
+    case G::Redo: {
+        const float direction = kind == G::Undo ? -1.f : 1.f;
+        p.startNewSubPath(cx - 5 * direction, cy + 4);
+        p.quadraticTo(cx - 5 * direction, cy - 2, cx - direction, cy - 2);
+        p.lineTo(cx + 5 * direction, cy - 2);
+        p.startNewSubPath(cx + 2 * direction, cy - 5);
+        p.lineTo(cx + 5 * direction, cy - 2);
+        p.lineTo(cx + 2 * direction, cy + 1);
+        g.strokePath(p, juce::PathStrokeType(1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        break;
+    }
     case G::Metronome:
         g.drawEllipse(juce::Rectangle<float>(7, 7).withCentre({cx - 10, cy}), 1.2f);
         g.fillEllipse(juce::Rectangle<float>(7, 7).withCentre({cx - 1, cy}));
@@ -401,6 +413,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
                                        "at the play location. Click to type a signature such as 3/4."},
         {&metronome, "Metronome", "O toggles the metronome. Its menu sets the click, Count-In and shared Cue Volume."},
         {&quantize, "Launch Quantization", "Unavailable until Session View can launch clips.", false},
+        {&undo, "Undo", "Nothing to Undo"},
+        {&redo, "Redo", "Nothing to Redo"},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
                             "(Option+Shift+F on the Mac)."},
@@ -442,8 +456,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         // The bar remembers the control that last had the focus.
         info.item->onFocus = [this, item = info.item] { lastFocused_ = item; };
     }
-    for (auto *item : {&play, &stop, &record, &follow, &metronome, &loop})
+    for (auto *item : {&play, &stop, &record, &follow, &metronome, &loop, &undo, &redo})
         item->getProperties().set(controls::iconTooltip, true);
+    undo.setEnabled(false);
+    redo.setEnabled(false);
+    undo.onClick = [this] { root_.command(AppCommands::Undo); };
+    redo.onClick = [this] { root_.command(AppCommands::Redo); };
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
@@ -560,7 +578,7 @@ void TransportBar::resized() {
     // Keep Live's wide positions. At narrower widths reclaim spacing and unavailable
     // controls before hiding working controls, leaving the transport until last.
     enum class Overflow {
-        Placeholders, Mapping, MidiActivity, EditTools, LoopRange, Secondary, Fields, Workspace, Transport
+        Placeholders, Mapping, MidiActivity, EditTools, LoopRange, Secondary, CpuMeter, Fields, Workspace, Transport
     };
     struct Slot {
         BarItem &item;
@@ -582,12 +600,13 @@ void TransportBar::resized() {
         Slot{sessionRecord, 17, 12, Overflow::Placeholders}, Slot{loopStart, 85, 1, Overflow::LoopRange},
         Slot{punchIn, 20, 1, Overflow::Fields}, Slot{loop, 21, 1, Overflow::Workspace},
         Slot{punchOut, 20, 1, Overflow::Fields}, Slot{loopLength, 85, 2, Overflow::LoopRange},
+        Slot{undo, 18, 2, Overflow::Transport}, Slot{redo, 18, 2, Overflow::Transport},
     };
     const int segment = look::workspaceSegmentWidth;
     std::array right{
         Slot{arrangementPage, segment, 0, Overflow::Workspace}, Slot{mix, segment, look::gap, Overflow::Workspace},
         Slot{draw, 17, 2, Overflow::EditTools}, Slot{keyboard, 17, 2, Overflow::EditTools}, Slot{key, 26, 12, Overflow::Mapping},
-        Slot{midi, 28, 2, Overflow::Mapping}, Slot{cpu, 58, 2, Overflow::Fields}, Slot{indicators, 13, 1, Overflow::MidiActivity},
+        Slot{midi, 28, 2, Overflow::Mapping}, Slot{cpu, 58, 2, Overflow::CpuMeter}, Slot{indicators, 13, 1, Overflow::MidiActivity},
         Slot{midiOutIndicator, 18, 0, Overflow::MidiActivity},
     };
     const auto widthOf = [](std::span<const Slot> group) {
