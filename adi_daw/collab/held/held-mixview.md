@@ -151,9 +151,46 @@ No branch is "abandoned by its seat" or "unclear": the seat's log requests every
 
 ## Progress
 
-- 28 Nov, round 1: survey written and pushed. Next: create `held/mixview-chain` from BASE, merge the
-  offline regression, then the top, resolving the ten files.
+- 28 Nov, round 1: survey written and pushed.
+- 28 Nov, round 1: `held/mixview-chain` created from BASE `origin/land/basics-1128c` (`3543a9a74`'s
+  successor on the landing stack) and pushed. Two merges:
+  1. `offline-suspension-regression-20261119`: one include line collided; both kept.
+  2. the top `mx30-parked-realtime-burst-lands-after-2026-12-03`: ten files, 70 hunks. How each was
+     resolved is in the merge commit's message. The parts a reader should know:
+     - **Output bits.** Both sides had taken the same `SharedAnalysis::Output` bits (256, 512, 1024) for
+       different outputs. The landed ones (FilledSpectrum, PeriodScope, ColourWaveform) keep their values;
+       the seat's six (Strip, DeviceBlockAverage, PhaseBands, CumulativeAverage, RealtimeSigma,
+       PhaseBandDetail) moved to 2048..65536. Nothing stores these bits, so no file format changes.
+     - **Mode enum.** The landed modes keep their numbers; the seat's two new modes follow them.
+     - **Renamed helper.** Each side renamed `Domain::ensureSpectrum` (to `prepareOutputs` and to
+       `ensureOutputPlans`). Both stay: `prepareOutputs` builds the period capture and calls
+       `ensureOutputPlans`.
+     - **The Spectrum page (the one real collision).** On 27 November the director's analysers queue made
+       the Analysers page's Spectrum the Filled Spectrum with four traces (Realtime Average, Realtime
+       Maximum, Held Maximum, Average). Before that, while held, the seat had grown the same page's trace
+       box into six line traces (Realtime, Realtime Average, Cumulative Average, Realtime Sigma, Realtime
+       Maximum, Cumulative Maximum) with Stack pins. The two cannot share one box: the names collide and
+       each side's tests count the box's items. The chain keeps the director's newer Spectrum page as it
+       landed; the seat's line traces stay in `SharedSpectrumView` (and its Info and detached analyser
+       modes) but are not offered on that page, and the pin control shows only where it can pin. The
+       seat's page tests that select a line trace from that box are expected to fail for this reason; the
+       check will name them. This is question A below.
+     - **Phase.** The landed goniometer trail draws inside the seat's phase-band layout (bands below, the
+       stereo picture above).
+     - **Channel browser.** The landed "name as the header shows it" (walk-B B3) is also what the seat's
+       folded search matches.
+- 28 Nov, round 1: validators pass; chain pushed at the stack merge; check `all` started in slot 13
+  (cold build). Result below when it returns.
 
 ## For the director
 
-(nothing yet)
+**A. The Analysers Spectrum page.** Your 27 November analysers queue made it the Filled Spectrum (four
+traces). The Mix View seat, held since 22 November, had made the same page a line spectrum with six traces
+(including Realtime Sigma and Cumulative Average) and Stack pins overlaid. Only one can be that page.
+- A1: the Filled Spectrum stays the page; the seat's line traces move to their own page beside it (a new
+  page entry, its picture shown to you first).
+- A2: the Filled Spectrum stays the page; the line traces stay out of the Analysers page (they remain in
+  the Info box and the detached analyser).
+- A3: the seat's line traces become the page again, and the Filled Spectrum moves elsewhere.
+Recommendation: A1. It keeps your newer word and all of the seat's measured work; until you rule, the
+chain is A2 and the seat's page tests for the line traces fail. Reply "A1", "A2" or "A3".
