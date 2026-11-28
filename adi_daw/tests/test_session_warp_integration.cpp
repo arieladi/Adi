@@ -124,10 +124,14 @@ struct Playback {
     std::size_t sceneCount = 0;
     std::int64_t first = 0;
     bool paged = false;
+    std::span<double> pcm64{};
+    Precision precision = Precision::Float32;
 
     void through(std::int64_t target) {
         std::array<float,blockFrames> left{}, right{};
+        std::array<double,blockFrames> left64{}, right64{};
         float* out[]{left.data(), right.data()};
+        double* out64[]{left64.data(), right64.data()};
         while (first < target) {
             const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockFrames, target - first));
             AudioIo io{out, nullptr, 2, 0, frames, first};
@@ -135,6 +139,11 @@ struct Playback {
             {
                 const audio::CallbackScope scope;
                 auto block = session.beginRender();
+                precision = block.precision();
+                if (precision == Precision::Float64 && !pcm64.empty()) {
+                    io.out = nullptr;
+                    io.out64 = out64;
+                }
                 block.observeLaunchTransitions(this, [](void* opaque, const LaunchTransition& edge, std::int64_t) noexcept {
                     auto& self = *static_cast<Playback*>(opaque);
                     if (self.count < self.edges.size()) {
@@ -150,7 +159,10 @@ struct Playback {
                 rendered = block.process(io);
             }
             require(rendered, "render actual persisted launch graph");
-            std::copy_n(left.begin(), frames, pcm.begin() + first);
+            if (io.out64)
+                std::copy_n(left64.begin(), frames, pcm64.begin() + first);
+            else
+                std::copy_n(left.begin(), frames, pcm.begin() + first);
             first += frames;
             if (paged) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -2076,6 +2088,100 @@ void pausedSupersessionAdoptsChangedClock(float originalGain, bool capture) {
             std::abs(refreshedAgain - expected) < 1e-6f && tail > .45f * originalGain && tail < expected &&
             std::abs(restarted - .275f) < 1e-6f && callbackAllocations == 0 && audio::callbackFileIo == 0,
             "resuming and Capture keep the old PCM and phase, while the new run uses the saved edit");
+}
+
+void pausedPagedPrecisionChange(bool replaceGain) {
+    constexpr std::int64_t start = 2400, park = 120000, resumedFrames = 21037;
+    constexpr auto pauseFrames = 3 * blockFrames;
+    constexpr auto stopAt = park + resumedFrames;
+    constexpr auto stopStream = stopAt + pauseFrames;
+    constexpr auto capacity = static_cast<std::size_t>(stopStream + blockFrames);
+    std::vector<float> source(220000);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame) + 1.f) / 524288.f;
+    test::TempDirectory folder{"session_paused_paged_precision",replaceGain ? "replaced" : "same"};
+    auto store = residentLegacyRawSlot(folder,source,false,false);
+    pinUnwarpedOneShot(*store,50000000,4000000000);
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path()/"song.adi",error);
+    require(static_cast<bool>(store),"reopen the unchanged pinned paged source");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames,Precision::Float32})) throw std::runtime_error(session.error());
+    std::vector<float> pcm(capacity);
+    std::vector<double> pcm64(capacity, -1.0);
+    Playback playback{session,pcm};
+    playback.paged = true;
+    playback.pcm64 = pcm64;
+    scene(*store,session,10);
+    playback.through(park-1);
+    const auto original = trackState(session);
+    require(original.clip == 101 && original.run && playback.precision == Precision::Float32 &&
+            session.postLaunchClipGainEdit({1,101,session.launchIncarnation(),original.run,.5f,ClipUpdateRate::None}),
+            "start late into the Float32 pinned run and apply half gain");
+    playback.through(park);
+    require(pcm[park-1] == source[start+park-1] * .5f,"hear exact old source cursor and live gain before pause");
+    const auto held = trackState(session);
+    const auto swaps = session.graph().stats().swaps;
+    session.transport().play(false);
+    playback.through(park + blockFrames);
+    require(session.transport().position() == park && trackState(session).sourceTick == held.sourceTick,
+            "pause holds the playhead and original source phase");
+
+    if (replaceGain) {
+        std::array<OpRequest,2> edits;
+        edits[0].opType = "project.insertTempoEvent";
+        edits[0].payload = {{"pos",quarter},{"bpm",150},{"curve",0}};
+        edits[1].opType = "clip.setGain";
+        edits[1].payload = {{"id",101},{"gain",-6.020599913279624}};
+        require(OpJournal(*store).commit(edits).ok && session.refresh(*store),
+                "publish the authored step and saved gain while keeping the file and source window");
+    } else {
+        require(session.setExternalTempoAt(*store,150,quarter),"publish the ordinary performed 150 BPM step");
+    }
+    require(session.setPrecision(Precision::Float64),
+            "supersede the ordinary retime publication with its Float64 rebuild");
+    playback.through(park + 2 * blockFrames);
+    const auto afterAdoption = trackState(session);
+    const auto retimed = session.beginRender().bpmAtTick(quarter);
+    const auto adoptedSwaps = session.graph().stats().swaps;
+    require(playback.precision == Precision::Float64 && adoptedSwaps == swaps + 1 && retimed == 150 &&
+            !session.transport().playing() && session.transport().position() == park &&
+            afterAdoption.run == original.run && afterAdoption.sourceTick == held.sourceTick,
+            "the paused driver adopts only the Float64 generation, with the new clock and frozen source phase");
+    (void)session.graph().collect();
+    playback.through(park + pauseFrames);
+    (void)session.graph().collect();
+    require(std::all_of(pcm64.begin() + park + blockFrames,pcm64.begin() + park + pauseFrames,
+                        [](double sample) { return sample == 0; }) && session.transport().position() == park,
+            "two Float64 paused blocks emit silence at the held playhead");
+
+    session.transport().play();
+    playback.through(stopStream);
+    const auto beforeStop = trackState(session);
+    const auto exactResume = std::equal(pcm64.begin() + park + pauseFrames,pcm64.begin() + stopStream,
+        source.begin() + start + park,[](double output, float input) {
+            return output == static_cast<double>(input) * .5;
+        });
+    require(beforeStop.run == original.run && playback.count == 1 && session.transport().position() == stopAt,
+            "the old run remains active through the late Float64 source pages");
+    OpRequest stop;
+    stop.opType = "session.stopTrack";
+    stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(stop).ok,"submit the exact Stop at the resumed playhead");
+    playback.through(static_cast<std::int64_t>(capacity));
+    const auto silent = std::all_of(pcm64.begin() + stopStream,pcm64.end(),[](double sample) { return sample == 0; });
+    const auto actualStop = playback.count == 2 ? playback.edges[1].sample : -1;
+    std::printf("Paused Float64 %s backing: swaps %llu -> %llu, parked %lld, resumed frames %lld exact %d, "
+                "Stop %lld with silence %d, allocations %u, I/O %u\n",
+                replaceGain ? "replacement" : "unchanged",static_cast<unsigned long long>(swaps),
+                static_cast<unsigned long long>(adoptedSwaps),static_cast<long long>(park),
+                static_cast<long long>(resumedFrames),exactResume,static_cast<long long>(actualStop),silent,
+                callbackAllocations,audio::callbackFileIo.load());
+    require(exactResume && actualStop == stopAt && silent && trackState(session).clip == 0 &&
+            callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the old paged reader and live gain survive width change until exact Stop");
 }
 
 void coldPagedOneShotOnAuthoredRamp() {
@@ -4438,6 +4544,8 @@ int main() {
         pausedSupersessionReturnsToSameClock(true);
         pausedSupersessionAdoptsChangedClock(1.0f,false);
         pausedSupersessionAdoptsChangedClock(.8f,true);
+        pausedPagedPrecisionChange(false);
+        pausedPagedPrecisionChange(true);
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
