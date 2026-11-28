@@ -117,6 +117,10 @@ struct LaunchSceneTransition {
 enum class LaunchTrackSource : std::uint8_t { Arrangement, Session, Silence };
 enum class LaunchQueuedAction : std::uint8_t { None, Start, Stop, BackToArrangement };
 
+struct LaunchPhysicalRegion {
+    std::int64_t startFrame, endFrame, loopBeginFrame = 0, loopEndFrame = 0;
+};
+
 struct LaunchQueuedStatus {
     LaunchQueuedAction action = LaunchQueuedAction::None;
     std::int64_t clip = 0, scene = 0, tick = 0;
@@ -168,7 +172,7 @@ public:
         return gestures_.push(requests);
     }
     /// Owner only. Queue playback bounds for a single active prepared run.
-    [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&) noexcept;
+    [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&, const LaunchSlot* prepared = nullptr) noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
@@ -212,10 +216,17 @@ private:
         std::uint64_t completedLoops = 0;
         bool fade = false;
         std::optional<LaunchClipRegion> region{};
+        std::optional<LaunchPhysicalRegion> physicalRegion{};
+        std::int64_t physicalCueFrame = -1;
+    };
+    struct RegionRequest {
+        LaunchClipRegionEdit edit;
+        std::optional<LaunchPhysicalRegion> physical;
     };
     struct RegionPending {
         LaunchClipRegionEdit edit;
         ClipUpdateBoundary boundary;
+        std::optional<LaunchPhysicalRegion> physical;
     };
     struct Track {
         std::int64_t id = 0;
@@ -279,7 +290,7 @@ private:
     // an older pinned graph. Keep one literal transfer until that scene exists.
     std::array<LaunchRequest, LaunchGestureQueue::capacity> deferredRetarget_{};
     std::size_t deferredRetargetSize_ = 0;
-    std::array<LaunchClipRegionEdit, LaunchGestureQueue::capacity> regionMailbox_{};
+    std::array<RegionRequest, LaunchGestureQueue::capacity> regionMailbox_{};
     alignas(64) std::atomic<std::uint64_t> regionWritten_{0};
     alignas(64) std::atomic<std::uint64_t> regionRead_{0};
     std::vector<Track> tracks_, scratch_;

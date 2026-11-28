@@ -100,20 +100,35 @@ std::int64_t sourceEnd(const LaunchSlot& slot) noexcept {
 }
 
 struct PhysicalLap {
-    std::int64_t startFrame = -1, endFrame = -1, startTick = 0, endTick = 0;
-    std::int64_t length() const noexcept { return endFrame - startFrame; }
+    std::int64_t startFrame = -1, endFrame = -1, startTick = 0, endTick = 0, cueFrame = -1;
+    std::int64_t originFrame() const noexcept { return cueFrame < 0 ? startFrame : cueFrame; }
+    std::int64_t length() const noexcept { return endFrame - originFrame(); }
+    PhysicalLap withCue(std::int64_t frame) const noexcept {
+        if (startFrame < 0 || frame < startFrame || frame >= endFrame) return *this;
+        return {startFrame,endFrame,startTick,endTick,frame};
+    }
     std::int64_t tickAt(std::int64_t elapsed) const noexcept {
-        if (elapsed <= 0) return startTick;
         if (elapsed >= length()) return endTick;
-        const auto fraction = static_cast<long double>(elapsed) / static_cast<long double>(length());
+        const auto offset = originFrame() - startFrame + std::max<std::int64_t>(0,elapsed);
+        const auto fraction = static_cast<long double>(offset) / static_cast<long double>(endFrame - startFrame);
         return startTick + static_cast<std::int64_t>(fraction * static_cast<long double>(endTick - startTick));
     }
+    std::int64_t frameAt(std::int64_t tick) const noexcept {
+        if (tick <= startTick) return startFrame;
+        if (tick >= endTick) return endFrame;
+        const auto fraction = static_cast<long double>(tick - startTick) / static_cast<long double>(endTick - startTick);
+        return startFrame + std::llround(fraction * static_cast<long double>(endFrame - startFrame));
+    }
 };
+
+PhysicalLap physicalExtent(const LaunchSlot& slot) noexcept {
+    return {slot.physicalStartFrame,slot.physicalStartFrame + slot.physicalFrames,slot.startTick,slot.endTick};
+}
 
 PhysicalLap physicalLap(const LaunchSlot* slot, bool wrapped) noexcept {
     if (!slot || slot->physicalFrames <= 0) return {};
     if (!slot->physicalLoopEndFrame)
-        return {slot->physicalStartFrame,slot->physicalStartFrame + slot->physicalFrames,slot->startTick,slot->endTick};
+        return physicalExtent(*slot);
     return {wrapped ? slot->physicalLoopBeginFrame : slot->physicalStartFrame,slot->physicalLoopEndFrame,
             wrapped ? slot->loopStartTick : slot->startTick,slot->loopEndTick};
 }
@@ -146,8 +161,40 @@ bool regionFits(const LaunchSlot* prepared, const LaunchClipRegion& region) noex
     return occupied(prepared) && region.start >= prepared->startTick && region.end <= prepared->endTick;
 }
 
+bool physicalRegionFits(const LaunchSlot* slot, const LaunchPhysicalRegion& region) noexcept {
+    return occupied(slot) && slot->physicalFrames > 0 && region.startFrame >= slot->physicalStartFrame &&
+        region.endFrame > region.startFrame && region.endFrame <= slot->physicalStartFrame + slot->physicalFrames &&
+        (!region.loopEndFrame || (region.loopBeginFrame >= region.startFrame &&
+            region.loopEndFrame > region.loopBeginFrame && region.loopEndFrame <= region.endFrame));
+}
+
+std::optional<LaunchPhysicalRegion> physicalRegionFor(const LaunchSlot* slot, const LaunchClipRegion& region) noexcept {
+    if (!regionFits(slot,region) || slot->physicalFrames <= 0) return {};
+    const auto extent = physicalExtent(*slot);
+    const LaunchPhysicalRegion frames{extent.frameAt(region.start),extent.frameAt(region.end),
+        region.loop ? extent.frameAt(region.loop->begin) : 0,
+        region.loop ? extent.frameAt(region.loop->end) : 0};
+    if (!physicalRegionFits(slot,frames)) return {};
+    return frames;
+}
+
 const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<LaunchClipRegion>& region,
-                                LaunchSlot& scratch) noexcept {
+                                const std::optional<LaunchPhysicalRegion>& physical, LaunchSlot& scratch) noexcept {
+    if (physical) {
+        if (!physicalRegionFits(prepared,*physical)) return prepared;
+        const auto extent = physicalExtent(*prepared);
+        const auto tick = [&](std::int64_t frame) { return extent.tickAt(frame - extent.startFrame); };
+        scratch = *prepared;
+        scratch.startTick = tick(physical->startFrame);
+        scratch.endTick = tick(physical->endFrame);
+        scratch.loopStartTick = physical->loopEndFrame ? tick(physical->loopBeginFrame) : 0;
+        scratch.loopEndTick = physical->loopEndFrame ? tick(physical->loopEndFrame) : 0;
+        scratch.physicalStartFrame = physical->startFrame;
+        scratch.physicalFrames = physical->endFrame - physical->startFrame;
+        scratch.physicalLoopBeginFrame = physical->loopBeginFrame;
+        scratch.physicalLoopEndFrame = physical->loopEndFrame;
+        return &scratch;
+    }
     if (!region || !regionFits(prepared,*region)) return prepared;
     scratch = *prepared;
     scratch.startTick = region->start;
@@ -173,13 +220,15 @@ Launcher::Launcher(std::size_t maximumTracks)
     for (auto& frame : statusBuffers_) frame.rows = std::make_unique<LaunchTrackStatus[]>(maximumTracks);
 }
 
-bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit) noexcept {
+bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit, const LaunchSlot* prepared) noexcept {
     if (edit.track <= 0 || edit.clip <= 0 || edit.incarnation == 0 || edit.run == 0 ||
         !validRegion(edit.region) || edit.rate > ClipUpdateRate::Bar)
         return false;
+    const auto physical = physicalRegionFor(prepared,edit.region);
+    if (prepared && prepared->physicalFrames > 0 && !physical) return false;
     const auto write = regionWritten_.load(std::memory_order_relaxed);
     if (write - regionRead_.load(std::memory_order_acquire) == regionMailbox_.size()) return false;
-    regionMailbox_[static_cast<std::size_t>(write % regionMailbox_.size())] = edit;
+    regionMailbox_[static_cast<std::size_t>(write % regionMailbox_.size())] = {edit,physical};
     regionWritten_.store(write + 1,std::memory_order_release);
     return true;
 }
@@ -188,13 +237,17 @@ void Launcher::drainRegionEdits(const LaunchBlock& block, const LaunchView& view
     auto read = regionRead_.load(std::memory_order_relaxed);
     const auto write = regionWritten_.load(std::memory_order_acquire);
     while (read != write) {
-        const auto& edit = regionMailbox_[static_cast<std::size_t>(read++ % regionMailbox_.size())];
+        const auto& request = regionMailbox_[static_cast<std::size_t>(read++ % regionMailbox_.size())];
+        const auto& edit = request.edit;
         auto* track = findTrack(edit.track);
-        if (!track || track->run.clip != edit.clip || track->run.serial != edit.run ||
-            edit.incarnation != block.incarnation || !regionFits(findClip(view,edit.track,edit.clip),edit.region))
+        if (!track || track->run.clip != edit.clip || track->run.serial != edit.run || edit.incarnation != block.incarnation)
             continue;
+        const auto* prepared = findClip(view,edit.track,edit.clip);
+        const auto physical = request.physical ? request.physical : physicalRegionFor(prepared,edit.region);
+        if (physical ? !physicalRegionFits(prepared,*physical) :
+            !regionFits(prepared,edit.region) || prepared->physicalFrames > 0) continue;
         if (const auto boundary = nextClipUpdateBoundary(block,block.sample,edit.rate,true))
-            track->regionEdit = RegionPending{edit,*boundary};
+            track->regionEdit = RegionPending{edit,*boundary,physical};
     }
     regionRead_.store(read,std::memory_order_release);
 }
@@ -528,10 +581,14 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     track.run.arrangement = pending.action == Action::Arrangement;
     LaunchSlot oldGeometry;
     const auto* oldSlot = previous.clip
-        ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry) : nullptr;
+        ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,previous.physicalRegion,oldGeometry) : nullptr;
+    const auto oldLap = physicalLap(oldSlot,previous.completedLoops != 0 && previous.physicalCueFrame < 0)
+        .withCue(previous.physicalCueFrame);
+    const auto elapsed = previous.frames - previous.pcmAnchorFrame;
     if (pending.action == Action::Start) {
         track.stopSuppressesFollow = false;
-        const auto position = launchSourceTick(*target,oldSlot,previous.sourceTick);
+        const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
+        const auto position = launchSourceTick(*target,oldSlot,sourceTick);
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
         if (pending.repeat) {
@@ -551,9 +608,9 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     const auto followOrdinal = track.run.clip != 0 ? ++track.followOrdinal : 0;
     const LaunchTransition edge{track.id,previous.clip,track.run.clip,track.run.sourceTick,
         block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
-        track.run.velocity,track.run.fade,previous.pcmAnchorTick,previous.frames-previous.pcmAnchorFrame,
+        track.run.velocity,track.run.fade,oldLap.startFrame >= 0 ? oldLap.tickAt(0) : previous.pcmAnchorTick,elapsed,
         previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick,
-        physicalLap(oldSlot,previous.completedLoops != 0).startFrame};
+        oldLap.originFrame()};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -582,9 +639,14 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             }
         }
         LaunchSlot regionGeometry;
-        const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
+        const auto* slot = effectiveSlot(preparedSlot,track.run.region,track.run.physicalRegion,regionGeometry);
         const auto elapsed = track.run.frames - track.run.pcmAnchorFrame;
-        const auto lap = physicalLap(slot,track.run.completedLoops != 0);
+        const auto lap = physicalLap(slot,track.run.completedLoops != 0 && track.run.physicalCueFrame < 0)
+            .withCue(track.run.physicalCueFrame);
+        if (lap.startFrame >= 0) {
+            track.run.pcmAnchorTick = lap.tickAt(0);
+            track.run.sourceTick = lap.tickAt(elapsed);
+        }
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
@@ -629,8 +691,9 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         if (track.regionEdit) {
             const auto& pending = *track.regionEdit;
-            if (pending.edit.clip != track.run.clip || pending.edit.run != track.run.serial ||
-                !regionFits(preparedSlot,pending.edit.region)) {
+            const auto fits = pending.physical ? physicalRegionFits(preparedSlot,*pending.physical)
+                                               : regionFits(preparedSlot,pending.edit.region);
+            if (pending.edit.clip != track.run.clip || pending.edit.run != track.run.serial || !fits) {
                 track.regionEdit.reset();
             } else {
                 const auto editSample = pending.edit.rate == ClipUpdateRate::None
@@ -675,7 +738,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
                 track.run.pcmAnchorTick,elapsed,track.run.region.has_value(),
-                track.run.anchorTick,track.run.anchorSourceTick,lap.startFrame});
+                track.run.anchorTick,track.run.anchorSourceTick,lap.originFrame()});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
@@ -719,8 +782,27 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             phaseChangedAtCursor = phaseChangedAtCursor || run != track.run.serial;
         } else if (editRegion) {
             const auto region = track.regionEdit->edit.region;
+            track.run.physicalRegion = track.regionEdit->physical;
             track.regionEdit.reset();
             track.run.region = region;
+            if (const auto& frames = track.run.physicalRegion; frames && lap.startFrame >= 0) {
+                const auto played = std::min(lap.length(),track.run.frames - track.run.pcmAnchorFrame);
+                auto frame = std::max(frames->startFrame,lap.originFrame() + played);
+                if (frames->loopEndFrame && frame >= frames->loopEndFrame)
+                    frame = frames->loopBeginFrame + (frame - frames->loopEndFrame) %
+                        (frames->loopEndFrame - frames->loopBeginFrame);
+                else if (frame >= frames->endFrame)
+                    frame = frames->startFrame;
+                const auto extent = physicalExtent(*preparedSlot);
+                const auto sourceTick = extent.tickAt(frame - extent.startFrame);
+                track.run.physicalCueFrame = frame;
+                track.run.sourceTick = track.run.anchorSourceTick = track.run.pcmAnchorTick = sourceTick;
+                track.run.anchorTick = edgeTick;
+                track.run.pcmAnchorFrame = track.run.frames;
+                phaseChangedAtCursor = true;
+                tick = nextTick;
+                continue;
+            }
             auto revisedPosition = std::max(track.run.sourceTick,region.start);
             if (region.loop && revisedPosition >= region.loop->end) {
                 revisedPosition = region.loop->begin + (revisedPosition - region.loop->end) %
@@ -740,6 +822,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             track.run.anchorTick = nextTick;
             track.run.pcmAnchorTick = slot->loopStartTick;
             track.run.pcmAnchorFrame = track.run.frames;
+            track.run.physicalCueFrame = -1;
             ++track.run.completedLoops;
             phaseChangedAtCursor = true;
         } else {
@@ -994,7 +1077,8 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto physicalSample = [&](const Pending& event) {
         if (event.physicalLaps > 0 && (current->physicalLoopEndFrame || (event.repeat && current->physicalFrames > 0))) {
-            const auto lap = physicalLap(current,run.completedLoops != 0);
+            const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
+                .withCue(run.physicalCueFrame);
             const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
             const auto period = physicalLap(current,true).length();
             const auto completed = std::min(run.completedLoops,static_cast<std::uint64_t>(event.physicalLaps));
@@ -1017,7 +1101,8 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
 
     if (current->physicalFrames > 0) {
         const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
-        const auto lap = physicalLap(current,run.completedLoops != 0);
+        const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
+            .withCue(run.physicalCueFrame);
         if (elapsed <= lap.length())
             return launchSourceTick(target,current,lap.tickAt(elapsed));
         if (!current->physicalLoopEndFrame) return {};
@@ -1061,12 +1146,16 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         status.source = LaunchTrackSource::Session;
         slot = findSlot(view,track.id,run.scene);
         if (!slot || slot->clip != run.clip) slot = findClip(view,track.id,run.clip);
-        slot = effectiveSlot(slot,run.region,regionGeometry);
+        slot = effectiveSlot(slot,run.region,run.physicalRegion,regionGeometry);
+        const auto lap = physicalLap(slot,run.completedLoops != 0 && run.physicalCueFrame < 0)
+            .withCue(run.physicalCueFrame);
+        const auto elapsed = run.frames - run.pcmAnchorFrame;
+        if (lap.startFrame >= 0) status.sourceTick = lap.tickAt(elapsed);
         if (slot && loops(*slot)) {
             status.loopStartTick = slot->loopStartTick;
             status.loopLengthTicks = slot->loopEndTick - slot->loopStartTick;
-        } else if (slot && slot->physicalFrames > 0) {
-            status.remainingSamples = std::max<std::int64_t>(0,slot->physicalFrames - (run.frames - run.pcmAnchorFrame));
+        } else if (lap.startFrame >= 0) {
+            status.remainingSamples = std::max<std::int64_t>(0,lap.length() - elapsed);
         } else if (occupied(slot)) {
             const auto end = add(run.anchorTick,std::max<std::int64_t>(0,slot->endTick - run.anchorSourceTick));
             status.remainingSamples = std::max<std::int64_t>(0,block.sampleAtTick(block.clock,end) - endSample);

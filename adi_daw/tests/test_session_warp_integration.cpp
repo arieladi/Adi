@@ -29,6 +29,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -980,6 +981,77 @@ void laterFollowKeepsEarlierLegatoForecast() {
             "prefetching the earlier Legato phase keeps callback work allocation and I/O free");
 }
 
+void pinnedLiveRegionEdit(std::string_view kind, bool retime, bool flatRebase = false) {
+    test::TempDirectory folder{"physical_live_region","resident"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);");
+    addClip(*store,folder.path(),101,10,7,false,3000,1,12000);
+    pinUnwarpedOneShot(*store,100000000,1000000000);
+    constexpr auto tick = [](std::int64_t frame) { return frame * quarter / (rate / 2); };
+    if (kind == "loop") {
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=2306304,loop_len_ticks=8072064;"
+                "UPDATE clip_playback_details SET loop_begin_ns=200000000,loop_end_ns=900000000;");
+    }
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(), "open a resident non-Legato source with absolute pins");
+    std::vector<float> pcm(54000);
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(6000);
+    if (retime) require(session.setExternalTempoAt(*store,140,quarter / 2), "perform 140 BPM after frame 12000");
+    constexpr auto editAt = 18000;
+    playback.through(editAt);
+    const auto before = trackState(session);
+    require(before.clip == 101 && before.run != 0 && before.completedLoops == 0, "the non-Legato run is active at edit time");
+    require(session.beginRender().bpmAtTick(quarter / 2) == (retime ? 140 : 120), "the driver has selected the expected clock");
+    LaunchClipRegion region{tick(4800),tick(52800),{}};
+    std::int64_t expected = 0;
+    if (kind == "end") {
+        region.end = tick(40000);
+        expected = 40000 - 4800;
+    } else if (kind == "start") {
+        region.start = tick(30000);
+        expected = editAt + 52800 - 30000;
+    } else if (kind == "loop") {
+        region.loop = LaunchClipLoopRegion{tick(12000),tick(36000)};
+        expected = 36000 - 4800;
+    } else {
+        throw std::runtime_error("expected end, start, or loop");
+    }
+    const LaunchClipRegionEdit edit{1,101,session.launchIncarnation(),before.run,region,ClipUpdateRate::None};
+    require(session.postLaunchClipRegionEdit(edit), "the exact physical marker edit is accepted by the RAM path");
+    if (flatRebase) {
+        playback.through(editAt + 1);
+        require(session.setExternalTempo(*store,20), "keep the active physical edit across a new tick-zero tempo");
+    }
+    std::int64_t actual = -1;
+    if (kind == "loop") {
+        while (playback.first <= expected) {
+            const auto at = playback.first;
+            playback.through(at + 1);
+            if (trackState(session).completedLoops != 0) {
+                actual = at;
+                break;
+            }
+        }
+    } else {
+        playback.through(expected + blockFrames);
+        if (playback.count == 2) actual = playback.edges[1].sample;
+    }
+    const auto pulse = kind == "end" ? 34200 : 27000;
+    std::printf("%.*s at %d BPM: expected boundary %lld, actual %lld, difference %lld, pulse[%d]=%.6f\n",
+        static_cast<int>(kind.size()),kind.data(),flatRebase ? 20 : retime ? 140 : 120,static_cast<long long>(expected),
+        static_cast<long long>(actual),static_cast<long long>(actual-expected),pulse,static_cast<double>(pcm[static_cast<std::size_t>(pulse)]));
+    if (kind != "loop") require(actual == expected && pcm[static_cast<std::size_t>(pulse)] == .55f,
+                                "stop at the physical End without dropping the selected source pulse");
+    else require(actual == expected,"wrap exactly on the edited physical Loop End");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "physical marker editing adds no callback allocations or file reads");
+}
+
 void pinnedRepeatUsesItsLaunchClock() {
     for (const bool ram : {true,false}) {
         for (const auto variant : {0,1,2}) {
@@ -1124,11 +1196,16 @@ int main() {
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
-        pinnedRepeatUsesItsLaunchClock();
         persistedPhysicalLoopTempo();
         physicalLoopFollowUsesTargetGrid();
         physicalFollowKeepsCoincidentGridSample();
         laterFollowKeepsEarlierLegatoForecast();
+        for (const auto kind : {"end","start","loop"}) {
+            pinnedLiveRegionEdit(kind,false);
+            pinnedLiveRegionEdit(kind,true);
+        }
+        pinnedLiveRegionEdit("end",true,true);
+        pinnedRepeatUsesItsLaunchClock();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

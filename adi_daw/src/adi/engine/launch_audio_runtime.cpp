@@ -141,7 +141,11 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
         const auto lastFrame = pcm->frameForTick(last, prepared.bpm());
         if (pcm->usesPages() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
     } else if (!prepared.isMidiTrack(edit.track)) return false;
-    return driver.launcher_.postRegionEdit(edit);
+    const auto slots = prepared.view().slots;
+    const auto slot = std::ranges::find_if(slots,[&](const LaunchSlot& candidate) {
+        return candidate.track == edit.track && candidate.clip == edit.clip;
+    });
+    return driver.launcher_.postRegionEdit(edit,slot != slots.end() ? &*slot : nullptr);
 }
 
 LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject> project,
