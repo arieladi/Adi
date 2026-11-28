@@ -299,6 +299,7 @@ add_library(adi_core STATIC
     src/adi/scan_prune.cpp
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
+    src/adi/media/source_hash_memo.cpp
     src/adi/media/zip_writer.cpp
     src/adi/interchange/smf.cpp
     src/adi/interchange/midi_clip_file.cpp
@@ -2307,6 +2308,10 @@ target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 
 # ADR-0071/0205: queued offline master renders, isolated and published without replacement.
+add_executable(adi_source_hash_memo_tests tests/test_source_hash_memo.cpp)
+target_link_libraries(adi_source_hash_memo_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_source_hash_memo_tests COMMAND adi_source_hash_memo_tests)
+
 add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
 target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
 if(TARGET FLAC::FLAC)
