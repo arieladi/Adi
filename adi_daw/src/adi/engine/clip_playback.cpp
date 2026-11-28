@@ -957,7 +957,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const bool nativeWarp = (arrangementStreaming || warpPlayback == WarpPlayback::NativePages) &&
                 warpMode && !a->reverse && a->formantShift == 0 &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
-                 (*warpMode == audio::WarpMode::RePitch && (arrangementStreaming || a->transposeSemis == 0)));
+                 *warpMode == audio::WarpMode::RePitch);
             const bool r3Mode = (arrangementStreaming || warpPlayback == WarpPlayback::AlignedR3) &&
                 warpMode && !a->reverse &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
