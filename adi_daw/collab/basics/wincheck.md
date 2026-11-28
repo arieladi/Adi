@@ -12,6 +12,7 @@ A fix for a branch is one commit on `wincheck/<branch>`, made from that branch's
 
 | When (UTC) | Branch and head | Built | Headless suites | Errors (file:line) and the smallest fix |
 |---|---|---|---|---|
+| 2026-11-28 10:15 | `basics/midi-chain` `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Yes, both builds | 280 of 280 | None |
 | 2026-11-28 09:40 | `basics/plugins-chain` `1e5f0c78cd1cb6325f68bfa43725eaa88cfdd42e` | Yes, both builds | 279 of 279 | None |
 | 2026-11-28 09:00 | `basics/tracks-chain` `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb` | Yes, both builds | 279 of 279 | None |
 | 2026-11-28 08:30 | `basics/analysers-chain` `bdd8fa175a9eac805057961bb6f266f20ca8ffc7` | Yes, both builds | 278 of 279. `adi_library_tests` times out at 120 s in the parallel run and passes alone | None new: the load starvation already fixed on **`wincheck/main` `9734b0c44`** (`RUN_SERIAL TRUE` on `adi_library_tests` in `CMakeLists.txt`). Neither `main` nor this chain has it yet (`CMakeLists.txt:1889` still sets only `TIMEOUT 120`); it goes away once `wincheck/main` is merged. |
