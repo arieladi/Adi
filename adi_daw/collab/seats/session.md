@@ -69,6 +69,8 @@ The plan calls the material writes literal `clip.create`. The present `clip.crea
 
 ## Verification
 
+- At `8bcbb2ac3`, the full `ctest -LE performance` run passed 302 of 303 suites. The seek fixture used the wrong column name, so it stopped before exercising the new case. The corrected fixture uses `launch_quant`.
+
 - The merged Session head `beb7ebc87` passed all 301 Linux GCC 14 Debug CTest suites in 179.81 s with `ADI_WERROR=ON`. All five repository validators passed. Wincheck subsequently passed both MSVC builds and all 302 headless suites on this same head. The libc++ checker passed all 301 headless suites and three offscreen JUCE suites on this head.
 - Full continuation regression at `dbe4d0d64` passed all 300 CTest tests in 181.84 s on Linux GCC 14 Debug with `ADI_WERROR=ON`. Schema, op, parity, Pd and CI validators passed, including the reserved 1.26 schema check 9b. The full Windows build and installed Live readings remain open.
 - Linux GCC 14 Debug, `ADI_WERROR=ON`. All 288 CTest tests passed in 190.66 s. After rebuilding the final Session audio configuration checks, all ten seat suites passed again in 0.32 s.
