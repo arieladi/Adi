@@ -795,13 +795,10 @@ void musicalPlacementPhysicalPins(bool ram) {
                 ram ? "RAM" : "paged",span,start,end);
 }
 
-void steadyLegacyOneShotAperture() {
-    const auto render = [](bool halfQuarter, bool ram, bool fade, bool earlyStop) {
+void steadyLegacyOneShotAperture(bool explicitEnd = false) {
+    const auto render = [explicitEnd](bool halfQuarter, bool ram, bool fade, bool earlyStop) {
         test::TempDirectory folder{"legacy_fade_aperture",halfQuarter ? "half-quarter" : "quarter"};
         auto store = sceneProject(folder.path());
-        auto& db = store->db();
-        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,140);"
-                "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
         const std::int64_t launch = halfQuarter ? 10286 : 20571;
         const std::int64_t natural = halfQuarter ? 20571 : 41143;
         const auto played = natural - launch;
@@ -809,16 +806,36 @@ void steadyLegacyOneShotAperture() {
         const auto stop = earlyStop ? natural - 32 : natural;
         constexpr auto sourceFrames = 2 * rate;
         addClip(*store,folder.path(),101,10,1,false,static_cast<int>(played-1),1,sourceFrames);
-        db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101");
-        SQLite::Statement clip(db,"UPDATE clips SET length_ticks=?,loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
-        clip.bind(1,halfQuarter ? quarter / 2 : quarter);
-        clip.exec();
-        SQLite::Statement launchSettings(db,"UPDATE clip_launch SET launch_quant=?,ram_mode=?,clip_fade=? WHERE clip_id=101");
-        launchSettings.bind(1,1 + static_cast<int>(halfQuarter ? LaunchQuantization::Eighth : LaunchQuantization::Quarter));
-        launchSettings.bind(2,ram ? 1 : 0);
-        launchSettings.bind(3,fade ? 1 : 0);
-        launchSettings.exec();
-        require(db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() == 0,
+        const auto marker = halfQuarter ? quarter / 2 : quarter;
+        {
+            auto& db = store->db();
+            db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,140);"
+                    "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0');"
+                    "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101");
+            SQLite::Statement clip(db,"UPDATE clips SET length_ticks=?,loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
+            clip.bind(1,explicitEnd ? marker + 2*quarter : marker);
+            clip.exec();
+            if (explicitEnd) {
+                SQLite::Statement save(db,"INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(101,?)");
+                save.bind(1,marker);
+                save.exec();
+            }
+            SQLite::Statement launchSettings(db,"UPDATE clip_launch SET launch_quant=?,ram_mode=?,clip_fade=? WHERE clip_id=101");
+            launchSettings.bind(1,1 + static_cast<int>(halfQuarter ? LaunchQuantization::Eighth : LaunchQuantization::Quarter));
+            launchSettings.bind(2,ram ? 1 : 0);
+            launchSettings.bind(3,fade ? 1 : 0);
+            launchSettings.exec();
+        }
+        if (explicitEnd) {
+            store.reset();
+            StoreError error{};
+            store = Store::open(folder.path()/"song.adi",error);
+            require(static_cast<bool>(store),"reopen the saved steady legacy End marker");
+            require(store->db().execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64() == marker &&
+                    store->db().execAndGet("SELECT length_ticks FROM clips WHERE id=101").getInt64() == marker+2*quarter,
+                    "the saved End is distinct from the longer placement length");
+        }
+        require(store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() == 0,
                 "the legacy slot retains tick markers without physical pins");
 
         audio::WavReader reader(folder.path()/"101.wav");
@@ -861,8 +878,8 @@ void steadyLegacyOneShotAperture() {
             exact &= pcm[static_cast<std::size_t>(frame)] == expected;
         }
         const auto observed = playback.count == 2 ? playback.edges[1].sample : -1;
-        std::printf("Steady 140 legacy aperture %s %s Fade %d early Stop %d: %lld frames, Stop %lld/%lld, exact PCM %d\n",
-            halfQuarter ? "eighth" : "quarter",ram ? "RAM" : "paged",fade,earlyStop,static_cast<long long>(played),
+        std::printf("Steady 140 legacy aperture %s %s saved End %d Fade %d early Stop %d: %lld frames, Stop %lld/%lld, exact PCM %d\n",
+            halfQuarter ? "eighth" : "quarter",ram ? "RAM" : "paged",explicitEnd,fade,earlyStop,static_cast<long long>(played),
             static_cast<long long>(observed),static_cast<long long>(stop),exact);
         require(playback.count == 2 && playback.edges[0].newClip == 101 && playback.edges[0].sample == launch &&
                 playback.edges[1].newClip == 0 && observed == stop && exact && session.problems().empty(),
@@ -973,7 +990,7 @@ void fadedLegacyRawSceneAtFirstAdoption() {
             "the late-adopted tempo scene preserves the before-bank Fade aperture and starts the new raw slot on time");
 }
 
-void legacyMusicalOneShotPlaysRawPcm() {
+void legacyMusicalOneShotPlaysRawPcm(bool explicitEnd = false) {
     enum class Clock { Steady, AuthoredRamp, External, ChangedBacking, DriverRace, LegacyTrim, FlatRamRegion,
                        SteadyFade, AuthoredRampFade, ExternalFade, EarlyExternalFade };
     constexpr auto mediaFrames = 2 * rate;
@@ -1004,7 +1021,8 @@ void legacyMusicalOneShotPlaysRawPcm() {
             const bool flatRegion = clock == Clock::FlatRamRegion;
             const bool fade = clock == Clock::SteadyFade || clock == Clock::AuthoredRampFade ||
                 clock == Clock::ExternalFade || earlyEof;
-            if (flatRegion && !ram) continue;
+            if ((flatRegion && !ram) || (explicitEnd && (flatRegion || trim))) continue;
+            const auto placement = explicitEnd ? (clock == Clock::External ? quarter : 4*quarter) : 2*quarter;
             test::TempDirectory folder{"tick_only_raw_slot",ram ? "ram" : "paged"};
             auto store = sceneProject(folder.path());
             const auto file = folder.path() / "plain.wav";
@@ -1033,7 +1051,8 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 // The tick span is what a whole-file drop made at 60 BPM stored.
                 std::array<OpRequest,4> operations;
                 operations[0].opType = "clip.create";
-                operations[0].payload = {{"id",101},{"track",1},{"kind","audio"},{"pos",4*quarter},{"length",2*quarter}};
+                operations[0].payload = {{"id",101},{"track",1},{"kind","audio"},{"pos",4*quarter},
+                    {"length",placement}};
                 operations[1].opType = "clip.attachAudio";
                 operations[1].payload = {{"id",101},{"media",101},{"frames",mediaFrames}};
                 operations[2].opType = "session.setSlotClip";
@@ -1041,6 +1060,11 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 operations[3].opType = "session.setLaunchSettings";
                 operations[3].payload = {{"clip",101},{"ram",ram},{"fade",fade}};
                 require(OpJournal(*store).commit(operations).ok,"persist a plain drop and move it to Session");
+                if (explicitEnd) {
+                    SQLite::Statement save(db,"INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(101,?)");
+                    save.bind(1,2*quarter);
+                    save.exec();
+                }
                 if (trim) {
                     SQLite::Statement start(db,"UPDATE clips SET content_offset_ticks=? WHERE id=101");
                     start.bind(1,quarter/4);
@@ -1055,6 +1079,10 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 return store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() != 0;
             };
             require(!hasPins(),"the stored clip has no source pins");
+            if (explicitEnd)
+                require(store->db().execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64() == 2*quarter &&
+                        store->db().execAndGet("SELECT length_ticks FROM clips WHERE id=101").getInt64() == placement,
+                        "the reopened marked slot keeps its distinct saved placement length");
 
             Session session;
             session.graph().setFadeFrames(0);
@@ -1076,7 +1104,16 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 require(session.postLaunchClipRegionEdit(region),"flat RAM still accepts a live nonzero Start");
             }
             playback.through(tempoCut-100);
-            if (changed) store->db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+            const auto oldSwaps = session.graph().stats().swaps;
+            if (changed) {
+                if (explicitEnd) {
+                    SQLite::Statement moveEnd(store->db(),"UPDATE clip_properties SET end_marker_ticks=? WHERE clip_id=101");
+                    moveEnd.bind(1,3*quarter);
+                    moveEnd.exec();
+                } else {
+                    store->db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+                }
+            }
             bool accepted = false;
             if (race) {
                 accepted = session.setExternalTempoAt(*store,20,cutTick,[&] {
@@ -1100,6 +1137,18 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 halt.opType = "session.stopTrack";
                 halt.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
                 require(OpJournal(*store).commit(halt).ok,"stop the slowed raw slot 32 frames before native EOF");
+            }
+            if (explicitEnd && race) {
+                playback.through(expectedStop);
+                require(session.graph().stats().swaps == oldSwaps && trackState(session).clip == 101,
+                        "the suspect first adoption leaves the original run and End in place through its last PCM frame");
+                playback.through(expectedStop+1);
+                require(session.graph().stats().swaps == oldSwaps && playback.count == 2 &&
+                        playback.edges[1].newClip == 0 && playback.edges[1].sample == expectedStop &&
+                        trackState(session).clip == 0,"the old run reaches its original natural Stop before graph adoption");
+                playback.through(expectedStop+2);
+                require(session.graph().stats().swaps > oldSwaps && session.beginRender().bpmAtTick(2*quarter) == 20,
+                        "the already-prepared new End and clock adopt once the old run has stopped");
             }
             playback.through(expectedStop+blockFrames);
 
@@ -1125,8 +1174,8 @@ void legacyMusicalOneShotPlaysRawPcm() {
                         pcm[static_cast<std::size_t>(expectedStop+frame)] == static_cast<float>(tail*(1.0-shape));
                 }
             }
-            std::printf("Tick-only raw %s case %d: BPM %.0f, Stop %lld/%lld, exact PCM %d, owner accepted %d\n",
-                ram ? "RAM" : "paged",static_cast<int>(clock),observed,static_cast<long long>(stop),
+            std::printf("Tick-only raw %s case %d saved End %d: BPM %.0f, Stop %lld/%lld, exact PCM %d, owner accepted %d\n",
+                ram ? "RAM" : "paged",static_cast<int>(clock),explicitEnd,observed,static_cast<long long>(stop),
                 static_cast<long long>(expectedStop),exact,accepted);
             if (trim) {
                 const auto& problems = session.problems();
@@ -3795,7 +3844,9 @@ int main() {
         musicalPlacementPhysicalPins(false);
         unpinnedAbsoluteOneShotFollowsItsSource();
         steadyLegacyOneShotAperture();
+        steadyLegacyOneShotAperture(true);
         legacyMusicalOneShotPlaysRawPcm();
+        legacyMusicalOneShotPlaysRawPcm(true);
         fadedLegacyRawSceneAtFirstAdoption();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();

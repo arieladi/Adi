@@ -1560,6 +1560,9 @@ static void appendLaunchSource(ClipProject& project, const ClipProject& original
         source.lengthTicks.reset();
         source.posNs = 0;
         source.lengthNs = *endNs;
+        // The launch slot applies the audible End. Keep the requested
+        // absolute aperture available in this private PCM reader.
+        source.endMarkerTicks.reset();
     }
     source.contentOffsetTicks = 0;
     source.contentOffsetNs.reset();
@@ -1595,7 +1598,7 @@ static bool hasWholeAbsoluteSource(const rows::Clip& clip, const rows::AudioClip
 static std::optional<std::int64_t> legacyRawDuration(const rows::Clip& clip, const rows::AudioClip& audio,
                                                      std::span<const rows::Media> allMedia) {
     if (clip.timeBase != 0 || clip.contentOffsetTicks != 0 || clip.contentOffsetNs || clip.sourceEndNs ||
-        clip.endMarkerTicks || clip.loopEnabled) return {};
+        clip.loopEnabled) return {};
     const auto rate = wholeRawSourceRate(audio,allMedia);
     if (!rate) return {};
     return edit::nanosFromSeconds(static_cast<double>(audio.srcLenFrames) / static_cast<double>(*rate));
