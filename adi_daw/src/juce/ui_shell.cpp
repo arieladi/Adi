@@ -133,6 +133,7 @@ void AppCommands::reload() {
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
     envelopesLocked_ = !flag(settings_, "editing.automationFollowsClips", true);
+    chaseMidiNotes_ = flag(settings_, "midi.chaseNotes", true);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
@@ -416,6 +417,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
         {"edit.consolidate", "Edit"}, // ConsolidateMidi
+        {"options.chase-midi-notes", "Options"}, // ChaseMidiNotes
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -549,6 +551,14 @@ bool AppCommands::setEnvelopesLocked(bool locked, std::string &why) {
         onEnvelopeLockChanged();
     return saved;
 }
+bool AppCommands::setChaseMidiNotes(bool on, std::string &why) {
+    if (!settings_.set("midi.chaseNotes", on, {}, why))
+        return false;
+    chaseMidiNotes_ = on; // in force from here, as every Settings change is
+    const bool saved = settings_.save(why);
+    manager.commandStatusChanged();
+    return saved;
+}
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
         return false;
@@ -665,7 +675,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate",
+                                  "Chase MIDI Notes"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -1210,6 +1221,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)
         info.setTicked(delayCompensation_);
+        break;
+    case ChaseMidiNotes: // SC-232: the Options menu's switch, ticked from `midi.chaseNotes`
+        info.setTicked(chaseMidiNotes_);
         break;
     case SoloSwitches: // manual 18.6: the Options menu's pair, one ticked, from the project's field
     case CueSwitches:
@@ -6697,6 +6711,16 @@ bool AdiRootComponent::command(int id) {
             return fail(why.empty() ? "Delay Compensation could not be changed." : why);
         break;
     }
+    case AppCommands::ChaseMidiNotes: {
+        // SC-232: Live's switch: the setting, then the session; no undo step.
+        std::string why;
+        const bool saved = commands_.setChaseMidiNotes(!commands_.chaseMidiNotes(), why);
+        if (applyChaseMidiNotes)
+            applyChaseMidiNotes(commands_.chaseMidiNotes());
+        if (!saved)
+            return fail(why.empty() ? "Chase MIDI Notes could not be saved." : why);
+        break;
+    }
     case AppCommands::WrapTabNavigation: {
         std::string why;
         if (!commands_.setWrapTabNavigation(!commands_.wrapTabNavigation(), why))
@@ -6995,17 +7019,18 @@ const std::vector<MenuEntries> &menuBar() {
         // 5 November: Solo Switches, Cue Switches, Solo in Place, before Settings), and Settings on
         // Windows (§2.3). Solo Switches and Cue Switches are the cue path's (B6, MX-08). Delay
         // Compensation (manual 18.7) stands in its own group before them; its place among Live's
-        // other Options entries is to be read on Live 12 (PROVISIONAL).
+        // other Options entries is to be read on Live 12 (PROVISIONAL). Chase MIDI Notes (SC-232) joins
+        // its group, its place among Live's entries to be read too (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
          {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
           C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
+          C::DelayCompensation, C::ChaseMidiNotes, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
          {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
           C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
+          C::DelayCompensation, C::ChaseMidiNotes, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
         // Learn View come with those views; the Mixer with its keyboard.

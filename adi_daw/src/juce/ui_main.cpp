@@ -2181,6 +2181,14 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         if (!document_->setDelayCompensation(commands_->delayCompensation()))
             root->say(document_->error());
+        // Options > Chase MIDI Notes (SC-232): the same, from the open and at each toggle.
+        root->applyChaseMidiNotes = [this](bool on) {
+            if (settingsWindow_)
+                settingsWindow_->panel().refreshValues();
+            if (document_)
+                document_->setChaseMidiNotes(on);
+        };
+        document_->setChaseMidiNotes(commands_->chaseMidiNotes());
         root->reenableLane = [this](std::int64_t lane) {
             const bool ok = document_->reenableAutomation(lane);
             if (!ok && root_)
@@ -3462,6 +3470,9 @@ class AdiApplication final : public juce::JUCEApplication,
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
+                    // The Tempo & MIDI page's Chase MIDI Notes row is the Options menu's switch (SC-232).
+                    if (document_)
+                        document_->setChaseMidiNotes(commands_->chaseMidiNotes());
                     if (document_)
                         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
                     refreshDevicePresets();

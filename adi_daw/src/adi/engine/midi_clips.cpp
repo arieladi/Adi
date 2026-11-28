@@ -127,6 +127,8 @@ public:
     bool meterNotes = false;
     std::shared_ptr<const MidiControllerProgram> controls;
     std::uint16_t pitchChase = 0;
+    // SC-232: Options > Chase MIDI Notes, shared by every source of the session.
+    std::shared_ptr<const std::atomic<bool>> chaseNotes;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
         if(!active.note.identity.note || byIdentity.empty())return nullptr;
@@ -501,6 +503,10 @@ public:
         const bool newGeneration = state->generation != generation;
         const bool moved=state->revision!=transport.revision() || state->expected!=first;
         bool discontinuity=newGeneration || moved;
+        // SC-232: with Chase MIDI Notes off, a note begun before a start, a Locate or a loop wrap
+        // stays silent until its next start. A new graph alone still re-chases what it could not adopt.
+        const bool chaseNotesOn = !chaseNotes || chaseNotes->load(std::memory_order_relaxed);
+        bool located = moved;
         bool controlsReset=false;
         bool controlChase=false;
         bool expressionBlocked=false;
@@ -556,11 +562,13 @@ public:
                     return;
                 invalidateControls();
                 discontinuity = true;
+                located = true;
                 controlsReset=true;controlChase=true;
             }
             if (discontinuity) {
                 if(controlChase)evaluateControls(out, frame, time);
-                chase(out, frame, time);
+                if (chaseNotesOn || !located)
+                    chase(out, frame, time);
             }
             const auto end=time+std::min(count,std::numeric_limits<std::int64_t>::max()-time);
             const auto* eventBegin=events.data();
@@ -703,8 +711,16 @@ struct MidiClipState {
     };
     std::map<std::int64_t,OwnedTrack> tracks; // message thread only
     std::uint64_t generation=0,trackIdentity=0,controllerIdentity=0,routeIdentity=0;
+    // SC-232: written on the message thread, read by every source on the audio thread.
+    std::shared_ptr<std::atomic<bool>> chaseNotes = std::make_shared<std::atomic<bool>>(true);
 };
 std::shared_ptr<MidiClipState> makeMidiClipState(){return std::make_shared<MidiClipState>();}
+void setChaseMidiNotes(MidiClipState& state, bool on) noexcept {
+    state.chaseNotes->store(on, std::memory_order_relaxed);
+}
+bool chaseMidiNotes(const MidiClipState& state) noexcept {
+    return state.chaseNotes->load(std::memory_order_relaxed);
+}
 struct MidiClips::Impl {
     std::map<std::int64_t,std::shared_ptr<Source>> tracks;
     std::vector<std::string> problems;
@@ -759,6 +775,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         // The realizer retains each source independently. A replacement graph
         // can share an unchanged track without keeping old changed tracks alive.
         source->owner = source;
+        source->chaseNotes = state->chaseNotes;
         source->meterNotes = meterNotes;
         source->monitorInputOnly = monitorInputOnly;
         impl_->tracks.emplace(track.id, std::move(source));

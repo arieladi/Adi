@@ -279,6 +279,9 @@ public:
     /// SC-333: a take is being recorded, so the transport a hosted plug-in is handed says it records
     /// while it plays. Set by the document as its recording starts and ends; read on the audio thread.
     void setRecordingForDevices(bool on) noexcept { recordingForDevices_.store(on, std::memory_order_release); }
+    /// SC-232: Options > Chase MIDI Notes (`midi.chaseNotes`, on by default), in force from the next block.
+    void setChaseMidiNotes(bool on) noexcept { adi::engine::setChaseMidiNotes(*midiState_, on); }
+    [[nodiscard]] bool chaseMidiNotes() const noexcept { return adi::engine::chaseMidiNotes(*midiState_); }
     struct DriverClock {
         std::int64_t sample = 0, streamedFrames = 0, loopBegin = 0, loopEnd = 0;
         std::uint64_t revision = 0;

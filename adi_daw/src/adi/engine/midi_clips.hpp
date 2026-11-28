@@ -22,6 +22,10 @@ struct MidiNoteActivity {
     bool held = false;
 };
 std::shared_ptr<MidiClipState> makeMidiClipState();
+// SC-232: Live's Options > Chase MIDI Notes, on by default. Off, a note that began before the point
+// playback starts, a Locate lands or the loop wraps to is not played; a note starting there is.
+void setChaseMidiNotes(MidiClipState&, bool on) noexcept;
+[[nodiscard]] bool chaseMidiNotes(const MidiClipState&) noexcept;
 class MidiClips {
 public:
     // Owner-only ordered union of actual event paths, ending each path at its

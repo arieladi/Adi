@@ -3300,6 +3300,27 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             root.applyDelayCompensation = nullptr;
             root.say({});
         }
+        {
+            // SC-232: Options > Chase MIDI Notes, on by default: the setting, then the session, no undo step.
+            std::vector<bool> told;
+            root.applyChaseMidiNotes = [&](bool on) { told.push_back(on); };
+            const auto stepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+            const auto ticked = [&commands] {
+                juce::ApplicationCommandInfo info(AppCommands::ChaseMidiNotes);
+                commands.getCommandInfo(AppCommands::ChaseMidiNotes, info);
+                return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0 && info.shortName == "Chase MIDI Notes";
+            };
+            check(commands.chaseMidiNotes() && ticked() && commands.settings().get("midi.chaseNotes") == settings::Value(true),
+                  "SC-232: Chase MIDI Notes is on by default and ticked");
+            check(root.command(AppCommands::ChaseMidiNotes) && !commands.chaseMidiNotes() && !ticked() &&
+                      commands.settings().get("midi.chaseNotes") == settings::Value(false) && told == std::vector<bool>{false} &&
+                      (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == stepBefore,
+                  "SC-232: chosen, it is off, saved, the session told, and no undo step");
+            check(root.command(AppCommands::ChaseMidiNotes) && commands.chaseMidiNotes() && ticked() &&
+                      told == std::vector<bool>{false, true},
+                  "SC-232: chosen again, it is on");
+            root.applyChaseMidiNotes = nullptr;
+        }
         if (column != nullptr) {
             // The box's own grid is a hundredth: 10.004 snaps to the 10.00 it holds and nothing
             // is committed.
@@ -30373,9 +30394,9 @@ int main(int argc, char **argv) {
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
                                                    C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, C::ChaseMidiNotes, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
-              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, then "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, Chase MIDI Notes, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, C::OpenBackup, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio,
@@ -30392,10 +30413,10 @@ int main(int argc, char **argv) {
               "Collect and Export after them, then audio/video and MIDI clip export. It ends with Quit [P:export#1]");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
                                                    C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, C::ChaseMidiNotes, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
-              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, Solo in "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, Lock Envelopes, the grid, Delay Compensation, Chase MIDI Notes, Solo in "
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif

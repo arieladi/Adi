@@ -214,7 +214,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         LockEnvelopes,
         OpenBackup,
         ConsolidateMidi,
-        LastId = ConsolidateMidi
+        ChaseMidiNotes, // Live's Options > Chase MIDI Notes (SC-232)
+        LastId = ChaseMidiNotes
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -260,6 +261,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool envelopesLocked() const noexcept { return envelopesLocked_; }
     bool setEnvelopesLocked(bool locked, std::string &why);
     std::function<void()> onEnvelopeLockChanged;
+    // Live's Options > Chase MIDI Notes (SC-232; `midi.chaseNotes`, on by default): a note already
+    // sounding where playback starts, a Locate lands or the loop wraps to is played from there.
+    bool chaseMidiNotes() const noexcept { return chaseMidiNotes_; }
+    bool setChaseMidiNotes(bool on, std::string &why);
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -353,6 +358,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool tabMovesFocus_ = false;
     bool delayCompensation_ = true;
     bool envelopesLocked_ = false;
+    bool chaseMidiNotes_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
@@ -615,6 +621,7 @@ class AdiRootComponent final : public juce::Component,
     // the command toggles the setting. Unset, the setting changes and the session hears it at the next
     // project open.
     std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
+    std::function<void(bool)> applyChaseMidiNotes;    // SC-232: the session follows Options > Chase MIDI Notes
     // The current audio device's granted physical output channels, read on the message thread.
     // Empty when no device is running, and Cue Out offers the default 1/2.
     std::function<std::optional<engine::OutputChannelMap>()> physicalOutputChannels;

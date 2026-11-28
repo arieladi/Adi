@@ -228,6 +228,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The application's setting, not the project's: not an op and not an undo step. False with
     // `error()` when the session refused it.
     bool setDelayCompensation(bool on);
+    // Live's Options > Chase MIDI Notes (SC-232; `midi.chaseNotes`): an application setting the session
+    // follows from the next block. Not an op and not an undo step.
+    void setChaseMidiNotes(bool on) noexcept { session_.setChaseMidiNotes(on); }
+    [[nodiscard]] bool chaseMidiNotes() const noexcept { return session_.chaseMidiNotes(); }
     // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
     // again; the others stay overridden. Session state as above, no undo step. False with `error()`
     // when the lane was not overridden or the rebuild failed.

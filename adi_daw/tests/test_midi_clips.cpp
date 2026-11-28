@@ -1041,6 +1041,54 @@ void maximumLocate(){
     f.session.transport().locate(std::numeric_limits<std::int64_t>::max());f.render();
     check(f.instrument->balance()==0,"maximum sample locate releases notes without overflow");
 }
+// SC-232: Options > Chase MIDI Notes. On (Live's default), a note already sounding where playback
+// starts, where a Locate lands and where the loop wraps to is played from there. Off, it is not;
+// a note that starts at that very point still plays. The default clip's note sounds from sample 100
+// to 2100 (Fixture::clip, 120 BPM at 48 kHz).
+void chaseNotesSwitch(){
+    const auto ons=[](const Fixture& f,std::size_t from){
+        int n=0;
+        for(std::size_t i=from;i<f.instrument->count;++i)if(f.instrument->heard[i].e.type==EventType::NoteOn)++n;
+        return n;
+    };
+    {
+        Fixture f;f.clip();f.load();
+        check(f.session.chaseMidiNotes(),"SC-232: Chase MIDI Notes is on by default");
+        f.session.transport().play(false);f.session.transport().locate(1000);f.session.transport().play();
+        f.render();
+        check(ons(f,0)==1 && f.instrument->balance()==1,"SC-232: on, starting inside a note plays it");
+        const auto before=f.instrument->count;
+        f.session.transport().locate(1500);f.render();
+        check(ons(f,before)==1 && f.instrument->balance()==1,"SC-232: on, a Locate inside the note plays it again from there");
+    }
+    {
+        Fixture f;f.clip();f.load();
+        f.session.setChaseMidiNotes(false);
+        check(!f.session.chaseMidiNotes(),"SC-232: the switch reads off");
+        f.session.transport().play(false);f.session.transport().locate(1000);f.session.transport().play();
+        while(f.clock<2600)f.render();
+        check(ons(f,0)==0 && f.instrument->count==0,"SC-232: off, starting inside a note leaves it silent to its end");
+        f.session.transport().locate(100);f.render();
+        check(ons(f,0)==1 && f.instrument->balance()==1,"SC-232: off, a note starting where playback lands still plays");
+        const auto before=f.instrument->count;
+        f.session.transport().locate(1500);f.render();
+        check(ons(f,before)==0 && f.instrument->balance()==0,"SC-232: off, a Locate inside it releases it and does not play it again");
+        f.session.setChaseMidiNotes(true);
+        f.session.transport().locate(1500);f.render();
+        check(f.instrument->balance()==1,"SC-232: switched back on, the next Locate plays it");
+    }
+    for(const bool chase:{true,false}) {
+        // The loop wraps from 1500 back to 1000, inside the note: on, it sounds again at each wrap.
+        Fixture f;f.clip();f.load();
+        f.session.setChaseMidiNotes(chase);
+        f.session.transport().loop(1000,1500);f.session.transport().locate(0);
+        while(f.clock<2000)f.render();
+        const int expected=chase?1+2:1; // the start at 100, then the wraps at clock 1500 and 2000
+        check(ons(f,0)==expected && f.instrument->balance()==(chase?1:0),
+              chase?"SC-232: on, each loop wrap plays the note held across the loop start"
+                   :"SC-232: off, the loop wrap releases it and does not play it again");
+    }
+}
 void loopEntry(){
     Fixture f;f.clip(1,0,240240,240240);
     f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,content_offset_ticks=12012");
@@ -2142,7 +2190,7 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "pitch-bend") livePitchBendOwnership(); }
     catch (const std::exception& e) { check(false, e.what()); }
-    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="chase-notes")chaseNotesSwitch();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
