@@ -37,6 +37,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <sqlite3.h>
 #include <string_view>
 #include <vector>
@@ -4297,9 +4298,9 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     // The batch is built from the CURRENT cell.
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
-    // Each file captured before the batch lands: a new pool row takes an id past the ones the files
-    // before it took, and a file dropped twice is captured once.
+    // Capture each path once. Uncommitted pool rows are shared by content across the batch.
     std::vector<DroppedAudio> dropped;
+    std::map<std::string, std::int64_t> pendingMedia;
     std::int64_t nextId = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
         const auto &[path, name] = files[i];
@@ -4315,6 +4316,14 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
             std::string why;
             if (!importAudio(path, file.import, why))
                 return fail(why.empty() ? "The file could not be imported." : why);
+            if (file.import.media.opType == "media.import") {
+                const auto &hash = file.import.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
+                const auto [entry, inserted] = pendingMedia.try_emplace(hash, file.import.mediaId);
+                if (!inserted) {
+                    file.import.mediaId = entry->second;
+                    file.import.media = {};
+                }
+            }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
         }

@@ -6898,6 +6898,78 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
           "SC-160: Settings can re-enable the prompt with its last import options");
     if (auto *prompt = root.importPrompt())
         prompt->answer(false);
+
+    // Two different sources with a steady 120 BPM pulse, including one with an initial offset.
+    const auto beatA = dir / "SC-158 Beat A.wav", beatB = dir / "SC-158 Beat B.wav";
+    for (const auto &[source, lead] : {std::pair{beatA, 0u}, std::pair{beatB, 1234u}}) {
+        constexpr unsigned beat = 24000;
+        std::vector<float> samples(lead + 8 * beat);
+        for (unsigned i = 0; i < 8; ++i)
+            samples[lead + i * beat] = 1.f;
+        audio::WavWriter writer(source, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+
+    auto &db = document->store().db();
+    const auto mediaCount = [&] { return db.execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto headBeforeDrop = History(document->store()).head();
+    const auto tracksBeforeDrop = root.reader().tracks().size();
+    const int mediaBeforeDrop = mediaCount();
+    const auto dropPosition = textproj::kWhole;
+    const auto projectFolder = media::projectFolder(document->store());
+    const auto warpedAndCopied = [&] {
+        SQLite::Statement rows(db, "SELECT c.track_id, m.rel_path FROM clips c "
+                                   "JOIN audio_clips a ON a.clip_id = c.id JOIN media_files m ON m.id = a.media_id "
+                                   "WHERE c.name IN ('SC-158 Beat A', 'SC-158 Beat B') AND c.pos_ticks = ? "
+                                   "AND c.fade_in_ticks > 0 AND c.fade_out_ticks > 0 "
+                                   "AND a.warp_enabled = 1 AND a.warp_mode = 'beats' AND length(a.warp_markers) > 0");
+        rows.bind(1, dropPosition);
+        std::set<std::int64_t> tracks;
+        while (rows.executeStep()) {
+            const auto relative = media::pathFromUtf8(rows.getColumn(1).getString());
+            if (relative.parent_path() == "audio" && std::filesystem::is_regular_file(projectFolder / relative))
+                tracks.insert(rows.getColumn(0).getInt64());
+        }
+        return tracks.size() == 2 && tracks.contains(audioTrack);
+    };
+
+    keepImportChoices(settings, ImportChoices{}, why);
+    auto &geometry = root.arrangement.geometry;
+    geometry.left = 0;
+    geometry.reveal(root.reader(), audioTrack);
+    const auto x = static_cast<int>(geometry.x(dropPosition));
+    const auto y = laneTop(root, audioTrack) + 10;
+    {
+        const juce::ScopedValueSetter<juce::ModifierKeys> command(
+            juce::ModifierKeys::currentModifiers, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+        root.arrangement.canvas.filesDropped({juce::String(beatA.string()), juce::String(beatB.string())}, x, y);
+    }
+    check(root.importPrompt() != nullptr && History(document->store()).head() == headBeforeDrop,
+          "SC-158: the two-file arrangement drop asks before editing the project");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->warp.setToggleState(true, juce::sendNotificationSync);
+        prompt->fades.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(true);
+    }
+    root.frame();
+    const auto dropHead = History(document->store()).head();
+    const bool dropCommitted = dropHead && dropHead != headBeforeDrop;
+    check(dropCommitted && warpedAndCopied() && root.reader().tracks().size() == tracksBeforeDrop + 1 &&
+              mediaCount() == mediaBeforeDrop + 2,
+          "SC-158: a separate drop warps, fades and copies both clips at the same position on separate tracks");
+    if (dropCommitted) {
+        check(root.command(AppCommands::Undo), "undo the complete Warp, Fades and Copy drop");
+        root.frame();
+        check(root.reader().tracks().size() == tracksBeforeDrop && mediaCount() == mediaBeforeDrop &&
+                  History(document->store()).head() == headBeforeDrop,
+              "SC-158: one Undo removes both warped clips, their media rows and the new track");
+        check(root.command(AppCommands::Redo), "redo the complete Warp, Fades and Copy drop");
+        root.frame();
+        check(History(document->store()).head() == dropHead && warpedAndCopied() &&
+                  root.reader().tracks().size() == tracksBeforeDrop + 1 && mediaCount() == mediaBeforeDrop + 2,
+              "SC-158: one Redo restores both complete imports");
+    }
     keepImportChoices(settings, ImportChoices{}, why);
     settings.save(why);
     commands.detach(root);
@@ -7499,6 +7571,38 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // A second filename can carry the same sample bytes before either file is pooled.
+    const auto alternateSnare = dir / "Alt Snare.wav";
+    std::filesystem::copy_file(snare, alternateSnare);
+    const auto beforeSharedDrop = History(*store).head();
+    const auto poolSize = [&] { return store->db().execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto poolBefore = poolSize();
+    const Clips sharedDropClips{{"Snare 909", bar3}, {"Alt Snare", bar3 + textproj::kPPQ}};
+    const auto bothUseFirstMedia = [&] {
+        return store->db().execAndGet("SELECT count(*) FROM audio_clips a JOIN clips c ON c.id=a.clip_id "
+                                     "JOIN media_files m ON m.id=a.media_id "
+                                     "WHERE c.track_id=3 AND m.orig_name='Snare 909.wav'").getInt() == 2;
+    };
+    canvas.filesDropped(juce::StringArray{snarePath, juce::String(alternateSnare.string())}, x3, below);
+    root.frame();
+    const auto sharedDrop = History(*store).head();
+    const bool dropCommitted = sharedDrop && sharedDrop != beforeSharedDrop;
+    check(dropCommitted && clipsOn(3) == sharedDropClips && poolSize() == poolBefore + 1 && bothUseFirstMedia(),
+          "SC-158: a plain drop gives same-content files distinct clip names and one shared media row");
+    if (dropCommitted) {
+        check(root.command(AppCommands::Undo), "undo the same-content drop");
+        root.frame();
+        check(History(*store).head() == beforeSharedDrop && !root.reader().findTrack(3) && poolSize() == poolBefore,
+              "SC-158: one Undo removes both clips, the new track and the shared media row");
+        check(root.command(AppCommands::Redo), "redo the same-content drop");
+        root.frame();
+        check(History(*store).head() == sharedDrop && clipsOn(3) == sharedDropClips &&
+                  poolSize() == poolBefore + 1 && bothUseFirstMedia(),
+              "SC-158: one Redo restores both named clips and their shared media row");
+        check(root.command(AppCommands::Undo), "reset the same-content drop fixture");
+        root.frame();
+    }
 
     // A separate-track drop covers only its first file's range on the target track.
     const auto beat = textproj::kPPQ;
