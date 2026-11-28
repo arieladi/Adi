@@ -25,10 +25,12 @@ void check(bool value, const char* message) {
 }
 
 Json rowNamed(const Json& page, std::string_view name) {
-    auto found = std::ranges::find_if(page.at("entries"), [name](const Json& row) {
-        return row.at("name") == name;
-    });
-    return found == page.at("entries").end() ? Json::object() : *found;
+    // A plain loop and a string compared with a string: a json beside a string_view is ambiguous
+    // to MSVC under C++20, and the range search could not be resolved with it.
+    for (const Json& row : page.at("entries"))
+        if (row.at("name").get_ref<const std::string&>() == name)
+            return row;
+    return Json::object();
 }
 
 void browserSources() {
