@@ -838,18 +838,11 @@ struct Session::MidiHardwareNode final : Node {
     void process(const NodeIo& io) noexcept override {
         if (io.wide()) copyAudio(io.in64, io.out64, io.channels, io.blockOffset, io.frames);
         else copyAudio(io.in, io.out, io.channels, io.blockOffset, io.frames);
-        const auto* sink = owner_.midiHardwareSink_;
-        if (!sink || !sink->send || io.exporting) return;
-        const auto now = owner_.midiHardwareStreamSample_;
-        const bool heard = strip_.midiAudible(io);
-        if (heard_ && !heard)
-            sink->send(sink->context, port_, track_, now + io.blockOffset, kMidiHardwareRelease);
-        heard_ = heard;
-        if (!heard) return;
-        for (const auto& event : io.events)
-            if (const auto word = midiHardwareWord(event, route_.channel); word != 0)
-                sink->send(sink->context, port_, track_, now + event.frame, word);
+        sendMidi(io);
     }
+
+    // The graph can sleep after notes end even while a hardware pedal is held.
+    void silenceTaps(const NodeIo& io) noexcept override { sendMidi(io); }
 
     const rows::MidiOutput& route() const noexcept { return route_; }
     const StripNode& strip() const noexcept { return strip_; }
@@ -859,6 +852,31 @@ struct Session::MidiHardwareNode final : Node {
     std::shared_ptr<LiveMidiInput::Voices> liveVoices;
 
 private:
+    void sendMidi(const NodeIo& io) noexcept {
+        const auto* sink = owner_.midiHardwareSink_;
+        if (!sink || !sink->send || io.exporting || (!releasePending_ && io.events.empty())) return;
+        const auto now = owner_.midiHardwareStreamSample_;
+        const auto blockEnd = io.blockOffset + io.frames;
+        auto event = io.events.begin();
+        const auto eventsEnd = io.events.end();
+        for (auto frame = io.blockOffset; frame < blockEnd;) {
+            const auto run = strip_.midiAudibleRun(io, frame);
+            if (!run.audible && releasePending_) {
+                sink->send(sink->context, port_, track_, now + frame, kMidiHardwareRelease);
+                releasePending_ = false;
+            }
+            for (; event != eventsEnd && event->frame < run.endFrame; ++event) {
+                if (!run.audible) continue;
+                if (const auto word = midiHardwareWord(*event, route_.channel); word != 0) {
+                    sink->send(sink->context, port_, track_, now + event->frame, word);
+                    releasePending_ = true;
+                }
+            }
+            if (event == eventsEnd && !releasePending_) break;
+            frame = run.endFrame;
+        }
+    }
+
     template<class Sample>
     static void copyAudio(const Sample* const* input, Sample* const* output,
                           std::int32_t channels, std::int32_t offset, std::int32_t frames) noexcept {
@@ -876,7 +894,7 @@ private:
     rows::MidiOutput route_;
     std::uint64_t port_;
     std::uint64_t serial_;
-    bool heard_ = false;
+    bool releasePending_ = false;
 };
 
 void Session::attach(std::shared_ptr<const TimingView> timing) {

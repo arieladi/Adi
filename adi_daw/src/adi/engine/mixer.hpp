@@ -241,7 +241,8 @@ public:
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
     [[nodiscard]] const StripMeter& meter() const noexcept { return meter_; }
-    [[nodiscard]] bool midiAudible(const NodeIo&) const noexcept;
+    struct MidiAudibleRun { bool audible; std::int32_t endFrame; };
+    [[nodiscard]] MidiAudibleRun midiAudibleRun(const NodeIo&, std::int32_t frame) const noexcept;
     /// Driver stopped: clear the published readout without touching render state.
     void release() override;
 
