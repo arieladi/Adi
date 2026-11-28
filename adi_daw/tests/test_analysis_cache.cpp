@@ -5,6 +5,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/appdata.hpp"
 #include "adi/library/index.hpp"
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <new>
 #include <thread>
 #if defined(_WIN32)
@@ -81,11 +83,24 @@ void files() {
     test::TempDirectory temp{"analysis","files"};AnalysisCache cache(temp.path()/"analysed");auto data=sample();std::string error;
     check(cache.read(data.identity).problem==AnalysisCacheProblem::Missing,"missing cache is explicit and creates no folder");
     check(cache.update(data.identity,"FUTR",data.sections.at("FUTR"),error)==AnalysisCacheProblem::None,"first section is published in an owned central file");
+    const auto target = cache.folder() / (data.identity.hash + ".adia");
+    {
+        std::error_code leaseError;
+        const auto lease = ProjectFileLease::openShared(target, leaseError);
+        if (!lease) throw std::system_error(leaseError, "hold the existing analysis file");
+        check(cache.update(data.identity, "APKS", data.sections.at("APKS"), error) == AnalysisCacheProblem::Io &&
+                  !error.empty(), "a leased analysis file refuses atomic replacement");
+    }
+    const auto preserved = cache.read(data.identity);
+    check(preserved && preserved.data->sections.size() == 1 && preserved.data->sections.contains("FUTR") &&
+              preserved.data->sections.at("FUTR") == data.sections.at("FUTR") &&
+              std::distance(fs::directory_iterator(cache.folder()), fs::directory_iterator()) == 1,
+          "refused replacement preserves prior bytes and cleans its private stage");
     check(cache.update(data.identity,"APKS",data.sections.at("APKS"),error)==AnalysisCacheProblem::None,"a second analysis updates the same sample file");
     const auto loaded=cache.read(data.identity);check(loaded && *loaded.data==data,"section update preserves unknown future data");
     std::size_t count=0;for(const auto& entry:fs::directory_iterator(cache.folder())){(void)entry;++count;}check(count==1,"the sample has one cache file and no surviving private stage");
     auto changed=data.identity;changed.frames++;check(cache.read(changed).problem==AnalysisCacheProblem::Invalid,"cached dimensions must match the requested sample identity");
-    const auto target=cache.folder()/(data.identity.hash+".adia");{std::ofstream corrupt(target,std::ios::binary);corrupt<<"bad";}
+    {std::ofstream corrupt(target,std::ios::binary);corrupt<<"bad";}
     check(cache.read(data.identity).problem==AnalysisCacheProblem::Invalid,"damaged optional cache returns an explicit miss reason");
     check(cache.update(data.identity,"APKS",data.sections.at("APKS"),error)==AnalysisCacheProblem::None && cache.read(data.identity).data->sections.size()==1,"rebuilding replaces corrupt optional bytes with a complete new record");
     std::stop_source stop;stop.request_stop();check(cache.read(data.identity,stop.get_token()).problem==AnalysisCacheProblem::Cancelled && cache.update(data.identity,"FUTR",data.sections.at("FUTR"),error,stop.get_token())==AnalysisCacheProblem::Cancelled,"pre-cancelled cache I/O preserves the existing file");

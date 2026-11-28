@@ -121,7 +121,14 @@ AnalysisCacheProblem AnalysisCache::update(const AnalysisIdentity& id,const std:
         const auto stage=directory/"analysis";
         {audio::fileIoPoint();std::ofstream out(stage,std::ios::binary);out.exceptions(std::ios::badbit|std::ios::failbit);out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));out.flush();out.close();}
         if(stop.stop_requested())return AnalysisCacheProblem::Cancelled;
-        const auto replaced=replaceCacheFile(stage,target);if(replaced){error=replaced.message();return AnalysisCacheProblem::Io;}error.clear();return AnalysisCacheProblem::None;
+        auto published = replaceFile(stage, target);
+        if (published.status != PublishStatus::published) {
+            error = std::move(published.error);
+            return AnalysisCacheProblem::Io;
+        }
+        // A parent sync warning follows installation of the complete optional cache file.
+        error.clear();
+        return AnalysisCacheProblem::None;
     }catch(const std::bad_alloc&){return AnalysisCacheProblem::Resource;}
     catch(const std::exception& e){error=e.what();return AnalysisCacheProblem::Io;}
 }
