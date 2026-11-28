@@ -1276,14 +1276,14 @@ void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, 
     if (!track.follow || !track.follow->linkedPhysical || !track.run.clip) return;
     const auto& pending = *track.follow;
     const auto* target = findSlot(view,track.id,pending.scene);
-    if (!occupied(target) || target->clip != pending.clip || target->physicalFrames <= 0) return;
+    if (!occupied(target) || target->clip != pending.clip) return;
     const auto* current = findSlot(view,track.id,track.run.scene);
     if (!current || current->clip != track.run.clip) current = findClip(view,track.id,track.run.clip);
     LaunchSlot region;
     current = effectiveSlot(current,track.run.region,track.run.physicalRegion,region);
     std::int64_t due = 0;
     const auto cue = queuedLegatoSourceCue(track,pending,*target,current,block,endSample,&due);
-    if (cue && cue->physicalFrame >= 0) sink.prefetchLinkedLegato(sink.context,*target,due,cue->physicalFrame);
+    if (cue) sink.prefetchLinkedLegato(sink.context,*target,due,*cue);
 }
 
 std::uint32_t Launcher::claimStatusBuffer() noexcept {

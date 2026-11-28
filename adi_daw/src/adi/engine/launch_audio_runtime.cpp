@@ -63,6 +63,10 @@ NativeCueWrap nativeCueWrap(const LaunchBlock& block, const LaunchSlot& slot,
     return {LaunchWarpPosition{first,tick,slot.loopStartTick},bounded};
 }
 
+bool needsWorkerCueLease(const LaunchAudioClip& clip) noexcept {
+    return clip.latencySamples() > 0 && !clip.allWorkerPhasesPrimed();
+}
+
 bool needsRetainedPages(const LaunchSlot& slot, std::uint32_t rate) noexcept {
     return slot.physicalLoopEndFrame > 0 || slot.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate);
 }
@@ -657,9 +661,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!call.media->stored()) return true;
         const auto physical = target.physicalFrames > 0;
         const auto scheduled = cueAdmission == LaunchCueAdmission::Scheduled;
+        const auto linked = cueAdmission == LaunchCueAdmission::Linked;
         const auto readyOnly = cueAdmission == LaunchCueAdmission::ReadyOnly || cueAdmission == LaunchCueAdmission::HeldRepeat;
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
-                     : !scheduled && !readyOnly) return true;
+                     : !scheduled && !linked && !readyOnly) return true;
         const auto* pcm = call.media->clip(target.clip);
         auto* nativePages = scheduled && pcm ? pcm->warpPageReader() : nullptr;
         if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache()) {
@@ -688,7 +693,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         }
         if (!pcm) return !physical;
         auto* pages = pcm->pageReader();
-        if (!pages || (!physical && (pcm->latencySamples() == 0 || pcm->allWorkerPhasesPrimed()))) return true;
+        if (!pages || (!physical && !needsWorkerCueLease(*pcm))) return true;
         const auto frame = physical ? cue.physicalFrame : pcm->frameForTick(cue.tick,call.media->bpm());
         if (cueAdmission == LaunchCueAdmission::None || frame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
@@ -706,7 +711,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         // wrap or phase change; reserve the outer callback's remaining PCM.
         const auto remaining = call.frames - call.offset - offset;
         if (physical) {
-            const auto requestAhead = scheduled || cueAdmission == LaunchCueAdmission::Linked;
+            const auto requestAhead = scheduled || linked;
             if (!pages->reserveCue(target.clip,frame,remaining,requestAhead,
                                    cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
         } else {
@@ -735,13 +740,17 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
         return true;
-    }, [](void* state, const LaunchSlot& target, std::int64_t due, std::int64_t frame) noexcept {
+    }, [](void* state, const LaunchSlot& target, std::int64_t due, const LaunchSourceCue& cue) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         if (call.runtime.mediaAt(due).get() != call.media) return;
         const auto* clip = call.media->clip(target.clip);
-        if (!clip || !clip->pageReader() || !needsCueLease(target,clip->rate())) return;
+        if (!clip || !clip->pageReader()) return;
+        const auto physical = target.physicalFrames > 0;
+        if (physical ? !needsCueLease(target,clip->rate())
+                     : !needsWorkerCueLease(*clip)) return;
         const auto* rendered = call.runtime.trackRanges(target.track);
         if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == target.clip) return;
+        const auto frame = physical ? cue.physicalFrame : clip->frameForTick(cue.tick,call.media->bpm());
         clip->pageReader()->prefetch(target.clip,frame);
     }};
     while (context.offset < frames) {

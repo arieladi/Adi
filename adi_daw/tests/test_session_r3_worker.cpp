@@ -787,10 +787,217 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
             "the warm cue is sample-exact through track PDC and the cold cue keeps the old run with no late replay");
 }
 
+enum class WorkerFollowCase { Warm, Cold, Manual, Stop };
+
+void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
+    constexpr int rawStart = 2400, loopHead = 124800, loopEnd = 134400;
+    constexpr int physicalEnd = loopEnd - rawStart, period = loopEnd - loopHead;
+    constexpr int cue = 18*8192-1, manualCue = 16*8192-1, cutFrames = blockFrames-17;
+    constexpr std::uint64_t incarnation = 113;
+    constexpr auto extent = 10 * quarter;
+    const auto due = noGrid ? physicalEnd : 144000;
+    const auto phaseAt = [&](int at) { return loopHead + (at - physicalEnd) % period; };
+    const auto inherited = phaseAt(due) - rawStart;
+    const auto cold = testCase == WorkerFollowCase::Cold;
+    const auto manual = testCase == WorkerFollowCase::Manual;
+    const auto stop = testCase == WorkerFollowCase::Stop;
+    const auto frameToTick = [](int frame) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(frame)*quarter/(rate/2)));
+    };
+    const auto frameToNs = [](std::int64_t frame) {
+        return (frame*1'000'000'000 + rate/2)/rate;
+    };
+    test::TempDirectory folder{"linked_worker_legato",noGrid ? "physical end" : "quarter"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path()/"song.adi",error);
+    require(static_cast<bool>(store),"create the saved linked worker project");
+    test::applySessionSchema(store->db());
+    auto& db = store->db();
+    db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Linked worker Legato',48000);"
+            "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
+            "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1),(30,2)");
+    addSlot(*store,101,10,.55f,extent,phaseAt(due+140),false);
+    addSlot(*store,102,20,-.8f,extent,cue+40,true);
+    if (manual) addSlot(*store,103,30,-.7f,extent,manualCue+40,true);
+    db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
+            "UPDATE clip_launch SET ram_mode=1,launch_quant=1,follow_enabled=1,follow_linked=1,"
+            "follow_loop_count=1,follow_a=4 WHERE clip_id=101;"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000 WHERE id=101;"
+            "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id>=102");
+    {
+        SQLite::Statement loop(db,"UPDATE clips SET loop_start_ticks=?,loop_len_ticks=? WHERE id=101");
+        loop.bind(1,frameToTick(loopHead)); loop.bind(2,frameToTick(period)); loop.exec();
+        SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns,"
+                                  "loop_begin_ns,loop_end_ns) VALUES(101,?,?,?,?)");
+        pins.bind(1,frameToNs(rawStart)); pins.bind(2,frameToNs(216000));
+        pins.bind(3,frameToNs(loopHead)); pins.bind(4,frameToNs(loopEnd)); pins.exec();
+        SQLite::Statement quantization(db,"UPDATE clip_launch SET launch_quant=? WHERE clip_id>=102");
+        quantization.bind(1,noGrid ? 1 : 8); quantization.exec();
+        const auto trim = [&](int id,int desiredCue) {
+            const auto start = frameToTick(desiredCue-inherited);
+            SQLite::Statement slot(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=length_ticks-? WHERE id=?");
+            slot.bind(1,start); slot.bind(2,start); slot.bind(3,id); slot.exec();
+        };
+        trim(102,cue);
+        if (manual) trim(103,manualCue);
+    }
+    store.reset();
+    store = Store::open(folder.path()/"song.adi",error);
+    require(static_cast<bool>(store),"reopen the linked worker rows");
+    struct Gate {
+        std::int64_t heldPage;
+        std::atomic<bool> entered{false}, warmed{false}, resume{false};
+    } gate{cold ? 18 : manual && !noGrid ? 16 : -1};
+    const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
+        .beforePageClaim=[](void* opaque,std::int64_t,std::int64_t number) noexcept {
+            auto& state = *static_cast<Gate*>(opaque);
+            if (number == 19) state.warmed.store(true,std::memory_order_release);
+            if (number != state.heldPage) return;
+            state.entered.store(true,std::memory_order_release);
+            while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
+        }};
+    const auto project = readClipProject(*store,rows::readModel(*store),true);
+    TempoMap clock;
+    clock.events.push_back({0,120,0});
+    std::vector<std::string> problems;
+    const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,incarnation,problems);
+    const auto* target = bank ? bank->clip(102) : nullptr;
+    require(target && target->pageReader() && target->latencySamples() == 2048 &&
+            !target->allWorkerPhasesPrimed() && problems.empty() &&
+            bank->view().slots.front().physicalStartFrame == rawStart,
+            "prepare a physical outgoing loop and a long aligned incoming source");
+    auto& pages = *target->pageReader();
+    struct ResumeOnExit { Gate& gate; ~ResumeOnExit(){ gate.resume.store(true,std::memory_order_release); } } resume{gate};
+    pages.setRequestSnapshotProbeForTest(&probe);
+    auto runtime = std::make_shared<LaunchAudioRuntime>(bank,std::vector<std::int64_t>{1},blockFrames);
+    LaunchAudioDriver driver(1);
+    Transport transport;
+    ClipPlayback track(project,transport,rate,2,blockFrames);
+    track.attachLaunchAudio(1,runtime);
+    auto* source = track.sourcesFor(1).front();
+    const auto delay = source->latencySamples();
+    require(delay == 2048,"the attached physical source reports the worker compensation");
+    transport.play();
+    const auto finish = due+delay+blockFrames+100;
+    std::vector<float> pcm(static_cast<std::size_t>(finish));
+    struct Trace { std::array<LaunchTransition,4> edges{}; std::size_t count = 0; } trace;
+    const auto through = [&](int end) {
+        while (transport.position() < end) {
+            LaunchBlock block;
+            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockFrames,end-transport.position()));
+            block.global = stop ? (noGrid ? LaunchQuantization::None : LaunchQuantization::Quarter)
+                                : LaunchQuantization::Bar;
+            block.clock = &clock;
+            block.tickAtSample = [](const void* raw,std::int64_t frame) noexcept {
+                return static_cast<const TempoMap*>(raw)->secondsToTicks(static_cast<double>(frame)/rate);
+            };
+            block.sampleAtTick = [](const void* raw,std::int64_t tick) noexcept -> std::int64_t {
+                return std::llround(static_cast<const TempoMap*>(raw)->ticksToSeconds(tick)*rate);
+            };
+            std::array<float,blockFrames> right{};
+            float* channels[]{pcm.data()+transport.position(),right.data()};
+            NodeIo io;
+            io.out = channels;
+            io.channels = 2;
+            io.frames = block.frames;
+            io.sampleRate = rate;
+            {
+                const audio::CallbackScope callback;
+                runtime->begin(driver,block,transport,transport.position(),&trace,
+                    [](void* opaque,const LaunchTransition& edge,std::int64_t) noexcept {
+                        auto& report = *static_cast<Trace*>(opaque);
+                        if (report.count < report.edges.size()) report.edges[report.count++] = edge;
+                    });
+                source->process(io);
+                runtime->finish();
+            }
+            transport.advance(block.frames);
+        }
+    };
+    const auto waitUntil = [](auto ready) {
+        const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        do {
+            if (ready()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    const auto observed = [&](const std::atomic<bool>& event) {
+        return waitUntil([&] { return event.load(std::memory_order_acquire); });
+    };
+    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the physical raw loop");
+    through(2*blockFrames);
+    std::array<LaunchTrackStatus,1> rows{};
+    LaunchStatusHeader status{};
+    require(driver.readStatus(rows,status) && rows[0].clip == 101 && rows[0].queued.action == LaunchQueuedAction::None,
+            "a Linked Follow does not occupy public queued status");
+    const auto oldRun = rows[0].run;
+    require(observed(cold ? gate.entered : gate.warmed),"private forecast requests the exact far R3 PCM pages");
+    std::array<float,cutFrames> expected{};
+    if (testCase == WorkerFollowCase::Warm) {
+        const audio::CallbackScope callback;
+        require(pages.read(102,cue,cutFrames,false),"measure the exact aligned cue");
+        std::ranges::copy(pages.channel(0),expected.begin());
+    }
+    if (manual || stop) {
+        through(noGrid ? due : due-blockFrames);
+        const auto request = manual ? LaunchRequest{LaunchRequestKind::SlotPress,1,30,103,incarnation}
+            : LaunchRequest{LaunchRequestKind::StopTrack,1,{},{},incarnation};
+        require(driver.post(std::array{request}),"post the coincident manual Start or Stop");
+        if (!noGrid) {
+            through(due-17);
+            require(driver.readStatus(rows,status) && rows[0].queued.action ==
+                (manual ? LaunchQueuedAction::Start : LaunchQueuedAction::Stop),"publish only the coincident user action");
+            if (manual) require(observed(gate.entered),"the manual candidate's second cue page remains cold");
+        }
+    } else {
+        through(due-17);
+    }
+    through(due+cutFrames);
+    require(driver.readStatus(rows,status) && rows[0].queued.action == LaunchQueuedAction::None,
+            "settle the linked or coincident request once");
+    gate.resume.store(true,std::memory_order_release);
+    if (cold || manual) {
+        const auto id = manual ? 103 : 102;
+        const auto frame = manual ? manualCue : cue;
+        {
+            const audio::CallbackScope callback;
+            pages.prefetch(id,frame);
+        }
+        require(waitUntil([&] {
+            const audio::CallbackScope callback;
+            if (!pages.reserveWorkerCue(id,frame,blockFrames,false)) return false;
+            pages.releaseCue(id);
+            return true;
+        }),"the refused pages can finish warming without a late replay");
+    }
+    through(finish);
+    const auto heard = due+delay;
+    const auto warm = testCase == WorkerFollowCase::Warm;
+    const auto pass = warm
+        ? (trace.count == 2 && trace.edges[1].newClip == 102 && trace.edges[1].sample == due &&
+           target->frameForTick(trace.edges[1].sourceTick,120) == cue &&
+           *std::min_element(expected.begin(),expected.end()) < -.5f &&
+           std::equal(expected.begin(),expected.end(),pcm.begin()+heard))
+        : stop ? (trace.count == 2 && trace.edges[1].newClip == 0 && trace.edges[1].sample == due &&
+                  std::all_of(pcm.begin()+heard,pcm.end(),[](float sample) { return sample == 0; }))
+               : (trace.count == 1 && rows[0].run == oldRun && pcm[static_cast<std::size_t>(heard+140)] == .55f);
+    std::printf("Linked worker Legato %s case %d: cut %d, cue %d, clip %lld, transitions %zu, underruns %u\n",
+                noGrid ? "None" : "Quarter",static_cast<int>(testCase),due,cue,static_cast<long long>(rows[0].clip),
+                trace.count,pages.underrunSamples());
+    require(pass && pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+            "the exact private worker cue obeys the physical lap and manual precedence with no callback faults");
+}
+
 } // namespace
 
 int main() {
     try {
+        for (const auto noGrid : {false,true})
+            for (const auto testCase : {WorkerFollowCase::Warm,WorkerFollowCase::Cold,
+                                        WorkerFollowCase::Manual,WorkerFollowCase::Stop})
+                linkedWorkerLegato(noGrid,testCase);
         for (const auto testCase : {WorkerCueCase::Warm,WorkerCueCase::ColdCue,WorkerCueCase::WarmWrap,
                                     WorkerCueCase::ColdWrap,WorkerCueCase::ColdDistantHead,WorkerCueCase::RepeatWrap,
                                     WorkerCueCase::ColdRepeatStart,WorkerCueCase::ColdLaterStart,WorkerCueCase::ReleasedBeforeCut})

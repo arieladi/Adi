@@ -171,7 +171,7 @@ struct LaunchSink {
     bool (*admitLegatoCue)(void*, const LaunchSlot&, const LaunchSourceCue&, std::int64_t launchTick,
                            std::int32_t offset, LaunchCueAdmission) noexcept = nullptr;
     // Driver-only forecast. Linked follows stay out of the user-queued status.
-    void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, std::int64_t frame) noexcept = nullptr;
+    void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, const LaunchSourceCue&) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
