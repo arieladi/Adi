@@ -6631,7 +6631,7 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
         check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos &&
                   root.error().find("not audio") != std::string::npos && root.error().find("other file came in") != std::string::npos,
               ("SC-389: the good file lands and the bad one is named, with why: " + root.error()).c_str());
-        check(root.dropAudioFiles({{(dir / "Broken.wav").string(), "Broken"}}, audioTrack, 0, false), "SC-389: a lone bad file");
+        check(root.dropAudioFiles({{broken, "Broken"}}, audioTrack, 0, false), "SC-389: a lone bad file");
         if (pending) std::exchange(pending, nullptr)({{std::nullopt, "it is not audio ADI can read"}}, "");
         root.frame();
         check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos,
@@ -19463,6 +19463,55 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     commands.detach(root);
     root.pluginHost = nullptr;
     document->release();
+}
+void builtinPanelWithoutConfigure(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "builtin-panel.adi", true, {}, error);
+    check(document != nullptr, "SC-454: a project for the Device View");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "builtin-panel");
+
+    DevicePanelData hosted;
+    hosted.id = 17;
+    hosted.name = "Hosted device";
+    hosted.uid = "org.adidaw.builtin.eq-eight";
+    hosted.format = "clap";
+    hosted.plugin = true;
+    hosted.resolved.showsConfigureHint = true;
+    auto builtin = hosted;
+    builtin.name = "EQ Eight";
+    builtin.format = "internal";
+    builtin.plugin = false;
+    builtin.available = true;
+    builtin.resolved = {};
+    builtin.declared.push_back({"frequency", "Frequency"});
+    builtin.records.push_back({.id = "frequency", .name = "Frequency", .text = "1.00 kHz"});
+    builtin.resolved.entries.push_back({"frequency"});
+
+    DevicePanelView panel(root.devices, hosted);
+    panel.setSize(170, 180);
+    const auto hasConfigure = [&] {
+        const auto menu = panel.commands();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Configure") return true;
+        return false;
+    };
+    check(panel.configureButton.isVisible() && hasConfigure(),
+          "SC-454: a hosted device with the same UID still offers Configure");
+    panel.configure();
+    check(panel.configuring && panel.search.isVisible(), "SC-454: Configure still opens search on the hosted device");
+
+    panel.present(builtin);
+    check(!panel.configureButton.isVisible() && !hasConfigure() && !panel.configuring && !panel.search.isVisible(),
+          "SC-454: a built-in panel offers neither the hosted Configure commands nor their search");
+    check(panel.controls.size() == 1 && panel.controls.front()->getTitle() == "Frequency" &&
+              panel.controls.front()->slider.isVisible(),
+          "SC-454: the built-in panel displays its declared control");
+    DevicePanelView builtinPanel(root.devices, builtin);
+    builtinPanel.configure();
+    check(!builtinPanel.configuring && !builtinPanel.search.isVisible(),
+          "SC-454: direct Configure does not open on the built-in");
 }
 void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -32301,6 +32350,7 @@ int main(int argc, char **argv) {
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
+    trace("builtinPanelWithoutConfigure", [&] { builtinPanelWithoutConfigure(commands, temp.path()); });
     trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });

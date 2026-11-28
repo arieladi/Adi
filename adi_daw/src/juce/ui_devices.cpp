@@ -1559,9 +1559,12 @@ void DevicePanelView::present(const DevicePanelData &d) {
     updateEqPreview(d);
     const bool bypassChanged = data != nullptr && data->enabledNow() != d.enabledNow();
     data = &d;
-    if (configureSession_) {
+    if (configuring) {
         const auto safe = SafePointer<DevicePanelView>(this);
-        queueConfigureTouch(d);
+        if (!allowsConfigure())
+            closeConfigure();
+        else if (configureSession_)
+            queueConfigureTouch(d);
         if (!safe) return;
     }
     if (bypassChanged)
@@ -1601,14 +1604,12 @@ void DevicePanelView::present(const DevicePanelData &d) {
             resized();
         }
     }
-    const bool swapVisible = !strip.folded(id) && canHotSwap();
-    if (hotSwapButton.isVisible() != swapVisible)
-        resized();
     // Only a plug-in has a window of its own (parity-7.5 row 1).
-    if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
-        wrench.setVisible(d.plugin && !strip.folded(id));
+    const bool isFolded = strip.folded(id);
+    if (hotSwapButton.isVisible() != (!isFolded && canHotSwap()) ||
+        wrench.isVisible() != (!isFolded && d.plugin) ||
+        configureButton.isVisible() != (!isFolded && !mixCard_ && allowsConfigure()))
         resized();
-    }
     // Native EQ uses its declared stable band/section metadata, not the ordinary
     // plug-in Configure cap. Construct only this small visible control set.
     std::vector<panel::Entry> eqEntries;
@@ -1727,13 +1728,13 @@ void DevicePanelView::layoutTitle(bool isFolded) {
     const int markSpace = playbackProblemPresented_ ? static_cast<int>(kPlaybackProblemMarkSize) + 2 : 0;
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
-    configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
+    configureButton.setVisible(!mixCard_ && !isFolded && allowsConfigure());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
     hotSwapButton.setVisible(!isFolded && canHotSwap());
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    const int titleRight = getWidth() - (eqPresentation() || mixCard_ ? 4 : 58);
+    const int titleRight = getWidth() - (configureButton.isVisible() ? 58 : 4);
     const int swapWidth = hotSwapButton.isVisible() ? 17 : 0;
     hotSwapButton.setBounds(titleRight - swapWidth, 1, swapWidth, 15);
     title.setBounds(nameLeft, 1, std::max(0, titleRight - swapWidth - nameLeft - markSpace), 15);
@@ -1895,7 +1896,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.drawFittedText(juce::String(parameterPageUnavailableReason().data(), parameterPageUnavailableReason().size()),
                         10, kTitleHeight + kPageHeight + 8, std::max(0, getWidth() - 20),
                         std::max(0, getHeight() - kTitleHeight - kPageHeight - 16), juce::Justification::centred, 5);
-    } else if (data && data->resolved.showsConfigureHint && !eqPresentation()) {
+    } else if (allowsConfigure() && data->resolved.showsConfigureHint) {
         g.setColour(look::text);
         g.drawFittedText("Choose parameters with Configure", 8, kTitleHeight + 6, getWidth() - 16,
                          36, juce::Justification::centred, 2);
@@ -2276,7 +2277,7 @@ juce::PopupMenu DevicePanelView::commands() {
         m.addSeparator();
         m.addSubMenu("MPE", routes);
     }
-    if (!eqPresentation()) {
+    if (allowsConfigure()) {
         m.addSeparator();
         m.addItem("Configure", [safe, epoch] {
             if (!safe || safe->menuEpoch_ != epoch) return;
@@ -2385,8 +2386,11 @@ void DevicePanelView::closeConfigure() {
     configureButton.setToggleState(false, juce::dontSendNotification);
     resized();
 }
+bool DevicePanelView::allowsConfigure() const noexcept {
+    return data && !(data->format == "internal" && findBuiltin(data->uid)) && !eqPresentation();
+}
 void DevicePanelView::configure() {
-    if (!data || !validTarget() || eqPresentation() || strip.folded(id))
+    if (!allowsConfigure() || !validTarget() || strip.folded(id))
         return;
     const bool plugin = !mixCard_ && data->plugin;
     const auto safe = SafePointer<DevicePanelView>(this);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "parameter_feed.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "adi/engine/param_ops.hpp"
 #include <algorithm>
 #include <cmath>
@@ -318,11 +319,18 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 }
                 data.metadata = tables.metadata;
             }
-            data.resolved = panel::resolve(model, row.id, data.declarations());
-            if (!data.plugin && !data.groups().empty() && !data.resolved.configured) {
-                data.resolved.entries.clear();
-                for (const auto &parameter : data.declarations()) data.resolved.entries.push_back({parameter.id, false});
-                data.resolved.showsConfigureHint = false;
+            const bool builtin = data.format == "internal" && findBuiltin(data.uid);
+            if (builtin) {
+                // Built-ins own their control list, including in projects with an old Configure row.
+                data.resolved.entries.reserve(data.declarations().size());
+                data.records.reserve(data.declarations().size());
+            } else {
+                data.resolved = panel::resolve(model, row.id, data.declarations());
+                if (!data.plugin && !data.groups().empty() && !data.resolved.configured) {
+                    data.resolved.entries.clear();
+                    for (const auto &parameter : data.declarations()) data.resolved.entries.push_back({parameter.id, false});
+                    data.resolved.showsConfigureHint = false;
+                }
             }
             // Configure needs all metadata; only displayed controls need values/text.
             // Large controller maps must not turn a small panel into quadratic SDK work.
@@ -332,7 +340,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 for (std::int32_t i = 0; i < count; ++i) {
                     const auto* descriptor = instance->paramAt(i);
                     if (!descriptor) continue;
-                    if (!algorithmPanel && std::none_of(data.resolved.entries.begin(), data.resolved.entries.end(),
+                    if (!builtin && !algorithmPanel && std::none_of(data.resolved.entries.begin(), data.resolved.entries.end(),
                         [&](const auto& entryToShow) { return entryToShow.id == descriptor->id; })) continue;
                     panel::Record record;
                     record.id = descriptor->id; record.name = descriptor->name;
@@ -340,11 +348,19 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                     record.text = instance->paramText(descriptor->id, record.playing);
                     record.shape = static_cast<panel::Shape>(descriptor->shape); record.stepCount = descriptor->stepCount;
                     if (descriptor->shape == device::ParamShape::Menu) record.choiceLabels = descriptor->choiceLabels;
+                    if (builtin) {
+                        data.resolved.entries.push_back({record.id, record.missing});
+                        if ((descriptor->automatable || descriptor->configurable) && !record.missing)
+                            ++data.resolved.modifiableCount;
+                    }
                     data.records.push_back(std::move(record));
                 }
             }
-            if (instance && instance->identity().uid.find("airwindows") !=
-                                std::string::npos) {
+            if (builtin) {
+                next->push_back(std::move(data));
+                continue;
+            }
+            if (algorithmPanel) {
               const auto algorithm = instance->getParam("0");
               const auto active = panel::activeAlgorithmParams(
                   data.records, static_cast<std::int32_t>(

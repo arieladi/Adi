@@ -57,6 +57,8 @@ public:
             else if(declaration.curve==PdCurve::Menu || declaration.curve==PdCurve::Int) {
                 descriptor.stepCount=static_cast<std::int32_t>(declaration.max-declaration.min+1);
                 descriptor.shape=descriptor.stepCount==2?ParamShape::Switch:ParamShape::Menu;descriptor.domain=ParamDomain::Enum;
+                if (descriptor.shape == ParamShape::Menu && declaration.curve == PdCurve::Menu)
+                    descriptor.choiceLabels = declaration.items;
             }
             targets_[i].store(static_cast<float>(descriptor.defaultValue.normalized),std::memory_order_relaxed);
             descriptors_.push_back(std::move(descriptor));
