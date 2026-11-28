@@ -46,6 +46,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-03 native pitch wheel | Prepared the newly landed native pitch-wheel stream in Session and shared its pending neutral with the Arrangement handover (`8fba6d61b`). | The native graph fixture exercises pitch and CC7 at frames 55 and 548, with one center and a note release at 730. | Pushed. Full headless rerun pending. |
 | TM-SV-04 centered wheel capture | Preserved an isolated held wheel as a literal ACTL stream when it returns to center before the run ends (`704c6f660`). | The native replay fixture checks the wheel at frames 55, 548 and 655, event and byte equality, Undo, Redo and reopen. Off-center exits remain outside the admission proof. | Pushed. Full headless rerun pending. |
 | Session slot record input routing | Kept stable input port IDs and routed note, expression and controller material through each frozen track input filter (`b63805023`). | The native mixed-route fixture records three independent port and channel selections, then checks slot material and one Undo and Redo against unchanged Arrangement material. | Pushed. Full headless rerun pending. |
+| Session slot record crash journal | Refused an explicit audio slot recovery request before arming either writer because the current recovery record has no scene or performed-clock fields (`a1f29d0b6`). | The test checks idle state and an empty work folder after refusal, then arms and cancels an ordinary private mixed take. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
