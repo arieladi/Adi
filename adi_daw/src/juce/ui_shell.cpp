@@ -7136,14 +7136,22 @@ bool isTestLaunch(const juce::String &commandLine) {
             return true;
     return false;
 }
+juce::File defaultProjectsFolder(const settings::AppSettings &settings, const juce::File &documents) {
+    if (documents != juce::File{})
+        return documents.getChildFile("ADI").getChildFile("Projects");
+    return juce::File(juce::String::fromUTF8(
+                          reinterpret_cast<const char *>(settings.file().parent_path().u8string().c_str())))
+        .getChildFile("projects");
+}
 juce::File projectsFolder(const settings::AppSettings &settings) {
     const auto chosen = settings.get("files.projectsFolder");
-    auto directory =
-        chosen.is_string() && !chosen.get<std::string>().empty()
-            ? juce::File(juce::String::fromUTF8(chosen.get<std::string>().c_str()))
-            : juce::File(juce::String::fromUTF8(
-                             reinterpret_cast<const char *>(settings.file().parent_path().u8string().c_str())))
-                  .getChildFile("projects");
+    // WTS-01: a launch isolated by ADI_HOME (every test) never reaches the user's documents.
+    const auto documents = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}).isNotEmpty()
+                               ? juce::File{}
+                               : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    auto directory = chosen.is_string() && !chosen.get_ref<const std::string &>().empty()
+                         ? juce::File(juce::String::fromUTF8(chosen.get_ref<const std::string &>().c_str()))
+                         : defaultProjectsFolder(settings, documents);
     directory.createDirectory();
     return directory;
 }

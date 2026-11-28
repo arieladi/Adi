@@ -1234,8 +1234,11 @@ juce::StringArray launchArguments(const juce::String &commandLine);
 // WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
 // copy's, which keeps its window out of the foreground and reports to stderr.
 bool isTestLaunch(const juce::String &commandLine);
-// The default projects folder (File & Folder's files.projectsFolder; unset, <config>/projects), made
-// when missing.
+// SC-100, ADR-0258 d7: with files.projectsFolder unset, projects live where the user can see them,
+// <documents>/ADI/Projects, beside the User Library (Windows). With no documents folder (an ADI_HOME
+// launch passes none), <config>/projects. Not made here.
+juce::File defaultProjectsFolder(const settings::AppSettings &settings, const juce::File &documents);
+// The projects folder (File & Folder's files.projectsFolder, else the default above), made when missing.
 juce::File projectsFolder(const settings::AppSettings &settings);
 // Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
 // places it. Reserve an exclusive Untitled, Untitled(2), ... directory for launch or New.

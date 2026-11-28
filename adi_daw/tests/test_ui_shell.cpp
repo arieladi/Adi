@@ -29080,6 +29080,12 @@ void untitledProjects(const std::filesystem::path &dir) {
     check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled" / "Untitled.adi") &&
               std::filesystem::is_directory(dir / "projects" / "Untitled"),
           "with no projects folder chosen, the first Untitled reserves its own project folder");
+    // SC-100, ADR-0258 d7: unset, projects live in the user's documents; this suite's ADI_HOME passes none.
+    check(defaultProjectsFolder(fresh, file(dir / "Documents")) == file(dir / "Documents" / "ADI" / "Projects") &&
+              !std::filesystem::exists(dir / "Documents"),
+          "the default projects folder is ADI/Projects under the user's documents, not made until used");
+    check(defaultProjectsFolder(fresh, {}) == file(dir / "projects") && projectsFolder(fresh) == file(dir / "projects"),
+          "with no documents folder, as under ADI_HOME, projects stay beside the settings");
     const auto folder = dir / "untitled";
     std::string why;
     check(fresh.set("files.projectsFolder", media::pathUtf8(folder), {}, why), "the projects folder is chosen");

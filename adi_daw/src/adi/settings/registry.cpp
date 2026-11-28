@@ -410,7 +410,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("cache.folder", Type::Path, ff, "Cache Folder",
                      "Where the decoding cache lives. Empty: the application cache folder (ADR-0149).", ""));
     r.push_back(make("files.projectsFolder", Type::Path, ff, "Default projects folder",
-                     "Where new projects are saved (REAPER).", ""));
+                     "Where new projects are saved. Empty: the ADI/Projects folder in your Documents.", ""));
     r.push_back(make("files.renderFolder", Type::Path, ff, "Default render folder",
                      "Where exports are written.", ""));
     r.push_back(make("files.recordFolder", Type::Path, ff, "Default record folder",
