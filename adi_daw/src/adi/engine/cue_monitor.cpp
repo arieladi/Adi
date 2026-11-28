@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -363,7 +364,12 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     const auto first=io.packedOutputPair(physicalFirst);
     auto* preview=impl_->preview;
     const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,physicalFirst);
-    const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
+    // Checked vector iterators can take a lock on the audio thread in MSVC Debug.
+    const auto* voices=scene->voices.data();
+    const auto voiceCount=scene->voices.size();
+    bool cueActive=false;
+    for(std::size_t voiceIndex=0;voiceIndex<voiceCount && !cueActive;++voiceIndex)
+        cueActive=voices[voiceIndex].selected || voices[voiceIndex].gate->current!=0;
     if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render && !sampleActive) {
         impl_->volume={scene->gain,scene->gain,0,0};
         return;
@@ -375,7 +381,8 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     double* scratch[]{buffers.scratch.data(),buffers.scratch.data()+stride};
     for(int c=0;c<2;++c){std::fill_n(cue[c],frames,0.0);std::fill_n(reference[c],frames,0.0);}
     AudioIo copy;copy.out64=scratch;copy.numOut=2;copy.frames=io.frames;
-    for(const auto& voice:scene->voices) {
+    for(std::size_t voiceIndex=0;voiceIndex<voiceCount;++voiceIndex) {
+        const auto& voice=voices[voiceIndex];
         voice.gate->set(voice.selected?1.0:0.0,scene->ramp);
         if(voice.gate->current==0 && !voice.selected)continue;
         const bool copied=graph.copyRenderedOutput(*voice.node,copy);
