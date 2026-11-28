@@ -22,7 +22,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **The devices' panels, three sheets the same day (SC-455).** The first laid seven devices out as Live lays its own: he took EQ Eight and Utility and said the rest could improve. He then brought pictures from his outside panel that he liked better, one of them above all: a large main knob with its value inside, the signal behind each curve, joined buttons, meters on every device. Win told him what those pictures leave out (most of each device's controls: their Reverb has five, ADI's thirty-one) and drew the look on ADI's own controls, twice: the second sheet he found "still doesn't look as good", the third is drawn to that level, a card showing the controls reached for and opening to the whole device. He also asked for one Auto Filter that cuts lows and highs at once (SC-480, an addition). The sheets are on `win/devices-sheet-1` and ride the next stack. Not agreed yet.
 
-**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-481.
+**He agreed the third sheet** ("agreed, draw the rest of the devices") and the rest were drawn the same day: sheet 4 (EQ, which he renamed from EQ Eight since it is ADI's only EQ device; Utility, Overdrive, Redux, Echo, Hybrid Reverb), 5 (Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators, Vocoder), 6 (ADI-Shaper), 7 (OneShot and Sampler), 8 (Chord Comb and Color Cab). His outside panel then said, rightly, that ADI-Shaper, OneShot and Sampler do less than the tools they are measured against. A sheet draws only what a device has, so that is not a fault of the look: it is three lists to make, feature by feature (SC-481 to SC-483, `collab/prompts/2026-11-28-device-parity-lists.md`).
+
+**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-484.
 
 ---
 
