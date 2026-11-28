@@ -3,14 +3,13 @@
 - Production app activation needs the AGT-02/03 changes to land, a host
   lease that the control owner can revoke during an active stream, and the
   DEV-25 full-class-ID and stock parameter maps. The project writer and local
-  consent ledger are on `control/agent-chain` at `b86614940`. The window and
+  consent ledger are on `control/agent-chain` at `d68937dc5`. The window and
   authenticated production fork have separate rows.
 - Physical two-host PTP evidence needs separately clocked endpoints and PHC
   access. This runner supplies isolated network namespaces on one kernel.
 
-The Windows checker lists no server entry or merge branch. The server-specific
-Windows proof below uses strict x64 MinGW builds and Wine Winsock. Microsoft's
-native compiler remains a separate check.
+On 28 November the server chain merged `origin/main` at `6aeeed1b1`, including
+PR #830, and both checker branches. See the latest verification below.
 
 I took the server engine seat on 27 November 2026.
 
@@ -40,6 +39,8 @@ I took the server engine seat on 27 November 2026.
 | DEV-27 export preflight | Reused the named remote-device check before staging, including signed-delay ranges that render no graph block. | Baseline wrote 32 frames with the server unavailable. The fixed run named the device and server, wrote zero frames and produced no WAV. The same local placeholder still exported 32 silent frames. A granted server matched all 1,732 local samples. Chain `03ad65157`. | Leading-silence and ordinary remote export checked. |
 | DF-E92 stale state from an absent server | Added unresolved remote devices to the shared Save/Quit stale receipt and kept acknowledgement from requesting the captured bytes twice. | Both assertions failed against the merged baseline. Strict ParamOps now passes all 232 checks. Local placeholder saves keep their existing behavior, stored remote bytes survive and the other device's changed state still saves. Chain `3da2e9178`. | Save/Quit engine receipt checked. |
 | DEV-27 project-file consent binding | The server loader supplies its open Store synchronously at lease issuance. The control ledger can derive its separate native file binding even when two files share a UUID. | Strict standalone admission passed 22 checks in 209 ms. The test saves and opens a real native copy, verifies the common UUID and declines the copy before the processor is made. A scratch mutation that forwarded the first file instead of the requested file failed that assertion. Windows x64 Werror compiled the updated admission and Session test inputs. Chain `548025a7a`. | Engine issuance seam complete. Runtime lease publication and production wiring remain with the control and app owners. |
+| DF-E92 / DEV-27 main and checker merges | Merged the tenth basics bundle and subsequent main changes. The Windows branch avoids a compiler shadowing diagnostic and parses integer inputs through pointers. The libc++ branch passes unsigned byte views to the pinned JSON library. | Chain `dd26236dd` includes `321ea3fb2` and `5cce04174`. | Pushed. The final headless run is pending. |
+| DEV-27 shared copies | Admission refuses a disabled project server before pairing or requesting consent. The fixture covers a default share and an explicit preserved copy with the original UUID. | Chain `6d313f591` carries regressions for both copy policies and an otherwise granted project with its server disabled. | Pushed. The final headless run is pending. |
 
 ## For the director
 
