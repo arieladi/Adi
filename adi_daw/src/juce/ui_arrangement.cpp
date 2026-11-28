@@ -4088,7 +4088,8 @@ bool ArrangementCanvas::beginAutomationStroke(const juce::MouseEvent &e) {
         stroke.track = body.track->id;
         stroke.generation = view.root.committedGeneration();
         stroke.target = std::move(target);
-        stroke.stepped = view.geometry.grid.snap && !e.mods.isAltDown();
+        // The grid key of every Arrangement gesture: Alt, Cmd on the Mac, where Option bends a segment.
+        stroke.stepped = view.snaps(e.mods);
         stroke.top = body.top;
         stroke.bottom = body.scaleBottom;
         stroke.lastY = stroke.valueY = e.position.y;

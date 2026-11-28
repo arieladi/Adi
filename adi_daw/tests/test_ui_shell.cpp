@@ -23610,6 +23610,30 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
           "SC-87: Alt writes off-grid linear points and Shift reduces the vertical change");
     check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points == beforeFreehand,
           "SC-87: one Undo restores an existing envelope after a freehand stroke");
+    // SC-347: a stroke takes the grid key of every other Arrangement gesture, Alt (Cmd on the Mac,
+    // where Option is the curve key): with the grid off, holding it draws steps on the grid.
+#if JUCE_MAC
+    const juce::ModifierKeys strokeGridKey(juce::ModifierKeys::commandModifier);
+#else
+    const juce::ModifierKeys strokeGridKey(juce::ModifierKeys::altModifier);
+#endif
+    auto &strokeGrid = root.arrangement.geometry.grid;
+    const bool strokeGridWasOn = strokeGrid.snap;
+    strokeGrid.snap = false;
+    canvas.mouseDown(pressAt(canvas, freeBegin, strokeGridKey));
+    canvas.mouseDrag(dragAt(canvas, freeBegin, freeEnd, strokeGridKey));
+    canvas.mouseUp(dragAt(canvas, freeBegin, freeEnd, strokeGridKey));
+    strokeGrid.snap = strokeGridWasOn;
+    const auto strokeCell = root.arrangement.geometry.snap(rawBegin, false);
+    const auto *gridStroke = laneOf().data;
+    check(strokeCell != rawBegin && gridStroke != nullptr &&
+              std::ranges::any_of(gridStroke->points, [&](const auto &p) {
+                  return p.time == strokeCell && p.curve == 0;
+              }) &&
+              std::ranges::none_of(gridStroke->points, [&](const auto &p) { return p.time == rawBegin; }),
+          "SC-347: with the grid off, the grid key held draws a stepped stroke on the grid");
+    check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points == beforeFreehand,
+          "SC-347: one Undo restores the envelope after the held-key stroke");
     root.command(AppCommands::DrawMode);
     root.arrangement.geometry.selection.track = 4;
     const auto trackMenu = root.arrangement.headerMenu();
