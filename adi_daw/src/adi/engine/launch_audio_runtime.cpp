@@ -39,8 +39,8 @@ bool nativeCueClockStable(const LaunchBlock& block, const LaunchFollowPlayer* fo
         (!block.followActionsEnabled || !follow || !follow->hasClipOrSceneActions(clip));
 }
 
-bool nativeLinkedOneShot(const LaunchSlot& slot) noexcept {
-    return slot.mode != LaunchMode::Repeat && slot.loopEndTick <= slot.loopStartTick;
+bool nativeLinkedTarget(const LaunchSlot& slot) noexcept {
+    return slot.mode != LaunchMode::Repeat && (slot.loopEndTick <= slot.loopStartTick || !slot.fade);
 }
 
 struct NativeCueWraps {
@@ -87,6 +87,10 @@ NativeCueWraps nativeCueWraps(const LaunchBlock& block, const LaunchSlot& slot,
         ticksToWrap = lapTicks;
     }
     return wraps;
+}
+
+bool boundedNativeLinkedCue(const LaunchSlot& slot, const NativeCueWraps& wraps) noexcept {
+    return wraps.bounded && wraps.count == (slot.loopEndTick > slot.loopStartTick ? 1u : 0u);
 }
 
 NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot, LaunchWarpPosition position,
@@ -788,7 +792,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
         const auto nativeRepeat = cueAdmission == LaunchCueAdmission::HeldRepeat ||
             (target.mode == LaunchMode::Repeat && scheduled && cue.repeat);
-        const auto nativeLinked = linked && !call.runtime.beforeClock_ && !call.arrangementLoop && nativeLinkedOneShot(target);
+        const auto nativeLinked = linked && !call.runtime.beforeClock_ && !call.arrangementLoop && nativeLinkedTarget(target);
         auto* nativePages = (scheduled || nativeImmediate || nativeRepeat || nativeLinked) && pcm
             ? pcm->warpPageReader() : nullptr;
         if (nativePages && (nativeRepeat ? target.mode == LaunchMode::Repeat
@@ -812,7 +816,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             const LaunchWarpPosition position{call.block.sample + offset,tick,cue.tick};
             const auto wraps = nativeRepeat ? nativeCueRepeat(call.block,target,position,remaining,cue,scheduled)
                                             : nativeCueWraps(call.block,target,position,remaining);
-            if (!wraps.bounded) return true;
+            if (!wraps.bounded || (nativeLinked && !boundedNativeLinkedCue(target,wraps))) return true;
+            if (nativeLinked && wraps.count != 0 && remaining != call.runtime.maxFrames_ &&
+                !boundedNativeLinkedCue(target,nativeCueWraps(call.block,target,position,call.runtime.maxFrames_)))
+                return true;
             if (!pcm->reserveWarpCue(position,remaining,wraps.span())) return false;
             rendered->warpCuePages = nativePages;
             return true;
@@ -873,9 +880,12 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!clip) return;
         if (const auto* native = clip->warpPageReader()) {
             if (forecast.admission == LaunchCueAdmission::Linked && !call.runtime.beforeClock_ &&
-                !call.arrangementLoop && nativeLinkedOneShot(target) && !native->wholeSourceFitsPageCache() &&
-                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip))
-                clip->prefetchWarp({forecast.sample,forecast.tick,forecast.cue.tick});
+                !call.arrangementLoop && nativeLinkedTarget(target) && !native->wholeSourceFitsPageCache() &&
+                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip)) {
+                const LaunchWarpPosition position{forecast.sample,forecast.tick,forecast.cue.tick};
+                const auto wraps = nativeCueWraps(call.block,target,position,call.runtime.maxFrames_);
+                if (boundedNativeLinkedCue(target,wraps)) clip->prefetchWarp(position,wraps.span());
+            }
             return;
         }
         if (!clip->pageReader()) return;

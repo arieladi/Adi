@@ -1167,13 +1167,17 @@ void ramModes(Fixture& fixture) {
 }
 enum class NativeFollowCase { Warm, Cold, Manual, Stop };
 
-void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
+void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase, bool looping = false) {
     constexpr std::uint32_t rate = 48000;
     constexpr std::uint64_t incarnation = 93;
     constexpr std::int64_t rawStart = 2400, loopHead = 124800, loopEnd = 134400;
     constexpr std::int64_t firstEnd = loopEnd-rawStart, period = loopEnd-loopHead;
-    constexpr std::int64_t seam = 18*8192-280, nativeColdPage = 18;
-    constexpr std::uint32_t sourceFrames = 180000;
+    constexpr std::int64_t seam = 18*8192-280;
+    constexpr std::int64_t headFrame = 90000, denseFrame = 60110;
+    constexpr std::uint32_t sourceShift = 239000;
+    const auto nativeColdPage = looping ? (headFrame+sourceShift)/8192 : 18;
+    const std::uint32_t sourceFrames = looping ? 420000 : 180000;
+    const auto timelineFrames = sourceFrames - (looping ? sourceShift : 0);
     constexpr auto ppq = textproj::kPPQ;
     const auto cold = testCase == NativeFollowCase::Cold;
     const auto manual = testCase == NativeFollowCase::Manual;
@@ -1200,6 +1204,14 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
     const auto sourceStart = nativePhase-inherited;
     const auto manualCue = loopHead+elapsed-rawStart;
     const LaunchWarpPosition placement{due,dueTick,nativePhase};
+    const auto nativeLoopBegin = tickAt(headFrame);
+    const auto nativeLoopLength = nativePhase+tickAt(37)-nativeLoopBegin;
+    const auto headTick = dueTick+tickAt(37);
+    const std::array wrapPlacements{LaunchWarpPosition{sampleAt(headTick),headTick,nativeLoopBegin}};
+    const auto wraps = looping ? std::span<const LaunchWarpPosition>{wrapPlacements}
+                              : std::span<const LaunchWarpPosition>{};
+    require(!looping || wrapPlacements.front().frame-due == 37,
+            "the linked native cue has 37 frames before its only wrap in this callback");
 
     Fixture fixture;
     {
@@ -1224,14 +1236,26 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
                                   "loop_begin_ns,loop_end_ns) VALUES(101,?,?,?,?)");
         pins.bind(1,nsAt(rawStart)); pins.bind(2,nsAt(189600));
         pins.bind(3,nsAt(loopHead)); pins.bind(4,nsAt(loopEnd)); pins.exec();
-        const auto markers = audio::writeWarpMap(std::array<WarpMarker,2>{{{0,0},{sourceFrames,tickAt(sourceFrames)}}},sourceFrames);
+        std::vector<WarpMarker> markersToSave{{0,0}};
+        if (looping) {
+            // A distant dense segment can evict the initially primed head
+            // without any test-only manipulation of page ownership.
+            markersToSave.push_back({60000,tickAt(60000)});
+            markersToSave.push_back({300000,tickAt(61000)});
+        }
+        markersToSave.push_back({sourceFrames,tickAt(timelineFrames)});
+        const auto markers = audio::writeWarpMap(markersToSave,sourceFrames);
         require(static_cast<bool>(markers),"save the long native Warp source map");
         SQLite::Statement nativeAudio(db,"UPDATE audio_clips SET src_len_frames=?,warp_markers=? WHERE clip_id=102");
         nativeAudio.bind(1,sourceFrames);
         nativeAudio.bind(2,markers.bytes.data(),static_cast<int>(markers.bytes.size()));
         nativeAudio.exec();
         SQLite::Statement nativeClip(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=? WHERE id=102");
-        nativeClip.bind(1,sourceStart); nativeClip.bind(2,tickAt(sourceFrames)-sourceStart); nativeClip.exec();
+        nativeClip.bind(1,sourceStart); nativeClip.bind(2,tickAt(timelineFrames)-sourceStart); nativeClip.exec();
+        if (looping) {
+            SQLite::Statement loop(db,"UPDATE clips SET loop_enabled=1,loop_start_ticks=?,loop_len_ticks=? WHERE id=102");
+            loop.bind(1,nativeLoopBegin); loop.bind(2,nativeLoopLength); loop.exec();
+        }
         SQLite::Statement grid(db,"UPDATE clip_launch SET launch_quant=? WHERE clip_id=102");
         grid.bind(1,noGrid ? 1 : 8); grid.exec();
     }
@@ -1252,19 +1276,29 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
         const auto project = readClipProject(*fixture.store,rows::readModel(*fixture.store),true);
         std::vector<std::string> problems;
         auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems);
-        require(bank && problems.empty(),"prepare the saved physical loop into a long native one-shot");
+        require(bank && problems.empty(),"prepare the saved physical loop and long native linked target");
         return bank;
     };
     struct PageGate {
         std::int64_t page;
-        std::atomic<bool> blocked{false}, resume{false};
+        std::atomic<bool> blocked{false}, resume{false}, evicting{false}, evicted{false};
         ClipPlayback::RequestSnapshotProbeForTest probe() noexcept {
             return {.context=this,
+                .afterService=[](void* raw) noexcept {
+                    auto& gate = *static_cast<PageGate*>(raw);
+                    if (gate.evicting.exchange(false,std::memory_order_acq_rel))
+                        gate.evicted.store(true,std::memory_order_release);
+                },
                 .beforePageClaim=[](void* raw,std::int64_t,std::int64_t number) noexcept {
                     auto& gate = *static_cast<PageGate*>(raw);
                     if (number != gate.page) return;
                     gate.blocked.store(true,std::memory_order_release);
                     while (!gate.resume.load(std::memory_order_acquire)) std::this_thread::yield();
+                },
+                .afterPageClaimAttempt=[](void* raw,std::int64_t previous,std::int64_t requested,bool claimed) noexcept {
+                    auto& gate = *static_cast<PageGate*>(raw);
+                    if (claimed && previous == gate.page && requested != previous)
+                        gate.evicting.store(true,std::memory_order_release);
                 }};
         }
     } nativeGate{cold ? nativeColdPage : -1}, manualGate{manual && !noGrid ? manualCue/8192 : -1};
@@ -1337,12 +1371,21 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         return ready();
     };
-    const auto nativeReady = [&](int frames = blockSize) {
+    const auto nativeReady = [&](int frames = blockSize, bool includeWrap = true) {
         const audio::CallbackScope scope;
-        if (!target->reserveWarpCue(placement,frames,{})) return false;
+        if (!target->reserveWarpCue(placement,frames,includeWrap ? wraps : std::span<const LaunchWarpPosition>{})) return false;
         pages.releaseCue();
         return true;
     };
+    if (cold && looping) {
+        const auto dense = tickAt(denseFrame);
+        {
+            const audio::CallbackScope scope;
+            target->prefetchWarp({sampleAt(dense),dense,dense});
+        }
+        require(wait([&]{ return nativeGate.evicted.load(std::memory_order_acquire); }),
+                "the dense Warp window evicts the primed head before Linked Follow is armed");
+    }
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the saved physical source");
     through(blockSize);
     std::array<LaunchTrackStatus,1> rows{};
@@ -1352,8 +1395,9 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
     const auto oldRun = rows[0].run;
     if (cold) {
         require(wait([&] { return nativeGate.blocked.load(std::memory_order_acquire); }) &&
-                nativeReady(64) && !nativeReady(),
-            "the private forecast warms the cue head while its adjacent page stays cold");
+                nativeReady(looping ? blockSize : 64,false) && !nativeReady(),
+            looping ? "the full linear cue is warm while the disjoint Loop Begin remains cold"
+                    : "the private forecast warms the cue head while its adjacent page stays cold");
     } else {
         require(wait([&] { return nativeReady(); }),"the private forecast fills the native cue window");
     }
@@ -1376,7 +1420,14 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
         std::array<float,blockSize> left{}, right{};
         float* outputs[]{left.data(),right.data()};
         AudioIo io{outputs,nullptr,2,0,blockSize,due};
-        renderLaunchAudio(io,0,blockSize,resident->clip(102),0,1,-1,placement);
+        if (looping) {
+            const auto beforeWrap = static_cast<std::int32_t>(wrapPlacements.front().frame-due);
+            renderLaunchAudio(io,0,beforeWrap,resident->clip(102),0,1,-1,placement);
+            renderLaunchAudio(io,beforeWrap,blockSize-beforeWrap,resident->clip(102),0,1,-1,wrapPlacements.front());
+            require(rows[0].completedLoops == 1,"the accepted Link crosses exactly one ordinary wrap");
+        } else {
+            renderLaunchAudio(io,0,blockSize,resident->clip(102),0,1,-1,placement);
+        }
         require(output.count == 2 && output.edges[1].newClip == 102 && output.edges[1].sample == due &&
                 output.edges[1].tick == dueTick && output.edges[1].sourceTick == nativePhase &&
                 output.left == left && output.right == right && left.front() < -.1f,
@@ -1397,8 +1448,9 @@ void nativeLinkedLegato(bool noGrid, NativeFollowCase testCase) {
     require(output.count == (cold || manual ? 1u : 2u) && pages.underrunSamples() == 0 &&
             (!manualPages || manualPages->underrunSamples() == 0) && allocations == 0 && audio::callbackFileIo == 0,
             "the consumed action never replays and native page admission keeps the callback clean");
-    std::printf("PASS -- native Linked %s case %d, cut %lld, anchor %lld, phase %lld\n",noGrid ? "None" : "Quarter",
-        static_cast<int>(testCase),static_cast<long long>(due),static_cast<long long>(dueTick),static_cast<long long>(nativePhase));
+    std::printf("PASS -- native Linked %s %s case %d, cut %lld, anchor %lld, phase %lld\n",
+        looping ? "loop" : "one-shot",noGrid ? "None" : "Quarter",static_cast<int>(testCase),
+        static_cast<long long>(due),static_cast<long long>(dueTick),static_cast<long long>(nativePhase));
 }
 
 } // namespace
@@ -1408,6 +1460,9 @@ int main() {
         for (const auto noGrid : {false,true})
             for (const auto testCase : {NativeFollowCase::Warm,NativeFollowCase::Cold,NativeFollowCase::Manual,NativeFollowCase::Stop})
                 nativeLinkedLegato(noGrid,testCase);
+        for (const auto noGrid : {false,true})
+            for (const auto testCase : {NativeFollowCase::Warm,NativeFollowCase::Cold})
+                nativeLinkedLegato(noGrid,testCase,true);
         Fixture fixture;
         persisted(fixture);
         ramModes(fixture);
