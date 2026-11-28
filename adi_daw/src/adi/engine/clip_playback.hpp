@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 namespace adi { class Store; }
-namespace adi::audio { class ProgressiveDecoder; }
+namespace adi::audio { class ProgressiveDecoder; enum class PitchCompareSide; }
 namespace adi::engine {
 struct ClipProject;
 struct NoteExpressionsRead;
@@ -103,11 +103,21 @@ public:
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
     /// Owner-only check of the original native-rate WAV reader.
     [[nodiscard]] bool readsNativePcm(std::int64_t clipId) const noexcept;
+
+    // Off-callback owner controls. One edited clip can be compared at a time
+    // in this source generation. Preparation leaves an existing comparison
+    // intact on failure. Both sides use the live Arrangement transport.
+    bool preparePitchComparison(std::int64_t clipId, audio::PitchCompareSide initial,
+                                std::string& error, std::uint32_t crossfadeFrames = 0,
+                                std::stop_token stop = {});
+    bool selectPitchComparison(std::int64_t clipId, audio::PitchCompareSide) noexcept;
+    void endPitchComparison();
+    void collectPitchComparisons();
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
     // Wait for preparation independently of the page-read timeout. Offline
-    // renders use this before reading their first block of a cold Warp clip.
+    // renders use this before reading their first block of a cold Warp or pitch-edited clip.
     bool waitForWarp(std::stop_token stop = {}) const;
     // Owner only, BEFORE publishing a candidate source generation: request and
     // wait for the pages selected by an immutable, owner-owned transport value.

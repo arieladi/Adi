@@ -434,6 +434,37 @@ clip rewrites the gloss on every note inside it — a 400-note clip move becomes
 
 Linear-time objects render `s` / `ms` / `ns` per their declared `time_base`.
 
+### 8.1 Authored audio pitch
+
+A clip with authored pitch has a `pitch edits` child. Its `source` is the
+captured BLAKE3 content hash, followed by `sourceFrames`, `sampleRate`,
+`analysisVersion` and `analysisConfiguration`. The binding remains visible
+when the clip is detached or plays a replacement source.
+
+All ranges are half-open, in original source frames. An authored geometry
+starts with `segments` and lists `segment <start> <end>` in source order.
+The marker with no segment lines represents an explicitly empty geometry.
+Each changed note has a `pitchEdit <sourceStart> <sourceEnd> to <start> <end>`
+line, also in source order. The `to` range is the edited destination on the
+same frame clock. The line appends changed controls in the order `pitch`,
+`straighten`, `straightenRange <start> <end>`, `tilt`, `tiltAnchor`,
+`tiltStart`, `tiltEnd`, `formant`, `gain` or `muted`, `drift`,
+`preserveExpression`, `transition`. Pitch, tilt and formant values are in
+cents, gain is in dB, and transition is in destination frames. Finite
+controls use the float format in §5.1. The source ranges represent segments
+and notes independently of local identifiers and cached analysis.
+
+An unreadable edit record leaves `pitchUnreadable` on its clip. A failure
+to read the entire pitch table leaves that marker on the project. Older
+projects with no pitch table have no pitch output. The staged schema tests
+exercise this projection before native activation. Add both pitch tables to
+the coverage manifest when their schema minor lands.
+
+An extraction output with a `clip_pitch_extractions` row has a bare
+`pitchExtraction` attribute on its MIDI clip. The attribute survives deletion
+of the source clip. A project with unreadable extraction provenance has
+`pitchExtractionUnreadable` on its project header.
+
 ---
 
 ## 9. What is projected

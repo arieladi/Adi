@@ -177,18 +177,26 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }
-const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains"};
+constexpr char pitchExtractions[]="clip_pitch_extractions";
+const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains","clip_pitch_edits",pitchExtractions};
 void validDuplicate(const Payload& payload) {
     const auto id=detail::signedInteger(payload.at("id"));std::size_t roots=0;
+    bool midi=false,extraction=false;
     for(const auto& change:payload.at("changes")) {
         const auto table=change.at("table").get<std::string>();
         if(!clipTables.contains(table) || !change.at("before").is_null() || !change.at("after").is_object())
             throw std::runtime_error("duplicate can only create captured clip rows");
         const auto& row=change.at("after");
-        if(table=="clips"){if(detail::signedInteger(row.at("id"))!=id)throw std::runtime_error("duplicate clip id differs");++roots;}
-        else if(detail::signedInteger(row.at("clip_id"))!=id)throw std::runtime_error("duplicate child belongs to another clip");
+        if(table=="clips") {
+            if(detail::signedInteger(row.at("id"))!=id)throw std::runtime_error("duplicate clip id differs");
+            ++roots;midi=row.at("kind")=="midi";
+        } else {
+            if(detail::signedInteger(row.at("clip_id"))!=id)throw std::runtime_error("duplicate child belongs to another clip");
+            extraction|=table==pitchExtractions;
+        }
     }
     if(roots!=1)throw std::runtime_error("duplicate needs one new clip");
+    if(extraction && !midi)throw std::runtime_error("pitch extraction ownership requires a MIDI clip");
 }
 bool duplicateApply(OpContext& context,const Payload& payload,std::string& error) {
     try{validDuplicate(payload);return edit::applyRows(context,payload,error);}
@@ -238,6 +246,8 @@ void validSplit(const Payload& payload,bool joining) {
     for(const auto& change:payload.at("changes")) {
         const auto table=change.at("table").get<std::string>();
         if(!clipTables.contains(table))throw std::runtime_error("split cannot change unrelated tables");
+        if(table==pitchExtractions && sourceBefore->at("kind")!="midi")
+            throw std::runtime_error("pitch extraction ownership requires a MIDI clip");
         if(table=="clips")continue;
         for(const auto* row:{&change.at("before"),&change.at("after")})if(!row->is_null()) {
             const auto owner=detail::signedInteger(row->at("clip_id"));

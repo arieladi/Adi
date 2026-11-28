@@ -2,16 +2,22 @@
 
 #include "adi/textproj_store.hpp"
 
+#include "adi/pitch_edit_store.hpp"
 #include "adi/store.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <unordered_map>
 
 namespace adi::textproj {
 namespace {
+
+bool sameBits(double left, double right) {
+    return std::memcmp(&left, &right, sizeof left) == 0;
+}
 
 // ---------------------------------------------------------------------------
 // Attributes, with defaults omitted (TEXT-PROJECTION 3)
@@ -54,9 +60,6 @@ public:
     void raw(std::string line) { out_.push_back(std::move(line)); }
 
 private:
-    static bool sameBits(double a, double b) {
-        return std::memcmp(&a, &b, sizeof a) == 0;
-    }
     std::vector<std::string>& out_;
 };
 
@@ -73,6 +76,57 @@ std::size_t addNode(Tree& t, std::string kind, std::string selector,
     n.keys = std::move(keys);
     t.nodes.push_back(std::move(n));
     return t.nodes.size() - 1;
+}
+
+void addPitchEdits(Tree& tree, std::size_t owner, const clip_edit::ClipPitchEditsRead& saved) {
+    if (!saved.edits) {
+        if (!saved.error.empty()) tree.nodes[owner].attrs.emplace_back("pitchUnreadable");
+        return;
+    }
+    const auto& pitch = *saved.edits;
+    const auto node = addNode(tree, "pitch", "", "edits", {});
+    tree.nodes[owner].children.push_back(node);
+    auto& attrs = tree.nodes[node].attrs;
+    attrs.push_back("source " + pitch.sourceHash);
+    attrs.push_back("sourceFrames " + std::to_string(pitch.sourceFrames));
+    attrs.push_back("sampleRate " + std::to_string(pitch.sampleRate));
+    attrs.push_back("analysisVersion " + std::to_string(pitch.analysisVersion));
+    attrs.push_back("analysisConfiguration " + std::to_string(pitch.analysisConfiguration));
+    if (pitch.segmentation) {
+        attrs.emplace_back("segments");
+        for (const auto& span : pitch.segmentation->segments)
+            attrs.push_back("segment " + std::to_string(span.startFrame) + " " + std::to_string(span.endFrame));
+    }
+    for (const auto& row : pitch.rows) {
+        const auto& edit = row.edit;
+        auto line = "pitchEdit " + std::to_string(row.sourceStartFrame) + " " + std::to_string(row.sourceEndFrame) +
+            " to " + std::to_string(edit.startFrame) + " " + std::to_string(edit.endFrame);
+        const auto real = [&](const char* key, double value, double initial = 0.0) {
+            if (!sameBits(value, initial)) {
+                line += ' ';
+                line += key;
+                line += ' ';
+                line += renderF64(value);
+            }
+        };
+        real("pitch", edit.pitchShiftCents);
+        real("straighten", edit.straighten);
+        if (edit.straightenRange) {
+            const auto& range = *edit.straightenRange;
+            line += " straightenRange " + std::to_string(range.startFrame) + " " + std::to_string(range.endFrame);
+        }
+        real("tilt", edit.tiltCents);
+        real("tiltAnchor", edit.tiltGeometry.anchor, audio::PitchTiltGeometry{}.anchor);
+        real("tiltStart", edit.tiltGeometry.startCents);
+        real("tiltEnd", edit.tiltGeometry.endCents);
+        real("formant", edit.formantShiftCents);
+        if (edit.gainDb == -std::numeric_limits<double>::infinity()) line += " muted";
+        else real("gain", edit.gainDb);
+        real("drift", edit.drift, audio::PitchNoteEdit{}.drift);
+        if (edit.preserveExpression) line += " preserveExpression";
+        if (edit.transitionFrames) line += " transition " + std::to_string(edit.transitionFrames);
+        attrs.push_back(std::move(line));
+    }
 }
 
 /// Section rank: the first sort key on every root.
@@ -217,7 +271,8 @@ std::span<const TableCoverage> coverage() {
 // buildTree
 // ---------------------------------------------------------------------------
 
-Tree buildTree(const rows::Model& m) {
+static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRead& pitch,
+                      const rows::PitchExtractionRows& extractions) {
     Tree t;
     const std::vector<Meter> meters = metersOf(m.signatures);
 
@@ -234,6 +289,8 @@ Tree buildTree(const rows::Model& m) {
         a.num("length", m.project.lengthTicks, 0);
         a.text("author", m.project.author);
         a.text("notes", m.project.notes);
+        if (!pitch.error.empty()) a.raw("pitchUnreadable");
+        a.flag("pitchExtractionUnreadable", extractions.unreadable);
         t.roots.push_back(n);
     }
 
@@ -536,6 +593,11 @@ Tree buildTree(const rows::Model& m) {
             a.num("channelMode", ac.channelMode, 0);
         }
 
+        a.flag("pitchExtraction", std::binary_search(extractions.clipIds.begin(), extractions.clipIds.end(), c.id));
+        if (pitch.clips) {
+            const auto saved = pitch.clips->find(c.id);
+            if (saved != pitch.clips->end()) addPitchEdits(t, n, saved->second);
+        }
         t.nodes[parent].children.push_back(n);
     }
 
@@ -754,8 +816,13 @@ Tree buildTree(const rows::Model& m) {
     return t;
 }
 
+Tree buildTree(const rows::Model& m) { return buildTree(m, {}, {}); }
+
 Projection projectStore(const Store& store) {
-    return project(buildTree(rows::readModel(store)));
+    clip_edit::ProjectPitchEditsRead pitch;
+    rows::PitchExtractionRows extractions;
+    const auto model = rows::readModel(store, pitch, extractions);
+    return project(buildTree(model, pitch, extractions));
 }
 
 }  // namespace adi::textproj

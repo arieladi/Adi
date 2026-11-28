@@ -293,7 +293,7 @@ void keepRight(Payload& image,const ImageCut& cut) {
 Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint point,
                    const edit::TimeMap& time,double referenceRate,CopyIds& ids) {
     const auto cut=prepareImageCut(store,image,point,time,referenceRate);
-    auto right=cloneImage(image,rightId,ids);
+    auto right=cloneImage(image,rightId,ids,ClonePurpose::SplitPiece);
     keepLeft(image,cut);keepRight(right,cut);
     return right;
 }
@@ -627,7 +627,8 @@ ClipCopy copyClip(Store& store,std::int64_t id,const edit_plan::Options& options
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
-        result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
+        result.sourceFile=filename(store);result.image=captureDeleted(context,id);
+        detachPitchExtraction(result.image);captureMediaKeys(store,result.image);
         edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);
         const auto& row=result.image.at("row");
         if(options.policy.automationFollowsClips && row.at("lane_id").is_null()) {
@@ -1111,9 +1112,11 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 }
 
 namespace {
+enum class RangeCapture { Clipboard, Move };
+
 RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
                         std::optional<std::int64_t> lane={},std::span<const std::int64_t> selectedClips={},
-                        bool copyClipEnvelopes=false,bool rejectLinked=false) {
+                        bool copyClipEnvelopes=false,RangeCapture purpose=RangeCapture::Clipboard) {
     RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
@@ -1136,8 +1139,12 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(result.clearsRange && last<=begin)continue;
                 auto image=captureDeleted(context,id);
-                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
-                    throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                if (purpose == RangeCapture::Move) {
+                    if (!root.at("alias_of").is_null() || !image.at("alias_links").empty())
+                        throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                } else {
+                    detachPitchExtraction(image);
+                }
                 captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
                 if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
@@ -1521,7 +1528,9 @@ PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std:
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
         for(std::size_t imageIndex=0;imageIndex<copy.images.size();++imageIndex) {
             const auto& original=copy.images[imageIndex];
-            verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
+            verifyMediaKeys(store,original);
+            auto image=cloneImage(original,ids.next("clips"),ids,
+                                  move ? ClonePurpose::SplitPiece : ClonePurpose::Independent);
             const auto index=original.at("trackIndex").get<std::size_t>();
             if(index>=tracks.size())throw std::runtime_error("clipboard track offset is invalid");
             auto& row=image["row"];const auto native=static_cast<int>(detail::signedInteger(row.at("time_base")));
@@ -1559,7 +1568,7 @@ PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimeP
         const edit::TimeMap time(store.db());
         if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
             auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{}, {},
-                                    false,/*rejectLinked=*/true);
+                                    false,RangeCapture::Move);
             if(!copy.ok)throw std::runtime_error(copy.error);
             if(!copy.images.empty()) {
                 if(options.policy.automationFollowsClips)

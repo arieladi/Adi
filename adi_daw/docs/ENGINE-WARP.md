@@ -76,7 +76,10 @@ extending the initial tempo. Source offsets, loop bounds and end markers use
 that musical clock and take precedence over earlier fixed nanosecond pins.
 This path needs a new prepared render for a tempo change.
 The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
-the default is zero. Reverse and channel aliases remain unsupported here.
+the default is zero. Matching Pitch Editor edits are applied in source coordinates
+before Warp preparation. Both plain and pitch-edited clips use the same directed
+marker and tempo mapping when the page reader reverses the prepared window.
+Channel aliases remain unsupported.
 
 Split, copy and range/Time material edits retain warped fade shapes on the
 unrolled source musical clock (clip_warp_fade_domains, schema 1.13), including

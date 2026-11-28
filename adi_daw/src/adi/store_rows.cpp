@@ -5,6 +5,7 @@
 #include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -116,7 +117,20 @@ void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
     readClipNotesInto(store, clipId, m.notes, m.problems);
 }
 
-Model readModel(const Store& store) {
+static PitchExtractionRows readPitchExtractionRows(const SQLite::Database& db) {
+    PitchExtractionRows result;
+    try {
+        if (!db.tableExists("clip_pitch_extractions")) return result;
+        SQLite::Statement query(db, "SELECT clip_id FROM clip_pitch_extractions ORDER BY clip_id");
+        while (query.executeStep()) result.clipIds.push_back(query.getColumn(0).getInt64());
+        return result;
+    } catch (const std::exception&) {
+        return {{}, true};
+    }
+}
+
+static Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead* pitchEdits,
+                       PitchExtractionRows* extractions) {
     Model m;
     const SQLite::Database& db = store.db();
 
@@ -664,6 +678,9 @@ Model readModel(const Store& store) {
               m.automationSegmentRanges.push_back(range);
           });
 
+    if (pitchEdits) *pitchEdits = clip_edit::readProjectPitchEdits(store);
+    if (extractions) *extractions = readPitchExtractionRows(db);
+
     if (txn) {
         try {
             txn->commit();   // a read transaction: commit and rollback are the same
@@ -672,6 +689,12 @@ Model readModel(const Store& store) {
     }
 
     return m;
+}
+
+Model readModel(const Store& store) { return readModel(store, nullptr, nullptr); }
+
+Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead& edits, PitchExtractionRows& extractions) {
+    return readModel(store, &edits, &extractions);
 }
 
 }  // namespace adi::rows

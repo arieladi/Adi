@@ -275,7 +275,8 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
                     const auto end=span.end==original.original.end?native.end:
                         (nativeClock==1?span.end:directedTick(span.end,native,false,time));
                     if(begin>=end)throw std::runtime_error("placement survivor collapses in its native clock");
-                    auto survivor=index==0?image:clip_edit::cloneImage(image,ids.next("clips"),ids);
+                    auto survivor=index==0?image:clip_edit::cloneImage(image,ids.next("clips"),ids,
+                        clip_edit::ClonePurpose::SplitPiece);
                     detail::trimFrozenImage(survivor,begin,end,time,options.referenceRate);
                     const auto actual=interval(survivor,1,time);
                     // Checked native-clock conversion may leave a harmless gap.

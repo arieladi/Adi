@@ -43,6 +43,7 @@
 
 namespace adi {
 class Store;
+namespace clip_edit { struct ProjectPitchEditsRead; }
 }
 
 namespace adi::rows {
@@ -464,5 +465,13 @@ void readClipNotes(Model&, const Store&, std::int64_t clipId);
 /// that vocabulary. A table that cannot be read leaves its vector empty and
 /// appends to `problems`.
 [[nodiscard]] Model readModel(const Store&);
+
+struct PitchExtractionRows {
+    std::vector<std::int64_t> clipIds; ///< sorted owner IDs for containment
+    bool unreadable = false;
+};
+
+/// Text projection requests pitch edits and extraction markers on the same snapshot.
+[[nodiscard]] Model readModel(const Store&, clip_edit::ProjectPitchEditsRead&, PitchExtractionRows&);
 
 }  // namespace adi::rows

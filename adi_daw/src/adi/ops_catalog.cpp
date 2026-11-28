@@ -46,6 +46,7 @@
 #include "adi/track_recording.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/clip_property_ops.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
 #include "adi/tuning_ops.hpp"
@@ -2610,6 +2611,7 @@ std::span<const OpDescriptor> builtinOps() {
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
+        const auto pitchEdits=pitchEditStoreOps();v.insert(v.end(),pitchEdits.begin(),pitchEdits.end());
         const auto takeLanes=takeLaneOps();v.insert(v.end(),takeLanes.begin(),takeLanes.end());
         const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
         const auto recording=trackRecordingOps();

@@ -5,6 +5,7 @@
 #include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
 namespace adi::library {class Index;}
+namespace adi::media {struct MediaResult;}
 namespace adi::clip_edit {
 struct MaterialFiles;
 struct MaterialEdit {
@@ -40,6 +41,12 @@ struct ImportBatch {
 /// unless consecutive is true, when the previous clip's authored end is used.
 [[nodiscard]] MaterialEdit prepareImportAudioBatch(Store&, const ImportBatch&, double referenceRate,
                                                    library::Index* sampleDefaults = nullptr);
+/// Capture a closed rendered WAV as owned material without creating a clip.
+/// The caller owns the read snapshot and the remaining captured edit ops.
+/// A readable identical pool entry keeps its existing id and path.
+[[nodiscard]] media::MediaResult stageRenderedAudio(Store&,MaterialEdit&,const std::filesystem::path&,
+                                                   std::int64_t mediaId,std::int64_t importedUtc,
+                                                   std::stop_token={});
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;

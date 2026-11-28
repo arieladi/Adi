@@ -183,14 +183,20 @@ MediaPaths mediaPaths(const fs::path& folder, const fs::path& relative, const fs
 }
 } // namespace
 fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+    return resolveMedia(folder, row, error, {});
+}
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error,
+                      std::stop_token stop) {
+    error.clear();
+    if (stop.stop_requested()) return {};
     const auto path = [&](const char* column) {
         const auto& value = row.at(column);
         return value.is_null() ? fs::path{} : pathFromUtf8(value.get<std::string>());
     };
     const auto name = row.at("orig_name").get<std::string>();
     const auto resolved = resolveMedia(folder, path("rel_path"), path("abs_path_hint"),
-                                       name, row.at("hash_blake3").get<std::string>(), error);
-    if (resolved.empty() && error.empty()) error = "missing media: " + name;
+                                       name, row.at("hash_blake3").get<std::string>(), error, stop);
+    if (resolved.empty() && error.empty() && !stop.stop_requested()) error = "missing media: " + name;
     return resolved;
 }
 fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
