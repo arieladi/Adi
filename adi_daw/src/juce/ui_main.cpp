@@ -2265,9 +2265,9 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
-        root->promptInsertSilence = [root](AdiRootComponent::InsertSilenceReply reply) {
+        root->promptInsertSilence = [owner = root.get()](AdiRootComponent::InsertSilenceReply reply) {
             auto *prompt = new juce::AlertWindow("Set Time to Insert", "Enter bars, beats and sixteenths.",
-                                                 juce::MessageBoxIconType::NoIcon, root);
+                                                 juce::MessageBoxIconType::NoIcon, owner);
             prompt->addTextEditor("length", "0.0.0", "Length");
             prompt->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
             prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
