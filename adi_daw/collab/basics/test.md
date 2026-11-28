@@ -171,6 +171,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-461 | `basics/test-chain-2` at `9ba133e10` | Measure the source and destination edge points left by clip moves. Automation and Arrangement seats. | The same prepared move and commit path replayed both directions, an overlapping variant, lock and Undo. The observed data are recorded below. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Awaiting Live reading |
 | DF-W64 | `basics/test-chain-2` at `ff8716872` | Add the chosen track on a double-click below the Arrangement rows. Window, editing and settings seats. | The peerless fixture passed 18 checks for the real gesture, remembered choice, Settings, safe boundaries and one-step Undo. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | DF-W65 | `basics/test-chain-2` at `13eb88b8c` | Offer an opt-in Transport setting for the Loop switch to take selected time. Transport and settings seats. | The button fixture exercises the default, an active range, the same brace, an insert marker and a clip selection. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-446 | `basics/test-chain-2` at `865d1d9bb` | Fit the Control Bar without collisions at 960 px and below. Control Bar and window seats. | The bounds fixture counted eight overlapping pairs before and zero after. All 32 control bounds at 1440 px match the baseline. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -434,3 +435,51 @@ The focused Debug Werror fixture passed all 18 checks with DISPLAY unset and rec
 #### DF-W65 · Loop switch takes time selection
 
 Transport Settings gains the optional Loop switch takes time selection control. The default Off preserves the switch that toggles the saved brace. On applies the existing Loop Selection command for a raw selected time range, including the command's toggle when the selection already matches the brace. An insert marker or a clip selection toggles the saved brace in either setting. The button uses its existing Control Bar rectangle and the project transport change remains outside Undo.
+
+#### SC-446 Control Bar at narrow widths
+
+All bounds below are root-local (x, y, width, height) in pixels, measured in the software fixture at Compact density. The full bar at 960 × 540 measures (0, 0, 960, 35) before and after. Each displayed field or control has y = 9 and height 17. The measured old overlap was between the right end of the transport group and the workspace and global controls. Loop Start covered 17 px of Arrangement. Loop Length drew across the Computer MIDI Keyboard (17 px), Key Map (26 px) and MIDI Map (27 px).
+
+After layout, every pair of visible control rectangles is disjoint. At 960 all functional controls remain visible. The bar shortens the workspace labels, tightens the transport spacing, and folds Link, the two Nudge controls, Launch Quantization and Session Record. Those are unavailable in the current app. Key and MIDI Map remain visible and correctly separated at this width. At smaller widths controls with lower priority fold first, and AppCommands retains the existing keyboard shortcuts. The inline editor tracks its field through resize and closes if the field must fold.
+
+| Control at 960 × 540 | Before | After |
+| --- | --- | --- |
+| Link | (8, 9, 43, 17) | Hidden |
+| Tap Tempo | (53, 9, 25, 17) | (8, 9, 25, 17) |
+| Tempo | (80, 9, 41, 17) | (35, 9, 41, 17) |
+| Nudge Down | (125, 9, 17, 17) | Hidden |
+| Nudge Up | (144, 9, 16, 17) | Hidden |
+| Time Signature | (162, 9, 40, 17) | (78, 9, 40, 17) |
+| Metronome | (204, 9, 40, 17) | (120, 9, 40, 17) |
+| Launch Quantization | (246, 9, 45, 17) | Hidden |
+| Follow | (313, 9, 21, 17) | (183, 9, 21, 17) |
+| Arrangement Position | (336, 9, 82, 17) | (206, 9, 82, 17) |
+| Play | (436, 9, 18, 17) | (290, 9, 18, 17) |
+| Stop | (456, 9, 18, 17) | (310, 9, 18, 17) |
+| Arrangement Record | (476, 9, 18, 17) | (330, 9, 18, 17) |
+| MIDI Arrangement Overdub | (512, 9, 17, 17) | (350, 9, 17, 17) |
+| Automation Arm | (530, 9, 17, 17) | (368, 9, 17, 17) |
+| Re-Enable Automation | (548, 9, 17, 17) | (386, 9, 17, 17) |
+| Capture MIDI | (566, 9, 17, 17) | (404, 9, 17, 17) |
+| Session Record | (584, 9, 17, 17) | Hidden |
+| Loop Start | (613, 9, 85, 17) | (422, 9, 85, 17) |
+| Punch-In | (699, 9, 20, 17) | (508, 9, 20, 17) |
+| Loop Switch | (720, 9, 21, 17) | (529, 9, 21, 17) |
+| Punch-Out | (742, 9, 20, 17) | (551, 9, 20, 17) |
+| Loop Length | (763, 9, 85, 17) | (572, 9, 85, 17) |
+| Draw Mode | (745, 9, 17, 17) | (745, 9, 17, 17) |
+| Computer MIDI Keyboard | (764, 9, 17, 17) | (764, 9, 17, 17) |
+| Key Map Mode | (783, 9, 26, 17) | (783, 9, 26, 17) |
+| MIDI Map Mode | (821, 9, 28, 17) | (821, 9, 28, 17) |
+| CPU Load Meter | (851, 9, 58, 17) | (851, 9, 58, 17) |
+| MIDI In | (911, 9, 13, 17) | (911, 9, 13, 17) |
+| MIDI Out | (925, 9, 18, 17) | (925, 9, 18, 17) |
+| Arrangement | (681, 9, 28, 17) | (681, 9, 28, 17) |
+| Mix View | (709, 9, 28, 17) | (709, 9, 28, 17) |
+
+
+At 1440 × 900 the bar measures (0, 0, 1440, 35), and all 32 control rectangles match the baseline exactly. Arrangement Position remains (446, 9, 82, 17) and Arrangement remains (1037, 9, 90, 17), with the full workspace labels. The same rectangles and disabled controls return after expansion.
+
+The suite also checks non-overlap with Play, Stop and Record still visible at widths 520, 600, 800, 1050 and 1180. At the 520 minimum all visible controls stay within the bar. The 960 software-reference typography mask now covers the old 30 px gap only when the Position field crosses it, so the narrow reference keeps comparing the rest of the window while the dedicated bounds test covers all of the Control Bar.
+
+The focused Debug build used the warnings-as-errors command. With DISPLAY unset, the baseline passed three of six checks and the fix passed all six. No window or menu was shown.
