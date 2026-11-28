@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 follow-up for cancelling a held draft is building against main `bdcccb3e`.
+SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 follow-up is published. SC-184 is next.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -8,6 +8,7 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 | SC-157 | `basics/sc-157-project-backups` at `f47d614b` | A saved project gets a versioned backup on open and a new one after a ten-minute check finds edits. The ten newest versions are kept. Safe rotation uses the system trash after a durable write. File > Open Backup restores a separate editable project. Touched engine-win project files and window/window-fn app, File menu and tests. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. Four storage suites and window-state passed, including 99 project-file checks. Native Xvfb covered open, the real ten-minute edit backup, adjacent and read-only recovery, and archive shutdown. Acceptance passed 3/3. The document and shell timing failures are recorded below. | Ready for Windows check |
 | SC-151 | `basics/sc-151-playback-problems` at `08ab0ef5` | Session playback problems mark the affected Arrangement clips and device cards. A single Status Bar action shows the count and opens the full list of reasons. The marks and action clear as the problems clear. Touched window/window-fn and device card display code. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The native red and green runs used the same missing-WAV and missing-CLAP fixture. The new app marked both items and the visible list contained both reasons. Window-state and all three acceptance tests passed. The document and shell suites ran with the known timing failures below. | Ready for Windows check |
 | SC-155 | `basics/sc-155-undo-open-state` at `0864420e` | Undo History captures the current cursor when it opens a project. The bottom row returns to that cursor from either direction. Earlier history remains accessible and any creation snapshot has its own row. Touched window/window-fn's history panel and UI submitter. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. History, history-move and window-state passed. The full shell ran the reopened-cursor regression. Native Xvfb reproduced the old four-to-two-track loss and verified the fix restored four from five with Redo intact. Acceptance passed 3/3. Known timing failures are below. | Ready for Windows check |
+| SC-344 | `basics/sc-344-automation-drag-undo` at `8146a636` | Main already commits a line drag in one Undo. The follow-up cancels the pending point on an editing mode or target change, on focus loss, or when a drag encounters a hidden target. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The complete shell passed 5,407 checks and window-state passed 195. A native Xvfb check passed both held mode round trips and the normal drag, Undo, and Redo. Acceptance passed 3/3. The document timing result is below. | Ready for Windows check |
 
 ### SC-159 verification
 
@@ -34,6 +35,12 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 - The Debug shell passed 4,375 of 4,376 checks with DISPLAY unset. Its only failure was SC-421, with a 114 ms first keystroke against 40 ms. The document suite passed 914 of 916 checks, with the known device-loss and SC-415 timing failures.
 - The item started directly from updated main `ed3da057` to keep its history changes separate from earlier integration conflicts. The Linux code tree was `05623050`. The merge of main `fbf541ee` before publication changed four documents. The built-in realtime test passed in 3,433 seconds with the local emulation timeout.
 - When history retention has discarded the opening cursor or it requires a cross-baseline reload, the row reports that it cannot restore the saved state.
+
+### SC-344 verification
+
+- The old native app wrote separate Add and Move transactions and left a point under the press after one Undo. The first Linux fix at `a9560a7b` passed the native gesture and acceptance. Win's merge included `8334b46e` independently, so the published follow-up uses the landed implementation and tests its cancellation paths.
+- The exact `8146a636` Linux app showed the draft before each held mode round trip. Switching Automation Mode off and back on or Draw Mode on and back off cleared it. Button 1 stayed held, and release left the original envelope bytes and journal head intact. A normal drag created one transaction at the final time and value. Undo and Redo restored the exact before and after states. The shell also covered Escape, focus loss, envelope changes, and hidden targets.
+- The document suite passed 1,047 of 1,048 checks. SC-415 was the sole failure at 322 ms for the longest owner turn out of 944 ms total, the timing case previously reproduced on unmodified main. Built-in realtime passed in 2,579 seconds with the local 5,400-second timeout. All three acceptance tests passed.
 
 ## Build storage
 
