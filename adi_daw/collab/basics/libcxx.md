@@ -6,6 +6,16 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 15:00 IST — libcxx/seats/library-chain `b2bd4f792e24d318241d8e3c85c904bd350ba25d`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The exact patched `probe.cpp` passed strict Clang 20 Apple Silicon syntax checks with macOS 26.1 SDK headers targeting macOS 14.0 and 26.1. Linux Clang/libc++ and GCC/libstdc++ syntax checks also passed.
+
+The standalone Warp benchmark and its candidate test built against libc++ and libc++abi on Linux. Its CTest run passed, and a generated WAV smoke test accepted `1.2e2` BPM and rejected a leading `+`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 14:50 IST — seats/library-chain `5354d28b5cd9e9978400a24e10d31bd343b4c37d`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
