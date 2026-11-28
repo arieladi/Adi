@@ -788,16 +788,22 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
 }
 
 enum class WorkerFollowCase { Warm, Cold, Manual, Stop };
+enum class WorkerFollowSource { Physical, Native, Aligned };
 
-void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
-    constexpr int rawStart = 2400, loopHead = 124800, loopEnd = 134400;
-    constexpr int physicalEnd = loopEnd - rawStart, period = loopEnd - loopHead;
+void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase,
+                        WorkerFollowSource sourceKind = WorkerFollowSource::Physical) {
+    const auto physical = sourceKind == WorkerFollowSource::Physical;
+    const auto aligned = sourceKind == WorkerFollowSource::Aligned;
+    constexpr int savedStart = 2400;
+    const auto loopHead = physical ? 124800 : 29280;
+    const auto loopEnd = physical ? 134400 : 39937;
+    const auto firstEnd = loopEnd - savedStart, period = loopEnd - loopHead;
     constexpr int cue = 18*8192-1, manualCue = 16*8192-1, cutFrames = blockFrames-17;
     constexpr std::uint64_t incarnation = 113;
     constexpr auto extent = 10 * quarter;
-    const auto due = noGrid ? physicalEnd : 144000;
-    const auto phaseAt = [&](int at) { return loopHead + (at - physicalEnd) % period; };
-    const auto inherited = phaseAt(due) - rawStart;
+    const auto due = noGrid ? firstEnd : physical ? 144000 : 48000;
+    const auto phaseAt = [&](int at) { return loopHead + (at - firstEnd) % period; };
+    const auto inherited = phaseAt(due) - savedStart;
     const auto cold = testCase == WorkerFollowCase::Cold;
     const auto manual = testCase == WorkerFollowCase::Manual;
     const auto stop = testCase == WorkerFollowCase::Stop;
@@ -820,18 +826,29 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
     addSlot(*store,101,10,.55f,extent,phaseAt(due+140),false);
     addSlot(*store,102,20,-.8f,extent,cue+40,true);
     if (manual) addSlot(*store,103,30,-.7f,extent,manualCue+40,true);
-    db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
-            "UPDATE clip_launch SET ram_mode=1,launch_quant=1,follow_enabled=1,follow_linked=1,"
+    db.exec("UPDATE clip_launch SET launch_quant=1,follow_enabled=1,follow_linked=1,"
             "follow_loop_count=1,follow_a=4 WHERE clip_id=101;"
-            "UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000 WHERE id=101;"
             "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id>=102");
+    if (physical)
+        db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
+                "UPDATE clip_launch SET ram_mode=1 WHERE clip_id=101;"
+                "UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000 WHERE id=101");
+    else if (!aligned)
+        db.exec("UPDATE audio_clips SET warp_mode='re-pitch' WHERE clip_id=101;"
+                "UPDATE clip_launch SET ram_mode=1 WHERE clip_id=101;"
+                "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(40,3,120,1)");
     {
         SQLite::Statement loop(db,"UPDATE clips SET loop_start_ticks=?,loop_len_ticks=? WHERE id=101");
         loop.bind(1,frameToTick(loopHead)); loop.bind(2,frameToTick(period)); loop.exec();
-        SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns,"
-                                  "loop_begin_ns,loop_end_ns) VALUES(101,?,?,?,?)");
-        pins.bind(1,frameToNs(rawStart)); pins.bind(2,frameToNs(216000));
-        pins.bind(3,frameToNs(loopHead)); pins.bind(4,frameToNs(loopEnd)); pins.exec();
+        if (physical) {
+            SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns,"
+                                      "loop_begin_ns,loop_end_ns) VALUES(101,?,?,?,?)");
+            pins.bind(1,frameToNs(savedStart)); pins.bind(2,frameToNs(216000));
+            pins.bind(3,frameToNs(loopHead)); pins.bind(4,frameToNs(loopEnd)); pins.exec();
+        } else {
+            SQLite::Statement sourceStart(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=length_ticks-? WHERE id=101");
+            sourceStart.bind(1,frameToTick(savedStart)); sourceStart.bind(2,frameToTick(savedStart)); sourceStart.exec();
+        }
         SQLite::Statement quantization(db,"UPDATE clip_launch SET launch_quant=? WHERE clip_id>=102");
         quantization.bind(1,noGrid ? 1 : 8); quantization.exec();
         const auto trim = [&](int id,int desiredCue) {
@@ -863,13 +880,15 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
     std::vector<std::string> problems;
     const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,incarnation,problems);
     const auto* target = bank ? bank->clip(102) : nullptr;
-    require(target && target->pageReader() && target->latencySamples() == 2048 &&
+    const auto* outgoing = bank ? bank->clip(101) : nullptr;
+    require(target && outgoing && target->pageReader() && target->latencySamples() == 2048 &&
             !target->allWorkerPhasesPrimed() && problems.empty() &&
-            bank->view().slots.front().physicalStartFrame == rawStart,
-            "prepare a physical outgoing loop and a long aligned incoming source");
+            bank->view().slots.front().physicalStartFrame == (physical ? savedStart : -1) &&
+            outgoing->followsTempo() == (!physical && !aligned) &&
+            outgoing->latencySamples() == (aligned ? 2048 : 0),
+            "prepare the requested outgoing loop and a long aligned incoming source");
     auto& pages = *target->pageReader();
     struct ResumeOnExit { Gate& gate; ~ResumeOnExit(){ gate.resume.store(true,std::memory_order_release); } } resume{gate};
-    pages.setRequestSnapshotProbeForTest(&probe);
     auto runtime = std::make_shared<LaunchAudioRuntime>(bank,std::vector<std::int64_t>{1},blockFrames);
     LaunchAudioDriver driver(1);
     Transport transport;
@@ -926,7 +945,24 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
     const auto observed = [&](const std::atomic<bool>& event) {
         return waitUntil([&] { return event.load(std::memory_order_acquire); });
     };
-    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the physical raw loop");
+    if (aligned) {
+        // Keep the outgoing loop ready before optionally holding the shared
+        // worker at the incoming cue. This demand names only the old clip.
+        {
+            const audio::CallbackScope callback;
+            pages.prefetch(101,17000);
+        }
+        for (const auto frame : {2400,8192,16384,24576,32768}) {
+            require(waitUntil([&] {
+                const audio::CallbackScope callback;
+                if (!pages.reserveWorkerCue(101,frame,blockFrames,false)) return false;
+                pages.releaseCue(101);
+                return true;
+            }),"prime the outgoing aligned loop without filling the incoming cue");
+        }
+    }
+    pages.setRequestSnapshotProbeForTest(&probe);
+    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the outgoing loop");
     through(2*blockFrames);
     std::array<LaunchTrackStatus,1> rows{};
     LaunchStatusHeader status{};
@@ -982,10 +1018,12 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase) {
            std::equal(expected.begin(),expected.end(),pcm.begin()+heard))
         : stop ? (trace.count == 2 && trace.edges[1].newClip == 0 && trace.edges[1].sample == due &&
                   std::all_of(pcm.begin()+heard,pcm.end(),[](float sample) { return sample == 0; }))
-               : (trace.count == 1 && rows[0].run == oldRun && pcm[static_cast<std::size_t>(heard+140)] == .55f);
-    std::printf("Linked worker Legato %s case %d: cut %d, cue %d, clip %lld, transitions %zu, underruns %u\n",
-                noGrid ? "None" : "Quarter",static_cast<int>(testCase),due,cue,static_cast<long long>(rows[0].clip),
-                trace.count,pages.underrunSamples());
+               : (trace.count == 1 && rows[0].run == oldRun &&
+                  (physical ? pcm[static_cast<std::size_t>(heard+140)] == .55f
+                            : *std::max_element(pcm.begin()+heard+124,pcm.begin()+heard+157) > .45f));
+    std::printf("Linked worker Legato %s source %d case %d: cut %d, cue %d, clip %lld, transitions %zu, underruns %u\n",
+                noGrid ? "None" : "Quarter",static_cast<int>(sourceKind),static_cast<int>(testCase),due,cue,
+                static_cast<long long>(rows[0].clip),trace.count,pages.underrunSamples());
     require(pass && pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
             "the exact private worker cue obeys the physical lap and manual precedence with no callback faults");
 }
@@ -998,6 +1036,13 @@ int main() {
             for (const auto testCase : {WorkerFollowCase::Warm,WorkerFollowCase::Cold,
                                         WorkerFollowCase::Manual,WorkerFollowCase::Stop})
                 linkedWorkerLegato(noGrid,testCase);
+        for (const auto noGrid : {false,true})
+            for (const auto testCase : {WorkerFollowCase::Warm,WorkerFollowCase::Cold,
+                                        WorkerFollowCase::Manual,WorkerFollowCase::Stop})
+                linkedWorkerLegato(noGrid,testCase,WorkerFollowSource::Native);
+        for (const auto noGrid : {false,true})
+            for (const auto testCase : {WorkerFollowCase::Warm,WorkerFollowCase::Cold})
+                linkedWorkerLegato(noGrid,testCase,WorkerFollowSource::Aligned);
         for (const auto testCase : {WorkerCueCase::Warm,WorkerCueCase::ColdCue,WorkerCueCase::WarmWrap,
                                     WorkerCueCase::ColdWrap,WorkerCueCase::ColdDistantHead,WorkerCueCase::RepeatWrap,
                                     WorkerCueCase::ColdRepeatStart,WorkerCueCase::ColdLaterStart,WorkerCueCase::ReleasedBeforeCut})

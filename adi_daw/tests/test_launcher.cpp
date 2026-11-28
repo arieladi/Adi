@@ -667,6 +667,75 @@ void queuedLegatoPredictsTakeoverPhase() {
     }
 }
 
+void musicalLinkedUsesTheRenderedSample() {
+    constexpr long double framesPerQuarter = 19271.667880553533L;
+    constexpr std::int64_t cut = 130084, expectedPhase = 44113252, expectedFrame = 147446;
+    const auto sourceTick = [=](int frame) {
+        return static_cast<std::int64_t>(std::llround(static_cast<long double>(frame)*quarter/framesPerQuarter));
+    };
+    auto outgoing = slot(1,1,11);
+    outgoing.quantization = LaunchQuantization::None;
+    outgoing.startTick = sourceTick(2400);
+    outgoing.loopStartTick = sourceTick(124800)+59;
+    outgoing.loopEndTick = outgoing.loopStartTick+sourceTick(5293)+119;
+    auto incoming = slot(1,2,12);
+    incoming.quantization = LaunchQuantization::ThirtySecond;
+    incoming.startTick = sourceTick(22655);
+    incoming.legato = true;
+    const std::array slots{outgoing,incoming};
+    const LaunchView view{std::span(tracks).first(1),slots,scenes};
+
+    for (const auto frames : {17,257}) {
+        struct Trace {
+            std::int64_t followTick, minimumLap, phase = -1, sample = -1;
+            std::size_t forecasts = 0;
+            bool correct = true;
+        } trace{outgoing.loopEndTick-outgoing.startTick,
+                static_cast<std::int64_t>(std::ceil(quarter/framesPerQuarter))};
+        LaunchSink sink;
+        sink.context = &trace;
+        sink.followOnLaunch = [](void* raw,const LaunchTransition& edge) noexcept -> std::optional<LaunchFollowRequest> {
+            if (edge.newClip != 11) return {};
+            const auto& result = *static_cast<const Trace*>(raw);
+            return LaunchFollowRequest{request(LaunchRequestKind::SlotPress,1,2,12),
+                                       result.followTick,0,true,result.minimumLap};
+        };
+        sink.prefetchLinkedLegato = [](void* raw,const LaunchSlot&,std::int64_t sample,const LaunchSourceCue& cue) noexcept {
+            auto& result = *static_cast<Trace*>(raw);
+            ++result.forecasts;
+            result.correct &= sample == cut && cue.tick == expectedPhase;
+        };
+        sink.transition = [](void* raw,const LaunchTransition& edge) noexcept {
+            if (edge.newClip != 12) return;
+            auto& result = *static_cast<Trace*>(raw);
+            result.phase = edge.sourceTick;
+            result.sample = edge.sample;
+        };
+        Launcher launcher(1);
+        check(post(launcher,request(LaunchRequestKind::SlotPress,1,1,11)),"start the fractional-clock musical loop");
+        LaunchBlock launch;
+        launch.incarnation = 17;
+        launch.frames = frames;
+        launch.clock = &framesPerQuarter;
+        launch.tickAtSample = [](const void* clock,std::int64_t sample) noexcept {
+            return static_cast<std::int64_t>(std::llround(static_cast<long double>(sample)*quarter/
+                *static_cast<const long double*>(clock)));
+        };
+        launch.sampleAtTick = [](const void* clock,std::int64_t tick) noexcept {
+            return static_cast<std::int64_t>(std::llround(static_cast<long double>(tick)*
+                *static_cast<const long double*>(clock)/quarter));
+        };
+        const auto prior = allocations;
+        countAllocations = true;
+        for (; launch.sample <= cut && trace.phase < 0; launch.sample += frames)
+            launcher.process(launch,view,sink);
+        countAllocations = false;
+        check(trace.forecasts > 0 && trace.correct && trace.sample == cut && trace.phase == expectedPhase &&
+              launch.sampleAtTick(launch.clock,trace.phase) == expectedFrame && allocations == prior,
+              "the same rounded musical Follow cut forecasts and inherits the exact PCM phase across block sizes");
+    }
+}
+
 void statusTapAndStoppedAdmission() {
     constexpr int rate = 48000;
     auto looping = slot(1,1,11);
@@ -1087,6 +1156,7 @@ int main() {
     cancelSceneAndStopAll();
     stopSupersedesQueuedPlayback();
     queuedLegatoPredictsTakeoverPhase();
+    musicalLinkedUsesTheRenderedSample();
     statusTapAndStoppedAdmission();
     tapAcrossGenerations();
     simultaneousTapReaders();

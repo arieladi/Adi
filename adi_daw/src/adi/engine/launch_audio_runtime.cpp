@@ -7,6 +7,7 @@
 #include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/launch_warp_source.hpp"
 #include "adi/engine/transport.hpp"
+#include "adi/textproj.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -653,6 +654,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         void* sceneObserverContext;
         void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept;
         LaunchCaptureBuffer* capture;
+        bool arrangementLoop;
         std::int32_t offset = 0;
     };
     if (streamSample < 0 || streamSample > std::numeric_limits<std::int64_t>::max() - frames) {
@@ -661,7 +663,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }
     Context context{*this, driver, project_.get(), {}, block, follow, block.incarnation,
         followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer,
-        sceneObserverContext, sceneObserver, capture};
+        sceneObserverContext, sceneObserver, capture, transport.looping()};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
         call.runtime.add(call.driver, *call.media, section, call.block, call.offset, call.capture);
@@ -680,7 +682,23 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchTransition& edge) noexcept -> std::optional<LaunchFollowRequest> {
         const auto& call = *static_cast<const Context*>(state);
         if (!call.follow) return std::nullopt;
-        return call.follow->followOnLaunch(edge, call.view, call.incarnation, call.block.followActionsEnabled, call.seed);
+        auto next = call.follow->followOnLaunch(edge,call.view,call.incarnation,call.block.followActionsEnabled,call.seed);
+        if (next && next->linked && next->physicalLaps == 0 && next->request.clip) {
+            const auto* source = call.media->clip(edge.newClip);
+            const auto* target = call.media->clip(*next->request.clip);
+            // A fixed bank can forecast the wrapped musical phase. Keep the
+            // original path when a prepared clock pair or Arrangement wrap
+            // can rebase the pending deadline.
+            if (!call.runtime.beforeClock_ && !call.arrangementLoop && source &&
+                (source->followsTempo() || source->latencySamples() > 0) && target && needsWorkerCueLease(*target)) {
+                // Shorter laps can put two adjacent wraps on one sample.
+                // The shared forecast and transition then keep the old path.
+                const auto ticksPerSample = static_cast<long double>(call.media->bpm()) * textproj::kPPQ /
+                    (60.0L * source->rate());
+                next->minimumMusicalLapTicks = static_cast<std::int64_t>(std::ceil(ticksPerSample));
+            }
+        }
+        return next;
     }, [](void* state, const LaunchTrackStatus& track) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         if (!track.queued.legatoSourceTick) return;
@@ -739,9 +757,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto physical = target.physicalFrames > 0;
         const auto scheduled = cueAdmission == LaunchCueAdmission::Scheduled;
         const auto linked = cueAdmission == LaunchCueAdmission::Linked;
+        const auto musicalLinked = cueAdmission == LaunchCueAdmission::MusicalLinked;
         const auto readyOnly = cueAdmission == LaunchCueAdmission::ReadyOnly || cueAdmission == LaunchCueAdmission::HeldRepeat;
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
-                     : !scheduled && !linked && !readyOnly) return true;
+                     : !scheduled && !linked && !musicalLinked && !readyOnly) return true;
+        if (musicalLinked && !physical && (call.runtime.beforeClock_ || call.arrangementLoop)) return true;
         const auto* pcm = call.media->clip(target.clip);
         const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
         const auto nativeRepeat = cueAdmission == LaunchCueAdmission::HeldRepeat ||
@@ -777,7 +797,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         auto* pages = pcm->pageReader();
         if (!pages || (!physical && !needsWorkerCueLease(*pcm))) return true;
         const auto frame = physical ? cue.physicalFrame : pcm->frameForTick(cue.tick,call.media->bpm());
-        if (cueAdmission == LaunchCueAdmission::None || frame < 0) return false;
+        if (cueAdmission == LaunchCueAdmission::None || (physical && musicalLinked) || frame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
         if (!rendered || rendered->cuePages || rendered->warpCuePages) return false;
         // An earlier range on this source could trim the new reservation

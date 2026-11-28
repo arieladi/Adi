@@ -108,6 +108,8 @@ struct LaunchFollowRequest {
     LaunchRequest request;
     std::int64_t tick = 0;
     std::int64_t physicalLaps = 0;
+    bool linked = false;
+    std::int64_t minimumMusicalLapTicks = 0;
 };
 
 struct LaunchSceneTransition {
@@ -159,7 +161,7 @@ struct LaunchStatusHeader {
     bool transportPlaying = false, backToArrangement = false;
 };
 
-enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, Linked, ReadyOnly, HeldRepeat };
+enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, Linked, MusicalLinked, ReadyOnly, HeldRepeat };
 
 struct LaunchSink {
     void* context = nullptr;
@@ -225,8 +227,9 @@ private:
         std::int64_t earliestSample = 0;
         bool sceneGesture = false;
         std::uint64_t admission = 0;
-        bool prepared = false, linkedPhysical = false;
-        std::int64_t physicalLaps = 0;
+        bool prepared = false;
+        LaunchCueAdmission linkedAdmission = LaunchCueAdmission::None;
+        std::int64_t physicalLaps = 0, minimumMusicalLapTicks = 0;
     };
     struct Run {
         std::int64_t scene = 0, clip = 0, sourceTick = 0, frames = 0;

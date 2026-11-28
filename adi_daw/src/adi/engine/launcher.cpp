@@ -189,6 +189,32 @@ LaunchSourceCue launchSourceCue(const LaunchSlot& target, const LaunchSlot* prev
     return {cuedPhysicalLap(&target,0,frame).tickAt(0),frame};
 }
 
+bool hasMusicalLap(const LaunchSlot* slot, std::int64_t minTicks) noexcept {
+    return occupied(slot) && (!loops(*slot) || slot->loopEndTick - slot->loopStartTick >= minTicks);
+}
+
+std::optional<std::int64_t> musicalSourceAtCut(const LaunchSlot& slot, const LaunchBlock& block,
+                                              std::int64_t anchorTick, std::int64_t anchorSourceTick,
+                                              std::int64_t cutSample, std::int64_t cutTick) noexcept {
+    const auto end = sourceEnd(slot);
+    const auto firstEndTick = add(anchorTick,std::max<std::int64_t>(0,end - anchorSourceTick));
+    const auto firstEndSample = block.sampleAtTick(block.clock,firstEndTick);
+    const auto source = add(anchorSourceTick,std::max<std::int64_t>(0,cutTick - anchorTick));
+    if (!loops(slot)) {
+        if (firstEndSample < cutSample) return {};
+        return firstEndSample == cutSample ? end : std::min(end,source);
+    }
+
+    // A rounded source wrap and a grid tick can occupy the same sample.
+    // The old run contributes its wrapped phase at that cut.
+    const auto length = slot.loopEndTick - slot.loopStartTick;
+    const auto wrap = cutTick <= firstEndTick ? firstEndTick : cutTick - (cutTick - firstEndTick) % length;
+    const auto wrapSample = block.sampleAtTick(block.clock,wrap);
+    const auto nextWrapSample = block.sampleAtTick(block.clock,add(wrap,length));
+    if (wrapSample == nextWrapSample) return {};
+    return wrapSample == cutSample || nextWrapSample == cutSample ? end : source;
+}
+
 bool validRegion(const LaunchClipRegion& region) noexcept {
     return region.start >= 0 && region.end > region.start &&
         (!region.loop || (region.loop->begin >= region.start && region.loop->end > region.loop->begin &&
@@ -512,7 +538,11 @@ void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock&
         track.follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
             grid,false,earliestSample};
         track.follow->physicalLaps = follow.physicalLaps;
-        track.follow->linkedPhysical = follow.physicalLaps > 0;
+        if (follow.physicalLaps > 0) track.follow->linkedAdmission = LaunchCueAdmission::Linked;
+        else if (follow.linked && follow.minimumMusicalLapTicks > 0 && slot.legato && slot.clip != track.run.clip) {
+            track.follow->linkedAdmission = LaunchCueAdmission::MusicalLinked;
+            track.follow->minimumMusicalLapTicks = follow.minimumMusicalLapTicks;
+        }
     }
     if (request.kind == LaunchRequestKind::StopTrack) {
         auto& track = *findTrack(*request.track);
@@ -626,7 +656,15 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         const auto oldFrame = oldLap.startFrame < 0 ? -1 :
             oldSlot->physicalLoopEndFrame && elapsed == oldLap.length() ? oldSlot->physicalLoopBeginFrame :
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
-        const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
+        const auto legato = occupied(oldSlot) && target->clip != previous.clip && target->legato;
+        auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
+        if (legato && cueAdmission == LaunchCueAdmission::MusicalLinked && oldLap.startFrame < 0) {
+            const auto cut = block.sample + offset;
+            const auto source = musicalSourceAtCut(*oldSlot,block,previous.anchorTick,previous.anchorSourceTick,
+                                                   cut,atSample(block,cut));
+            if (source) sourceTick = *source;
+            else cueAdmission = LaunchCueAdmission::None;
+        }
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
         if (pending.repeat) {
             repeatTick = repeatAtSourceEnd ? add(tick,sourceEnd(*target) - cue.tick)
@@ -637,8 +675,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
                 cue.repeat = LaunchSourceCue::ScheduledRepeat{repeatTick,launchSourceTick(*target,nullptr,0),following};
             }
         }
-        if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,tick,offset,cueAdmission)) return false;
+        if (legato && sink.admitLegatoCue && !sink.admitLegatoCue(sink.context,*target,cue,tick,offset,cueAdmission)) return false;
     }
     track.follow.reset();
     track.repeat.reset();
@@ -833,7 +870,10 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 }
                 edgeTick = target;
             }
-            if (next == &track.follow && pending.linkedPhysical && refusedUserStartAtCursor) {
+            if (pending.linkedAdmission == LaunchCueAdmission::MusicalLinked &&
+                !hasMusicalLap(slot,pending.minimumMusicalLapTicks))
+                pending.linkedAdmission = LaunchCueAdmission::None;
+            if (next == &track.follow && pending.linkedAdmission != LaunchCueAdmission::None && refusedUserStartAtCursor) {
                 // A due manual Start owns its sample even when its cue is cold.
                 // A Follow deferred to a later grid already continued above.
                 tick = nextTick;
@@ -845,8 +885,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (next == &track.user && !pending.sceneGesture) {
                 if (pending.grid != LaunchQuantization::None) cueAdmission = LaunchCueAdmission::Scheduled;
                 else cueAdmission = pending.repeat ? LaunchCueAdmission::HeldRepeat : LaunchCueAdmission::ReadyOnly;
-            } else if (next == &track.follow && pending.linkedPhysical) {
-                cueAdmission = LaunchCueAdmission::Linked;
+            } else if (next == &track.follow) {
+                cueAdmission = pending.linkedAdmission;
             }
             if (transition(track,block,view,sink,pending,cursor,edgeTick,cueAdmission,projectedEnd)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
@@ -1212,25 +1252,12 @@ std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& trac
         const auto phase = (elapsed - lap.length()) % wrapped.length();
         return launchSourceCue(target,current,wrapped.tickAt(phase),wrapped.startFrame+phase);
     }
-    const auto dueTick = block.sampleAtTick(block.clock,pending.tick) == dueSample
-        ? pending.tick : atSample(block,dueSample);
-    const auto end = sourceEnd(*current);
-    const auto firstEndTick = add(run.anchorTick,std::max<std::int64_t>(0,end - run.anchorSourceTick));
-    const auto firstEndSample = block.sampleAtTick(block.clock,firstEndTick);
-    const auto sourceAtDue = add(run.anchorSourceTick,std::max<std::int64_t>(0,dueTick - run.anchorTick));
-    if (!loops(*current)) {
-        if (firstEndSample < dueSample) return {};
-        return launchSourceCue(target,current,firstEndSample == dueSample ? end : std::min(end,sourceAtDue));
-    }
-
-    // A rounded source wrap and a later grid tick can occupy the same physical
-    // sample. Render takes the wrapped phase on that sample.
-    const auto length = current->loopEndTick - current->loopStartTick;
-    const auto wrap = dueTick <= firstEndTick ? firstEndTick : dueTick - (dueTick - firstEndTick) % length;
-    const auto wrapSample = block.sampleAtTick(block.clock,wrap);
-    const auto nextWrapSample = block.sampleAtTick(block.clock,add(wrap,length));
-    if (wrapSample == nextWrapSample) return {};
-    return launchSourceCue(target,current,wrapSample == dueSample || nextWrapSample == dueSample ? end : sourceAtDue);
+    // Musical Linked inherits from the rendered sample. A grid tick can
+    // round to that sample without being its tick-at-sample value.
+    const auto dueTick = pending.linkedAdmission != LaunchCueAdmission::MusicalLinked &&
+        block.sampleAtTick(block.clock,pending.tick) == dueSample ? pending.tick : atSample(block,dueSample);
+    const auto source = musicalSourceAtCut(*current,block,run.anchorTick,run.anchorSourceTick,dueSample,dueTick);
+    return source ? std::optional{launchSourceCue(target,current,*source)} : std::nullopt;
 }
 
 LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& block,
@@ -1293,14 +1320,17 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
 
 void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, const LaunchBlock& block,
                                     LaunchSink sink, std::int64_t endSample) const noexcept {
-    if (!track.follow || !track.follow->linkedPhysical || !track.run.clip) return;
+    if (!track.follow || track.follow->linkedAdmission == LaunchCueAdmission::None || !track.run.clip) return;
     const auto& pending = *track.follow;
     const auto* target = findSlot(view,track.id,pending.scene);
-    if (!occupied(target) || target->clip != pending.clip) return;
+    if (!occupied(target) || target->clip != pending.clip ||
+        (pending.linkedAdmission == LaunchCueAdmission::MusicalLinked && target->physicalFrames > 0)) return;
     const auto* current = findSlot(view,track.id,track.run.scene);
     if (!current || current->clip != track.run.clip) current = findClip(view,track.id,track.run.clip);
     LaunchSlot region;
     current = effectiveSlot(current,track.run.region,track.run.physicalRegion,region);
+    if (pending.linkedAdmission == LaunchCueAdmission::MusicalLinked &&
+        !hasMusicalLap(current,pending.minimumMusicalLapTicks)) return;
     std::int64_t due = 0;
     const auto cue = queuedLegatoSourceCue(track,pending,*target,current,block,endSample,&due);
     if (cue) sink.prefetchLinkedLegato(sink.context,*target,due,*cue);
