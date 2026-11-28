@@ -226,7 +226,7 @@ public:
                                       std::unique_ptr<LaunchAudioClip>&) const noexcept;
     [[nodiscard]] const std::shared_ptr<const LaunchAudioProject>& mediaAt(std::int64_t sample) const noexcept;
     [[nodiscard]] std::shared_ptr<const LaunchAudioProject> bankAtTempo(double bpm) const noexcept;
-    [[nodiscard]] bool hasTempoBanks() const noexcept { return !tempoBanks_.empty(); }
+    [[nodiscard]] std::size_t tempoBankCount() const noexcept { return tempoBanks_.size(); }
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 

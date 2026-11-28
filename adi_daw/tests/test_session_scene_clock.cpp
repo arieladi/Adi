@@ -380,6 +380,24 @@ void verifyResidentTempoHistory(Store& store) {
         matches(hear(secondCut+1000),-0.125f,-0.125f), "all three tempos adopt the same externally edited audio file");
     require(!session.setExternalTempoAt(store,135,nextStep,[] { return false; }) && tempoAt(nextStep) == 160 &&
         matches(hear(1000),0.25f,0.25f), "a failed external tempo publication preserves retained audio and clock history");
+
+    const auto setRam = [&](bool ram) {
+        OpRequest edit;
+        edit.opType = "session.setLaunchSettings";
+        edit.payload = {{"clip",102},{"ram",ram}};
+        require(OpJournal(store).commit(edit).ok,"commit the RAM mode edit");
+        if (!session.refresh(store)) throw std::runtime_error(session.error());
+        require((store.db().execAndGet("SELECT ram_mode FROM clip_launch WHERE clip_id=102").getInt() != 0) == ram,
+            "successful bank publication preserves the authored RAM mode");
+    };
+    setRam(false);
+    require(tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160 &&
+        matches(hear(1000),0.25f,-0.125f) && matches(hear(firstCut+1000),0.25f,-0.125f) &&
+        matches(hear(secondCut+1000),-0.125f,-0.125f),
+        "RAM Off keeps the two newest banks audible across seeks and preserves the performed tempo map");
+    setRam(true);
+    require(matches(hear(1000),0.25f,-0.125f),"RAM On rebuilds only the retained pair after the paged history was published");
+
     require(session.setExternalTempoAt(store,135,nextStep) && tempoAt(nextStep) == 135,
         "ordinary external tempo changes can replace a retained scene clock after rollback");
     require(render.count == 2 && allocations == 0 && audio::callbackFileIo == 0,

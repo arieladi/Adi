@@ -1015,7 +1015,7 @@ bool Session::sceneTempoBanksFit(const TempoMap& clock) const noexcept {
 }
 
 std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& timing, const rows::Model& model) {
-    const auto& periods = sceneTempoBanks_->periods;
+    auto periods = std::span<const TempoEvent>{sceneTempoBanks_->periods};
     const auto* previous = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!previous || previous->sampleRate != timing.sampleRate || previous->spec.channels != timing.spec.channels ||
         previous->spec.maxFrames != timing.spec.maxFrames)
@@ -1037,15 +1037,7 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
     auto budget = kSessionResidentPcmBudget;
     auto diagnostics = model.slotProblems;
     std::map<double,std::shared_ptr<const LaunchAudioProject>> prepared;
-    std::vector<LaunchTempoBank> result;
-    result.reserve(periods.size());
-    for (std::size_t i = 0; i < periods.size(); ++i) {
-        const auto& period = periods[i];
-        // Page-backed handovers retain just their last pair, as before. For
-        // resident history periods the first tick is always zero.
-        const auto sample = i == 0 ? 0 : timing.sampleForTick(period.posTicks);
-        if ((!result.empty() && sample <= result.back().startSample) || sample == std::numeric_limits<std::int64_t>::max())
-            throw std::runtime_error("Session tempo bank boundaries need distinct samples");
+    const auto prepareBank = [&](const TempoEvent& period) -> const std::shared_ptr<const LaunchAudioProject>& {
         auto& bank = prepared[period.bpm];
         if (!bank) {
             if (reuse) bank = previous->launchAudio->bankAtTempo(period.bpm);
@@ -1060,10 +1052,24 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
                 })) throw std::runtime_error("cannot prepare the complete Session media banks within the resident audio budget");
             if (bank->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
-            if (periods.size() > 2 && bank->hasPagedAudio())
-                throw std::runtime_error("retained Session tempo history needs resident audio banks");
             budget -= bank->residentBytes();
         }
+        return bank;
+    };
+    // An ordinary RAM Off refresh needs only the preceding and current page
+    // banks. Probe the current bank before preparing any earlier periods.
+    if (periods.size() > 2 && !sceneClockPending() && prepareBank(periods.back())->hasPagedAudio())
+        periods = periods.last(2);
+    std::vector<LaunchTempoBank> result;
+    result.reserve(periods.size());
+    for (std::size_t i = 0; i < periods.size(); ++i) {
+        const auto& period = periods[i];
+        const auto sample = i == 0 ? 0 : timing.sampleForTick(period.posTicks);
+        if ((!result.empty() && sample <= result.back().startSample) || sample == std::numeric_limits<std::int64_t>::max())
+            throw std::runtime_error("Session tempo bank boundaries need distinct samples");
+        const auto& bank = prepareBank(period);
+        if (periods.size() > 2 && bank->hasPagedAudio())
+            throw std::runtime_error("retained Session tempo history needs resident audio banks");
         result.push_back({sample,bank});
     }
     if (sceneClockPending() && result.size() >= 2 && periods.back().posTicks == preparedScene_->tick) {
@@ -1708,7 +1714,7 @@ bool Session::rebuild() {
         midi_ = std::move(nextMidi);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     prepareMidiInput(*timing, model_, *midi_);
-    const bool retainedSceneBanks = timing->launchAudio && timing->launchAudio->hasTempoBanks();
+    const auto retainedSceneBanks = timing->launchAudio ? timing->launchAudio->tempoBankCount() : 0;
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -1717,6 +1723,9 @@ bool Session::rebuild() {
     else {
         live_ = true; // durable audio publication; later auxiliary work cannot undo it
         if (retainedSceneBanks) {
+            auto& periods = sceneTempoBanks_->periods;
+            if (retainedSceneBanks < periods.size())
+                periods.erase(periods.begin(),periods.end()-static_cast<std::ptrdiff_t>(retainedSceneBanks));
             storedLaunchProject_.reset();
             storedLaunchSource_.reset();
         } else sceneTempoBanks_.reset();
