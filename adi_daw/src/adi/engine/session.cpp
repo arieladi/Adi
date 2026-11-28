@@ -23,6 +23,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/launch_ops.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_capture_detail.hpp"
 
@@ -45,6 +46,28 @@ namespace {
 constexpr bool kMonitorOffMutesPreviousTake = false;
 constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
 std::atomic<std::uint64_t> nextLaunchIncarnation{1};
+
+bool pinnedLegatoTarget(const LaunchSlot& slot, std::int64_t scene) noexcept {
+    return slot.scene == scene && slot.legato && slot.physicalFrames > 0 && !slot.physicalLoopEndFrame;
+}
+
+bool hasReadyPhysicalSource(const LaunchAudioClip* clip, const LaunchSlot& slot) noexcept {
+    return clip && slot.physicalStartFrame >= 0 && slot.physicalFrames > 0 &&
+        !clip->followsTempo() && clip->latencySamples() == 0 &&
+        static_cast<std::uint64_t>(slot.physicalStartFrame) + static_cast<std::uint64_t>(slot.physicalFrames) <= clip->frames();
+}
+
+bool readyPinnedLegatoTarget(const LaunchAudioProject& bank, const LaunchSlot& slot) noexcept {
+    const auto* clip = bank.clip(slot.clip);
+    return hasReadyPhysicalSource(clip,slot) &&
+        (!clip->pageReader() || clip->pageReader()->allPhysicalPhasesPrimed(slot.clip));
+}
+
+bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
+    return before.track == after.track && before.physicalStartFrame == after.physicalStartFrame &&
+        before.physicalFrames == after.physicalFrames && before.physicalLoopBeginFrame == after.physicalLoopBeginFrame &&
+        before.physicalLoopEndFrame == after.physicalLoopEndFrame;
+}
 
 std::string deviceRef(const rows::Device& row) {
     std::string s = "devices#" + std::to_string(row.id);
@@ -1019,6 +1042,15 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         timing.protectCompatiblePinnedPages = priorCompatible || adoptedCompatible;
         sameBankSources = priorCompatible &&
             sameStoredLaunchSources(*prior->launchSource,*clipProject_);
+        const bool pinnedLegato = beforeClock && sceneClockPending() && preparedScene_->tempoBpm > 0 &&
+            sceneTempoBanks_->tick == preparedScene_->tick && std::ranges::any_of(beforeClock->view().slots,[&](const LaunchSlot& slot) {
+                return pinnedLegatoTarget(slot,preparedScene_->scene);
+            });
+        // The driver may replace its outgoing run before the scene bar.
+        // Each publication while the cut is pending must keep the same
+        // saved sources as the publication that admitted the scene.
+        if (pinnedLegato && !sameBankSources)
+            throw std::runtime_error("a pinned Session Legato scene needs unchanged saved source audio and gain");
         if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
             storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events ||
             storedLaunchPreparedBpm_ != preparedBpm || !std::ranges::equal(storedLaunchWarmWarpClips_,warmWarpClips)) {
@@ -1059,6 +1091,26 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         } else if (priorCompatible && prior->preparedPinnedRestart &&
                    prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()) == storedLaunchProject_) {
             timing.preparedPinnedRestart = true;
+        }
+        if (pinnedLegato) {
+            const auto before = beforeClock->view().slots;
+            const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
+            for (const auto& target : before) {
+                if (!pinnedLegatoTarget(target,preparedScene_->scene)) continue;
+                for (const auto& oldSlot : before) {
+                    if (!oldSlot.clip || oldSlot.track != target.track) continue;
+                    const auto newSlot = std::ranges::find(after,oldSlot.clip,&LaunchSlot::clip);
+                    const auto* oldAudio = beforeClock->clip(oldSlot.clip);
+                    const auto* newAudio = storedLaunchProject_ ? storedLaunchProject_->clip(oldSlot.clip) : nullptr;
+                    if (newSlot == after.end() || !samePhysicalWindow(oldSlot,*newSlot) ||
+                        !hasReadyPhysicalSource(oldAudio,oldSlot) || !hasReadyPhysicalSource(newAudio,*newSlot) ||
+                        oldAudio->pageReader() != newAudio->pageReader())
+                        throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing physical source windows");
+                    if (oldSlot.clip == target.clip && (!pinnedLegatoTarget(*newSlot,preparedScene_->scene) ||
+                        !readyPinnedLegatoTarget(*storedLaunchProject_,*newSlot)))
+                        throw std::runtime_error("a pinned Session Legato scene needs the target's complete physical window");
+                }
+            }
         }
         project = storedLaunchProject_;
         timing.launchSource = clipProject_;
@@ -2728,6 +2780,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     }
                     if (!cell->legato) return false;
                     if (continuesWarp(cell->clip)) return false;
+                    if (pinnedLegatoTarget(*cell,scene)) return !readyPinnedLegatoTarget(*before,*cell);
                     const auto* target = before->clip(cell->clip);
                     if (!target || target->latencySamples() == 0) return true;
                     if (!target->allWorkerPhasesPrimed()) {
@@ -2795,11 +2848,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 const auto* oldSource = mixedBefore->clip(id);
                 const auto* newSource = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
                 if (oldSlot == before.end() || newSlot == after.end() || !oldSource || !newSource ||
-                    oldSlot->track != newSlot->track || oldSlot->physicalStartFrame != newSlot->physicalStartFrame ||
-                    oldSlot->physicalFrames != newSlot->physicalFrames ||
-                    oldSlot->physicalLoopBeginFrame != newSlot->physicalLoopBeginFrame ||
-                    oldSlot->physicalLoopEndFrame != newSlot->physicalLoopEndFrame ||
-                    oldSource->pageReader() != newSource->pageReader()) {
+                    !samePhysicalWindow(*oldSlot,*newSlot) || oldSource->pageReader() != newSource->pageReader()) {
                     missingPin = id;
                     return false;
                 }

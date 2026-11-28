@@ -101,6 +101,11 @@ bool LaunchPagedAudio::allWorkerPhasesPrimed(std::int64_t clip) const noexcept {
     return source && source->primesAllPhases;
 }
 
+bool LaunchPagedAudio::allPhysicalPhasesPrimed(std::int64_t clip) const noexcept {
+    const auto* source = find(clip);
+    return source && source->source.warmPhysicalWindow;
+}
+
 void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {
     const auto* found = find(id);
     if (!found || firstFrame < 0) return;

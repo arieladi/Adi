@@ -38,6 +38,8 @@ public:
     [[nodiscard]] std::int32_t latencySamples(std::int64_t clip) const noexcept;
     /// Owner query after prime for a newly published worker-backed bank.
     [[nodiscard]] bool allWorkerPhasesPrimed(std::int64_t clip) const noexcept;
+    /// A published raw slot that admitted its entire physical window.
+    [[nodiscard]] bool allPhysicalPhasesPrimed(std::int64_t clip) const noexcept;
     /// Driver only. Queue an idle clip's upcoming source phase while keeping
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;

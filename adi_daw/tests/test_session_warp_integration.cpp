@@ -1368,14 +1368,14 @@ void pinnedRepeatUsesItsLaunchClock() {
     }
 }
 
-std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder, bool ram) {
+std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder, bool ram, int targetBeats = 5) {
     auto store = sceneProject(folder);
     auto& db = store->db();
     db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
     addClip(*store,folder,101,10,7,false,3000,1,12000);
     pinUnwarpedOneShot(*store,50000000,1500000000);
     // The inherited target frame 27,086 carries the third signed pulse.
-    addClip(*store,folder,102,20,5,true,3086,1,12000);
+    addClip(*store,folder,102,20,targetBeats,true,3086,1,12000);
     db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
             "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
             "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
@@ -1383,6 +1383,101 @@ std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder
             "UPDATE clip_launch SET launch_quant=8 WHERE clip_id=102;");
     if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102");
     return store;
+}
+
+void physicalLegatoOneShotTempoScene() {
+    constexpr auto cue = 3086 + 12000; // Second signed attack in the saved target.
+    constexpr auto targetStart = 4800;
+    constexpr auto elapsed = cue - targetStart;
+    constexpr auto oldLaunch = tempoSceneFrame - elapsed;
+    constexpr auto stop = oldLaunch + rate;
+    enum class Scene { Steady, Tempo, ChangedSource, EditedWhilePending, ToggledWhilePending, LongPaged };
+    const auto render = [&](bool ram, Scene type) {
+        test::TempDirectory folder{"physical_legato_scene", ram ? "ram" : "paged"};
+        const bool longTarget = type == Scene::LongPaged;
+        auto store = physicalLegatoProject(folder.path(), ram, longTarget ? 17 : 5);
+        auto& db = store->db();
+        db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101");
+        if (type != Scene::Steady) db.exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        if (longTarget) db.exec("UPDATE clip_playback_details SET source_end_ns=4100000000 WHERE clip_id=102;"
+                                "UPDATE clips SET length_ns=4000000000 WHERE id=102");
+        store.reset();
+        StoreError openError{};
+        store = Store::open(folder.path() / "song.adi", openError);
+        require(static_cast<bool>(store), "reopen the saved unwarped Legato scene");
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+        session.transport().play();
+        std::vector<float> pcm(static_cast<std::size_t>(stop + blockFrames));
+        Playback playback{session, pcm};
+        playback.paged = !ram;
+        playback.through(oldLaunch);
+        OpRequest start;
+        start.opType = "session.launchClip";
+        start.payload = {{"track", 1}, {"scene", 10}, {"clip", 101}, {"incarnation", session.launchIncarnation()}};
+        require(OpJournal(*store).commit(start).ok, "launch the saved outgoing unwarped slot");
+        playback.through(tempoSceneFrame - 3 * blockFrames);
+        const auto previous = trackState(session);
+        require(previous.clip == 101 && previous.run != 0 && playback.count == 1 &&
+                playback.edges[0].sample == oldLaunch, "the outgoing run starts at its exact physical sample");
+        if (type == Scene::ChangedSource) sceneWithGain(*store, session, 20, 102, -6.0);
+        else scene(*store, session, 20);
+
+        if (type == Scene::LongPaged || type == Scene::ChangedSource) {
+            require(!session.error().empty(), "reject a cold page target or a changed saved source");
+            playback.through(tempoSceneFrame + 1);
+            require(playback.count == 1 && playback.sceneCount == 0 && trackState(session).run == previous.run &&
+                    session.beginRender().bpmAtTick(4 * quarter) == 120,
+                    "refusing the tempo scene preserves the old physical run and tempo");
+            return pcm;
+        }
+        if (!session.error().empty()) throw std::runtime_error("Physical Legato tempo scene: " + session.error());
+        if (type == Scene::EditedWhilePending || type == Scene::ToggledWhilePending) {
+            OpRequest edit;
+            if (type == Scene::EditedWhilePending) {
+                edit.opType = "clip.setStartMarker";
+                edit.payload = {{"id", 101}, {"ticks", quarter / 4}};
+            } else {
+                edit.opType = "session.setLaunchSettings";
+                edit.payload = {{"clip", 102}, {"legato", false}};
+            }
+            require(OpJournal(*store).commit(edit).ok && !session.refresh(*store),
+                    "a pending scene keeps its exact source and Legato target despite later saved edits");
+        }
+        playback.through(tempoSceneFrame + 1);
+        const auto active = trackState(session);
+        require(playback.count == 2 && playback.edges[1].sample == tempoSceneFrame &&
+                playback.edges[1].newClip == 102 && active.clip == 102 && active.run != previous.run &&
+                active.remainingSamples == rate - elapsed - 1 && pcm[tempoSceneFrame] == -.6f,
+                "the scene starts at the inherited physical cue with the exact remaining duration");
+        require(playback.sceneCount == 1 && playback.scenes[0].scene == 20 &&
+                playback.scenes[0].sample == tempoSceneFrame &&
+                session.beginRender().bpmAtTick(4 * quarter) == (type == Scene::Steady ? 120 : 140),
+                "the scene event and its clock coincide with the inherited-cue launch");
+        playback.through(stop + blockFrames);
+        require(playback.count == 3 && playback.edges[2].sample == stop && playback.edges[2].newClip == 0 &&
+                std::all_of(pcm.begin() + stop, pcm.end(), [](float sample) { return sample == 0; }) &&
+                session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "the inherited raw slot stops on its physical End without callback allocation or file I/O");
+        std::printf("Physical Legato %s scene: cue %d, launch %lld, stop %lld, attack %.6f\n",
+                    ram ? "RAM" : "paged", cue, static_cast<long long>(tempoSceneFrame),
+                    static_cast<long long>(stop), static_cast<double>(pcm[tempoSceneFrame]));
+        return pcm;
+    };
+    for (const bool ram : {true, false}) {
+        const auto steady = render(ram, Scene::Steady);
+        require(render(ram, Scene::Tempo) == steady, "tempo does not change any physical cue PCM");
+        if (!ram) {
+            require(render(false, Scene::EditedWhilePending) == steady,
+                    "a saved outgoing Start edit preserves the pending handover PCM");
+            require(render(false, Scene::ToggledWhilePending) == steady,
+                    "a saved Legato toggle preserves the pending handover PCM");
+        }
+    }
+    (void)render(false, Scene::LongPaged);
+    (void)render(true, Scene::ChangedSource);
 }
 
 void physicalLegatoOneShotFollowsExternalTempo() {
@@ -1800,6 +1895,7 @@ int main() {
         }
         pinnedLiveRegionEdit("end",true,true);
         physicalLegatoOneShotFollowsExternalTempo();
+        physicalLegatoOneShotTempoScene();
         physicalLegatoRebasesItsCueOnLaterBank();
         physicalLegatoLoopFollowsExternalTempo();
         pinnedRepeatUsesItsLaunchClock();
