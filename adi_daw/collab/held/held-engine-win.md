@@ -12,6 +12,24 @@
 
 ## State (newest first)
 
+- 2026-11-28, round 1, end: chain `held/engine-win-chain` at `7bc8ed71` holds 11 of the 17 taken stacks
+  (table below). **Next, in this order:** (9) ffmpeg-pcm-stream, (11) publication-safety-integration, then
+  archive-document-control and render-job-json-full-bytes, (12) clap-transport-gate, (13)
+  export-profile-validation, (14) source-hash-flac-proof, (15) comp-take-splice, (16) scanner-clean-mode,
+  (17) project-sync-folder. Then the full checks (core, then all). The first core check (slot 16, on
+  `c8a41862`, the first five merges) was still waiting for a build place when this round ended: read it with
+  `bash /d/adibuild-tools/slot.sh wait 16` before starting another, then check the newer head.
+- How the merges were done, for the next session: `git merge --no-ff origin/engine-win/<top>`, then
+  `git checkout --conflict=zdiff3 <files>` to see the base of each hunk. Most hunks are two additions at one
+  place (keep both); the rest are BASE rewrites of the same code since 19 November, where the seat's change
+  is re-applied onto BASE's new form. Each merge commit's message names its conflicts and how they went.
+- Survey change: **project-snapshot-backup and project-copy-lock-neutral are already on main by another
+  route**: SC-157 `940ac322` (basics, 27 Nov) built project backups (`writeProjectBackup`, `projectBackups`,
+  `restoreProjectBackup`, automatic backups) and copies clear `session_lock`. The seat's older
+  `writeSnapshotBackup` API would be a second path to the same thing, so it is left out (merge aborted).
+- Watch: project-sync-folder (PD-08 status) detects OneDrive/iCloud roots; BASE now has `synchronizedProject`
+  in `store.cpp` (ADR-0258 d7) for the journal policy. Read both before merging; if they duplicate the folder
+  test, have the seat's status call use BASE's function.
 - 2026-11-28, round 1: survey done (below). Chain started; see "Chain" for what is merged and what is next.
 
 ## Survey (2026-11-28, round 1)
@@ -159,12 +177,55 @@ project-sync-folder (PD-08).
 
 | # | Stack merged | Origin head | Chain head after | Conflicts and how they were resolved |
 |---|---|---|---|---|
+| 1 | settings-safety-integration (PD-11) | 31322dab | e41a287d | `store.hpp` both type groups; `store.cpp` BASE's FILE reader kept, NUL refusal kept before the step migration; `import_choices.hpp` stop-asking (BASE) with the scheduled save (seat); `ui_main.cpp` preferences flushed before BASE's quit flow (a failed flush warns, then continues it), debounce tick before the no-document return, device grant uses `saveSoon` |
+| 2 | project-removable-sync (PD-12; carries wal-benchmark, sqlite-defensive) | 8c51acaa | b1f08ddd | `store.cpp` BASE's sync/network rollback-journal policy (ADR-0258 d7) kept; the removable FULL applies on the local WAL path only; `SPEC.md` likewise; `test_project_files` both tests run |
+| 3 | project-wal-observation (PD-05) | 64c59116 | 5b20a730 | `Store::open` keeps BASE's `openWithLease`/`openForHeadlessApply`; `OpenReport*` threaded through `openWithLease` |
+| 4 | project-quick-check (PD-13) | 288d6a9e | 2533522f | `test_check.cpp` both new tests and both includes |
+| 5 | project-salvage (PD-13; carries the SQLiteCpp pin already on main) | 267d716a | c8a41862 | `adi_tool` links `adi_control` and `adi_salvage`; `EXTERNAL-CODE.md` and usage text both rows; `fetch_external.sh` landed 3.4.0 pin plus sqlite-recover |
+| - | project-snapshot-backup | 3b550a98 | (not merged) | already on main by another route (SC-157); see State |
+| 7 | wav-bwf-v2 (EX-08) | a657d93b | 95cf10ca | `wav_file` BASE's `wavSampleAtDepth`/`quantizePcm` and the BWF v2 validators side by side |
+| 8 | analysis-files-switch (TM-MD-04) | b54f4c6a | eb66274d | `buildMediaPeaks(…, PeakCacheResolution, AnalysisFileWrites)`: the switch goes after BASE's resolution (two test calls name `AnyValid`); the waveform worker reads it per request; Settings row beside BASE's in-place Sample Editor default; `ui_main` applies it at install and on Settings change |
+| 10 | scanner-windows-shortcuts (DEV-25) | cdb8f684 | 05e46552 | `findCandidates` keeps BASE's denied-location diagnostics and walk; `.lnk` roots and entries followed inside it (Windows only) |
+| 16a | scanner-paused-reader-proof (DEV-25) | b944e252 | d2a70fba | none |
+| 16b | vst3-class-id-packets (DF-E25 c) | 7d4128dc | 7207a3e0 | one include line each side |
+| 17a | project-cloud-backup (PD-08) | 25bf2855 | 7bc8ed71 | none |
+
+All five validators pass at `7bc8ed71`. No merge dropped a test.
 
 ## Proof
 
-Not run yet.
+- Core check started on slot 16 at `c8a41862` (merges 1 to 5); it had not got a build place when round 1
+  ended. Nothing is proved yet: the merges were resolved by reading, not built.
+
+## Account (so far)
+
+What the chain adds, once proved (one line per thing a user would notice):
+
+- Preferences are saved half a second after the last change, retried if the file is locked, and flushed on
+  quit; a damaged or unreadable settings file is kept aside instead of being overwritten (PD-11).
+- A project on a removable drive syncs each edit to disk; project files refuse writes to SQLite's own
+  schema tables (PD-12).
+- `adi_tool info` says when a project had a write-ahead log left beside it at open (PD-05).
+- A project can be checked page by page without opening it for writing, and `adi_tool salvage` recovers
+  the readable rows of a damaged closed project into a new file (PD-13).
+- WAV export can write Broadcast Wave v2 metadata (originator, time reference, loudness fields) (EX-08,
+  engine side; no control yet).
+- File & Folder gets Live's "Create Analysis Files" switch (TM-MD-04).
+- The plug-in search follows Windows shortcuts to plug-in folders and files (DEV-25).
+- The scanner packet can carry exact VST3 class IDs (DF-E25 c, packet half; the producer is parked).
+- A dated ZIP backup of the project into a chosen folder, engine side (PD-08; the File command is window-fn's).
+
+Left out, and why: see the survey's "already on main" and "abandoned" rows, and project-snapshot-backup
+(SC-157 did it).
 
 ## For the director
 
-Nothing yet beyond the seat's own open questions (its log's "FOR THE DIRECTOR": MX-09, CT-01/CT-02, CT-04,
+- **Create Analysis Files is a new Settings row** (Live has it, File & Folder). It is built in today's look
+  as a plain switch. Recommendation: accept it as Live's row; no picture needed beyond the existing page.
+- **Two backup paths.** SC-157 (on main) made Live's automatic Backup folder; the seat's PD-08 branch adds an
+  explicit dated ZIP backup to a chosen folder. Recommendation: keep the ZIP one only as the engine half of
+  a later File command, after the director rules whether ADI offers it beside Live's Backup folder (Live has
+  no such command: it is an addition).
+
+Beyond these, the seat's own open questions (its log's "FOR THE DIRECTOR": MX-09, CT-01/CT-02, CT-04,
 EX-03, EX-04, EX-05, PD-07, EX-12), which this chain does not answer.
