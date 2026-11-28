@@ -37,6 +37,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <sqlite3.h>
 #include <string_view>
 #include <vector>
@@ -3607,35 +3608,35 @@ bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
     if (!current)
         return fail("Splitting needs an open project.");
+    const auto &geometry = arrangement.geometry;
     auto &sel = arrangement.geometry.selection;
-    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
-    // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
-    // selection, and Split cuts it at the marker.
-    const auto *chosen = chosenClip(*current, sel).clip;
-    const bool timeSelection = from != to && chosen == nullptr;
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end), marker = sel.insert;
+    // Clicked clips are cut at the marker. The anchor carries its own span as the selection.
+    const bool clipsChosen = !sel.pickedClips.empty() || chosenClip(*current, sel).clip != nullptr;
+    const bool timeSelection = from != to && !clipsChosen;
     if (!timeSelection && !sel.marked)
         return fail("Place the insert marker inside a clip to split it.");
     // Each clip and the points it is cut at, strictly inside it (Live 12 manual 6.9): a time
     // selection cuts every clip on its tracks at its edges, one clip at both of them when the
-    // selection lies inside it (the two-point split); else the marker cuts the chosen clip, or with
-    // no clip chosen the clips under it on the selected tracks, or on every track when
+    // selection lies inside it (the two-point split); else the marker cuts the chosen clips, or with
+    // no clips chosen the clips under it on the selected tracks, or on every track when
     // `editing.splitAllWithNoSelection` is on.
     std::vector<clip_edit::ClipSplit> cuts;
     std::vector<std::string> cutTracks;
     const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
         return at > c.posTicks && at < c.posTicks + c.lengthTicks;
     };
-    const auto selected = arrangement.geometry.selectedTracks(reader());
-    const bool everyTrack = !timeSelection && chosen == nullptr && commands_.splitAllWithNoSelection();
+    const auto selected = geometry.selectedTracks(reader());
+    const bool everyTrack = !timeSelection && !clipsChosen && commands_.splitAllWithNoSelection();
     for (const auto &t : current->tracks) {
         if (!t)
             continue;
         // Every track the lanes show: not a track the project view leaves out, the returns while
         // hidden, or the Reference track while hidden (a folded group's tracks are its own, and split
         // with it).
-        const bool onTrack = everyTrack ? arrangement.geometry.inView(t->id)
+        const bool onTrack = everyTrack ? geometry.inView(t->id)
                                         : std::find(selected.begin(), selected.end(), t->id) != selected.end();
-        const auto trackName = shownName(arrangement.geometry, reader(), t->id); // as its header (B13)
+        const auto trackName = shownName(geometry, reader(), t->id); // as its header (B13)
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
@@ -3647,8 +3648,8 @@ bool AdiRootComponent::splitAtMarker() {
                 cuts.push_back({c->id, {0, cutStart ? from : to}, {}});
                 if (cutStart && cutEnd)
                     cuts.back().second = clip_edit::TimePoint{0, to};
-            } else if (!timeSelection && (chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
-                cuts.push_back({c->id, {0, sel.insert}, {}});
+            } else if (!timeSelection && (clipsChosen ? geometry.clipSelected(c->id) : onTrack) && inside(*c, marker)) {
+                cuts.push_back({c->id, {0, marker}, {}});
             } else {
                 continue;
             }
@@ -3660,6 +3661,9 @@ bool AdiRootComponent::splitAtMarker() {
                                   : "Place the insert marker inside a clip to split it.");
     auto prepared = clip_edit::prepareSplits(submitter_.store(), cuts, editRate());
     const auto done = prepared.edit.requests.size();
+    const bool anchorSplit = clipsChosen && std::ranges::any_of(prepared.edit.requests, [&](const auto &request) {
+        return request.targetId == sel.clip;
+    });
     const auto &refused = prepared.refused;
     std::string refusal;
     if (!refused.empty()) {
@@ -3676,17 +3680,19 @@ bool AdiRootComponent::splitAtMarker() {
     if (!commitEdit(std::move(prepared.edit)))
         return false;
 
-    // The chosen clip keeps its identity as the left piece. A time selection
+    // Chosen clips keep their identities as the left pieces. A time selection
     // in one track selects the piece cut out when both edges were inside it.
-    if (chosen != nullptr) {
+    if (anchorSplit) {
         sel.start = from;
-        sel.end = cuts.front().first.value;
-    } else if (timeSelection && sel.toTrack == 0) {
-        if (const auto after = view_.current())
-            if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
-                for (const auto &c : t->clips)
-                    if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
-                        sel.clip = c->id;
+        sel.end = marker;
+    } else if (timeSelection) {
+        sel.clip = 0;
+        if (selected.size() == 1 && selected.front() == sel.track)
+            if (const auto after = view_.current())
+                if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
+                    for (const auto &c : t->clips)
+                        if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
+                            sel.clip = c->id;
     }
 
     arrangement.changed();
@@ -4292,9 +4298,9 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     // The batch is built from the CURRENT cell.
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
-    // Each file captured before the batch lands: a new pool row takes an id past the ones the files
-    // before it took, and a file dropped twice is captured once.
+    // Capture each path once. Uncommitted pool rows are shared by content across the batch.
     std::vector<DroppedAudio> dropped;
+    std::map<std::string, std::int64_t> pendingMedia;
     std::int64_t nextId = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
         const auto &[path, name] = files[i];
@@ -4310,6 +4316,14 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
             std::string why;
             if (!importAudio(path, file.import, why))
                 return fail(why.empty() ? "The file could not be imported." : why);
+            if (file.import.media.opType == "media.import") {
+                const auto &hash = file.import.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
+                const auto [entry, inserted] = pendingMedia.try_emplace(hash, file.import.mediaId);
+                if (!inserted) {
+                    file.import.mediaId = entry->second;
+                    file.import.media = {};
+                }
+            }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
         }

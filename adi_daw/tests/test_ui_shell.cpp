@@ -5301,8 +5301,73 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo both time-selection splits");
     root.frame();
     check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1, "one Undo restores both original spans");
+    // Pick another track at the marker, then extend the range within the first lane.
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &headers = root.arrangement.headers;
+    const auto savedGrid = geo.grid;
+    geo.grid.snap = geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    const auto bodyY = static_cast<float>(laneTop(root, 2) + ArrangementCanvas::kClipBarHeight + 4);
+    const juce::Point<float> rangeStart{static_cast<float>(geo.x(bar / 2) + 1), bodyY};
+    const juce::Point<float> rangeEnd{static_cast<float>(geo.x(bar) - 1), bodyY};
+    const juce::Point<float> secondHeader{42.f, static_cast<float>(laneTop(root, 3) + 9)};
+    const auto leftButton = juce::ModifierKeys::leftButtonModifier;
+    canvas.mouseDown(pressAt(canvas, rangeStart, leftButton));
+    canvas.mouseUp(pressAt(canvas, rangeStart));
+    headers.mouseDown(pressAt(headers, secondHeader, leftButton | juce::ModifierKeys::commandModifier));
+    headers.mouseUp(pressAt(headers, secondHeader));
+    canvas.mouseDown(pressAt(canvas, rangeEnd, leftButton | juce::ModifierKeys::shiftModifier));
+    canvas.mouseUp(pressAt(canvas, rangeEnd));
+    const Selection pickedRange = sel;
+    check(pickedRange.track == 2 && pickedRange.toTrack == 0 && pickedRange.picked == std::vector<std::int64_t>{3} &&
+              pickedRange.clip == 0 && pickedRange.start == bar / 2 && pickedRange.end == bar,
+          "Ctrl/Cmd picking a header and Shift extending time selects the range across both tracks");
+    check(root.keyPressed(split), "Ctrl/Cmd+E over the range on both picked tracks");
+    root.frame();
+    const std::vector<std::pair<std::int64_t, std::int64_t>> pickedSpans{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}};
+    check(clipsOf(2) == pickedSpans && clipsOf(3) == pickedSpans && sel == pickedRange,
+          "SC-184: Split cuts both picked tracks and keeps the multi-track range selected");
+    check(root.command(AppCommands::Undo), "undo the picked-track split");
+    root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1 && sel == pickedRange,
+          "SC-184: one Undo restores both originals and their range selection");
+    check(root.command(AppCommands::Redo), "redo the picked-track split");
+    root.frame();
+    check(clipsOf(2) == pickedSpans && clipsOf(3) == pickedSpans && sel == pickedRange,
+          "SC-184: one Redo restores both tracks' cuts and keeps the range selected");
+    check(root.command(AppCommands::Undo), "reset the picked-track split fixture");
+    geo.grid = savedGrid;
+    root.arrangement.changed();
+    root.frame();
     check(settings.set("editing.splitAllWithNoSelection", true, {}, why) && (commands.reload(), commands.splitAllWithNoSelection()),
           "editing.splitAllWithNoSelection back on (its default)");
+    const auto clickClipTitle = [&](std::int64_t track, juce::ModifierKeys mods) {
+        const juce::Point<float> title{static_cast<float>(geo.x(bar) + 1), static_cast<float>(laneTop(root, track) + 6)};
+        canvas.mouseDown(pressAt(canvas, title, mods.withFlags(leftButton)));
+        canvas.mouseUp(pressAt(canvas, title, mods));
+    };
+    clickClipTitle(2, {});
+    clickClipTitle(3, juce::ModifierKeys::commandModifier);
+    const Selection pickedClips = sel;
+    check(sel.clip == 50 && sel.pickedClips == std::vector<std::int64_t>{51} && sel.insert == bar,
+          "Ctrl/Cmd picking a clip keeps the earlier clip and its marker");
+    check(root.keyPressed(split), "Ctrl/Cmd+E at the marker in both picked clips");
+    root.frame();
+    const std::vector<std::pair<std::int64_t, std::int64_t>> markerSpans{{0, bar}, {bar, bar}};
+    check(clipsOf(2) == markerSpans && clipsOf(3) == markerSpans &&
+              sel.clip == 50 && sel.pickedClips == pickedClips.pickedClips && sel.end == bar,
+          "SC-184: both picked clips split and their left parts stay selected");
+    check(root.command(AppCommands::Undo), "undo both picked clips");
+    root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1 && sel == pickedClips,
+          "SC-184: one Undo restores both picked clips and their selection");
+    check(root.command(AppCommands::Redo), "redo both picked clips");
+    root.frame();
+    check(clipsOf(2) == markerSpans && clipsOf(3) == markerSpans,
+          "SC-184: one Redo restores both picked clips' cuts");
+    check(root.command(AppCommands::Undo), "reset the picked-clip split fixture");
+    root.frame();
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
     const auto picture = [&](const char *name) {
         const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
@@ -5335,6 +5400,27 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1,
           "a clicked clip splits at the marker, not refused as a time selection; the other track's clip stays whole");
     check(sel.clip == 50 && sel.start == 0 && sel.end == bar, "the chosen clip stays chosen as the left piece");
+    // The marker can be on the anchor's boundary and inside a picked clip.
+    std::int64_t rightClip = 0;
+    if (const auto *track = root.reader().findTrack(2))
+        for (const auto &clip : track->clips)
+            if (clip && clip->posTicks == bar)
+                rightClip = clip->id;
+    check(rightClip != 0, "the anchor has a right piece at the marker");
+    if (rightClip != 0) {
+        root.arrangement.selectClip(2, rightClip);
+        clickClipTitle(3, juce::ModifierKeys::commandModifier);
+        const Selection boundary = sel;
+        const bool cut = root.command(AppCommands::Split);
+        root.frame();
+        check(cut && clipsOf(2) == markerSpans && clipsOf(3) == markerSpans && sel == boundary,
+              "SC-184: the picked clip splits while the anchor touching the marker keeps its full span");
+        if (cut) {
+            check(root.command(AppCommands::Undo), "undo the split of the picked clip at the anchor boundary");
+            root.frame();
+        }
+        root.arrangement.selectClip(2, 50);
+    }
     sel.insert = bar / 2;
     check(root.keyPressed(split), "Ctrl/Cmd+E again, the marker in the left piece");
     root.frame();
@@ -5401,7 +5487,6 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(!root.command(AppCommands::Split) && root.error().find("inside a clip") != std::string::npos,
           "a marker outside the clips says to place it inside one");
     // Delete over the clip's second half on 1 MIDI trims it there.
-    auto &canvas = root.arrangement.canvas;
     sel = {};
     sel.track = 2;
     sel.start = bar;
@@ -5524,7 +5609,6 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     root.frame();
     check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
 
-    auto &geo = root.arrangement.geometry;
     geo.hidden.clear();
     geo.grid.fixed = true;
     geo.grid.fixedQuarters = 1.;
@@ -6831,6 +6915,78 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
           "SC-160: Settings can re-enable the prompt with its last import options");
     if (auto *prompt = root.importPrompt())
         prompt->answer(false);
+
+    // Two different sources with a steady 120 BPM pulse, including one with an initial offset.
+    const auto beatA = dir / "SC-158 Beat A.wav", beatB = dir / "SC-158 Beat B.wav";
+    for (const auto &[source, lead] : {std::pair{beatA, 0u}, std::pair{beatB, 1234u}}) {
+        constexpr unsigned beat = 24000;
+        std::vector<float> samples(lead + 8 * beat);
+        for (unsigned i = 0; i < 8; ++i)
+            samples[lead + i * beat] = 1.f;
+        audio::WavWriter writer(source, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+
+    auto &db = document->store().db();
+    const auto mediaCount = [&] { return db.execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto headBeforeDrop = History(document->store()).head();
+    const auto tracksBeforeDrop = root.reader().tracks().size();
+    const int mediaBeforeDrop = mediaCount();
+    const auto dropPosition = textproj::kWhole;
+    const auto projectFolder = media::projectFolder(document->store());
+    const auto warpedAndCopied = [&] {
+        SQLite::Statement rows(db, "SELECT c.track_id, m.rel_path FROM clips c "
+                                   "JOIN audio_clips a ON a.clip_id = c.id JOIN media_files m ON m.id = a.media_id "
+                                   "WHERE c.name IN ('SC-158 Beat A', 'SC-158 Beat B') AND c.pos_ticks = ? "
+                                   "AND c.fade_in_ticks > 0 AND c.fade_out_ticks > 0 "
+                                   "AND a.warp_enabled = 1 AND a.warp_mode = 'beats' AND length(a.warp_markers) > 0");
+        rows.bind(1, dropPosition);
+        std::set<std::int64_t> tracks;
+        while (rows.executeStep()) {
+            const auto relative = media::pathFromUtf8(rows.getColumn(1).getString());
+            if (relative.parent_path() == "audio" && std::filesystem::is_regular_file(projectFolder / relative))
+                tracks.insert(rows.getColumn(0).getInt64());
+        }
+        return tracks.size() == 2 && tracks.contains(audioTrack);
+    };
+
+    keepImportChoices(settings, ImportChoices{}, why);
+    auto &geometry = root.arrangement.geometry;
+    geometry.left = 0;
+    geometry.reveal(root.reader(), audioTrack);
+    const auto x = static_cast<int>(geometry.x(dropPosition));
+    const auto y = laneTop(root, audioTrack) + 10;
+    {
+        const juce::ScopedValueSetter<juce::ModifierKeys> command(
+            juce::ModifierKeys::currentModifiers, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+        root.arrangement.canvas.filesDropped({juce::String(beatA.string()), juce::String(beatB.string())}, x, y);
+    }
+    check(root.importPrompt() != nullptr && History(document->store()).head() == headBeforeDrop,
+          "SC-158: the two-file arrangement drop asks before editing the project");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->warp.setToggleState(true, juce::sendNotificationSync);
+        prompt->fades.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(true);
+    }
+    root.frame();
+    const auto dropHead = History(document->store()).head();
+    const bool dropCommitted = dropHead && dropHead != headBeforeDrop;
+    check(dropCommitted && warpedAndCopied() && root.reader().tracks().size() == tracksBeforeDrop + 1 &&
+              mediaCount() == mediaBeforeDrop + 2,
+          "SC-158: a separate drop warps, fades and copies both clips at the same position on separate tracks");
+    if (dropCommitted) {
+        check(root.command(AppCommands::Undo), "undo the complete Warp, Fades and Copy drop");
+        root.frame();
+        check(root.reader().tracks().size() == tracksBeforeDrop && mediaCount() == mediaBeforeDrop &&
+                  History(document->store()).head() == headBeforeDrop,
+              "SC-158: one Undo removes both warped clips, their media rows and the new track");
+        check(root.command(AppCommands::Redo), "redo the complete Warp, Fades and Copy drop");
+        root.frame();
+        check(History(document->store()).head() == dropHead && warpedAndCopied() &&
+                  root.reader().tracks().size() == tracksBeforeDrop + 1 && mediaCount() == mediaBeforeDrop + 2,
+              "SC-158: one Redo restores both complete imports");
+    }
     keepImportChoices(settings, ImportChoices{}, why);
     settings.save(why);
     commands.detach(root);
@@ -7449,6 +7605,38 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // A second filename can carry the same sample bytes before either file is pooled.
+    const auto alternateSnare = dir / "Alt Snare.wav";
+    std::filesystem::copy_file(snare, alternateSnare);
+    const auto beforeSharedDrop = History(*store).head();
+    const auto poolSize = [&] { return store->db().execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto poolBefore = poolSize();
+    const Clips sharedDropClips{{"Snare 909", bar3}, {"Alt Snare", bar3 + textproj::kPPQ}};
+    const auto bothUseFirstMedia = [&] {
+        return store->db().execAndGet("SELECT count(*) FROM audio_clips a JOIN clips c ON c.id=a.clip_id "
+                                     "JOIN media_files m ON m.id=a.media_id "
+                                     "WHERE c.track_id=3 AND m.orig_name='Snare 909.wav'").getInt() == 2;
+    };
+    canvas.filesDropped(juce::StringArray{snarePath, juce::String(alternateSnare.string())}, x3, below);
+    root.frame();
+    const auto sharedDrop = History(*store).head();
+    const bool dropCommitted = sharedDrop && sharedDrop != beforeSharedDrop;
+    check(dropCommitted && clipsOn(3) == sharedDropClips && poolSize() == poolBefore + 1 && bothUseFirstMedia(),
+          "SC-158: a plain drop gives same-content files distinct clip names and one shared media row");
+    if (dropCommitted) {
+        check(root.command(AppCommands::Undo), "undo the same-content drop");
+        root.frame();
+        check(History(*store).head() == beforeSharedDrop && !root.reader().findTrack(3) && poolSize() == poolBefore,
+              "SC-158: one Undo removes both clips, the new track and the shared media row");
+        check(root.command(AppCommands::Redo), "redo the same-content drop");
+        root.frame();
+        check(History(*store).head() == sharedDrop && clipsOn(3) == sharedDropClips &&
+                  poolSize() == poolBefore + 1 && bothUseFirstMedia(),
+              "SC-158: one Redo restores both named clips and their shared media row");
+        check(root.command(AppCommands::Undo), "reset the same-content drop fixture");
+        root.frame();
+    }
 
     // A separate-track drop covers only its first file's range on the target track.
     const auto beat = textproj::kPPQ;
@@ -22899,6 +23087,39 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseUp(dragAt(canvas, addAt, finishAt));
     check(laneOf().lane == nullptr, "a cancelled draft adds no breakpoint");
     root.frame();
+    const auto cancelsAddDrag = [&](auto cancel, const char *reason) {
+        const auto before = OpJournal(document->store()).headSeq();
+        canvas.mouseDown(pressAt(canvas, addAt));
+        canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+        check(canvas.automationValueReadout().isNotEmpty(), "a held breakpoint draft shows its value");
+        cancel();
+        check(canvas.automationValueReadout().isEmpty(), "cancelling the breakpoint draft clears its value");
+        canvas.mouseUp(dragAt(canvas, addAt, finishAt));
+        root.frame();
+        check(laneOf().lane == nullptr && OpJournal(document->store()).headSeq() == before, reason);
+    };
+    cancelsAddDrag([&] {
+        root.setAutomationMode(false);
+        root.setAutomationMode(true);
+    }, "SC-344: turning Automation Mode off and back on cancels the held draft");
+    cancelsAddDrag([&] {
+        root.clipView.notes.setDrawMode(true);
+        root.clipView.notes.setDrawMode(false);
+    }, "SC-344: turning Draw Mode on and back off cancels the held draft");
+    const auto activator = activatorTarget(4);
+    cancelsAddDrag([&] {
+        root.showAutomation(4, activator);
+        root.showAutomation(4, volumeTarget(4));
+    }, "SC-344: changing the automation target and returning to Volume cancels the held draft");
+    cancelsAddDrag([&] { canvas.focusLost(juce::Component::focusChangedDirectly); },
+                   "SC-344: losing focus cancels the held draft");
+    cancelsAddDrag([&] {
+        auto &hidden = root.arrangement.geometry.hidden;
+        const auto previous = hidden;
+        hidden = {4};
+        canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+        hidden = previous;
+    }, "SC-344: a draft cannot resume after a drag sees its target hidden");
     // Off the line a double-click adds a breakpoint where it is (manual 25.5.2): at the foot, silence.
     canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
@@ -22908,7 +23129,6 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
               std::abs(laneOf().data->points[0].value + 150.) < 1e-9,
           "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
-    const auto activator = activatorTarget(4);
     const auto choices = root.automationChoices(4);
     check(std::find(choices.begin(), choices.end(), activator) != choices.end(),
           "SC-87: Track Activator is a Mixer automation target");

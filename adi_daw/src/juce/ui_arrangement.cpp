@@ -4434,6 +4434,7 @@ void ArrangementCanvas::resetAutomationValueInput() {
     keyboardAutomationLane_.reset();
     keyboardAutomationFocus_.reset();
     keyboardAutomationDraft_.reset();
+    cancelAutomationAddDrag();
     clearAutomationValueReadout();
 }
 
@@ -5324,9 +5325,18 @@ bool ArrangementCanvas::automationAddDragIsCurrent() const {
            automationAddDrag_->generation == view.root.committedGeneration() &&
            view.root.automationTargetShown(automationAddDrag_->track, automationAddDrag_->target);
 }
-void ArrangementCanvas::updateAutomationAddDrag(const juce::MouseEvent &e) {
-    if (!automationAddDragIsCurrent())
+void ArrangementCanvas::cancelAutomationAddDrag() {
+    if (!automationAddDrag_ || automationAddDrag_->cancelled)
         return;
+    automationAddDrag_->cancelled = true;
+    clearAutomationValueReadout();
+    repaint();
+}
+void ArrangementCanvas::updateAutomationAddDrag(const juce::MouseEvent &e) {
+    if (!automationAddDragIsCurrent()) {
+        cancelAutomationAddDrag();
+        return;
+    }
     auto &drag = *automationAddDrag_;
     for (const auto &body : laneBodies())
         if (body.track->id == drag.track && body.target == drag.target) {
@@ -5664,18 +5674,17 @@ void ArrangementCanvas::endClipRename() {
     repaint();
 }
 void ArrangementCanvas::focusLost(FocusChangeType) {
-    // F released where the canvas cannot hear it: the handles go back.
+    cancelAutomationAddDrag();
+    clearReleasedFadeHandles();
+}
+void ArrangementCanvas::clearReleasedFadeHandles() {
     if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }
 }
 bool ArrangementCanvas::keyStateChanged(bool) {
-    // F up: the handles go back to the clip under the mouse and the selected ones.
-    if (showFades && !view.root.input.down('f')) {
-        showFades = false;
-        repaint();
-    }
+    clearReleasedFadeHandles();
     return false;
 }
 void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
@@ -5880,7 +5889,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
-    focusLost(focusChangedDirectly);
+    clearReleasedFadeHandles();
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     automationStroke_.reset();
     automationDrag_.reset();
@@ -6178,7 +6187,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
     if(const auto point=automationValueAt(e.position,false,false))
         showAutomationValue(point->target,point->value,e.position);
     else clearAutomationValueReadout();
-    focusLost(focusChangedDirectly);
+    clearReleasedFadeHandles();
     if (view.root.automationMode() && view.root.drawMode()) {
         setMouseCursor(juce::MouseCursor::CrosshairCursor);
         return;
@@ -7203,9 +7212,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     if (automationAddDrag_ && code == juce::KeyPress::escapeKey) {
-        automationAddDrag_->cancelled = true;
-        clearAutomationValueReadout();
-        repaint();
+        cancelAutomationAddDrag();
         return true;
     }
     if (automationTransformDrag_ && code == juce::KeyPress::escapeKey) {

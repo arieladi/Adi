@@ -364,8 +364,10 @@ class ArrangementCanvas final : public juce::Component,
     RenameEditor &automationValueEditor() noexcept { return automationValueEditor_; }
     const juce::String &automationValueReadout() const noexcept { return automationValueReadout_; }
     void resetAutomationValueInput();
+    void cancelAutomationAddDrag();
 
   private:
+    void clearReleasedFadeHandles();
     struct DropPreview {
         juce::Rectangle<int> bounds;
         bool device = false;
