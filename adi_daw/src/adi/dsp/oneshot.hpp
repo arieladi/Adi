@@ -83,8 +83,16 @@ class OneShot final : public DeviceInstance {
         PitchEnvSustain,
         PitchEnvRelease,
         PitchEnvAmount,
+        FilterCircuit,
+        FilterCircuitBp,
+        Drive,
+        FilterVel,
+        FilterKey,
         Count
     };
+    /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
+    /// high-pass take all five; band-pass and notch take Clean and OSR.
+    enum Circuit { Clean, Osr, Ms2, Smp, Prd };
     /// The parameters a project saved before SC-482 holds (VelToVol was last).
     static constexpr int kLegacyCount = VelToVol + 1;
     OneShot();
@@ -163,6 +171,11 @@ class OneShot final : public DeviceInstance {
     struct Filter {
         double a = 0, b = 0;
         double run(double x, double g, double r, double d, int type) noexcept;
+        /// SC-482: the same state-variable stage through a circuit's
+        /// saturation (ADI's laws; Live's are a reading still to take).
+        /// `drive` is the input gain, applied by the first stage only.
+        double runCircuit(double x, double g, double r, double d, int type, int circuit,
+                          double drive) noexcept;
     };
     /// SC-482: a modulation envelope (filter, pitch): linear segments as the
     /// amp envelope's, from 0 at note-on. Stage 0 attack, 1 decay, 2 sustain,

@@ -85,7 +85,8 @@ constexpr int kSteadyFrames = 4096 + 64;
 std::vector<float> steady(const std::vector<float> &x) {
     return {x.begin() + 64, x.begin() + 64 + 4096};
 }
-std::vector<float> render(OneShot &d, int block, int count = 4096, int key = 60, int off = -1) {
+std::vector<float> render(OneShot &d, int block, int count = 4096, int key = 60, int off = -1,
+                          double velocity = 1) {
     d.release(); // each render starts from silence; prepare() alone is idempotent (DF-E37 f)
     d.prepare(48000, block);
     std::vector<float> out(static_cast<std::size_t>(count));
@@ -97,7 +98,7 @@ std::vector<float> render(OneShot &d, int block, int count = 4096, int key = 60,
         int size = 0;
         if (at == 0) {
             events[size++] = {
-                0, engine::EventType::NoteOn, 0, static_cast<std::uint16_t>(key), 1, 0, 1};
+                0, engine::EventType::NoteOn, 0, static_cast<std::uint16_t>(key), 1, 0, velocity};
         }
         if (off >= at && off < at + n) {
             events[size++] = {
@@ -621,6 +622,150 @@ void pitchEnvelope() {
     set(d, OneShot::PitchEnvAmount, -12);
     check(step(render(d, 64, 1200), 8) < .55, "a negative amount starts it below");
 }
+// A sine at FFT bin k of a 4096-sample window (k * 11.71875 Hz at 48 kHz).
+std::vector<float> binTone(int k, double amplitude = .4, std::size_t n = 20480) {
+    std::vector<float> s(n);
+    for (std::size_t i = 0; i < n; ++i)
+        s[i] = static_cast<float>(amplitude * std::sin(2 * 3.141592653589793 * k *
+                                                       static_cast<double>(i) / 4096.));
+    return s;
+}
+// The steady window 4096..8191 of a render: the filter's transient is over.
+std::vector<float> settled(const std::vector<float> &x) {
+    return {x.begin() + 4096, x.begin() + 8192};
+}
+double peak(const std::vector<float> &x) {
+    double m = 0;
+    for (float v : x)
+        m = std::max(m, static_cast<double>(std::abs(v)));
+    return m;
+}
+// SC-482: the four types at both slopes, the circuits, Drive, and the
+// cutoff's velocity and key amounts. Bins 25, 100 and 400 are two octaves apart.
+void filterCircuits() {
+    constexpr double fc = 100 * 48000. / 4096;  // bin 100: 1171.875 Hz
+    const auto gain = [](OneShot &d, int k) {
+        check(d.publishSample(binTone(k), 1, 48000), "filter tone publishes");
+        return bin(settled(render(d, 64, 8192)), k) / .4;
+    };
+    {
+        OneShot d;
+        configure(d);
+        set(d, OneShot::FilterOn, 1);
+        set(d, OneShot::Cutoff, fc);
+        const char *names[] = {"low-pass", "high-pass", "band-pass", "notch"};
+        for (int slope = 0; slope < 2; ++slope) {
+            set(d, OneShot::Slope, slope);
+            const double stopband = slope ? .01 : .1;  // 2 octaves away: 24 or 12 dB an octave
+            for (int type = 0; type < 4; ++type) {
+                set(d, OneShot::FilterType, type);
+                const double below = gain(d, 25), at = gain(d, 100), above = gain(d, 400);
+                std::printf("METRIC filter %s %d dB: %.4f at fc/4, %.4f at fc, %.4f at 4 fc\n",
+                            names[type], slope ? 24 : 12, below, at, above);
+                bool ok = false;
+                if (type == 0)
+                    ok = below > .9 && above < stopband && above > stopband / 30;
+                else if (type == 1)
+                    ok = above > .9 && below < stopband && below > stopband / 30;
+                else if (type == 2)
+                    ok = at > (slope ? .45 : .65) && below < at * .5 && above < at * .5;
+                else
+                    ok = at < .02 && below > .8 && above > .8;
+                check(ok, (std::string("the ") + names[type] + " response at its slope").c_str());
+            }
+        }
+    }
+    // Resonant and loud: each circuit but Clean clips its resonance. Quiet:
+    // each is Clean's within 2 %, its saturation's slope being 1 at 0.
+    OneShot d;
+    configure(d);
+    set(d, OneShot::FilterOn, 1);
+    set(d, OneShot::Slope, 0);
+    set(d, OneShot::Cutoff, fc);
+    set(d, OneShot::Resonance, 125);
+    const auto through = [&](int circuit, double amplitude) {
+        set(d, OneShot::FilterCircuit, circuit);
+        check(d.publishSample(binTone(100, amplitude), 1, 48000), "resonant tone publishes");
+        return peak(settled(render(d, 64, 8192)));
+    };
+    const double loud = through(OneShot::Clean, .4), quiet = through(OneShot::Clean, .001);
+    const char *circuits[] = {"Clean", "OSR", "MS2", "SMP", "PRD"};
+    for (int c = OneShot::Osr; c <= OneShot::Prd; ++c) {
+        const double clipped = through(c, .4), small = through(c, .001);
+        std::printf("METRIC filter circuit %s at Q 10: peak %.4f (Clean %.4f); quiet %.6f (Clean %.6f)\n",
+                    circuits[c], clipped, loud, small, quiet);
+        check(std::isfinite(clipped) && clipped < loud * .9,
+              (std::string(circuits[c]) + " clips a resonant, loud tone").c_str());
+        check(std::abs(small - quiet) < quiet * .02,
+              (std::string(circuits[c]) + " leaves a quiet tone as Clean does").c_str());
+    }
+    // Drive: the input's gain into the circuit's saturation, so harmonics.
+    set(d, OneShot::Resonance, 0);
+    set(d, OneShot::Cutoff, 22000);
+    check(d.publishSample(binTone(100), 1, 48000), "drive tone publishes");
+    const auto third = [&] {
+        const auto x = settled(render(d, 64, 8192));
+        return bin(x, 300) / bin(x, 100);
+    };
+    set(d, OneShot::FilterCircuit, OneShot::Ms2);
+    const double plain = third();
+    set(d, OneShot::Drive, 24);
+    const double driven = third();
+    std::printf("METRIC MS2 third harmonic: %.4f at 0 dB drive, %.4f at 24 dB\n", plain, driven);
+    check(plain < .02 && driven > .1, "Drive pushes MS2 into its saturation");
+    set(d, OneShot::FilterCircuit, OneShot::Clean);
+    const auto clean = render(d, 64, 8192);
+    set(d, OneShot::Drive, 0);
+    check(clean == render(d, 64, 8192), "Clean takes no Drive");
+    set(d, OneShot::FilterType, 3);
+    set(d, OneShot::FilterCircuitBp, OneShot::Osr);
+    const auto notch = render(d, 64, 8192);
+    set(d, OneShot::Drive, 24);
+    check(notch == render(d, 64, 8192), "the notch takes no Drive");
+    set(d, OneShot::Drive, 0);
+    set(d, OneShot::FilterType, 2);
+    set(d, OneShot::FilterCircuit, OneShot::Ms2);
+    set(d, OneShot::FilterCircuitBp, OneShot::Clean);
+    const auto band = render(d, 64, 8192);
+    set(d, OneShot::FilterCircuit, OneShot::Clean);
+    check(band == render(d, 64, 8192), "band-pass reads its own chooser, not the LP/HP one");
+    // Key: a note an octave up with Filter < Key at 100 % moves the cutoff an
+    // octave with it, so its (doubled) tone is filtered as the root's was.
+    {
+        OneShot k;
+        configure(k);
+        set(k, OneShot::FilterOn, 1);
+        set(k, OneShot::Cutoff, fc);
+        check(k.publishSample(binTone(200), 1, 48000), "key-tracking tone publishes");
+        const double root = bin(settled(render(k, 64, 8192, 60)), 200);
+        const double fixedUp = bin(settled(render(k, 64, 8192, 72)), 400);
+        set(k, OneShot::FilterKey, 100);
+        const double trackedUp = bin(settled(render(k, 64, 8192, 72)), 400);
+        const double trackedRoot = bin(settled(render(k, 64, 8192, 60)), 200);
+        std::printf("METRIC Filter < Key: root %.4f, octave up fixed %.4f, tracked %.4f\n", root,
+                    fixedUp, trackedUp);
+        check(trackedRoot == root, "key tracking leaves the root note's cutoff alone");
+        check(fixedUp < root * .5 && std::abs(trackedUp / root - 1) < .1,
+              "and moves the cutoff with the note's pitch");
+    }
+    // Velocity: Filter < Vel at 100 % opens the cutoff four octaves at full velocity.
+    {
+        OneShot v;
+        configure(v);
+        set(v, OneShot::VelToVol, 0);
+        set(v, OneShot::FilterOn, 1);
+        set(v, OneShot::Cutoff, 25 * 48000. / 4096);
+        check(v.publishSample(binTone(100), 1, 48000), "velocity tone publishes");
+        const double still = bin(settled(render(v, 64, 8192, 60, -1, 1)), 100);
+        set(v, OneShot::FilterVel, 100);
+        const double hard = bin(settled(render(v, 64, 8192, 60, -1, 1)), 100);
+        const double soft = bin(settled(render(v, 64, 8192, 60, -1, .25)), 100);
+        std::printf("METRIC Filter < Vel: off %.4f, full velocity %.4f, quarter %.4f\n", still / .4,
+                    hard / .4, soft / .4);
+        check(still / .4 < .1 && hard / .4 > .8 && soft / .4 < .2,
+              "velocity opens the cutoff by the amount, the harder the note the more");
+    }
+}
 } // namespace
 int main() {
     sliceKeys();
@@ -628,6 +773,7 @@ int main() {
     legacyState();
     filterEnvelope();
     pitchEnvelope();
+    filterCircuits();
     parameterModulation();
     midiControllers();
     preparedSamples();

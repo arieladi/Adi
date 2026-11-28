@@ -13,7 +13,14 @@ what OneShot played before the control existed (`test_oneshot.cpp`,
 SC-482 added, beside Live 12's Simpler: a filter envelope (attack, decay,
 sustain, release and an amount of +-72 st on the cutoff) and a pitch envelope
 (on/off, the same four times and an amount of +-48 st), both linear like the
-amp envelope, from 0 at note-on, released with the note in every mode.
+amp envelope, from 0 at note-on, released with the note in every mode. The
+filter's two circuit choosers, as Live's: Clean, OSR, MS2, SMP and PRD for
+low- and high-pass, Clean and OSR for band-pass and notch; Drive (0..24 dB) on
+every circuit but Clean, for low-, high- and band-pass; and the cutoff's
+velocity amount (100 % opens it four octaves at full velocity, ADI's span) and
+key amount (100 % moves it an octave with each octave of pitch from C3). The
+circuits are ADI's saturations around Clean's state-variable stage, linear for a
+quiet signal; Live's own circuits are readings still to take.
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset
@@ -23,8 +30,9 @@ Fade In and Out 0..2000 ms at 0.1 ms; Loop, Snap, Filter and LFO on; Filter
 30 Hz..22 kHz at 22 kHz; Resonance 0..125 %; Voices 6; Vel > Vol 35 %);
 `test_oneshot.cpp` pins them. The LAWS behind them are still ADI's and are not
 claimed as Live's: the linear attack, decay and release (Live has slopes), the
-Vel > Vol blend, the Resonance-to-Q curve, the filter (Live's circuits and its
-Morph type are not built), and the Voices chooser's list (a reading to take).
+Vel > Vol blend, the Resonance-to-Q curve, the filter (its Morph type is not
+built; its circuits are ADI's, see below), and the Voices chooser's list (a
+reading to take).
 
 Bind parameters and sample declarations with audio stopped. Decode sample slot
 1 off-thread, then call `prepareOneShotSample()` before publishing the result

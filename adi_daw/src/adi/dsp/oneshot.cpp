@@ -77,7 +77,18 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"pe_decay", "Pitch env decay", "ms", 1, 60000, 600, 0},
                        {"pe_sustain", "Pitch env sustain", "%", 0, 100, 0, 0},
                        {"pe_release", "Pitch env release", "ms", 1, 60000, 50, 0},
-                       {"pe_amount", "Pitch env amount", "st", -48, 48, 0, 0}};
+                       {"pe_amount", "Pitch env amount", "st", -48, 48, 0, 0},
+                       // SC-482: Live's two circuit choosers, Drive (0..24 dB,
+                       // for every circuit but Clean, on low-, high- and
+                       // band-pass), and the cutoff's velocity and key amounts.
+                       {"filter_circuit", "Filter circuit (LP/HP)", "", 0, 4, 0, 5},
+                       {"filter_circuit_bp", "Filter circuit (BP/Notch)", "", 0, 1, 0, 2},
+                       {"drive", "Filter drive", "dB", 0, 24, 0, 0},
+                       {"filter_vel", "Filter < Vel", "%", 0, 100, 0, 0},
+                       {"filter_key", "Filter < Key", "%", 0, 100, 0, 0}};
+// SC-482: Filter < Vel at 100 % opens the cutoff this far at full velocity
+// (ADI's span: Live's is a reading still to take); a softer note, less.
+constexpr double kFilterVelocityOctaves = 4;
 static_assert(std::size(specs) == OneShot::Count);
 double real(int i, double n) {
     const auto &s = specs[i];
@@ -158,6 +169,10 @@ std::string OneShot::paramText(const std::string &id, double n) const {
                 return std::array{"Low-pass", "High-pass", "Band-pass", "Notch"}[k];
             if (i == LfoShape)
                 return std::array{"Sine", "Square", "Triangle", "Saw down", "Saw up", "Random"}[k];
+            if (i == FilterCircuit)
+                return std::array{"Clean", "OSR", "MS2", "SMP", "PRD"}[k];
+            if (i == FilterCircuitBp)
+                return std::array{"Clean", "OSR"}[k];
             if (specs[i].steps == 2)
                 return value > 0 ? "On" : "Off";
             return std::to_string(value) + " " + specs[i].unit;
@@ -334,6 +349,37 @@ double OneShot::Filter::run(double x, double g, double r, double d, int type) no
     const double v2 = b + g * v1;
     a = 2 * v1 - a;
     b = 2 * v2 - b;
+    if (std::abs(a) < 1e-30) {
+        a = 0;
+    }
+    if (std::abs(b) < 1e-30) {
+        b = 0;
+    }
+    const double high = x - r * v1 - v2;
+    return type == 0 ? v2 : type == 1 ? high : type == 2 ? v1 : high + v2;
+}
+double OneShot::Filter::runCircuit(double x, double g, double r, double d, int type, int circuit,
+                                   double drive) noexcept {
+    // ADI's circuits, each a saturation around Clean's stage (unit slope at
+    // 0, so a quiet signal hears little of it): OSR clips its resonance (the
+    // band state); MS2 soft-clips its input and its resonance; SMP shapes its
+    // input asymmetrically and clips its resonance harder; PRD leaves its input
+    // clean and lets the resonance overdrive. Live's own laws are readings.
+    x *= drive;
+    if (circuit == Ms2)
+        x = std::tanh(x);
+    else if (circuit == Smp)
+        x = x >= 0 ? std::tanh(x) : std::tanh(1.5 * x) / 1.5;
+    const double v1 = (a + g * (x - b)) / d;
+    const double v2 = b + g * v1;
+    a = 2 * v1 - a;
+    b = 2 * v2 - b;
+    if (circuit == Osr || circuit == Ms2)
+        a = std::tanh(a);
+    else if (circuit == Smp)
+        a = a / std::sqrt(1 + a * a);
+    else if (circuit == Prd)
+        a = 1.5 * std::tanh(a / 1.5);
     if (std::abs(a) < 1e-30) {
         a = 0;
     }
@@ -613,6 +659,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     double feAttack = 0, feDecay = 0, feSustain = 0, peAttack = 0, peDecay = 0, peSustain = 0;
     bool classic = true, lfoHeard = true, filterFixed = false, filterEnvHeard = false,
          pitchEnvHeard = false;
+    // SC-482: the circuit the chosen type takes, its input gain, and the
+    // cutoff's key (octaves an octave of pitch) and velocity (octaves at 1).
+    int filterType = 0, circuit = Clean;
+    double driveGain = 1, filterKeyAmount = 0, filterVelAmount = 0;
     // The cutoff moved by `octaves`: 0 is the knob's own cutoff (exp2(0) is 1).
     const auto coefficients = [&](double octaves, double &g, double &q) {
         const double hz = std::clamp(p[Cutoff] * std::exp2(octaves), 5., rate_ * .45);
@@ -630,7 +680,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         lfoHeard = p[LfoPitch] != 0 || p[LfoVolume] != 0 || p[LfoPan] != 0 || p[LfoFilter] != 0;
         filterEnvHeard = p[FilterEnvAmount] != 0;
         pitchEnvHeard = p[PitchEnvOn] > 0 && p[PitchEnvAmount] != 0;
-        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0 && !filterEnvHeard;
+        filterType = static_cast<int>(p[FilterType]);
+        circuit = static_cast<int>(filterType < 2 ? p[FilterCircuit] : p[FilterCircuitBp]);
+        // Drive: every circuit but Clean, on low-, high- and band-pass.
+        driveGain = circuit != Clean && filterType != 3 ? std::pow(10., p[Drive] / 20.) : 1.;
+        filterKeyAmount = p[FilterKey] / 100.;
+        filterVelAmount = p[FilterVel] / 100. * kFilterVelocityOctaves;
+        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0 && !filterEnvHeard &&
+                      filterKeyAmount == 0 && filterVelAmount == 0;
         const double hz =
             p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
         lfoStep = hz / rate_;
@@ -759,6 +816,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         double octaves = lfo * p[LfoFilter] * midi.modulation;
                         if (filterEnvHeard)
                             octaves += v.filterEnv.value * p[FilterEnvAmount] / 12.;
+                        if (filterKeyAmount != 0)
+                            octaves += (p[Mode] == 2 ? 0 : v.key - rootKey_) / 12. * filterKeyAmount;
+                        if (filterVelAmount != 0)
+                            octaves += v.velocity * filterVelAmount;
                         if (!(octaves == v.cutoffSeen)) {
                             double q = 0;
                             v.cutoffSeen = octaves;
@@ -780,10 +841,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                 read(*s, v.loop + v.position - (v.end - fade), c) *
                                     std::sin(t * pi * .5);
                         }
-                        if (p[FilterOn] > 0) {
-                            x = v.filters[c][0].run(x, g, r, d, static_cast<int>(p[FilterType]));
+                        if (p[FilterOn] > 0 && circuit != Clean) {
+                            x = v.filters[c][0].runCircuit(x, g, r, d, filterType, circuit, driveGain);
                             if (p[Slope] > 0)
-                                x = v.filters[c][1].run(x, g, r, d, static_cast<int>(p[FilterType]));
+                                x = v.filters[c][1].runCircuit(x, g, r, d, filterType, circuit, 1.);
+                        } else if (p[FilterOn] > 0) {
+                            x = v.filters[c][0].run(x, g, r, d, filterType);
+                            if (p[Slope] > 0)
+                                x = v.filters[c][1].run(x, g, r, d, filterType);
                         }
                         const double pan = lfo * p[LfoPan] * midi.modulation / 100.;
                         // sqrt(1) is exactly 1: no pan, no square root.
