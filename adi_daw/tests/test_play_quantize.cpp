@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/play_quantize.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -35,6 +36,24 @@ void effectiveRamp() {
           "ramp lines honor the same two-sample forgiveness window");
     check(playQuantizeReleaseOnTempoMap(49043,tempo,48000,1920,2)==81341,
           "just past forgiveness waits for the next integrated line");
+    const WarpArrangementClock clock(tempo,48000);
+    check(playQuantizeReleaseOnClock(1,clock,1920)==49040 &&
+          playQuantizeReleaseOnClock(49040,clock,1920)==49040 &&
+          playQuantizeReleaseOnClock(49042,clock,1920,2)==49042 &&
+          playQuantizeReleaseOnClock(49043,clock,1920,2)==81341,
+          "the indexed ramp keeps the project grid ceiling and forgiveness boundaries");
+    const TempoMap fixed{{{0,120,0}}};
+    const WarpArrangementClock fractional(fixed,44100);
+    check(playQuantizeReleaseOnClock(5512,fractional,240)==5513 &&
+          playQuantizeReleaseOnClock(5513,fractional,240)==5513,
+          "the indexed clock rounds fractional grid lines up and releases on that sample");
+    allocations.store(0);
+    counting.store(true);
+    bool valid = true;
+    for (std::int64_t frame=49000;frame<49100;++frame)
+        valid &= playQuantizeReleaseOnClock(frame,clock,1920,2).has_value();
+    counting.store(false);
+    check(valid && allocations.load()==0,"indexed ramp release allocates nothing");
 }
 void basic() {
     check(playQuantizeRelease(0,steady,48000,240)==0,"origin is a grid line");

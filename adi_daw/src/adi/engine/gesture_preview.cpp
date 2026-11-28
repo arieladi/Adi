@@ -575,13 +575,13 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->stripLanes=out->controls->lanes;
+        timing->tempo = TempoMap::fromRows(playback.tempo);
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
-        timing->tempo = TempoMap::fromRows(playback.tempo);
         owner->prepareSourceReadiness(*timing, *out->clips);
         auto sample=[&](std::int64_t tick){
             const long double value=static_cast<long double>(timing->tempo.ticksToSeconds(tick))*owner->spec_.sampleRate;

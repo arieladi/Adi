@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "play_quantize.hpp"
 #include "snapshot.hpp"
+#include "warp_arrangement_clock.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace adi::engine {
 namespace {
+bool validReleaseInput(std::int64_t eventSample, double gridTicks, std::int64_t forgivenessSamples) noexcept {
+    return eventSample >= 0 && forgivenessSamples >= 0 && std::isfinite(gridTicks) && gridTicks > 0;
+}
+
 std::optional<std::int64_t> ceilingSample(long double sample, long double epsilon) noexcept {
     // Ignore representational noise around a whole sample.
     const auto nearest = std::round(sample);
@@ -51,12 +56,24 @@ std::optional<std::int64_t> releaseAtPhase(long double phase, long double gridTi
     if (!next) return std::nullopt;
     return std::max(eventSample, *next);
 }
+
+template <class FrameAt>
+std::optional<std::int64_t> releaseOnProjectClock(long double phase, double gridTicks, std::int64_t eventSample,
+                                                std::int64_t forgivenessSamples, FrameAt frameAt) noexcept {
+    constexpr long double scale = static_cast<long double>(textproj::kPPQ) / playQuantizePpq;
+    return releaseAtPhase(phase, gridTicks * scale, eventSample, forgivenessSamples,
+        [&](long double tick) {
+            if (tick >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+                return std::optional<std::int64_t>{};
+            return ceilingSample(frameAt(tick), std::numeric_limits<double>::epsilon());
+        });
+}
 }
 std::optional<std::int64_t> playQuantizeRelease(std::int64_t eventSample,
     std::span<const PlayTempoPoint> tempo, std::uint32_t sampleRate,
     double gridTicks, std::int64_t forgivenessSamples) noexcept {
-    if (eventSample < 0 || forgivenessSamples < 0 || sampleRate == 0 ||
-        !std::isfinite(gridTicks) || gridTicks <= 0 || tempo.empty() || tempo[0].sample != 0)
+    if (!validReleaseInput(eventSample, gridTicks, forgivenessSamples) ||
+        sampleRate == 0 || tempo.empty() || tempo[0].sample != 0)
         return std::nullopt;
     for (std::size_t i = 0; i < tempo.size(); ++i) {
         if (tempo[i].sample < 0 || !std::isfinite(tempo[i].bpm) || tempo[i].bpm <= 0 ||
@@ -76,17 +93,19 @@ std::optional<std::int64_t> playQuantizeRelease(std::int64_t eventSample,
 
 std::optional<std::int64_t> playQuantizeReleaseOnTempoMap(std::int64_t eventSample, const TempoMap& tempo,
     std::uint32_t sampleRate, double gridTicks, std::int64_t forgivenessSamples) noexcept {
-    if (eventSample < 0 || forgivenessSamples < 0 || sampleRate == 0 ||
-        !std::isfinite(gridTicks) || gridTicks <= 0 || tempo.events.empty() || tempo.events.front().posTicks != 0)
+    if (!validReleaseInput(eventSample, gridTicks, forgivenessSamples) ||
+        sampleRate == 0 || tempo.events.empty() || tempo.events.front().posTicks != 0)
         return std::nullopt;
-    constexpr long double scale = static_cast<long double>(textproj::kPPQ) / playQuantizePpq;
     const auto phase = tempo.positionAtSeconds(static_cast<long double>(eventSample) / sampleRate);
-    return releaseAtPhase(phase, gridTicks * scale, eventSample, forgivenessSamples,
-        [&](long double tick) {
-            if (tick >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
-                return std::optional<std::int64_t>{};
-            const auto sample = tempo.secondsAtPosition(tick) * sampleRate;
-            return ceilingSample(sample, std::numeric_limits<double>::epsilon());
-        });
+    return releaseOnProjectClock(phase, gridTicks, eventSample, forgivenessSamples,
+        [&](long double tick) { return tempo.secondsAtPosition(tick) * sampleRate; });
+}
+
+std::optional<std::int64_t> playQuantizeReleaseOnClock(std::int64_t eventSample,
+    const WarpArrangementClock& clock, double gridTicks, std::int64_t forgivenessSamples) noexcept {
+    if (!validReleaseInput(eventSample, gridTicks, forgivenessSamples)) return std::nullopt;
+    const auto phase = clock.tickAtFrame(static_cast<double>(eventSample));
+    return releaseOnProjectClock(phase, gridTicks, eventSample, forgivenessSamples,
+        [&](long double tick) { return clock.frameAtTick(static_cast<double>(tick)); });
 }
 } // namespace adi::engine
