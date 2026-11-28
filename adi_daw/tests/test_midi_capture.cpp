@@ -152,6 +152,10 @@ void nativeHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;auto source=transcript();
         for(auto& event:source.events)if(event.event.noteId)event.event.noteId=UINT64_MAX-event.event.noteId;
+        // DEV-17: the parser's identities carry its own source prefix, so the
+        // expected stored ID is the first captured note-on's full identity.
+        std::uint64_t firstNoteId=0;
+        for(const auto& event:source.events)if(event.event.type==EventType::NoteOn){firstNoteId=event.event.noteId;break;}
         const auto before=digestProject(*f.store).text;std::string error;const auto prepared=capture::prepareMidi(*f.store,source,spec(),error);
         check(prepared && prepared->notes==3 && prepared->controllerLanes==2 && prepared->closedHeldNotes==1 && prepared->requests.size()==1 &&
             digestProject(*f.store).text==before && !History(*f.store).canUndo(),"real parser transcript prepares one reviewable note/CC Capture without writes or reserved identities");
@@ -159,7 +163,7 @@ void nativeHistory() {
         const auto committed=capture::commitMidi(*f.store,*prepared);
         check(committed.ok && committed.seqs.size()==1,"explicit notes/CC images commit as one native Capture operation");if(!committed.ok)return;
         const auto bytes=f.store->getEventStream(7,"notes");bool notes=false;
-        if(bytes){StreamReader<NoteRecord> reader(*bytes,FourCC::Notes);notes=reader.ok() && reader.count()==3 && reader.at(0)->note_id==UINT64_MAX-1 && reader.at(0)->vel_on==100 && reader.at(0)->vel_off==7 && reader.at(2)->vel_off==0;}
+        if(bytes){StreamReader<NoteRecord> reader(*bytes,FourCC::Notes);notes=reader.ok() && reader.count()==3 && firstNoteId!=0 && reader.at(0)->note_id==firstNoteId && reader.at(0)->vel_on==100 && reader.at(0)->vel_off==7 && reader.at(2)->vel_off==0;}
         check(notes,"stored ANOT retains original full uint64 identities and exact source/release velocity words");
         const auto controls=controllers::readLanes(*f.store,7);
         check(controls.ok && controls.lanes.size()==2 && controls.lanes[0].points.size()==2 && controls.lanes[0].points[1].value==controlValue &&
@@ -429,7 +433,9 @@ void nativePackets() {
         if(which==4)packet["controllers"][1]["controller"]=7;
         if(which==5)packet["controllers"][0]["channel"]=UINT64_MAX;
         if(which==6)packet["notes"]["id"]=packet["controllers"][0]["id"];
-        if(which==7)noteImage(packet,1,[](NoteRecord& n){n.note_id=1;});
+        // A duplicate ID: the second record takes the first's (DEV-17's prefixed identities are not 1, 2, 3).
+        if(which==7){std::uint64_t first=0;noteImage(packet,0,[&first](NoteRecord& n){first=n.note_id;});
+            noteImage(packet,1,[first](NoteRecord& n){n.note_id=first;});}
         if(which==8){auto& bytes=packet["notes"]["bytes"].get_binary();StreamHeader header{};std::memcpy(&header,bytes.data(),sizeof header);header.version=2;std::memcpy(bytes.data(),&header,sizeof header);}
         if(which==9)packet["notes"]["bytes"].get_binary().pop_back();
         if(which==10){auto& bytes=packet["controllers"][0]["bytes"].get_binary();AutomationPoint point{};std::memcpy(&point,bytes.data()+sizeof(StreamHeader),sizeof point);point.value=std::numeric_limits<double>::quiet_NaN();std::memcpy(bytes.data()+sizeof(StreamHeader),&point,sizeof point);}

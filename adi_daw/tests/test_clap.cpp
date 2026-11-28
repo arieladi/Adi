@@ -178,9 +178,13 @@ void testEventListCarriesNoteIdAndDouble() {
     list.clear();
     check(list.add(noteOn(7, 60, 0.75)) && list.add(gain) && list.add(pan),
           "CLAP accepts a note and its authored AEXP values");
+    const auto* authoredNote = reinterpret_cast<const clap_event_note_t*>(list.at(0));
     const auto* volume = reinterpret_cast<const clap_event_note_expression_t*>(list.at(1));
     const auto* balance = reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
-    check(volume && volume->expression_id==CLAP_NOTE_EXPRESSION_VOLUME && volume->note_id==7 &&
+    // DEV-17: the wire carries the instance's assigned native ID, not the
+    // engine's source identity, so the expression names its note's wire ID.
+    check(authoredNote && volume && volume->expression_id==CLAP_NOTE_EXPRESSION_VOLUME &&
+          volume->note_id==authoredNote->note_id && volume->note_id>0 &&
           std::abs(volume->value-2.0)<1e-14,"CLAP volume uses the authored linear amplitude above unity");
     check(balance && balance->expression_id==CLAP_NOTE_EXPRESSION_PAN && balance->value==0.25,
           "CLAP pan converts signed AEXP to the SDK's left-to-right range");
@@ -1788,10 +1792,16 @@ void testFullClapDialectSwitch() {
         if (ordered) {
             for (std::size_t i = 0; i < held.size(); ++i)
                 ordered = releasesOnOriginalWire(held[i], switched[i]) && ordered;
+            // DEV-17: a CLAP attack carries the instance's own native ID, one
+            // per voice, not the engine's source identity (1001 + key).
+            std::vector<int> newIds;
             for (int key = 0; key < newVoices; ++key) {
                 const auto& attack = switched[static_cast<std::size_t>(voices + key)];
+                const bool freshId = attack.id > 0 &&
+                    std::find(newIds.begin(), newIds.end(), attack.id) == newIds.end();
+                newIds.push_back(attack.id);
                 ordered = attack.on && attack.wire == newWire && attack.key == key && attack.frame == 0 &&
-                          (newWire != ClapDialect::Clap || attack.id == 1001 + key) && ordered;
+                          (newWire != ClapDialect::Clap || freshId) && ordered;
             }
         }
         check(accepted && ordered, "the switch sends all 128 original releases before all 16 new-wire attacks");
@@ -1857,7 +1867,8 @@ void testPendingClapDialectRelease() {
         check(held.size() == 1 && switched.size() == 2 &&
                   releasesOnOriginalWire(held.front(), switched[0]) &&
                   switched[1].on && switched[1].wire == newWire && switched[1].key == 64 &&
-                  switched[1].frame == 0 && (newWire != ClapDialect::Clap || switched[1].id == 99),
+                  // DEV-17: the instance's own native ID, not the source identity 99.
+                  switched[1].frame == 0 && (newWire != ClapDialect::Clap || switched[1].id > 0),
               "the next segment first sends the pending release on its original wire, then the new attack");
         check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == earlierDrops &&
                   d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
