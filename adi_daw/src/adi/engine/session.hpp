@@ -362,6 +362,8 @@ public:
         [[nodiscard]] double beatAtSample(std::int64_t) const noexcept;
         [[nodiscard]] std::int64_t sampleAtTick(std::int64_t) const noexcept;
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
+        /// BPM heard at the current sample, including changes rounded onto it.
+        [[nodiscard]] double scheduledBpm() const noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
         [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames,
@@ -743,6 +745,7 @@ private:
         [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
         void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
+        [[nodiscard]] std::int64_t scheduledTickAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const std::pair<std::int64_t, std::int64_t>* nextDeviceClockChange(std::int64_t sample) const noexcept;
         void applyLoop() const noexcept;
         [[nodiscard]] bool projectLoop(Transport&) const noexcept;
