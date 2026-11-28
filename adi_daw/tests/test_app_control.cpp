@@ -259,12 +259,15 @@ void testReviewCards(const std::filesystem::path& executable) {
     options.tier = Tier::Propose;
     AppControl app([&owner](Task task) { owner.post(std::move(task)); }, std::move(options));
     app.attach(document.get());
+    require(app.liveProject() == uuid, "the window names the open project by the handle the cards take");
     AgentLaunch launch;
     launch.command.executable = executable;
     launch.command.arguments = {"--proposing-helper"};
     launch.provider.kind = AgentProviderKind::Faux;
     launch.provider.model = "fixture-model";
     require(app.checkAgent(launch, uuid).canAnswer(), "the proposing faux helper answers its check");
+    require(app.agentReadiness(app.liveProject()).canAnswer(),
+            "after its check, the readiness the AI label follows says the agent can answer");
     const auto run = owner.roundTrip([&] { return app.runAgent(launch, uuid, "Name the track"); });
     require(run.reason == "completed" && run.answer == "One change waits for your review",
             "the agent read the project and proposed one change");

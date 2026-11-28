@@ -81,6 +81,9 @@ public:
     [[nodiscard]] std::vector<ConsentRequest> takeConsentQuestions();
     [[nodiscard]] bool answerConsent(const ConsentRequest&, ConsentTerm);
     [[nodiscard]] std::vector<QueuedChangeset> proposals() const;
+    /// The open project's handle, as reviewCards and agentReadiness take it;
+    /// empty while no project is attached.
+    [[nodiscard]] std::string liveProject() const;
     [[nodiscard]] agent::ApplyResult review(std::string_view id, bool approve);
     /// The owner thread: the cards waiting in this open project, oldest first.
     /// Reads the history tree once per card; call it when the queue or the

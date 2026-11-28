@@ -3592,6 +3592,76 @@ class AdiApplication final : public juce::JUCEApplication,
         if (enabled == true && !appControl_->start(error)) juce::Logger::writeToLog(juce::String(error));
     }
 
+    // The Browser's AI mode (ADR-0261 d2 and d7, ADR-0262): its label and cards follow the agent's
+    // readiness, the waiting proposals and the song's head. The cards are read (one history read each)
+    // only when one of those changed, at most four times a second, never from a paint.
+    void syncAgentMode() {
+        if (!root_ || !document_)
+            return;
+        const auto now = juce::Time::getMillisecondCounter();
+        if (now - agentModeCheckedMs_ < 250u)
+            return;
+        agentModeCheckedMs_ = now;
+        const auto project = appControl_ ? appControl_->liveProject() : std::string{};
+        std::string stamp;
+        if (!project.empty()) {
+            stamp = project + (appControl_->agentReadiness(project).canAnswer() ? " ready" : " idle");
+            for (const auto &waiting : appControl_->proposals())
+                stamp += " " + waiting.id;
+            const auto head = History(document_->store()).head();
+            stamp += " @" + (head ? std::to_string(*head) : std::string("-"));
+        }
+        if (stamp == agentModeStamp_)
+            return;
+        agentModeStamp_ = stamp;
+        BrowserPanel::AgentMode mode;
+        if (!project.empty()) {
+            mode.canAnswer = appControl_->agentReadiness(project).canAnswer();
+            mode.head = "Agent \xc2\xb7 asks first";
+            for (const auto &card : appControl_->reviewCards(project)) {
+                BrowserPanel::AgentCard shown;
+                shown.id = card.id;
+                shown.request = card.request;
+                shown.changes = card.changeCount;
+                shown.steps = card.freshness.steps;
+                shown.canAskAgain = card.fromAdiAgent;
+                using F = control::Freshness;
+                using M = BrowserPanel::AgentCard::Moved;
+                switch (card.freshness.state) {
+                case F::Current: shown.moved = M::No; break;
+                case F::Behind: shown.moved = M::Behind; break;
+                case F::Ahead: shown.moved = M::Ahead; break;
+                case F::Elsewhere: shown.moved = M::Elsewhere; break;
+                case F::Unknown: shown.moved = M::Unknown; break;
+                }
+                mode.cards.push_back(std::move(shown));
+            }
+        }
+        auto &browser = root_->browser;
+        if (!browser.onApplyCard) {
+            const auto review = [this](const std::string &id, bool approve) {
+                if (!appControl_)
+                    return;
+                const auto result = appControl_->review(id, approve);
+                if (!result.ok && !result.error.empty())
+                    root_->say(result.error);
+                agentModeStamp_.clear(); // read the cards again on the next turn
+                agentModeCheckedMs_ = 0;
+            };
+            browser.onApplyCard = [review](const std::string &id) { review(id, true); };
+            browser.onRejectCard = [review](const std::string &id) { review(id, false); };
+            // DF owed (see the agent stream's log): the floating window of ADR-0262 d2, and Ask again,
+            // which runs the agent on a worker as the floating search will.
+            browser.onOpenCardList = [this](const std::string &) {
+                root_->say("The full list of a proposed change opens in its own window in a later build.");
+            };
+            browser.onAskAgain = [this](const std::string &) {
+                root_->say("Ask again comes with the agent's conversation in a later build; Reject it and ask anew.");
+            };
+        }
+        browser.setAgentMode(std::move(mode));
+    }
+
     void reloadStoredHistory() {
         if (!pendingHistoryReload_)
             return;
@@ -3688,6 +3758,7 @@ class AdiApplication final : public juce::JUCEApplication,
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (appControl_) appControl_->tick(document_.get());
+        syncAgentMode();
         if (root_) {
             root_->browser.setCurrentProjectSnapshot(projectLibrary_.update(document_->store()));
             if (root_->status.setPlaybackProblems(document_->session().problems()))
@@ -3773,6 +3844,8 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<control::AppControl> appControl_;
     std::string controlSettings_;
+    std::string agentModeStamp_;
+    juce::uint32 agentModeCheckedMs_ = 0;
     std::optional<DiagnosticLog> diagnosticLog_;
     audio::DecodeCacheLimits cacheLimits_;
     std::unique_ptr<AppCommands> commands_;

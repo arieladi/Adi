@@ -360,6 +360,8 @@ std::vector<QueuedChangeset> AppControl::proposals() const {
     return impl_->queue.forReview();
 }
 
+std::string AppControl::liveProject() const { return impl_->live ? impl_->live->handle() : std::string{}; }
+
 JobBook& AppControl::jobs() { return impl_->jobs; }
 
 AgentStopReport AppControl::stopAgent(std::string surface) {
