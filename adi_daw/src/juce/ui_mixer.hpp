@@ -7,6 +7,10 @@
 #include "adi/ui/track_edits.hpp"
 #include "ui_controls.hpp"
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <utility>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>

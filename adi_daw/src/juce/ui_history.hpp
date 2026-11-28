@@ -19,6 +19,7 @@ class UndoHistoryPanel final : public juce::Component, private juce::ListBoxMode
     ~UndoHistoryPanel() override;
     // How the panel reads the history and restores a step; the window gives them.
     std::function<History::Timeline()> read;
+    // Transaction zero selects the original project state.
     std::function<bool(std::int64_t txnId)> restore;
     std::function<bool()> restoreOpening;
     std::function<bool(std::int64_t snapshotId)> revertSnapshot, removeSnapshot;

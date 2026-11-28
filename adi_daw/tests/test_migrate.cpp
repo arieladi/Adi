@@ -8,6 +8,7 @@
 // everything 1.0 really had, comments in its DDL included, and the upgraded
 // file must then match a fresh one object for object.
 
+#include "adi/media/media_ops.hpp"
 #include "temp_directory.hpp"
 
 #include "adi/check.hpp"
@@ -28,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -106,7 +108,7 @@ std::string describeDiff(const std::set<Object>& a, const std::set<Object>& b) {
 }
 
 int userVersion(const fs::path& p) {
-    SQLite::Database db(p.string(), SQLite::OPEN_READONLY);
+    SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READONLY);
     return db.execAndGet("PRAGMA user_version").getInt();
 }
 
@@ -115,7 +117,7 @@ fs::path buildOld(const fs::path& dir, int minor, bool embeddedMedia = false) {
     const auto p = dir / ("v1_" + std::to_string(minor) + ".adi");
     const auto ddl = readFile(fs::path(ADI_SCHEMA_HISTORY_DIR) /
                               ("schema-1." + std::to_string(minor) + ".sql"));
-    SQLite::Database db(p.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     db.exec("PRAGMA page_size = 4096");
     db.exec(ddl);
     db.exec("INSERT INTO project(id, name) VALUES (1, 'Old Song')");
@@ -166,10 +168,12 @@ void testUpgradeEachMinor() {
             if (!s) continue;
             check(s->upgradedFromMinor() == minor, v + ": reports what it upgraded from");
             backupPath = s->upgradeBackupPath();
-            check(!backupPath.empty() && backupPath.parent_path() == p.parent_path() && fs::is_regular_file(backupPath),
+            std::error_code pathError;
+            check(!backupPath.empty() && fs::equivalent(backupPath.parent_path(), p.parent_path(), pathError) &&
+                      fs::is_regular_file(backupPath),
                   v + ": reports a safety copy beside the source");
             if (!backupPath.empty() && fs::is_regular_file(backupPath)) {
-                SQLite::Database original(backupPath.string(), SQLite::OPEN_READONLY);
+                SQLite::Database original(media::pathUtf8(backupPath), SQLite::OPEN_READONLY);
                 check(original.execAndGet("PRAGMA user_version").getInt() == 1000 + minor &&
                           original.execAndGet("SELECT name FROM tracks WHERE id=1").getString() == "Keys" &&
                           original.execAndGet("PRAGMA quick_check").getString() == "ok",
@@ -254,6 +258,10 @@ void testReadOnlyNeverWrites() {
     }
     check(readFile(p) == before, "the file's bytes are identical afterwards");
     check(userVersion(p) == 1001, "user_version is still 1001");
+    auto upgraded = Store::open(p, e);
+    check(upgraded && upgraded->upgradedFromMinor() == 1 &&
+              !upgraded->db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString().empty(),
+          "the first writable open both upgrades and assigns the project's id");
 }
 
 void testNewerMinorUntouched() {
@@ -289,14 +297,14 @@ void testFailureLeavesTheOldFile() {
     {
         // A third-party writer already used the name 1.3 needs. The 1.2 step
         // succeeds, the 1.3 step fails, and the 1.2 step must not survive it.
-        SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+        SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READWRITE);
         db.exec("CREATE TABLE history_snapshots(theirs TEXT) STRICT");
         db.exec("INSERT INTO history_snapshots VALUES ('keep me')");
     }
     StoreError e = StoreError::Ok;
     auto s = Store::open(p, e);
     check(s == nullptr && e == StoreError::MigrationFailed, "the open fails, and says why");
-    SQLite::Database db(p.string(), SQLite::OPEN_READONLY);
+    SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READONLY);
     check(db.execAndGet("PRAGMA user_version").getInt() == 1001, "user_version is still 1001");
     check(db.execAndGet("SELECT COUNT(*) FROM sqlite_master WHERE name = 'remarks'").getInt() == 0,
           "the 1.2 step's table was rolled back, not left half-upgraded");
@@ -311,7 +319,7 @@ void testProjectDefaultMigration() {
     adi::test::TempDirectory temp("migrate", "project-default");
     const auto p = buildOld(temp.path(), 8);
     {
-        SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+        SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READWRITE);
         db.exec("UPDATE project SET sample_rate=96000, ppq=123456, length_ticks=700, "
                 "timecode_origin_ns=800, frame_rate_num=30000,frame_rate_den=1001,"
                 "render_bit_depth=16,author='Author',notes='Notes';"
@@ -343,7 +351,7 @@ void testProjectMigrationRefusesDataLoss() {
         adi::test::TempDirectory temp("migrate", foreignKey ? "project-fk" : "project-column");
         const auto p = buildOld(temp.path(), 8);
         {
-            SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+            SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READWRITE);
             if (foreignKey) db.exec("CREATE TABLE project_child(id INTEGER REFERENCES PrOjEcT(id) ON DELETE CASCADE);"
                                     "INSERT INTO project_child VALUES(1)");
             else db.exec("ALTER TABLE project ADD COLUMN custom TEXT DEFAULT 'keep me'");
@@ -360,7 +368,7 @@ void testUpgradeCopiesCommittedWal() {
     section("the safety copy includes a change committed to the WAL");
     adi::test::TempDirectory temp("migrate", "upgrade-wal");
     const auto p = buildOld(temp.path(), 8);
-    SQLite::Database prior(p.string(), SQLite::OPEN_READWRITE);
+    SQLite::Database prior(media::pathUtf8(p), SQLite::OPEN_READWRITE);
     check(prior.execAndGet("PRAGMA journal_mode=WAL").getString() == "wal", "the old writer enters WAL mode");
     prior.exec("PRAGMA wal_autocheckpoint=0");
     prior.exec("UPDATE tracks SET name='Uncheckpointed Keys' WHERE id=1");
@@ -370,7 +378,7 @@ void testUpgradeCopiesCommittedWal() {
           "writable open migrates after publishing the safety copy");
     if (!upgraded || upgraded->upgradeBackupPath().empty())
         return;
-    SQLite::Database original(upgraded->upgradeBackupPath().string(), SQLite::OPEN_READONLY);
+    SQLite::Database original(media::pathUtf8(upgraded->upgradeBackupPath()), SQLite::OPEN_READONLY);
     check(original.execAndGet("PRAGMA user_version").getInt() == 1008 &&
               original.execAndGet("SELECT name FROM tracks WHERE id=1").getString() == "Uncheckpointed Keys" &&
               original.execAndGet("PRAGMA journal_mode").getString() == "delete",
@@ -415,7 +423,7 @@ void testOrder() {
 
     adi::test::TempDirectory temp("migrate", "order");
     const auto p = buildOld(temp.path(), 0);
-    SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+    SQLite::Database db(media::pathUtf8(p), SQLite::OPEN_READWRITE);
     g_trace.clear();
     sqlite3_trace_v2(db.getHandle(), SQLITE_TRACE_STMT, traceStatement, nullptr);
     std::string err;

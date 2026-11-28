@@ -183,9 +183,8 @@ public:
     /// snapshots (#387). A read; nothing moves.
     [[nodiscard]] History::Timeline timeline() const { return History(store_).readTimeline(); }
 
-    // The snapshot at open is identified by its durable history boundary, not by an index
-    // into a list that can be reordered or compacted while the project is open.
-    History::Result restoreOpening(std::optional<std::int64_t> head, std::int64_t nowUtc) {
+    // The opening uses its durable history boundary. An empty head selects the original state.
+    History::Result restoreHistoryHead(std::optional<std::int64_t> head, std::int64_t nowUtc) {
         auto result = History(store_).moveTo(head, nowUtc);
         if (result.ok && result.opsApplied != 0)
             view_.refresh(store_, overrides());

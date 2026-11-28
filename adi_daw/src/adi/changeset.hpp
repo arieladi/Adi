@@ -43,6 +43,8 @@ struct Limits {
     /// default a request gets when nobody set one: ADR-0203 d20's 6000, the
     /// default of `agent.maxOpsPerRequest`, which adi-mcp reads (AGT-01).
     std::size_t maxOps = 6000;
+    /// AGT-09: measure distinct clips touched during the rolled-back preview.
+    bool measureClipImpact = false;
 };
 
 struct Changeset {
@@ -90,6 +92,9 @@ struct Preview {
     std::string textAfter;      // ... and as the changeset would leave it
     std::string unifiedDiff;    // of the two, `--- before` / `+++ after`
     std::vector<Change> changes;
+    /// Available when the successful preview measured clip impact. True
+    /// when it touched more than 20% of the clips present before the edit.
+    std::optional<bool> bulkClipEdit;
 };
 
 /// Runs every op inside a transaction that is always rolled back, projects
@@ -101,6 +106,7 @@ struct ApplyResult {
     Refusal refusal = Refusal::None;
     std::string error;
     std::int64_t txnId = 0;
+    std::vector<std::int64_t> seqs = {};
 };
 
 /// Commits the whole changeset as one transaction, actor `agent`, with its
@@ -109,8 +115,13 @@ struct ApplyResult {
 
 /// The allowlist. Project edits only (Scope::Edit, not ephemeral), and of
 /// the media ops only those that change a reference, never a file. Never an
-/// internal restore op, which exists to replay a captured inverse.
+/// internal restore op, which exists to replay a captured inverse, or the
+/// operation that sets a marker's prompt (ADR-0261 d8).
 [[nodiscard]] bool agentMayEmit(std::string_view opType);
+
+/// Payload-level restrictions in addition to the op allowlist. Marker prompts
+/// cannot be written through marker creation or a captured Arrangement edit.
+[[nodiscard]] bool agentMayEmitPayload(std::string_view opType, const Payload&);
 
 /// A unified diff of two texts, line by line (Myers), with `context` lines
 /// around each hunk. Empty when the texts are equal.

@@ -29,6 +29,8 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -56,7 +58,9 @@ public:
 
     [[nodiscard]] const DeviceCore& core() const { return core_; }
     [[nodiscard]] std::optional<engine::OutputChannelMap> physicalOutputChannels() const noexcept {
-        return core_.isOpen() ? std::optional(outputChannels_) : std::nullopt;
+        if (!hasOutputGrant_.load(std::memory_order_acquire))
+            return std::nullopt;
+        return engine::OutputChannelMap{outputMask_.load(std::memory_order_acquire)};
     }
 
     /// Non-empty when the device is running at a size other than the one
@@ -79,10 +83,10 @@ public:
         const auto granted = static_cast<std::int32_t>(device->getCurrentBufferSizeSamples());
         const double rate = device->getCurrentSampleRate();
         const auto active = device->getActiveOutputChannels();
-        outputChannels_.enabled = 0;
+        std::uint64_t outputMask = 0;
         for (int channel = 0; channel < engine::OutputChannelMap::maximumChannels; ++channel)
             if (active[channel])
-                outputChannels_.enabled |= std::uint64_t{1} << channel;
+                outputMask |= std::uint64_t{1} << channel;
 
         // A restart on a live stream is a RECONFIGURATION, not a fresh open:
         // the processor keeps its state and the stream clock stays continuous,
@@ -90,6 +94,10 @@ public:
         last_ = core_.isOpen() ? core_.changeBlockSize(rate, requested_, granted)
                                : core_.open(*proc_, rate, requested_, granted);
         if (last_.opened) {
+            // Publish one complete, prepared mask. A running input-only device
+            // has an empty mask, which is distinct from a stopped device.
+            outputMask_.store(outputMask, std::memory_order_release);
+            hasOutputGrant_.store(true, std::memory_order_release);
             currentDevice_ = {device->getTypeName(), device->getName()};
             if (stoppedDevice_ && *stoppedDevice_ == currentDevice_)
                 stoppedDevice_.reset();
@@ -100,10 +108,12 @@ public:
                                           float* const* out, int numOut,
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
-        core_.process(out, numOut, in, numIn, numSamples, outputChannels_);
+        const engine::OutputChannelMap outputs{outputMask_.load(std::memory_order_acquire)};
+        core_.process(out, numOut, in, numIn, numSamples, outputs);
     }
 
     void audioDeviceStopped() override {
+        hasOutputGrant_.store(false, std::memory_order_release);
         if (core_.isOpen() && !stoppedDevice_)
             stoppedDevice_ = currentDevice_;
         core_.close();
@@ -155,7 +165,9 @@ private:
     };
     engine::BlockProcessor* proc_ = nullptr;
     DeviceCore core_;
-    engine::OutputChannelMap outputChannels_;
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    std::atomic<std::uint64_t> outputMask_{0};
+    std::atomic<bool> hasOutputGrant_{false};
     std::int32_t requested_ = 0;
     OpenResult last_;
     DeviceName currentDevice_;

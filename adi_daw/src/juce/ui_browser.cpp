@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_browser.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "ui_controls.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
@@ -670,7 +671,7 @@ void BrowserPanel::updateMarkedSamples() {
     markedSamples_.clear();
     if (sampleMarks_.empty())
         return;
-    std::unordered_set<std::filesystem::path> projectMarks;
+    std::unordered_set<std::filesystem::path, LibraryPathHash> projectMarks;
     if (projectLibrary_)
         for (const auto &sample : projectLibrary_->listing().files)
             if (sample.isSample() && sampleMarks_.contains(sample.path)) {
@@ -769,7 +770,7 @@ const void *browserCatalogueRow(const BrowserPanel::Row &row) {
     return row.device ? static_cast<const void *>(row.device) : row.plugin;
 }
 struct BrowserListPosition {
-    std::unordered_set<std::filesystem::path> paths;
+    std::unordered_set<std::filesystem::path, LibraryPathHash> paths;
     std::unordered_set<const void *> catalogue;
     const std::filesystem::path *primaryPath = nullptr;
     const void *primaryCatalogue = nullptr;
@@ -1039,8 +1040,8 @@ void BrowserPanel::sortRows() {
                 self(self, index + 1, ends[index]);
         }
     };
-    // Scan progress is a status line and the progress callback updates row zero.
-    const bool scanNotice = pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
+    // Favorites has no scan progress row, even when it includes plug-ins.
+    const bool scanNotice = !favoritesShown() && pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
     if (scanNotice)
         append(0);
     appendSorted(appendSorted, scanNotice ? 1u : 0u, count);
@@ -1312,6 +1313,14 @@ bool BrowserPanel::load(int row) {
             const juce::File file(nativeFilePath(entry.file->path));
             open(file);
             return true;
+        }
+        if (entry.file->kind == LibraryFile::Kind::Midi) {
+            const auto path = media::pathUtf8(entry.file->path);
+            const auto name = media::pathUtf8(entry.file->path.stem());
+            const auto current = root_.current();
+            const auto *target = current ? current->findTrack(track) : nullptr;
+            return root_.dropMidiFiles({{path, name}}, target && isMidiTrack(*target) ? track : 0,
+                                       root_.arrangement.geometry.selection.insert, false);
         }
         if (!entry.file->isSample())
             return false;

@@ -12,6 +12,7 @@
 #include "adi/gesture_presentation.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
+#include "ui_picture_compare.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -80,13 +81,13 @@ struct MixFocusTestAccess {
                    return std::ranges::all_of(member.scopePaths, oneSegment);
                });
     }
-    static juce::Image scopePicture(MixFocus &focus) {
+    static adi::uitest::ComparisonPicture scopePicture(MixFocus &focus) {
         const auto plot = focus.plot_.toNearestInt();
-        juce::Image image(juce::Image::RGB, plot.getWidth(), plot.getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics g(image);
-        g.setOrigin(-plot.getX(), -plot.getY());
-        focus.paint(g);
-        return image;
+        return adi::uitest::pictureForComparison(juce::Image::RGB, plot.getWidth(), plot.getHeight(),
+                                                [&focus, plot](juce::Graphics &g) {
+                                                    g.setOrigin(-plot.getX(), -plot.getY());
+                                                    focus.paint(g);
+                                                });
     }
     static bool sumStrokeAt(MixFocus &focus, float value) {
         const auto plot = focus.plot_;
@@ -1150,10 +1151,8 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
         return nullptr;
     };
     const auto paintPanel = [](DevicePanelView &panel) {
-        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
-        juce::Graphics g(image);
-        panel.paint(g);
-        return image;
+        return adi::uitest::pictureForComparison(juce::Image::RGB, panel.getWidth(), panel.getHeight(),
+                                                 [&panel](juce::Graphics &g) { panel.paint(g); });
     };
     auto *panel = findPanel(findPanel, surface);
     check(panel != nullptr, "the spectrum uses the existing EQ card");
@@ -1180,14 +1179,11 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
     const auto audible = paintPanel(*card);
     const auto result = sibling.read();
     int changedPixels = 0;
-    bool withinGraph = true;
     const auto graph = card->eqPreviewBounds().toNearestInt();
-    for (int y = 0; y < silent.getHeight(); ++y)
-        for (int x = 0; x < silent.getWidth(); ++x)
-            if (silent.getPixelAt(x, y) != audible.getPixelAt(x, y)) {
-                ++changedPixels;
-                withinGraph = withinGraph && graph.contains(x, y);
-            }
+    const bool withinGraph = adi::uitest::comparePicturePixels(silent, audible, [&](int x, int y) {
+        ++changedPixels;
+        return graph.contains(x, y);
+    });
     if (!result || std::abs(result->binsDbfs[16] + 6.0206f) >= .002f || changedPixels == 0 || !withinGraph)
         std::cout << "Stack spectrum fixture: bin16=" << (result ? result->binsDbfs[16] : -999.f)
                   << ", peak=" << (result ? result->peak[0] : -1.f)
@@ -1604,7 +1600,7 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
         const auto before = broker->stats();
         const auto openedBefore = opened.size(), closedBefore = closed.size();
         const auto overlay = MixFocusTestAccess::scopePicture(focus);
-        const auto plotCentre = static_cast<float>(overlay.getHeight()) * .5f;
+        const auto plotCentre = static_cast<float>(overlay.raster.getHeight()) * .5f;
         const auto sharedRow = [plotCentre](float level) { return plotCentre * (1.f - level); };
         const auto traceAt = [](const juce::Image &image, float row) {
             constexpr std::array positions{.2f, .4f, .6f, .8f};
@@ -1619,28 +1615,25 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
             layout->setSelectedItemIndex(index, juce::sendNotificationSync);
             return MixFocusTestAccess::scopePicture(focus);
         };
-        check(traceAt(overlay, sharedRow(.25f)) && traceAt(overlay, sharedRow(-.125f)) &&
-                  traceAt(overlay, sharedRow(.125f)),
+        check(traceAt(overlay.raster, sharedRow(.25f)) && traceAt(overlay.raster, sharedRow(-.125f)) &&
+                  traceAt(overlay.raster, sharedRow(.125f)),
               "the original Overlay contains both members and their signed sum");
         const auto layers = select(1);
-        check(traceAt(layers, sharedRow(.25f)) && traceAt(layers, sharedRow(-.125f)) &&
-                  !traceAt(layers, sharedRow(.125f)),
+        check(traceAt(layers.raster, sharedRow(.25f)) && traceAt(layers.raster, sharedRow(-.125f)) &&
+                  !traceAt(layers.raster, sharedRow(.125f)),
               "Layers shows both members around one baseline without a sum trace");
         const auto stack = select(2);
-        check(traceAt(stack, sharedRow(.25f) * .5f) &&
-                  traceAt(stack, plotCentre + sharedRow(-.125f) * .5f) &&
-                  !traceAt(stack, sharedRow(.25f)) && !traceAt(stack, sharedRow(-.125f)),
+        check(traceAt(stack.raster, sharedRow(.25f) * .5f) &&
+                  traceAt(stack.raster, plotCentre + sharedRow(-.125f) * .5f) &&
+                  !traceAt(stack.raster, sharedRow(.25f)) && !traceAt(stack.raster, sharedRow(-.125f)),
               "Stack moves each member to its own baseline");
         const auto sum = select(3);
-        check(traceAt(sum, sharedRow(.125f)) && !traceAt(sum, sharedRow(.25f)) &&
-                  !traceAt(sum, sharedRow(-.125f)),
+        check(traceAt(sum.raster, sharedRow(.125f)) && !traceAt(sum.raster, sharedRow(.25f)) &&
+                  !traceAt(sum.raster, sharedRow(-.125f)),
               "Sum displays the signed combination without the member traces");
         const auto restored = select(0);
-        bool equal = true;
-        for (int y = 0; equal && y < overlay.getHeight(); ++y)
-            for (int x = 0; equal && x < overlay.getWidth(); ++x)
-                equal = overlay.getPixelAt(x, y) == restored.getPixelAt(x, y);
-        check(equal, "returning to Overlay restores the existing plot exactly");
+        check(adi::uitest::samePicturePixels(overlay, restored),
+              "returning to Overlay restores the existing plot exactly");
         root.frame();
         const auto after = broker->stats();
         check(after.consumers == before.consumers && after.taps == before.taps &&

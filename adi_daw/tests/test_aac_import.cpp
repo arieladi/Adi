@@ -23,6 +23,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
@@ -30,6 +31,20 @@ void operator delete(void* p) noexcept{if(p && adi::audio::onAudioThread)++frees
 void operator delete[](void* p) noexcept{operator delete(p);}
 void operator delete(void* p,std::size_t) noexcept{operator delete(p);}
 void operator delete[](void* p,std::size_t) noexcept{operator delete(p);}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a std::string or
+// std::vector is constructed, so an empty result returned from the callback path costs one allocation
+// and one free per container there and none on the other CRTs. The refusal check allows exactly that.
+template<class Result> std::pair<unsigned,unsigned> emptyResultCost(){
+#if defined(_MSC_VER) && _ITERATOR_DEBUG_LEVEL == 2
+    const auto allocated=allocations.load(),freed=frees.load();
+    {adi::audio::CallbackScope scope;Result empty;(void)empty;}
+    return {allocations.load()-allocated,frees.load()-freed};
+#else
+    return {};
+#endif
+}
+}
 namespace {
 using namespace adi;using namespace adi::audio;namespace fs=std::filesystem;
 int checks=0,failures=0;
@@ -145,8 +160,10 @@ void material(){
     request.opType="preserve";request.payload={{"large",std::string(10000,'p')}};const auto kept=request.payload;
     const auto callbackSource=fixture("mono.m4a");
     media::MediaResult callback;clip_edit::MaterialEdit callbackMaterial;
+    const auto mediaCost=emptyResultCost<media::MediaResult>(),materialCost=emptyResultCost<clip_edit::MaterialEdit>();
+    const auto allocatedBefore=allocations.load(),freedBefore=frees.load();
     {CallbackScope scope;callback=media::prepareImport(*store,callbackSource,23,0,request,&cache,{});callbackMaterial=clip_edit::prepareImportAudio(*store,options,44100);}
-    check(!callback.ok && !callbackMaterial.edit.ok && request.opType=="preserve" && request.payload==kept && allocations==0 && frees==0 && callbackFileIo==0,"media and material capture refuse callbacks before clearing caller values, allocation/free, SQL or file I/O");
+    check(!callback.ok && !callbackMaterial.edit.ok && request.opType=="preserve" && request.payload==kept && allocations-allocatedBefore==mediaCost.first+materialCost.first && frees-freedBefore==mediaCost.second+materialCost.second && callbackFileIo==0,"media and material capture refuse callbacks with caller values intact and only the empty result's Windows Debug proxy cost");
 }
 } // namespace
 int main(){try{

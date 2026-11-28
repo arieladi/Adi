@@ -41,7 +41,9 @@
 #include "adi/control/project_access.hpp"
 #include "adi/control/service.hpp"
 
+#include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,15 +75,20 @@ public:
         bool initialized = false;   ///< legacy era: after `initialize`
         std::string version;        ///< legacy era: the negotiated version
         std::string clientLabel;    ///< from clientInfo, for actor_detail only
+        /// Set by the authenticated transport. No MCP input can change it.
+        std::shared_ptr<const ConsentDestination> readDestination = {};
+        std::optional<std::uint64_t> receivedAgentEpoch = {};
     };
 
     McpEndpoint(Service& service, ProjectSet& projects, McpServerInfo info,
                 std::string instructions = defaultInstructions());
 
-    /// One message in; at most one line out (none for a notification or a
-    /// client's response). The service's executor must run calls before
-    /// `call` returns, as adi-mcp's inline executor does.
-    [[nodiscard]] std::optional<std::string> handle(const Incoming& message, Session& session);
+    /// One message in, at most one line out. Only one thread handles a
+    /// Session at a time. With a stoppable token the caller must be off the
+    /// service's owner thread, and can wait for its executor. Without a token
+    /// the executor must run inline, as adi-mcp's headless executor does.
+    [[nodiscard]] std::optional<std::string> handle(const Incoming& message, Session& session,
+                                                    std::stop_token stop = {});
 
     /// Records a connection event ("connect", "disconnect") in the audit.
     void noteConnection(const Session& session, const char* kind);
@@ -95,7 +102,7 @@ private:
     [[nodiscard]] Json initializeResult(const Json& params, Session& session) const;
     [[nodiscard]] Json discoverResult() const;
     [[nodiscard]] Json toolsList(Tier tier) const;
-    [[nodiscard]] Json resourcesList() const;
+    [[nodiscard]] Json resourcesList(bool discloseLabels) const;
     [[nodiscard]] Json resourceTemplates() const;
     [[nodiscard]] Json capabilities(bool modern) const;
     [[nodiscard]] Json serverInfoJson() const;
@@ -103,19 +110,19 @@ private:
     /// tools/call: a result, or a JSON-RPC error. `tier`: the caller's grant,
     /// which decides the tools an unknown name's refusal lists.
     [[nodiscard]] std::optional<Json> callTool(const Json& params, const Principal& who, Tier tier,
-                                               RpcError& error);
+                                               const Session&, std::stop_token, RpcError& error);
     /// `modern`: the request's era, which decides the not-found code.
     [[nodiscard]] std::optional<Json> readResource(const Json& params, const Principal& who, bool modern,
-                                                   RpcError& error);
+                                                   const Session&, std::stop_token, RpcError& error);
     /// Records a refusal made at this layer: {now, "refused", label, method,
     /// code, the code's name}; never the message, never the credential.
     void auditRefusal(const std::string& label, const char* method, const RpcError& error);
     /// auditRefusal, then the encoded error.
     [[nodiscard]] std::string refuse(const Json& id, const std::string& label, const char* method,
                                      RpcError error);
-    /// Runs one control method synchronously.
+    /// Runs one control method, waiting for an owner-thread hop when needed.
     [[nodiscard]] Outcome run(const Principal& who, std::string_view method, const Json& params,
-                              const RequestMeta& meta);
+                              RequestMeta meta, std::stop_token stop);
 
     Service& service_;
     ProjectSet& projects_;
