@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 17:58 IST — seats/stretcher-chain `1f193ff30a4a6e154a8b5eafb68d88be773fca66`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
+The exact `tempo_map.cpp`, `automation.cpp`, `automation_clips.cpp` and `test_clip_envelopes.cpp` passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers. The test file used its CMake target flags.
+
 ### 28 November 2026, 17:41 IST — basics/browser-chain `0fd68e875f6d0d36022d30fdead6fd0d9f6f0fa3`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
