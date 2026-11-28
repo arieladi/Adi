@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -66,6 +67,31 @@ struct Job {
     PcmContainer container = PcmContainer::Wav;
     // The complete literal filename from a single PCM delivery's save dialog.
     std::optional<std::string> exactPcmFilename;
+    // SC-479: the device rows the playing engine has loaded when Export is
+    // pressed. The export loads its own instances; one of these it cannot
+    // load a second time stops the export and is named, because leaving it
+    // out would make the file differ from what plays. A row missing in the
+    // playing engine too is bypassed in the file as it is in playback (SC-395).
+    std::vector<std::int64_t> playingDevices{};
+};
+
+// SC-479: the revision an export renders, taken on the project's owner when
+// Export is pressed. Every job of that export (each track of a batch) renders
+// this one copy, so an edit made while the export runs reaches the song and
+// never the files. The copy is a hidden file beside the project, so its media
+// resolve exactly as the project's do; it is removed when the last holder lets
+// go of it. Taking it reads the whole project file once.
+class PinnedProject {
+public:
+    // Throws when no copy can be made; nothing is left behind then.
+    [[nodiscard]] static std::shared_ptr<const PinnedProject> capture(Store& live);
+    ~PinnedProject();
+    PinnedProject(const PinnedProject&) = delete;
+    PinnedProject& operator=(const PinnedProject&) = delete;
+    [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+private:
+    explicit PinnedProject(std::filesystem::path path) : path_(std::move(path)) {}
+    std::filesystem::path path_;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;

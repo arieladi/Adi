@@ -7,8 +7,10 @@
 #include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
+#include <SQLiteCpp/Backup.h>
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
+#include <sqlite3.h>
 #include <utf8proc.h>
 #include <algorithm>
 #include <atomic>
@@ -506,7 +508,17 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 if (!session.load(*store, std::move(loader), renderSpec))
                     throw std::runtime_error(session.error());
             });
-            const auto blockingProblems = session.exportBlockingProblems();
+            auto blockingProblems = session.exportBlockingProblems();
+            // SC-479: what plays must be in the file. A plug-in the playing
+            // engine holds that refused a second instance (one instance per
+            // computer, no memory left) is named, never silently left out.
+            for (const auto device : job.playingDevices) {
+                const auto* entry = session.entryFor(device);
+                if (entry && entry->placeholder && !entry->retired)
+                    blockingProblems.push_back(entry->name +
+                        " plays in the song but could not be loaded a second time for the export" +
+                        (entry->error.empty() ? std::string() : ": " + entry->error));
+            }
             if (session.stats().skipped || !blockingProblems.empty()) {
                 std::string why = "Some parts of this song cannot be exported";
                 for (const auto& problem : blockingProblems) why += "\n" + problem;
@@ -697,6 +709,40 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         result.state = JobState::Failed; result.error = "unknown exception during export";
     }
     return result;
+}
+
+std::shared_ptr<const PinnedProject> PinnedProject::capture(Store& live) {
+    const auto folder = media::projectFolder(live);
+    static std::atomic<std::uint64_t> sequence{0};
+    fs::path path;
+    for (unsigned attempt = 0; attempt < 128 && path.empty(); ++attempt) {
+        auto candidate = folder / (".adi-export-" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+            std::to_string(sequence.fetch_add(1)) + ".adi");
+        if (!occupiedNative(candidate)) path = std::move(candidate);
+    }
+    if (path.empty()) throw std::runtime_error("the song could not be copied for the export");
+    // Owned before the file exists, so a failed copy leaves nothing behind.
+    std::shared_ptr<const PinnedProject> pinned(new PinnedProject(path));
+    {
+        SQLite::Database copy(media::pathUtf8(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        {
+            SQLite::Backup backup(copy, live.db());
+            if (backup.executeStep() != SQLITE_DONE)
+                throw std::runtime_error("the song could not be copied for the export");
+        }
+        // A rollback journal: the copy is only read, and leaves no WAL beside it.
+        (void)copy.execAndGet("PRAGMA journal_mode=DELETE");
+    }
+    return pinned;
+}
+PinnedProject::~PinnedProject() {
+    for (const char* suffix : {"", "-journal", "-wal", "-shm"}) {
+        auto file = path_;
+        file += suffix;
+        std::error_code ignored;
+        fs::remove(file, ignored);
+    }
 }
 
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,

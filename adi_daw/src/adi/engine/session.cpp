@@ -27,6 +27,7 @@
 #include <limits>
 #include <cmath>
 #include <cstddef>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -608,7 +609,19 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
-        inst = loader_(rq, err);
+        if (spec_.exporting) {
+            // SC-479: the export's second set of plug-ins and samples may not
+            // fit beside the playing one. The export then stops and names the
+            // device, instead of ending with an allocator's word or leaving
+            // the device out of the file.
+            try {
+                inst = loader_(rq, err);
+            } catch (const std::bad_alloc &) {
+                throw std::runtime_error(e.name + ": there is not enough memory to load it for the export");
+            }
+        } else {
+            inst = loader_(rq, err);
+        }
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
 

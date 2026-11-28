@@ -2234,6 +2234,11 @@ add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
 target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 
+# SC-479: exporting while the song plays harms neither the export nor the playback.
+add_executable(adi_export_while_playing_tests tests/test_export_while_playing.cpp)
+target_link_libraries(adi_export_while_playing_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_export_while_playing_tests COMMAND adi_export_while_playing_tests)
+
 add_executable(adi_normalization_tests tests/test_normalization.cpp)
 target_link_libraries(adi_normalization_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_normalization_tests COMMAND adi_normalization_tests)

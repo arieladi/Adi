@@ -858,6 +858,31 @@ class AdiApplication final : public juce::JUCEApplication,
         });
     }
     void startRender(std::vector<render::Job> jobs, std::string stateWarning) {
+        // SC-479: every file of this export renders the song as it is now, from one copy taken here on
+        // the message thread; an edit made while it runs reaches the song and not the files. A plug-in
+        // that plays now but cannot be loaded a second time stops the export and is named.
+        std::shared_ptr<const render::PinnedProject> pinned;
+        try {
+            if (document_)
+                pinned = render::PinnedProject::capture(document_->store());
+        } catch (const std::exception &e) {
+            if (exportPage_)
+                exportPage_->showDone(std::string("The export could not start: ") + e.what());
+            return;
+        }
+        if (!pinned)
+            return;
+        std::vector<std::int64_t> playing;
+        const auto &session = document_->session();
+        for (std::size_t i = 0; i < session.entryCount(); ++i) {
+            const auto &entry = session.entryAt(i);
+            if (!entry.placeholder && !entry.retired && !entry.parked)
+                playing.push_back(entry.deviceId);
+        }
+        for (auto &job : jobs) {
+            job.project = pinned->path();
+            job.playingDevices = playing;
+        }
         renderStop_ = std::stop_source{};
         auto alive = renderAlive_;
         if (exportPage_)
@@ -894,7 +919,8 @@ class AdiApplication final : public juce::JUCEApplication,
             });
         };
         render_ = std::thread([this, alive, completed, jobs = std::move(jobs), stateWarning = std::move(stateWarning),
-                               made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
+                               made = loader_.fn(), control, stop = renderStop_.get_token(),
+                               pinned = std::move(pinned)]() mutable {
             std::string message;
             try {
                 render::Queue queue;
@@ -921,6 +947,7 @@ class AdiApplication final : public juce::JUCEApplication,
             } catch (const std::exception &e) {
                 message = "The export failed: " + std::string(e.what());
             }
+            pinned.reset(); // the song's copy goes as soon as its files are written
             message = withWarning(std::move(message), stateWarning);
             completed->set_value();
             juce::MessageManager::callAsync([this, alive, message = std::move(message)] {
