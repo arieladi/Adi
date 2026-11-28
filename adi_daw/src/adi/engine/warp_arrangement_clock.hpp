@@ -25,6 +25,7 @@ public:
     /// makes its own sample-rounding decision.
     [[nodiscard]] double ticksToSeconds(std::int64_t tick) const noexcept;
     [[nodiscard]] std::int64_t secondsToTicks(double seconds) const noexcept;
+    [[nodiscard]] std::int64_t storedNanosecondsToTicks(std::int64_t nanos) const noexcept;
     [[nodiscard]] double bpmAt(std::int64_t tick) const noexcept;
     [[nodiscard]] long double secondsAtPosition(long double tick) const noexcept;
     [[nodiscard]] long double positionAtSeconds(long double seconds) const noexcept;
