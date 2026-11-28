@@ -120,11 +120,15 @@ std::error_code AudioRecordingResult::discard() {
     if(files_->hasOriginalPlan) {
         fs::remove(files_->directory/"start.json",removalError);
         if(removalError)return removalError;
+        recording_recovery::forgetLaunchTake(recordingId_);
+        // The take is no longer recoverable. Close its owner.lock before removing the directory
+        // so a Windows delete-pending marker cannot keep that directory nonempty.
+        files_->recordingOwner.reset();
     }
     fs::remove_all(files_->directory,removalError);
     if(!removalError) {
+        // A recovery preview also holds its original take's lease, outside this staging directory.
         files_->recordingOwner.reset();
-        if(files_->hasOriginalPlan)recording_recovery::forgetLaunchTake(recordingId_);
         if(files_->ephemeralStage)files_->directory.clear();
         files_.reset();
     }

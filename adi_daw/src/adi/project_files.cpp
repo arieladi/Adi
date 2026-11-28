@@ -963,7 +963,12 @@ StoreFileResult Store::restoreProjectBackup(const fs::path& project, const fs::p
     try {
         checkSaveCancellation(stop);
         const auto folder = fs::weakly_canonical(project).parent_path();
-        if (fs::canonical(backup.parent_path()) != folder / "Backup" ||
+        const auto backupFolder = folder / "Backup";
+        std::error_code folderError;
+        // Write and listing use this directory even when the volume resolves a different spelling.
+        // A link substituted for the project's Backup directory is still refused.
+        if (!fs::is_directory(fs::symlink_status(backupFolder, folderError)) ||
+            !fs::equivalent(backup.parent_path(), backupFolder, folderError) ||
             !fs::is_regular_file(fs::symlink_status(backup)))
             return {false, "choose a backup from this project's Backup folder", {}};
         StoreError error{};

@@ -14,10 +14,18 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <stop_token>
+#include <string>
+#include <system_error>
+#include <vector>
 #include <cstdio>
 #include <fstream>
 #include <future>
-#include <fstream>
 #include <iterator>
 
 namespace {
@@ -155,6 +163,33 @@ void projectBackups() {
     check(Store::projectBackups(fixture.source).empty() &&
               !Store::restoreProjectBackup(fixture.source, backups.front().path, refusedRecovery).ok,
           "SC-157: a same-name replacement cannot select or rotate the previous song's backups");
+}
+
+void backupFolderSpelling() {
+    Fixture fixture;
+    const auto lower = fixture.folder / "backup";
+    fs::create_directory(lower);
+    const auto written = Store::writeProjectBackup(fixture.source, 1'800'000'000'000'000);
+    const auto backups = Store::projectBackups(fixture.source);
+    check(written.ok && backups.size() == 1, "SC-157: write and list a backup with a lowercase folder present");
+    if (!written.ok || backups.size() != 1) return;
+    fixture.store.reset();
+
+    // On a case-insensitive volume, select the actual lowercase spelling. On a case-sensitive
+    // volume, the distinct capitalized directory is the correct one.
+    const auto& listed = backups.front().path;
+    const auto backup = fs::equivalent(lower, listed.parent_path()) ? lower / listed.filename() : listed;
+    fs::path recovered;
+    const auto restored = Store::restoreProjectBackup(fixture.source, backup, recovered);
+    check(restored.ok && fs::is_regular_file(recovered), "SC-157: restore from the same backup directory under its actual spelling");
+#if !defined(_WIN32)
+    const auto moved = fixture.folder / "Moved Backup";
+    fs::rename(listed.parent_path(), moved);
+    fs::create_directory_symlink(moved, listed.parent_path());
+    check(!Store::restoreProjectBackup(fixture.source, backup, recovered).ok && recovered.empty() &&
+              fs::is_regular_file(moved / listed.filename()),
+          "SC-157: preserve the backup when a directory symlink replaces its required parent");
+#endif
 }
 
 void automaticProjectBackups() {
@@ -652,5 +687,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();automaticProjectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

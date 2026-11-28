@@ -28,6 +28,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stop_token>
+#include <utility>
 #include <mutex>
 #include <thread>
 #include <optional>
