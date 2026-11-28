@@ -220,4 +220,29 @@ round 1; nothing of them is on the chain.
 
 ## Step 4 — the account
 
-(Filled when the proof is done.)
+**What the chain adds to ADI, in plain words** (one line per thing a user would notice; most are the
+engine half, waiting for a window binding before a user can reach them):
+- Racks' Drum Rack pads: a played key reaches the pad's chains and the "All Notes" chains in order, with choke groups tagged (DEV-04); chain zones (key, velocity, chain select) with their fades are read and obeyed (DEV-02).
+- MIDI effects can change notes before the instrument hears them, and notes from clips, live input and MPE never mix up their identities, also inside plug-ins (DEV-17, DEV-18).
+- A device can see the song's key and scale, and a clip's own scale on its track (DEV-19).
+- The CPU meter: the real callback load against its deadline, and the time each track takes (DEV-24).
+- A plug-in reports that it really loaded, took its state and processed audio (DEV-25).
+- Pd devices get whole blocks of their own size, so a Pd patch hears exact ticks (DEV-13).
+- Main's loudness readout (momentary, short-term, integrated, true peak, range) from the one shared meter (DEV-28).
+- Fit to Scale, Invert pitches around an axis, and transpose by scale degrees, on selected notes (MI-06, MI-04).
+- Humanize's engine: seeded random timing moves of selected notes (MI-05).
+- Warp: insert, move and remove a warp marker inside a clip without disturbing the rest; smoother (four-point) warped playback; Beats loops that cross at a zero crossing (TM-WT-02, TM-WT-03).
+- Clear Envelope: clear one clip's envelope, or delete a parameter's automation everywhere (AU-08).
+- Export "Via Main": render one track or group through Main's effects, alone (EX-02).
+- WAVE files' embedded tempo, root key, loops and text read on import (TM-MD-04).
+- Analysis cache files written safely, never half-written (PD-04).
+- Controllers: relative encoders of every format, keyboard keys mapped to parameters, nudges that never lose a tick, Pick-Up takeover (SRF-03, SRF-04).
+- Mackie Control and HUI surfaces: faders with motor feedback, V-Pots and their rings, the LCD (SRF-08, the wire half).
+- MIDI clock in: follow an external clock's tempo and Start/Stop/Song Position (TM-LS-03, the engine half).
+- Exact time conversion and SMPTE timecode, drop-frame included (TM-IC-01); OpenTimelineIO read and write of a linear timeline, and the file container AAF needs (TM-IC-04, the codec half).
+- Measurement tools for the latency rig: loopback latency, offline nulls, sync spikes (MX-33, MX-09); a test plug-in that records the track name and color a host sends (MX-32).
+
+**What it leaves out, and why:** the five ports under step 2 (racks and macros, the AU-02/AU-03
+automation passes and AU-08 Copy/Paste, Bounce's editable sibling, project templates); TM-SV-01/03/04
+and TM-TT-01 (another seat carries them); DF-E17 (a) (win finishes it to your ruling); the superseded
+and already-landed branches of the survey.
