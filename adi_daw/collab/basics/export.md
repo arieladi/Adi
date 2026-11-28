@@ -7,7 +7,49 @@ message. No pull request: win merges the chain into a landing stack.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
-| SC-479 | `basics/export-chain` `see below` | An export renders one copy of the song taken when Export is pressed (`render::PinnedProject`, a hidden `.adi-export-*.adi` beside the project, removed when the export ends), so an edit made while it runs reaches the song and never the files. A plug-in that plays but cannot be loaded a second time stops the export and is named with its reason (`Job::playingDevices`); out of memory while loading the second set names the device. New suite `adi_export_while_playing_tests`. Engine (`queue.*`, `session.cpp` resolveOne), window-fn (`ui_main.cpp` startRender). | Pending the slot check; see the proof line below. | in progress |
+| SC-479 | `basics/export-chain` `29f699ea3` | An export renders one copy of the song taken when Export is pressed (`render::PinnedProject`, a hidden `.adi-export-*.adi` beside the project, removed when the export ends), so an edit made while it runs reaches the song and never the files. A plug-in that plays but cannot be loaded a second time stops the export and is named with its reason (`Job::playingDevices`); out of memory while loading the second set names the device. New suite `adi_export_while_playing_tests`. Engine (`queue.*`, `session.cpp` resolveOne), window-fn (`ui_main.cpp` startRender). | Slot check (round 2) at `29f699ea`, core, MSVC Debug /WX: build OK, `adi_export_while_playing`, `adi_render_queue`, `adi_session*` 3/3 pass. | PR requested (with the round 2 rows) |
+
+## Round 2 of the export stream (28 November, evening)
+
+The round 1 session stopped before its slot check; round 2 ran it (above), then closed points 4 and 5
+and the leak round 1 named.
+
+| SC | Branch and head | What changed | How it was proved | State |
+|---|---|---|---|---|
+| SC-479 (stale copy) | `basics/export-chain` `123f6d22c` | The export's copy of the song is held under a shared project-file lease while it lives. Each capture first removes, with its journal, every `.adi-export-*.adi` in the project's folder that nobody holds (an exclusive lease succeeds): a copy left when the app was killed or the power went. A running export's copy is never removed by another's start; other files are left alone. Engine (`render/queue.*`). | `staleCopies` fails without it (the stale copy stays). Slot check at `5820b534`, core, filter `adi_export_while_playing\|adi_render_queue\|adi_freeze_capture\|adi_session`: `staleCopies` passes; see the next row for the one failure of that run. | PR requested |
+| SC-479 (point 5, a third engine) | `basics/export-chain` `5820b5341`, `e7623bee3` | Test only. `freezeDuringExport`: a Freeze capture on its own worker and connection while an export renders its pinned copy; the file and the frozen audio are each identical to the ones made alone, each with its own plug-in loaded and freed. | First run failed on the fixture (its media row had a placeholder hash, which Freeze verifies and the export does not); `e7623bee3` gives it the real hash. Slot check at `e7623bee` (filter `adi_export_while_playing`): waiting for a build place when this line was written. | in progress |
+
+### What round 2 decided, and why
+
+- **Point 4, what only real time can render.** Nothing in ADI today is real-time-only in Live's sense.
+  Live renders in real time only for External Instrument and External Audio Effect (manual 5.1.3.5,
+  `collab/window/parity-export.md` rows 32 to 35), and ADI has neither device yet. A MIDI track sent to a
+  hardware port exports without that sound in Live as in ADI, and ADI's export sends no MIDI to the
+  hardware (already proved: `adi_midi_clips_tests`, "export callbacks emit no hardware MIDI"). An offline
+  export takes no live input in either. So no test fails today, and there is nothing to refuse the Ableton
+  way. Naming those tracks in the done message is an addition: it stays choice B below. When External
+  Instrument or External Audio Effect is built, real-time rendering (rows 32 to 35) comes with it.
+- **Point 5, a second export.** Read in `ui_main.cpp`: `openExport` brings the page forward while a render
+  runs, and `chooseExportFile` returns at once while one runs (`render_.joinable()`); the page and the Status
+  Bar show the running one. No other path starts an app export (`render::Queue` is used by `startRender`
+  only; the control queue `control/render_jobs.cpp` is not wired to the app). Not a headless test: the
+  guard lives in the app class, which has no seam, and adding one for a guard that already holds is not a
+  fix. Left as read.
+- **Point 5, Freeze or Bounce during an export.** Round 1 wrote "Freeze/Bounce waits for a running export".
+  Round 2 did not make it wait: that would be a refusal a user sees, and Live has nothing to copy (its export
+  is modal). Instead it proved the third engine harms neither (`freezeDuringExport`). Memory is then held a
+  third time while both run; that is choice A's question again.
+
+### What a stranger needs next
+
+- If the `e7623bee` check above passed, SC-479 is done on the chain except choices A and B. Run one full
+  check (mode all) on the chain head before handing it to win, if this round did not.
+- The pinned copy costs one read of the project file on the message thread at the press, and its size on
+  disk while the export runs. In a synced folder (OneDrive, Dropbox: `Store::synchronizedLocation()`)
+  the sync client may upload the copy while the export runs. Not fixed: rendering from a
+  copy elsewhere breaks the media paths, which resolve beside the project. A fix would render that
+  case from a snapshot transaction instead, but in a synced folder the journal is not WAL, and a long
+  read would block the owner's edits. Noted, not a row.
 
 ### SC-479, what each point of the row now has
 
@@ -83,9 +125,7 @@ main. Its table, for the record:
 
 ## For the next session
 
-- Continue SC-479 at point 4 (real-time-only parts: a test that fails today, then the fix the director
-  picks under B; build the test first, it is wanted either way) and point 5 (a test that a second Export
-  is refused while one runs, and that Freeze/Bounce waits for a running export).
-- The pinned copy costs one read of the project file on the message thread at the press (a project with
-  large sampler states takes longer), and the copy's size on disk while the export runs. A copy left by a
-  crash is a hidden `.adi-export-*.adi` beside the project; nothing sweeps it yet.
+- Round 1's list (points 4 and 5, the unswept copy) was worked in round 2: see "What round 2 decided"
+  and "What a stranger needs next" above.
+- The export queue has no other row to work now (see "Not now"). When the director answers A or B, each
+  answer is its own item on this chain. When SC-394's Live 12 look is done, it is the next item.
