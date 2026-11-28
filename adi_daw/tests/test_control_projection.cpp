@@ -255,6 +255,9 @@ void testLevel0(const rows::Model& m) {
               "the device inside the rack: its ref id, its rack, its plug-in");
         check(utility && utility->at("ref").is_null() && !utility->contains("inRack"),
               "a top-level device with no plug-in: ref null, not in a rack");
+        check(rack && utility && verb && rack->at("ord") == 0 && utility->at("ord") == 1 && verb->at("ord") == 0 &&
+                  verb->at("chain") == 30,
+              "each device's stored ord within its own chain");
     }
 
     const auto& keys = p.at("keyEvents");

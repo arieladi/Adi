@@ -134,7 +134,9 @@ Json devicesOfTrack(const rows::Model& m, std::int64_t trackId) {
             }
             // `ref` is the plug-in reference's id (pluginRefs below), which
             // device.insert takes: a second instance reuses it (R1.22).
-            Json row = {{"id", d->id}, {"chain", c->id}, {"name", d->name}, {"enabled", d->enabled},
+            // `ord` is the stored position device.move and device.insert
+            // take: the list's order alone cannot name a place between two.
+            Json row = {{"id", d->id}, {"chain", c->id}, {"ord", d->ord}, {"name", d->name}, {"enabled", d->enabled},
                         {"rack", d->isRack}, {"plugin", plugin},
                         {"ref", d->pluginRefId ? Json(*d->pluginRefId) : Json(nullptr)}, {"missing", d->missing}};
             if (c->parentDeviceId) row["inRack"] = *c->parentDeviceId;

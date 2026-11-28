@@ -1198,6 +1198,96 @@ void testAgentCorpus() {
     store->close();
 }
 
+void testAgentDeviceWork() {
+    section("AGT-08: an agent's work on devices: a parameter, bypass, rename, reorder, remove and its Undo");
+    ProjectFile f("devices");
+    {
+        // The Bass track's chain, as the user left it: two plug-ins, one knob set.
+        StoreError e = StoreError::Ok;
+        auto setup = Store::open(f.path, e);
+        if (!setup) throw std::runtime_error("fixture: cannot open the project");
+        auto& db = setup->db();
+        db.exec("INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES "
+                "(4,'vst3','00000000000000000000000000000004','Example','Echo','1.0.0','effect'),"
+                "(5,'vst3','00000000000000000000000000000005','Example','Space','1.0.0','effect')");
+        db.exec("INSERT INTO device_chains(id,track_id,ord,name) VALUES (20,3,0,'Devices')");
+        db.exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES (21,20,0,4,'Echo'),(22,20,1,5,'Space')");
+        db.exec("INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES (21,'mix',0.5),(21,'time',0.25)");
+        setup->close();
+    }
+    auto headless = openHeadless(f.path);
+    auto bridge = std::make_unique<Bridge>(headless);
+    Bridge& b = *bridge;
+    b.initialize();
+    const auto devicesOf = [&b] {
+        const Json read = b.tool("project_read", Json::object()).at("structuredContent");
+        const Json* bass = rowWith(read.at("tracks"), "id", 3);
+        return bass ? bass->at("devices") : Json::array();
+    };
+    const auto paramOf = [&b](std::int64_t device, const std::string& param) -> Json {
+        const Json read = b.tool("project_read", {{"level", 1}, {"tracks", {3}}}).at("structuredContent");
+        for (const auto& p : read.at("params"))
+            if (p.at("device") == device && p.at("param").is_string() &&
+                p.at("param").get_ref<const std::string&>() == param)
+                return p.at("norm");
+        return nullptr;
+    };
+
+    const Json before = devicesOf();
+    const Json* echo = rowWith(before, "id", 21);
+    const Json* space = rowWith(before, "id", 22);
+    check(before.size() == 2 && echo && space && echo->value("ord", -1) == 0 && space->value("ord", -1) == 1 &&
+              echo->value("chain", 0) == 20,
+          "level 0: each device gives its chain and its stored ord, which device.move takes");
+    check(paramOf(21, "mix") == 0.5, "level 1: Echo's mix at 0.5");
+
+    const Json r = b.tool(
+        "changeset_propose",
+        {{"request", "Bypass the space, call it dark, put it first and open the echo"},
+         {"baseHead", b.head()},
+         {"ops", Json::array({{{"op", "device.setParam"}, {"payload", {{"dev", 21}, {"param", "mix"}, {"norm", 0.8}}}},
+                              {{"op", "device.setEnabled"}, {"payload", {{"id", 22}, {"enabled", false}}}},
+                              {{"op", "device.rename"}, {"payload", {{"id", 22}, {"name", "Dark space"}}}},
+                              {{"op", "device.move"}, {"payload", {{"id", 21}, {"chain", 20}, {"ord", 2}}}}})}});
+    check(!isToolError(r), "four device ops preview as one changeset: " + r.dump().substr(0, 400));
+    if (isToolError(r)) return;
+
+    StoreError e = StoreError::Ok;
+    auto store = Store::open(f.path, e);
+    check(store != nullptr, "the user opens the project");
+    if (!store) return;
+    const auto applyProposal = [&store](const Json& proposal) {
+        std::string err;
+        const auto changeset = agent::changesetFromJson(*store, proposal.at("structuredContent").at("changeset"), err);
+        return changeset && agent::apply(*store, *changeset).ok;
+    };
+    check(applyProposal(r), "the user applies it");
+    const Json after = devicesOf();
+    const Json* dark = after.size() == 2 ? &after.at(0) : nullptr;
+    check(dark && dark->value("id", 0) == 22 && dark->value("name", "") == "Dark space" &&
+              dark->value("enabled", true) == false && after.at(1).value("id", 0) == 21 &&
+              after.at(1).value("ord", -1) == 2,
+          "the space comes first, renamed and bypassed; the echo after it at ord 2");
+    check(paramOf(21, "mix") == 0.8 && paramOf(21, "time") == 0.25, "the echo's mix is 0.8, its time untouched");
+
+    const std::string projection = textproj::projectStore(*store).text;
+    const Json removal = b.tool("changeset_propose",
+                                {{"request", "Remove the echo"},
+                                 {"baseHead", b.head()},
+                                 {"ops", Json::array({{{"op", "device.remove"}, {"payload", {{"id", 21}}}}})}});
+    check(!isToolError(removal) && applyProposal(removal), "a second proposal removes the echo, and is applied");
+    check(devicesOf().size() == 1 && paramOf(21, "mix").is_null(), "the echo and its parameters are gone");
+    History history(*store);
+    check(history.undo().ok && textproj::projectStore(*store).text == projection,
+          "one Undo brings the echo back exactly");
+    check(rowWith(devicesOf(), "id", 21) && paramOf(21, "mix") == 0.8,
+          "with the sound the agent gave it: mix 0.8, not the plug-in's default");
+
+    bridge.reset();
+    headless.reset();
+    store->close();
+}
+
 void testTelemetry() {
     section("telemetry: what the engine already publishes, labelled honestly");
     engine::StripMeter kick, silent;
@@ -1789,6 +1879,7 @@ int runAll() {
     testJobTools();
     testApplyBoundary();
     testAgentCorpus();
+    testAgentDeviceWork();
     testRefusals();
     testEchoesAreClipped();
     testExpectHead();
