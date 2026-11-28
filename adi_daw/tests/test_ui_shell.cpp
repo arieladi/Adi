@@ -14901,6 +14901,23 @@ void projectFilesList(AppCommands &commands, const std::filesystem::path &dir) {
               files[1].bytes && static_cast<std::uintmax_t>(*files[1].bytes) == std::filesystem::file_size(present),
           "SC-153: the list shows file names, locations, missing status and sizes");
     if (files.size() != 2) return;
+    {
+        // The rows keep the project's order, so a click on a column header must not claim a sort.
+        juce::TableListBox *mediaTable = nullptr;
+        for (auto *child : panel.getChildren())
+            if (auto *listBox = dynamic_cast<juce::TableListBox *>(child))
+                mediaTable = listBox;
+        bool sortClaimed = false;
+        if (mediaTable != nullptr) {
+            auto &columns = mediaTable->getHeader();
+            for (int index = 0; index < columns.getNumColumns(false); ++index) {
+                columns.columnClicked(columns.getColumnIdOfIndex(index, false), juce::ModifierKeys{});
+                sortClaimed = sortClaimed || columns.getSortColumnId() != 0;
+            }
+        }
+        check(mediaTable != nullptr && mediaTable->getHeader().getNumColumns(false) == 4 && !sortClaimed,
+              "SC-153: a click on a column header shows no sort order the list does not apply");
+    }
     auto chosen = present;
     panel.locateFile = [&](const ProjectMediaFile &file) {
         return document->relinkMediaFile(file.id, file.hash, chosen);
