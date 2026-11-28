@@ -4,6 +4,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/launch_data.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/midi_input_route.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -16,9 +17,10 @@ namespace adi::engine::launch {
 
 struct SlotRecordingTarget {
     SlotKey slot;
-    // Empty selects the common typed Track MIDI input. An audio target
-    // lists physical input channels in the order they will be written.
+    // An audio target lists physical input channels in file order. Empty
+    // selects typed MIDI with the track input fixed at prepare time.
     std::vector<std::uint32_t> audioChannels;
+    MidiInputFilter midiInput{};
 };
 
 struct SlotRecordingWindow {
@@ -32,6 +34,7 @@ struct SlotMidiInput {
     std::int64_t scheduledSample;
     std::int64_t inputSample;
     Event event; // frame relative to this callback, in scheduled order
+    std::uint64_t port = 0; // zero for input without a named endpoint
 };
 
 enum class SlotRecordingState : std::uint8_t {

@@ -5,6 +5,7 @@
 #include "adi/engine/slot_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -21,7 +22,7 @@ namespace {
 struct SlotMidiContent {
     std::vector<notes::NoteValues> notes;
     std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
-    std::map<std::pair<int, int>, std::vector<AutomationPoint>> controllers;
+    std::map<std::pair<int, int>, std::vector<controllers::Point>> controllers;
 };
 
 int capturedVelocity(double value, bool onset) {
@@ -35,9 +36,9 @@ int capturedVelocity(double value, bool onset) {
 
 template<class SampleToTick>
 SlotMidiContent readSlotMidi(const engine::launch::SlotRecordingResult& capture,
-                            std::int64_t length, SampleToTick tickAt) {
+                            std::int64_t length, SampleToTick tickAt, engine::MidiInputFilter input) {
     SlotMidiContent content;
-    std::map<std::uint64_t, std::size_t> held;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t> held;
     std::int64_t spanBegin = 0, spanEnd = 0, previous = 0;
     std::optional<std::uint64_t> epoch;
     for (const auto& packet : capture.midi) {
@@ -58,25 +59,30 @@ SlotMidiContent readSlotMidi(const engine::launch::SlotRecordingResult& capture,
             event.frame != sample - spanBegin || !std::isfinite(event.value) || event.channel > 15)
             throw std::runtime_error("invalid slot MIDI event or sample order");
         previous = sample;
+        if (!input.matches(packet.port, event.channel)) continue;
         const auto tick = tickAt(sample);
-        if (event.type == engine::EventType::Controller) {
-            if (event.paramId > 127 || event.value < 0 || event.value > 1)
+        const bool channelPitch = adi::capture::isChannelPitchWheel(event);
+        if (event.type == engine::EventType::Controller || channelPitch) {
+            const auto address = channelPitch ? controllers::kPitchBend : event.paramId;
+            const auto value = channelPitch ? adi::capture::channelPitchWheelValue(event.value) : event.value;
+            if (!controllers::validController(address) || value < 0 || value > 1)
                 throw std::runtime_error("invalid slot MIDI controller address or value");
-            auto& points = content.controllers[{event.channel, static_cast<int>(event.paramId)}];
-            points.push_back({tick, event.value, 0, 0, 0, 0, points.size() + 1});
+            auto& points = content.controllers[{event.channel, static_cast<int>(address)}];
+            points.push_back({points.size() + 1, tick, value});
             continue;
         }
         if (event.noteId == 0)
             throw std::runtime_error("slot MIDI note or expression has no note identity");
+        const auto identity = std::pair{packet.port, event.noteId};
         if (event.type == engine::EventType::NoteOn) {
-            if (event.dim > 127 || !held.emplace(event.noteId, content.notes.size()).second)
+            if (event.dim > 127 || !held.emplace(identity, content.notes.size()).second)
                 throw std::runtime_error("invalid or duplicate held slot note");
             content.notes.push_back({.start = tick, .duration = length - tick, .id = content.notes.size() + 1,
                 .key = event.dim, .velocity = capturedVelocity(event.value, true), .channel = event.channel});
             continue;
         }
 
-        const auto active = held.find(event.noteId);
+        const auto active = held.find(identity);
         if (active == held.end()) continue; // The matching onset can precede the launch boundary.
         auto& note = content.notes[active->second];
         if (event.type == engine::EventType::NoteOff) {
@@ -177,9 +183,10 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
         }
         if (midi ? capture.midiState != engine::MidiCaptureState::Complete : !capture.midi.empty())
             throw std::runtime_error("slot commit needs a complete MIDI capture matching its targets");
-        const auto midiContent = midi ? readSlotMidi(capture, length, tickAt) : SlotMidiContent{};
-        const auto expression = expressionLanes(midiContent);
-
+        std::vector<SlotMidiContent> midiTakes;
+        for (const auto& target : capture.targets)
+            if (target.audioChannels.empty())
+                midiTakes.push_back(readSlotMidi(capture, length, tickAt, target.midiInput));
         constexpr auto label = "Record Session";
         if (capture.audio) {
             const auto& audio = *capture.audio;
@@ -193,22 +200,21 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
         for (auto& request : result.requests) request.label = label;
 
         clip_edit::CopyIds allocated(store.db());
-        std::size_t audioIndex = 0;
+        std::size_t audioIndex = 0, midiIndex = 0;
         for (std::size_t i = 0; i < ids.size(); ++i) {
             const auto& target = capture.targets[i];
             const auto& id = ids[i];
             const auto track = target.slot.trackId;
             Payload image;
             if (target.audioChannels.empty()) {
+                const auto& midiContent = midiTakes[midiIndex++];
+                const auto expression = expressionLanes(midiContent);
+                std::vector<MidiControllerLane> controllerLanes;
+                controllerLanes.reserve(midiContent.controllers.size());
+                for (const auto& [key, points] : midiContent.controllers)
+                    controllerLanes.push_back({key.first, key.second, points});
                 image = RecordingEdit::slotMidiImage(store,
-                    {track, id.clip, 0, length, id.name, midiContent.notes, expression}, allocated);
-                for (const auto& [key, points] : midiContent.controllers) {
-                    const auto bytes = writeStream<AutomationPoint>(FourCC::Controller, points, 1, StreamFlags::SortedByTime);
-                    image.at("children")["event_streams"].push_back(edit::defaultRow(store.db(), "event_streams", {
-                        {"id", allocated.next("event_streams")}, {"clip_id", id.clip}, {"stream_kind", "cc"},
-                        {"channel", key.first}, {"controller", key.second}, {"data", RecordingEdit::slotStreamBytes(bytes)},
-                    }));
-                }
+                    {track, id.clip, 0, length, id.name, midiContent.notes, expression, false, controllerLanes}, allocated);
             } else {
                 image = RecordingEdit::slotAudioImage(store, clock, id, track, mediaIds[audioIndex++],
                     capture.frames, length, capture.sampleRate);
