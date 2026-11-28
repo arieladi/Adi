@@ -894,6 +894,56 @@ void driverMidiCapture() {
     check(capture.state() == MidiCaptureState::DeviceStopped && capture.drain(packets) == 0,
           "closing the audio device terminates even a capture waiting for its first slice");
 }
+// Only the owner's timer drains the MIDI capture. A window that stalls for a few seconds (a slow
+// save, a plug-in opening) must not end the take: at 64-frame blocks the ring held 4096 slices,
+// about five and a half seconds, and the take stopped with "the MIDI recording buffer filled".
+// Here the owner drains nothing for eight seconds while notes are played; the take goes on and
+// holds every frame and every note.
+void midiCaptureOutlastsAStalledOwner() {
+    Fixture f(48000, 64);
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    f.load();
+    auto& capture = f.session.midiInputCapture();
+    std::string error;
+    check(f.session.startMidiInputCapture(std::array<std::int64_t,1>{1}, error), "start a MIDI take");
+    const auto startClock = f.clock;
+    constexpr int blocks = 6000;
+    const auto noteOn = startClock + 1000 * 64 + 5, noteOff = startClock + 5500 * 64 + 9;
+    bool sent = true;
+    for (int block = 0; block < blocks; ++block) {
+        if (block == 1000) sent = sent && f.session.enqueueMidiInput(noteOn, {0, EventType::NoteOn, 3, 60, 700, 0, 0.5});
+        if (block == 5500) sent = sent && f.session.enqueueMidiInput(noteOff, {0, EventType::NoteOff, 3, 60, 700, 0, 0.5});
+        f.render();
+    }
+    check(sent && capture.state() == MidiCaptureState::Recording,
+          "eight seconds without a drain do not end a MIDI take");
+    capture.stop();
+    f.render();
+    check(capture.state() == MidiCaptureState::Complete, "the stalled take completes when it is stopped");
+    std::vector<MidiCapturePacket> packets;
+    std::array<MidiCapturePacket, 256> batch{};
+    while (const auto count = capture.drain(batch))
+        packets.insert(packets.end(), batch.begin(), batch.begin() + static_cast<std::ptrdiff_t>(count));
+    std::int64_t stream = startClock, timeline = -1, frames = 0;
+    bool contiguous = !packets.empty();
+    std::vector<std::pair<EventType, std::int64_t>> events;
+    for (const auto& packet : packets) {
+        if (packet.kind == MidiCapturePacket::Kind::Event) {
+            events.emplace_back(packet.event.type, packet.streamSample);
+            continue;
+        }
+        if (timeline < 0) timeline = packet.timelineSample;
+        contiguous = contiguous && packet.streamSample == stream && packet.timelineSample == timeline && packet.frames > 0;
+        stream += packet.frames;
+        timeline += packet.frames;
+        frames += packet.frames;
+    }
+    check(contiguous && frames == std::int64_t{blocks} * 64,
+          "the stalled take's spans cover every frame it recorded, in order, with no gap");
+    check(events.size() == 2 && events[0] == std::pair{EventType::NoteOn, noteOn} &&
+              events[1] == std::pair{EventType::NoteOff, noteOff},
+          "the notes played while the owner stalled are in the take at their samples");
+}
 void placement(){
     for(double rate:{44100.,48000.,88200.,96000.,176400.,192000.})for(int block:{64,128,256,512,1024,2048,4096}){
         Fixture f(rate,block);f.clip();f.load();
@@ -2137,6 +2187,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "driver-capture") midiCaptureOutlastsAStalledOwner(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
     catch (const std::exception& e) { check(false, e.what()); }
