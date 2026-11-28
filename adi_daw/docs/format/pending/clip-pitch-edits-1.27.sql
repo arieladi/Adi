@@ -10,3 +10,7 @@ CREATE TABLE clip_pitch_edits (
     analysis_configuration INTEGER NOT NULL CHECK (analysis_configuration BETWEEN 0 AND 4294967295),
     edits                  BLOB NOT NULL CHECK (length(edits) BETWEEN 1 AND 16777216)
 ) STRICT;
+
+CREATE TABLE clip_pitch_extractions (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE
+) STRICT;

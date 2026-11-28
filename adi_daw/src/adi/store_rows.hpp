@@ -453,7 +453,12 @@ void readClipNotes(Model&, const Store&, std::int64_t clipId);
 /// appends to `problems`.
 [[nodiscard]] Model readModel(const Store&);
 
-/// Text projection requests authored pitch rows on the same SQLite snapshot.
-[[nodiscard]] Model readModel(const Store&, clip_edit::ProjectPitchEditsRead&);
+struct PitchExtractionRows {
+    std::vector<std::int64_t> clipIds; ///< sorted owner IDs for containment
+    bool unreadable = false;
+};
+
+/// Text projection requests pitch edits and extraction markers on the same snapshot.
+[[nodiscard]] Model readModel(const Store&, clip_edit::ProjectPitchEditsRead&, PitchExtractionRows&);
 
 }  // namespace adi::rows

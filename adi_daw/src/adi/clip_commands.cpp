@@ -285,7 +285,7 @@ void keepRight(Payload& image,const ImageCut& cut) {
 Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint point,
                    const edit::TimeMap& time,double referenceRate,CopyIds& ids) {
     const auto cut=prepareImageCut(store,image,point,time,referenceRate);
-    auto right=cloneImage(image,rightId,ids);
+    auto right=cloneImage(image,rightId,ids,ClonePurpose::SplitPiece);
     keepLeft(image,cut);keepRight(right,cut);
     return right;
 }
@@ -344,7 +344,8 @@ ClipCopy copyClip(Store& store,std::int64_t id,const edit_plan::Options& options
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
-        result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
+        result.sourceFile=filename(store);result.image=captureDeleted(context,id);
+        detachPitchExtraction(result.image);captureMediaKeys(store,result.image);
         edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);
         const auto& row=result.image.at("row");
         if(options.policy.automationFollowsClips && row.at("lane_id").is_null()) {
@@ -793,7 +794,7 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 if(root.at(length).is_null())throw std::runtime_error("copy range needs finite clip extents");
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(last<=begin || first>=end)continue;
-                auto image=captureDeleted(context,id);captureMediaKeys(store,image);
+                auto image=captureDeleted(context,id);detachPitchExtraction(image);captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
                 if(first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
                 if(last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);

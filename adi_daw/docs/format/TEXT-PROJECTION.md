@@ -457,8 +457,13 @@ and notes independently of local identifiers and cached analysis.
 An unreadable edit record leaves `pitchUnreadable` on its clip. A failure
 to read the entire pitch table leaves that marker on the project. Older
 projects with no pitch table have no pitch output. The staged schema tests
-exercise this projection before native activation. Add the pitch table to
-the coverage manifest when its real schema minor lands.
+exercise this projection before native activation. Add both pitch tables to
+the coverage manifest when their schema minor lands.
+
+An extraction output with a `clip_pitch_extractions` row has a bare
+`pitchExtraction` attribute on its MIDI clip. The attribute survives deletion
+of the source clip. A project with unreadable extraction provenance has
+`pitchExtractionUnreadable` on its project header.
 
 ---
 

@@ -541,14 +541,25 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setTimeSignature` | e | S | cap | P1 |
 | `clip.setScale` | e | S | cap | P1 |
 | `clip.setPitchEdits` | e | S | cap | P1 |
+| `clip.splitPitchSegment` | e | S | cap | P1 |
+| `clip.mergePitchSegments` | e | S | cap | P1 |
 
 `clip.setPitchEdits` replaces one clip's complete set of authored pitch edits
 in the reserved schema 1.27 table. The operation captures the previous set
 for Undo. The request identifies the source hash, rate, frame count, analysis
 version and configuration. Each edit includes its original source-note
-bounds and its destination and controls. An empty set clears the clip's
-edits. Journal replay uses explicit values. Worker evaluation of an edit
-set requires matching source analysis.
+bounds and its destination and controls. An empty set without authored
+segmentation clears the clip's edits. Worker evaluation of an edit set
+requires matching source analysis.
+
+`clip.splitPitchSegment` and `clip.mergePitchSegments` use the same source
+identity and complete edit rows, with the resolved `segmentation` required.
+The split image contains at least two segments and the merge image at least one.
+The producer resolves note bounds and corrections before submitting each
+action as its own Undo step. The journal captures the previous clip row or
+its absence. Undo restores that capture, and Redo and replay use the submitted
+image. Boundary correction and previously recorded structural images continue
+through `clip.setPitchEdits`.
 
 `clip.setLane {id,lane?}` preserves the clip identity and all child rows. A
 positive lane must exist, be a take lane and belong to the clip's track; omission

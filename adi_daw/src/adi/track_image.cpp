@@ -306,6 +306,10 @@ using ForeignByChild = std::map<std::string, std::vector<const ForeignKey *>>;
 // R12 will settle whether a copied track starts armed.
 constexpr bool kCopyArmState = false;
 
+bool pitchExtractionRow(const Payload &entry) {
+    return entry.at("table") == "clip_pitch_extractions";
+}
+
 Payload pooledKeys(SQLite::Database &db, const Catalog &catalog, const Payload &capture) {
     Payload keys = Payload::object();
     for (const auto &[table, columns] : {std::pair{"media_files", "hash_blake3"},
@@ -355,6 +359,8 @@ class TrackCopyImage {
         for (const auto &entry : capture.at("rows")) {
             if (!entry.at("after").is_null())
                 continue; // The deletion image can contain changes to surviving tracks.
+            if (pitchExtractionRow(entry))
+                continue;
             const auto name = entry.at("table").get<std::string>();
             const auto &source = entry.at("before");
             const auto &table = catalog.get(name);
@@ -507,6 +513,8 @@ Payload captureTrackForCopy(SQLite::Database &db, std::int64_t root) {
     Image image(db, catalog);
     image.collect("tracks", root);
     auto capture = image.encode(root);
+    auto &rows = capture.at("rows");
+    rows.erase(std::remove_if(rows.begin(), rows.end(), pitchExtractionRow), rows.end());
     capture["assets"] = pooledKeys(db, catalog, capture);
     return capture;
 }

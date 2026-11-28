@@ -271,7 +271,8 @@ std::span<const TableCoverage> coverage() {
 // buildTree
 // ---------------------------------------------------------------------------
 
-static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRead& pitch) {
+static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRead& pitch,
+                      const rows::PitchExtractionRows& extractions) {
     Tree t;
     const std::vector<Meter> meters = metersOf(m.signatures);
 
@@ -289,6 +290,7 @@ static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRe
         a.text("author", m.project.author);
         a.text("notes", m.project.notes);
         if (!pitch.error.empty()) a.raw("pitchUnreadable");
+        a.flag("pitchExtractionUnreadable", extractions.unreadable);
         t.roots.push_back(n);
     }
 
@@ -591,6 +593,7 @@ static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRe
             a.num("channelMode", ac.channelMode, 0);
         }
 
+        a.flag("pitchExtraction", std::binary_search(extractions.clipIds.begin(), extractions.clipIds.end(), c.id));
         if (pitch.clips) {
             const auto saved = pitch.clips->find(c.id);
             if (saved != pitch.clips->end()) addPitchEdits(t, n, saved->second);
@@ -809,12 +812,13 @@ static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRe
     return t;
 }
 
-Tree buildTree(const rows::Model& m) { return buildTree(m, {}); }
+Tree buildTree(const rows::Model& m) { return buildTree(m, {}, {}); }
 
 Projection projectStore(const Store& store) {
     clip_edit::ProjectPitchEditsRead pitch;
-    const auto model = rows::readModel(store, pitch);
-    return project(buildTree(model, pitch));
+    rows::PitchExtractionRows extractions;
+    const auto model = rows::readModel(store, pitch, extractions);
+    return project(buildTree(model, pitch, extractions));
 }
 
 }  // namespace adi::textproj

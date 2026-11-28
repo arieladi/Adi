@@ -9,10 +9,11 @@
 
 namespace adi::clip_edit {
 namespace {
-constexpr std::array<ChildTable,9> children={{
+constexpr char pitchExtractions[]="clip_pitch_extractions";
+constexpr std::array<ChildTable,10> children={{
     {"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
     {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},
-    {"clip_pitch_edits","clip_id"}
+    {"clip_pitch_edits","clip_id"},{pitchExtractions,"clip_id"}
 }};
 }
 std::span<const ChildTable> childTables(){return children;}
@@ -65,7 +66,8 @@ Payload captureImage(OpContext& context,std::int64_t id) {
     Payload result={{"id",id},{"row",*root},{"children",Payload::object()},{"alias_links",Payload::array()}};
     for(const auto& child:children) {
         const bool present=tablePresent(context.db,child.table);
-        if(!present && std::string_view(child.table)=="clip_pitch_edits")continue;
+        const std::string_view table=child.table;
+        if(!present && (table=="clip_pitch_edits" || table==pitchExtractions))continue;
         auto& records=result["children"][child.table];records=Payload::array();
         if(!present)continue;
         SQLite::Statement st(context.db,"SELECT "+std::string(child.key)+" FROM "+child.table+" WHERE clip_id=? ORDER BY "+child.key);
@@ -95,10 +97,14 @@ std::int64_t CopyIds::next(const std::string& table) {
     reserve(table,0);return ids_.next(table);
 }
 
-Payload cloneImage(const Payload& source,std::int64_t id,CopyIds& ids) {
+void detachPitchExtraction(Payload& image) {
+    image.at("children").erase(pitchExtractions);
+}
+Payload cloneImage(const Payload& source,std::int64_t id,CopyIds& ids,ClonePurpose purpose) {
     if(id==detail::signedInteger(source.at("id")))throw std::runtime_error("a copy needs a new clip identity");
     ids.reserve("clips",id);
     auto result=source;result["id"]=id;result["row"]["id"]=id;result["alias_links"]=Payload::array();
+    if(purpose==ClonePurpose::Independent)detachPitchExtraction(result);
     std::map<std::int64_t,std::int64_t> automationIds;
     for(const auto& child:children) {
         if(!result.at("children").contains(child.table))continue;
