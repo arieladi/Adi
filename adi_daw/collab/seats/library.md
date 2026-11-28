@@ -6,9 +6,8 @@ Codex took the library seat on 27 November 2026.
 
 - TM-MD-04, TM-WT-01 and TM-WT-05. Run the prepared workstation fixtures on Live 12.4 and record the remaining measurements. This execution environment has no Live 12.4 host.
 - TM-WT-01. Enable the candidate in production playback after the timing rollout decision. The candidate currently has an opt-in engine path and measured comparison.
-- TM-MD-04. Resolve the appendix's Create Analysis Files switch against the existing always-cache decision.
 
-The current chain is `081971490`, with `origin/main` `ed3da057c` merged. The exact Linux headless gate passed all 295 suites and all five validators. The Windows checker log at `d41168220` has yet to record a native library-chain result.
+The current chain is `5354d28b5`, with `origin/main` `6aeeed1b1` and `wincheck/seats/library-chain` `e5ec63eff` merged. The full Linux headless `ctest -LE performance` gate passed all 296 selected suites in 187.01 s. All six validators passed. The Windows checker passed both native builds and 294 headless suites at its prior repaired head. The current integration has Linux gate results. [Windows checker](https://github.com/arieladi/Adi/blob/basics/wincheck-log/adi_daw/collab/basics/wincheck.md) · [libc++ checker](https://github.com/arieladi/Adi/blob/basics/libcxx-log/adi_daw/collab/basics/libcxx.md)
 
 The first proof, at `5bb8fdd5e` on `origin/main` `17a688803`, passed all 288 headless suites in 261.50 s, including the real-time stress suite and both acceptance suites. It used GCC 14.2 Debug with warnings as errors, Pd and acceptance enabled. All five validators passed. The continuation below builds on the 27 November reservations from `6f96847b0`.
 
@@ -42,7 +41,7 @@ B. The continuation implements the authored-key and BPM-provenance exchange in l
 
 ## For the director
 
-A. The TM-MD-04 appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue say ADI always caches derived analysis. Keep the existing rule and use the implemented root, size, free-space and Cleanup settings?
+A. The current Settings Catalogue and ADR-0125 R-16 specify always-cached analysis. The library follows that rule with the existing folder, size, free-space and Cleanup controls. The older TM-MD-04 appendix describes Live's switch.
 
 ## Readings owed
 
@@ -107,6 +106,25 @@ The 32-recording timing scores are macro averages. Acc1 and Acc2 use a ±4% temp
 | Tempo Acc1 | 2/32 | 22/32 | 28/32 | 24/32 |
 | Tempo Acc2 | 4/32 | 27/32 | 29/32 | 27/32 |
 
+## Continued acceptance on 28 November
+
+| Item | Change and proof | State |
+|---|---|---|
+| Tenth bundle and Windows checker merge | `4c4136ba0` merges `origin/main` `6aeeed1b1` and `wincheck/seats/library-chain` `e5ec63eff`. The merge keeps main's batch placement, deduplication, saved defaults, manual Warp, edited intervals, and existing map edits. The library retains short-sample policy and cached timing for new automatic maps. A new fixture exercises manual source BPM on a clean source with automatic short-sample handling set to Unwarped One Shot. The checker compiles a build-tree copy of the pinned Mixxx tracker with the signed offsets combined before indexing. A GCC checked-iterator probe reproduced the assertion in the pinned copy and ran through with the generated copy. | Pushed. Included in the 296-suite merged gate. |
+| TM-MD-07, first-publication content verification | `5354d28b5` treats persisted size and mtime as hints. The existing background worker hashes a new unproved revision. An exact previous measurement or explicitly verified native revision can use the cached digest. The tests use main's real Browser matcher and Place walker. The prior implementation failed the replacement sound, replacement tag and paused reuse checks. This revision passes them and exercises nested `.SMF` exclusion from sample search. | Pushed. Included in the 296-suite merged gate. |
+
+The browser measurements below used already published ALIB data for warm runs and shared the machine with the merged build. Establishing explicit native proof is outside the publication intervals. Fresh listings with unproved index metadata still do their file reads on the catalogue worker.
+
+| Corpus and cache state | First 40 usable from listing replacement | All worker measurements |
+|---|---:|---:|
+| 200 two-second stereo WAVs, cold without a verified revision | 7.416 s | 26.081 s |
+| Same 200, warm without a verified revision | 0.105 s | 0.552 s |
+| Same 200, warm with verified revisions | 0.027 s | 0.030 s |
+| 200,000 short WAVs, warm without verified revisions | 5.517 s | 33.296 s |
+| Same 200,000, warm with verified revisions | 5.170 s | 23.036 s |
+
+Both warm sizes completed with zero PCM opens. Establishing native proof separately cost 1.003 s for 200 files and 73.369 s for 200,000. The with-proof times describe reuse of already established proof.
+
 ## Remaining acceptance
 
 | Card | Native acceptance | Remaining evidence |
@@ -121,9 +139,8 @@ This Linux execution environment has no Live 12.4 host for the remaining worksta
 ### Unbuilt or gated integration
 
 - TM-WT-01's evaluation switch exposes the candidate in both native producers. The labelled corpus favors it over the incumbent beat detector. Downbeat accuracy still varies by instrument, and the 6/8 proof uses supplied source meter and quarter tempo. The real key comparison favored the incumbent at 7/16 exact versus 5/16 for the CQT probe. Recommend promoting the timing candidate only after the remaining meter and Live reference readings. The independent model runs in the benchmark process.
-- TM-MD-04's appendix calls for a Create Analysis Files switch. ADR-0125 R-16 and the Settings Catalogue specify always caching derived analysis. The engine applies the existing size, free-space, folder and Cleanup settings. Recommend retaining the catalogue rule.
 - The Browser and floating search can use the tested headless adapter at the existing presentation boundary. The current Browser-chain preview player plays one shot. Its later loop player can use the same typed classification exercised by the filter and Warp fixtures. The seat prompt assigns tempo-following preview playback to the stretcher seat and presentation wiring to the window lane.
-- The main merge resolves the Warp hunk. Edited intervals retain their source origin and End marker mapping. Stored maps retain their bytes. New maps use the shared timing analyzer, and short-sample policy applies to an unedited full file with no stored map. Warp off clears the opted-in full-source loop with the clip edit. The full headless matcher and typed listing are still on `basics/browser-chain` `862cea353`. The virtual merge now has three conflicts in that lane's two images and Cue test, outside the library paths.
+- The tenth bundle landed the headless Browser matcher and typed listing. The library's own regression now calls them directly. App wiring of the prepared analysis publication remains with the window lane. The merge keeps main's Warp interval mapping and stored map rules. New automatic maps use the shared analysis. Manual source tempo pins the original source start and bypasses short-sample classification.
 
 The warnings-as-errors GCC 14.2 Debug gate with Pd and acceptance enabled passed all 295 suites in 209.24 s on the merged chain, including both acceptance suites. The library test ran serially in 0.21 s with its original 120 s timeout. The preceding gate passed all 294 suites in 225.43 s on `1d967c1de`, before the main merge. Schema, ops, parity, Pd and CI validators passed on the final reservation merge.
 
