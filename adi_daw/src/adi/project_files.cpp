@@ -565,8 +565,14 @@ StoreFileResult Store::prepareFileSave(const fs::path& output, StoreSaveKind kin
     if (job.data_) return {false, "save job was already prepared", {}};
     if (closed_ || !db_) return {false, "project is closed", {}};
     try {
-        if (kind != StoreSaveKind::copy && kind != StoreSaveKind::saveAs && kind != StoreSaveKind::firstSave)
+        if (kind != StoreSaveKind::copy && kind != StoreSaveKind::saveAs &&
+            kind != StoreSaveKind::firstSave && kind != StoreSaveKind::sessionCopy)
             throw std::runtime_error("unknown save kind");
+        if (kind == StoreSaveKind::sessionCopy) {
+            if (major_ != kSchemaMajor) throw std::runtime_error("session copies need a supported schema major");
+            if (collision != StoreFileCollision::Fail)
+                throw std::runtime_error("session copies cannot replace an existing project");
+        }
         const auto owner = appliedSource(*this);
         if (detail::appliedSourceStore(owner) != this || detail::appliedDispatchActive(*this))
             throw std::runtime_error("saving requires the idle project owner");
@@ -663,7 +669,8 @@ StoreFileResult StoreFileSave::write(std::stop_token stop, const Progress& progr
             reader.reset();
         };
         state.copy = Store::writeFileCopy(state.target, state.sourceFolder, state.sourceLease, state.major,
-                                          state.collision, snapshot, stop, phaseProgress, this, state.copyPolicy);
+                                          state.collision, state.kind, snapshot, stop, phaseProgress, this,
+                                          state.copyPolicy);
         return *state.copy;
     } catch (const SaveCancelled&) {
         state.cancelled = true;
@@ -692,7 +699,7 @@ fs::path Store::copyBeforeMigration(SQLite::Database& source, int fromMinor, std
                                       std::to_string(now) + ".adi");
     SQLite::Database reader(sqlite3_db_filename(source.getHandle(), "main"), SQLite::OPEN_READONLY);
     const auto copied = writeFileCopy(backupPath, folder, sourceLease,
-        kSchemaMajor, StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+        kSchemaMajor, StoreFileCollision::Fail, StoreSaveKind::copy, [&](SQLite::Database& destination) {
             SQLite::Backup backup(destination, reader);
             if (backup.executeStep() != SQLITE_DONE)
                 throw std::runtime_error("pre-upgrade database snapshot was incomplete");
@@ -707,6 +714,13 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output, StoreFileCo
     auto result=saveCopyImpl(output,collision,copyPolicy,stop);
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
+
+StoreFileResult Store::saveSessionCopy(const std::filesystem::path& output) const {
+    auto result = saveCopyImpl(output, StoreFileCollision::Fail, StoreCopyPolicy::preserve, {},
+                               StoreSaveKind::sessionCopy);
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+
 namespace {
 constexpr auto backupOrigin = "backup_origin";
 constexpr auto backupCreated = "backup_created_utc";
@@ -895,6 +909,7 @@ StoreFileResult Store::writeProjectBackup(const fs::path& project, std::int64_t 
             const auto target = numberedAdiFile(folder, stem, number);
             if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
             auto copied = writeFileCopy(target, base, source->fileLease_, source->major_, StoreFileCollision::Fail,
+                StoreSaveKind::copy,
                 [&](SQLite::Database& destination) {
                     backUpDatabase(destination, source->db(), stop);
                     stampBackupImage(destination, {media::pathUtf8(project.filename()), createdUtc, number - 1});
@@ -983,7 +998,7 @@ StoreFileResult Store::restoreProjectBackup(const fs::path& project, const fs::p
             const auto target = numberedAdiFile(destinationFolder, stem, number);
             if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
             auto copied = writeFileCopy(target, media::projectFolder(*source), source->fileLease_, source->major_,
-                StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+                StoreFileCollision::Fail, StoreSaveKind::copy, [&](SQLite::Database& destination) {
                     backUpDatabase(destination, source->db(), stop);
                     clearBackupMarkers(destination);
                     verifyBackupImage(destination);
@@ -1095,13 +1110,15 @@ StoreFileResult recover(const fs::path& path, const fs::path& destination, std::
 } // namespace backup
 
 Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output, StoreFileCollision collision,
-                                     StoreCopyPolicy copyPolicy, std::stop_token stop) const {
+                                     StoreCopyPolicy copyPolicy, std::stop_token stop, StoreSaveKind kind) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {
         if(closed_ || !db_)return {false,"project is closed",{}};
+        if (kind == StoreSaveKind::sessionCopy && major_ != kSchemaMajor)
+            return {false, "session copies need a supported schema major", {}};
         if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before saving a copy",{}};
         const auto sourceFolder = major_ == kSchemaMajor ? media::projectFolder(*this) : fs::path{};
-        return writeFileCopy(output, sourceFolder, fileLease_, major_, collision,
+        return writeFileCopy(output, sourceFolder, fileLease_, major_, collision, kind,
             [&](SQLite::Database& destination) {
                 backUpDatabase(destination, *db_, stop);
             }, stop, {}, nullptr, copyPolicy);
@@ -1110,7 +1127,7 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output, StoreF
 }
 
 Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& sourceFolder,
-    const std::shared_ptr<media::ProjectFileLease>& sourceLease, int major, StoreFileCollision collision,
+    const std::shared_ptr<media::ProjectFileLease>& sourceLease, int major, StoreFileCollision collision, StoreSaveKind kind,
     const std::function<void(SQLite::Database&)>& snapshot, std::stop_token stop, const StoreFileSave::Progress& progress,
     const StoreFileSave* pending, StoreCopyPolicy copyPolicy) {
     try {
@@ -1132,6 +1149,7 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
                 SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
             auto& destination = *database;
             snapshot(destination);
+            if (kind == StoreSaveKind::sessionCopy) renewProjectUuid(destination);
             checkSaveCancellation(stop);
             if (progress) progress({StoreSavePhase::relocating});
             const bool sharing = copyPolicy != StoreCopyPolicy::preserve;
@@ -1150,10 +1168,10 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
             if (major == kSchemaMajor) {
                 rebaseHistory(destination, sourceFolder, media::projectFolder(destination).parent_path(),
                               mediaToMove ? &*mediaToMove : nullptr, stop);
-                // A normal Save As (or its Copy dialog) yields an ordinary project.
+                // Save As, a sharing copy and a session fork yield ordinary projects.
                 if (pending && pending->data_->backup)
                     stampBackupImage(destination, *pending->data_->backup);
-                else if (pending || sharing)
+                else if (pending || sharing || kind == StoreSaveKind::sessionCopy)
                     clearBackupMarkers(destination);
                 if (pending && pending->data_->recoveringBackup)
                     verifyBackupImage(destination);
@@ -1246,7 +1264,8 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
 }
 
 StoreFileResult Store::adoptFileSave(StoreFileSave& job) {
-    if (audio::onAudioThread || !job.data_ || job.data_->kind == StoreSaveKind::copy ||
+    if (audio::onAudioThread || !job.data_ ||
+        (job.data_->kind != StoreSaveKind::saveAs && job.data_->kind != StoreSaveKind::firstSave) ||
         !job.data_->copy || !job.data_->copy->ok || job.data_->retired)
         return {false, "save job has no published replacement", {}};
     if (closed_ || !db_ || detail::appliedSourceStore(job.data_->owner) != this || detail::appliedDispatchActive(*this))

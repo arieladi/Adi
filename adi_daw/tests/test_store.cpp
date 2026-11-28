@@ -149,6 +149,87 @@ void testNewProjectDefaults() {
           "the snapshot fallback also follows the new-project default");
 }
 
+void testProjectUuid() {
+    section("AGT-02: create and first writable open assign a stable project identity");
+    Scratch scratch("project_uuid");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto store = Store::create(path, error);
+    const auto imported = Store::createEmpty(scratch / "import.adi", error);
+    check(store && imported, "both independent projects are created");
+    if (!store || !imported) return;
+
+    const auto storedUuid = [](Store& project) {
+        return project.db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString();
+    };
+    const auto original = storedUuid(*store);
+    const auto other = storedUuid(*imported);
+    check(!original.empty() && !other.empty() && original != other,
+          "new files carry distinct project ids, including a converter's empty store");
+    store.reset();
+
+    auto reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader) == original, "the project id is durable on read-only reopen");
+    reader.reset();
+    {
+        SQLite::Database legacy(path.string(), SQLite::OPEN_READWRITE);
+        legacy.exec("UPDATE adi_meta SET value='' WHERE key='project_uuid'");
+    }
+    reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader).empty(), "read-only open leaves a legacy project without an id");
+    reader.reset();
+
+    store = Store::open(path, error);
+    check(store && !store->upgradedFromMinor(), "the legacy file is already at the current schema");
+    if (!store) return;
+    const auto backfilled = storedUuid(*store);
+    check(!backfilled.empty() && backfilled != other && !OpJournal(*store).headSeq(),
+          "first writable open fills the id without adding an undo step");
+    store.reset();
+    store = Store::open(path, error);
+    check(store && storedUuid(*store) == backfilled, "later writable opens keep the same id");
+}
+
+void testHeadlessApplyLease() {
+    section("headless Apply requires exclusive access to the project");
+    Scratch scratch("headless_apply");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto editor = Store::create(path, error);
+    check(editor != nullptr, "the editor owns a writable Store");
+    if (!editor) return;
+
+    OpRequest rename;
+    rename.opType = "project.setName";
+    rename.payload = {{"name", "Editor"}};
+    check(OpJournal(*editor).commit(rename).ok, "the editor commits a starting head");
+    const auto head = OpJournal(*editor).headSeq();
+    auto reader = Store::open(path, error, true);
+    check(reader && reader->readOnly() && OpJournal(*reader).headSeq() == head,
+          "a read-only preview can see the open editor's committed work");
+    const auto refused = Store::openForHeadlessApply(path, error);
+    check(!refused && error == StoreError::ExclusiveAccessRequired &&
+              OpJournal(*editor).headSeq() == head,
+          "headless Apply refuses the editor's shared lease and leaves its head alone");
+
+    editor.reset();
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a remaining read-only Store also holds a shared lease");
+    reader.reset();
+    auto writer = Store::openForHeadlessApply(path, error);
+    check(writer && error == StoreError::Ok && !writer->readOnly(),
+          "headless Apply opens writable once all shared leases are released");
+    if (!writer) return;
+    check(!Store::open(path, error), "a competing editor cannot open during headless Apply");
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a second headless writer cannot share the exclusive lease");
+    check(OpJournal(*writer).headSeq() == head, "the exclusive writer sees the same starting head");
+    writer.reset();
+    const auto reopened = Store::open(path, error);
+    check(reopened && OpJournal(*reopened).headSeq() == head,
+          "normal access resumes after the exclusive writer releases its lease");
+}
+
 // --- SPEC 3.3: the WAL sidecar rule -----------------------------------------
 
 void testWalSidecarRule() {
@@ -582,6 +663,8 @@ int main() {
     std::printf("adi_store_tests -- SPEC 2, 3, 11 and ADR-0009\n\n");
     testCreateAndOpen();
     testNewProjectDefaults();
+    testProjectUuid();
+    testHeadlessApplyLease();
     testWalSidecarRule();
     testSyncedProjectCopies();
     testSynchronizedProject();

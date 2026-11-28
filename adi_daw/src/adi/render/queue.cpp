@@ -877,7 +877,7 @@ std::string serializeRunManifest(const RunReport& run) {
     return manifest.dump(2);
 }
 
-void Queue::run(engine::DeviceLoader loader, Control control) {
+void Queue::run(engine::DeviceLoader loader, Control control, const QueueObserver& observer) {
     if (running_) throw std::logic_error("export queue is already running");
     running_ = true;
     struct Reset { bool& value; ~Reset() {value=false;} } reset{running_};
@@ -911,6 +911,12 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
             continue;
         }
         const Job job = it->job;
+        const auto requested = observer.start ? observer.start(id) : std::optional{std::stop_token{}};
+        if (!requested) {
+            jobs_.erase(it);
+            if (member) member->removedBeforeStart = true;
+            continue;
+        }
         it->result.state = JobState::Running;
         if (member) {
             member->started = true;
@@ -920,10 +926,25 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         }
         Result result;
         try {
+            Control active = control;
+            // A global stop ends the run. A member stop affects only this
+            // invocation of the renderer, including its file publication.
+            std::stop_source either{std::nostopstate};
+            if (requested->stop_possible()) {
+                if (control.stop.stop_possible()) {
+                    either = std::stop_source{};
+                    active.stop = either.get_token();
+                } else {
+                    active.stop = *requested;
+                }
+            }
+            const auto stopEither = [&either] { (void)either.request_stop(); };
+            std::stop_callback stopRun(either.stop_possible() ? control.stop : std::stop_token{}, stopEither);
+            std::stop_callback stopMember(either.stop_possible() ? *requested : std::stop_token{}, stopEither);
             // The enqueue ordinal is stable across removal/retry. Reusing a
             // vector index would reuse names of completed files after removal.
-            result = job.niStems ? renderNiStems(job, loader, control, id, id)
-                                 : renderWav(job, loader, control, id, id);
+            result = job.niStems ? renderNiStems(job, loader, std::move(active), id, id)
+                                 : renderWav(job, loader, std::move(active), id, id);
         } catch (const std::exception& e) {
             result.state = JobState::Failed; result.error = e.what();
         } catch (...) {
@@ -936,6 +957,7 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
                 try { member->result = e.result; }
                 catch (...) { member->result.reset(); lastRun_.captureComplete = false; }
             }
+            if (observer.finished) observer.finished(id, e.result);
             break;
         }
     }
