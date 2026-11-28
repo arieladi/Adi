@@ -190,9 +190,24 @@ picture and the Arrangement's differ (the preview row always shown there, no AI 
 ADR-0261 win. Proposal 1 of the Browser (19 November, on `window/proposals`) was never shown to him
 and is overtaken.
 
+## The built-in devices, sheets 1 to 8 (`proposals/devices-1` to `devices-8`)
+
+Drawn on 28 November 2026 after the director's second test (SC-454, SC-455), each with its source beside
+it and the shared drawing code in `src/devlib.js`. Sheet 1 lays seven devices out as Live lays its own;
+sheet 2 was a first try at the look he asked for and is overtaken. **Sheet 3 is the agreed look**
+("agreed, draw the rest of the devices"): a card shows the controls reached for and opens to the whole
+device; the main control is large with its value inside; the signal is drawn behind a curve; short lists
+are joined buttons; every card has a meter; orange is the device's own, blue a modulator or the signal.
+Sheets 4 to 8 follow it: 4 (EQ, Utility, Overdrive, Redux, Echo opened, Hybrid Reverb), 5
+(Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators, Vocoder), 6 (ADI-Shaper), 7 (OneShot, Sampler), 8
+(Chord Comb, Color Cab: "looks perfect to me"). A sheet draws only what a device has today: what
+ADI-Shaper, OneShot and Sampler lack beside their models is three lists, not a fault of the look (SC-481
+to SC-483). The record is ADR-0267. Still to draw: OneShot in its Slice mode; the opened views of
+Phaser-Flanger, Shifter and Vocoder; the card's preset row and the floating preset list (ADR-0267 d7).
+
 ## What is not on a sheet yet
 
-Each Pd device's panel; the Clip View; the Mixer and the track rows in detail; the Browser's plug-in list
+The Clip View; the Mixer and the track rows in detail; the Browser's plug-in list
 (folders by maker, Rescan); menus,
 dialogs and Settings; the contents of a channel's name tag in the Mix View. They are rows in
 `docs/DEFERRED.md` (DF-W20, DF-W23).
