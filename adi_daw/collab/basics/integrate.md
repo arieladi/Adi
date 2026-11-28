@@ -1,4 +1,4 @@
-Integrating basics/integrate-4 at `6ae9defb5e236ade043fdca09bc67679542654f2`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
+Integrating basics/integrate-4 at `650063b8ce8387a684a8d51e257be674de2a8417`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
@@ -26,6 +26,10 @@ Started from `land/basics-1128c` at `16064c0a6d8e3f435ed5cb9626e09d2b73f042cd` w
 At the Session checkpoint, Slot Commit, Arrangement Isolation, Performance Capture, R3 Worker and Overlay Delay passed. Persisted Launch, Performance Graph, Scene Clock and Warp Integration exposed regressions at the shared media-bank boundaries. `e54505f9` separates native one-shot validation from pinned physical handovers. `f845be1f` prepares fixed source projections for retained tempo periods. The delayed scene now keeps its sample-192000 clock switch and produces the expected −0.25 PCM. `bb4691a98` matches steady Re-Pitch across Session and Arrangement. The captured Warp fixture went from 839 differing samples to exact PCM. The four original failing fixtures passed scoped verification with their assertions intact. The full JUCE build and CTest gate are running on the combined head, with both C++ Node helper checks enabled. All six validators and the landing-check tests passed. The JavaScript helper passed all 15 tests on the CI Node version.
 
 `24a7acc55` qualified the Pitch fixture’s existing row-capture helper after Speed added a second `detail` namespace. The unchanged fixture then compiled with warnings as errors. Once #838 landed, `6ae9defb5` merged `origin/main` at `bac01d4e89c66fc49307de8312f519486a44d467` cleanly. The sync adds only the newer Win log to this branch. The six validators and landing-check tests passed again on the synced head. [Landed PR](https://github.com/arieladi/Adi/pull/838)
+
+The first full test attempt stopped when workspace storage filled. After freeing space, `6ae9defb5` passed 379 of 381 headless suites, all 18 display-free window suites, and all three acceptance suites. All four Session regressions passed on the integrated head. The two failures exposed the old-server identity fixture and a PCM mismatch between live and flattened Re-Pitch playback. `8502ca99` recreates an unprovisioned legacy project and reopens it read-only. The refusal fixture passed all 27 checks, including that resolution, consent and processor construction each stay unused.
+
+The later verified Stretcher tip `e0d72128bdfe0ed17a2af1006b136c4202c94063` passed all 312 owner suites. Merge `e6b8b89d` resolved three runtime and launcher conflicts and kept the separate raw-clock, pinned-source and linked-cue paths. Director tip `865d1d9bb615dceba6e4031829ec0ae540e8679c` adds the tested compact Control Bar in SC-446. Merge `058e38c2` keeps the shell pixel helper and blacks out the same new text area in each software image before comparing. `650063b8` syncs the documentation-only main update `629a4834`. The next gate will include the Pitch playback repair. [Stretcher log](https://github.com/arieladi/Adi/blob/401e611753b453108598b26f0debd32935a9f1aa/adi_daw/collab/seats/stretcher.md) [Director test log](https://github.com/arieladi/Adi/blob/866043f26bcfa7b993bffb223c5d9aa4734c0c17/adi_daw/collab/basics/test.md)
 
 ## Integrate-3
 
