@@ -2,6 +2,7 @@
 
 #include "adi/control/agent_runtime.hpp"
 #include "adi/control/mcp.hpp"
+#include "adi/control/proposal_freshness.hpp"
 #include "adi/device_presets.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -193,6 +194,44 @@ int proposingHelper() {
     helperSend({{"type", "answer"}, {"id", id}, {"text", "One change waits for your review"}});
     helperSend({{"type", "ended"}, {"id", id}, {"reason", "completed"}, {"steps", 2}});
     return 0;
+}
+
+/// Freshness on a hand-built history tree: the branches and the compacted root
+/// that a live document makes slowly.
+void testFreshnessOnTheTree() {
+    const auto step = [](std::int64_t seq, std::optional<std::int64_t> parent, bool applied, bool line) {
+        History::TimelineStep s;
+        s.step.txnId = seq;
+        s.step.firstSeq = seq;
+        s.step.lastSeq = seq;
+        s.parentSeq = parent;
+        s.applied = applied;
+        s.onCurrentLine = line;
+        return s;
+    };
+    // root -> 1 -> 2 (the head); 3 branches from 1 and is not on the current line.
+    History::Timeline tree;
+    tree.headSeq = 2;
+    tree.steps = {step(3, 1, false, false), step(2, 1, true, true), step(1, std::nullopt, true, true)};
+    const auto is = [&](std::optional<std::int64_t> base, Freshness state, std::size_t steps) {
+        const auto found = proposalFreshness(tree, base);
+        return found.state == state && found.steps == steps;
+    };
+    require(is(2, Freshness::Current, 0) && is(1, Freshness::Behind, 1) && is(std::nullopt, Freshness::Behind, 2),
+            "a base on the undo path is behind by the steps after it");
+    require(is(3, Freshness::Elsewhere, 0) && is(99, Freshness::Elsewhere, 0),
+            "a base on another branch, or unknown to the tree, is elsewhere");
+    tree.headSeq = 1;
+    tree.steps = {step(3, 1, false, false), step(2, 1, false, true), step(1, std::nullopt, true, true)};
+    require(is(2, Freshness::Ahead, 1) && is(3, Freshness::Elsewhere, 0),
+            "a base on the redo line is ahead; the other branch still elsewhere");
+    tree.headSeq = 2;
+    tree.baseSeq = 1;
+    tree.steps = {step(2, 1, true, true)};
+    require(is(1, Freshness::Behind, 1) && is(std::nullopt, Freshness::Elsewhere, 0),
+            "past a compacted root, Undo reaches the root it kept and not the empty song");
+    tree.error = "cannot read";
+    require(is(2, Freshness::Unknown, 0), "a history that cannot be read says nothing");
 }
 
 /// AGT-05's engine side for the AI mode's cards (ADR-0261 d7, ADR-0262 d2):
@@ -528,6 +567,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--binding-helper") return bindingHelper();
         if (argc == 2 && std::string_view(argv[1]) == "--proposing-helper") return proposingHelper();
         testAppControl(std::filesystem::absolute(argv[0]));
+        testFreshnessOnTheTree();
         testReviewCards(std::filesystem::absolute(argv[0]));
         std::puts("PASS -- loopback app control, consent, review, Stop Agent and shutdown");
         return 0;
