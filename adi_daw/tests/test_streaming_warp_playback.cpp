@@ -10,6 +10,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/warp_clip_player.hpp"
+#include "adi/engine/warp_projection.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/render/queue.hpp"
@@ -987,6 +988,10 @@ void requireUnity(bool condition,const char* failure) {
     if (!condition) throw std::runtime_error(failure);
 }
 
+enum class UnityMarkerShape { Endpoints, IdentityInterior, ShiftedInterior };
+constexpr std::uint32_t unityProbeMarker = 8393;
+constexpr std::size_t unityInteriorMarkers = 9;
+
 struct SavedWindow {
     test::TempDirectory directory{"arrangement-reversed-r3-unity","project"};
     std::unique_ptr<Store> store;
@@ -996,7 +1001,8 @@ struct SavedWindow {
         return static_cast<std::int64_t>(std::llround(static_cast<double>(at)*quarter/(rate/2)));
     }
 
-    SavedWindow(std::uint32_t sampleRate,audio::WarpMode mode)
+    SavedWindow(std::uint32_t sampleRate,audio::WarpMode mode,
+                UnityMarkerShape shape=UnityMarkerShape::Endpoints)
         : rate(sampleRate),pageFrames((8192u*rate+47999u)/48000u),windowFrames(8*pageFrames+37) {
         const auto song = directory.path()/"unity.adi";
         StoreError error{};
@@ -1043,9 +1049,18 @@ struct SavedWindow {
             clip.bind(1,tick(placementFrame));
             clip.bind(2,tick(windowFrames));
             clip.exec();
-            const auto blob = audio::writeWarpMap(std::array{WarpMarker{0,0},WarpMarker{windowFrames,tick(windowFrames)}},
-                                                  windowFrames);
-            requireUnity(static_cast<bool>(blob),"encode exact unity Warp endpoints");
+            std::vector<WarpMarker> markers{{0,0}};
+            if (shape != UnityMarkerShape::Endpoints) {
+                const std::array<std::uint32_t,unityInteriorMarkers> frames{
+                    1,4095,4096,4097,unityProbeMarker,16383,4*pageFrames+29,windowFrames-3,windowFrames-1};
+                for (const auto frame : frames) {
+                    const bool shifted = shape==UnityMarkerShape::ShiftedInterior && frame==unityProbeMarker;
+                    markers.push_back({frame,tick(frame+static_cast<std::uint32_t>(shifted))});
+                }
+            }
+            markers.push_back({windowFrames,tick(windowFrames)});
+            const auto blob = audio::writeWarpMap(markers,windowFrames);
+            requireUnity(static_cast<bool>(blob),"encode the saved unity Warp fixture");
             SQLite::Statement audioRow(db,"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,"
                                           "warp_enabled,warp_mode,warp_markers,reverse) VALUES(7,1,?,?,1,?,?,1)");
             audioRow.bind(1,windowStart);
@@ -1057,6 +1072,23 @@ struct SavedWindow {
         store.reset();
         store = Store::open(song,error);
         if (!store) throw std::runtime_error(toString(error));
+    }
+
+    void verifyInteriorMarkers(bool shifted) const {
+        SQLite::Statement row(store->db(),"SELECT warp_markers FROM audio_clips WHERE clip_id=7");
+        requireUnity(row.executeStep(),"load the saved Warp markers");
+        const auto packed=row.getColumn(0);
+        const auto map=audio::readWarpMap({static_cast<const std::byte*>(packed.getBlob()),
+                                         static_cast<std::size_t>(packed.getBytes())},windowFrames);
+        requireUnity(map && map.markers.size()==unityInteriorMarkers+2,
+                     "the saved AWRP reader keeps every authored interior point");
+        TempoMap tempo;
+        tempo.events={{0,120,0}};
+        const auto projected=projectWarpAnchors(map.markers,tempo,tick(placementFrame),rate);
+        requireUnity(projected.size()==map.markers.size(),"the steady projection keeps every authored interior point");
+        for (const auto& anchor : projected)
+            requireUnity(anchor.outputFrame==anchor.sourceFrame+(shifted && anchor.sourceFrame==unityProbeMarker ? 1u : 0u),
+                         "the saved map projects to exact unity apart from the optional one-frame interior change");
     }
 
     void load(Session& session,bool prepared,std::uint32_t first=0) {
@@ -1076,8 +1108,10 @@ bool bitEqual(std::span<const StereoFrame> a,std::span<const StereoFrame> b) {
     });
 }
 
-void reversedUnityPreparedParity(std::uint32_t rate,audio::WarpMode mode) {
-    SavedWindow source(rate,mode);
+void reversedUnityPreparedParity(std::uint32_t rate,audio::WarpMode mode,
+                                 UnityMarkerShape shape=UnityMarkerShape::Endpoints) {
+    SavedWindow source(rate,mode,shape);
+    if (shape==UnityMarkerShape::IdentityInterior) source.verifyInteriorMarkers(false);
     const auto windowFrames = source.windowFrames;
     Session native, reference;
     source.load(native,false);
@@ -1149,6 +1183,22 @@ void reversedUnityPreparedParity(std::uint32_t rate,audio::WarpMode mode) {
     std::printf("reversed Complex clock edit: bit-exact legacy prepared PCM\n");
 }
 
+void reversedUnityOneFrameKeepsPrepared() {
+    SavedWindow source(48000,audio::WarpMode::Complex,UnityMarkerShape::ShiftedInterior);
+    source.verifyInteriorMarkers(true);
+    Session session, reference;
+    source.load(session,false);
+    source.load(reference,true);
+    requireUnity(session.clips()->problems().size()==1 && session.graph().currentGraph()->latencySamples()==0,
+                 "a one-frame interior Warp change keeps the historical prepared path");
+    const auto frames=placementFrame+source.windowFrames+513;
+    const auto heard=compensatedPlayback(session,frames,377);
+    const auto golden=compensatedPlayback(reference,frames,231);
+    requireUnity(bitEqual(heard,golden) && session.clips()->underrunSamples()==0 && session.clips()->readErrors()==0,
+                 "the one-frame fallback retains exact historical playback without source errors");
+    std::printf("reversed Complex with one nonunity interior frame: exact prepared fallback\n");
+}
+
 void reversedComplexModesKeepPreparedAt96k() {
     audio::WarpRenderPlan plan;
     plan.outputRate = 96000;
@@ -1187,7 +1237,8 @@ int main() {
         reverseTextureTypedTempo();
         reverseTextureRenderCursor();
         reversedUnityPreparedParity(44100,audio::WarpMode::ComplexPro);
-        reversedUnityPreparedParity(48000,audio::WarpMode::Complex);
+        reversedUnityPreparedParity(48000,audio::WarpMode::Complex,UnityMarkerShape::IdentityInterior);
+        reversedUnityOneFrameKeepsPrepared();
         reversedUnityPreparedParity(96000,audio::WarpMode::Tones);
         reversedComplexModesKeepPreparedAt96k();
         steadyTempo("texture", 120.0);

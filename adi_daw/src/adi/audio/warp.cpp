@@ -31,6 +31,7 @@ namespace {
 namespace fs=std::filesystem;
 constexpr std::uint32_t blockFrames=4096;
 constexpr std::uint64_t maxFrames=(std::uint64_t{1}<<31)-1;
+constexpr std::size_t maxAnchors=1000000;
 struct Failure {WarpError code;const char* text;};
 void cancelled(std::stop_token stop){if(stop.stop_requested())throw Failure{WarpError::Cancelled,"warp cancelled"};}
 struct Decoded {
@@ -57,7 +58,7 @@ void validate(const WarpRenderPlan& plan,const WavReader& reader) {
     if(plan.sourceFrames==0 || plan.sourceFrames>maxFrames || plan.sourceStart>reader.frames() ||
        plan.sourceFrames>reader.frames()-plan.sourceStart || reader.channels()==0 || reader.channels()>64 ||
        reader.sampleRate()<8000 || reader.sampleRate()>768000 || plan.outputRate<44100 || plan.outputRate>768000 ||
-       plan.anchors.size()<2 || plan.anchors.size()>1000000 || !std::isfinite(plan.transposeSemis) ||
+       plan.anchors.size()<2 || plan.anchors.size()>maxAnchors || !std::isfinite(plan.transposeSemis) ||
        plan.transposeSemis<-96 || plan.transposeSemis>96 || !std::isfinite(plan.formantScale) ||
        plan.formantScale<=0 || plan.formantScale>8)
         throw Failure{WarpError::InvalidPlan,"invalid warp source, rate, pitch or anchor count"};
@@ -368,9 +369,17 @@ std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan& pla
         !validUnityR3Source(plan.sourceStart,plan.sourceFrames,channels,*shape) ||
         plan.transposeSemis != 0 || plan.formantScale != 1 ||
         (plan.mode == WarpMode::Tones && plan.grainSeconds != kArrangementTonesGrainSeconds) ||
-        plan.anchors.size() != 2 || plan.anchors.front() != WarpAnchor{0,0} ||
+        plan.anchors.size() < 2 || plan.anchors.size() > maxAnchors || plan.anchors.front() != WarpAnchor{0,0} ||
         plan.anchors.back() != WarpAnchor{plan.sourceFrames,plan.sourceFrames})
         return {};
+    // The offline R3 key-frame map changes the time ratio at each marker.
+    // Strictly increasing identity anchors leave it exactly at unity, so
+    // the bounded page render can use its endpoint-only map.
+    const auto nonidentity = std::adjacent_find(plan.anchors.begin(),plan.anchors.end(),
+        [](const WarpAnchor& before,const WarpAnchor& next) {
+            return next.sourceFrame <= before.sourceFrame || next.sourceFrame != next.outputFrame;
+        });
+    if (nonidentity != plan.anchors.end()) return {};
     return shape->pageFrames;
 }
 
