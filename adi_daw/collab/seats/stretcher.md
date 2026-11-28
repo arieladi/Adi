@@ -100,6 +100,8 @@ A second reversed R3 experiment synthesized forward and reflected the integrated
 
 The two-tile worker held sustained RMS at unity at 44.1, 48, and 96 kHz. With an abrupt 120→140 change, 9 of 63 pulse landmarks exceeded 2.79 ms. Triggering the change at each voice’s exact input analysis centre increased the failures to 14 of 63. The steady control was exact within one sample, and a command that hit the saved source frame still left the next attack 246 samples late at 44.1 kHz. Both candidates retained full attack levels and had no separated duplicate above 0.30 FS in this fixture. Output-hop timing remains open.
 
+A bounded stereo PCM remap reduced late landmarks from 13 of 63 to one and kept stereo peak skew within one sample. It left the known split attack with two crests. On a simultaneous 440 Hz sustain, the same windows bent pitch by as much as 1,152 cents and raised adjacent sample steps by 1.65 times. Even the entire gap between the adjacent landmarks in one 48 kHz fixture would require at least 148 cents of pitch excursion to reach the timing tolerance. The remap remains an experiment.
+
 ## Readings owed
 
 - Live 12 describes Beats' zero crossing and envelope, Texture's grain and fluctuation, and Re-Pitch's tape-speed behavior. The manual leaves exact slice fades, grain jitter and mode latency unquantified. Keep the named existing Beats attack and envelope constants and the captured Texture seed until the TM-WT-03 listening work establishes equivalents. The recorded Live 12.4 audit has Beats defaulting to Back-and-Forth. [Live 12 warp modes](https://www.ableton.com/en/live-manual/12/audio-clips-tempo-and-warping/#warping-modes)
