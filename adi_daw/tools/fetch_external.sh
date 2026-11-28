@@ -226,11 +226,16 @@ fetch_pinned() {
         fi
     fi
 
+    # The patterns are rooted at the repository ("/ext/..."). Git Bash on
+    # Windows rewrites an argument that starts with "/" into a Windows path,
+    # which matches nothing and leaves the sparse tree empty: turn that off here.
     if [ "$sub" = headers ] && [ -d "$path/.git" ]; then
-        git -C "$path" sparse-checkout set --no-cone '/libavcodec/*.h' '/libavutil/*.h' /COPYING.LGPLv2.1 /LICENSE.md
+        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+            git -C "$path" sparse-checkout set --no-cone '/libavcodec/*.h' '/libavutil/*.h' /COPYING.LGPLv2.1 /LICENSE.md
     fi
     if [ "$sub" = recovery ] && [ -d "$path/.git" ]; then
-        git -C "$path" sparse-checkout set --no-cone /ext/recover/sqlite3recover.c /ext/recover/sqlite3recover.h /ext/recover/dbdata.c /manifest.uuid
+        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+            git -C "$path" sparse-checkout set --no-cone /ext/recover/sqlite3recover.c /ext/recover/sqlite3recover.h /ext/recover/dbdata.c /manifest.uuid
     fi
 
     # A submodule is fetched only where the table asks. Shallow, like the parent:
