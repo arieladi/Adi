@@ -172,6 +172,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | DF-W64 | `basics/test-chain-2` at `ff8716872` | Add the chosen track on a double-click below the Arrangement rows. Window, editing and settings seats. | The peerless fixture passed 18 checks for the real gesture, remembered choice, Settings, safe boundaries and one-step Undo. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | DF-W65 | `basics/test-chain-2` at `13eb88b8c` | Offer an opt-in Transport setting for the Loop switch to take selected time. Transport and settings seats. | The button fixture exercises the default, an active range, the same brace, an insert marker and a clip selection. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-446 | `basics/test-chain-2` at `865d1d9bb` | Fit the Control Bar without collisions at 960 px and below. Control Bar and window seats. | The bounds fixture counted eight overlapping pairs before and zero after. All 32 control bounds at 1440 px match the baseline. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-450 | `basics/test-chain-2` at `ee5228390` | Add enabled and disabled Undo and Redo arrows with the next edit in Info View. Edit, Control Bar and window seats. | The headless fixture drives the commands and checks titles, geometry and zero frame allocations after externally committed history changes. The layout replay covers five widths from 520 to 1440 px. All 306 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -483,3 +484,25 @@ At 1440 × 900 the bar measures (0, 0, 1440, 35), and all 32 control rectangles 
 The suite also checks non-overlap with Play, Stop and Record still visible at widths 520, 600, 800, 1050 and 1180. At the 520 minimum all visible controls stay within the bar. The 960 software-reference typography mask now covers the old 30 px gap only when the Position field crosses it, so the narrow reference keeps comparing the rest of the window while the dedicated bounds test covers all of the Control Bar.
 
 The focused Debug build used the warnings-as-errors command. With DISPLAY unset, the baseline passed three of six checks and the fix passed all six. No window or menu was shown.
+
+#### SC-450 | Undo and Redo in the Control Bar
+
+Candidate `8e48c11af` over the SC-449 command update, final SC-446 layout and SC-457/462 point-aware Info hover. Window seat, with a message-thread gesture-presence query in the engine/document seam.
+
+Two arrow buttons sit after the loop controls and before the Arrangement and Mix switch. They call the same project Undo and Redo commands used by the edit menu. The existing disabled style dims their glyphs. Info names the next transaction or describes the held device edit, empty history or recording hold. The button labels and enablement refresh at a new project generation or after a hold changes, including under a stationary pointer. The point-aware hover still decides the target. Both a new hover target and refreshed text for a button under the same pointer use one Info formatting and analyser-visibility path. The root does not read or format history on steady frames. The application checks for a pending parameter gesture without constructing a list of gestures.
+
+Compact coordinates are relative to the Control Bar. The extracted production layout was replayed with `DISPLAY` unset and checked every visible slot for clipping and overlap. Before SC-450 there were no arrow rectangles. Existing controls shift only where they need to make room. The same checks passed in Open density, with 18 × 20 px arrows at y=11. At Open 1440 px, the arrows are at x=960 and x=980 and the workspace uses compact labels to preserve spacing. The smallest layout lets the CPU meter yield to keep both arrows and the tempo, signature, metronome and position fields. At 960 px the existing unavailable Key and MIDI map placeholders yield and the CPU meter remains visible.
+
+| Window width | Undo after | Redo after | Arrangement before → after | Play before → after |
+| --- | --- | --- | --- | --- |
+| 520 | `(351,9) 18×17` | `(371,9) 18×17` | `(379,9) → (439,9)`, `28×17` | `(227,9) → (227,9)`, `18×17` |
+| 960 | `(659,9) 18×17` | `(679,9) 18×17` | `(681,9) → (749,9)`, `28×17` | `(290,9) → (290,9)`, `18×17` |
+| 1000 | `(673,9) 18×17` | `(693,9) 18×17` | `(721,9) → (721,9)`, `28×17` | `(310,9) → (304,9)`, `18×17` |
+| 1200 | `(850,9) 18×17` | `(870,9) 18×17` | `(921,9) → (921,9)`, `28×17` | `(436,9) → (436,9)`, `18×17` |
+| 1440 | `(960,9) 18×17` | `(980,9) 18×17` | `(1037,9) → (1037,9)`, `90×17` | `(546,9) → (546,9)`, `18×17` |
+
+The peerless shell test is in the whole suite and `--arrangement-components-only`. It drives mouse press/release, checks the actual track rename is undone and redone, reads Info and availability through held and landing states, checks steady-frame allocation, and verifies all arrow bounds and essential fields down to 520 px. `git diff --check` and the extracted layout replay passed. All five changed C++ translation units passed Linux Debug Werror syntax. A reduced replay linked the production button methods with JUCE. With `DISPLAY` unset, each enabled arrow ran its callback once, each disabled arrow ran none, and software-painted glyph contrast against the button background fell from 0.643 to 0.259 when disabled. Zero JUCE assertions. The complete shell test drives the project history and is part of the integrated gate because the changed component headers need a coherent build.
+
+The first integrated run exposed two generation-change frame allocation failures. The application’s existing 20 ms owner timer now reads committed history after the document tick. Construction, a successful edit, Undo, Redo and a history restore also refresh it. Drawing frames do no history queries. The added peerless check changes the journal outside the window, audits both roots during their generation-change frames, and then updates their arrows and stationary Info through the owner refresh.
+
+The actual peerless allocation replay counted 46 allocations across two generation-change frames before the repair and zero afterward. All 20 history, button and hover checks passed after the repair.
