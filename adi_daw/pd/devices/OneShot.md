@@ -36,6 +36,10 @@ Spread plays each note as two voices at half the level: one detuned up and
 panned left, one detuned down and panned right, both by the amount (at 100 %:
 50 cents apart, hard left and right; ADI's span, Live's is a reading). Each
 loops and ends on its own; the note ends when both have. At 0 it is one voice.
+Sensitivity (Slice by Transient) picks one of 21 lists found when the sample is
+prepared, 0 % to 100 % in 5 % steps; 50 %, the default, is the list OneShot
+found before the control existed (above 0.05 and three times the envelope, 10
+ms apart), each step 2^(1/5) stricter or looser. Up to 64 slices in each.
 Reverse and Crop (Simpler's context-menu commands) are `prepareSampleReverse`
 and `prepareSampleCrop` in `src/adi/sample_slots.cpp`: each writes a changed
 copy of the slot's sample to `Samples/Processed/Reverse` or `.../Crop` in the

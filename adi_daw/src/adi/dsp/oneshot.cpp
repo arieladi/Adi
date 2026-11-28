@@ -111,7 +111,11 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        // SC-482: Spread plays each note as two voices, one
                        // detuned up and panned left, one down and right, both
                        // by the amount (0, the default, is one voice as before).
-                       {"spread", "Spread", "%", 0, 100, 0, 0}};
+                       {"spread", "Spread", "%", 0, 100, 0, 0},
+                       // SC-482: Slice by Transient's Sensitivity: more slices
+                       // as it rises (up to 64). 50 % finds the slices OneShot
+                       // found before it existed; Live's default is a reading.
+                       {"slice_sensitivity", "Sensitivity", "%", 0, 100, 50, 0}};
 // SC-482: Spread at 100 % detunes its two voices this far apart in cents, half
 // up and half down, and pans them hard left and right (ADI's span and law:
 // Live's are a reading still to take). Each voice plays at half the level, so
@@ -256,21 +260,36 @@ std::shared_ptr<const OneShot::PreparedSample> OneShot::prepareSample(
     s->manual.erase(std::unique(s->manual.begin(), s->manual.end()), s->manual.end());
     if (s->manual.size() > 64)
         return {};
-    s->transients = {0};
+    // SC-482: one detector a Sensitivity step, all in one pass over the same
+    // envelope. Step k's threshold is the old law's (level above 0.05 and
+    // above 3 x the envelope, 10 ms after the last slice) times
+    // 2^((10 - k) / 5): step 10 is that law exactly (x 1), step 0 four times
+    // as strict, step 20 a quarter. The scale is ADI's, Live's a reading.
+    constexpr int steps = Sample::kSensitivitySteps;
+    std::array<double, steps> strictness{};
+    std::array<std::size_t, steps> last{};
+    for (int k = 0; k < steps; ++k) {
+        strictness[static_cast<std::size_t>(k)] = std::exp2((10 - k) / 5.);
+        s->transients[static_cast<std::size_t>(k)] = {0};
+    }
+    const double loosest = strictness[static_cast<std::size_t>(steps - 1)];
     s->zeros = {0};
     double envelope = 0;
-    std::size_t last = 0;
     for (std::size_t i = 1; i < s->frames(); ++i) {
         const auto ch = static_cast<std::size_t>(channels);
         const float x = s->data[i * ch], prev = s->data[(i - 1) * ch];
         if ((x >= 0 && prev < 0) || (x < 0 && prev >= 0))
             s->zeros.push_back(i);
         const double level = std::abs(x);
-        if (s->transients.size() < 64 && level > std::max(.05, envelope * 3) &&
-            i - last > static_cast<std::size_t>(rate * .01)) {
-            s->transients.push_back(i);
-            last = i;
-        }
+        if (level > std::max(.05 * loosest, envelope * 3 * loosest))
+            for (std::size_t k = 0; k < static_cast<std::size_t>(steps); ++k) {
+                auto &found = s->transients[k];
+                if (found.size() < 64 && level > std::max(.05 * strictness[k], envelope * 3 * strictness[k]) &&
+                    i - last[k] > static_cast<std::size_t>(rate * .01)) {
+                    found.push_back(i);
+                    last[k] = i;
+                }
+            }
         envelope = .995 * envelope + .005 * level;
         if (envelope < 1e-30) {
             envelope = 0;
@@ -469,7 +488,11 @@ bool OneShot::slice(int key, const Sample &s, const std::array<double, Count> &p
         if (p[SlicePlayback] != 2)
             to = std::min(end, from + size);
     } else {
-        const auto &slices = by == 2 ? s.transients : s.manual;
+        // SC-482: Sensitivity picks its step's list (50 %: step 10).
+        const auto step = static_cast<std::size_t>(std::clamp(
+            std::lround(p[SliceSensitivity] / 100. * (Sample::kSensitivitySteps - 1)), 0L,
+            static_cast<long>(Sample::kSensitivitySteps - 1)));
+        const auto &slices = by == 2 ? s.transients[step] : s.manual;
         auto first = std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(begin));
         if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key))
             return false;

@@ -635,6 +635,20 @@ void sliceKeys() {
         set(d, OneShot::Voices, 2);
         const auto poly = playNotes(d, 512, {{0, 36}, {100, 37}, {200, 46}});
         check(std::abs(poly[300] - .3f) < 1e-6f, "Poly: a key with no slice does not kill the oldest voice (DF-E46 a)");
+        // SC-482: Mono plays one slice at a time, Poly lets two overlap, and
+        // Poly's Retrigger restarts a playing slice or lets it overlap itself.
+        const auto polyPair = playNotes(d, 512, {{0, 36}, {256, 37}});
+        const auto again = playNotes(d, 512, {{0, 36}, {256, 36}});
+        set(d, OneShot::Retrigger, 0);
+        const auto stacked = playNotes(d, 512, {{0, 36}, {256, 36}});
+        set(d, OneShot::Retrigger, 1);
+        set(d, OneShot::SlicePlayback, 0);
+        const auto monoPair = playNotes(d, 512, {{0, 36}, {256, 37}});
+        set(d, OneShot::SlicePlayback, 1);
+        check(std::abs(monoPair[300] - .2f) < 1e-6f && std::abs(polyPair[300] - .3f) < 1e-6f,
+              "Mono plays one slice at a time; Poly lets two overlap");
+        check(std::abs(again[300] - .1f) < 1e-6f && std::abs(stacked[300] - .2f) < 1e-6f,
+              "Poly: Retrigger on restarts a playing slice, off lets it overlap itself");
         // A refused note still takes the per-note gain queued for it, so the
         // next note gets its own (the Sampler queues one per forwarded note-on).
         set(d, OneShot::SlicePlayback, 0);
@@ -664,6 +678,31 @@ void sliceKeys() {
         d.publishSample(onsets, 1, 48000);
         check(energy(playNotes(d, 512, {{0, 37}})) == 0, "a Transient slice beginning past End is refused too");
     }
+}
+// SC-482: Slice by Transient's Sensitivity. Clicks of 0.03, 0.08, 0.3 and 0.9
+// in silence, 4,800 samples apart: 50 % (the old law: above 0.05) finds the
+// last three, 0 % (above 0.2) the last two, 100 % (above 0.0125) all four.
+// A slice's first output sample is its click, at full level.
+void sliceSensitivity() {
+    std::vector<float> clicks(24000, 0.f);
+    const std::array<float, 4> levels{.03f, .08f, .3f, .9f};
+    for (std::size_t n = 0; n < levels.size(); ++n)
+        clicks[4800 * (n + 1)] = levels[n];
+    OneShot d;
+    configure(d);
+    set(d, OneShot::Mode, 2);
+    set(d, OneShot::SliceBy, 2);  // Transient
+    set(d, OneShot::SlicePlayback, 0);
+    check(d.publishSample(clicks, 1, 48000), "clicks publish");
+    const auto first = [&](int key) { return playNotes(d, 64, {{0, key}})[0]; };
+    const auto silent = [&](int key) { return energy(playNotes(d, 256, {{0, key}})) == 0; };
+    check(d.getParam("slice_sensitivity").real == 50 && first(37) == .08f && first(38) == .3f &&
+              first(39) == .9f && silent(40),
+          "Sensitivity 50 %, the default, slices as OneShot always did");
+    set(d, OneShot::SliceSensitivity, 0);
+    check(first(37) == .3f && first(38) == .9f && silent(39), "a lower Sensitivity finds fewer slices");
+    set(d, OneShot::SliceSensitivity, 100);
+    check(first(37) == .03f && first(38) == .08f && first(40) == .9f, "a higher one finds more");
 }
 void liveDefaults() {
     struct Row {
@@ -957,6 +996,7 @@ void filterCircuits() {
 } // namespace
 int main() {
     sliceKeys();
+    sliceSensitivity();
     liveDefaults();
     legacyState();
     filterEnvelope();

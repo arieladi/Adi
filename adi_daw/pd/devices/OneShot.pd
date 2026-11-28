@@ -149,6 +149,8 @@
 #X msg 2520 508 p 64 \$1;
 #X obj 2520 560 adi.param \$0 66 0 100 0 % lin Spread;
 #X msg 2520 598 p 65 \$1;
+#X obj 2520 650 adi.param \$0 67 0 100 50 % lin Sensitivity;
+#X msg 2520 688 p 66 \$1;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 2 0 3 0;
@@ -298,3 +300,5 @@
 #X connect 147 0 0 0;
 #X connect 148 0 149 0;
 #X connect 149 0 0 0;
+#X connect 150 0 151 0;
+#X connect 151 0 0 0;

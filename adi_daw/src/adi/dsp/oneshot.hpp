@@ -5,6 +5,7 @@
 #include "adi/engine/publisher.hpp"
 #include "juce/device_model.hpp"
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <limits>
 #include <span>
@@ -19,7 +20,12 @@ class OneShot final : public DeviceInstance {
         std::vector<float> data;
         int channels = 1;
         double rate = 48000;
-        std::vector<std::size_t> transients, manual, zeros;
+        std::vector<std::size_t> manual, zeros;
+        /// SC-482: the transient slices at each step of Sensitivity, 0 % to
+        /// 100 % in 5 % steps; step 10 (50 %, the default) is the one list
+        /// OneShot found before Sensitivity existed, found the same way.
+        static constexpr int kSensitivitySteps = 21;
+        std::array<std::vector<std::size_t>, kSensitivitySteps> transients;
         std::size_t frames() const noexcept {
             return data.size() / static_cast<std::size_t>(channels);
         }
@@ -97,6 +103,7 @@ class OneShot final : public DeviceInstance {
         Pan,
         PanRandom,
         Spread,
+        SliceSensitivity,
         Count
     };
     /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
