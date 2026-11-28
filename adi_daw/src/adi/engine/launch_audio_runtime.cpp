@@ -685,9 +685,19 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     for (std::size_t index = 0; index < actions.size(); ++index) {
         const auto& action = actions[index];
         if (action.kind == TimedSceneActionKind::Stop) continue;
+        auto& ranges = ranges_.data()[index];
+        if (action.kind == TimedSceneActionKind::KeepIdle) {
+            const auto tails = std::span(driver.tails_).first(driver.tailCount_);
+            if (ranges.size || ranges.tailCount || ranges.cuePages || ranges.warpCuePages ||
+                driver.findRetained(action.track,driver.retainedCount_) ||
+                std::ranges::find(tails,action.track,&LaunchAudioDriver::Tail::track) != tails.end()) {
+                finish();
+                return false;
+            }
+            continue;
+        }
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
-        auto& ranges = ranges_.data()[index];
         auto leaseFrames = candidate.frames;
         if (action.kind == TimedSceneActionKind::Continue) {
             const auto* before = outgoing.pinnedCandidate(clockSample_-1,action.track,action.clip);

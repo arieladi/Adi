@@ -179,12 +179,13 @@ enum class Outcome {
     Warm, ColdThird, StopTrack, SavedStop, ColdSavedStop, CompetingSavedStop, ResidentNoStop,
     Continues, ColdContinue, CompetingStopContinue, CompetingBackContinue,
     ShortContinue, ColdShortContinue, StopShortContinue,
-    EndAtCut, ColdEndAtCut, EndBeforeCut
+    EndAtCut, ColdEndAtCut, EndBeforeCut, IdleNoStop, ColdIdleNoStop, BackIdleNoStop
 };
 
 void exercise(Outcome outcome) {
     const bool warm = outcome == Outcome::Warm || outcome == Outcome::SavedStop ||
-        outcome == Outcome::Continues || outcome == Outcome::ShortContinue || outcome == Outcome::EndAtCut;
+        outcome == Outcome::Continues || outcome == Outcome::ShortContinue || outcome == Outcome::EndAtCut ||
+        outcome == Outcome::EndBeforeCut || outcome == Outcome::IdleNoStop;
     const bool savedStop = outcome == Outcome::SavedStop || outcome == Outcome::ColdSavedStop ||
         outcome == Outcome::CompetingSavedStop;
     const bool endAtCut = outcome == Outcome::EndAtCut || outcome == Outcome::ColdEndAtCut;
@@ -192,23 +193,27 @@ void exercise(Outcome outcome) {
     const bool shortContinue = endAtCut || endBeforeCut || outcome == Outcome::ShortContinue ||
         outcome == Outcome::ColdShortContinue || outcome == Outcome::StopShortContinue;
     const auto naturalEnd = endAtCut ? cut : endBeforeCut ? cut - 1 : continuedEndSample;
-    const bool continues = shortContinue || outcome == Outcome::Continues || outcome == Outcome::ColdContinue ||
+    const bool idleInitially = outcome == Outcome::IdleNoStop || outcome == Outcome::ColdIdleNoStop ||
+        outcome == Outcome::BackIdleNoStop;
+    const bool continues = shortContinue || idleInitially || outcome == Outcome::Continues || outcome == Outcome::ColdContinue ||
         outcome == Outcome::CompetingStopContinue || outcome == Outcome::CompetingBackContinue;
     const bool residentNoStop = outcome == Outcome::ResidentNoStop;
-    const bool back = outcome == Outcome::CompetingBackContinue;
+    const bool back = outcome == Outcome::CompetingBackContinue || outcome == Outcome::BackIdleNoStop;
     std::optional<std::size_t> manualStop;
     if (outcome == Outcome::StopTrack) manualStop = 1;
     if (outcome == Outcome::CompetingSavedStop || outcome == Outcome::CompetingStopContinue) manualStop = 0;
-    if (back || outcome == Outcome::StopShortContinue) manualStop = 2;
+    if (outcome == Outcome::CompetingBackContinue || outcome == Outcome::StopShortContinue) manualStop = 2;
+    if (outcome == Outcome::BackIdleNoStop) manualStop = 0;
     constexpr std::array names{"warm","cold-third","stop","saved-stop","cold-saved-stop","competing-saved-stop",
                                "resident-no-stop","continue","cold-continue","competing-stop-continue","competing-back-continue",
                                "short-continue","cold-short-continue","stop-short-continue",
-                               "end-at-cut","cold-end-at-cut","end-before-cut"};
+                               "end-at-cut","cold-end-at-cut","end-before-cut",
+                               "idle-no-stop","cold-idle-no-stop","back-idle-no-stop"};
     const auto* mode = names[static_cast<std::size_t>(outcome)];
     auto startedAt = nearStarts;
     if (outcome == Outcome::ColdThird) startedAt[2] = blockFrames;
     if (outcome == Outcome::ColdSavedStop || outcome == Outcome::ColdContinue ||
-        outcome == Outcome::ColdShortContinue || outcome == Outcome::ColdEndAtCut)
+        outcome == Outcome::ColdShortContinue || outcome == Outcome::ColdEndAtCut || outcome == Outcome::ColdIdleNoStop)
         startedAt[1] = blockFrames;
     if (continues) startedAt[2] = 0;
     constexpr auto end = cut + 3 * blockFrames;
@@ -229,6 +234,7 @@ void exercise(Outcome outcome) {
     std::array<std::size_t,3> order{0,1,2};
     std::ranges::sort(order,{},[&](auto index) { return startedAt[index]; });
     for (const auto index : order) {
+        if (idleInitially && index == 2) continue;
         playback.through(startedAt[index]);
         LaunchRequest start;
         start.kind = LaunchRequestKind::SlotPress;
@@ -238,7 +244,7 @@ void exercise(Outcome outcome) {
         start.scene = 10;
         require(session.postLaunchGesture({&start,1}),"queue a saved outgoing raw slot");
     }
-    if (continues) {
+    if (continues && !idleInitially) {
         playback.through(gainAt);
         const auto source = readTracks(session)[2];
         require(session.postLaunchClipGainEdit({3,clips[2],session.launchIncarnation(),source.run,0.5f,ClipUpdateRate::None}),
@@ -246,9 +252,14 @@ void exercise(Outcome outcome) {
     }
     playback.through(prepareAt);
     const auto old = readTracks(session);
-    for (std::size_t index = 0; index < old.size(); ++index)
-        require(old[index].clip == clips[index] && old[index].run != 0,"keep every outgoing run alive up to the Scene");
-    require(playback.edgeCount == 3 && playback.sceneCount == 0,"only the three outgoing slots have launched");
+    for (std::size_t index = 0; index < old.size(); ++index) {
+        if (idleInitially && index == 2)
+            require(old[index].clip == 0 && old[index].run == 0,"C has no run before preparing the Scene");
+        else
+            require(old[index].clip == clips[index] && old[index].run != 0,"keep each outgoing run alive up to the Scene");
+    }
+    const auto initialEdges = idleInitially ? 2u : 3u;
+    require(playback.edgeCount == initialEdges && playback.sceneCount == 0,"only the commanded outgoing slots have launched");
     const bool staged = session.prepareSceneLaunch(*store,20,bar);
     if (residentNoStop) require(!staged,"continuation without an adopted pager is outside timed raw admission");
     else if (!staged) throw std::runtime_error(session.error());
@@ -257,7 +268,7 @@ void exercise(Outcome outcome) {
         LaunchRequest request;
         request.kind = LaunchRequestKind::BackToArrangement;
         request.incarnation = session.launchIncarnation();
-        request.track = 3;
+        request.track = static_cast<std::int64_t>(*manualStop + 1);
         require(session.postLaunchGesture({&request,1}),"post competing Back on the queued cut sample");
     } else if (manualStop) {
         playback.through(crossing);
@@ -266,17 +277,20 @@ void exercise(Outcome outcome) {
         command.payload = {{"track",*manualStop + 1},{"incarnation",session.launchIncarnation()}};
         require(OpJournal(*store).commit(command).ok,"queue competing StopTrack on the old clock");
     }
-    if (endAtCut || endBeforeCut) {
+    if (endAtCut || endBeforeCut || idleInitially) {
         playback.through(cut);
         const auto atCut = readTracks(session);
         require(playback.sceneCount == 0,"the audited old prefix has no prepared Scene receipt");
         if (endBeforeCut) {
-            require(playback.edgeCount == 4 && playback.edges[3].track == 3 &&
-                    playback.edges[3].oldRun == old[2].run && playback.edges[3].newClip == 0 &&
-                    playback.edges[3].sample == naturalEnd && atCut[2].clip == 0 && atCut[2].run == 0,
+            const auto& edge = playback.edges[initialEdges];
+            require(playback.edgeCount == initialEdges + 1 && edge.track == 3 && edge.oldRun == old[2].run &&
+                    edge.newClip == 0 && edge.sample == naturalEnd && atCut[2].clip == 0 && atCut[2].run == 0,
                     "a run already ended in the old prefix has no live identity at the cut");
+        } else if (idleInitially) {
+            require(playback.edgeCount == initialEdges && atCut[2].clip == 0 && atCut[2].run == 0,
+                    "the saved No Stop cell still has no live run at the audited cut opening");
         } else {
-            require(playback.edgeCount == 3 && atCut[2].clip == old[2].clip && atCut[2].run == old[2].run,
+            require(playback.edgeCount == initialEdges && atCut[2].clip == old[2].clip && atCut[2].run == old[2].run,
                     "the half-open old prefix reaches End with the same live run and no Stop yet");
         }
     }
@@ -284,22 +298,24 @@ void exercise(Outcome outcome) {
 
     const auto after = readTracks(session);
     const bool naturalStop = shortContinue && !manualStop;
-    const auto expectedEdges = (warm ? (continues ? 5u : 6u) : manualStop ? 4u : 3u) + (naturalStop ? 1u : 0u);
+    const auto expectedEdges = initialEdges + (warm ? (continues ? 2u : 3u) : manualStop ? 1u : 0u)
+        + (naturalStop ? 1u : 0u);
+    const auto firstCommitted = initialEdges + (endBeforeCut ? 1u : 0u);
     require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
             playback.sceneCount == (warm ? 1u : 0u) && playback.edgeCount == expectedEdges,
-            "clock, receipt and all three Starts are one driver decision");
+            "clock, receipt and every due track action are one driver decision");
     if (warm) require(playback.scene.sample == cut && playback.scene.tempoBpm == 140,
                       "the single receipt uses the same exact 140 BPM cut");
     if (manualStop) {
         const auto index = *manualStop;
-        const auto& edge = playback.edges[3];
+        const auto& edge = playback.edges[initialEdges];
         require(edge.track == static_cast<std::int64_t>(index + 1) && edge.oldClip == clips[index] &&
                 edge.oldRun == old[index].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar &&
                 edge.arrangement == back,
                 "the manual command alone dispatches on the old clock while the timed Scene refuses");
     }
     if (naturalStop) {
-        const auto& edge = playback.edges[playback.edgeCount - 1];
+        const auto& edge = playback.edges[endBeforeCut ? initialEdges : playback.edgeCount - 1];
         const auto pin = session.beginRender();
         require(edge.track == 3 && edge.oldClip == clips[2] && edge.oldRun == old[2].run && edge.newClip == 0 &&
                 edge.oldPhysicalSourceAnchorFrame == starts[2] && edge.oldFramesSinceSourceAnchor == naturalEnd &&
@@ -310,12 +326,17 @@ void exercise(Outcome outcome) {
         require(playback.sceneOrder < playback.edgeOrder[3] && playback.edgeOrder[3] < playback.edgeOrder[4] &&
                 playback.edgeOrder[4] < playback.edgeOrder[5],
                 "the receipt and both Starts precede the sole natural Stop in the same callback");
+    if (endBeforeCut)
+        require(playback.edgeOrder[initialEdges] < playback.sceneOrder &&
+                playback.sceneOrder < playback.edgeOrder[firstCommitted] &&
+                playback.edgeOrder[firstCommitted] < playback.edgeOrder[firstCommitted + 1],
+                "the sole old-prefix natural Stop precedes the receipt and both Starts");
     const auto stopsAtCut = [&](std::size_t index) {
         return (manualStop && *manualStop == index) || (warm && savedStop && index == 2);
     };
     for (std::size_t index = 0; index < after.size(); ++index) {
         if (warm && !(continues && index == 2)) {
-            const auto& edge = playback.edges[3 + index];
+            const auto& edge = playback.edges[firstCommitted + index];
             const auto expectedClip = stopsAtCut(index) ? 0 : clips[index + 3];
             require(edge.sample == cut && edge.tick == bar && edge.oldClip == clips[index] &&
                     edge.oldRun == old[index].run && edge.newClip == expectedClip &&
@@ -332,7 +353,7 @@ void exercise(Outcome outcome) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < startedAt.size(); ++index) {
             if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index)) ||
-                (shortContinue && index == 2 && sample >= naturalEnd)) continue;
+                (index == 2 && (idleInitially || (shortContinue && sample >= naturalEnd)))) continue;
             const auto clip = warm && sample >= cut && !(continues && index == 2) ? index + 3 : index;
             const auto gain = continues && index == 2 && sample >= gainAt ? 0.5f : 1.0f;
             expected += gain * signal(clip,sample - startedAt[index] + starts[clip]);
@@ -529,6 +550,8 @@ void runThreeTrackTimedRawSceneTests() {
         exercise(outcome);
     for (const auto outcome : {Outcome::ShortContinue,Outcome::ColdShortContinue,Outcome::StopShortContinue,
                                Outcome::EndAtCut,Outcome::ColdEndAtCut,Outcome::EndBeforeCut})
+        exercise(outcome);
+    for (const auto outcome : {Outcome::IdleNoStop,Outcome::ColdIdleNoStop,Outcome::BackIdleNoStop})
         exercise(outcome);
 }
 } // namespace adi::test

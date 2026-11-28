@@ -1148,6 +1148,14 @@ std::optional<std::size_t> Launcher::planTimedSceneActions(const LaunchBlock& bl
         if (!action && !continues) continue;
 
         const auto& run = track.run;
+        if (continues && run.clip == 0 && run.serial == 0) {
+            // A No Stop cell leaves a clear track in its existing state.
+            // An active run at End still follows the Continue path.
+            if (run.fade || run.physicalCueFrame >= 0 || run.legacyRawAnchorFrame >= 0 || run.completedLoops != 0)
+                return {};
+            result[count++] = {TimedSceneActionKind::KeepIdle,track.id,0,0,0,{}};
+            continue;
+        }
         const auto* previous = run.clip ? findClip(candidate,track.id,run.clip) : nullptr;
         if (run.clip && !occupied(previous)) return {};
         const auto lap = cuedPhysicalLap(previous,run.completedLoops,run.physicalCueFrame);
