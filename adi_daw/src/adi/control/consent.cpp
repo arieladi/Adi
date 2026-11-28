@@ -125,7 +125,10 @@ bool save(const std::filesystem::path& file, Json rows) {
 }
 
 bool matches(const Json& row, std::string_view scope, ConsentData kind) {
-    return row.at("scope") == scope && row.at("kind") == static_cast<int>(kind);
+    // Compared as a string: a json beside a string_view is ambiguous to MSVC under C++20.
+    const auto& stored = row.at("scope");
+    return stored.is_string() && stored.get_ref<const std::string&>() == scope &&
+           row.at("kind") == static_cast<int>(kind);
 }
 
 bool expired(const Json& row, std::int64_t now) {
