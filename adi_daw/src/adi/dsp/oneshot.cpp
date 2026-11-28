@@ -59,7 +59,25 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"lfo_volume", "LFO volume", "%", 0, 100, 0, 0},
                        {"lfo_pan", "LFO pan", "%", 0, 100, 0, 0},
                        {"lfo_filter", "LFO filter", "octaves", 0, 8, 0, 0},
-                       {"vel_to_vol", "Vel > Vol", "%", 0, 100, 35, 0}};
+                       {"vel_to_vol", "Vel > Vol", "%", 0, 100, 35, 0},
+                       // SC-482. Times take the amp envelope's ranges and
+                       // defaults; Sustain is a level (Live shows these two
+                       // envelopes' Sustain as a level, not in dB). The amounts
+                       // are Live's Fe < Env (+-72 st) and Pe < Env (+-48 st)
+                       // as the parity list names them; the defaults of the
+                       // times and sustains are a reading still to take, and
+                       // play nothing while the amount is 0 or Pitch env off.
+                       {"fe_attack", "Filter env attack", "ms", .1, 20000, .1, 0},
+                       {"fe_decay", "Filter env decay", "ms", 1, 60000, 600, 0},
+                       {"fe_sustain", "Filter env sustain", "%", 0, 100, 0, 0},
+                       {"fe_release", "Filter env release", "ms", 1, 60000, 50, 0},
+                       {"fe_amount", "Filter env amount", "st", -72, 72, 0, 0},
+                       {"pe_on", "Pitch env", "", 0, 1, 0, 2},
+                       {"pe_attack", "Pitch env attack", "ms", .1, 20000, .1, 0},
+                       {"pe_decay", "Pitch env decay", "ms", 1, 60000, 600, 0},
+                       {"pe_sustain", "Pitch env sustain", "%", 0, 100, 0, 0},
+                       {"pe_release", "Pitch env release", "ms", 1, 60000, 50, 0},
+                       {"pe_amount", "Pitch env amount", "st", -48, 48, 0, 0}};
 static_assert(std::size(specs) == OneShot::Count);
 double real(int i, double n) {
     const auto &s = specs[i];
@@ -264,11 +282,20 @@ bool OneShot::loadState(const std::string &role, const std::vector<std::uint8_t>
         return false;
     try {
         const auto j = nlohmann::json::from_cbor(bytes);
-        if (j.at("version") != 1 || j.at("params").size() != Count)
+        // SC-482: a state saved before a control existed holds fewer values
+        // (41 before SC-482); each missing one takes its default, which plays
+        // what that state played. More than this build knows is refused.
+        const auto saved = j.at("params").size();
+        if (j.at("version") != 1 || saved < static_cast<std::size_t>(kLegacyCount) ||
+            saved > static_cast<std::size_t>(Count))
             return false;
         std::array<double, Count> values{};
         for (int i = 0; i < Count; ++i) {
             auto &v = values[static_cast<std::size_t>(i)];
+            if (static_cast<std::size_t>(i) >= saved) {
+                v = params_[static_cast<std::size_t>(i)].defaultValue.normalized;
+                continue;
+            }
             v = j.at("params").at(static_cast<std::size_t>(i)).get<double>();
             if (!std::isfinite(v) || v < 0 || v > 1)
                 return false;
@@ -465,6 +492,30 @@ void OneShot::releaseVoice(Voice &v, const std::array<double, Count> &p) noexcep
     v.sustained = false;
     v.stage = 3;
     v.releaseStep = v.env / std::max(1., rate_ * (p[Mode] == 0 ? p[Release] : p[FadeOut]) * .001);
+    // SC-482: the filter and pitch envelopes release with the note, each in
+    // its own time, whatever the mode's amp release is.
+    v.filterEnv.release(rate_ * p[FilterEnvRelease] * .001);
+    v.pitchEnv.release(rate_ * p[PitchEnvRelease] * .001);
+}
+void OneShot::Envelope::run(double attackSamples, double decaySamples, double sustain) noexcept {
+    // The amp envelope's arithmetic: a step, then the value is the sample's.
+    if (stage == 0) {
+        value = std::min(1., value + 1 / std::max(1., attackSamples));
+        if (value >= 1)
+            stage = 1;
+    } else if (stage == 1) {
+        value = std::max(sustain, value - (1 - sustain) / std::max(1., decaySamples));
+        if (value <= sustain)
+            stage = 2;
+    } else if (stage == 2) {
+        value = sustain;
+    } else {
+        value = std::max(0., value - releaseStep);
+    }
+}
+void OneShot::Envelope::release(double releaseSamples) noexcept {
+    stage = 3;
+    releaseStep = value / std::max(1., releaseSamples);
 }
 void OneShot::event(const engine::Event &e, const Sample *s,
                     std::array<double, Count> &p) noexcept {
@@ -557,9 +608,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     // exactly 1), not each voice's each sample.
     double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0, rFixed = 0, dFixed = 0;
     double lfoStep = 0;  // the LFO's phase a sample: block-constant
-    bool classic = true, lfoHeard = true, filterFixed = false;
-    const auto coefficients = [&](double lfo, double depth, double &g, double &q) {
-        const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter] * depth), 5., rate_ * .45);
+    // SC-482: the filter and pitch envelopes' segments, in samples, and their
+    // sustain levels; constant between events, like every parameter here.
+    double feAttack = 0, feDecay = 0, feSustain = 0, peAttack = 0, peDecay = 0, peSustain = 0;
+    bool classic = true, lfoHeard = true, filterFixed = false, filterEnvHeard = false,
+         pitchEnvHeard = false;
+    // The cutoff moved by `octaves`: 0 is the knob's own cutoff (exp2(0) is 1).
+    const auto coefficients = [&](double octaves, double &g, double &q) {
+        const double hz = std::clamp(p[Cutoff] * std::exp2(octaves), 5., rate_ * .45);
         g = std::tan(pi * hz / rate_);
         // Res 0..125 % (Live's 0..1.25) onto the state-variable filter's Q
         // from 1/sqrt(2) to 10: ADI's law, unmeasured.
@@ -572,12 +628,23 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         level = std::pow(10., (p[Gain] + p[Volume]) / 20.);
         classic = p[Mode] == 0;
         lfoHeard = p[LfoPitch] != 0 || p[LfoVolume] != 0 || p[LfoPan] != 0 || p[LfoFilter] != 0;
-        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0;
+        filterEnvHeard = p[FilterEnvAmount] != 0;
+        pitchEnvHeard = p[PitchEnvOn] > 0 && p[PitchEnvAmount] != 0;
+        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0 && !filterEnvHeard;
         const double hz =
             p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
         lfoStep = hz / rate_;
+        feAttack = rate_ * p[FilterEnvAttack] * .001;
+        feDecay = rate_ * p[FilterEnvDecay] * .001;
+        feSustain = p[FilterEnvSustain] / 100.;
+        peAttack = rate_ * p[PitchEnvAttack] * .001;
+        peDecay = rate_ * p[PitchEnvDecay] * .001;
+        peSustain = p[PitchEnvSustain] / 100.;
+        // A voice's cached coefficients were for the old cutoff and resonance.
+        for (auto &v : voices_)
+            v.cutoffSeen = std::numeric_limits<double>::quiet_NaN();
         if (filterFixed) {
-            coefficients(0, 1, gFixed, qFixed);
+            coefficients(0., gFixed, qFixed);
             rFixed = 1 / qFixed;
             dFixed = 1 + gFixed * (gFixed + rFixed);
         }
@@ -646,6 +713,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     } else
                         v.env = std::min(1., static_cast<double>(v.played + 1) /
                                                  std::max(1., rate_ * p[FadeIn] * .001));
+                    // SC-482: they run whether heard or not, so an amount
+                    // raised mid-note finds the envelope where it would be.
+                    v.filterEnv.run(feAttack, feDecay, feSustain);
+                    v.pitchEnv.run(peAttack, peDecay, peSustain);
                     double lfo = 0;
                     if (p[LfoOn] > 0) {
                         const int shape = static_cast<int>(p[LfoShape]);
@@ -664,8 +735,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         }
                     }
                     const auto &midi = midiChannels_[v.channel];
-                    const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
-                                         p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation;
+                    double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
+                                   p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation;
+                    if (pitchEnvHeard)
+                        pitch += v.pitchEnv.value * p[PitchEnvAmount];
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {
@@ -681,11 +754,21 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     const double fade = looping ? (v.end - v.loop) * p[Fade] / 200. : 0;
                     // The filter's coefficients: the block's, or this voice's
                     // this sample when the LFO moves the cutoff.
-                    double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
+                    double g = gFixed, r = rFixed, d = dFixed;
                     if (p[FilterOn] > 0 && !filterFixed) {
-                        coefficients(lfo, midi.modulation, g, q);
-                        r = 1 / q;
-                        d = 1 + g * (g + r);
+                        double octaves = lfo * p[LfoFilter] * midi.modulation;
+                        if (filterEnvHeard)
+                            octaves += v.filterEnv.value * p[FilterEnvAmount] / 12.;
+                        if (!(octaves == v.cutoffSeen)) {
+                            double q = 0;
+                            v.cutoffSeen = octaves;
+                            coefficients(octaves, v.g, q);
+                            v.r = 1 / q;
+                            v.d = 1 + v.g * (v.g + v.r);
+                        }
+                        g = v.g;
+                        r = v.r;
+                        d = v.d;
                     }
                     double both[2];
                     readBoth(*s, v.position, both);

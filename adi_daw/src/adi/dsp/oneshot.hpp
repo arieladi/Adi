@@ -70,8 +70,23 @@ class OneShot final : public DeviceInstance {
         LfoPan,
         LfoFilter,
         VelToVol,
+        // SC-482: added after VelToVol, never renumbered. Each new control's
+        // default plays exactly what OneShot played before it existed.
+        FilterEnvAttack,
+        FilterEnvDecay,
+        FilterEnvSustain,
+        FilterEnvRelease,
+        FilterEnvAmount,
+        PitchEnvOn,
+        PitchEnvAttack,
+        PitchEnvDecay,
+        PitchEnvSustain,
+        PitchEnvRelease,
+        PitchEnvAmount,
         Count
     };
+    /// The parameters a project saved before SC-482 holds (VelToVol was last).
+    static constexpr int kLegacyCount = VelToVol + 1;
     OneShot();
     const DeviceIdentity &identity() const noexcept override { return identity_; }
     bool loaded() const noexcept override { return true; }
@@ -149,10 +164,20 @@ class OneShot final : public DeviceInstance {
         double a = 0, b = 0;
         double run(double x, double g, double r, double d, int type) noexcept;
     };
+    /// SC-482: a modulation envelope (filter, pitch): linear segments as the
+    /// amp envelope's, from 0 at note-on. Stage 0 attack, 1 decay, 2 sustain,
+    /// 3 release. Live's segment slopes are a reading still to take.
+    struct Envelope {
+        double value = 0, releaseStep = 0;
+        int stage = 0;
+        void run(double attackSamples, double decaySamples, double sustain) noexcept;
+        void release(double releaseSamples) noexcept;
+    };
     struct Voice {
         bool active = false, held = false, sustained = false;
         std::uint64_t id = 0, age = 0;
         int key = 60, stage = 0;
+        Envelope filterEnv, pitchEnv;
         std::uint8_t channel = 0;
         double position = 0, begin = 0, end = 0, loop = 0, env = 0, releaseStep = 0, velocity = 1,
                phase = 0, random = 0, tuning = 0, gain = 1;
@@ -160,6 +185,9 @@ class OneShot final : public DeviceInstance {
         std::uint64_t played = 0;
         // The last pitch's read increment (exp2 is per pitch, not per sample).
         double pitchSeen = std::numeric_limits<double>::quiet_NaN(), increment = 0;
+        // The last cutoff offset's filter coefficients (tan is per offset, not
+        // per sample): the same offset gives the same coefficients, bit for bit.
+        double cutoffSeen = std::numeric_limits<double>::quiet_NaN(), g = 0, r = 0, d = 0;
         Filter filters[2][2];
     };
     /// Gains for the next note-ons, in order (a zone weight from the Sampler).

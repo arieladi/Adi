@@ -2,8 +2,18 @@
 
 `OneShot.pd` is a top-level instrument canvas with stereo `dac~` outputs and
 the compiled-in `adi.oneshot~` external. Open it through `LibPdEngine` with two
-inputs and two outputs and add the parent `pd/` search path. Its forty-one
-controls declare the native parameter names, units, ranges and defaults.
+inputs and two outputs and add the parent `pd/` search path. Its controls
+declare the native parameter names, units, ranges and defaults, in the native
+order: the first forty-one are the ones every project saved before SC-482
+holds, and each control added since comes after them, never renumbered. A
+state that lacks a control gives it its default, and every added default plays
+what OneShot played before the control existed (`test_oneshot.cpp`,
+`legacyState`).
+
+SC-482 added, beside Live 12's Simpler: a filter envelope (attack, decay,
+sustain, release and an amount of +-72 st on the cutoff) and a pitch envelope
+(on/off, the same four times and an amount of +-48 st), both linear like the
+amp envelope, from 0 at note-on, released with the note in every mode.
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset

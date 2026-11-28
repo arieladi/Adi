@@ -10,6 +10,7 @@
 #include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <nlohmann/json.hpp>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -508,10 +509,125 @@ void liveDefaults() {
                      (p != nullptr ? p->id : std::string("?"))).c_str());
     }
 }
+// SC-482: a project saved before a control existed opens and plays the same.
+// Today's state is the same CBOR with fewer values: those it lacks take their
+// defaults, and the defaults play nothing new.
+void legacyState() {
+    OneShot d;
+    configure(d);
+    set(d, OneShot::Cutoff, 2000);
+    set(d, OneShot::FilterOn, 1);
+    set(d, OneShot::Resonance, 60);
+    set(d, OneShot::LfoOn, 1);
+    set(d, OneShot::LfoPitch, 3);
+    set(d, OneShot::LfoRate, 7);
+    check(d.publishSample(tone(8192), 1, 48000), "legacy-state sample publishes");
+    const auto full = d.saveState("component");
+    auto j = nlohmann::json::from_cbor(full);
+    check(j.at("params").size() == static_cast<std::size_t>(OneShot::Count),
+          "today's state holds every control");
+    auto legacy = j;
+    legacy["params"] = nlohmann::json::array();
+    for (int i = 0; i < OneShot::kLegacyCount; ++i)
+        legacy["params"].push_back(j["params"][static_cast<std::size_t>(i)]);
+    OneShot opened;
+    // A value the old state never held is set first: loading must reset it.
+    set(opened, OneShot::FilterEnvAmount, 36);
+    set(opened, OneShot::PitchEnvOn, 1);
+    set(opened, OneShot::PitchEnvAmount, 12);
+    check(opened.loadState("component", nlohmann::json::to_cbor(legacy)),
+          "a state saved before SC-482 (41 controls) opens");
+    bool defaults = true;
+    for (int i = OneShot::kLegacyCount; i < OneShot::Count; ++i) {
+        const auto *p = opened.paramAt(i);
+        defaults &= opened.getParam(p->id).normalized == p->defaultValue.normalized;
+    }
+    check(defaults, "every control the old state lacks takes its default");
+    check(render(opened, 64, 8192) == render(d, 64, 8192),
+          "and the old state plays exactly what it played");
+    auto tooMany = j;
+    tooMany["params"].push_back(0.5);
+    auto tooFew = legacy;
+    tooFew["params"].erase(tooFew["params"].size() - 1);
+    check(!opened.loadState("component", nlohmann::json::to_cbor(tooMany)) &&
+              !opened.loadState("component", nlohmann::json::to_cbor(tooFew)),
+          "a state with more controls than this build, or fewer than any build saved, is refused");
+}
+// SC-482: the filter envelope moves the cutoff and is its own: a 750 Hz tone
+// under a 100 Hz 24 dB low-pass opens only as the envelope's attack lets it.
+void filterEnvelope() {
+    OneShot d;
+    configure(d);
+    check(d.publishSample(tone(), 1, 48000), "filter-envelope tone publishes");
+    set(d, OneShot::FilterOn, 1);
+    set(d, OneShot::Slope, 1);
+    set(d, OneShot::Cutoff, 100);
+    set(d, OneShot::FilterEnvSustain, 100);
+    // The window 50..92 ms after note-on, against the open tone's.
+    const auto window = [](const std::vector<float> &x) {
+        return energy(std::vector<float>(x.begin() + 2400, x.begin() + 4400));
+    };
+    OneShot unfiltered;
+    configure(unfiltered);
+    unfiltered.publishSample(tone(), 1, 48000);
+    const double reference = window(render(unfiltered, 64, 4400));
+    const double closed = window(render(d, 64, 4400));
+    set(d, OneShot::FilterEnvAmount, 48);  // four octaves: 1.6 kHz at the top
+    set(d, OneShot::FilterEnvAttack, 20);
+    const double fast = window(render(d, 64, 4400));
+    set(d, OneShot::FilterEnvAttack, 1000);
+    const double slow = window(render(d, 64, 4400));
+    std::printf("METRIC filter envelope 50..92 ms: closed %.4g, 20 ms attack %.4g, 1 s attack "
+                "%.4g, open %.4g\n", closed, fast, slow, reference);
+    check(closed < reference * .01, "the closed filter holds the tone back");
+    check(fast > reference * .5, "a 20 ms filter-envelope attack has opened the filter by 50 ms");
+    check(slow < reference * .05, "a 1 s attack has not: the cutoff follows the envelope's attack");
+    set(d, OneShot::FilterEnvAmount, -72);  // six octaves down: 344 Hz
+    set(d, OneShot::Cutoff, 22000);
+    set(d, OneShot::FilterEnvAttack, 20);
+    check(window(render(d, 64, 4400)) < reference * .01, "a negative amount closes the filter");
+    const auto blocks = render(d, 64, 4400);
+    bool invariant = true;
+    for (int size : {1, 33, 513, 4096})
+        invariant &= render(d, size, 4400) == blocks;
+    check(invariant, "the filter envelope is independent of the callback size");
+}
+// SC-482: the pitch envelope bends the pitch and falls back to the note's. On
+// a ramp the output's step is the read increment: 2^(semitones / 12) / 8192.
+void pitchEnvelope() {
+    std::vector<float> ramp(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+        ramp[i] = static_cast<float>(i) / 8192.f;
+    OneShot d;
+    configure(d);
+    check(d.publishSample(ramp, 1, 48000), "pitch-envelope ramp publishes");
+    set(d, OneShot::PitchEnvAmount, 12);
+    set(d, OneShot::PitchEnvDecay, 10);
+    set(d, OneShot::PitchEnvSustain, 0);
+    const auto step = [](const std::vector<float> &x, std::size_t i) {
+        return (x[i] - x[i - 1]) * 8192.;
+    };
+    const auto off = render(d, 64, 1200);
+    check(std::abs(step(off, 100) - 1) < 1e-3, "with Pitch env off the amount bends nothing");
+    set(d, OneShot::PitchEnvOn, 1);
+    const auto bent = render(d, 64, 1200);
+    // 0.1 ms attack (5 samples), then 480 samples of decay from +12 st to 0.
+    const double expected = std::exp2(1. - 95. / 480.);
+    std::printf("METRIC pitch envelope: step at 100 %.4f (about %.4f), at 1000 %.4f\n",
+                step(bent, 100), expected, step(bent, 1000));
+    check(step(bent, 8) > 1.9, "the note starts an octave up");
+    check(std::abs(step(bent, 100) - expected) < .01, "and falls through the decay");
+    check(std::abs(step(bent, 1000) - 1) < 1e-3, "to the held note's own pitch");
+    set(d, OneShot::PitchEnvAmount, -12);
+    check(step(render(d, 64, 1200), 8) < .55, "a negative amount starts it below");
+}
 } // namespace
 int main() {
     sliceKeys();
     liveDefaults();
+    legacyState();
+    filterEnvelope();
+    pitchEnvelope();
     parameterModulation();
     midiControllers();
     preparedSamples();
