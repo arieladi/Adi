@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 15:10 IST — main `e14c080ae4029f99c6d5737d9811bcb520e4c2c7`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 15:00 IST — libcxx/seats/library-chain `b2bd4f792e24d318241d8e3c85c904bd350ba25d`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
