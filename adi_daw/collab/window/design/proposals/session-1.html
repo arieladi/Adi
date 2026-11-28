@@ -1,0 +1,124 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Session View sheet</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, the Session View, proposal 1 (28 November 2026). Live 12's layout in the agreed design language;
+// the Browser, the Info box, the Device View and the Status Bar are the Arrangement sheet's, unchanged.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','arr');
+s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'SESSION VIEW SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+const BOT=782,SB=H-26;
+// ---------------- the Browser (as the Arrangement sheet) ----------------
+const bx=6,bw=326,by=74,bh=BOT-by-6;s+=R(bx,by,bw,bh,C.panel,{r:6});
+s+=R(bx+8,by+8,bw-52,24,C.well,{r:5,s:'#3a3a3a'});s+=T(bx+18,by+24,'Search (Ctrl + F)',{z:11.5,f:C.faint});s+=btn(bx+bw-38,by+8,30,24,'',{r:5});s+=P(`M${bx+bw-30} ${by+16}h14M${bx+bw-27} ${by+20}h8M${bx+bw-25} ${by+24}h4`,{s:C.acc,sw:1.6});
+const cw=116;let yy=by+52;const cat=(t,o={})=>{if(o.sel)s+=R(bx+4,yy-13,cw-4,19,'#44444a',{r:4});s+=CI(bx+17,yy-4,4,o.c||'none',{s:o.c?null:C.dim,sw:1.3});s+=T(bx+29,yy,t,{z:11.5,f:o.sel?C.text:'#bdbdbd',w:o.sel?600:400});yy+=20};
+const sect=t=>{s+=T(bx+10,yy,t,{z:10.5,f:C.faint});yy+=20};
+sect('Collections');cat('Favorites',{c:C.rec});cat('Mix tools',{c:C.acc});yy+=8;
+sect('Library');['Sounds','Drums','Instruments','Audio Effects','MIDI Effects','Pd Devices','Plug-Ins'].forEach(t=>cat(t));cat('Clips',{sel:1});['Samples','Grooves','Tunings','Templates'].forEach(t=>cat(t));yy+=8;
+sect('Places');['Packs','User Library','Current Project','Add Folder...'].forEach(t=>cat(t));
+s+=L(bx+cw,by+40,bx+cw,by+bh-34,'#1c1c1c');
+{let ty=by+44;s+=R(bx+cw+1,ty,bw-cw-2,20,C.head);s+=T(bx+cw+10,ty+14,'Name',{z:10.5,w:600});s+=T(bx+bw-10,ty+14,'7 results',{z:10,f:C.dim,a:'end'});ty+=22;
+ ['Chorus Keys','Verse Bass','Break 124','Pad Swell','Vox Chop A','Riser 8 bars','Fill 2'].forEach((n,i)=>{const ry=ty+i*21;if(i===1)s+=R(bx+cw+3,ry,bw-cw-6,20,'#3f5866',{r:4});s+=R(bx+cw+10,ry+5,10,10,'none',{r:2,s:C.dim,sw:1.3});s+=T(bx+cw+27,ry+14,n,{z:11.5})})}
+s+=R(bx+4,by+bh-30,bw-8,24,C.well,{r:5});s+=CI(bx+18,by+bh-18,7,'none',{s:C.val,sw:1.6});s+=P(`M${bx+16} ${by+bh-21.5}L${bx+22} ${by+bh-18}L${bx+16} ${by+bh-14.5}Z`,{f:C.val});s+=T(bx+34,by+bh-14,'Preview',{z:10.5,f:C.faint});
+
+// ---------------- the Session View ----------------
+const ax=338,aw=W-ax-6,ay=74;s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+const CW=104,TH=24,RH=22,NS=12,MW=158;
+// the strip over the tracks: what is shown, and the switch between the two views as Live has it
+{const y=ay+5;let x=ax+aw-6;
+ x-=58;s+=grp(x,y,58,20);s+=R(x+2,y+2,27,16,C.acc,{r:4});[0,1,2].forEach(k=>{s+=R(x+9+k*5,y+6,3,8,C.ink,{r:1});s+=R(x+37,y+6+k*3.2,14,2,C.dim,{r:1})});
+ x-=64;s+=grp(x,y,58,20);s+=T(x+15,y+14,'H',{z:10,a:'middle',w:700,f:C.dim});s+=sep(x+29,y,20);s+=T(x+43,y+14,'W',{z:10,a:'middle',w:700,f:C.dim});
+ x-=152;s+=grp(x,y,146,20);[['I·O',1],['S',1],['R',1],['M',1],['D',0],['X',0]].forEach(([t,on],k)=>{if(on)s+=R(x+2+k*24,y+2,22,16,C.acc,{r:4});s+=T(x+13+k*24,y+14,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})});
+ x-=118;s+=btn(x,y,112,20,'',{r:4});s+=T(x+7,y+14,'Show',{z:10.5,f:C.dim});s+=T(x+40,y+14,'All groups',{z:10.5,w:600});s+=P(`M${x+98} ${y+8}l3.5 3.5l3.5 -3.5`,{s:C.dim,sw:1.5});
+ s+=T(ax+12,y+14,'Launch',{z:10.5,f:C.dim});s+=chooser(ax+56,y+2,64,16,'1 Bar',{z:9.5});s+=T(ax+134,y+14,'Follow actions',{z:10.5,f:C.dim});s+=R(ax+216,y+4,26,12,C.acc,{r:6});s+=CI(ax+235,y+10,4.5,C.ink)}
+const GD='#f08a5d',GP='#e8b04a';
+const tracks=[
+ {n:'Drums',c:GD,k:'a',grp:1,S:[0,1,2,3,4,5,7,8]},
+ {n:'Kick',c:'#ff6f61',k:'a',S:[0,1,2,3,4,5,7,8]},
+ {n:'Percussion',c:GP,k:'a',grp:1,S:[1,3,4,5,7]},
+ {n:'Breaks',c:'#f2cf5a',k:'a',S:[1,3,4,5,7]},
+ {n:'Bass',c:'#f2e15a',k:'m',S:[1,2,3,4,5,7]},
+ {n:'Keys',c:'#8f8cff',k:'m',S:[0,1,3,5,6,8]},
+ {n:'Pads',c:'#c479ff',k:'m',S:[0,3,5,6,8]},
+ {n:'Lead Vocals',c:'#5ec8ff',k:'a',sel:1,arm:1,S:[1,3,4,5]},
+ {n:'Backing Vox',c:'#5eb4ff',k:'a',S:[3,5]},
+ {n:'FX',c:'#ff6fb1',k:'a',S:[2,6,7]},
+];
+const scenes=[['Intro',''],['Verse 1',''],['Pre',''],['Chorus',''],['Verse 2',''],['Chorus 2',''],['Bridge','98.00'],['Drop','120.00'],['Outro',''],['',''],['',''],['','']];
+const PLAY=3,x0=ax+6,y0=ay+40,gy=y0+TH+2,ys=gy+NS*RH,ym=ys+RH+8,ysd=ym+78,ymx=ysd+40,FH=BOT-6-8-22-ymx;
+// the bars that hold a group's tracks together
+s+=R(x0,y0-7,4*CW-2,3,GD,{r:1.5});s+=R(x0+2*CW,y0-3,2*CW-2,2,GP,{r:1});
+const tri=(x,y,h,f,o={})=>P(`M${x+6} ${y+5}L${x+13} ${y+h/2}L${x+6} ${y+h-5}Z`,o.line?{s:f,sw:1.5}:{f:f});
+const strip=(x,w,tr,i,kind)=>{let g='';
+ // In/Out
+ if(kind==='t'&&!tr.grp){g+=chooser(x+3,ym,w-6,16,tr.k==='m'?'All Ins':'Ext. In',{z:9.5})+chooser(x+3,ym+18,w-6,16,tr.k==='m'?'All Channels':'1/2',{z:9.5});
+  g+=grp(x+3,ym+36,w-6,16)+T(x+19,ym+48,'In',{z:9.5,a:'middle',f:C.dim,w:600})+R(x+35,ym+38,32,12,C.acc,{r:3})+T(x+51,ym+48,'Auto',{z:9.5,a:'middle',f:C.ink,w:700})+T(x+83,ym+48,'Off',{z:9.5,a:'middle',f:C.dim,w:600})}
+ if(kind==='m'){g+=T(x+6,ym+12,'Cue Out',{z:9.5,f:C.dim})+chooser(x+56,ym,w-62,16,'3/4',{z:9.5})+T(x+6,ym+30,'Main Out',{z:9.5,f:C.dim})+chooser(x+56,ym+18,w-62,16,'1/2',{z:9.5})}
+ else g+=chooser(x+3,ym+54,w-6,16,kind==='t'&&i>0&&i<4?(i===3?'Percussion':'Drums'):'Main',{z:9.5});
+ // Sends
+ if(kind!=='m'){[['A',[0.1,0.3,0,0.2,0.05,0.45,0.6,0.5,0.4,0.2,0,0.15][i]],['B',[0,0.1,0,0.3,0,0.3,0.35,0.3,0.2,0.5,0.1,0][i]]].forEach(([l,v],k)=>{g+=knob(x+30+k*42,ysd+14,8,v,C.val,'','',{ring:2})+T(x+14+k*42,ysd+18,l,{z:9.5,f:C.dim,w:600})})}
+ else{g+=knob(x+30,ysd+14,8,0.6,C.val,'','',{ring:2})+T(x+46,ysd+18,'Cue volume',{z:9.5,f:C.dim})}
+ // Mixer: pan, the meter with the volume beside it, the three buttons
+ const mv=kind==='m'?0.82:[0.8,0.72,0.62,0.6,0.66,0.44,0.38,0.7,0.5,0.3,0.4,0.3][i],fv=kind==='m'?0.78:[0.74,0.7,0.72,0.66,0.7,0.6,0.56,0.78,0.6,0.52,0.7,0.7][i];
+ const mxx=x+Math.round(w/2)-8;
+ [['6',0.04],['0',0.2],['12',0.42],['24',0.6],['48',0.82]].forEach(([t,u])=>{g+=T(mxx-8,ymx+FH*u+3,t,{z:8.5,f:C.faint,a:'end'})+L(mxx-5,ymx+FH*u,mxx-2,ymx+FH*u,'#555')});
+ g+=meterV(mxx,ymx,6,FH,mv)+meterV(mxx+8,ymx,6,FH,mv*0.94);
+ g+=P(`M${mxx+17} ${(ymx+FH*(1-fv)).toFixed(1)}l9 -5v10z`,{f:'#e0e0e0'})+L(mxx-1,ymx+FH*(1-fv),mxx+16,ymx+FH*(1-fv),'#e0e0e0',1.2,{op:0.75});
+ g+=knob(x+16,ymx+12,8,0.5,C.val,'','',{bi:1,ring:2});
+ const bxx=x+w-30,byy=ymx+FH-64;
+ if(kind==='t'){g+=btn(bxx,byy,26,18,String(i+1),{on:1,r:4,z:10})+btn(bxx,byy+22,26,18,'S',{r:4,z:10,f:C.dim});
+  if(!tr.grp){g+=btn(bxx,byy+44,26,18,'',{r:4,on:tr.arm,c:C.rec})+CI(bxx+13,byy+53,4,tr.arm?C.ink:C.dim)}}
+ else if(kind==='r'){g+=btn(bxx,byy+22,26,18,tr.l,{on:1,r:4,z:10})+btn(bxx,byy+44,26,18,'S',{r:4,z:10,f:C.dim})}
+ else{g+=btn(bxx-10,byy+44,36,18,'Solo',{on:1,r:4,z:9.5})}
+ g+=box(x+3,ymx+FH+5,48,16,kind==='m'?'0.0':['-3.0','-6.5','-5.0','-4.2','-9.0','-7.5','-12','0.0','-8.0','-14','-6.0','-9.0'][i],{z:9.5})+box(x+55,ymx+FH+5,w-58,16,kind==='m'?'-1.2':['-4.1','-6.0','-9.2','-8.8','-7.4','-13','-15','-5.5','-12','-18','-14','-16'][i],{z:9,f:C.dim});
+ return g};
+tracks.forEach((tr,i)=>{const x=x0+i*CW,w=CW-2;
+ // the title
+ s+=R(x,y0,w,TH,tr.c,{r:3,s:tr.sel?'#ffffff':null,sw:1.4});if(tr.grp)s+=CI(x+11,y0+12,5.5,'none',{s:C.ink,sw:1.5})+P(`M${x+8.5} ${y0+11}l2.5 2.5l2.5 -2.5`,{s:C.ink,sw:1.5});
+ s+=T(x+(tr.grp?22:8),y0+16,tr.n,{z:11.5,f:C.ink,w:700});
+ // the slots
+ for(let k=0;k<NS;k++){const y=gy+k*RH,h=RH-2,has=tr.S.includes(k);
+  if(tr.sel&&k===6){s+=R(x,y,w,h,C.rec,{r:3,op:0.85})+R(x,y,19,h,C.ink,{r:3,op:0.5})+tri(x,y,h,C.rec)+T(x+24,y+14,'Lead Vocals 5',{z:10,f:C.ink,w:600});continue}
+  if(has){const playing=k===PLAY,queued=(i===5&&k===5);
+   if(tr.grp){s+=R(x,y,w,h,tr.c,{r:3,op:0.42});for(let q=0;q<5;q++)s+=L(x+26+q*15,y+h-3,x+34+q*15,y+3,tr.c,2,{op:0.55});s+=R(x,y,19,h,C.ink,{r:3,op:playing?0.6:0.3})+tri(x,y,h,playing?C.grn:C.ink)}
+   else{s+=R(x,y,w,h,tr.c,{r:3})+R(x,y,19,h,C.ink,{r:3,op:playing||queued?0.6:0.25})+(queued?tri(x,y,h,C.grn,{line:1}):tri(x,y,h,playing?C.grn:C.ink));
+    s+=T(x+24,y+14,(tr.n.length>9?tr.n.slice(0,8)+'.':tr.n)+' '+(tr.S.indexOf(k)+1),{z:10,f:C.ink,w:600})}
+   if(tr.sel&&k===PLAY)s+=R(x-0.5,y-0.5,w+1,h+1,'none',{r:3,s:'#ffffff',sw:1.5})}
+  else{s+=R(x,y,w,h,'#2a2a2b',{r:3});s+=tr.arm?CI(x+9.5,y+h/2,3.8,C.rec,{op:0.75}):R(x+6,y+h/2-3.5,7,7,'#4a4a4c',{r:1.2})}}
+ // the track's status and its stop button
+ s+=R(x,ys,w,RH-2,'#262626',{r:3});s+=R(x+w-17,ys+6,8,8,'#8c8c8c',{r:1.5});
+ if(tr.S.includes(PLAY)){s+=CI(x+13,ys+10,6,'#161616')+P(arc(x+13,ys+10,3,0,250),{s:C.grn,sw:6})+T(x+26,ys+14,i%2?'2':'1',{z:10,f:C.grn,w:600})+T(x+36,ys+14,': 4',{z:10,f:C.dim})}
+ s+=strip(x,w,tr,i,'t')});
+// the space where files and devices are dropped
+const xr=ax+aw-6-MW-2*CW;s+=T((x0+10*CW+xr)/2,gy+NS*RH/2,'Drop Files and',{z:12,f:C.faint,a:'middle'})+T((x0+10*CW+xr)/2,gy+NS*RH/2+17,'Devices Here',{z:12,f:C.faint,a:'middle'});
+// the returns: no slots, as in Live
+[['A Reverb','A'],['B Delay','B']].forEach(([n,l],k)=>{const x=xr+k*CW,w=CW-2;s+=R(x,y0,w,TH,'#b7b7c2',{r:3})+T(x+8,y0+16,n,{z:11.5,f:C.ink,w:700});s+=R(x,gy,w,NS*RH-2,'#242425',{r:3});s+=R(x,ys,w,RH-2,'#262626',{r:3});s+=strip(x,w,{l:l},10+k,'r')});
+// Main: the scenes
+{const x=ax+aw-6-MW,w=MW;s+=R(x,y0,w,TH,'#e8e8ee',{r:3})+T(x+8,y0+16,'Main',{z:11.5,f:C.ink,w:700});
+ scenes.forEach(([n,bpm],k)=>{const y=gy+k*RH,h=RH-2,on=k===PLAY;s+=R(x,y,w,h,on?'#3a3a3c':'#2c2c2d',{r:3});s+=R(x,y,19,h,'#161616',{r:3,op:0.7})+tri(x,y,h,on?C.grn:'#9a9a9a');
+  s+=T(x+24,y+14,n||String(k+1),{z:10.5,f:n?(on?C.text:'#c8c8c8'):C.faint,w:on?700:400});if(bpm)s+=T(x+w-8,y+14,bpm,{z:9.5,f:C.val,a:'end'})});
+ s+=R(x,ys,w,RH-2,'#262626',{r:3});s+=R(x+8,ys+6,8,8,'#8c8c8c',{r:1.5})+T(x+24,ys+14,'Stop Clips',{z:10,f:C.dim});s+=iBack(x+w-16,ys+10,C.acc).replace(/stroke-width="2.2"/,'stroke-width="1.7"');
+ s+=strip(x,w,{},0,'m')}
+// the names of the three parts, at the left edge, as light rules
+[[ym-5,'In / Out'],[ysd-5,'Sends'],[ymx-5,'Mixer']].forEach(([y,t])=>{s+=L(ax+4,y,ax+aw-4,y,'#111',1)});
+
+// ---------------- the Info box and the Device View (as the Arrangement sheet) ----------------
+const ph=SB-BOT-6;s+=infoBox(6,BOT,326,ph,{seed:9});
+const dx=ax,dw=aw;s+=R(dx,BOT,dw,ph,'#202020',{r:6});
+{const py=BOT+8,h=ph-16;let px=dx+8;
+ s+=R(px,py,22,h,'#5ec8ff',{r:5});s+=`<text transform="translate(${px+15} ${py+h-10}) rotate(-90)" font-size="11.5" font-weight="700" fill="${C.ink}">Lead Vocals</text>`;px+=28;
+ s+=eqPanel(px,py,400,h);px+=408;
+ s+=compPanel(px,py,300,h,1);px+=308;
+ {const w=292;s+=panel(px,py,w,h,'Auto Filter','Clean ▾');s+=filterd(px+8,py+30,184,92);s+=knob(px+218,py+60,13,0.62,C.val,'Freq','1.2 kHz',{lz:9.5});s+=knob(px+264,py+60,13,0.4,C.val,'Res','40 %',{lz:9.5});
+  s+=pill(px+10,py+130,32,16,'LP',{on:1});s+=pill(px+46,py+130,32,16,'HP');s+=pill(px+82,py+130,32,16,'BP');s+=pill(px+118,py+130,42,16,'Notch');
+  [['Amount','+12',0.6],['Attack','6 ms',0.2],['Release','200 ms',0.5]].forEach(([l,v,pv],n)=>s+=knob(px+28+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5,bi:n===0}));
+  [['Amount','20 %',0.2],['Rate','1/8',0.45],['Phase','180°',1]].forEach(([l,v,pv],n)=>s+=knob(px+174+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5}));px+=w+8}
+ {const w=276;s+=panel(px,py,w,h,'Reverb','Hall ▾');s+=decayd(px+8,py+30,w-16,92);s+=T(px+w-16,py+44,'2.4 s',{z:11,a:'end',w:600});
+  [['Pre-delay','12 ms',0.2],['Size','68 %',0.68],['Decay','2.4 s',0.55],['Damp','6.0 kHz',0.6]].forEach(([l,v,pv],n)=>s+=knob(px+38+n*66,py+148,13,pv,C.val,l,v,{lz:9.5}));px+=w+8}
+ s+=T(px+20,py+h/2,'Drop Audio Effects Here',{z:11.5,f:C.faint})}
+// ---------------- the Status Bar ----------------
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Lead Vocals  ·  Chorus  ·  slot 4  ·  Launch: Trigger, quantized to 1 Bar',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Lead Vocals',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-154,SB+5,68,16,C.acc,{r:4});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.ink,w:700});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.dim,w:600});
+finish(W,H,s);
+</script></body></html>
