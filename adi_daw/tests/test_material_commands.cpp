@@ -3,6 +3,7 @@
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
+#include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -149,7 +150,9 @@ void batchImports() {
           db.execAndGet("SELECT count(*) FROM tracks WHERE id=22").getInt() == 0 && !History(*p.store).head(),
           "SC-158: deferred SQL refusal retracts both new copied assets and all project rows");
     db.exec("DROP TRIGGER fail_batch;DROP TABLE batch_deferred");
+    const auto before = digestProject(*p.store).text;
     const auto landed = clip_edit::commitMaterial(*p.store, ready);
+    const auto after = digestProject(*p.store).text;
     check(landed.ok && db.execAndGet("SELECT count(*) FROM media_files").getInt() == 2 &&
           db.execAndGet("SELECT count(*) FROM audio_clips WHERE media_id=8").getInt() == 2 &&
           db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22 AND fade_in_ticks>0 AND fade_out_ticks>0").getInt() == 3 &&
@@ -160,6 +163,11 @@ void batchImports() {
           db.execAndGet("SELECT count(*) FROM tracks WHERE id=22").getInt() == 0 && !History(*p.store).head() &&
           History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22").getInt() == 3,
           "SC-158: one Undo and one Redo cover the complete drop");
+    // Every stored row, the media pool included, not only the clips and the track.
+    check(History(*p.store).undo().ok && digestProject(*p.store).text == before,
+          "SC-158: Undo of the drop restores every project row, the media pool included");
+    check(History(*p.store).redo().ok && digestProject(*p.store).text == after,
+          "SC-158: Redo of the drop repeats every project row");
 }
 void batchReplacement() {
     Project project;

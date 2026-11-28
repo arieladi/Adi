@@ -635,6 +635,47 @@ void loopSetAfterTimeEdit() {
           "an edit prepared before the loop changed is refused whole");
 }
 
+// SC-186: both repairs of a fragmentary bar are one time edit each. A 3/4 bar
+// at beat 4 is cut short by a 4/4 marker at beat 6; a clip, a tempo change and
+// a locator sit across it. Undo and Redo compare every stored row.
+void fragmentaryBarRepair() {
+    constexpr std::int64_t q=5765760;
+    for(const bool complete:{true,false}) {
+        Project p;auto& db=p.store->db();
+        db.exec("DELETE FROM clips WHERE id<>8;UPDATE clips SET pos_ticks=17297280,length_ticks=23063040 WHERE id=8;"
+                "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,8,'notes',X'010203');"
+                "DELETE FROM time_signature_map;INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) "
+                "VALUES(1,0,4,4),(2,23063040,3,4),(3,34594560,4,4);"
+                "DELETE FROM tempo_map;INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120),(2,23063040,90);"
+                "INSERT INTO markers(id,pos_ticks,kind) VALUES(91,28828800,'position');"
+                "UPDATE project SET length_ticks=46126080");
+        const auto meter=[&](std::int64_t id) {
+            SQLite::Statement row(db,"SELECT pos_ticks FROM time_signature_map WHERE id=?");row.bind(1,id);
+            return row.executeStep()?row.getColumn(0).getInt64():-1;
+        };
+        const auto before=digestProject(*p.store).text;const auto head=History(*p.store).head();
+        const auto edit=complete?clip_edit::prepareCompleteFragmentaryBar(*p.store,4*q,q,48000)
+                                :clip_edit::prepareDeleteTime(*p.store,4*q,6*q,48000);
+        const auto committed=edit.ok?clip_edit::commitPrepared(*p.store,edit):CommitResult{};
+        check(edit.ok && committed.ok,(std::string(complete?"Complete":"Delete")+" Fragmentary Bar commits: "+
+                                       edit.error+committed.error).c_str());
+        if(!committed.ok)continue;
+        if(complete)
+            check(meter(1)==0 && meter(2)==4*q && meter(3)==7*q,
+                  "Complete Fragmentary Bar keeps the short bar's meter and moves the next one a beat later");
+        else
+            check(meter(1)==0 && meter(2)==-1 && meter(3)==4*q,
+                  "Delete Fragmentary Bar Time removes the short bar and its meter");
+        const auto after=digestProject(*p.store).text;
+        check(History(*p.store).undo().ok && History(*p.store).head()==head && digestProject(*p.store).text==before,
+              complete?"one Undo of Complete Fragmentary Bar restores every project row":
+                       "one Undo of Delete Fragmentary Bar Time restores every project row");
+        check(History(*p.store).redo().ok && digestProject(*p.store).text==after,
+              complete?"Redo of Complete Fragmentary Bar repeats every project row":
+                       "Redo of Delete Fragmentary Bar Time repeats every project row");
+    }
+}
+
 void reusedMediaIds() {
     Project p;auto& db=p.store->db();const std::string original(64,'a'),replacement(64,'b');
     SQLite::Statement media(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(300,?,'original.wav','wav')");
@@ -1037,6 +1078,32 @@ void ordinaryRangeLaneScope() {
     }
 }
 
+// SC-252: Copy Take to Main Lane is one edit: the take stays, the main lane
+// takes the copy and gives up what it covers.
+void takeToMainRoundTrip() {
+    constexpr std::int64_t q=5765760;
+    Project p;auto& db=p.store->db();
+    db.exec("DELETE FROM clips;INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Takes');"
+            "INSERT INTO lanes(id,track_id,ord,name,kind) VALUES(301,22,0,'Take 1','take');"
+            "INSERT INTO clips(id,track_id,lane_id,kind,pos_ticks,length_ticks,name) VALUES"
+            "(40,22,301,'midi',0,23063040,'Take'),(41,22,NULL,'midi',11531520,23063040,'Main');"
+            "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,40,'notes',X'010203'),(62,41,'notes',X'040506')");
+    const auto take=rangeTable(db,"clips","WHERE lane_id IS NOT NULL");
+    const auto before=digestProject(*p.store).text;const auto head=History(*p.store).head();
+    const auto edit=clip_edit::prepareTakeToMain(*p.store,22,301,{0,q},{0,3*q},48000);
+    const auto committed=edit.ok?clip_edit::commitPrepared(*p.store,edit):CommitResult{};
+    check(edit.ok && committed.ok,("Copy Take to Main Lane commits: "+edit.error+committed.error).c_str());
+    if(!committed.ok)return;
+    check(rangeTable(db,"clips","WHERE lane_id IS NOT NULL")==take &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22 AND lane_id IS NULL AND pos_ticks=5765760 AND length_ticks=11531520").getInt()==1,
+          "the take stays on its lane and the main lane holds the copied range");
+    const auto after=digestProject(*p.store).text;
+    check(History(*p.store).undo().ok && History(*p.store).head()==head && digestProject(*p.store).text==before,
+          "one Undo of Copy Take to Main Lane restores every project row");
+    check(History(*p.store).redo().ok && digestProject(*p.store).text==after,
+          "Redo of Copy Take to Main Lane repeats every project row");
+}
+
 void rangeSurvivorExhaustedIds() {
     constexpr std::int64_t q=5765760,maximum=std::numeric_limits<std::int64_t>::max();
     for(const int mode:{0,1,2,3}) {
@@ -1427,4 +1494,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();sparseClipboardAutomation();rangeMoveRefusalsAndNoOps();rangeMoveAutomation();consolidateMidi();clockSharing();pureLoopAndCut();loopSetAfterTimeEdit();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();sparseClipboardAutomation();rangeMoveRefusalsAndNoOps();rangeMoveAutomation();consolidateMidi();clockSharing();pureLoopAndCut();loopSetAfterTimeEdit();fragmentaryBarRepair();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();takeToMainRoundTrip();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
