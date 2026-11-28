@@ -1335,11 +1335,11 @@ public:
         cue_.fill(-1);
     }
 
-    void prefetch(Window cue, Window loopHead) noexcept override {
+    void prefetch(Window cue, std::span<const Window> wraps) noexcept override {
         if (clip_.cueAdmitted) return;
         Pages pages;
         pages.fill(-1);
-        (void)addCueRanges(pages,cue,maxFrames_,loopHead);
+        (void)addCueRanges(pages,cue,maxFrames_,wraps);
         forecast_ = pages;
         for (const auto page : warmed_)
             if (page >= 0) (void)append(pages,page);
@@ -1347,15 +1347,12 @@ public:
         clip_.request(pages);
     }
 
-    bool reserveCue(Window cue, std::int32_t frames, Window loopHead) noexcept override {
+    bool reserveCue(Window cue, std::int32_t frames, std::span<const Window> wraps) noexcept override {
         if (!cue.placement || cue.first < cue.placement.firstFrame || cue.first >= cue.placement.endFrame ||
             frames <= 0 || frames > maxFrames_ || clip_.cueAdmitted || readErrors()) return false;
-        if (loopHead.placement &&
-            (loopHead.first < loopHead.placement.firstFrame || loopHead.first >= loopHead.placement.endFrame))
-            return false;
         Pages pages;
         pages.fill(-1);
-        if (!addCueRanges(pages,cue,frames,loopHead) || pages.front() < 0) return false;
+        if (!addCueRanges(pages,cue,frames,wraps) || pages.front() < 0) return false;
         clip_.trimAdmission(pages);
         for (const auto page : pages) {
             if (page >= 0 && !clip_.reserve(page)) {
@@ -1472,14 +1469,22 @@ private:
         return true;
     }
 
-    bool addCueRanges(Pages& pages, Window cue, std::int32_t frames, Window loopHead) const noexcept {
-        // Keep the initial placement through the whole callback for a tail.
-        const bool initial = addRange(pages,cue.placement,cue.first,frames);
-        if (!loopHead.placement) return initial;
-        if (cue.first < 0 || loopHead.first <= cue.first) return false;
-        const auto offset = loopHead.first - cue.first;
-        if (offset >= frames) return false;
-        return addRange(pages,loopHead.placement,loopHead.first,frames - static_cast<std::int32_t>(offset)) && initial;
+    bool addCueRanges(Pages& pages, Window cue, std::int32_t frames, std::span<const Window> wraps) const noexcept {
+        if (wraps.empty()) return addRange(pages,cue.placement,cue.first,frames);
+        if (cue.first < 0 || frames <= 0 || cue.first > std::numeric_limits<std::int64_t>::max() - frames)
+            return false;
+        const auto end = cue.first + frames;
+        const auto firstEnd = wraps.size() == 1 ? end : wraps.front().first;
+        if (wraps.front().first <= cue.first || firstEnd > end ||
+            !addRange(pages,cue.placement,cue.first,static_cast<std::int32_t>(firstEnd - cue.first))) return false;
+        for (std::size_t index = 0; index < wraps.size(); ++index) {
+            const auto& wrap = wraps[index];
+            const auto next = index + 1 < wraps.size() ? wraps[index + 1].first : end;
+            if (!wrap.placement || wrap.first < wrap.placement.firstFrame || wrap.first >= wrap.placement.endFrame ||
+                wrap.first >= next || next > end ||
+                !addRange(pages,wrap.placement,wrap.first,static_cast<std::int32_t>(next - wrap.first))) return false;
+        }
+        return true;
     }
 
     bool addRange(Pages& pages, WarpClipPlayer::Placement placement, std::int64_t first,

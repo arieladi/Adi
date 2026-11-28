@@ -38,29 +38,50 @@ bool nativeCueClockStable(const LaunchBlock& block, const LaunchFollowPlayer* fo
         (!block.followActionsEnabled || !follow || !follow->hasClipOrSceneActions(clip));
 }
 
-struct NativeCueWrap {
-    std::optional<LaunchWarpPosition> head;
+struct NativeCueWraps {
+    std::array<LaunchWarpPosition,kMaximumLaunchWarpCueWraps> positions;
+    std::size_t count = 0;
     bool bounded = true;
+
+    [[nodiscard]] std::span<const LaunchWarpPosition> span() const noexcept {
+        return {positions.data(),count};
+    }
 };
 
-NativeCueWrap nativeCueWrap(const LaunchBlock& block, const LaunchSlot& slot,
-                           LaunchWarpPosition cue, std::int32_t frames) noexcept {
-    if (slot.loopEndTick <= slot.loopStartTick) return {};
+NativeCueWraps nativeCueWraps(const LaunchBlock& block, const LaunchSlot& slot,
+                             LaunchWarpPosition cue, std::int32_t frames) noexcept {
+    NativeCueWraps wraps{};
+    if (slot.loopEndTick <= slot.loopStartTick) return wraps;
     constexpr auto limit = std::numeric_limits<std::int64_t>::max();
     if (cue.frame < 0 || frames <= 0 || cue.frame > limit - frames || cue.anchorTick < 0 ||
-        cue.anchorSourceTick < 0 || cue.anchorSourceTick >= slot.loopEndTick) return {{},false};
-    const auto ticksToWrap = slot.loopEndTick - cue.anchorSourceTick;
-    if (cue.anchorTick > limit - ticksToWrap) return {{},false};
-    const auto tick = cue.anchorTick + ticksToWrap;
-    const auto first = block.sampleAtTick(block.clock,tick);
-    // The Launcher can give a sub-sample lap one frame. Leave that case on
-    // its existing path rather than guessing the resulting anchor.
-    if (first <= cue.frame) return {{},false};
+        cue.anchorSourceTick < 0 || cue.anchorSourceTick >= slot.loopEndTick) {
+        wraps.bounded = false;
+        return wraps;
+    }
     const auto end = cue.frame + frames;
-    if (first >= end) return {};
     const auto lapTicks = slot.loopEndTick - slot.loopStartTick;
-    const bool bounded = tick > limit - lapTicks || block.sampleAtTick(block.clock,tick + lapTicks) >= end;
-    return {LaunchWarpPosition{first,tick,slot.loopStartTick},bounded};
+    auto tick = cue.anchorTick;
+    auto previous = cue.frame;
+    auto ticksToWrap = slot.loopEndTick - cue.anchorSourceTick;
+    if (tick > limit - ticksToWrap) {
+        wraps.bounded = false;
+        return wraps;
+    }
+    while (tick <= limit - ticksToWrap) {
+        tick += ticksToWrap;
+        const auto first = block.sampleAtTick(block.clock,tick);
+        if (first >= end) break;
+        // The Launcher can stretch a same-sample wrap to one frame. Leave
+        // those cases and multi-lap fade tails on the ordinary reader path.
+        if (first <= previous || wraps.count == wraps.positions.size() || (wraps.count != 0 && slot.fade)) {
+            wraps.bounded = false;
+            break;
+        }
+        wraps.positions[wraps.count++] = {first,tick,slot.loopStartTick};
+        previous = first;
+        ticksToWrap = lapTicks;
+    }
+    return wraps;
 }
 
 bool needsWorkerCueLease(const LaunchAudioClip& clip) noexcept {
@@ -612,7 +633,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto* clip = media.clip(track.queued.clip);
         if (clip && clip->followsTempo()) {
             const LaunchWarpPosition cue{due,track.queued.tick,*track.queued.legatoSourceTick};
-            std::optional<LaunchWarpPosition> head;
+            NativeCueWraps wraps{};
             const auto slots = call.view.slots;
             const auto slot = std::ranges::lower_bound(slots,std::pair{track.track,track.queued.scene},{},
                 [](const LaunchSlot& item) noexcept { return std::pair{item.track,item.scene}; });
@@ -620,10 +641,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             if (nativePages && !nativePages->wholeSourceFitsPageCache() && slot != slots.end() &&
                 slot->clip == track.queued.clip && slot->mode != LaunchMode::Repeat &&
                 nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),slot->clip)) {
-                const auto wrap = nativeCueWrap(call.block,*slot,cue,call.runtime.maxFrames_);
-                if (wrap.bounded) head = wrap.head;
+                wraps = nativeCueWraps(call.block,*slot,cue,call.runtime.maxFrames_);
             }
-            clip->prefetchWarp(cue,head);
+            clip->prefetchWarp(cue,wraps.bounded ? wraps.span() : std::span<const LaunchWarpPosition>{});
         } else if (clip && clip->pageReader()) {
             const auto* rendered = call.runtime.trackRanges(track.track);
             if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == clip->clip()) return;
@@ -685,9 +705,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 if (sameReader(rendered->tails.data()[index].range)) return true;
             const auto remaining = call.frames - call.offset - offset;
             const LaunchWarpPosition position{call.block.sample + offset,tick,cue.tick};
-            const auto wrap = nativeCueWrap(call.block,target,position,remaining);
-            if (!wrap.bounded) return true;
-            if (!pcm->reserveWarpCue(position,remaining,wrap.head)) return false;
+            const auto wraps = nativeCueWraps(call.block,target,position,remaining);
+            if (!wraps.bounded) return true;
+            if (!pcm->reserveWarpCue(position,remaining,wraps.span())) return false;
             rendered->warpCuePages = nativePages;
             return true;
         }

@@ -14,6 +14,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -494,7 +495,8 @@ void nativePagedLegato(std::string_view mode, bool looping = false) {
     render();
     require(wait([&] {
         const audio::CallbackScope scope;
-        if (!target->reserveWarpCue(warmCue,blockSize,warmHead)) return false;
+        if (!target->reserveWarpCue(warmCue,blockSize,warmHead ? std::span<const LaunchWarpPosition>(&*warmHead,1)
+                                                          : std::span<const LaunchWarpPosition>{})) return false;
         pages.releaseCue();
         return true;
     }),"the second scheduled forecast fills its exact native pages");
@@ -530,6 +532,221 @@ void nativePagedLegato(std::string_view mode, bool looping = false) {
     std::printf("PASS -- native %.*s %s refused the cold cue at %lld and matched every warm sample at %lld\n",
                 static_cast<int>(mode.size()),mode.data(),looping ? "loop" : "one-shot",
                 static_cast<long long>(coldDue),static_cast<long long>(warmDue));
+}
+
+void repeatedBeatsLegato() {
+    constexpr std::uint32_t rate = 48'000;
+    constexpr std::int32_t framesPerBlock = 1024;
+    constexpr std::int64_t targetId = 106, targetScene = 60;
+    constexpr std::uint64_t incarnation = 90;
+    constexpr auto ppq = textproj::kPPQ;
+    constexpr auto ticksForFrames = [](std::int64_t frames) { return (frames * ppq + 12'000) / 24'000; };
+    constexpr auto authoredOnset = ticksForFrames(120'000);
+    constexpr auto loopBegin = authoredOnset + ticksForFrames(16);
+    constexpr auto lapTicks = ppq / 96;  // 250 frames at 120 BPM
+    constexpr auto initialTail = ticksForFrames(48);
+    constexpr auto cueTick = loopBegin + lapTicks - initialTail;
+    constexpr std::int64_t pageBoundary = 12 * 8192;
+    constexpr auto coldPage = pageBoundary / 8192 - 1;
+
+    Fixture fixture;
+    {
+        constexpr std::uint32_t frames = 384'000;
+        std::vector<float> waveform(frames);
+        for (std::size_t index = 0; index < waveform.size(); ++index)
+            waveform[index] = .2f + .1f * static_cast<float>(index) / static_cast<float>(frames);
+        audio::WavWriter wave(fixture.directory.path() / "beats-loop.wav",rate,1,audio::WavFormat::Float32);
+        wave.write(waveform.data(),frames);
+        wave.close();
+        // The same authored onset yields P+4 at a slow head and P-4 at
+        // the faster one. Only the latter needs the preceding raw page.
+        const auto markers = audio::writeWarpMap(std::array{WarpMarker{0,0},
+            WarpMarker{pageBoundary-12,authoredOnset},
+            WarpMarker{pageBoundary+18'000,ticksForFrames(120'400)},WarpMarker{frames,16*ppq}},frames);
+        require(static_cast<bool>(markers),"encode the Beats loop's authored onsets");
+        auto& db = fixture.store->db();
+        db.exec("INSERT INTO scenes(id,ord,name) VALUES(60,9,'Repeated Beats Legato'),(61,10,'Tempo cue');"
+                "UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=61;"
+                "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(6,'beats-loop','beats-loop.wav','wav');"
+                "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(106,1,'audio',0,86486400);"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,106);"
+                "INSERT INTO clip_launch(clip_id,legato,ram_mode) VALUES(106,1,0)");
+        SQLite::Statement clip(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=1,"
+                                  "loop_start_ticks=?,loop_len_ticks=? WHERE id=106");
+        clip.bind(1,static_cast<std::int64_t>(cueTick));
+        clip.bind(2,static_cast<std::int64_t>(loopBegin));
+        clip.bind(3,static_cast<std::int64_t>(lapTicks));
+        clip.exec();
+        SQLite::Statement row(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers)"
+                                 " VALUES(106,6,384000,1,'beats',?)");
+        row.bind(1,markers.bytes.data(),static_cast<int>(markers.bytes.size()));
+        row.exec();
+    }
+    TempoMap clock;
+    clock.events.push_back({0,120,0});
+    for (const auto due : {ppq,2*ppq}) {
+        const auto thirdHead = due + initialTail + 2*lapTicks;
+        clock.events.push_back({thirdHead-ticksForFrames(16),240,0});
+        clock.events.push_back({thirdHead+ticksForFrames(30),120,0});
+    }
+    const auto sampleAt = [&](std::int64_t tick) -> std::int64_t { return std::llround(clock.ticksToSeconds(tick)*rate); };
+    const auto coldDue = sampleAt(ppq);
+    const auto warmDue = sampleAt(2*ppq);
+    // The previous callback ends on a rounded physical sample. Its inverse
+    // tick supplies the outgoing phase at a cue on the next block's edge.
+    const auto warmSourceTick = loopBegin + (cueTick - loopBegin +
+        clock.secondsToTicks(static_cast<double>(warmDue)/rate)) % lapTicks;
+    const auto wrapPositions = [&](std::int64_t tick,std::int64_t sourceTick) {
+        std::array<LaunchWarpPosition,4> wraps;
+        for (std::size_t index = 0; index < wraps.size(); ++index) {
+            const auto at = tick + loopBegin + lapTicks - sourceTick + static_cast<std::int64_t>(index)*lapTicks;
+            wraps[index] = {sampleAt(at),at,loopBegin};
+        }
+        return wraps;
+    };
+    const auto coldWraps = wrapPositions(ppq,cueTick);
+    const auto warmWraps = wrapPositions(2*ppq,warmSourceTick);
+    require(coldWraps[0].frame == coldDue+48 && coldWraps[2].frame == coldDue+540 &&
+            coldWraps[3].frame == coldDue+775 && sampleAt(ppq+initialTail+4*lapTicks) == coldDue+1025,
+            "the tempo burst changes only the interior Beats head inside the four-wrap buffer");
+
+    struct Gate {
+        std::atomic<bool> held{false}, resume{false};
+    } gate;
+    const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
+        .beforePageClaim=[](void* raw,std::int64_t,std::int64_t page) noexcept {
+            auto& state = *static_cast<Gate*>(raw);
+            if (page != coldPage || state.resume.load(std::memory_order_acquire)) return;
+            state.held.store(true,std::memory_order_release);
+            while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
+        }};
+    const auto prepare = [&] {
+        const auto model = rows::readModel(*fixture.store);
+        const auto project = readClipProject(*fixture.store,model,true);
+        std::vector<std::string> problems;
+        auto bank = prepareStoredLaunchProject(*project,clock,rate,2,framesPerBlock,incarnation,
+                                               problems,kSessionResidentPcmBudget,120);
+        require(bank && problems.empty(),"prepare the repeated Beats Loop");
+        return bank;
+    };
+    const auto bank = prepare();
+    fixture.store->db().exec("UPDATE clip_launch SET ram_mode=1 WHERE clip_id=106");
+    const auto referenceBank = prepare();
+    const auto* target = bank->clip(targetId);
+    const auto* reference = referenceBank->clip(targetId);
+    require(target && target->warpPageReader() && !target->warpPageReader()->wholeSourceFitsPageCache() &&
+            reference && reference->followsTempo() && !reference->usesPages(),
+            "compare the long paged Beats source to resident Beats");
+    auto& pages = *target->warpPageReader();
+    struct ResumeOnExit {
+        Gate& gate;
+        ~ResumeOnExit() { gate.resume.store(true,std::memory_order_release); }
+    } resume{gate};
+    ClipPlayback::setWarpRequestSnapshotProbeForTest(pages,&probe);
+
+    LaunchAudioRuntime runtime(bank,{1},framesPerBlock);
+    LaunchAudioDriver driver(1);
+    Transport transport;
+    transport.play();
+    struct Output {
+        std::array<float,framesPerBlock> left{}, right{};
+        std::array<LaunchTransition,4> edges{};
+        std::size_t count = 0;
+    } output;
+    const auto render = [&] {
+        LaunchBlock block;
+        block.frames = framesPerBlock;
+        for (const auto due : {coldDue,warmDue}) {
+            if (transport.position() < due && due-transport.position() < block.frames)
+                block.frames = static_cast<std::int32_t>(due-transport.position());
+        }
+        block.global = LaunchQuantization::Quarter;
+        block.clock = &clock;
+        block.tickAtSample = [](const void* state,std::int64_t sample) noexcept {
+            return static_cast<const TempoMap*>(state)->secondsToTicks(static_cast<double>(sample) / rate);
+        };
+        block.sampleAtTick = [](const void* state,std::int64_t tick) noexcept -> std::int64_t {
+            return std::llround(static_cast<const TempoMap*>(state)->ticksToSeconds(tick)*rate);
+        };
+        float* channels[]{output.left.data(),output.right.data()};
+        NodeIo io;
+        io.out = channels;
+        io.channels = 2;
+        io.frames = block.frames;
+        io.sampleRate = rate;
+        {
+            const audio::CallbackScope scope;
+            runtime.begin(driver,block,transport,transport.position(),&output,
+                [](void* data,const LaunchTransition& edge,std::int64_t) noexcept {
+                    auto& current = *static_cast<Output*>(data);
+                    if (current.count < current.edges.size()) current.edges[current.count++] = edge;
+                });
+            runtime.overlay(1,io);
+            runtime.finish(driver);
+        }
+        transport.advance(block.frames);
+    };
+    const auto post = [&](std::int64_t sceneId,std::int64_t clipId) {
+        const std::array requests{LaunchRequest{LaunchRequestKind::SlotPress,1,sceneId,clipId,incarnation}};
+        require(driver.post(requests),"queue a manual Beats Legato press");
+    };
+    const auto wait = [](auto ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!ready() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return ready();
+    };
+    const auto ready = [&](LaunchWarpPosition position,std::int32_t frames,
+                          std::span<const LaunchWarpPosition> wraps = {}) {
+        const audio::CallbackScope scope;
+        if (!target->reserveWarpCue(position,frames,wraps)) return false;
+        pages.releaseCue();
+        return true;
+    };
+
+    post(10,101);
+    render();
+    require(output.count == 1 && output.edges[0].newClip == 101,"the outgoing run starts normally");
+    post(targetScene,targetId);
+    render();
+    require(wait([&] { return gate.held.load(std::memory_order_acquire); }),
+            "the worker asks for the raw page touched only by the interior Beats head");
+    require(ready({coldDue,ppq,cueTick},48) && ready(coldWraps[0],250),
+            "the initial cue and first complete lap are warm with the interior page still held");
+    while (transport.position() <= coldDue) render();
+    require(output.count == 1 && pages.underrunSamples() == 0 &&
+            std::ranges::all_of(output.left,[](const float sample) { return std::abs(sample-.5f) < .0005f; }),
+            "the missing interior lap keeps the entire cold callback on the old run");
+    gate.resume.store(true,std::memory_order_release);
+
+    post(targetScene,targetId);
+    render();
+    const LaunchWarpPosition warmCue{warmDue,2*ppq,warmSourceTick};
+    require(wait([&] { return ready(warmCue,framesPerBlock,warmWraps); }),
+            "the worker fills the union of all projected Beats lap windows");
+    while (transport.position() <= warmDue) render();
+    require(output.count == 2 && output.edges[1].newClip == targetId && output.edges[1].sample == warmDue &&
+            output.edges[1].sourceTick == warmSourceTick && output.edges[1].offset == 0,
+            "the warmed cue commits at the exact grid sample and saved Legato phase");
+
+    std::array<float,framesPerBlock> expectedLeft{}, expectedRight{};
+    float* channels[]{expectedLeft.data(),expectedRight.data()};
+    const AudioIo expected{channels,nullptr,2,0,framesPerBlock,0};
+    auto position = warmCue;
+    const auto referenceThrough = [&](std::int64_t end) {
+        const auto from = static_cast<std::int32_t>(position.frame-warmDue);
+        const auto count = static_cast<std::int32_t>(end-position.frame);
+        renderLaunchAudio(expected,from,count,reference,0,1.0f,-1,position);
+    };
+    for (const auto wrap : warmWraps) {
+        referenceThrough(wrap.frame);
+        position = wrap;
+    }
+    referenceThrough(warmDue+framesPerBlock);
+    require(output.left == expectedLeft && output.right == expectedRight && output.left[540] > .1f &&
+            pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+            "all 1024 stereo samples, including the fast interior head, match resident Beats");
+    std::printf("PASS -- Beats Legato leases four exact wraps, including the tempo-burst interior head\n");
 }
 
 void ramModes(Fixture& fixture) {
@@ -600,6 +817,7 @@ int main() {
         for (const auto mode : {"beats","texture","re-pitch"}) nativePagedLegato(mode);
         nativePagedLegato("re-pitch",true);
         nativePagedLegato("texture",true);
+        repeatedBeatsLegato();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
