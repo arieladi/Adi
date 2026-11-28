@@ -128,6 +128,10 @@ struct Fixture {
 void run() {
     Fixture f;
     if (control::projectFileConsentBinding(*f.store).empty()) {
+#if defined(_WIN32)
+        // NTFS always gives a file a durable identity: the skip below would hide the whole test.
+        check(false, "a Windows project file has a durable consent binding");
+#endif
         std::string error;
         check(!f.load(error) && f.factories == 0 && f.leases.takeQuestions().empty(),
               "a file with no durable binding is refused and asks nothing it could not grant");
