@@ -133,6 +133,11 @@ The order, oldest stack first (the effects stack's root, compressor-core, is of 
 
 The validators pass on a374b5afa (schema, ops, Pd, CI, parity).
 
+**The base moved (28 November, evening).** `land/basics-1128c` is on main now, so BASE is origin/main.
+origin/main 629a48341 was merged into the chain (docs only: the device parity review, SANITY-CHECK,
+win.md), with no conflict; the validators pass; the chain's head is that merge, 916dd7858. The cut point stays
+578c95198: main itself carries those docs.
+
 ## Step 3 — the proof
 
 | Check | Chain head | Result |
