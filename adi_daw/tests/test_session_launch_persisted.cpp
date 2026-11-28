@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 
@@ -146,6 +147,78 @@ void persisted(Fixture& fixture) {
     require(allocations == 0 && audio::callbackFileIo == 0, "launch callback allocates and reads no files");
     std::printf("PASS -- persisted scenes switch at %lld, 44.1 kHz source converted and 2x Warp verified, "
                 "0 callback allocations/file calls\n", static_cast<long long>(render.edges[1].sample));
+}
+
+void tempoScenesWithArrangementLoop() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr auto loopEnd = 2 * quarter;
+    struct Scenario {
+        std::int64_t startTick, expectedBar; // zero when the driver must refuse
+        bool loopBeforeStart;
+        std::optional<bool> pendingLoopEdit;
+    };
+    const std::array cases{
+        Scenario{quarter, 0, true, {}},
+        Scenario{loopEnd, 1, true, {}},
+        Scenario{3 * quarter, 1, true, {}},
+        Scenario{4 * quarter - quarter / 128, 2, true, {}},
+        Scenario{quarter, 0, false, true},
+        Scenario{quarter, 0, true, false},
+    };
+    for (const auto& item : cases) {
+        Fixture fixture;
+        fixture.store->db().exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        const auto saveLoop = [&](bool on) {
+            OpRequest loop;
+            loop.opType = "transport.setLoop";
+            loop.payload = {{"on", on}, {"start", 0}, {"end", loopEnd}};
+            require(OpJournal(*fixture.store).commit(loop).ok, "save the Arrangement Loop brace");
+        };
+        saveLoop(item.loopBeforeStart);
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*fixture.store, {}, {2, 48'000, blockSize})) throw std::runtime_error(session.error());
+        bool started = false;
+        {
+            auto block = session.beginRender();
+            started = block.startPlayback(item.startTick, false);
+        }
+        require(started, "use the Arrangement playback entry point");
+        const auto driverHasLoop = item.loopBeforeStart && item.startTick < loopEnd;
+        require(session.transport().looping() == driverHasLoop, "observe the effective loop at the playback start");
+        if (item.pendingLoopEdit) {
+            saveLoop(*item.pendingLoopEdit);
+            require(session.refresh(*fixture.store), "publish an Arrangement loop edit to the owner");
+            require(session.transport().looping() == driverHasLoop, "driver still reports the previous loop state");
+        }
+        require(OpJournal(*fixture.store).commit(scene(20, session.launchIncarnation())).ok, "audit a saved tempo scene");
+
+        Render render{session};
+        const auto due = item.expectedBar * barFrames;
+        const auto frames = due ? due - session.transport().position() + 1024 : 2 * barFrames + 1024;
+        while (render.stream < frames) render.block();
+        const auto boundary = std::max(item.expectedBar, std::int64_t{1}) * 4 * quarter;
+        double bpmAtBoundary, bpmBeforeBoundary;
+        {
+            const auto clock = session.beginRender();
+            bpmAtBoundary = clock.bpmAtTick(boundary);
+            bpmBeforeBoundary = clock.bpmAtTick(boundary - 1);
+        }
+        if (item.expectedBar != 0) {
+            require(render.size == 1 && render.edges[0].sample == due && render.edges[0].newClip == 102 &&
+                std::abs(render.left.back() + 0.25f) < 0.0005f,
+                "a bypassed Loop brace permits an audible tempo scene at the reachable bar");
+            require(bpmAtBoundary == 140 && bpmBeforeBoundary == 120,
+                "tempo starts at the exact admitted bar, including when the previous bar is too close");
+        } else {
+            require(render.size == 0 && session.transport().looping() == item.pendingLoopEdit.value_or(driverHasLoop) &&
+                bpmAtBoundary == 120,
+                "an active or unacknowledged Loop brace keeps scene audio and tempo unchanged");
+        }
+    }
+    require(allocations == 0 && audio::callbackFileIo == 0, "loop-aware scene callbacks allocate and read no files");
+    std::printf("PASS -- audited tempo scenes keep active loops and play at the reachable bar at or beyond Loop End\n");
 }
 
 struct PagedRender {
@@ -467,6 +540,7 @@ int main() {
         Fixture fixture;
         persisted(fixture);
         ramModes(fixture);
+        tempoScenesWithArrangementLoop();
         Fixture legato;
         pagedLegato(legato);
         Fixture immediateLegato;

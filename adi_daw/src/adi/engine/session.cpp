@@ -2582,11 +2582,16 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     }
     const auto grid = timing->settings.launchQuantization.value_or(timing->launchAudio->globalQuantization());
     const auto sample = timing->sampleForTick(tick);
+    // The latest saved brace can be waiting for its first driver block.
+    const auto armedLoopEnd = timing->settings.hasLoop && timing->settings.loopEnabled ? timing->loopEnd : 0;
+    const auto arrangementLoops = [armedLoopEnd](const DriverClock& position) {
+        return position.loopEnd > position.loopBegin || position.sample < armedLoopEnd;
+    };
     DriverClock origin;
     if (launch_quantize::nextGridTick(tick, grid, timing->signatures) != tick ||
         sample == std::numeric_limits<std::int64_t>::max() || !readDriverClock(origin) ||
-        origin.sample > sample || (timing->settings.hasLoop && timing->settings.loopEnabled)) {
-        error_ = "the Session scene boundary must be reachable on the current Global grid without an Arrangement loop";
+        origin.sample > sample || arrangementLoops(origin)) {
+        error_ = "the Session scene boundary must be reachable on the current Global grid with no active Arrangement loop";
         return false;
     }
     const auto bpm = clock->bpm;
@@ -2623,7 +2628,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     const std::function<bool()> guard = [&] {
         DriverClock latest;
         return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
-            (!latest.playing || sample - latest.sample >= maxFrames);
+            !arrangementLoops(latest) && (!latest.playing || sample - latest.sample >= maxFrames);
     };
     const auto previousScene = preparedScene_;
     const auto previousBanks = sceneTempoBanks_;
