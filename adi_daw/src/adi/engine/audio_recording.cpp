@@ -105,6 +105,8 @@ AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acc
     const auto signedFrames = static_cast<std::int64_t>(frames);
     if (offset >= signedFrames)
         return {startSample, 0, 0};
+    if (offset < 0 && signedFrames > std::numeric_limits<std::int64_t>::max() + offset)
+        return {startSample, 0, frames};
     const auto heard = static_cast<std::uint64_t>(signedFrames - offset);
     const auto firstFrames = static_cast<std::uint64_t>(loop->endSample - startSample);
     RecordedPass pass{0, heard, startSample, 0};
