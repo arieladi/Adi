@@ -88,6 +88,10 @@ indexed size and timestamp observations, and the shown row offsets. It
 captures native file revisions before installing the catalogue queue. The
 shown rows go first once the replacement commits. `prioritize` can move new
 shown rows ahead while the generation is active. Existing pause state holds.
+An indexed hash can identify a cached measurement when the caller supplies
+the exact native revision from byte verification or an earlier publication
+verified that revision. For rows with size and modified time alone, the
+catalogue worker hashes the current bytes before consulting the cache.
 
 `snapshot(generation)` returns an immutable listing and aligned catalogue
 results with filename matches available while measurements are pending.

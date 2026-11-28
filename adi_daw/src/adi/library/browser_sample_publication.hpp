@@ -30,6 +30,9 @@ struct BrowserIndexedSample {
     std::string hash;
     std::uintmax_t size = 0;
     std::int64_t modifiedNs = 0; // Unix epoch, as in Index::Entry.
+    // Supply only when byte verification proved hash for this exact native
+    // revision. The persisted Index size and modified time cannot prove that.
+    std::optional<media::FileRevision> verifiedRevision = {};
 };
 
 namespace browser_publication_detail {
@@ -107,9 +110,11 @@ public:
             if (!added) slot->second.source = nullptr;
         }
         const auto oldFiles = filesFor(listing_);
-        for (std::size_t i = 0; i < oldFiles.size() && !observations.empty(); ++i)
-            if (const auto found = observations.find(oldFiles[i].path); found != observations.end())
-                found->second.previous = i;
+        for (std::size_t i = 0; i < oldFiles.size(); ++i) {
+            if (rows_[i].hash.empty() && !attached_[i]) continue;
+            auto slot = observations.try_emplace(oldFiles[i].path, Observation{nullptr, {}}).first;
+            if (!slot->second.previous) slot->second.previous = i;
+        }
 
         std::vector<Row> rows(files.size());
         std::vector<AnalysisJob> jobs;
@@ -125,11 +130,15 @@ public:
             row.key = browser_publication_detail::revisionKey(file.path, *row.revision);
             if (const auto indexedRow = observations.find(file.path); indexedRow != observations.end()) {
                 const auto& [source, previous] = indexedRow->second;
-                if (source && source->size == row.revision->size && browser_publication_detail::validHash(source->hash) &&
+                if (previous) row.hash = previousVerifiedHash(*previous, *row.revision);
+                if (row.hash.empty() && source && source->verifiedRevision == row.revision &&
+                    source->size == row.revision->size &&
                     browser_publication_detail::indexedStamp(*row.revision) == source->modifiedNs &&
-                    (!previous || !repeatsChangedHash(*previous, *row.revision, source->hash)))
+                    browser_publication_detail::validHash(source->hash))
                     row.hash = source->hash;
             }
+            // Without proof for this native revision the existing worker key
+            // makes the analysis service hash the current bytes off the owner.
             jobs.push_back({file.path, row.hash, row.key});
         }
 
@@ -208,10 +217,12 @@ private:
         return keys;
     }
 
-    bool repeatsChangedHash(std::size_t previous, const media::FileRevision& revision, std::string_view hash) const {
+    std::string_view previousVerifiedHash(std::size_t previous, const media::FileRevision& revision) const {
         const auto& earlier = rows_[previous];
-        if (!earlier.revision || *earlier.revision == revision) return false;
-        return earlier.hash == hash || (attached_[previous] && attached_[previous]->contentHash == hash);
+        if (earlier.revision != revision) return {};
+        if (!earlier.hash.empty()) return earlier.hash;
+        if (attached_[previous]) return attached_[previous]->contentHash;
+        return {};
     }
 
     SampleAnalysisCatalog& catalog_;

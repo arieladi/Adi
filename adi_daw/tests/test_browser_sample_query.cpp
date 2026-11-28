@@ -7,12 +7,11 @@
 #include "adi/library/sample_analysis_catalog.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/publish_file.hpp"
+#include "adi/ui/library_query.hpp"
 #include "temp_directory.hpp"
 
-#if defined(ADI_TEST_BROWSER_SAMPLE_QUERY_REMOTE)
-#include "adi/ui/library_query.hpp"
-#endif
-
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -20,13 +19,16 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <numbers>
 #include <stdexcept>
 
 namespace {
 using namespace adi;
 using namespace adi::library;
+using ui::BrowserLibrarySnapshot;
+using ui::LibraryListing;
+using ui::LibraryPlace;
+using ui::LibraryQuery;
 namespace fs = std::filesystem;
 
 constexpr std::uint32_t sampleRate = 48000;
@@ -38,83 +40,6 @@ void check(bool passes, const char* description) {
         std::printf("FAIL %s\n", description);
     }
 }
-
-#if defined(ADI_TEST_BROWSER_SAMPLE_QUERY_REMOTE)
-using FilenameIndex = ui::BrowserLibrarySnapshot;
-using WordQuery = ui::LibraryQuery;
-using Listing = ui::LibraryListing;
-using Place = ui::LibraryPlace;
-#else
-// Test the adapter against the public engine-only Browser interface while
-// the production filename index is carried on the adjacent Browser branch.
-class WordQuery {
-public:
-    explicit WordQuery(std::string_view text) {
-        while (!text.empty()) {
-            const auto space = text.find(' ');
-            words_.emplace_back(text.substr(0, space));
-            if (space == std::string_view::npos) break;
-            text.remove_prefix(space + 1);
-        }
-    }
-    [[nodiscard]] bool empty() const { return words_.empty(); }
-    [[nodiscard]] bool matches(std::string_view name, std::string_view tags = {}) const {
-        return std::ranges::all_of(words_, [&](const auto& word) {
-            return name.find(word) != std::string_view::npos || tags.find(word) != std::string_view::npos;
-        });
-    }
-private:
-    std::vector<std::string> words_;
-};
-
-struct Place { std::string name; fs::path root; std::string volumeId; };
-struct File {
-    std::string name;
-    fs::path path;
-    std::string volumeId;
-    [[nodiscard]] bool isSample() const { return path.extension() == ".wav"; }
-};
-struct Listing { std::vector<Place> places; std::vector<File> files; };
-
-class FilenameIndex {
-public:
-    struct Folder { std::vector<std::size_t> files; };
-    explicit FilenameIndex(Listing listing) : listing_(std::move(listing)) {
-        for (const auto& place : listing_.places) {
-            auto& rows = folders_[place.volumeId].emplace_back().files;
-            for (std::size_t row = 0; row < listing_.files.size(); ++row) {
-                const auto relative = listing_.files[row].path.lexically_relative(place.root);
-                if (!relative.empty() && *relative.begin() != "..") rows.push_back(row);
-            }
-        }
-    }
-    [[nodiscard]] const Listing& listing() const { return listing_; }
-    [[nodiscard]] std::span<const Folder> folders(const std::string& place) const {
-        if (const auto found = folders_.find(place); found != folders_.end()) return found->second;
-        return {};
-    }
-    void appendSamples(const WordQuery& words, const std::string* place, std::vector<const File*>& results) const {
-        const auto append = [&](const auto& file) {
-            if (file.isSample() && words.matches(file.name)) results.push_back(&file);
-        };
-        if (!place) {
-            for (const auto& file : listing_.files) append(file);
-        } else {
-            for (const auto& folder : folders(*place))
-                for (const auto row : folder.files) append(listing_.files[row]);
-        }
-    }
-    [[nodiscard]] const File* matchingFileAtPath(const fs::path& path, const WordQuery& words) const {
-        const auto found = std::ranges::find_if(listing_.files, [&](const auto& file) {
-            return file.path == path && words.matches(file.name);
-        });
-        return found == listing_.files.end() ? nullptr : &*found;
-    }
-private:
-    Listing listing_;
-    std::map<std::string, std::vector<Folder>> folders_;
-};
-#endif
 
 void bytes32(std::string& bytes, std::size_t value, bool littleEndian) {
     for (std::size_t i = 0; i < 4; ++i) {
@@ -159,22 +84,15 @@ void writeSample(const fs::path& path, double frequency, std::string_view genre 
     if (!output) throw std::runtime_error("could not write tagged WAV fixture");
 }
 
-Listing listFiles(const std::vector<Place>& places) {
-    Listing listing;
+LibraryListing listFiles(const std::vector<LibraryPlace>& places) {
+    LibraryListing listing;
     listing.places = places;
     for (auto& place : listing.places) {
-#if defined(ADI_TEST_BROWSER_SAMPLE_QUERY_REMOTE)
         auto files = ui::readUnindexedPlace(place, {});
         listing.files.insert(listing.files.end(), std::make_move_iterator(files.begin()),
                              std::make_move_iterator(files.end()));
-#else
-        for (const auto& entry : fs::recursive_directory_iterator(place.root)) {
-            if (entry.is_regular_file())
-                listing.files.push_back({entry.path().filename().string(), entry.path(), place.volumeId});
-        }
-#endif
     }
-    std::ranges::sort(listing.files, {}, [](const auto& file) { return file.name; });
+    ui::sortLibraryFiles(listing.files);
     return listing;
 }
 
@@ -189,12 +107,19 @@ void searchableReadOnlyTags() {
     writeSample(kick, 75, "Percussion CAFE\xCC\x81");
     writeSample(other / "Kick B.wav", 95, "Percussion");
     writeSample(other / "Pending.wav", 4000);
+    constexpr std::array<char, 26> midi{'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
+        'M', 'T', 'r', 'k', 0, 0, 0, 4, 0, static_cast<char>(0xff), 0x2f, 0};
+    {
+        std::ofstream pattern(nested / "Kick Pattern.SMF", std::ios::binary);
+        pattern.write(midi.data(), static_cast<std::streamsize>(midi.size()));
+        if (!pattern) throw std::runtime_error("could not write MIDI fixture");
+    }
     const auto before = media::blake3File(kick);
     if (!before) throw std::runtime_error("tagged fixture did not hash");
 
     const std::string readOnlyId = "folder:read-only";
-    const std::vector<Place> places{{"Read only", readOnly, readOnlyId}, {"Other", other, "folder:other"}};
-    auto browser = std::make_shared<const FilenameIndex>(listFiles(places));
+    const std::vector<LibraryPlace> places{{"Read only", readOnly, readOnlyId}, {"Other", other, "folder:other"}};
+    auto browser = std::make_shared<const BrowserLibrarySnapshot>(listFiles(places));
     std::string error;
     auto index = Index::open(temp.path() / "library.sqlite", error, false);
     if (!index || !index->importJson("{\"version\":1,\"media\":{\"" + before.hex +
@@ -209,7 +134,7 @@ void searchableReadOnlyTags() {
     for (const auto& file : browser->listing().files) {
         // Unindexed Places have path-and-revision keys and no pre-scanned hash.
         lookups.push_back({file.name, {}});
-        if (file.name != "Pending.wav") jobs.push_back({file.path, {}, file.name});
+        if (file.isSample() && file.name != "Pending.wav") jobs.push_back({file.path, {}, file.name});
     }
     catalog.replaceFiles(std::move(jobs));
     catalog.worker().resume();
@@ -217,45 +142,50 @@ void searchableReadOnlyTags() {
     std::vector<std::shared_ptr<const SampleAnalysis>> records;
     catalog.read(lookups, records);
     const BrowserSampleQuery query(browser, std::move(records));
-    BrowserSampleQuery<FilenameIndex>::Results browserResults, floatingResults;
+    BrowserSampleQuery<BrowserLibrarySnapshot>::Results browserResults, floatingResults;
     const auto names = [&](const auto& results) {
         std::vector<std::string> output;
         for (const auto& match : results.matches) output.push_back(browser->listing().files[match.row].name);
         return output;
     };
 
-    std::vector<const BrowserSampleQuery<FilenameIndex>::File*> originalWordMatches;
-    browser->appendSamples(WordQuery("Percussion Kick"), nullptr, originalWordMatches);
+    std::vector<const BrowserSampleQuery<BrowserLibrarySnapshot>::File*> originalWordMatches;
+    browser->appendSamples(LibraryQuery("Percussion Kick"), nullptr, originalWordMatches);
     check(originalWordMatches.empty(), "the original name index alone has no match for the embedded term");
-    query.query(WordQuery("Percussion Kick"), nullptr, {}, browserResults);
-    query.query(WordQuery("Kick Percussion"), nullptr, {}, floatingResults);
+    query.query(LibraryQuery("Percussion Kick"), nullptr, {}, browserResults);
+    query.query(LibraryQuery("Kick Percussion"), nullptr, {}, floatingResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav", "Kick B.wav"} &&
           names(browserResults) == names(floatingResults), "Browser and floating queries join independent name and embedded tag words");
-    query.query(WordQuery("Percussion Favorite"), &readOnlyId, {}, browserResults);
+    query.query(LibraryQuery("Percussion Favorite"), &readOnlyId, {}, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav"}, "authored and embedded tags are searchable in a read-only Place");
-    query.query(WordQuery("Percussion"), &readOnlyId, {}, browserResults);
+    query.query(LibraryQuery("Percussion"), &readOnlyId, {}, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav"}, "tag candidates respect existing nested Place membership");
 
-#if defined(ADI_TEST_BROWSER_SAMPLE_QUERY_REMOTE)
-    query.query(WordQuery("caf\xC3\xA9 FAVORITE"), &readOnlyId, {}, browserResults);
+    query.query(LibraryQuery("caf\xC3\xA9 FAVORITE"), &readOnlyId, {}, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav"}, "canonical Unicode folding applies to tag fields");
-#endif
 
-    query.query(WordQuery("Kick"), nullptr, {}, browserResults);
+    const LibraryQuery midiWords("pattern\tKICK");
+    std::vector<const ui::LibraryFile*> placeMatches;
+    browser->appendFiles(midiWords, &readOnlyId, placeMatches);
+    query.query(midiWords, &readOnlyId, {}, browserResults);
+    check(placeMatches.size() == 1 && placeMatches.front()->kind == ui::LibraryFile::Kind::Midi &&
+          browserResults.matches.empty(), "the real Place index finds a nested SMF while sample search excludes it");
+
+    query.query(LibraryQuery("Kick"), nullptr, {}, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav", "Kick B.wav"}, "filename and tag matches merge once in listing order");
-    query.query(WordQuery("Pending"), nullptr, {}, browserResults);
+    query.query(LibraryQuery("Pending"), nullptr, {}, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Pending.wav"}, "filename discovery does not wait for analysis");
 
     SampleQuery byTone;
     byTone.brightnessHz = SampleQueryRange{0, 500};
     byTone.kind = audio::SampleKind::OneShot;
-    query.query(WordQuery("Favorite"), nullptr, byTone, browserResults);
+    query.query(LibraryQuery("Favorite"), nullptr, byTone, browserResults);
     check(names(browserResults) == std::vector<std::string>{"Kick A.wav"}, "catalog tag candidates flow through the same measured query");
     const auto after = media::blake3File(kick);
     check(after && after.hex == before.hex && !fs::exists(readOnly / ".adi-volume-id") && index->entries().empty(),
           "read-only tag search changes neither audio bytes nor the Place's index membership");
 
-    const WordQuery empty("");
+    const LibraryQuery empty("");
     {
         audio::CallbackScope callback;
         query.query(empty, nullptr, {}, browserResults);
@@ -264,7 +194,7 @@ void searchableReadOnlyTags() {
 
     catalog.worker().pause();
     writeSample(kick, 6500, "Cymbals");
-    const auto revisedBrowser = std::make_shared<const FilenameIndex>(listFiles(places));
+    const auto revisedBrowser = std::make_shared<const BrowserLibrarySnapshot>(listFiles(places));
     const std::array revisedLookups{SampleAnalysisLookup{"kick-v2", {}}};
     catalog.replaceFiles({{kick, {}, "kick-v2"}});
     catalog.read(revisedLookups, records);
@@ -273,14 +203,14 @@ void searchableReadOnlyTags() {
     if (!catalog.worker().waitIdle()) throw std::runtime_error("revised file did not finish");
     catalog.read(revisedLookups, records);
     const BrowserSampleQuery revised(revisedBrowser, std::move(records));
-    revised.query(WordQuery("Cymbals"), &readOnlyId, {}, browserResults);
+    revised.query(LibraryQuery("Cymbals"), &readOnlyId, {}, browserResults);
     check(browserResults.matches.size() == 1 && browserResults.matches.front().row == 0 &&
           query.analysis(0) && revised.analysis(0) &&
           revised.analysis(0)->contentHash != query.analysis(0)->contentHash &&
           revised.analysis(0)->descriptors.spectralEnergy != query.analysis(0)->descriptors.spectralEnergy &&
           revised.analysis(0)->descriptors.brightnessHz > 6000.f,
           "a changed content hash recomputes spectral descriptors and replaces searchable tags");
-    revised.query(WordQuery("Favorite"), nullptr, {}, browserResults);
+    revised.query(LibraryQuery("Favorite"), nullptr, {}, browserResults);
     check(browserResults.matches.empty(), "an authored tag stays bound to the old content hash");
 }
 
@@ -342,15 +272,15 @@ void combinedSamples() {
     const auto aliasRecord = measure(alias);
     const auto kickRecord = measure(nextKick);
 
-    Listing sharedFiles;
+    LibraryListing sharedFiles;
     sharedFiles.files = {{"Hat A.wav", hat, {}}, {"Hat B copy.wav", alias, {}},
                          {"Kick Library.wav", fs::canonical(referencePath), {}}, {"Pending.wav", temp.path() / "pending.wav", {}}};
-    Listing projectFiles;
+    LibraryListing projectFiles;
     projectFiles.files = {{"Kick Current Project.wav", fs::canonical(referencePath), {}},
                           {"Kick Next.wav", nextKick, {}}};
-    auto sharedBrowser = std::make_shared<const FilenameIndex>(std::move(sharedFiles));
-    auto projectBrowser = std::make_shared<const FilenameIndex>(std::move(projectFiles));
-    using Search = BrowserSampleQuery<FilenameIndex>;
+    auto sharedBrowser = std::make_shared<const BrowserLibrarySnapshot>(std::move(sharedFiles));
+    auto projectBrowser = std::make_shared<const BrowserLibrarySnapshot>(std::move(projectFiles));
+    using Search = BrowserSampleQuery<BrowserLibrarySnapshot>;
     const Search shared(sharedBrowser, {hatRecord, aliasRecord, reference, nullptr});
     const Search project(projectBrowser, {nullptr, kickRecord});
     Search::CombinedResults results;
@@ -359,22 +289,22 @@ void combinedSamples() {
         for (const auto& hit : results.matches) output.push_back(hit.file->name);
         return output;
     };
-    shared.queryCombined(WordQuery(""), &project, {}, results);
+    shared.queryCombined(LibraryQuery(""), &project, {}, results);
     check(names() == std::vector<std::string>{"Hat A.wav", "Hat B copy.wav", "Kick Current Project.wav", "Pending.wav", "Kick Next.wav"},
           "a matching project duplicate replaces the shared name in place, while unique project files append");
     if (results.matches.size() != 5) return;
     auto retainedReference = results.matches[2].analysis;
     check(retainedReference == reference && !results.matches[3].analysis,
           "a pending project duplicate can retain its shared measurement and an unmeasured file still matches by name");
-    shared.queryCombined(WordQuery("Library"), &project, {}, results);
+    shared.queryCombined(LibraryQuery("Library"), &project, {}, results);
     check(names() == std::vector<std::string>{"Kick Library.wav"}, "a project display name does not displace a sole shared word match");
 
     SampleQuery low;
     low.brightnessHz = SampleQueryRange{0, 500};
-    shared.queryCombined(WordQuery("Kick"), &project, low, results);
+    shared.queryCombined(LibraryQuery("Kick"), &project, low, results);
     check(names() == std::vector<std::string>{"Kick Current Project.wav", "Kick Next.wav"},
           "the joined stream applies a measured filter to both sources and honors the inherited measurement");
-    shared.queryCombined(WordQuery("Drums Kick"), &project, {}, results);
+    shared.queryCombined(LibraryQuery("Drums Kick"), &project, {}, results);
     check(names() == std::vector<std::string>{"Kick Library.wav", "Kick Next.wav"},
           "both streams use the same indexed independent-word matching with embedded tags");
 
@@ -383,12 +313,12 @@ void combinedSamples() {
     similar.rank = SampleQueryRank::Similar;
     similar.reference = retainedReference.get();
     similar.limit = 2;
-    rescanned.queryCombined(WordQuery("Drums"), &project, similar, results);
+    rescanned.queryCombined(LibraryQuery("Drums"), &project, similar, results);
     check(names() == std::vector<std::string>{"Kick Next.wav", "Hat A.wav"},
           "one global top-K ranks a project kick ahead of shared hats and skips an equivalent reference after a rescan");
 
     similar.limit = sharedBrowser->listing().files.size() + projectBrowser->listing().files.size();
-    rescanned.queryCombined(WordQuery("Drums"), &project, similar, results);
+    rescanned.queryCombined(LibraryQuery("Drums"), &project, similar, results);
     std::vector<SimilarSampleCandidate> swaps;
     Search::makeSwapCandidates(results.matches, swaps);
     check(swaps.size() == 2 && swaps[0].file == nextKick && swaps[0].contentHash == kickRecord->contentHash &&
@@ -407,10 +337,10 @@ void publicationGenerations() {
     fs::copy_file(indexed, indexedAlias);
     writeSample(unindexed, 97);
     const auto paths = [&] {
-        Listing files;
+        LibraryListing files;
         files.files = {{"Indexed Alias.wav", indexedAlias, {}}, {"Indexed.wav", indexed, {}},
                        {"Pending.wav", temp.path() / "Pending.wav", {}}, {"Unindexed.wav", unindexed, {}}};
-        return std::make_shared<const FilenameIndex>(std::move(files));
+        return std::make_shared<const BrowserLibrarySnapshot>(std::move(files));
     };
 
     std::string error;
@@ -424,20 +354,28 @@ void publicationGenerations() {
     if (indexedEntries.size() != 2 || indexedEntries[0].hash.empty() || indexedEntries[0].hash != indexedEntries[1].hash)
         throw std::runtime_error("fixture index did not hash its source");
     std::vector<BrowserIndexedSample> observations;
-    for (const auto& entry : indexedEntries)
-        observations.push_back({indexedRoot / entry.relativePath, entry.hash, entry.size, entry.modifiedNs});
+    for (const auto& entry : indexedEntries) {
+        const auto path = indexedRoot / entry.relativePath;
+        std::error_code revisionError;
+        const auto before = media::readFileRevision(path, revisionError);
+        const auto verified = media::blake3File(path);
+        const auto after = media::readFileRevision(path, revisionError);
+        if (!before || !after || before != after || !verified || verified.hex != entry.hash)
+            throw std::runtime_error("fixture observation could not verify the indexed hash");
+        observations.push_back({path, entry.hash, entry.size, entry.modifiedNs, after});
+    }
     const auto& entry = indexedEntries[1];
     const std::array<std::size_t, 4> shown{3, 1, 0, 99};
     media::AnalysisCache cache(temp.path() / "analyzed");
     audio::DecodeCache decode(temp.path() / "decoded");
     SampleAnalysisCatalog catalog(cache, decode, index.get());
-    BrowserSamplePublication<FilenameIndex> publisher(catalog);
+    BrowserSamplePublication<BrowserLibrarySnapshot> publisher(catalog);
     check(publisher.replace(1, paths(), observations, shown), "aligned jobs install for the first shown generation");
     check(publisher.prioritize(1, shown), "visible row indices reprioritize the installed job keys");
     auto pending = publisher.snapshot(1);
-    BrowserSampleQuery<FilenameIndex>::Results result;
+    BrowserSampleQuery<BrowserLibrarySnapshot>::Results result;
     if (!pending) throw std::runtime_error("pending filename publication is missing");
-    pending->query(WordQuery("Pending"), nullptr, {}, result);
+    pending->query(LibraryQuery("Pending"), nullptr, {}, result);
     check(result.matches.size() == 1 && result.matches[0].row == 2 && !pending->analysis(2),
           "files without measurements retain their aligned filename row");
     check(catalog.worker().stats().pending == 2,
@@ -503,6 +441,72 @@ void publicationGenerations() {
     }
     check(refused, "audio callbacks cannot refresh or reprioritize a library publication");
 }
+
+void staleIndexBeforeFirstPublication() {
+    test::TempDirectory temp{"browser_sample_query", "stale-first-publication"};
+    const auto place = temp.path() / "indexed";
+    fs::create_directory(place);
+    const auto source = place / "Kick.wav";
+    writeSample(source, 82, "Oldtag");
+
+    std::string error;
+    auto index = Index::open(temp.path() / "library.sqlite", error);
+    Volume volume;
+    MarkerVolumeProvider provider;
+    if (!index || !provider.identify(place, volume, error) || !index->scan(volume).ok)
+        throw std::runtime_error("could not index stale-hash fixture: " + error);
+    index->waitIdle();
+    const auto entries = index->entries();
+    if (entries.size() != 1 || entries.front().hash.empty())
+        throw std::runtime_error("stale-hash fixture did not index its original bytes");
+    const auto& indexed = entries.front();
+    media::AnalysisCache cache(temp.path() / "analyzed");
+    audio::DecodeCache decode(temp.path() / "decoded");
+    SampleAnalysisService service(cache, decode);
+    const auto old = service.analyze(source, indexed.hash);
+    if (!old || old.analysis->descriptors.brightnessHz >= 300.f)
+        throw std::runtime_error("stale-hash fixture did not warm the original bass measurement");
+
+    const auto stamp = fs::last_write_time(source);
+    const auto replacement = temp.path() / "replacement.wav";
+    writeSample(replacement, 6700, "Newtag");
+    fs::last_write_time(replacement, stamp);
+    fs::remove(source);
+    fs::rename(replacement, source);
+    const auto current = media::blake3File(source);
+    check(current && current.hex != indexed.hash && fs::file_size(source) == indexed.size &&
+          fs::last_write_time(source) == stamp && service.read(indexed.hash),
+          "same-size source replacement leaves the old indexed hash and its warm ADIA record available");
+
+    const std::array observations{BrowserIndexedSample{source, indexed.hash, indexed.size, indexed.modifiedNs}};
+    SampleAnalysisCatalog catalog(cache, decode, index.get());
+    BrowserSamplePublication<BrowserLibrarySnapshot> publisher(catalog);
+    auto listing = std::make_shared<const BrowserLibrarySnapshot>(listFiles({{"Indexed", place, volume.id}}));
+    if (!publisher.replace(1, listing, observations))
+        throw std::runtime_error("could not install the first stale-hash publication");
+    const auto pending = publisher.snapshot(1);
+    check(pending && !pending->analysis(0), "a fresh publication cannot borrow old ADIA from an unverified index digest");
+    catalog.worker().resume();
+    if (!catalog.worker().waitIdle()) throw std::runtime_error("first stale-hash publication did not finish");
+    const auto measured = publisher.snapshot(1);
+    const auto* sound = measured ? measured->analysis(0) : nullptr;
+    check(sound && sound->contentHash == current.hex && sound->descriptors.brightnessHz > 6000.f,
+          "the first publication verifies the actual bytes and measures their replacement sound");
+    if (measured) {
+        BrowserSampleQuery<BrowserLibrarySnapshot>::Results matches;
+        measured->query(LibraryQuery("Newtag Kick"), nullptr, {}, matches);
+        check(matches.matches.size() == 1 && matches.matches.front().row == 0,
+              "the production matcher finds the replacement file's verified embedded tag");
+    }
+
+    catalog.worker().pause();
+    check(publisher.replace(2, listing, observations), "a later listing still receives the stale persisted index digest");
+    const auto rescanned = publisher.snapshot(2);
+    const auto* retained = rescanned ? rescanned->analysis(0) : nullptr;
+    check(sound && retained && retained->contentHash == current.hex &&
+          retained->descriptors.spectralEnergy == sound->descriptors.spectralEnergy,
+          "an unchanged native revision reattaches the verified measurement while the worker is paused");
+}
 } // namespace
 
 int main() {
@@ -511,6 +515,7 @@ int main() {
         measuredFits();
         combinedSamples();
         publicationGenerations();
+        staleIndexBeforeFirstPublication();
     } catch (const std::exception& error) {
         check(false, error.what());
     }
